@@ -29,6 +29,25 @@ export interface NotificationsResult {
   notModified: boolean;
 }
 
+/** One page of a PR's `labels` connection, as returned by the GraphQL API. */
+interface LabelConnection {
+  nodes: Array<{ name: string }>;
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+}
+
+/** Fetches further pages of one PR's labels when the inline first page is not the whole set. */
+const LABEL_PAGE_QUERY = `
+  query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) {
+        labels(first: 100, after: $cursor) {
+          nodes { name }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+  }`;
+
 /** An open PR's fields relevant to the review-notify watcher (issue #115). */
 export interface PullRequestCandidate {
   owner: string;
@@ -282,7 +301,10 @@ export class GithubClient {
               isDraft
               reviewDecision
               author { login }
-              labels(first: 20) { nodes { name } }
+              labels(first: 20) {
+                nodes { name }
+                pageInfo { hasNextPage endCursor }
+              }
             }
             pageInfo { hasNextPage endCursor }
           }
@@ -296,7 +318,7 @@ export class GithubClient {
       isDraft: boolean;
       reviewDecision: string | null;
       author: { login: string } | null;
-      labels: { nodes: Array<{ name: string }> };
+      labels: LabelConnection;
     }
     interface Data {
       repository: {
@@ -322,12 +344,42 @@ export class GithubClient {
           author: n.author?.login ?? "unknown",
           isDraft: n.isDraft,
           reviewDecision: n.reviewDecision,
-          labels: n.labels.nodes.map((l) => l.name),
+          labels: await this.allLabelNames(owner, repo, n.number, n.labels),
         });
       }
       cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
     } while (cursor);
     return results;
+  }
+
+  /**
+   * Returns *all* label names on a PR: the page fetched inline by the candidate
+   * query, plus any remaining pages. Callers treat the result as the complete
+   * label set — the review notifier suppresses `auto-merge` PRs, and a label
+   * sitting past the first page would otherwise slip through and trigger a DM
+   * that label is meant to prevent.
+   */
+  private async allLabelNames(
+    owner: string,
+    repo: string,
+    number: number,
+    firstPage: LabelConnection,
+  ): Promise<string[]> {
+    const names = firstPage.nodes.map((l) => l.name);
+    let cursor: string | null = firstPage.pageInfo.hasNextPage ? firstPage.pageInfo.endCursor : null;
+
+    interface Data {
+      repository: { pullRequest: { labels: LabelConnection } | null } | null;
+    }
+
+    while (cursor) {
+      const data: Data = await this.graphql<Data>(LABEL_PAGE_QUERY, { owner, repo, number, cursor });
+      const conn: LabelConnection | undefined = data.repository?.pullRequest?.labels;
+      if (!conn) break;
+      names.push(...conn.nodes.map((l) => l.name));
+      cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
+    }
+    return names;
   }
 
   /** Lists the file paths changed by a pull request (paginated, 100/page). */

@@ -165,10 +165,21 @@ same machine).
   be noise; a CODEOWNERS-path PR is blocked on human review regardless of the
   label, so it still gets notified.
 - Dedupe is persisted (`review-notified.json` in `AGENT_STATE_DIR`): one
-  notification per PR number, ever.
+  notification per PR number, ever. Delivery is two-phase — a marker is written
+  *before* the DM and confirmed after it — so a disk failure can never be
+  mistaken for a send failure: if the marker cannot be written the DM is not
+  attempted (fail closed), and if the confirmation cannot be written the marker
+  still suppresses a second DM. An unreadable or malformed state file defers
+  all notifications (logged as ERROR) instead of re-DMing every PR from an
+  empty set.
 - Notify failures (Slack API errors) are logged as WARN and never stop the
-  poll loop; the PR is retried on the next cycle since it is not marked
-  notified until the DM succeeds.
+  poll loop; the marker is rolled back so the PR is retried on the next cycle.
+  The Slack client is configured without SDK-level retries — the poll cycle is
+  the retry mechanism, so one bad call cannot stall the PRs behind it.
+- Poll cadence follows `GITHUB_POLL_INTERVAL`.
+  `GITHUB_REVIEW_NOTIFY_POLL_INTERVAL` is an optional override for running the
+  notifier on a different cadence than the notifications poller; leave it
+  unset unless you need that.
 - Empty `SLACK_REVIEW_NOTIFY_USER` (the default) disables the notifier
   entirely. Requires both `GITHUB_ENABLED` and `SLACK_ENABLED`.
 

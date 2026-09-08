@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -169,6 +169,81 @@ test("ReviewNotifier: feilet Slack-DM logges/svelges, ikke markert varslet — p
 
   await notifier["pollOnce"](); // prøver på nytt og lykkes
   assert.equal(slack.sent.length, 1);
+});
+
+test("ReviewNotifier: DM lykkes men markNotified feiler — ingen duplikat ved neste syklus eller restart", async () => {
+  const pr = candidate();
+  const config = await tempConfig();
+  const github = new FakeGithub(new Map([["digdir/digdir-ai-agents", [pr]]]));
+  const slack = new FakeSlack();
+  const notifier = new ReviewNotifier(config, github, slack);
+
+  // Simulerer disk-feil i det bekreftende skrivet, etter at DM-en er sendt.
+  const store = notifier["store"];
+  store.markNotified = async () => {
+    throw new Error("disk full");
+  };
+
+  await notifier["pollOnce"]();
+  assert.equal(slack.sent.length, 1, "DM-en skal faktisk ha blitt sendt");
+
+  await notifier["pollOnce"]();
+  assert.equal(slack.sent.length, 1, "samme syklus-instans skal ikke sende på nytt");
+
+  const slack2 = new FakeSlack();
+  const afterRestart = new ReviewNotifier(
+    config,
+    new FakeGithub(new Map([["digdir/digdir-ai-agents", [pr]]])),
+    slack2,
+  );
+  await afterRestart["pollOnce"]();
+  assert.equal(slack2.sent.length, 0, "pending-markøren på disk skal hindre duplikat etter restart");
+});
+
+test("ReviewNotifier: feiler markPending (før sending) sendes ingen DM — fail closed", async () => {
+  const pr = candidate();
+  const github = new FakeGithub(new Map([["digdir/digdir-ai-agents", [pr]]]));
+  const slack = new FakeSlack();
+  const notifier = new ReviewNotifier(await tempConfig(), github, slack);
+
+  const store = notifier["store"];
+  const real = store.markPending.bind(store);
+  store.markPending = async () => {
+    throw new Error("disk read-only");
+  };
+
+  await notifier["pollOnce"]();
+  assert.equal(slack.sent.length, 0, "uten varig markør skal ingen DM sendes");
+
+  // Når disken er tilbake, varsles PR-en som normalt (nøyaktig én gang).
+  store.markPending = real;
+  await notifier["pollOnce"]();
+  assert.equal(slack.sent.length, 1);
+});
+
+test("ReviewNotifier: korrupt state-fil utsetter varsling i stedet for å re-sende", async () => {
+  const pr = candidate();
+  const config = await tempConfig();
+
+  const first = new ReviewNotifier(
+    config,
+    new FakeGithub(new Map([["digdir/digdir-ai-agents", [pr]]])),
+    new FakeSlack(),
+  );
+  await first["pollOnce"]();
+
+  // State-fila blir ulesbar (halvskrevet fil, disk-korrupsjon, feil format).
+  await writeFile(path.join(config.stateDir, "review-notified.json"), "{ikke json", "utf-8");
+
+  const slack2 = new FakeSlack();
+  const second = new ReviewNotifier(
+    config,
+    new FakeGithub(new Map([["digdir/digdir-ai-agents", [pr]]])),
+    slack2,
+  );
+  await second["pollOnce"]();
+
+  assert.equal(slack2.sent.length, 0, "varsling skal utsettes, ikke gjenta seg fra tom state");
 });
 
 test("ReviewNotifier: auto-merge-PR uten CODEOWNERS-treff varsles ikke", async () => {

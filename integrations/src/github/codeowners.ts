@@ -53,6 +53,8 @@ function patternToRegex(pattern: string): RegExp {
   }
 
   const prefix = anchored ? "^" : "^(?:.*/)?";
-  const suffix = isDir ? "(?:/.*)?$" : "$";
+  // A directory rule ("scripts/") owns the files *inside* the directory, so the
+  // separator is required — a plain file named "scripts" is not a match.
+  const suffix = isDir ? "/.*$" : "$";
   return new RegExp(prefix + out + suffix);
 }

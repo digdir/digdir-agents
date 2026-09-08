@@ -81,10 +81,24 @@ export class ReviewNotifier {
     this.running = false;
   }
 
-  /** Runs one poll cycle across all watched repos. Loads the dedupe state on first use. */
+  /**
+   * Runs one poll cycle across all watched repos. Loads the dedupe state on
+   * first use; if that state cannot be read, the whole cycle is skipped rather
+   * than run blind — notifying from an empty set would re-DM every PR already
+   * handled (issue #115: "ingen dubletter"). The next cycle retries the load.
+   */
   private async pollOnce(): Promise<void> {
     if (!this.storeLoaded) {
-      await this.store.load();
+      try {
+        await this.store.load();
+      } catch (err) {
+        log.error(
+          `Could not load review-notify state (${this.store.file}); deferring all notifications ` +
+            `this cycle rather than risking duplicate DMs. Fix or remove the file to resume.`,
+          err,
+        );
+        return;
+      }
       this.storeLoaded = true;
     }
     for (const full of this.config.repos) {
@@ -124,15 +138,60 @@ export class ReviewNotifier {
     for (const c of selected) {
       const key = keyFor(c);
       if (this.store.has(key)) continue;
+      await this.deliver(c, key);
+    }
+  }
+
+  /**
+   * Sends one DM under the store's two-phase protocol, so a disk failure can
+   * never turn into a duplicate DM:
+   *
+   * - marker write fails → nothing is sent (fail closed), retried next cycle;
+   * - DM fails → marker is rolled back, retried next cycle;
+   * - DM succeeds but the confirming write fails → the durable pending marker
+   *   already suppresses a second DM, so the PR is not re-notified.
+   *
+   * Every failure is logged and swallowed: a broken DM must never take down the
+   * poll loop (issue #115 requirement).
+   */
+  private async deliver(c: PullRequestCandidate, key: string): Promise<void> {
+    try {
+      await this.store.markPending(key);
+    } catch (err) {
+      log.warn(
+        `Could not persist review-notify intent for ${key}; skipping the DM this cycle to ` +
+          `avoid an unrecorded (and later duplicated) notification.`,
+        err,
+      );
+      return;
+    }
+
+    try {
+      await this.notify(c);
+    } catch (err) {
+      log.warn(`Could not send review-notify DM for ${key}; will retry next poll.`, err);
       try {
-        await this.notify(c);
-        await this.store.markNotified(key);
-      } catch (err) {
-        // Notify failures are logged and skipped, not thrown — a broken DM
-        // must never take down the poll loop (issue #115 requirement), and
-        // leaving the key unmarked means it retries on the next cycle.
-        log.warn(`Could not send review-notify DM for ${key}; will retry next poll.`, err);
+        await this.store.clearPending(key);
+      } catch (clearErr) {
+        // The marker outlives the failed send: the PR stays suppressed rather
+        // than risking a duplicate. Loud, because a DM was genuinely lost.
+        log.error(
+          `Review-notify DM for ${key} failed and its pending marker could not be cleared; ` +
+            `the PR will not be retried. Notify the reviewer manually.`,
+          clearErr,
+        );
       }
+      return;
+    }
+
+    try {
+      await this.store.markNotified(key);
+    } catch (err) {
+      log.error(
+        `Review-notify DM for ${key} was delivered, but recording it failed; the pending ` +
+          `marker keeps it from being sent twice.`,
+        err,
+      );
     }
   }
 

@@ -41,6 +41,21 @@ test("matcher gjenkjenner katalogmønster (agents/*/docker/skills/)", () => {
   assert.equal(isOwned(rules, "agents/proxy-agent/docker/other.md"), false);
 });
 
+test("katalogregel (scripts/) matcher ikke en fil som heter scripts", () => {
+  const rules = parseCodeowners(REAL_CODEOWNERS);
+  assert.equal(isOwned(rules, "scripts"), false);
+  assert.equal(isOwned(rules, "scripts/foo.ts"), true);
+  assert.equal(isOwned(rules, "scripts/nested/foo.ts"), true);
+});
+
+test("katalogregel matcher ikke katalognavnet som fil på dypere nivå heller", () => {
+  const rules = parseCodeowners(REAL_CODEOWNERS);
+  // "agents/*/docker/skills/" eier filer i skills/, ikke en fil ved navn skills.
+  assert.equal(isOwned(rules, "agents/proxy-agent/docker/skills"), false);
+  assert.equal(isOwned(rules, "integrations/src"), false);
+  assert.equal(isOwned(rules, "integrations/src/config.ts"), true);
+});
+
 test("filer utenfor alle mønstre er ikke eid", () => {
   const rules = parseCodeowners(REAL_CODEOWNERS);
   assert.equal(isOwned(rules, "README.md"), false);
