@@ -1,7 +1,10 @@
 import { loadConfig } from "./config.ts";
 import { createLogger } from "./logger.ts";
 import { GithubPoller } from "./github/poller.ts";
+import { GithubClient } from "./github/client.ts";
+import { ReviewNotifier } from "./github/reviewNotifier.ts";
 import { SlackConnector } from "./slack/connector.ts";
+import { SlackWebDm } from "./slack/reviewDm.ts";
 import { AgentQueue } from "./agent/queue.ts";
 import { Router } from "./router/router.ts";
 import type { ResultPosters } from "./agent/types.ts";
@@ -33,6 +36,16 @@ async function main(): Promise<void> {
   const github = config.github.enabled ? new GithubPoller(config.github, queue, awaitReply) : null;
   const slack = config.slack.enabled ? new SlackConnector(config.slack, queue, awaitReply) : null;
 
+  // Slack-DM review notifier (optional — issue #115): independent of the
+  // agent queue bridge, so it runs even when AGENT_QUEUE_ENABLED is false.
+  const reviewNotifier = config.reviewNotify.enabled
+    ? new ReviewNotifier(
+        config.reviewNotify,
+        new GithubClient(config.github),
+        new SlackWebDm(config.slack.botToken),
+      )
+    : null;
+
   // Wire connectors into the queue so submit() can short-circuit acks directly.
   if (queue && (github || slack)) {
     queue.setConnectors({ slack: slack ?? undefined, github: github ?? undefined });
@@ -43,6 +56,7 @@ async function main(): Promise<void> {
     abort.abort();
     github?.stop();
     slack?.stop().catch((err) => log.error("Error during Slack shutdown.", err));
+    reviewNotifier?.stop();
     // Give in-flight work a brief moment, then force-exit.
     setTimeout(() => process.exit(0), 1000).unref();
   };
@@ -62,6 +76,13 @@ async function main(): Promise<void> {
     tasks.push(
       slack.start().catch((err) => {
         log.error("Slack connector failed to start.", err);
+      }),
+    );
+  }
+  if (reviewNotifier) {
+    tasks.push(
+      reviewNotifier.start(abort.signal).catch((err) => {
+        log.error("Review notifier stopped with an error.", err);
       }),
     );
   }
