@@ -1,4 +1,5 @@
 import type { GithubConfig } from "../config.ts";
+import { parseCodeowners, type CodeownersRule } from "./codeowners.ts";
 
 /** Minimal shape of a GitHub notification we care about. */
 export interface GithubNotification {
@@ -28,17 +29,55 @@ export interface NotificationsResult {
   notModified: boolean;
 }
 
+/** One page of a PR's `labels` connection, as returned by the GraphQL API. */
+interface LabelConnection {
+  nodes: Array<{ name: string }>;
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+}
+
+/** Fetches further pages of one PR's labels when the inline first page is not the whole set. */
+const LABEL_PAGE_QUERY = `
+  query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) {
+        labels(first: 100, after: $cursor) {
+          nodes { name }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+  }`;
+
+/** An open PR's fields relevant to the review-notify watcher (issue #115). */
+export interface PullRequestCandidate {
+  owner: string;
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  author: string;
+  isDraft: boolean;
+  reviewDecision: string | null;
+  labels: string[];
+}
+
 export class GithubClient {
   /** Fine-grained token for issues/PRs/reactions/user. */
   private readonly actionToken: string;
   /** Token for the notifications API (classic PAT with `notifications` scope). */
   private readonly notificationsToken: string;
   private readonly baseUrl: string;
+  private readonly graphqlUrl: string;
 
   constructor(config: GithubConfig) {
     this.actionToken = config.token;
     this.notificationsToken = config.notificationsToken;
     this.baseUrl = config.apiBaseUrl;
+    // github.com: https://api.github.com -> https://api.github.com/graphql.
+    // GHE: https://HOST/api/v3 -> https://HOST/api/graphql (no /v3).
+    this.graphqlUrl = this.baseUrl.endsWith("/api/v3")
+      ? `${this.baseUrl.slice(0, -"/v3".length)}/graphql`
+      : `${this.baseUrl}/graphql`;
   }
 
   private headers(token: string, extra?: Record<string, string>): Record<string, string> {
@@ -224,6 +263,161 @@ export class GithubClient {
     if (!res.ok && res.status !== 205 && res.status !== 404) {
       throw new Error(`PATCH thread failed: ${res.status} ${await res.text()}`);
     }
+  }
+
+  private async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const res = await fetch(this.graphqlUrl, {
+      method: "POST",
+      headers: this.headers(this.actionToken, { "Content-Type": "application/json" }),
+      body: JSON.stringify({ query, variables }),
+    });
+    if (!res.ok) {
+      throw new Error(`POST /graphql failed: ${res.status} ${await res.text()}`);
+    }
+    const body = (await res.json()) as { data?: T; errors?: Array<{ message: string }> };
+    if (body.errors && body.errors.length > 0) {
+      throw new Error(`GraphQL error: ${body.errors.map((e) => e.message).join("; ")}`);
+    }
+    if (!body.data) {
+      throw new Error("GraphQL response missing data");
+    }
+    return body.data;
+  }
+
+  /**
+   * Lists open pull requests in a repo with the fields the review notifier
+   * (issue #115) needs to decide whether a PR is awaiting human review:
+   * draft status, review decision, author and labels.
+   */
+  async listOpenPullRequestCandidates(owner: string, repo: string): Promise<PullRequestCandidate[]> {
+    const query = `
+      query($owner: String!, $repo: String!, $cursor: String) {
+        repository(owner: $owner, name: $repo) {
+          pullRequests(states: OPEN, first: 50, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
+            nodes {
+              number
+              title
+              url
+              isDraft
+              reviewDecision
+              author { login }
+              labels(first: 20) {
+                nodes { name }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+      }`;
+
+    interface Node {
+      number: number;
+      title: string;
+      url: string;
+      isDraft: boolean;
+      reviewDecision: string | null;
+      author: { login: string } | null;
+      labels: LabelConnection;
+    }
+    interface Data {
+      repository: {
+        pullRequests: { nodes: Node[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+      } | null;
+    }
+
+    type Connection = NonNullable<Data["repository"]>["pullRequests"];
+
+    const results: PullRequestCandidate[] = [];
+    let cursor: string | null = null;
+    do {
+      const data: Data = await this.graphql<Data>(query, { owner, repo, cursor });
+      const conn: Connection | undefined = data.repository?.pullRequests;
+      if (!conn) break;
+      for (const n of conn.nodes) {
+        results.push({
+          owner,
+          repo,
+          number: n.number,
+          title: n.title,
+          url: n.url,
+          author: n.author?.login ?? "unknown",
+          isDraft: n.isDraft,
+          reviewDecision: n.reviewDecision,
+          labels: await this.allLabelNames(owner, repo, n.number, n.labels),
+        });
+      }
+      cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
+    } while (cursor);
+    return results;
+  }
+
+  /**
+   * Returns *all* label names on a PR: the page fetched inline by the candidate
+   * query, plus any remaining pages. Callers treat the result as the complete
+   * label set — the review notifier suppresses `auto-merge` PRs, and a label
+   * sitting past the first page would otherwise slip through and trigger a DM
+   * that label is meant to prevent.
+   */
+  private async allLabelNames(
+    owner: string,
+    repo: string,
+    number: number,
+    firstPage: LabelConnection,
+  ): Promise<string[]> {
+    const names = firstPage.nodes.map((l) => l.name);
+    let cursor: string | null = firstPage.pageInfo.hasNextPage ? firstPage.pageInfo.endCursor : null;
+
+    interface Data {
+      repository: { pullRequest: { labels: LabelConnection } | null } | null;
+    }
+
+    while (cursor) {
+      const data: Data = await this.graphql<Data>(LABEL_PAGE_QUERY, { owner, repo, number, cursor });
+      const conn: LabelConnection | undefined = data.repository?.pullRequest?.labels;
+      if (!conn) break;
+      names.push(...conn.nodes.map((l) => l.name));
+      cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
+    }
+    return names;
+  }
+
+  /** Lists the file paths changed by a pull request (paginated, 100/page). */
+  async listPullRequestFiles(owner: string, repo: string, number: number): Promise<string[]> {
+    const files: string[] = [];
+    let page = 1;
+    for (;;) {
+      const url = `${this.baseUrl}/repos/${owner}/${repo}/pulls/${number}/files?per_page=100&page=${page}`;
+      const res = await fetch(url, { headers: this.headers(this.actionToken) });
+      if (!res.ok) {
+        throw new Error(`GET ${url} failed: ${res.status} ${await res.text()}`);
+      }
+      const body = (await res.json()) as Array<{ filename: string }>;
+      files.push(...body.map((f) => f.filename));
+      if (body.length < 100) break;
+      page += 1;
+    }
+    return files;
+  }
+
+  /**
+   * Fetches and parses a repo's CODEOWNERS file (checked at the locations
+   * GitHub itself recognizes). Returns null if none of them exist.
+   */
+  async getCodeowners(owner: string, repo: string): Promise<CodeownersRule[] | null> {
+    for (const path of [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"]) {
+      const url = `${this.baseUrl}/repos/${owner}/${repo}/contents/${path}`;
+      const res = await fetch(url, { headers: this.headers(this.actionToken) });
+      if (res.status === 404) continue;
+      if (!res.ok) {
+        throw new Error(`GET ${url} failed: ${res.status} ${await res.text()}`);
+      }
+      const body = (await res.json()) as { content?: string; encoding?: string };
+      if (body.content && body.encoding === "base64") {
+        return parseCodeowners(Buffer.from(body.content, "base64").toString("utf-8"));
+      }
+    }
+    return null;
   }
 }
 

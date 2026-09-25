@@ -107,11 +107,28 @@ export interface RouterConfig {
   maxRelated: number;
 }
 
+/**
+ * Slack-DM notifier (optional — issue #115): on each poll cycle, finds open
+ * non-draft PRs awaiting human review in the watched repos and DMs one
+ * summary per PR to a single operator. Empty `notifyUserId` = disabled.
+ */
+export interface ReviewNotifyConfig {
+  enabled: boolean;
+  /** Slack user id (e.g. U0123456) to DM. */
+  notifyUserId: string;
+  /** "owner/repo" pairs to watch. */
+  repos: string[];
+  pollIntervalSeconds: number;
+  /** Where the notified-PR dedupe set is persisted (shares agentQueue's state dir). */
+  stateDir: string;
+}
+
 export interface Config {
   github: GithubConfig;
   slack: SlackConfig;
   agentQueue: AgentQueueConfig;
   router: RouterConfig;
+  reviewNotify: ReviewNotifyConfig;
 }
 
 function bool(value: string | undefined, fallback = false): boolean {
@@ -271,5 +288,48 @@ export function loadConfig(): Config {
     }
   }
 
-  return { github, slack, agentQueue, router };
+  const reviewNotify: ReviewNotifyConfig = {
+    enabled: false,
+    notifyUserId: (process.env.SLACK_REVIEW_NOTIFY_USER ?? "").trim(),
+    repos: [],
+    pollIntervalSeconds: Number(
+      process.env.GITHUB_REVIEW_NOTIFY_POLL_INTERVAL ?? process.env.GITHUB_POLL_INTERVAL ?? "60",
+    ),
+    stateDir: agentQueue.stateDir,
+  };
+  reviewNotify.enabled = reviewNotify.notifyUserId !== "";
+
+  if (reviewNotify.enabled) {
+    if (!github.enabled || !slack.enabled) {
+      throw new Error(
+        "SLACK_REVIEW_NOTIFY_USER is set but GITHUB_ENABLED and SLACK_ENABLED must both be " +
+          "true — the review notifier needs a GitHub token to list PRs and a Slack bot token to DM.",
+      );
+    }
+    const repos = [
+      ...new Set(
+        (process.env.GITHUB_REVIEW_NOTIFY_REPOS ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s !== ""),
+      ),
+    ];
+    if (repos.length === 0) {
+      throw new Error(
+        "SLACK_REVIEW_NOTIFY_USER is set but GITHUB_REVIEW_NOTIFY_REPOS is empty — set a " +
+          "comma-separated list of owner/repo pairs to watch.",
+      );
+    }
+    for (const repo of repos) {
+      if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) {
+        throw new Error(`GITHUB_REVIEW_NOTIFY_REPOS: invalid "owner/repo" entry: "${repo}"`);
+      }
+    }
+    reviewNotify.repos = repos;
+    if (!Number.isFinite(reviewNotify.pollIntervalSeconds) || reviewNotify.pollIntervalSeconds < 1) {
+      throw new Error("GITHUB_REVIEW_NOTIFY_POLL_INTERVAL must be a positive number of seconds");
+    }
+  }
+
+  return { github, slack, agentQueue, router, reviewNotify };
 }

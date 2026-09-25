@@ -153,6 +153,36 @@ same machine).
   failed / no classification), the agent's own classification step will still
   see it and act accordingly.
 
+**Slack-DM review notifier** (optional — `SLACK_REVIEW_NOTIFY_USER`, issue #115):
+- Independently of the agent queue bridge, polls the repos listed in
+  `GITHUB_REVIEW_NOTIFY_REPOS` (GraphQL) for open, non-draft pull requests
+  with `reviewDecision == REVIEW_REQUIRED` ("awaiting human review") and DMs
+  one summary (title, author, link) per PR to the Slack user in
+  `SLACK_REVIEW_NOTIFY_USER`.
+- A PR carrying the `auto-merge` label is skipped **unless** it also touches
+  a path listed in the repo's `CODEOWNERS` — such a PR merges on its own once
+  CI passes (see [`doc/pr-prosess.md`](../doc/pr-prosess.md)), so a DM would
+  be noise; a CODEOWNERS-path PR is blocked on human review regardless of the
+  label, so it still gets notified.
+- Dedupe is persisted (`review-notified.json` in `AGENT_STATE_DIR`): one
+  notification per PR number, ever. Delivery is two-phase — a marker is written
+  *before* the DM and confirmed after it — so a disk failure can never be
+  mistaken for a send failure: if the marker cannot be written the DM is not
+  attempted (fail closed), and if the confirmation cannot be written the marker
+  still suppresses a second DM. An unreadable or malformed state file defers
+  all notifications (logged as ERROR) instead of re-DMing every PR from an
+  empty set.
+- Notify failures (Slack API errors) are logged as WARN and never stop the
+  poll loop; the marker is rolled back so the PR is retried on the next cycle.
+  The Slack client is configured without SDK-level retries — the poll cycle is
+  the retry mechanism, so one bad call cannot stall the PRs behind it.
+- Poll cadence follows `GITHUB_POLL_INTERVAL`.
+  `GITHUB_REVIEW_NOTIFY_POLL_INTERVAL` is an optional override for running the
+  notifier on a different cadence than the notifications poller; leave it
+  unset unless you need that.
+- Empty `SLACK_REVIEW_NOTIFY_USER` (the default) disables the notifier
+  entirely. Requires both `GITHUB_ENABLED` and `SLACK_ENABLED`.
+
 ## Requirements
 
 - **Node ≥ 23** (runs the TypeScript directly via type stripping — no build step),
