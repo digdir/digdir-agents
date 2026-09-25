@@ -16,7 +16,7 @@ menneskelesbar der, delegerings-eventet er bare en tynn peker.
 ## 1. Analyser
 
 - Koderepoene ligger **read-only** under `/repos/<provider>/<org>/<repo>`
-  (f.eks. `/repos/github/digdir/digdir-ai-agents`). Les koden der for å
+  (f.eks. `/repos/github/digdir/digdir-agents`). Les koden der for å
   forstå problemet — ikke forsøk å endre noe.
 - Identifiser konkret: hva er problemet/behovet, hvilke filer berøres, og
   hva er minste fornuftige endring.
@@ -98,7 +98,7 @@ prompten må stå på egne ben:
 - Leveransekrav: egen branch (`agent/<kort-navn>`), PR med **base-branchen
   navngitt eksplisitt** i prompten — slå den opp, ikke anta:
   default-branchen er ikke alltid utviklingsbranchen (i
-  `digdir/digdir-ai-agents` er base `main`; v1 er arkivert på `v1.0`).
+  `digdir/digdir-agents` er base `main`; v1 er arkivert på `v1.0`).
   Aldri push direkte til base-branchen.
 - Krev **eksplisitt** at PR-body-en inneholder `Closes #<nr>` — og ligger
   issuet i et *annet* repo enn PR-en, fullt kvalifisert

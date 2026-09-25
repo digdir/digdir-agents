@@ -358,7 +358,7 @@ github-watcher for CI-checks, evt. k8s-spor.
 2. **Vertsmiljø:** Windows + WSL2 hos Ole, Mac hos Mirko —
    miljøuavhengighet er et krav; bridgen bygges for container-kjøring
    (docker-outside-of-docker) med host-node-prosess som fallback.
-3. **Modell (endret 2026-07-27, [#96](https://github.com/digdir/digdir-ai-agents/issues/96)):**
+3. **Modell (endret 2026-07-27, [#96](https://github.com/digdir/digdir-agents/issues/96)):**
    llm-gatewayen med subscription-OAuth først, som jr-/sr-agentene kjører i
    dag — fat-dev blir en egen konsument i gatewayens `routes.json` med egen
    fake-nøkkel og modell-allowlist, og OAuth-tokenet bor kun i gatewayens

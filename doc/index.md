@@ -1,6 +1,6 @@
 ---
 type: index
-title: Dokumentasjon og læringspunkter — digdir-ai-agents
+title: Dokumentasjon og læringspunkter — digdir-agents
 description: Inngangsport til repo-spesifikk kunnskap. Følger OKF-konvensjonene (markdown + YAML-frontmatter, sti = identitet, kryss-lenker = kunnskapsgraf).
 timestamp: 2026-07-21T00:00:00Z
 ---
