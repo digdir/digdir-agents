@@ -56,7 +56,7 @@ det. Nye topics får ferskt workspace og fersk sesjon.
   `origin/<base>` som aller første steg — før noen filer røres.
   Arbeidskopien kan stå igjen på forrige oppgaves branch; en branch bygget
   på feil utgangspunkt drar med seg (eller reverterer) andres endringer.
-  Aldri commit eller push til `main`/`v2.0` direkte, aldri force-push,
+  Aldri commit eller push til `main` direkte, aldri force-push,
   aldri `--no-verify`.
 - Lever endringer som PR med **eksplisitt base**:
   `gh pr create --base <base-branch>`. Uten `--base` velger `gh`

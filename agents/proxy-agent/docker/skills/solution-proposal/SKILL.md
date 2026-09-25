@@ -98,8 +98,8 @@ prompten må stå på egne ben:
 - Leveransekrav: egen branch (`agent/<kort-navn>`), PR med **base-branchen
   navngitt eksplisitt** i prompten — slå den opp, ikke anta:
   default-branchen er ikke alltid utviklingsbranchen (i
-  `digdir/digdir-ai-agents` er base `v2.0`, ikke `main`). Aldri push
-  direkte til base-branchen.
+  `digdir/digdir-ai-agents` er base `main`; v1 er arkivert på `v1.0`).
+  Aldri push direkte til base-branchen.
 - Krev **eksplisitt** at PR-body-en inneholder `Closes #<nr>` — og ligger
   issuet i et *annet* repo enn PR-en, fullt kvalifisert
   `Closes owner/repo#nr` (et nakent `#nr` peker på feil issue i

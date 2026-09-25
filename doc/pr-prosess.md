@@ -64,19 +64,14 @@ review-gaten.
 
 ## Oppsett (repo-admin, gjøres i GitHub UI/API) — status: aktivt
 
-Dette kan ikke leveres som filer i repoet. Oppsettet er nå aktivt, speilet
-på **både `v2.0` og `main`**:
+Dette kan ikke leveres som filer i repoet. Oppsettet er nå aktivt på
+**`main`** (utviklingsbranchen; frem til v2-koden tok over `main` var det
+speilet på både `v2.0` og `main`, og v1 er arkivert på `v1.0`):
 
-1. **Branch protection / ruleset på `v2.0` og `main`** — samme oppsett på
-   begge:
+1. **Branch protection / ruleset på `main`:**
    - Require a pull request before merging, **required approvals: 0**
    - **Require review from Code Owners: enabled**
    - Required status checks: **`integrations`** (jobben i CI-workflowen)
-
-   På `main` biter code owners-kravet først når `.github/CODEOWNERS`
-   faktisk finnes på den branchen — er filen ikke der (f.eks. før første
-   merge fra `v2.0`), håndheves ikke code-owner-skillet der før den er
-   synkronisert inn.
 2. **Repo-innstilling:** «Allow auto-merge» er slått på (kreves av
    `gh pr merge --auto`).
 3. **Label:** `auto-merge` finnes i repoet.
@@ -105,7 +100,7 @@ omgå required review from Code Owners på sensitive stier, og kan ikke sette
 `GITHUB_TOKEN`, se punkt 4 i mekanikken ovenfor). Restrisikoen er dermed at
 et kompromittert agent-token kan pushe/force-pushe direkte til andre
 branches enn de beskyttede — ikke at det kan omgå review-prosessen på
-`v2.0`/`main`.
+`main`.
 
 **Fremtidig hardening:** en fork-basert flyt (agenten jobber i en fork,
 åpner PR mot upstream) ville fjernet behovet for at agent-tokenet har

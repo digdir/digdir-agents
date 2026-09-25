@@ -110,7 +110,7 @@ samme klone. Kjør den derfor fra en egen klone som watcheren eier alene:
 ```powershell
 git clone https://github.com/digdir/digdir-ai-agents.git C:\data\deploy\digdir-ai-agents
 cd C:\data\deploy\digdir-ai-agents
-git checkout v2.0
+git checkout main
 Copy-Item <dev-klone>\integrations\.env integrations\           # .env er gitignorert
 Copy-Item <dev-klone>\agents\proxy-agent\.env agents\proxy-agent\
 pwsh scripts\self-update.ps1 -WatchSeconds 300
