@@ -1,0 +1,33 @@
+# nvt-bridge i container. Krever at NVT_ROOT og PIPELINE_ROOT står i .env som
+# ABSOLUTTE HOST-STIER — se README.md («Container»):
+#
+#   NVT_ROOT=/home/<bruker>/src/nvt-agent
+#   PIPELINE_ROOT=/home/<bruker>/src/digdir-ai-agents
+#
+# Begge mountes på samme sti inne i broen som de har på hosten. Grunnen er at
+# compose-bind-mounts løses av HOSTENS daemon: stier broen sender videre til
+# `make agent-up` må være gyldige der, ikke her inne.
+services:
+  nvt-bridge:
+    build: .
+    image: digdir/nvt-bridge:latest
+    env_file: .env
+    restart: ${RESTART_POLICY:-unless-stopped}
+    environment:
+      # Overstyrer .env-verdien: må være den identiske host-stien (se over).
+      NVT_BRIDGE_TRIGGERS_DIR: ${PIPELINE_ROOT:?PIPELINE_ROOT must be set in .env to absolute host path}/agents/nvt-fat-developer/triggers
+      NVT_BRIDGE_STATE_DIR: /app/state
+    volumes:
+      # Hostens Docker-socket. Bevisst unntak for tiltrodd infrastruktur —
+      # broen er deterministisk kode uten LLM. Agentcontainerne får den ALDRI;
+      # nvt-instansen har sin egen, isolerte dind.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # nvt-sjekkouten på identisk sti (Make-flyten kjøres herfra).
+      - ${NVT_ROOT:?NVT_ROOT must be set in .env to absolute host path}:${NVT_ROOT:?NVT_ROOT must be set in .env to absolute host path}
+      # Filkontrakten på identisk sti. Kun triggers/ — verken monorepoet eller
+      # deploy-klonen mountes inn noe sted.
+      - ${PIPELINE_ROOT:?PIPELINE_ROOT must be set in .env to absolute host path}/agents/nvt-fat-developer/triggers:${PIPELINE_ROOT:?PIPELINE_ROOT must be set in .env to absolute host path}/agents/nvt-fat-developer/triggers
+      # Bridgens egen state (topic → instans) overlever omstart.
+      - ./state:/app/state
+    security_opt:
+      - no-new-privileges:true

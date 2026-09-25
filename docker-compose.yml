@@ -1,0 +1,19 @@
+# Drar opp hele pipelinen: integrations + alle agenter.
+#
+# Forutsetninger:
+#   Copy-Item integrations\.env.example integrations\.env          # Slack-/GitHub-tokens
+#   Copy-Item agents\proxy-agent\.env.example agents\proxy-agent\.env  # LLM-endepunkt
+#
+#   docker compose up -d --build
+#
+# Hver komponent kan fortsatt kjøres alene med `docker compose up` i sin egen
+# katalog — denne fila inkluderer bare komponentenes egne compose-filer.
+# Krever Docker Compose v2.20+ (include-støtte). Nye agenter legges til som
+# en ny linje under include.
+
+name: digdir-ai-agents
+
+include:
+  - integrations/docker-compose.yml
+  - agents/proxy-agent/docker-compose.yml
+  - apps/llm-gateway/docker-compose.yml

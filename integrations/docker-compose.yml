@@ -1,0 +1,33 @@
+services:
+  integrations:
+    build: .
+    image: digdir/integrations:latest
+    env_file: .env
+    environment:
+      # Overstyrer .env, som er skrevet for kjøring på hosten: inne i
+      # containeren ligger køen alltid på /triggers og state på /state.
+      AGENT_TRIGGERS_DIR: /triggers
+      AGENT_STATE_DIR: /state
+      # Delegeringsruter (AGENT_ROUTES i .env) slås opp som /agents/<navn>/triggers.
+      AGENT_AGENTS_DIR: /agents
+    volumes:
+      # Delt kø med proxy-agent: samme host-katalog som proxy-agent mounter
+      # som /triggers i sin container.
+      - ../agents/proxy-agent/triggers:/triggers
+      # Delegeringsruter: KUN triggers-katalogen per agent i AGENT_ROUTES —
+      # aldri hele agents/-treet, som ville eksponert agentenes .env-filer.
+      # Legg til én linje per rute: ../agents/<navn>/triggers:/agents/<navn>/triggers
+      - ../agents/local-cc-coding-agent/triggers:/agents/local-cc-coding-agent/triggers
+      - ../agents/local-cc-jr-developer/triggers:/agents/local-cc-jr-developer/triggers
+      # Egen state (pending replies + results-offset) overlever restart
+      - integrations-state:/state
+    # Overstyrbar for utvikling i forgrunnen (scripts/dev.ps1 setter "no");
+    # default gjør at klyngen overlever omstart av Docker/maskinen.
+    restart: ${RESTART_POLICY:-unless-stopped}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  integrations-state:

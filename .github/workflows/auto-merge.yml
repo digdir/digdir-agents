@@ -1,0 +1,30 @@
+# Auto-merge av PR-er agentene har merket «auto-merge».
+#
+# Merging krever Contents write — det skal agent-tokenene aldri ha. Derfor
+# gjøres selve mergen her, med workflowens efemere GITHUB_TOKEN; agentene
+# trenger bare rettigheter til å sette labelen. `gh pr merge --auto` slår på
+# GitHubs native auto-merge, som venter til alle required checks er grønne.
+#
+# Branch protection gjelder også denne workflowen: rører PR-en en
+# CODEOWNERS-sti, blokkeres merge til code owner (mennesket) har godkjent —
+# labelen kan aldri omgå det. Se doc/pr-prosess.md.
+name: Auto-merge
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    if: github.event.label.name == 'auto-merge'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Slå på auto-merge for PR-en
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --squash --auto "$PR_URL"

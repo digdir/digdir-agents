@@ -1,0 +1,25 @@
+{
+  "name": "integrations",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local bot that reacts to GitHub notifications and Slack messages (pull/websocket, no inbound webhooks).",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.ts",
+    "start:bun": "bun run src/index.ts",
+    "test": "node --test --disable-warning=ExperimentalWarning src/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@slack/socket-mode": "^2.0.3",
+    "@slack/web-api": "^7.9.1",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.3"
+  }
+}

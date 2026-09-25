@@ -1,0 +1,24 @@
+# CODEOWNERS — plattform-håndhevet skille mellom trygge og sensitive stier.
+#
+# Med branch protection «Require review from Code Owners» (og required
+# approvals: 0) betyr en linje her: PR-er som rører stien krever menneskelig
+# godkjenning før merge. PR-er som ikke rører noen av stiene kan merges uten
+# approver — det er grunnlaget for auto-merge-prosessen.
+# Se doc/pr-prosess.md for hele prosessen og hvorfor stiene er valgt
+# (merge til deploy-branchen er auto-deploy via scripts/self-update.ps1).
+
+# Agent-instrukser og skills — styrer agentenes oppførsel
+agents/*/CLAUDE.md            @olebhansen
+agents/*/docker/skills/       @olebhansen
+agents/*/docker/entrypoint.sh @olebhansen
+
+# Sikkerhetsmodell og drift. Hele integrations/src/ er sensitiv i første
+# omgang (CI er kun typecheck); kan snevres til config.ts når testdekning
+# er på plass.
+integrations/src/             @olebhansen
+**/docker-compose.yml         @olebhansen
+**/Dockerfile                 @olebhansen
+scripts/                      @olebhansen
+
+# Denne prosessen selv (CODEOWNERS + workflows)
+.github/                      @olebhansen

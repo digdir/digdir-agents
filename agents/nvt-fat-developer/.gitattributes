@@ -1,0 +1,2 @@
+*.sh text eol=lf
+AGENTS.local.md.tmpl text eol=lf

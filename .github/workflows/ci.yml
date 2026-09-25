@@ -1,0 +1,28 @@
+# Minimal CI — ment som required status check i branch protection, slik at
+# «grønn CI» er plattform-håndhevet før auto-merge (se doc/pr-prosess.md).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [v2.0, main]
+
+permissions:
+  contents: read
+
+jobs:
+  integrations:
+    name: integrations
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: integrations/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck

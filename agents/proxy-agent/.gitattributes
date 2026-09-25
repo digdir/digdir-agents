@@ -1,0 +1,5 @@
+# Shell-skript må ha LF for å kjøre i containeren
+*.sh text eol=lf
+Dockerfile text eol=lf
+# Skills kopieres inn i imaget; LF så frontmatter parses likt overalt
+docker/skills/** text eol=lf

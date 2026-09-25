@@ -1,0 +1,24 @@
+services:
+  llm-gateway:
+    build: .
+    image: digdir/llm-gateway:latest
+    env_file: .env
+    environment:
+      # Inne i containeren må serveren lytte på alle interfaces; eksponeringen
+      # styres av ports-publiseringen under (kun 127.0.0.1 på hosten).
+      HOST: 0.0.0.0
+      # Lokal LM Studio kjører på hosten — nås via host.docker.internal
+      # (overstyrer .env, som er skrevet for kjøring rett på hosten).
+      UPSTREAM_LMSTUDIO_URL: http://host.docker.internal:1234
+    extra_hosts:
+      # No-op på Docker Desktop, nødvendig på ren Linux
+      - host.docker.internal:host-gateway
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./routes.json:/app/routes.json:ro
+    restart: ${RESTART_POLICY:-unless-stopped}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

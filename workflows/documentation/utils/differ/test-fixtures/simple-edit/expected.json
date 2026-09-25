@@ -1,5 +1,0 @@
-{
-  "description": "One line should be modified (original -> modified)",
-  "expectedChanges": 1,
-  "hasModified": true
-}

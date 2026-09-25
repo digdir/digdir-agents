@@ -1,0 +1,10 @@
+{
+  "name": "llm-gateway",
+  "private": true,
+  "type": "module",
+  "description": "Lokal LLM-gateway: ruter OpenAI-kompatible kall på fake API-nøkkel (konsument) og path/modell (backend). Null avhengigheter.",
+  "engines": { "node": ">=21" },
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}

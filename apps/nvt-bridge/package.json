@@ -1,0 +1,19 @@
+{
+  "name": "nvt-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministisk bro mellom filkontrakten (agents/nvt-fat-developer/triggers/) og levende nvt-agent-instanser: topic -> instans, prompt-injeksjon, fallback-resultatlinje. Ingen LLM.",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.ts",
+    "test": "node --test --disable-warning=ExperimentalWarning",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.3"
+  }
+}

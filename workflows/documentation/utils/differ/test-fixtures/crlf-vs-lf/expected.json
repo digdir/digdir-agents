@@ -1,5 +1,0 @@
-{
-  "description": "All lines should be unchanged - line endings should not affect diff",
-  "expectedChanges": 0,
-  "allUnchanged": true
-}

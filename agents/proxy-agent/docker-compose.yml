@@ -1,0 +1,39 @@
+services:
+  pi-agent:
+    build: ./docker
+    image: proxy-agent/pi:latest
+    env_file: .env
+    environment:
+      POLL_INTERVAL: ${POLL_INTERVAL:-5}
+      PI_MODEL: ${PI_MODEL:-}
+      # Lokalt LLM-endepunkt på hosten (127.0.0.1:8787 sett fra containeren)
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:8787/v1}
+      LLM_MODEL_ID: ${LLM_MODEL_ID:-aivar:gemma4}
+      LLM_API_KEY: ${LLM_API_KEY:-none}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Trigger-kø: eksterne systemer appender til triggers/inbox.jsonl på hosten
+      - ./triggers:/triggers
+      # Agentens arbeidskatalog (det den får lov å endre)
+      - ./workspace:/workspace
+      # Kunnskapsbase: klone av KB_REPO, forvaltes av entrypointet.
+      # Anker-folder på monorepo-rot så klonen overlever restarts.
+      - ../../workspaces_knowledge:/knowledge
+      # Koderepoer (anker-folder på monorepo-rot): read-only for analyse —
+      # skriving skjer hos den utførende kodeagenten, som har sin egen
+      # skrivbare tilgang til samme folder.
+      - ../../workspaces_repos:/repos:ro
+      # Pi-innstillinger/sesjoner overlever container-restart
+      - pi-home:/home/node/.pi
+    # Overstyrbar for utvikling i forgrunnen (scripts/dev.ps1 setter "no");
+    # default gjør at klyngen overlever omstart av Docker/maskinen.
+    restart: ${RESTART_POLICY:-unless-stopped}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command: ["watch"]
+
+volumes:
+  pi-home:

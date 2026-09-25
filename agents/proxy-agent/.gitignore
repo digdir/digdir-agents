@@ -1,0 +1,5 @@
+.env
+triggers/*
+!triggers/.gitkeep
+workspace/*
+!workspace/.gitkeep
