@@ -109,12 +109,12 @@ ikke overskriv dem uten videre.
   `origin/<base>` som aller første steg — før noen filer røres.
   Arbeidskopien kan stå igjen på forrige oppgaves branch; en branch bygget
   på feil utgangspunkt drar med seg (eller reverterer) andres endringer.
-  Aldri commit eller push til `main`/`v2.0` direkte, aldri force-push,
+  Aldri commit eller push til `main` direkte, aldri force-push,
   aldri `--no-verify`.
 - Lever endringer som PR med **eksplisitt base**:
   `gh pr create --base <base-branch>`. Uten `--base` velger `gh`
   default-branchen, som ikke alltid er utviklingsbranchen (i
-  `digdir/digdir-ai-agents` er base `v2.0`; `main` har v1-dokumentasjon).
+  `digdir/digdir-ai-agents` er base `main`; v1 er arkivert på `v1.0`).
   Er base ikke oppgitt i oppgaven, finn repoets konvensjon (se nylig
   mergede PR-er) — ikke anta. Pek på PR-en i svaret ditt — mennesket er
   review-gaten. Du merger, godkjenner eller lukker aldri PR-er, heller
