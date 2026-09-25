@@ -6,6 +6,12 @@ description: Append-only kronologi over endringer i repoets kunnskapsbase. Nyest
 
 # Logg
 
+- **2026-09-25** — Repoet er omdøpt på GitHub: `digdir/digdir-ai-agents` →
+  **`digdir/digdir-agents`**. Referanser i README, agent-instrukser,
+  `.env.example`-filer og plandoc er oppdatert. Bevisst IKKE endret:
+  compose-prosjektnavnet `digdir-ai-agents` (ville omdøpt containere og
+  foreldreløst volumene), lokale klone-stier (`C:\data\...\digdir-ai-agents`)
+  og historiske loggposter/test-fixtures. GitHub redirecter gamle URL-er.
 - **2026-09-25** — `main` er nå utviklingsbranchen: v1-innholdet er
   arkivert på `v1.0` (speil av siste v1-`main`), og v2-koden tok over
   `main` via en `-s ours`-merge (fast-forward-push, ingen force på
