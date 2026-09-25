@@ -6,6 +6,16 @@ description: Append-only kronologi over endringer i repoets kunnskapsbase. Nyest
 
 # Logg
 
+- **2026-09-25** — `main` er nå utviklingsbranchen: v1-innholdet er
+  arkivert på `v1.0` (speil av siste v1-`main`), og v2-koden tok over
+  `main` via en `-s ours`-merge (fast-forward-push, ingen force på
+  beskyttet branch — hele historikken fra begge linjer er bevart).
+  Alle `--base v2.0`-instrukser i agent-promptene, `doc/pr-prosess.md`
+  og default-branchen i `scripts/self-update.ps1` er byttet til `main`.
+  Åpne Dependabot-PR-er mot v1-koden (`workflows/documentation/utils/
+  differ`, som ikke finnes i v2) ble lukket. `v2.0`-branchen slettes når
+  overgangen er verifisert i drift. Bonus: `Closes #N` i PR-er virker nå
+  (GitHub lukker kun issues fra default-branchen).
 - **2026-07-31** — nvt M1-adapteren (issue #97) kalibrert mot M0-funnene.
   `agent-init` kjøres nå som `scripts/agent-init.sh --user non-root` (make-målet
   forwarder ikke `--user`), fordi claude nekter bypass-flagget som root.

@@ -26,7 +26,7 @@
   nede (første oppstart, etter reboot), startes den. Én kommando å kjøre.
 
 .PARAMETER Branch
-  Deploy-branchen som følges (default: v2.0). Arbeidskopien må stå på denne.
+  Deploy-branchen som følges (default: main). Arbeidskopien må stå på denne.
 
 .PARAMETER WatchSeconds
   > 0: kjør i løkke og sjekk origin hvert n-te sekund (Ctrl+C stopper).
@@ -47,7 +47,7 @@
 #>
 [CmdletBinding()]
 param(
-  [string]$Branch = "v2.0",
+  [string]$Branch = "main",
   [int]$WatchSeconds = 0,
   [int]$HealthTimeoutSeconds = 120,
   [switch]$Force
