@@ -9,6 +9,14 @@ import {
 import type { InstanceNameOptions } from "./topic.ts";
 
 export interface BridgeConfig {
+  /** Backend: `docker` (nvt-instanser) eller `agentctl` (sandbox-agenter). */
+  driver: "docker" | "agentctl";
+  /** agentctl-driverens oppsett. Brukes kun når `driver === "agentctl"`. */
+  agentctl: {
+    bin: string;
+    agentDir: string;
+    agentName: string;
+  };
   triggersDir: string;
   stateDir: string;
   pollMs: number;
@@ -44,8 +52,15 @@ export function loadConfig(
   cwd: string = process.cwd(),
 ): BridgeConfig {
   const dryRun = boolFrom(env.NVT_BRIDGE_DRY_RUN);
+  const driver = (env.NVT_BRIDGE_DRIVER ?? "docker").trim();
+  if (driver !== "docker" && driver !== "agentctl") {
+    throw new Error(`NVT_BRIDGE_DRIVER: forventet "docker" eller "agentctl", fikk "${driver}"`);
+  }
+  // nvt-spesifikke krav gjelder bare docker-driveren; agentctl-driveren har
+  // sitt oppsett i agent.yaml (identitet, provider, mounts).
+  const needsNvt = !dryRun && driver === "docker";
   const nvtRoot = (env.NVT_ROOT ?? "").trim();
-  if (!dryRun && nvtRoot === "") {
+  if (needsNvt && nvtRoot === "") {
     throw new Error(
       "NVT_ROOT må peke på nvt-agent-sjekkouten (eller sett NVT_BRIDGE_DRY_RUN=1). " +
         "Kopiér .env.example til .env.",
@@ -77,7 +92,7 @@ export function loadConfig(
   const identityName = (env.NVT_GIT_IDENTITY_NAME ?? "").trim();
   const identityEmail = (env.NVT_GIT_IDENTITY_EMAIL ?? "").trim();
   const brokerProvider = (env.NVT_BROKER_PROVIDER ?? "").trim();
-  if (!dryRun) {
+  if (needsNvt) {
     const missing = [
       ["NVT_GIT_IDENTITY_NAME", identityName],
       ["NVT_GIT_IDENTITY_EMAIL", identityEmail],
@@ -95,6 +110,12 @@ export function loadConfig(
   }
 
   return {
+    driver,
+    agentctl: {
+      bin: (env.AGENTCTL_BIN ?? "agentctl").trim(),
+      agentDir: path.resolve(cwd, (env.AGENTCTL_AGENT_DIR ?? "../../agents/jr-sandbox").trim()),
+      agentName: (env.AGENTCTL_AGENT_NAME ?? "jr-sandbox").trim(),
+    },
     triggersDir: path.resolve(
       cwd,
       (env.NVT_BRIDGE_TRIGGERS_DIR ?? "../../agents/nvt-fat-developer/triggers").trim(),
