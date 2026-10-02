@@ -1,4 +1,4 @@
-# digdir-ai-agents
+# digdir-agents
 
 Monorepo for en event-drevet agent-pipeline: én **integrations**-app som lytter
 på Slack/GitHub, og et voksende sett **agenter** som utfører arbeidet isolert i
@@ -108,7 +108,7 @@ deploy-branchen, kun ren arbeidskopi) stopper den så snart du utvikler i
 samme klone. Kjør den derfor fra en egen klone som watcheren eier alene:
 
 ```powershell
-git clone https://github.com/digdir/digdir-ai-agents.git C:\data\deploy\digdir-ai-agents
+git clone https://github.com/digdir/digdir-agents.git C:\data\deploy\digdir-ai-agents
 cd C:\data\deploy\digdir-ai-agents
 git checkout main
 Copy-Item <dev-klone>\integrations\.env integrations\           # .env er gitignorert

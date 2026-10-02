@@ -2,7 +2,7 @@
 # ABSOLUTTE HOST-STIER — se README.md («Container»):
 #
 #   NVT_ROOT=/home/<bruker>/src/nvt-agent
-#   PIPELINE_ROOT=/home/<bruker>/src/digdir-ai-agents
+#   PIPELINE_ROOT=/home/<bruker>/src/digdir-agents
 #
 # Begge mountes på samme sti inne i broen som de har på hosten. Grunnen er at
 # compose-bind-mounts løses av HOSTENS daemon: stier broen sender videre til
