@@ -22,3 +22,8 @@ scripts/                      @olebhansen
 
 # Denne prosessen selv (CODEOWNERS + workflows)
 .github/                      @olebhansen
+
+# Innflyttet agent-lag fra altinn-studio (ki-lab) — eies av innflytterteamet,
+# review-gaten der er deres, ikke orkestrator-pipelinens
+agentctl/                     @martinothamar
+sandbox/                      @martinothamar

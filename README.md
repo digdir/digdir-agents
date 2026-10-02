@@ -32,6 +32,22 @@ agentens `triggers/`-katalog**. Formatet er beskrevet i
 [`integrations/README.md`](integrations/README.md) (resultatkontrakt med
 `intent`/`reply`).
 
+### Planlagt innflytting: `agentctl/` og `sandbox/`
+
+Agent-laget fra `altinn-studio/src/experimental` flytter inn som to nye
+rotkataloger (ki-lab-beslutning, september 2026):
+
+| Katalog | Rolle |
+|---|---|
+| `agentctl/` | CLI + generisk «Session API»-backend (modell-/harness-uavhengig). |
+| `sandbox/` | Sandbox-SDK; implementasjon basert på digdir-forkene [microsandbox](https://github.com/digdir/microsandbox) og [libkrunfw](https://github.com/digdir/libkrunfw). Konsumeres som git-ref-dependency fra altinn-studio inntil videre. |
+
+De eies av innflytterteamet (egne CODEOWNERS-stier) og tar med egne
+CI-jobber for sine stier; `integrations`-jobben forblir repoets required
+check. Orkestrator-pipelinen over og agentctl løser i dag harness-laget på
+hver sin måte — på sikt er planen å prøve én av agentene her på
+agentctl + manifest.
+
 ## Kom i gang
 
 Hele pipelinen kjører i Docker via compose-fila på rotnivå (krever Docker
