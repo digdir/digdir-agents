@@ -1,7 +1,7 @@
 apiVersion: agents.platform/v1alpha1
 kind: Agent
 metadata:
-  name: altinn-studio
+  name: minimal
 spec:
   sandbox:
     image:

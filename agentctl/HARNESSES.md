@@ -9,14 +9,14 @@ Adapter changes that accompany a bump must therefore also work with the previous
 
 Implementation: [adapters](src/harness), [terminal runtime](src/sessions/runtime/tmux.rs),
 [Session service](src/sessions/service.rs). Harness pins: [self-dev](examples/self-dev/Dockerfile),
-[minimal](examples/minimal/Dockerfile) (Claude Code only) and [worktree](../sandbox/examples/worktree/Dockerfile);
+[minimal](examples/minimal/Dockerfile) (Claude Code only) and [worktree](../sandbox/core/examples/worktree/Dockerfile);
 update them together.
 
 ## Upgrade test plan
 
-Install the current platform with `make user-install` from `src/experimental`; it replaces and restarts `agentd`,
-and refuses while any Session reports `Working` (#20871, #20872), so archive or delete earlier test Sessions first.
-Test the self-dev image built from the branch: from `agent/examples/self-dev`, `agentctl apply --variant nested
+Install the current platform with `make user-install` from the repository root; it replaces and restarts `agentd`,
+and refuses while any Session reports `Working` (Altinn/altinn-studio#20871, Altinn/altinn-studio#20872), so archive or delete earlier test Sessions first.
+Test the self-dev image built from the branch: from `agentctl/examples/self-dev`, `agentctl apply --variant nested
 --env-file <file> --wait` builds it with both harnesses and fits inside another Agent. Keep the env file outside the
 checkout. Use fresh Session names and confirm `claude --version` and `codex --version` in the Sandbox; testing an
 existing Sandbox does not prove the rebuilt image works.
@@ -42,15 +42,15 @@ on an Agent built with the previous pin.
 | -------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Create with an initial prompt                                        | Both        | One submission and answer; a daemon restart does not replay the prompt. A failed launch may lose the initial prompt and recover with an empty conversation.                                                               |
 | Create without a prompt, then immediately `prompt --wait`            | Both        | Input submits without manual Enter. Repeat several times to expose startup races. Codex readiness depends on its `› ` composer and the truncated session-ID pane title.                                                   |
-| Short, long, multiline, XML-shaped and literal request-heading input | Both        | `turns` preserves the complete operator input and shows no harness-injected text as operator input (#20870).                                                                                                              |
+| Short, long, multiline, XML-shaped and literal request-heading input | Both        | `turns` preserves the complete operator input and shows no harness-injected text as operator input (Altinn/altinn-studio#20870).                                                                                                              |
 | Prompt again after completion, including identical text              | Both        | Waits for one more completed turn, ignoring previous completions.                                                                                                                                                         |
 | Prompt during an active tool call, including identical text          | Both        | Input appears in `turns`; waiting follows work observed during settling, but does not demand an extra turn when input is absorbed into the current one.                                                                   |
 | Prompt while a background command runs, until it finishes            | Claude Code | The wait ends with the operator's turn; the completion notification's own turn does not end a later wait early.                                                                                                           |
 | Tool success and tool failure                                        | Both        | STATE reflects activity; tool completion alone does not complete a turn; `turns` marks only the failed call.                                                                                                              |
-| Permission prompt and `AskUserQuestion`, approved and denied         | Claude Code | While blocked, STATE is `WaitingForInput` and `activity.turns` does not advance; answering or approving completes the turn. A denial is an interruption (#20869). Not tested for Codex, which launches without approvals. |
-| Interruption during a tool call, then another prompt                 | Both        | Codex reports `Interrupt`, which releases the wait. Known gap (#20869): Claude Code has no interrupt hook, so STATE stays `Working` and a wait times out. The next prompt works in both.                                  |
+| Permission prompt and `AskUserQuestion`, approved and denied         | Claude Code | While blocked, STATE is `WaitingForInput` and `activity.turns` does not advance; answering or approving completes the turn. A denial is an interruption (Altinn/altinn-studio#20869). Not tested for Codex, which launches without approvals. |
+| Interruption during a tool call, then another prompt                 | Both        | Codex reports `Interrupt`, which releases the wait. Known gap (Altinn/altinn-studio#20869): Claude Code has no interrupt hook, so STATE stays `Working` and a wait times out. The next prompt works in both.                                  |
 | Model error reported through `StopFailure`                           | Claude Code | Create with an unknown `--model`. The completion report ends the wait, but does not imply a successful model response; inspect `turns`.                                                                                   |
-| Model error without a completion report                              | Codex       | Create with an unknown `--model`. Codex shows the API error without a turn ending, so the wait times out and STATE stays `Working` (#20872); inspect the Session and recover manually.                                    |
+| Model error without a completion report                              | Codex       | Create with an unknown `--model`. Codex shows the API error without a turn ending, so the wait times out and STATE stays `Working` (Altinn/altinn-studio#20872); inspect the Session and recover manually.                                    |
 | Short completion timeout                                             | Both        | Queuing, input readiness and delivery finish before the completion timeout starts. A timeout reports that the prompt was submitted; inspect turns before retrying. The next prompt contains no leftover draft.            |
 | Idle-stop and resume, before and after the first turn                | Both        | After 30 unattached, quiet minutes the Session is Idle. An untouched Session remains usable; an established conversation resumes with its history.                                                                        |
 | Archive mid-turn, then unarchive and resume                          | Both        | The harness stops once the turn ends; `create` or `attach` after unarchive resumes the conversation.                                                                                                                      |

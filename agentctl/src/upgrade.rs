@@ -281,7 +281,7 @@ pub async fn stage_release(paths: &InstallPaths, release: Release) -> Result<Sta
         )?;
     } else {
         let base = format!(
-            "https://github.com/{}/releases/download/experimental-agent/{}",
+            "https://github.com/{}/releases/download/agentctl/{}",
             release.repository, release.version
         );
         download(&format!("{base}/{}", Release::archive_name()), &archive).await?;
@@ -631,7 +631,7 @@ async fn latest_release(repository: &str) -> Result<String, Error> {
             .map_err(|error| Error::Daemon(format!("decode Agent releases: {error}")))?;
         if let Some(version) = releases
             .iter()
-            .find_map(|release| release.tag_name.strip_prefix("experimental-agent/"))
+            .find_map(|release| release.tag_name.strip_prefix("agentctl/"))
         {
             return normalize_version(version);
         }
@@ -639,7 +639,7 @@ async fn latest_release(repository: &str) -> Result<String, Error> {
             break;
         }
     }
-    Err(Error::Invalid("GitHub has no experimental Agent release".into()))
+    Err(Error::Invalid("GitHub has no agentctl release".into()))
 }
 
 async fn download(url: &str, path: &Path) -> Result<(), Error> {

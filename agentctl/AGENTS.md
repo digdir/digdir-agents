@@ -1,6 +1,7 @@
 # AGENTS.md
 
-This area contains the experimental agent platform described in `README.md`.
+This area contains the agent platform described in `README.md`: the `agent` crate here, with `agentctl` and
+`agentd`, and the Sandbox crates under `../sandbox/`.
 
 ## Architecture
 
@@ -53,18 +54,17 @@ Use Tokio's `LocalRuntime` for asynchronous work. Keep control-plane state singl
 
 ## Development
 
-Run `make help` in this directory to list the available development targets.
+Run `make help` at the repository root to list the available development targets.
 
-Follow [MICROSANDBOX.md](MICROSANDBOX.md) when synchronizing the Microsandbox or libkrunfw forks,
-publishing a downstream runtime or updating this workspace's source and artifact pins.
+Follow [MICROSANDBOX.md](../sandbox/MICROSANDBOX.md) when updating the Microsandbox source and runtime pins. The
+forks are synchronized and their runtimes released in digdir/microsandbox and digdir/libkrunfw.
 
-When adding or updating a harness installation or adapter, follow [HARNESSES.md](agent/HARNESSES.md).
+When adding or updating a harness installation or adapter, follow [HARNESSES.md](HARNESSES.md).
 
 ## Changelog and releases
 
-[CHANGELOG.md](CHANGELOG.md) is the release notes for the whole experimental Agent stack: `agentctl`, `agentd` and
-the Agent images under `agents/`. There is one changelog because there is one release unit, the `agentctl` and
-`agentd` binaries published by the `experimental-agent/v*` tag. The version in the changelog is that release
+[CHANGELOG.md](CHANGELOG.md) is the release notes for the Agent platform. There is one changelog because there is
+one release unit, the `agentctl` and `agentd` binaries published by the `agentctl/v*` tag. The version in the changelog is that release
 version; the Rust workspace version is a build detail and is not tracked there.
 
 Run `make changelog-validate` to check the file's structure, and `make changelog-test` for the tests covering
@@ -73,6 +73,6 @@ Run `make changelog-validate` to check the file's structure, and `make changelog
 Releasing is a promotion pull request that renames `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and adds a fresh
 empty `## [Unreleased]` above it. That rename is itself a change to the Unreleased section, so the pull request
 needs no `skip-changelog` label. Once it is merged, push the tag
-`experimental-agent/v<version>`; the release workflow extracts that section with `changelog.sh extract` and
+`agentctl/v<version>`; the release workflow extracts that section with `changelog.sh extract` and
 publishes it as the GitHub release body, and fails before creating the release when the section is missing or has
 no date.

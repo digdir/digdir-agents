@@ -170,7 +170,7 @@ COPY tmpfiles.conf /usr/lib/tmpfiles.d/worktree.conf
 ENV HOME=/home/agent
 
 USER agent
-WORKDIR /workspace/altinn-studio
+WORKDIR /workspace/digdir-agents
 
 ENTRYPOINT ["/usr/lib/systemd/systemd"]
 CMD ["codex", "--yolo"]

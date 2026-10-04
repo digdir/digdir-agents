@@ -219,7 +219,7 @@ fn render_unit() -> String {
     format!(
         "[Unit]\n\
          Description=OpenSSH server for Agent access on the guest loopback\n\
-         Documentation=https://github.com/Altinn/altinn-studio/tree/main/src/experimental\n\
+         Documentation=https://github.com/digdir/digdir-agents/tree/main/agentctl\n\
          ConditionPathExists={HOST_KEY}\n\
          After=network.target\n\
          \n\

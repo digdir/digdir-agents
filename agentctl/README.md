@@ -13,20 +13,37 @@ The main goals are:
 - host APIs that work on Linux, macOS and Windows while initially materializing Linux Sandboxes; and
 - a Sandbox layer reusable by CI runners and other isolated workloads that do not depend on Agent concepts.
 
+## Install
+
+Install the released `agentctl` and `agentd` on Linux or macOS, then log in to Claude Code:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/digdir/digdir-agents/main/agentctl/install.sh | sh
+agentctl claude login
+```
+
+Windows additionally requires the `HypervisorPlatform` optional feature. Install from PowerShell, then open a new
+PowerShell window so the updated user `PATH` takes effect:
+
+```powershell
+irm https://raw.githubusercontent.com/digdir/digdir-agents/main/agentctl/install.ps1 | iex
+```
+
+Update an installation with `agentctl self update`.
+
 ## Development
 
-Run `make help` from this directory for the supported development commands. `make user-install` builds, packages and
-installs `agentctl` and `agentd` for the current user. On Windows without Make, run `.\make-user-install.ps1` for the
+Run `make help` at the repository root for the supported development commands. `make user-install` builds, packages and
+installs `agentctl` and `agentd` for the current user. On Windows without Make, run `.\agentctl\make-user-install.ps1` for the
 same build, package and installation flow.
 
-Maintainers updating the Microsandbox or libkrunfw forks should follow the
-[downstream maintenance runbook](MICROSANDBOX.md).
+Maintainers updating the Microsandbox pin should follow [MICROSANDBOX.md](../sandbox/MICROSANDBOX.md).
 
 User-visible changes are recorded in [CHANGELOG.md](CHANGELOG.md), which covers the whole stack and provides the
-release notes for each `experimental-agent/v*` release.
+release notes for each `agentctl/v*` release.
 
-The Agent database and local protocol are intentionally clean-slate while this code is experimental. Breaking schema
-changes require stopping `agentd` and removing the configured Agent home rather than migrating old state.
+Upgrading from a released version migrates the Agent database, so Agents and Sessions carry over. State created by
+unreleased development builds is not migrated.
 
 ## Architecture
 
@@ -120,7 +137,7 @@ runtime must establish the common interface before one is introduced.
 
 ## Images, home and harnesses
 
-See the [harness compatibility test plan](agent/HARNESSES.md) when updating harness installations.
+See the [harness compatibility test plan](HARNESSES.md) when updating harness installations.
 
 Agent images own installed tools and optional workspace initialization. Repository checkouts are persistent runtime
 data beneath `/home/agent/code`; they are not declared, updated or deleted by the Agent controller. Sessions may clone

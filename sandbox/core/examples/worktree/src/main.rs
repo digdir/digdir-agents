@@ -23,8 +23,8 @@ use sha2::{Digest as _, Sha256};
 mod progress;
 
 const SANDBOX_HOME: &str = "/home/agent";
-const SANDBOX_REPOSITORY: &str = "/workspace/altinn-studio";
-const SANDBOX_WORKSPACE: &str = "/workspace/altinn-studio";
+const SANDBOX_REPOSITORY: &str = "/workspace/digdir-agents";
+const SANDBOX_WORKSPACE: &str = "/workspace/digdir-agents";
 const WORKTREE_ID_HEX_LENGTH: usize = 12;
 
 #[derive(Debug, Parser)]
@@ -220,7 +220,7 @@ fn worktree_repository() -> Result<PathBuf, Box<dyn Error>> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "{} does not contain the Altinn Studio Rust workspace",
+                "{} does not contain the digdir-agents Rust workspace",
                 repository.display()
             ),
         )

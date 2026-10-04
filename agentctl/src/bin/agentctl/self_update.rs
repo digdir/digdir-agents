@@ -13,7 +13,7 @@ use agent::{
 
 use super::CommandResult;
 
-const DEFAULT_REPOSITORY: &str = "Altinn/altinn-studio";
+const DEFAULT_REPOSITORY: &str = "digdir/digdir-agents";
 const DAEMON_STOP_TIMEOUT: Duration = Duration::from_secs(65);
 const LIFECYCLE_REQUEST_TIMEOUT: Duration = Duration::from_secs(65);
 const TARGET_VERIFY_TIMEOUT: Duration = Duration::from_secs(75);

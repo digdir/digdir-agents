@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$Repository = if ($env:AGENT_GITHUB_REPOSITORY) { $env:AGENT_GITHUB_REPOSITORY } else { "Altinn/altinn-studio" }
+$Repository = if ($env:AGENT_GITHUB_REPOSITORY) { $env:AGENT_GITHUB_REPOSITORY } else { "digdir/digdir-agents" }
 $Version = $env:AGENT_VERSION
 $InstallMode = if ($env:AGENT_INSTALL_MODE) { $env:AGENT_INSTALL_MODE } else { "managed" }
 $InstallRoot = if ($env:AGENT_INSTALL_ROOT) { $env:AGENT_INSTALL_ROOT } else { Join-Path $env:LOCALAPPDATA "Agent" }
@@ -51,11 +51,11 @@ if (-not $Version) {
     $Page = 1
     do {
         $Releases = Invoke-RestMethod "https://api.github.com/repos/$Repository/releases?per_page=100&page=$Page"
-        $Release = $Releases | Where-Object { $_.tag_name -like "experimental-agent/v*" } | Select-Object -First 1
+        $Release = $Releases | Where-Object { $_.tag_name -like "agentctl/v*" } | Select-Object -First 1
         $Page++
     } while (-not $Release -and $Releases.Count -eq 100)
-    if (-not $Release) { throw "Could not resolve the latest experimental Agent release" }
-    $Version = $Release.tag_name.Substring("experimental-agent/".Length)
+    if (-not $Release) { throw "Could not resolve the latest agentctl release" }
+    $Version = $Release.tag_name.Substring("agentctl/".Length)
 }
 if (-not $Version.StartsWith("v")) { $Version = "v$Version" }
 
@@ -78,7 +78,7 @@ try {
             $Checksum = if ($env:AGENT_LOCAL_ARCHIVE_SHA256) { $env:AGENT_LOCAL_ARCHIVE_SHA256 } else { "$LocalArchive.sha256" }
         } else {
             $Archive = "agent-$Platform.tar.gz"
-            $Base = "https://github.com/$Repository/releases/download/experimental-agent/$Version"
+            $Base = "https://github.com/$Repository/releases/download/agentctl/$Version"
             Invoke-WebRequest "$Base/$Archive" -OutFile (Join-Path $Temporary $Archive)
             $Checksum = Join-Path $Temporary "$Archive.sha256"
             Invoke-WebRequest "$Base/$Archive.sha256" -OutFile $Checksum

@@ -1,14 +1,14 @@
 # Minimal Agent
 
 This manifest-secret-free example exercises the core Agent lifecycle with mediated Claude Code authentication and one
-or more persistent tmux sessions. It does not require a `.env` file or expose GitHub and
-Altinn Studio secrets to the network mediator. Its small local Dockerfile contains only the tools needed for this
+or more persistent tmux sessions. It does not require a `.env` file or expose secrets to
+the network mediator. Its small local Dockerfile contains only the tools needed for this
 flow on the multi-platform Ubuntu 26.04 LTS base, and its layered root filesystem keeps the smoke-test sandbox
 capacity-efficient. Sessions start in the platform's stable `/home/agent/code` workspace root; this example is
 intentionally repository-free and uses the
 Sandbox Provider's backend init instead of an image entrypoint. A builder that needs a boot-time checkout should use an
-image init/entrypoint like the published `agents/` images; the self-development example offers both a boot-time clone and a
-bind-mounted host checkout. Sessions can instead clone repositories on demand when their
+image init or entrypoint, like the self-development example, which offers both a boot-time clone and a bind-mounted
+host checkout. Sessions can instead clone repositories on demand when their
 Agent declares a suitable mediated secret. It is not intended for running Docker inside the Agent.
 
 ```sh

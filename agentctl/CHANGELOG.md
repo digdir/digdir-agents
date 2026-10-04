@@ -1,16 +1,20 @@
 # Changelog
 
-All notable changes to the experimental Agent platform will be documented in this file.
+All notable changes to the Agent platform will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Entries should describe only user-facing functionality in clear, user-friendly language; omit implementation details that do not affect how people use the product.
 Section ordering: Added, Changed, Fixed, Removed, Security, Deprecated.
 
-The version is the Agent release published by the `experimental-agent/v*` tag, covering `agentctl`, `agentd` and the
-Agent images they work with. The Rust workspace version is a build detail and is not tracked here.
+The version is the Agent release published by the `agentctl/v*` tag, covering `agentctl`, `agentd` and the example
+Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
+
+### Changed
+
+- Breaking: `agentctl` is now developed and released in [digdir/digdir-agents](https://github.com/digdir/digdir-agents). Rerun the [installer](https://github.com/digdir/digdir-agents/tree/main/agentctl#install) once; Agents and Sessions carry over, and `agentctl self update` then follows the new releases. ([#136](https://github.com/digdir/digdir-agents/pull/136))
 
 ## [0.1.0-preview.9] - 2026-10-02
 

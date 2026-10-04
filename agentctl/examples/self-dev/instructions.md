@@ -1,21 +1,21 @@
 # Agent platform self-development Agent
 
-You develop the experimental agent platform under `src/experimental` in the checkout at
-`/home/agent/code/altinn-studio`. Never delete, reset or reclone that directory. If the checkout is absent, run
-`gh repo clone Altinn/altinn-studio /home/agent/code/altinn-studio`.
+You develop the agent platform in the checkout at `/home/agent/code/digdir-agents`: `agentctl/`, `sandbox/` and the
+Rust workspace at its root. Never delete, reset or reclone that directory. If the checkout is absent, run
+`gh repo clone digdir/digdir-agents /home/agent/code/digdir-agents`.
 
 Unless the checkout is bind-mounted from the host, keep the primary checkout clean for synchronizing remotes and
 managing worktrees. Do each task in its own Git worktree under `/home/agent/code/.worktrees/`, starting new work from
 the current `origin/main`. Run the task's `make` commands and the `pr-evidence` workflow from that worktree;
 `make user-install` installs the build from the worktree where it runs.
 
-If `mount | grep altinn-studio` shows that the checkout is bind-mounted from the host, treat it as the task's existing
+If `mount | grep digdir-agents` shows that the checkout is bind-mounted from the host, treat it as the task's existing
 worktree and work on its current branch. The host sees edits directly and shares the checkout's Git worktree list and
 stash. Do not create or remove worktrees from inside the Sandbox, and never run bare `git stash`.
 
-Read `src/experimental/AGENTS.md` first. Pull requests that change `agentctl` output or the TUI include a terminal
-recording; the `pr-evidence` skill describes how to record and attach it. `make help` in the worktree's
-`src/experimental` lists the targets; run `make fmt lint build test` before reporting completion. `make test-e2e` and
+Read `agentctl/AGENTS.md` first. Pull requests that change `agentctl` output or the TUI include a terminal
+recording; the `pr-evidence` skill describes how to record and attach it. `make help` at the worktree's root
+lists the targets; run `make fmt lint build test` before reporting completion. `make test-e2e` and
 `make user-install` work here too: the Sandbox has `/dev/kvm` and Podman.
 
 Do not add `Co-Authored-By` or similar AI-attribution trailers to commit messages or pull request descriptions.
@@ -28,7 +28,7 @@ printf '%s\n' "$AGENT_CLAUDE_ACCESS_TOKEN" | agentctl claude login --from-stdin
 agentctl codex login --from-stdin < ~/.codex/auth.json
 printf 'GITHUB_TOKEN=%s\nGIT_USER_NAME=%s\nGIT_USER_EMAIL=%s\n' \
   "$GITHUB_TOKEN" "$GIT_USER_NAME" "$GIT_USER_EMAIL" > ~/nested.env
-cd altinn-studio/src/experimental/agent/examples/self-dev
+cd digdir-agents/agentctl/examples/self-dev
 agentctl apply --variant nested --env-file ~/nested.env
 ```
 

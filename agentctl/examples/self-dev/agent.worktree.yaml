@@ -9,8 +9,8 @@ spec:
   sandbox:
     mounts:
       - type: bind
-        source: ../../../../..
-        target: /home/agent/code/altinn-studio
+        source: ../../..
+        target: /home/agent/code/digdir-agents
         readOnly: false
       - type: tmpfs
         target: /tmp

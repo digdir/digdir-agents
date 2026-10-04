@@ -84,7 +84,7 @@ header() {
   cat <<'HEADER'
 # Changelog
 
-All notable changes to the experimental Agent platform will be documented in this file.
+All notable changes to the Agent platform will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -679,11 +679,11 @@ assert_message 'extract rejects a dated section with no content' 1 'is empty' \
 # -------------------------------------------------------- check-unreleased ---
 
 REPOSITORY="${WORK}/repository"
-mkdir -p "${REPOSITORY}/src/experimental"
+mkdir -p "${REPOSITORY}/agentctl"
 git -C "${REPOSITORY}" init --quiet
 git -C "${REPOSITORY}" config user.email changelog-test@example.com
 git -C "${REPOSITORY}" config user.name 'Changelog Test'
-tracked="${REPOSITORY}/src/experimental/CHANGELOG.md"
+tracked="${REPOSITORY}/agentctl/CHANGELOG.md"
 
 git -C "${REPOSITORY}" commit --quiet --allow-empty -m 'empty'
 empty_base="$(git -C "${REPOSITORY}" rev-parse HEAD)"

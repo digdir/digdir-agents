@@ -2,7 +2,7 @@
 set -eu
 umask 077
 
-repository="${AGENT_GITHUB_REPOSITORY:-Altinn/altinn-studio}"
+repository="${AGENT_GITHUB_REPOSITORY:-digdir/digdir-agents}"
 version="${AGENT_VERSION:-}"
 install_mode="${AGENT_INSTALL_MODE:-managed}"
 bin_directory="${AGENT_INSTALL_DIR:-${HOME}/.local/bin}"
@@ -55,14 +55,14 @@ if [ -z "${version}" ]; then
   while [ -z "${version}" ]; do
     releases="$(curl -fsSL "https://api.github.com/repos/${repository}/releases?per_page=100&page=${page}")"
     version="$(printf '%s' "${releases}" \
-      | sed -n 's/.*"tag_name": "experimental-agent\/\(v[^"]*\)".*/\1/p' \
+      | sed -n 's/.*"tag_name": "agentctl\/\(v[^"]*\)".*/\1/p' \
       | head -n 1)"
     [ "${releases}" != "[]" ] || break
     page=$((page + 1))
   done
 fi
 if [ -z "${version}" ]; then
-  echo "Could not resolve the latest experimental Agent release" >&2
+  echo "Could not resolve the latest agentctl release" >&2
   exit 1
 fi
 case "${version}" in
@@ -89,7 +89,7 @@ if [ "${install_mode}" = standalone ] || [ ! -d "${target}" ]; then
     cp "${AGENT_LOCAL_ARCHIVE_SHA256:-${local_archive}.sha256}" "${temporary}/${archive}.sha256"
   else
     archive="agent-${platform}.tar.gz"
-    base="https://github.com/${repository}/releases/download/experimental-agent/${version}"
+    base="https://github.com/${repository}/releases/download/agentctl/${version}"
     curl -fsSL "${base}/${archive}" -o "${temporary}/${archive}"
     curl -fsSL "${base}/${archive}.sha256" -o "${temporary}/${archive}.sha256"
   fi

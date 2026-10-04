@@ -98,7 +98,7 @@ fn decodes_the_minimal_manifest() {
 
     assert_eq!(agent.api_version, API_VERSION);
     assert_eq!(agent.kind, KIND);
-    assert_eq!(agent.metadata.name, "altinn-studio");
+    assert_eq!(agent.metadata.name, "minimal");
     assert_eq!(agent.spec.sandbox.platform.os, "linux");
     assert_eq!(agent.spec.sandbox.platform.architecture, None);
     assert_eq!(agent.spec.sandbox.retention_policy, None);
