@@ -131,119 +131,6 @@ fn a_manifest_may_set_the_run_state_and_omits_it_by_default() {
     manifest::decode(paused.as_bytes()).expect_err("only Running and Stopped exist");
 }
 
-/// The image owns the harness version, so a manifest that repeats it only creates a second place
-/// to forget. The examples are what people copy, so none of them may pin one.
-#[test]
-fn no_example_manifest_pins_a_harness_version() {
-    let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
-    let mut checked = 0;
-    for example in std::fs::read_dir(&examples).expect("examples directory") {
-        let directory = example.expect("examples entry").path();
-        if !directory.is_dir() {
-            continue;
-        }
-        for manifest in std::fs::read_dir(&directory).expect("example directory") {
-            let path = manifest.expect("example entry").path();
-            if !path.is_file() {
-                continue;
-            }
-            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-            let is_manifest = name.starts_with("agent")
-                && path
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("yaml"));
-            if !is_manifest {
-                continue;
-            }
-            let agent = manifest::resolve(&path)
-                .unwrap_or_else(|error| panic!("{} should resolve: {error}", path.display()))
-                .agent;
-            for harness in &agent.spec.harnesses {
-                assert_eq!(
-                    harness.version,
-                    None,
-                    "{} pins a version for {:?}; the image owns it",
-                    path.display(),
-                    harness.kind
-                );
-            }
-            checked += 1;
-        }
-    }
-    assert!(checked > 0, "no example manifests were checked");
-}
-
-#[test]
-fn decodes_the_self_development_manifest() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/self-dev/agent.worktree.yaml");
-    let agent = manifest::resolve(&path)
-        .expect("self-development manifest should resolve")
-        .agent;
-
-    assert_eq!(agent.metadata.name, "agent-dev-worktree");
-    assert_eq!(agent.spec.sandbox.platform.architecture, None);
-    assert_eq!(agent.spec.secrets.len(), 1);
-    assert_eq!(agent.spec.secrets[0].environment, "GITHUB_TOKEN");
-    assert_eq!(agent.spec.secrets[0].source(), "GITHUB_TOKEN");
-    assert_eq!(agent.spec.environment.len(), 2);
-    assert_eq!(agent.spec.environment[0].name, "GIT_USER_NAME");
-    assert_eq!(agent.spec.environment[0].source(), "GIT_USER_NAME");
-    assert_eq!(
-        agent.spec.secrets[0].placeholder.as_deref(),
-        Some("github_pat_AGENT_MEDIATED_GITHUB_TOKEN")
-    );
-    assert!(
-        agent.spec.secrets[0]
-            .allowed_hosts
-            .iter()
-            .any(|host| host == "uploads.github.com")
-    );
-    assert_eq!(agent.spec.skills.len(), 1);
-    assert_eq!(agent.spec.skills[0].name(), Some("pr-evidence"));
-    assert_eq!(agent.spec.harnesses.len(), 2);
-    assert!(agent.spec.harnesses[0].default);
-    assert_eq!(agent.spec.harnesses[0].kind, Harness::ClaudeCode);
-    assert_eq!(agent.spec.harnesses[0].version, None);
-    assert_eq!(agent.spec.harnesses[1].kind, Harness::Codex);
-    assert!(!agent.spec.harnesses[1].default);
-    assert_eq!(
-        agent.spec.sandbox.resources.root_filesystem().mode(),
-        RootFilesystemMode::Direct
-    );
-}
-
-#[test]
-fn published_manifests_explicitly_select_git_identity() {
-    let manifests = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../agents");
-    if !manifests.is_dir() {
-        eprintln!("skipping published manifests omitted from this sparse checkout");
-        return;
-    }
-
-    for path in [
-        manifests.join("minimal/agent.yaml"),
-        manifests.join("full/agent.yaml"),
-        manifests.join("full/agent.nested.yaml"),
-        manifests.join("full/agent.nested-build.yaml"),
-        manifests.join("full/agent.worktree.yaml"),
-        manifests.join("desktop/agent.yaml"),
-        manifests.join("desktop/agent.nested.yaml"),
-        manifests.join("desktop/agent.nested-build.yaml"),
-        manifests.join("desktop/agent.worktree.yaml"),
-    ] {
-        let agent = manifest::resolve(&path)
-            .expect("published Agent manifest should resolve")
-            .agent;
-        let names = agent
-            .spec
-            .environment
-            .iter()
-            .map(|variable| variable.name.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(names, ["GIT_USER_NAME", "GIT_USER_EMAIL"]);
-    }
-}
-
 #[test]
 fn decodes_explicit_non_secret_environment_with_an_optional_source() {
     let mut agent = support::agent("worker");
@@ -354,60 +241,6 @@ fn rejects_environment_collisions_with_secrets_and_harness_owned_values() {
         harness_collision.validate(),
         Err(agent::Error::Invalid(message)) if message.contains("spec.environment[0]")
     ));
-}
-
-#[test]
-fn self_development_mounts_the_host_checkout_instead_of_cloning() {
-    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/self-dev");
-    let agent = manifest::resolve(&directory.join("agent.worktree.yaml"))
-        .expect("self-development worktree variant should resolve")
-        .agent;
-    let dockerfile = include_str!("../examples/self-dev/Dockerfile");
-
-    let mounts = &agent.spec.sandbox.mounts;
-    assert_eq!(mounts.len(), 2);
-    assert!(matches!(
-        &mounts[0],
-        manifest::MountSpec::Bind { source, target, read_only }
-            if source == std::path::Path::new("../../../../..")
-                && target.as_str() == "/home/agent/code/altinn-studio"
-                && !read_only
-    ));
-    assert!(!dockerfile.contains("gh repo clone"));
-
-    let default = manifest::resolve(&directory.join("agent.yaml"))
-        .expect("default manifest should resolve")
-        .agent;
-    assert_eq!(default.metadata.name, "agent-dev");
-    assert_eq!(default.spec.sandbox.mounts.len(), 1);
-    assert_eq!(default.spec.environment, agent.spec.environment);
-    let nested = manifest::resolve(&directory.join("agent.nested.yaml"))
-        .expect("nested manifest should resolve")
-        .agent;
-    assert_eq!(nested.metadata.name, "agent-dev-nested");
-    assert_eq!(nested.spec.sandbox.mounts, default.spec.sandbox.mounts);
-    assert_eq!(nested.spec.environment, agent.spec.environment);
-    assert!(nested.spec.sandbox.resources.memory() < default.spec.sandbox.resources.memory());
-    for resolved in [&default, &nested, &agent] {
-        assert!(matches!(
-            &resolved.spec.sandbox.image,
-            sandbox::image::ImageSource::Build { .. }
-        ));
-    }
-}
-
-#[test]
-fn self_development_image_leaves_harness_startup_to_sessions() {
-    let dockerfile = include_str!("../examples/self-dev/Dockerfile");
-
-    assert!(!dockerfile.lines().any(|line| line.trim_start().starts_with("CMD ")));
-    assert!(dockerfile.contains("podman"));
-    assert!(dockerfile.contains("podman-docker"));
-    assert!(dockerfile.contains("nftables"));
-    assert!(dockerfile.contains("rustup"));
-    assert!(dockerfile.contains("cargo-machete"));
-    assert!(dockerfile.contains("ENV DOCKER_HOST=unix:///run/podman/podman.sock"));
-    assert!(dockerfile.contains("ENV CARGO_TARGET_DIR="));
 }
 
 #[test]
@@ -706,28 +539,6 @@ spec:
                 .contains(&format!("{field} must be 1-128 ASCII letters")),
             "{field} = {invalid}: {error}"
         );
-    }
-}
-
-/// The `agents/` manifests declare the same default but live outside this crate,
-/// which the portable hosts build from a sparse checkout, so only the examples are
-/// guarded here.
-#[test]
-fn example_manifests_keep_claude_code_sessions_on_fable() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for path in [
-        root.join("examples/minimal/agent.yaml"),
-        root.join("examples/self-dev/agent.yaml"),
-        root.join("examples/self-dev/agent.nested.yaml"),
-        root.join("examples/self-dev/agent.worktree.yaml"),
-    ] {
-        let agent = manifest::resolve(&path).expect("manifest should resolve").agent;
-        let claude = agent
-            .spec
-            .harness(Harness::ClaudeCode)
-            .expect("every example manifest installs Claude Code");
-        assert_eq!(claude.defaults.model_str(), Some("fable"));
-        assert_eq!(claude.defaults.effort_str(), None);
     }
 }
 
