@@ -48,7 +48,7 @@ mkdir -p "${smoke_root}"
 
 CARGO_TARGET_DIR="${smoke_target}" CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 \
   AGENT_VERSION="${old_version}" cargo build --locked -p agent --bins
-./agent/package.sh "${old_archive}" "${binary_directory}"
+./agentctl/package.sh "${old_archive}" "${binary_directory}"
 CARGO_TARGET_DIR="${smoke_target}" CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 \
   AGENT_VERSION="${target_version}" cargo build --locked -p agent --bins
 suffix=""
@@ -58,7 +58,7 @@ fi
 mkdir "${target_binaries}"
 mv "${binary_directory}/agentctl${suffix}" "${binary_directory}/agentd${suffix}" "${target_binaries}/"
 rm -rf -- "${smoke_target}"
-./agent/package.sh "${target_archive}" "${target_binaries}"
+./agentctl/package.sh "${target_archive}" "${target_binaries}"
 
 if [ "${RUNNER_OS:-}" = "Windows" ]; then
   # Standalone installation
@@ -72,7 +72,7 @@ if [ "${RUNNER_OS:-}" = "Windows" ]; then
   export AGENT_HOME="$(cygpath -w "${standalone_root}/home")"
   export AGENT_VERSION="${target_version}"
   export AGENT_LOCAL_ARCHIVE="$(cygpath -w "${target_archive}")"
-  pwsh -NoProfile -File "$(cygpath -w agent/install.ps1)"
+  pwsh -NoProfile -File "$(cygpath -w agentctl/install.ps1)"
   # shellcheck disable=SC2016 # PowerShell expands its own environment variables.
   pwsh -NoProfile -Command '
     $agentctl = Join-Path $env:AGENT_INSTALL_DIR "agentctl.exe"
@@ -100,7 +100,7 @@ if [ "${RUNNER_OS:-}" = "Windows" ]; then
   export AGENT_VERSION="${old_version}"
   AGENT_LOCAL_ARCHIVE="$(cygpath -w "${old_archive}")"
   export AGENT_INSTALL_ROOT AGENT_INSTALL_DIR AGENT_HOME AGENT_LOCAL_ARCHIVE
-  pwsh -NoProfile -File "$(cygpath -w agent/install.ps1)"
+  pwsh -NoProfile -File "$(cygpath -w agentctl/install.ps1)"
   export AGENT_SMOKE_BIN="${AGENT_INSTALL_DIR}"
   AGENT_LOCAL_ARCHIVE="$(cygpath -w "${target_archive}")"
   export AGENT_LOCAL_ARCHIVE
@@ -123,7 +123,7 @@ if [ "${RUNNER_OS:-}" = "Windows" ]; then
   AGENT_LOCAL_ARCHIVE="$(cygpath -w "${old_archive}")"
   export AGENT_VERSION="${old_version}"
   export AGENT_INSTALL_ROOT AGENT_LOCAL_ARCHIVE
-  pwsh -NoProfile -File "$(cygpath -w agent/install.ps1)"
+  pwsh -NoProfile -File "$(cygpath -w agentctl/install.ps1)"
   # shellcheck disable=SC2016 # PowerShell expands its own environment variables.
   pwsh -NoProfile -Command '
     $agentctl = Join-Path $env:AGENT_SMOKE_BIN "agentctl.cmd"
@@ -144,7 +144,7 @@ else
     AGENT_HOME="${standalone_root}/home" \
     AGENT_VERSION="${target_version}" \
     AGENT_LOCAL_ARCHIVE="${target_archive}" \
-    ./agent/install.sh
+    ./agentctl/install.sh
   test -x "${standalone_root}/bin/agentctl"
   test -x "${standalone_root}/bin/agentd"
   test "$("${standalone_root}/bin/agentctl" --version)" = "agentctl ${target_version}"
@@ -160,7 +160,7 @@ else
   export AGENT_HOME="${smoke_root}/home"
   export AGENT_VERSION="${old_version}"
   export AGENT_LOCAL_ARCHIVE="${old_archive}"
-  ./agent/install.sh
+  ./agentctl/install.sh
   agentctl="${AGENT_INSTALL_DIR}/agentctl"
   export AGENT_LOCAL_ARCHIVE="${target_archive}"
   unset AGENT_INSTALL_ROOT AGENT_INSTALL_DIR
@@ -171,6 +171,6 @@ else
   export AGENT_INSTALL_DIR="${smoke_root}/bin"
   export AGENT_LOCAL_ARCHIVE="${old_archive}"
   export AGENT_VERSION="${old_version}"
-  ./agent/install.sh
+  ./agentctl/install.sh
   test "$("${agentctl}" --version)" = "agentctl ${old_version}"
 fi

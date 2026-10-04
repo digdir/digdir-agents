@@ -21,7 +21,7 @@ function Restore-ProcessEnvironment([string]$Name, [AllowNull()][string]$Value) 
     }
 }
 
-$Root = [IO.Path]::GetFullPath($PSScriptRoot)
+$Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 if (-not $Version) {
     $Version = "v0.0.1-dev.$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))"
 } elseif (-not $Version.StartsWith("v")) {
@@ -31,20 +31,20 @@ if (-not $Version) {
 $TargetRoot = if ($env:CARGO_TARGET_DIR) {
     Resolve-PathFromRoot $env:CARGO_TARGET_DIR $Root
 } else {
-    Resolve-PathFromRoot "../../target" $Root
+    Resolve-PathFromRoot "target" $Root
 }
 $ReleaseBinDirectory = Join-Path $TargetRoot "release"
 $ArchiveDirectory = Join-Path $Root "build/user-install"
 $ArchiveName = "agent-$Version.tar.gz"
 $Archive = Join-Path $ArchiveDirectory $ArchiveName
-$Installer = Join-Path $Root "agent/install.ps1"
+$Installer = Join-Path $Root "agentctl/install.ps1"
 $PreviousVersion = [Environment]::GetEnvironmentVariable("AGENT_VERSION", "Process")
 $PreviousArchive = [Environment]::GetEnvironmentVariable("AGENT_LOCAL_ARCHIVE", "Process")
 $PreviousChecksum = [Environment]::GetEnvironmentVariable("AGENT_LOCAL_ARCHIVE_SHA256", "Process")
 
 Push-Location $Root
 try {
-    Write-Host "Building experimental Agent $Version..."
+    Write-Host "Building agentctl $Version..."
     $env:AGENT_VERSION = $Version
     & cargo build --release --locked -p agent --bins
     if ($LASTEXITCODE -ne 0) {

@@ -4,9 +4,9 @@
 
 USER_INSTALL_VERSION := v0.0.1-dev.$(shell date -u +%Y%m%d%H%M%S)
 USER_INSTALL_ARCHIVE := $(abspath build/user-install/agent-$(USER_INSTALL_VERSION).tar.gz)
-RELEASE_BIN_DIR := $(abspath $(or $(CARGO_TARGET_DIR),../../target)/release)
+RELEASE_BIN_DIR := $(abspath $(or $(CARGO_TARGET_DIR),target)/release)
 
-EXPERIMENTAL_PACKAGES := \
+PACKAGES := \
 	-p agent \
 	-p sandbox-authorization \
 	-p sandbox \
@@ -24,59 +24,59 @@ help: ## Show this help message
 	@echo 'Available targets:'
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
 
-build: ## Build all experimental Rust crates
-	@echo "Building experimental Rust crates..."
-	@cargo build $(EXPERIMENTAL_PACKAGES) --all-targets --locked
+build: ## Build all Rust crates
+	@echo "Building Rust crates..."
+	@cargo build $(PACKAGES) --all-targets --locked
 	@echo "✓ Build successful"
 
 user-install: ## Build, package and install agentctl and agentd for the current user
 ifeq ($(OS),Windows_NT)
-	@powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(abspath make-user-install.ps1)"
+	@powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(abspath agentctl/make-user-install.ps1)"
 else
-	@echo "Building experimental Agent $(USER_INSTALL_VERSION)..."
+	@echo "Building agentctl $(USER_INSTALL_VERSION)..."
 	@AGENT_VERSION=$(USER_INSTALL_VERSION) cargo build --release --locked -p agent --bins
-	@./agent/package.sh "$(USER_INSTALL_ARCHIVE)" "$(RELEASE_BIN_DIR)"
-	@AGENT_VERSION=$(USER_INSTALL_VERSION) AGENT_LOCAL_ARCHIVE="$(USER_INSTALL_ARCHIVE)" ./agent/install.sh
+	@./agentctl/package.sh "$(USER_INSTALL_ARCHIVE)" "$(RELEASE_BIN_DIR)"
+	@AGENT_VERSION=$(USER_INSTALL_VERSION) AGENT_LOCAL_ARCHIVE="$(USER_INSTALL_ARCHIVE)" ./agentctl/install.sh
 endif
 
-clean: ## Clean experimental build artifacts
-	@echo "Cleaning experimental build artifacts..."
-	@cargo clean $(EXPERIMENTAL_PACKAGES)
+clean: ## Clean Rust build artifacts
+	@echo "Cleaning Rust build artifacts..."
+	@cargo clean $(PACKAGES)
 	@echo "✓ Cleaned"
 
 fmt: ## Format Rust code
-	@echo "Formatting experimental Rust code..."
-	@cargo fmt $(EXPERIMENTAL_PACKAGES)
+	@echo "Formatting Rust code..."
+	@cargo fmt $(PACKAGES)
 	@echo "✓ Code formatted"
 
 lint: ## Run strict Clippy analysis
-	@echo "Linting experimental Rust crates..."
-	@cargo clippy $(EXPERIMENTAL_PACKAGES) --all-targets --all-features --locked
+	@echo "Linting Rust crates..."
+	@cargo clippy $(PACKAGES) --all-targets --all-features --locked
 	@echo "✓ Lint passed"
 
 lint-fix: ## Apply safe Clippy fixes
-	@echo "Applying Clippy fixes to experimental Rust crates..."
-	@cargo clippy $(EXPERIMENTAL_PACKAGES) --all-targets --all-features --fix --allow-dirty --locked
+	@echo "Applying Clippy fixes to Rust crates..."
+	@cargo clippy $(PACKAGES) --all-targets --all-features --fix --allow-dirty --locked
 	@echo "✓ Lint fixes applied"
 
 test: changelog-test ## Run all tests
-	@echo "Testing experimental Rust crates..."
-	@cargo test $(EXPERIMENTAL_PACKAGES) --all-targets --locked
+	@echo "Testing Rust crates..."
+	@cargo test $(PACKAGES) --all-targets --locked
 	@echo "✓ Tests passed"
 
-changelog-validate: ## Check that CHANGELOG.md has the expected structure
-	@./changelog.sh validate
+changelog-validate: ## Check that agentctl/CHANGELOG.md has the expected structure
+	@./agentctl/changelog.sh validate
 
 changelog-test: ## Run the changelog.sh tests
-	@./changelog_test.sh
+	@./agentctl/changelog_test.sh
 
 test-e2e: ## Run integration tests that require Docker, Internet access, and KVM
-	@echo "Running experimental end-to-end tests..."
+	@echo "Running end-to-end tests..."
 	@cargo test -p sandbox-microsandbox --tests --locked -- --ignored
 	@echo "✓ End-to-end tests passed"
 
 deps: ## Print the workspace dependency graph
-	@cargo tree $(EXPERIMENTAL_PACKAGES) --locked
+	@cargo tree $(PACKAGES) --locked
 
 deps-check: ## Check for unused direct dependencies
 	@cargo machete --with-metadata .

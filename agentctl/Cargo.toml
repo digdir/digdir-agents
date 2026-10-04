@@ -8,9 +8,9 @@ license.workspace = true
 
 [dependencies]
 base64.workspace = true
-sandbox = { path = "../sandbox" }
-sandbox-authorization = { path = "../sandbox-authorization" }
-sandbox-microsandbox = { path = "../sandbox-microsandbox" }
+sandbox = { path = "../sandbox/core" }
+sandbox-authorization = { path = "../sandbox/authorization" }
+sandbox-microsandbox = { path = "../sandbox/microsandbox" }
 clap.workspace = true
 crossterm.workspace = true
 ignore.workspace = true

@@ -1,11 +1,10 @@
 [workspace]
 members = [
-  "src/experimental/agent",
-  "src/experimental/sandbox-authorization",
-  "src/experimental/sandbox",
-  "src/experimental/sandbox/examples/worktree",
-  "src/experimental/sandbox-microsandbox",
-  "src/ci/github-runner/coordinator",
+  "agentctl",
+  "sandbox/authorization",
+  "sandbox/core",
+  "sandbox/core/examples/worktree",
+  "sandbox/microsandbox",
 ]
 resolver = "3"
 
@@ -25,7 +24,6 @@ futures-core = "0.3.34"
 futures-util = "0.3.34"
 flate2 = "1.1.9"
 ignore = "0.4.33"
-jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
 # Microsandbox fork commit from `main-digdir`, tagged `digdir-v0.7.4-digdir.2`.
 # Update all three revisions together with the runtime bundle digests.
 microsandbox = { git = "https://github.com/martinothamar/microsandbox.git", rev = "c3a16753edba0ad4b21844ccd50ce7b615e43f84", default-features = false, features = ["local", "net"] }
@@ -36,8 +34,8 @@ ratatui = "0.30.2"
 reqwest = { version = "0.13.4", features = ["json"] }
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 rusqlite = "0.39.0"
-sandbox = { path = "src/experimental/sandbox" }
-sandbox-microsandbox = { path = "src/experimental/sandbox-microsandbox" }
+sandbox = { path = "sandbox/core" }
+sandbox-microsandbox = { path = "sandbox/microsandbox" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 serde_yaml_ng = "0.10.0"

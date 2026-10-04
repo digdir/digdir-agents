@@ -1,7 +1,8 @@
 # EditorConfig is awesome: https://editorconfig.org
 root = true
 
-[*]
+# The Rust workspace: agentctl, the Sandbox crates and the root build files.
+[{agentctl/**,sandbox/**,Makefile,*.toml,.cargo/**}]
 charset = utf-8
 end_of_line = lf
 insert_final_newline = true
