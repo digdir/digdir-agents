@@ -29,6 +29,7 @@ jobs:
       pull-requests: read
     outputs:
       integrations: ${{ steps.areas.outputs.integrations }}
+      rust: ${{ steps.areas.outputs.rust }}
     steps:
       - name: Detect changed areas
         id: areas
@@ -40,6 +41,7 @@ jobs:
           # Each area's paths, as an extended regular expression over the changed file names.
           areas=(
             'integrations=^(integrations/|\.github/workflows/(ci|integrations)\.yml$)'
+            'rust=^(agentctl/|sandbox/|\.cargo/|(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|rustfmt\.toml|clippy\.toml|deny\.toml|Makefile)$|\.github/workflows/(ci|rust)\.yml$)'
           )
           # A renamed file counts under both its old and its new name.
           names='.filename, (.previous_filename // empty)'
@@ -65,10 +67,15 @@ jobs:
     if: needs.changes.outputs.integrations == 'true'
     uses: ./.github/workflows/integrations.yml
 
+  rust:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    uses: ./.github/workflows/rust.yml
+
   ci-gate:
     name: ci-gate
     if: always()
-    needs: [changes, integrations]
+    needs: [changes, integrations, rust]
     runs-on: ubuntu-latest
     steps:
       - name: Check that no needed job failed
