@@ -43,8 +43,9 @@ rotkataloger (ki-lab-beslutning, september 2026):
 | `sandbox/` | Sandbox-SDK; implementasjon basert på digdir-forkene [microsandbox](https://github.com/digdir/microsandbox) og [libkrunfw](https://github.com/digdir/libkrunfw). Konsumeres som git-ref-dependency fra altinn-studio inntil videre. |
 
 De eies av innflytterteamet (egne CODEOWNERS-stier) og tar med egne
-CI-jobber for sine stier; `integrations`-jobben forblir repoets required
-check. Orkestrator-pipelinen over og agentctl løser i dag harness-laget på
+CI-jobber for sine stier. Hvert område kjører bare når stiene dets endres,
+og `ci-gate` i `.github/workflows/ci.yml` er repoets eneste required check.
+Orkestrator-pipelinen over og agentctl løser i dag harness-laget på
 hver sin måte — på sikt er planen å prøve én av agentene her på
 agentctl + manifest.
 
