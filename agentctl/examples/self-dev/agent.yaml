@@ -5,9 +5,8 @@ metadata:
 spec:
   sandbox:
     image:
-      type: build
-      context: .
-      dockerfile: Dockerfile
+      type: reference
+      reference: ghcr.io/digdir/digdir-agents/agent-self-dev:latest
     platform:
       os: linux
     resources:

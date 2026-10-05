@@ -14,6 +14,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Added
 
+- The self-development Agent's image is published as `ghcr.io/digdir/digdir-agents/agent-self-dev`, so its default, `nested` and `worktree` variants start without building it. The new `nested-build` variant builds it from the checkout.
 - The self-development Agent clones `digdir/microsandbox` and `digdir/libkrunfw` beside `digdir/digdir-agents`, and has the `changelog` skill for writing changelog entries. ([#136](https://github.com/digdir/digdir-agents/pull/136))
 
 ### Changed

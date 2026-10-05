@@ -14,12 +14,12 @@ update them together.
 
 ## Upgrade test plan
 
-Install the current platform with `make user-install` from the repository root; it replaces and restarts `agentd`,
-and refuses while any Session reports `Working` (Altinn/altinn-studio#20871, Altinn/altinn-studio#20872), so archive or delete earlier test Sessions first.
-Test the self-dev image built from the branch: from `agentctl/examples/self-dev`, `agentctl apply --variant nested
---env-file <file> --wait` builds it with both harnesses and fits inside another Agent. Keep the env file outside the
-checkout. Use fresh Session names and confirm `claude --version` and `codex --version` in the Sandbox; testing an
-existing Sandbox does not prove the rebuilt image works.
+Install the current platform with `make user-install` from the repository root; it replaces and restarts `agentd`, and
+refuses while any Session reports `Working` (Altinn/altinn-studio#20871, Altinn/altinn-studio#20872), so archive or
+delete earlier test Sessions first. Test the self-dev image built from the branch: from `agentctl/examples/self-dev`,
+`agentctl apply --variant nested-build --env-file <file> --wait` builds it with both harnesses and fits inside another
+Agent. Keep the env file outside the checkout. Use fresh Session names and confirm `claude --version` and
+`codex --version` in the Sandbox; testing an existing Sandbox does not prove the rebuilt image works.
 
 Run each check against both harnesses unless the table names one. A low-cost model is enough, but Sessions on each
 installation's manifest `defaults` must work at least once. Before attributing a failure to the bump, repeat the check

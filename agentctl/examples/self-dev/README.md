@@ -2,13 +2,15 @@
 
 This Agent develops the Agent platform itself: `agentctl/`, `sandbox/` and the Rust workspace in digdir-agents.
 
-| Variant | Checkout | Resources |
-| --- | --- | --- |
-| default (`agent.yaml`) | Fresh `digdir/digdir-agents`, `digdir/microsandbox` and `digdir/libkrunfw` clones made at boot | Normal |
-| `nested` | Fresh clones | Reduced to fit inside the default Agent |
-| `worktree` | Current host checkout mounted read-write, fresh fork clones | Normal |
+| Variant | Image | Checkout | Resources |
+| --- | --- | --- | --- |
+| default (`agent.yaml`) | Published | Fresh `digdir/digdir-agents`, `digdir/microsandbox` and `digdir/libkrunfw` clones made at boot | Normal |
+| `nested` | Published | Fresh clones | Reduced to fit inside the default Agent |
+| `nested-build` | Built from this checkout | Fresh clones | Reduced to fit inside the default Agent |
+| `worktree` | Published | Current host checkout mounted read-write, fresh fork clones | Normal |
 
-Every variant builds the directory's `Dockerfile` locally. Self-development images are not published to GHCR.
+The published image, `ghcr.io/digdir/digdir-agents/agent-self-dev:latest`, is built from this directory's `Dockerfile`
+whenever it changes on `main`. Use `nested-build` to try changes to the image itself.
 
 ```sh
 make user-install
