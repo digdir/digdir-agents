@@ -14,11 +14,14 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Added
 
-- The self-development Agent's image is published as `ghcr.io/digdir/digdir-agents/agent-self-dev`, so its default, `nested` and `worktree` variants start without building it. The new `nested-build` variant builds it from the checkout.
-- The self-development Agent clones `digdir/microsandbox` and `digdir/libkrunfw` beside `digdir/digdir-agents`, and has the `changelog` skill for writing changelog entries. ([#136](https://github.com/digdir/digdir-agents/pull/136))
+- The self-development Agent:
+  - clones `digdir/microsandbox` and `digdir/libkrunfw` beside `digdir/digdir-agents`, and has the `changelog` skill for writing changelog entries ([#136](https://github.com/digdir/digdir-agents/pull/136))
+  - starts from the image published as `ghcr.io/digdir/digdir-agents/agent-self-dev` in its default, `nested` and `worktree` variants; the new `nested-build` variant builds it from the checkout ([#138](https://github.com/digdir/digdir-agents/pull/138))
+  - includes `shellcheck`, `actionlint`, `yq` and `btop` ([#138](https://github.com/digdir/digdir-agents/pull/138))
 
 ### Changed
 
+- The self-development Agent is created without Codex when the host has no Codex login; `agentctl codex login` adds it later. ([#138](https://github.com/digdir/digdir-agents/pull/138))
 - Breaking: `agentctl` is now developed and released in [digdir/digdir-agents](https://github.com/digdir/digdir-agents). Rerun the [installer](https://github.com/digdir/digdir-agents/tree/main/agentctl#install) once; Agents and Sessions carry over, and `agentctl self update` then follows the new releases. ([#136](https://github.com/digdir/digdir-agents/pull/136))
 
 ## [0.1.0-preview.9] - 2026-10-02

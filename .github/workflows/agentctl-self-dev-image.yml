@@ -105,6 +105,9 @@ jobs:
             codex --version
             gh --version
             gh stack --help >/dev/null
+            shellcheck --version
+            actionlint --version
+            yq --version
             asciinema --version
             agg --version
             cargo --version
