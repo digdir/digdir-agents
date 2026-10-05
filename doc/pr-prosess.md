@@ -35,9 +35,9 @@ sensitive stier er satt med det i mente.
    - PR uten CODEOWNERS-treff → kan merges uten noen godkjenning.
    - PR som rører en sensitiv sti → blokkert til code owner har godkjent.
 3. **CI som required check**
-   ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml), minimal:
-   typecheck i `integrations/`) — «grønn CI før merge» er plattform-håndhevet,
-   ikke konvensjon.
+   ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml): hvert område
+   kjører når stiene dets endres, og `ci-gate` samler resultatet) — «grønn CI
+   før merge» er plattform-håndhevet, ikke konvensjon.
 4. **Auto-merge via GitHub Action**
    ([`.github/workflows/auto-merge.yml`](../.github/workflows/auto-merge.yml)):
    når en PR får labelen `auto-merge`, slår workflowen på GitHubs native
@@ -71,7 +71,7 @@ speilet på både `v2.0` og `main`, og v1 er arkivert på `v1.0`):
 1. **Branch protection / ruleset på `main`:**
    - Require a pull request before merging, **required approvals: 0**
    - **Require review from Code Owners: enabled**
-   - Required status checks: **`integrations`** (jobben i CI-workflowen)
+   - Required status checks: **`ci-gate`** (jobben i CI-workflowen)
 2. **Repo-innstilling:** «Allow auto-merge» er slått på (kreves av
    `gh pr merge --auto`).
 3. **Label:** `auto-merge` finnes i repoet.
