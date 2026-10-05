@@ -22,3 +22,7 @@ Thumbs.db
 
 # Claude Code scratch
 tmpclaude-*
+
+# Rust
+/target/
+/build/

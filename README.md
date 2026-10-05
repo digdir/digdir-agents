@@ -32,10 +32,11 @@ agentens `triggers/`-katalog**. Formatet er beskrevet i
 [`integrations/README.md`](integrations/README.md) (resultatkontrakt med
 `intent`/`reply`).
 
-### Planlagt innflytting: `agentctl/` og `sandbox/`
+### `agentctl/` og `sandbox/`
 
-Agent-laget fra `altinn-studio/src/experimental` flytter inn som to nye
-rotkataloger (ki-lab-beslutning, september 2026):
+Agent-laget fra `altinn-studio/src/experimental` har flyttet inn som to
+rotkataloger (ki-lab-beslutning, september 2026), med Rust-arbeidsområdet på
+rot:
 
 | Katalog | Rolle |
 |---|---|

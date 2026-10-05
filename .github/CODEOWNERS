@@ -27,3 +27,19 @@ scripts/                      @olebhansen
 # review-gaten der er deres, ikke orkestrator-pipelinens
 agentctl/                     @martinothamar
 sandbox/                      @martinothamar
+
+# Rust-arbeidsområdet på rot og workflowene til agentctl/sandbox. Står etter
+# .github/ slik at review av disse ikke krever orkestrator-pipelinens eier, og
+# omvendt.
+/Cargo.toml                   @martinothamar
+/Cargo.lock                   @martinothamar
+/rust-toolchain.toml          @martinothamar
+/rustfmt.toml                 @martinothamar
+/clippy.toml                  @martinothamar
+/deny.toml                    @martinothamar
+/Makefile                     @martinothamar
+/.cargo/                      @martinothamar
+/.editorconfig                @martinothamar
+/.github/workflows/rust.yml   @martinothamar
+/.github/workflows/agentctl-release.yml   @martinothamar
+/.github/workflows/agentctl-changelog.yml @martinothamar
