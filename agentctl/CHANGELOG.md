@@ -15,9 +15,9 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 ### Added
 
 - The self-development Agent:
-  - clones `digdir/microsandbox` and `digdir/libkrunfw` beside `digdir/digdir-agents`, and has the `changelog` skill for writing changelog entries ([#136](https://github.com/digdir/digdir-agents/pull/136))
-  - starts from the image published as `ghcr.io/digdir/digdir-agents/agent-self-dev` in its default, `nested` and `worktree` variants; the new `nested-build` variant builds it from the checkout ([#138](https://github.com/digdir/digdir-agents/pull/138))
-  - includes `shellcheck`, `actionlint`, `yq` and `btop` ([#138](https://github.com/digdir/digdir-agents/pull/138))
+  - clones `digdir/microsandbox` and `digdir/libkrunfw` and has the `changelog` skill ([#136](https://github.com/digdir/digdir-agents/pull/136))
+  - uses the published image `ghcr.io/digdir/digdir-agents/agent-self-dev`; its new `nested-build` variant builds the image from the checkout ([#138](https://github.com/digdir/digdir-agents/pull/138))
+  - includes more development tools, such as `cargo-deny`, `shellcheck`, `actionlint`, `sqlite3` and `hyperfine` ([#138](https://github.com/digdir/digdir-agents/pull/138))
 
 ### Changed
 

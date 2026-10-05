@@ -108,6 +108,9 @@ jobs:
             shellcheck --version
             actionlint --version
             yq --version
+            cargo deny --version
+            cargo about --version
+            python3 --version
             asciinema --version
             agg --version
             cargo --version
