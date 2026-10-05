@@ -12,6 +12,10 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
 
+### Added
+
+- The self-development Agent clones `digdir/microsandbox` and `digdir/libkrunfw` beside `digdir/digdir-agents`, and has the `changelog` skill for writing changelog entries. ([#136](https://github.com/digdir/digdir-agents/pull/136))
+
 ### Changed
 
 - Breaking: `agentctl` is now developed and released in [digdir/digdir-agents](https://github.com/digdir/digdir-agents). Rerun the [installer](https://github.com/digdir/digdir-agents/tree/main/agentctl#install) once; Agents and Sessions carry over, and `agentctl self update` then follows the new releases. ([#136](https://github.com/digdir/digdir-agents/pull/136))

@@ -4,9 +4,9 @@ This Agent develops the Agent platform itself: `agentctl/`, `sandbox/` and the R
 
 | Variant | Checkout | Resources |
 | --- | --- | --- |
-| default (`agent.yaml`) | Fresh `digdir/digdir-agents` clone made at boot | Normal |
-| `nested` | Fresh clone | Reduced to fit inside the default Agent |
-| `worktree` | Current host checkout mounted read-write | Normal |
+| default (`agent.yaml`) | Fresh `digdir/digdir-agents`, `digdir/microsandbox` and `digdir/libkrunfw` clones made at boot | Normal |
+| `nested` | Fresh clones | Reduced to fit inside the default Agent |
+| `worktree` | Current host checkout mounted read-write, fresh fork clones | Normal |
 
 Every variant builds the directory's `Dockerfile` locally. Self-development images are not published to GHCR.
 
@@ -37,4 +37,5 @@ Ignored local variants such as `agent.mine.yaml` may extend another sibling vari
 the mounted checkout.
 
 Inside a running Agent, `instructions.md` tells the harness how to build, test and run the platform nested, and the
-`pr-evidence` skill how to record `agentctl` demonstrations and attach them to pull requests.
+`pr-evidence` skill how to record `agentctl` demonstrations and attach them to pull requests, and the `changelog`
+skill how to write changelog entries.

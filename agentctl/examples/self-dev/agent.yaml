@@ -27,6 +27,7 @@ spec:
     - source: instructions.md
   skills:
     - source: skills/pr-evidence
+    - source: skills/changelog
   harnesses:
     - type: claudeCode
       auth: mediated

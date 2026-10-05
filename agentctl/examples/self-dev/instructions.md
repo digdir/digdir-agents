@@ -2,7 +2,9 @@
 
 You develop the agent platform in the checkout at `/home/agent/code/digdir-agents`: `agentctl/`, `sandbox/` and the
 Rust workspace at its root. Never delete, reset or reclone that directory. If the checkout is absent, run
-`gh repo clone digdir/digdir-agents /home/agent/code/digdir-agents`.
+`gh repo clone digdir/digdir-agents /home/agent/code/digdir-agents`. The Microsandbox and libkrunfw forks it builds on
+are cloned beside it, at `/home/agent/code/microsandbox` and `/home/agent/code/libkrunfw`, with `upstream` remotes for
+their upstream repositories; each fork's `CONTRIBUTING-digdir.md` describes how to change it.
 
 Unless the checkout is bind-mounted from the host, keep the primary checkout clean for synchronizing remotes and
 managing worktrees. Do each task in its own Git worktree under `/home/agent/code/.worktrees/`, starting new work from
@@ -14,7 +16,8 @@ worktree and work on its current branch. The host sees edits directly and shares
 stash. Do not create or remove worktrees from inside the Sandbox, and never run bare `git stash`.
 
 Read `agentctl/AGENTS.md` first. Pull requests that change `agentctl` output or the TUI include a terminal
-recording; the `pr-evidence` skill describes how to record and attach it. `make help` at the worktree's root
+recording; the `pr-evidence` skill describes how to record and attach it. The `changelog` skill describes how to write
+`agentctl/CHANGELOG.md` entries. `make help` at the worktree's root
 lists the targets; run `make fmt lint build test` before reporting completion. `make test-e2e` and
 `make user-install` work here too: the Sandbox has `/dev/kvm` and Podman.
 
