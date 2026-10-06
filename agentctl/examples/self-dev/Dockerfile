@@ -14,20 +14,28 @@ ENV PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:
 # The toolchain the agent platform's own Rust workspace needs (libcap-ng-dev links the Microsandbox
 # runtime), plus Podman so that a nested agentd can build Agent images through the Docker Engine API.
 # Podman's netavark backend invokes nft for rootful bridge networking and aardvark-dns for
-# container-name resolution.
+# container-name resolution. bc, bison, flex, libelf-dev and python3-pyelftools check libkrunfw's
+# kernel configuration; sqlite3, socat and tcpdump inspect agentd's database, sockets and Sandbox
+# traffic; hyperfine measures performance changes.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         aardvark-dns \
+        bc \
+        bison \
+        btop \
         build-essential \
         ca-certificates \
         clang \
         curl \
+        flex \
         fonts-jetbrains-mono \
         fonts-liberation \
         git \
+        hyperfine \
         iproute2 \
         jq \
         libcap-ng-dev \
+        libelf-dev \
         libssl-dev \
         lldb \
         linux-perf \
@@ -38,14 +46,29 @@ RUN apt-get update \
         podman \
         podman-docker \
         procps \
+        python3 \
+        python3-pyelftools \
         ripgrep \
         rustup \
+        shellcheck \
+        socat \
+        sqlite3 \
         strace \
         sudo \
         systemd \
+        tcpdump \
         tmux \
     && rm -rf /var/lib/apt/lists/* \
     && nvim --version \
+    && shellcheck --version \
+    && btop --version \
+    && hyperfine --version \
+    && sqlite3 --version \
+    && socat -V >/dev/null \
+    && tcpdump --version \
+    && python3 -c 'import elftools' \
+    && bison --version >/dev/null \
+    && flex --version \
     && CARGO_HOME=/usr/local/cargo rustup set profile minimal \
     && CARGO_HOME=/usr/local/cargo rustup default "${RUST_VERSION}" \
     && CARGO_HOME=/usr/local/cargo rustup component add clippy rustfmt \
@@ -66,18 +89,30 @@ ARG GH_STACK_VERSION=0.1.1
 ARG ASCIINEMA_VERSION=3.2.1
 ARG AGG_VERSION=1.9.0
 ARG NODE_VERSION=22.23.2
+ARG ACTIONLINT_VERSION=1.7.12
+ARG YQ_VERSION=4.54.1
+ARG CARGO_DENY_VERSION=0.20.2
+ARG CARGO_ABOUT_VERSION=0.9.2
 
 RUN case "${TARGETARCH}" in \
         amd64) NODE_ARCH=x64; RUST_ARCH=x86_64; \
             GH_SHA256=e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be; \
             GH_STACK_SHA256=9ed103934fab0f90d3341fdfc4a342785396d39f5621fc7313a62602ce2b5462; \
             ASCIINEMA_SHA256=1b405bbda565b33c3c4718de67fedc3535580603c0694b1ff3fb04f363430a20; \
-            AGG_SHA256=f111e315cd71056b116302342553dd765b7297579ed511f111d0cedb442aeda6 ;; \
+            AGG_SHA256=f111e315cd71056b116302342553dd765b7297579ed511f111d0cedb442aeda6; \
+            ACTIONLINT_SHA256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8; \
+            YQ_SHA256=8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f; \
+            CARGO_DENY_SHA256=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f; \
+            CARGO_ABOUT_SHA256=9099a59e820c38a68b9d65f300662a567d56562f9a10f6aa4c7e86c17c2566af ;; \
         arm64) NODE_ARCH=arm64; RUST_ARCH=aarch64; \
             GH_SHA256=ea4e7a581a32ccad6cc7923cb1576ac5859ba4b9a16ab22eb8f8a96e78e2e961; \
             GH_STACK_SHA256=2da13f8c46f2770237c744b341ab6be9f07508585a6762634c4a88aa355460bc; \
             ASCIINEMA_SHA256=b516a6d896844c0ffbc96e0a55afe4cbcc79216abde0fc64fdda4e39bee421ea; \
-            AGG_SHA256=2b4be407b97e00e1c313a41d154ced8fa3d02c560c8f47a0db4950a2576444c9 ;; \
+            AGG_SHA256=2b4be407b97e00e1c313a41d154ced8fa3d02c560c8f47a0db4950a2576444c9; \
+            ACTIONLINT_SHA256=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6; \
+            YQ_SHA256=189088da0c6429ec5178dfaab1a114805f6cab0b61b165ab236efedf1d57a71b; \
+            CARGO_DENY_SHA256=995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d; \
+            CARGO_ABOUT_SHA256=af5169282fb6f84e13471493f405437e43ac517744c9ae12fbe2cdf0a6f0e5a8 ;; \
         *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
     && NODE_ARCHIVE="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
@@ -106,11 +141,41 @@ RUN case "${TARGETARCH}" in \
         -o /tmp/agg \
     && echo "${AGG_SHA256}  /tmp/agg" | sha256sum -c - \
     && install -m 0755 /tmp/agg /usr/local/bin/agg \
+    && curl -fsSL \
+        "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_${TARGETARCH}.tar.gz" \
+        -o /tmp/actionlint.tar.gz \
+    && echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/actionlint.tar.gz -C /usr/local/bin actionlint \
+    && curl -fsSL \
+        "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_${TARGETARCH}" \
+        -o /tmp/yq \
+    && echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c - \
+    && install -m 0755 /tmp/yq /usr/local/bin/yq \
+    && CARGO_DENY_DIR="cargo-deny-${CARGO_DENY_VERSION}-${RUST_ARCH}-unknown-linux-musl" \
+    && curl -fsSL \
+        "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${CARGO_DENY_DIR}.tar.gz" \
+        -o /tmp/cargo-deny.tar.gz \
+    && echo "${CARGO_DENY_SHA256}  /tmp/cargo-deny.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/cargo-deny.tar.gz -C /tmp "${CARGO_DENY_DIR}/cargo-deny" \
+    && install -m 0755 "/tmp/${CARGO_DENY_DIR}/cargo-deny" /usr/local/bin/cargo-deny \
+    && CARGO_ABOUT_DIR="cargo-about-${CARGO_ABOUT_VERSION}-${RUST_ARCH}-unknown-linux-musl" \
+    && curl -fsSL \
+        "https://github.com/EmbarkStudios/cargo-about/releases/download/${CARGO_ABOUT_VERSION}/${CARGO_ABOUT_DIR}.tar.gz" \
+        -o /tmp/cargo-about.tar.gz \
+    && echo "${CARGO_ABOUT_SHA256}  /tmp/cargo-about.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/cargo-about.tar.gz -C /tmp "${CARGO_ABOUT_DIR}/cargo-about" \
+    && install -m 0755 "/tmp/${CARGO_ABOUT_DIR}/cargo-about" /usr/local/bin/cargo-about \
     && rm -rf /tmp/node.tar.xz /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}" /tmp/asciinema /tmp/agg \
+        /tmp/actionlint.tar.gz /tmp/yq /tmp/cargo-deny.tar.gz "/tmp/${CARGO_DENY_DIR}" /tmp/cargo-about.tar.gz \
+        "/tmp/${CARGO_ABOUT_DIR}" \
     && node --version \
     && gh --version \
     && asciinema --version \
-    && agg --version
+    && agg --version \
+    && actionlint --version \
+    && yq --version \
+    && cargo-deny --version \
+    && cargo-about --version
 
 # Route GitHub credentials through the gh CLI so plain git commands authenticate with the
 # host-mediated token.

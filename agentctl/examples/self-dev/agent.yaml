@@ -5,9 +5,8 @@ metadata:
 spec:
   sandbox:
     image:
-      type: build
-      context: .
-      dockerfile: Dockerfile
+      type: reference
+      reference: ghcr.io/digdir/digdir-agents/agent-self-dev:latest
     platform:
       os: linux
     resources:
@@ -35,8 +34,11 @@ spec:
       # The mediated token cannot list Fable in the /model picker, so new Sessions select it at launch.
       defaults:
         model: fable
+    # Optional: the Agent is created without Codex when the host has no Codex login, so nobody who only uses
+    # Claude Code is blocked. Run `agentctl codex login` and the next convergence installs it.
     - type: codex
       auth: mediated
+      optional: true
   environment:
     - name: GIT_USER_NAME
     - name: GIT_USER_EMAIL
@@ -48,6 +50,7 @@ spec:
       allowedHosts:
         - github.com
         - api.github.com
+        - gist.github.com
         - uploads.github.com
   access:
     - type: ssh

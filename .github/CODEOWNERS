@@ -41,5 +41,4 @@ sandbox/                      @martinothamar
 /.cargo/                      @martinothamar
 /.editorconfig                @martinothamar
 /.github/workflows/rust.yml   @martinothamar
-/.github/workflows/agentctl-release.yml   @martinothamar
-/.github/workflows/agentctl-changelog.yml @martinothamar
+/.github/workflows/agentctl-*.yml        @martinothamar

@@ -3,4 +3,5 @@ agent.*.yaml
 
 # Repository-owned variants.
 !agent.nested.yaml
+!agent.nested-build.yaml
 !agent.worktree.yaml
