@@ -1,14 +1,24 @@
 # Publishes an agentctl release for an `agentctl/v<version>` tag: the archives for every host, the installers, the
-# license and third-party notices, with the version's CHANGELOG.md section as the release notes.
+# license and third-party notices, with the version's CHANGELOG.md section as the release notes. A manual run is a dry
+# run for a version: it builds, smoke-tests and assembles everything and uploads it as an artifact, but publishes
+# nothing, so a failure is caught before the immutable tag is spent.
 name: agentctl release
 
 on:
   push:
     tags:
       - 'agentctl/v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to dry-run, such as v0.1.0-preview.10
+        required: true
 
 permissions:
   contents: read
+
+env:
+  TAG: ${{ github.event_name == 'push' && github.ref_name || format('agentctl/{0}', inputs.version) }}
 
 jobs:
   build:
@@ -42,6 +52,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Validate version
+        run: |
+          if ! printf '%s\n' "${TAG#agentctl/}" | grep -q -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::${TAG} is not agentctl/v<semantic version>"
+            exit 1
+          fi
+
       - name: Install native build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -57,7 +74,7 @@ jobs:
 
       - name: Build release binaries
         run: |
-          AGENT_VERSION="${GITHUB_REF_NAME#agentctl/}" cargo build --release --locked -p agent --bins
+          AGENT_VERSION="${TAG#agentctl/}" cargo build --release --locked -p agent --bins
 
       - name: Package release binaries
         env:
@@ -68,9 +85,8 @@ jobs:
       - name: Smoke-test managed and standalone installation
         env:
           ARCHIVE: ${{ matrix.archive }}
-          AGENT_RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          VERSION="${AGENT_RELEASE_TAG#agentctl/}"
+          VERSION="${TAG#agentctl/}"
           export VERSION AGENT_VERSION="${VERSION}"
           SMOKE_ROOT="${RUNNER_TEMP}/agent-install-smoke"
           ARCHIVE_PATH="${GITHUB_WORKSPACE}/dist/${ARCHIVE}.tar.gz"
@@ -121,8 +137,6 @@ jobs:
           persist-credentials: false
 
       - name: Build release notes from the changelog
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           agentctl/changelog.sh validate
           agentctl/changelog.sh extract "${TAG#agentctl/}" > release-notes.md
@@ -157,10 +171,21 @@ jobs:
 
       # Immutable releases lock their assets on publication, so upload every asset to a draft first and publish it
       # last. A draft left by a failed run is not immutable and is replaced.
+      - name: Upload the dry run's release
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-dry-run
+          path: |
+            dist/
+            release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Publish release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
         run: |
           if [ "$(gh release view "${TAG}" --json isDraft --jq .isDraft 2>/dev/null)" = true ]; then
             gh release delete "${TAG}" --yes
