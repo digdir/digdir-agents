@@ -12,6 +12,8 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
 
+## [0.1.0-preview.10] - 2026-10-06
+
 ### Added
 
 - The self-development Agent:
@@ -21,8 +23,8 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Changed
 
-- The self-development Agent is created without Codex when the host has no Codex login; `agentctl codex login` adds it later. ([#138](https://github.com/digdir/digdir-agents/pull/138))
 - Breaking: `agentctl` is now developed and released in [digdir/digdir-agents](https://github.com/digdir/digdir-agents). Rerun the [installer](https://github.com/digdir/digdir-agents/tree/main/agentctl#install) once; Agents and Sessions carry over, and `agentctl self update` then follows the new releases. ([#136](https://github.com/digdir/digdir-agents/pull/136))
+- The self-development Agent is created without Codex when the host has no Codex login; `agentctl codex login` adds it later. ([#138](https://github.com/digdir/digdir-agents/pull/138))
 
 ## [0.1.0-preview.9] - 2026-10-02
 

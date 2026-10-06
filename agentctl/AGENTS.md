@@ -63,16 +63,17 @@ When adding or updating a harness installation or adapter, follow [HARNESSES.md]
 
 ## Changelog and releases
 
-[CHANGELOG.md](CHANGELOG.md) is the release notes for the Agent platform. There is one changelog because there is
-one release unit, the `agentctl` and `agentd` binaries published by the `agentctl/v*` tag. The version in the changelog is that release
-version; the Rust workspace version is a build detail and is not tracked there.
+[CHANGELOG.md](CHANGELOG.md) is the release notes for the Agent platform. There is one changelog because there is one
+release unit, the `agentctl` and `agentd` binaries published by the `agentctl/v*` tag. The version in the changelog is
+that release version; the Rust workspace version is a build detail and is not tracked there.
 
 Run `make changelog-validate` to check the file's structure, and `make changelog-test` for the tests covering
 [changelog.sh](changelog.sh) itself. `make check` runs the validation, and `make test` runs the tests.
 
 Releasing is a promotion pull request that renames `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and adds a fresh
-empty `## [Unreleased]` above it. That rename is itself a change to the Unreleased section, so the pull request
-needs no `skip-changelog` label. Once it is merged, push the tag
-`agentctl/v<version>`; the release workflow extracts that section with `changelog.sh extract` and
-publishes it as the GitHub release body, and fails before creating the release when the section is missing or has
-no date.
+empty `## [Unreleased]` above it. That rename is itself a change to the Unreleased section, so the pull request needs
+no `skip-changelog` label. Once it is merged, run the release workflow manually on `main` with the version: that dry
+run builds and smoke-tests every archive and assembles the release without publishing it. Then push the tag
+`agentctl/v<version>`, which can never be moved or reused; the release workflow extracts that section with
+`changelog.sh extract` and publishes it as the GitHub release body, and fails before creating the release when the
+section is missing or has no date.
