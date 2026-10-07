@@ -1,0 +1,3 @@
+.env
+triggers/*
+!triggers/.gitkeep

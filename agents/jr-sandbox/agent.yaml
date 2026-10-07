@@ -1,0 +1,67 @@
+# Kalibrert mot agentctl/src/manifest.rs og agentctl/examples/minimal
+# (v0.1.0-preview.10). Ikke kjørt mot en levende agent ennå — F1-E2E i
+# doc/plans/jr-paa-agentctl.md gjenstår; se README.md.
+apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  name: jr-sandbox
+spec:
+  sandbox:
+    image:
+      type: build
+      context: .
+      dockerfile: Dockerfile
+    platform:
+      os: linux
+    resources:
+      cpu: "2"
+      memory: "4Gi"
+      rootFilesystem:
+        capacity: "32Gi"
+        mode: layered
+    mounts:
+      # Pipelinens filkontrakt: agenten appender resultatlinja selv til
+      # /triggers/results.jsonl (jf. apps/nvt-bridge). Bind-mount av
+      # agentkatalogens triggers/, som integrations også leser.
+      - type: bind
+        source: ./triggers
+        target: /triggers
+        readOnly: false
+      - type: tmpfs
+        target: /tmp
+        capacity: "1Gi"
+  home:
+    source: home
+  instructions:
+    - source: instructions.md
+  harnesses:
+    - type: claudeCode
+      # Mediert auth: Claude-tokenet bor på hosten (agentctl claude login),
+      # aldri i sandboxen. Erstatter jr-ens setup-token-rute i llm-gateway.
+      auth: mediated
+      default: true
+      defaults:
+        # Policy (doc/pr-prosess.md / llm-gateway): kodeagenter kjører aldri
+        # fable-nivå. Kalibreringspunkt: kan medieringen HÅNDHEVE en
+        # modell-allowlist, eller er defaults bare et valg?
+        model: sonnet
+  environment:
+    - name: GIT_USER_NAME
+    - name: GIT_USER_EMAIL
+  secrets:
+    # GitHub-tokenet forblir på hosten; sandboxen ser en inert placeholder
+    # med fine-grained-prefiks (gh krever prefikset for vedleggsopplasting).
+    # Dette lukker #54-avviket: ikke noe ekte PAT i agent-miljøet.
+    - environment: GITHUB_TOKEN
+      placeholder: github_pat_AGENT_MEDIATED_GITHUB_TOKEN
+      allowedHosts:
+        - github.com
+        - api.github.com
+        - uploads.github.com
+  network:
+    mode: mediated
+    # Jr trenger i praksis bare GitHub + npm/apt under bygg. Starter med
+    # allow: all for kalibreringen; strammes inn når trafikkbildet er kjent.
+    allow: all
+    deny:
+      - metadata.google.internal
