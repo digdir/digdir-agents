@@ -151,7 +151,7 @@ pub(super) async fn execute(command: SelfCommand, home: &ControlPlaneHome) -> Co
 
 pub(super) fn resume_pending_before_command(home: &ControlPlaneHome) -> CommandResult<()> {
     let paths = InstallPaths::resolve()?;
-    let Some(journal) = UpdateJournal::read(&paths)?.filter(|journal| journal.phase != UpdatePhase::Complete) else {
+    let Some(journal) = UpdateJournal::read(&paths)? else {
         return Ok(());
     };
     let target_version = journal.target_version.clone();
@@ -167,7 +167,7 @@ pub(super) fn resume_pending_before_command(home: &ControlPlaneHome) -> CommandR
 
 async fn update(home: &ControlPlaneHome, version: Option<&str>, check: bool) -> CommandResult<()> {
     let paths = InstallPaths::resolve()?;
-    if let Some(journal) = UpdateJournal::read(&paths)?.filter(|journal| journal.phase != UpdatePhase::Complete) {
+    if let Some(journal) = UpdateJournal::read(&paths)? {
         Completion::from_journal(paths, journal)?.run_target(home)?;
         return Ok(());
     }
@@ -218,21 +218,20 @@ async fn complete(completion: Completion, home: &ControlPlaneHome) -> CommandRes
     } = completion;
     let _install_lock = paths.lock().await?;
     validate_target_process(&paths, &target_release, &target_version)?;
-    let (mut journal, journal_is_new) =
-        if let Some(journal) = UpdateJournal::read(&paths)?.filter(|journal| journal.phase != UpdatePhase::Complete) {
-            if journal.target_release != target_release
-                || journal.target_version != target_version
-                || journal.previous_release != previous_release
-            {
-                return Err(Error::Invalid("arguments do not match the unfinished Agent update".into()).into());
-            }
-            (journal, false)
-        } else {
-            (
-                UpdateJournal::new(previous_release.clone(), target_release.clone(), target_version.clone()),
-                true,
-            )
-        };
+    let (mut journal, journal_is_new) = if let Some(journal) = UpdateJournal::read(&paths)? {
+        if journal.target_release != target_release
+            || journal.target_version != target_version
+            || journal.previous_release != previous_release
+        {
+            return Err(Error::Invalid("arguments do not match the unfinished Agent update".into()).into());
+        }
+        (journal, false)
+    } else {
+        (
+            UpdateJournal::new(previous_release.clone(), target_release.clone(), target_version.clone()),
+            true,
+        )
+    };
     let client = Client::for_path(home.socket_path());
     if journal.phase < UpdatePhase::Migrated {
         println!("Check Agent activity");

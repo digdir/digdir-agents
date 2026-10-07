@@ -16,6 +16,11 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 - Sessions are tested with Claude Code 2.1.292 and Codex CLI 0.160.1, so Agents with their own images can install these versions. ([#154](https://github.com/digdir/digdir-agents/pull/154))
 
+### Fixed
+
+- Windows installation and updates tolerate temporary file locks while publishing a release. ([#152](https://github.com/digdir/digdir-agents/issues/152))
+- Completed updates no longer block commands or installation when old releases have been removed, and reinstalling repairs a current release pointer that names a missing release. ([#153](https://github.com/digdir/digdir-agents/issues/153))
+
 ## [0.1.0-preview.10] - 2026-10-06
 
 ### Added
