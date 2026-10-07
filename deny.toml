@@ -1,0 +1,47 @@
+# This policy intentionally contains no per-crate allowlist. New dependencies remain ordinary
+# Cargo.toml and Cargo.lock changes.
+
+[graph]
+all-features = true
+# The targets agentctl is released for.
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+]
+
+[advisories]
+yanked = "deny"
+ignore = [
+  # bincode 2 is unmaintained and has no maintained successor release. Microsandbox and its
+  # libkrun crates use it to serialize their own data; the advisory reports no vulnerability.
+  { id = "RUSTSEC-2025-0141", reason = "unmaintained bincode 2 used by Microsandbox; no known vulnerability or safe upgrade" },
+]
+
+[sources]
+# crates.io is allowed by default. Additional registries fail until deliberately configured.
+unknown-registry = "deny"
+# Do not maintain a git repository allowlist, but require an explicit revision specifier.
+unknown-git = "allow"
+required-git-spec = "rev"
+
+[licenses]
+# The licenses the released binaries may contain. agentctl/notices/about.toml accepts the same list, so a new license
+# is a reviewed change to both.
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]

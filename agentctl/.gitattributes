@@ -1,0 +1,2 @@
+# Check out with LF on every platform: tests and scripts read these files byte for byte.
+* text=auto eol=lf
