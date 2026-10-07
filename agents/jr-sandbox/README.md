@@ -1,48 +1,62 @@
-# jr-sandbox — jr-agenten på agentctl/sandbox (UTKAST)
+# jr-sandbox — jr-agenten på agentctl/sandbox
 
-**Status: F0-utkast — ikke i drift.** Dette er agent-definisjonen for
-piloten i [doc/plans/jr-paa-agentctl.md](../../doc/plans/jr-paa-agentctl.md):
-jr som agentctl-Agent (varig sandbox, én Session per topic), drevet av
+**Status: kalibrert mot kilden, venter på F1-E2E.** Dette er
+agent-definisjonen for piloten i
+[doc/plans/jr-paa-agentctl.md](../../doc/plans/jr-paa-agentctl.md): jr som
+agentctl-Agent (varig sandbox, én Session per topic), drevet av
 [apps/nvt-bridge](../../apps/nvt-bridge) med `NVT_BRIDGE_DRIVER=agentctl`.
 Dagens jr (`agents/local-cc-jr-developer/` + `scripts/agent-runner.ps1`)
 kjører uberørt videre til F3-cutover.
 
-Filene er skrevet mot skjemaet og konvensjonene slik de ser ut i
-altinn-studio (`agents/minimal`, `agents/Dockerfile`, `HARNESSES.md`) — før
-`agentctl/` og `sandbox/` er flyttet inn i dette repoet.
+Filene er kalibrert mot koden i dette repoet (`agentctl/` @
+v0.1.0-preview.10): manifest-skjemaet i `agentctl/src/manifest.rs`,
+CLI-flatene i `agentctl/src/bin/agentctl/main.rs`, session-statene i
+`agentctl/src/sessions/mod.rs`, og image-mønsteret i
+`agentctl/examples/minimal/`.
 
-## Slik er det tenkt å henge sammen
+## Slik henger det sammen
 
 ```
 integrations ──append──> agents/jr-sandbox/triggers/inbox.jsonl
 nvt-bridge (driver: agentctl) ──poll──┘
-  │  agentctl apply --wait                (én Agent: jr-sandbox)
-  │  agentctl create session/<topic>      (én Session per topic)
-  │  agentctl prompt session/<topic> …    (event-prompt m/ resultatkontrakt)
-  └─ poller session-state til turen er ferdig
+  │  agentctl apply --wait                  (én Agent: jr-sandbox)
+  │  agentctl create session/<topic> …      (ensure + venter til harness-klar)
+  │  agentctl prompt session/<topic> --file (event-prompt m/ resultatkontrakt)
+  └─ poller `get sessions -o json` til staten roer seg (working → waitingForInput)
 agenten ──append──> /triggers/results.jsonl  (bind-mount av triggers/)
 integrations ──poll──> results.jsonl → svar til Slack/GitHub
 ```
 
-## Kalibreringspunkter (F1 — når agentctl/sandbox er flyttet inn)
+TTL: broen `archive`-r stille topics; neste event `unarchive`-r og
+gjenopptar samtalen. Pre-seedet `claude-state.json` (mønster fra
+examples/minimal) fjerner onboarding-/trust-dialogene som spiste prompts i
+M0 — docker-driverens tmux-Enter-heuristikk trengs ikke her.
 
-Alt under er antakelser som må verifiseres mot ekte `agentctl`; de bor i
-`apps/nvt-bridge/src/nvt/agentctl.ts` (driveren) og her:
+## Verifisert mot kilden (tidligere kalibreringspunkter)
 
-1. **CLI-flatene**: `apply --wait`-idempotens, `create session/<navn>` uten
-   attach, promptlevering (posisjonsargument vs. stdin), `get sessions -o
-   json`-feltnavn (navn/state), `archive session/<navn>`, `--agent`-flagget.
-2. **Session-state-verdiene**: driveren antar `Working` under arbeid og noe
-   annet (`WaitingForInput`/`Idle`) når turen er ferdig.
-3. **Imaget**: bruker (`agent`), systemd-init, tmux og harness-pin må matche
-   det agentd forventer (modellert på altinn-studios `agents/Dockerfile`).
-4. **Bind-mount av `./triggers`** fra host inn i microsandbox-VM-en, med
-   skriverettigheter for sandbox-brukeren.
-5. **Modell-allowlist**: kan mediert claudeCode-auth håndheve «aldri
-   fable-nivå», eller er `defaults.model: sonnet` bare et default?
-6. **Prompt-dialekten**: broen bruker `dialect: "agentctl"` (ingen
-   `agentdctl signal done`); ferdig-deteksjon er session-state, og
-   resultatlinja er fortsatt eneste suksessbevis.
+- `create` er ensure-semantikk og venter til harnesset er klart; `apply` er
+  deklarativ og idempotent. `--agent` tar agent-navnet.
+- Prompt leveres med `--prompt`, `--file` eller stdin — driveren bruker
+  `--file` (lang, upålitelig tekst; unngår argumentgrenser).
+- `get sessions -o json` gir Session-objekter med `name` og `status.state`;
+  statene er `starting`/`working`/`waitingForInput`/`idle`/`archiving`/
+  `archived`/`failed` (camelCase, liten forbokstav).
+- Manifestet krever `home:`; bind-mounts bruker `readOnly`; secrets bruker
+  `environment`/`placeholder`/`allowedHosts`; `GIT_USER_NAME` og
+  `GIT_USER_EMAIL` må deklareres sammen. Skjemaet er `deny_unknown_fields`.
+- Image-fasit: tmux + `agent`-bruker (passordløs sudo) + pinnet Claude Code;
+  intet systemd/ssh for en headless agent.
+
+## Gjenstår å verifisere live (F1-E2E)
+
+1. Bind-mount av `./triggers` fra host inn i microsandbox-VM-en — spesielt
+   på Windows/WSL — med skriverettigheter for sandbox-brukeren.
+2. Modell-politikk: `defaults.model: sonnet` er et *default*, ikke en
+   allowlist (`--model` ved create overstyrer). Håndhevet «aldri
+   fable-nivå» må i så fall avtales med innflytterteamet (spørsmål i
+   plan-dokumentet står).
+3. Første ende-til-ende-kjøring: apply → create → prompt → resultatlinje,
+   og unarchive-gjenopptak etter TTL.
 
 ## Oppsett (F1, på verten)
 

@@ -20,6 +20,10 @@ kronologisk endringslogg.
   læringsloop)
 - [plans/agent-delegering.md](plans/agent-delegering.md) — delegering mellom
   agenter via broen, og utførende kodeagent (local-cc-coding-agent)
+- [plans/nvt-agent-integrasjon.md](plans/nvt-agent-integrasjon.md) — nvt-agent
+  som fat-dev-backend (nvt-bridge, konsoll, driver-lease; issue #95)
+- [plans/jr-paa-agentctl.md](plans/jr-paa-agentctl.md) — pilot: jr-agenten
+  over på agentctl/sandbox (mediert token/auth, nvt-bridge som supervisor)
 - [pr-prosess.md](pr-prosess.md) — auto-merge på trygge stier,
   CODEOWNERS/menneske-review på sensitive (issue #54)
 

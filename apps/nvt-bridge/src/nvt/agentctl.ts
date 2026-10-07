@@ -1,41 +1,53 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { ExecFn } from "./docker.ts";
 import type { DoneOutcome, NvtDriver, NvtInstance } from "./driver.ts";
 
 /**
  * ==========================================================================
- *  Tynn adapter over agentctl — UKALIBRERT (F1 i doc/plans/jr-paa-agentctl.md)
+ *  Tynn adapter over agentctl — kalibrert mot kilden (agentctl/ @
+ *  v0.1.0-preview.10), ennå ikke kjørt mot en levende agent (F1-E2E i
+ *  doc/plans/jr-paa-agentctl.md gjenstår)
  * ==========================================================================
  *
- * Driver for agenter definert med agent.yaml (agentctl/sandbox-stacken som
- * flyttes inn fra altinn-studio). Alle antakelser om agentctl bor HER og i
- * `agents/jr-sandbox/README.md` («Kalibreringspunkter»); kjernelogikken
- * testes mot `FakeNvtDriver` og er uavhengig av denne fila.
+ * Driver for agenter definert med agent.yaml (agentctl/sandbox i dette
+ * repoet). Alle antakelser om agentctl bor HER og i
+ * `agents/jr-sandbox/README.md`; kjernelogikken testes mot `FakeNvtDriver`
+ * og er uavhengig av denne fila.
  *
  * Topologien er en annen enn docker-driverens: nvt har én container per
  * topic; agentctl har ÉN varig Agent (sandbox) med én varig Session per
  * topic. `instance`-navnet fra bridgen brukes som session-navn.
  *
- * Antakelser skrevet mot altinn-studios HARNESSES.md og agents/README.md,
- * som er fasiten til koden flytter inn:
+ * Kalibrert mot `agentctl/src/bin/agentctl/main.rs` og
+ * `agentctl/src/sessions/mod.rs`:
  *
- * - `agentctl apply --wait` (cwd = agent-katalogen) er idempotent
- *   konvergens og returnerer når agenten er Ready.
- * - `agentctl create session/<navn>` oppretter en sesjon headless (attach
- *   er en egen kommando).
- * - `agentctl prompt session/<navn> <tekst>` leverer prompten som
- *   posisjonsargument og returnerer når den er submittet. Viser kalibreringen
- *   at CLI-et vil ha stdin i stedet, er `promptArgs()` det ene stedet å rette.
- * - `agentctl get sessions -o json` lister sesjonene med navn og state;
- *   `Working` betyr «turen pågår». `parseSessions()` er bevisst tolerant på
- *   feltnavn til formatet er verifisert.
- * - `agentctl archive session/<navn>` tilsvarer nvt-ens `agent-down`:
- *   samtale og navn består, `unarchive`/neste prompt gjenopptar.
- * - Session-scope angis med `--agent agent/<navn>` (og cwd-inferens som
- *   backup, siden alle kall kjører fra agent-katalogen).
+ * - `apply --wait` (cwd = agent-katalogen) er deklarativ konvergens og
+ *   venter til agenten er Ready (default-timeout 10m i CLI-et).
+ * - `create session/<navn> --agent <agentnavn>` er ensure-semantikk
+ *   (`ensure_session`): oppretter ELLER gjenbruker, og venter til harnesset
+ *   er klart — uten attach. Dette er også klar-ventingen vår.
+ * - Prompt leveres med `--file <fil>` (ikke posisjonsargument): prompten
+ *   inneholder upålitelig tekst og kan være lang — en fil unngår både
+ *   Windows-argumentgrenser og quoting. `--prompt`/stdin finnes også.
+ * - `get sessions -o json --agent <navn> --archived` gir et JSON-array av
+ *   Session-objekter (camelCase): `name`, `agent`, `status.state`.
+ *   State-verdiene er camelCase med liten forbokstav: `starting`, `working`,
+ *   `waitingForInput`, `idle`, `archiving`, `archived`, `failed`.
+ * - `--agent` tar agent-NAVNET (`jr-sandbox`), ikke ressursformen.
+ * - `archive session/<navn>` stopper harnesset og skjuler sesjonen fra
+ *   listinger; navn og samtale består. Arkiverte sesjoner må `unarchive`-s
+ *   før ny bruk — derfor lister vi med `--archived` og unarchiver i
+ *   `ensureInstance`.
  *
  * nvt-ens `--external`-flagg finnes ikke her: untrusted-input-rammen bæres
- * av selve prompt-teksten (prompt.ts bygger nonce-avgrensere uansett, og
+ * av selve prompt-teksten (prompt.ts bygger nonce-avgrensere, og
  * `dialect: "agentctl"` dropper `agentdctl signal done`-steget).
+ * Onboarding-dialog-problemet fra M0 finnes ikke: imaget pre-seeder
+ * `~/.claude/.claude.json` (se agents/jr-sandbox/Dockerfile), og `create`
+ * venter uansett på harness-klar.
  */
 
 export interface AgentctlDriverOptions {
@@ -45,17 +57,26 @@ export interface AgentctlDriverOptions {
   agentName: string;
   /** agentctl-binæren. Default `agentctl` fra PATH. */
   bin?: string;
-  /** Hvor tett done-sjekken poller session-state. Default 2000 ms. */
+  /** Hvor tett klar-/done-sjekkene poller session-state. Default 2000 ms. */
   donePollMs?: number;
   /**
-   * Hvor lenge waitForDone venter på å se `Working` før en rolig sesjon
+   * Hvor lenge waitForDone venter på å se `working` før en rolig sesjon
    * regnes som «turen var ferdig før vi rakk å se den». Default 30 s.
    */
   settleTimeoutMs?: number;
+  /** Katalog for midlertidige promptfiler. Default `os.tmpdir()`. */
+  tmpDir?: string;
   /** Overstyring for testing. */
   exec?: ExecFn;
+  files?: PromptFileFns;
   sleep?: (ms: number) => Promise<void>;
   log?: (message: string) => void;
+}
+
+/** Det lille filsnittet promptleveringen trenger — injiserbart for tester. */
+export interface PromptFileFns {
+  write(target: string, content: string): Promise<void>;
+  remove(target: string): Promise<void>;
 }
 
 export interface SessionInfo {
@@ -63,10 +84,16 @@ export interface SessionInfo {
   state: string;
 }
 
+/** Session-states fra `agentctl/src/sessions/mod.rs` (serde camelCase). */
+const WORKING = "working";
+const CALM_STATES = new Set(["waitingForInput", "idle"]);
+const ARCHIVED_STATES = new Set(["archiving", "archived"]);
+
 export class AgentctlDriver implements NvtDriver {
   private readonly opts: AgentctlDriverOptions;
   private readonly bin: string;
   private readonly exec: ExecFn;
+  private readonly files: PromptFileFns;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly log: (message: string) => void;
   /** Agenten konvergeres én gang per prosess; agentd eier livssyklusen etterpå. */
@@ -76,12 +103,9 @@ export class AgentctlDriver implements NvtDriver {
     this.opts = opts;
     this.bin = opts.bin ?? "agentctl";
     this.exec = opts.exec ?? defaultExec;
+    this.files = opts.files ?? nodeFiles;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.log = opts.log ?? (() => {});
-  }
-
-  private agentRef(): string {
-    return `agent/${this.opts.agentName}`;
   }
 
   private sessionRef(instance: string): string {
@@ -99,38 +123,54 @@ export class AgentctlDriver implements NvtDriver {
     return stdout;
   }
 
+  /** Lister ALLE sesjoner, også arkiverte — ensureInstance må se dem. */
   private async listSessions(): Promise<SessionInfo[]> {
-    const stdout = await this.ctl(["get", "sessions", "-o", "json", "--agent", this.agentRef()]);
+    const stdout = await this.ctl([
+      "get",
+      "sessions",
+      "-o",
+      "json",
+      "--agent",
+      this.opts.agentName,
+      "--archived",
+    ]);
     return parseSessions(stdout);
   }
 
   async ensureInstance(topic: string, instance: string): Promise<NvtInstance> {
     const ref: NvtInstance = { topic, instance };
     if (!this.converged) {
-      this.log(`agentctl apply --wait (${this.agentRef()})`);
+      this.log(`agentctl apply --wait (agent ${this.opts.agentName})`);
       await this.ctl(["apply", "--wait"]);
       this.converged = true;
     }
-    const sessions = await this.listSessions();
-    if (!sessions.some((s) => s.name === instance)) {
-      this.log(`agentctl create ${this.sessionRef(instance)} (topic ${topic})`);
-      try {
-        await this.ctl(["create", this.sessionRef(instance), "--agent", this.agentRef()]);
-      } catch (err) {
-        // Kappløp eller arkivert sesjon med samme navn: finnes den nå, er
-        // målet nådd. (unarchive-behov er et kalibreringspunkt.)
-        const after = await this.listSessions();
-        if (!after.some((s) => s.name === instance)) throw err;
-      }
+    const existing = (await this.listSessions()).find((s) => s.name === instance);
+    if (existing && ARCHIVED_STATES.has(existing.state)) {
+      // TTL-en vår arkiverer inaktive topics; et nytt event på topicet
+      // gjenopptar samtalen. `create` alene gjenoppliver ikke en arkivert
+      // sesjon — den må unarchives først.
+      this.log(`agentctl unarchive ${this.sessionRef(instance)} (topic ${topic})`);
+      await this.ctl(["unarchive", this.sessionRef(instance), "--agent", this.opts.agentName]);
+    }
+    // `create` er ensure-semantikk: oppretter eller gjenbruker, og venter til
+    // harnesset er klart. Trygt å kjøre hver gang (idempotent per kontrakten
+    // i driver.ts).
+    if (!existing) this.log(`agentctl create ${this.sessionRef(instance)} (topic ${topic})`);
+    try {
+      await this.ctl(["create", this.sessionRef(instance), "--agent", this.opts.agentName]);
+    } catch (err) {
+      // Kappløp: finnes sesjonen nå (og er i bruk), er målet nådd.
+      const after = (await this.listSessions()).find((s) => s.name === instance);
+      if (!after || ARCHIVED_STATES.has(after.state)) throw err;
     }
     return ref;
   }
 
   /**
-   * agentctl/agentd eier selv input-køing og oppstartsracene (jf.
-   * HARNESSES.md: «Create without a prompt, then immediately prompt --wait»
-   * er en støttet flyt). Klar-nivået her er derfor at sesjonen finnes og at
-   * daemonen svarer — ikke tmux-panel-heuristikk som i docker-driveren.
+   * `create` i ensureInstance har allerede ventet til harnesset er klart
+   * (ensure_session med WaitPolicy::UntilConverged), og agentd køer selv
+   * input ved oppstartsracer. Dette er derfor en bekreftelse: sesjonen står
+   * i lista og er ikke `failed`/arkivert.
    */
   async waitUntilReady(
     instance: NvtInstance,
@@ -138,7 +178,7 @@ export class AgentctlDriver implements NvtDriver {
   ): Promise<void> {
     const deadline = Date.now() + opts.timeoutMs;
     const pollMs = this.opts.donePollMs ?? 2000;
-    let lastError = "";
+    let last = "sesjonen finnes ikke i `get sessions`";
     for (;;) {
       if (opts.signal?.aborted) {
         throw new Error(
@@ -147,11 +187,13 @@ export class AgentctlDriver implements NvtDriver {
         );
       }
       try {
-        const sessions = await this.listSessions();
-        if (sessions.some((s) => s.name === instance.instance)) return;
-        lastError = "sesjonen finnes ikke i `get sessions`";
+        const session = (await this.listSessions()).find((s) => s.name === instance.instance);
+        if (session && session.state !== "failed" && !ARCHIVED_STATES.has(session.state)) {
+          return;
+        }
+        last = session ? `state er \`${session.state}\`` : last;
       } catch (err) {
-        lastError = firstLine(String(err));
+        last = firstLine(String(err));
       }
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
@@ -159,20 +201,40 @@ export class AgentctlDriver implements NvtDriver {
     }
     throw new Error(
       `sesjonen ${this.sessionRef(instance.instance)} ble ikke klar innen ` +
-        `${Math.round(opts.timeoutMs / 1000)}s (${lastError}). Ingen prompt ble sendt. ` +
-        `Sjekk \`agentctl get sessions -o json --agent ${this.agentRef()}\` på hosten.`,
+        `${Math.round(opts.timeoutMs / 1000)}s (${last}). Ingen prompt ble sendt. ` +
+        `Sjekk \`agentctl get sessions -o json --agent ${this.opts.agentName} --archived\` på hosten.`,
     );
   }
 
   async sendPrompt(instance: NvtInstance, prompt: string): Promise<void> {
-    await this.ctl(promptArgs(instance.instance, this.opts.agentName, prompt));
+    // Via fil: prompten er lang, upålitelig tekst — en fil unngår
+    // argumentgrenser og quoting, og read_prompt_arg leser den ordrett.
+    const file = path.join(
+      this.opts.tmpDir ?? os.tmpdir(),
+      `nvt-bridge-prompt-${instance.instance}-${randomUUID()}.md`,
+    );
+    await this.files.write(file, prompt);
+    try {
+      await this.ctl([
+        "prompt",
+        this.sessionRef(instance.instance),
+        "--agent",
+        this.opts.agentName,
+        "--file",
+        file,
+      ]);
+    } finally {
+      // Best effort — en gjenglemt tmp-fil skal aldri velte leveransen.
+      await this.files.remove(file).catch(() => {});
+    }
   }
 
   /**
    * Ferdig-deteksjon via session-state i to faser: først vente på å SE
-   * `Working` (inntil `settleTimeoutMs` — en rask tur kan være ferdig før
-   * første poll), deretter to påfølgende polls uten `Working` (samme
-   * dobbelt-poll-prinsipp som agentd selv bruker for completion).
+   * `working` (inntil `settleTimeoutMs` — en rask tur kan være ferdig før
+   * første poll), deretter to påfølgende polls i hvilestate
+   * (`waitingForInput`/`idle` — samme dobbelt-poll-prinsipp som agentd selv
+   * bruker for completion-venting i `prompt --wait`).
    *
    * En «done» her er uansett bare et hint: broen godtar aldri suksess uten
    * at agenten faktisk skrev resultatlinja (fallback-prinsippet i bridge.ts).
@@ -197,10 +259,10 @@ export class AgentctlDriver implements NvtDriver {
         // Forbigående feil mot daemonen er ikke et «done» — poll videre.
       }
 
-      if (state === "Working") {
+      if (state === WORKING) {
         workingSeen = true;
         calmPolls = 0;
-      } else if (state !== null) {
+      } else if (state !== null && CALM_STATES.has(state)) {
         if (workingSeen || Date.now() >= settleBy) {
           calmPolls++;
           if (calmPolls >= 2) {
@@ -208,7 +270,8 @@ export class AgentctlDriver implements NvtDriver {
           }
         }
       } else {
-        // Sesjonen borte fra lista er aldri et «done».
+        // `starting`, `failed`, arkivert eller borte fra lista er aldri et
+        // «done» — resultatlinje uten fullført tur finnes ikke.
         calmPolls = 0;
       }
 
@@ -220,26 +283,20 @@ export class AgentctlDriver implements NvtDriver {
   }
 
   /**
-   * TTL-opprydding. `archive` er agentctl-ekvivalenten til `agent-down`:
-   * samtalen og navnet består, og neste event på topicet gjenopptar.
+   * TTL-opprydding. `archive` stopper harnesset og skjuler sesjonen;
+   * samtalen og navnet består, og ensureInstance unarchiver ved neste event.
    */
   async stopInstance(instance: NvtInstance): Promise<void> {
     this.log(`agentctl archive ${this.sessionRef(instance.instance)}`);
-    await this.ctl(["archive", this.sessionRef(instance.instance), "--agent", this.agentRef()]);
+    await this.ctl(["archive", this.sessionRef(instance.instance), "--agent", this.opts.agentName]);
   }
 }
 
-/** Det ene stedet promptleveringen bor (kalibreringspunkt: argument vs. stdin). */
-export function promptArgs(instance: string, agentName: string, prompt: string): string[] {
-  return ["prompt", `session/${instance}`, "--agent", `agent/${agentName}`, prompt];
-}
-
 /**
- * Tolerant parsing av `get sessions -o json` til formatet er verifisert:
- * godtar et toppnivå-array eller `{sessions|items: []}`, navn i `name` eller
- * `metadata.name`, state i `state`, `status.state` eller `status` (streng).
- * Ukjente innslag hoppes over — en uleselig liste skal gi «ikke klar»/aldri
- * «done», ikke et krasj.
+ * Parsing av `get sessions -o json`: et toppnivå-array av Session-objekter
+ * med `name` (streng) og `status.state`. Tolerant på innpakking og feltnavn
+ * (eldre/nyere agentctl), og en uleselig liste gir tom liste — «ikke
+ * klar»/aldri «done», ikke et krasj.
  */
 export function parseSessions(stdout: string): SessionInfo[] {
   let parsed: unknown;
@@ -263,10 +320,10 @@ export function parseSessions(stdout: string): SessionInfo[] {
       typeof entry.name === "string" ? entry.name : typeof meta?.name === "string" ? meta.name : "";
     const status = isRecord(entry.status) ? entry.status : undefined;
     const state =
-      typeof entry.state === "string"
-        ? entry.state
-        : typeof status?.state === "string"
-          ? status.state
+      typeof status?.state === "string"
+        ? status.state
+        : typeof entry.state === "string"
+          ? entry.state
           : typeof entry.status === "string"
             ? entry.status
             : "";
@@ -282,6 +339,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function firstLine(text: string): string {
   return text.split("\n").find((l) => l.trim() !== "")?.trim() ?? "";
 }
+
+const nodeFiles: PromptFileFns = {
+  write: async (target, content) => {
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, content, "utf8");
+  },
+  remove: (target) => rm(target, { force: true }),
+};
 
 // Egen default-exec i stedet for å importere docker.ts sin private — samme
 // semantikk: aldri kaste, exit -1 ved spawn-feil.

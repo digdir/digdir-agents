@@ -1,6 +1,6 @@
-# UTKAST (F0 i doc/plans/jr-paa-agentctl.md) — skrevet mot agent.yaml-skjemaet
-# slik det ser ut i altinn-studio (agents/minimal), FØR agentctl/sandbox er
-# flyttet inn hit. Kalibreres i F1; se README.md for antakelsene.
+# Kalibrert mot agentctl/src/manifest.rs og agentctl/examples/minimal
+# (v0.1.0-preview.10). Ikke kjørt mot en levende agent ennå — F1-E2E i
+# doc/plans/jr-paa-agentctl.md gjenstår; se README.md.
 apiVersion: agents.platform/v1alpha1
 kind: Agent
 metadata:
@@ -30,6 +30,8 @@ spec:
       - type: tmpfs
         target: /tmp
         capacity: "1Gi"
+  home:
+    source: home
   instructions:
     - source: instructions.md
   harnesses:

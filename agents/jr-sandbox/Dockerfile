@@ -1,8 +1,8 @@
-# UTKAST (F0) — modellert på altinn-studio agents/Dockerfile, som er fasiten
-# for hva plattformen forventer av et Agent-image (systemd som init, tmux for
-# sesjoner, sudo + openssh for SSH-access, en `agent`-bruker). Nøyaktig
-# bruker-/init-oppsett kalibreres i F1 mot innflyttet kode.
-FROM ubuntu:26.04
+# Kalibrert mot agentctl/examples/minimal/Dockerfile (fasiten for hva
+# plattformen forventer av et Agent-image: tmux for sesjoner, `agent`-bruker
+# med passordløs sudo, pre-seedet Claude Code-state, intet systemd/ssh for en
+# headless agent). Ikke bygget/kjørt ennå — F1-E2E gjenstår.
+FROM ubuntu:26.04@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -12,32 +12,17 @@ RUN apt-get update \
     curl \
     git \
     jq \
-    openssh-server \
-    procps \
+    nodejs \
+    npm \
     ripgrep \
     sudo \
-    systemd \
     tmux \
     tzdata \
   && rm -rf /var/lib/apt/lists/*
 
-# Norsk lokaltid, som altinn-imagene: tidsstempler agenten skriver skal matche
-# klokka til menneskene som reviewer.
+# Norsk lokaltid: tidsstempler agenten skriver skal matche klokka til
+# menneskene som reviewer (symlenken er systeminnstillingen alt leser).
 RUN ln -sf /usr/share/zoneinfo/Europe/Oslo /etc/localtime
-
-# Node for Claude Code (harness-pin bor i imaget, jf. HARNESSES.md i
-# altinn-studio: adapter-endringer og pin-bump hører sammen).
-ARG NODE_VERSION=24.11.0
-RUN case "$(dpkg --print-architecture)" in \
-      amd64) NODE_ARCH=x64 ;; \
-      arm64) NODE_ARCH=arm64 ;; \
-      *) echo "unsupported arch" >&2; exit 1 ;; \
-    esac \
-  && curl -fsSL "https://nodejs.org/download/release/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" -o /tmp/node.tar.xz \
-  && tar -xJf /tmp/node.tar.xz --strip-components=1 -C /usr/local \
-  && rm -f /tmp/node.tar.xz
-
-RUN npm install -g @anthropic-ai/claude-code
 
 # GitHub CLI — kloning, issues og PR-er (auth via mediert GITHUB_TOKEN)
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -48,13 +33,31 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && apt-get install -y --no-install-recommends gh \
   && rm -rf /var/lib/apt/lists/*
 
-# Sandbox-brukeren. Kalibreringspunkt: navn/uid og sudo-oppsett skal matche
-# det agentd forventer (altinn-imagene bruker `agent` med passordløs sudo).
-RUN useradd --create-home --shell /bin/bash agent \
-  && echo "agent ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/agent \
-  && chmod 0440 /etc/sudoers.d/agent \
-  && mkdir -p /home/agent/code /triggers \
-  && chown -R agent:agent /home/agent /triggers
+# Harness-pin: bor i imaget (jf. agentctl/HARNESSES.md — adapter-endringer og
+# pin-bump hører sammen; følg samme versjon som agentctl/examples).
+ARG CLAUDE_CODE_VERSION=2.1.292
 
-# systemd som init (initSystem: image i agent.yaml)
-CMD ["/sbin/init"]
+# Agent-sandboxer mounter CA-bundelen sin her; dette stegets Node-nedlastinger
+# skal stole på den (mønster fra examples/minimal).
+RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
+      export NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem; \
+    fi; \
+    npm install --global --allow-scripts=@anthropic-ai/claude-code \
+        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+  && usermod --login agent --home /home/agent --move-home ubuntu \
+  && groupmod --new-name agent ubuntu \
+  && printf 'agent ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/agent \
+  && chmod 0440 /etc/sudoers.d/agent \
+  && install -d -m 0755 -o agent -g agent /home/agent/.claude /home/agent/code /triggers
+
+ENV DISABLE_AUTOUPDATER=1
+ENV GH_NO_UPDATE_NOTIFIER=1
+ENV HOME=/home/agent
+ENV PATH=/home/agent/.local/bin:${PATH}
+
+# Pre-seedet harness-state: hopper over onboarding/trust-dialogene som spiste
+# prompts i M0 (hasCompletedOnboarding + trust for /home/agent/code).
+COPY --chown=agent:agent --chmod=0600 claude-state.json /home/agent/.claude/.claude.json
+
+USER agent
+WORKDIR /home/agent/code

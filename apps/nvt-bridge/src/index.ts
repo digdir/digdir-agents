@@ -67,7 +67,7 @@ if (config.dryRun) {
 }
 if (config.driver === "agentctl") {
   log(
-    `driver: agentctl (UKALIBRERT — F1 i doc/plans/jr-paa-agentctl.md): ` +
+    `driver: agentctl (kalibrert mot kilden; F1-E2E gjenstår — doc/plans/jr-paa-agentctl.md): ` +
       `agent ${config.agentctl.agentName} fra ${config.agentctl.agentDir}`,
   );
 }
