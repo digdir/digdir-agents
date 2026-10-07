@@ -12,6 +12,10 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
 
+### Changed
+
+- Sessions are tested with Claude Code 2.1.292 and Codex CLI 0.160.1, so Agents with their own images can install these versions. ([#154](https://github.com/digdir/digdir-agents/pull/154))
+
 ## [0.1.0-preview.10] - 2026-10-06
 
 ### Added
