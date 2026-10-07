@@ -12,6 +12,11 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
 
+### Changed
+
+- Self-development, minimal and worktree Agents install Claude Code 2.1.292.
+- Self-development and worktree Agents install Codex CLI 0.160.1.
+
 ## [0.1.0-preview.10] - 2026-10-06
 
 ### Added
