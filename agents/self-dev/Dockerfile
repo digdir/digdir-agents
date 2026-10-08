@@ -384,6 +384,7 @@ COPY --chmod=0755 common/desktop-session.sh /usr/local/libexec/agent-desktop-ses
 COPY --chmod=0755 common/bin/chromium common/bin/desktop common/bin/desktop-terminal /usr/local/bin/
 COPY common/desktop-terminal.desktop /usr/local/share/applications/desktop-terminal.desktop
 COPY common/chromium.desktop /usr/local/share/applications/chromium.desktop
+COPY --chmod=0755 common/browser-open.sh /usr/local/libexec/agent-browser-open
 COPY common/mimeapps.list /etc/xdg/mimeapps.list
 
 # xdotool refuses multi-byte characters such as æ, ø and å under the POSIX locale.
