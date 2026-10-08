@@ -14,7 +14,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Changed
 
-- Breaking: the self-development Agent is now `agentctl-dev` in `agents/self-dev`; delete `agent-dev` and apply `agents/self-dev/minimal` or `full` instead:
+- Breaking: the self-development Agent is now `agentctl-dev` in `agents/self-dev`; delete `agent-dev` and apply `agents/self-dev/minimal` or `full` instead: ([#157](https://github.com/digdir/digdir-agents/pull/157))
   - `minimal` is the previous Agent, with a 100 GiB disk and Opus
   - `full` adds Chromium, `playwright-cli` and a desktop for `agentctl vnc`
   - `nested` builds the image from the checkout, replacing `nested-build`; `worktree` is removed
