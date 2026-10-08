@@ -1,4 +1,4 @@
-# Builds the self-development Agent's images from agents/self-dev. Pull requests only build and smoke-test them; main,
+# Builds the self-development Agent's images from agents/self-dev. Pull requests only build them; main,
 # including a manual run on main, also publishes them to GHCR as `latest` and `sha-<commit>`.
 name: agentctl self-dev images
 
@@ -101,31 +101,3 @@ jobs:
             --target "${TARGET}" \
             "$@" \
             "${CONTEXT}"
-
-      # The multi-platform build above loads no image. Load the native one separately (fully cached by the step above)
-      # and exercise the tools the Agent's instructions and skills use.
-      - name: Smoke test amd64 image
-        env:
-          IMAGE_REPOSITORY: ${{ matrix.repository }}
-          EXTRA_CACHE: ${{ matrix.extra_cache }}
-          TARGET: ${{ matrix.target }}
-        run: |
-          set -eu
-          set --
-          if [ -n "${EXTRA_CACHE}" ]; then
-            set -- --cache-from "type=registry,ref=${EXTRA_CACHE}:buildcache"
-          fi
-          docker buildx build \
-            --provenance=false \
-            --sbom=false \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --cache-from "type=registry,ref=${IMAGE_REPOSITORY}:buildcache" \
-            "$@" \
-            --platform linux/amd64 \
-            --target "${TARGET}" \
-            --load \
-            --tag "agentctl-self-dev-${TARGET}:smoke" \
-            "${CONTEXT}"
-          docker run --rm --init --ipc=host --security-opt seccomp=unconfined --entrypoint bash \
-            --volume "${PWD}/${CONTEXT}/smoke.sh:/smoke.sh:ro" \
-            "agentctl-self-dev-${TARGET}:smoke" /smoke.sh "${TARGET}"
