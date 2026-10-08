@@ -24,7 +24,7 @@ const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_mins(1);
 const INSTALL_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(windows)]
-const RELEASE_RENAME_TIMEOUT: Duration = Duration::from_secs(5);
+const RELEASE_RENAME_TIMEOUT: Duration = Duration::from_secs(15);
 const BINARY_STEMS: [&str; 2] = ["agentctl", "agentd"];
 
 /// Filesystem locations for one managed Agent installation.
@@ -394,7 +394,7 @@ impl UpdateJournal {
     /// # Errors
     ///
     /// Returns an error for invalid, unsupported, or unsafe journal data.
-    pub fn read(paths: &InstallPaths) -> Result<Option<Self>, Error> {
+    pub fn read_unfinished(paths: &InstallPaths) -> Result<Option<Self>, Error> {
         let bytes = match fs::read(paths.journal()) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -591,7 +591,7 @@ pub fn prune_releases(paths: &InstallPaths, previous: Option<&Path>) -> Result<(
     let mut keep = BTreeSet::new();
     keep.extend(current_release(paths)?);
     keep.extend(previous.map(Path::to_path_buf));
-    if let Some(journal) = UpdateJournal::read(paths)? {
+    if let Some(journal) = UpdateJournal::read_unfinished(paths)? {
         keep.insert(journal.target_release);
         keep.extend(journal.previous_release);
     }
@@ -1042,7 +1042,10 @@ mod tests {
                 .advance(&paths, UpdatePhase::Complete)
                 .expect("completed journal");
 
-            assert_eq!(UpdateJournal::read(&paths).expect("ignore completed journal"), None);
+            assert_eq!(
+                UpdateJournal::read_unfinished(&paths).expect("ignore completed journal"),
+                None
+            );
         }
     }
 
@@ -1059,7 +1062,7 @@ mod tests {
                 let mut journal = UpdateJournal::new(Some(previous), target, "v2.0.0".into());
                 journal.advance(&paths, phase).expect("unfinished journal");
 
-                let error = UpdateJournal::read(&paths).expect_err("missing release");
+                let error = UpdateJournal::read_unfinished(&paths).expect_err("missing release");
                 assert!(error.to_string().contains("release that no longer exists"), "{error}");
             }
         }
@@ -1075,7 +1078,7 @@ mod tests {
             .advance(&paths, UpdatePhase::Complete)
             .expect("completed journal");
 
-        let error = UpdateJournal::read(&paths).expect_err("unsupported format");
+        let error = UpdateJournal::read_unfinished(&paths).expect_err("unsupported format");
         assert!(
             error.to_string().contains("unsupported Agent update journal format"),
             "{error}"
@@ -1162,7 +1165,12 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn release_rename_waits_for_a_transient_windows_lock() {
-        for lock_directory in [false, true] {
+        for (lock_directory, lock_duration) in [
+            (false, Duration::from_millis(150)),
+            (true, Duration::from_millis(150)),
+            (false, Duration::from_secs(8)),
+            (true, Duration::from_secs(8)),
+        ] {
             let temporary = tempfile::TempDir::new().expect("temporary directory");
             let source = temporary.path().join("staging");
             let target = temporary.path().join("published");
@@ -1172,13 +1180,15 @@ mod tests {
             let lock = lock_release_path(if lock_directory { &source } else { &binary });
             let error = fs::rename(&source, &target).expect_err("release is locked");
             assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
+            let started = tokio::time::Instant::now();
 
             let (result, ()) = tokio::join!(rename_release(&source, &target), async {
-                tokio::time::sleep(Duration::from_millis(150)).await;
+                tokio::time::sleep(lock_duration).await;
                 drop(lock);
             });
 
             result.expect("publish after the lock is released");
+            assert!(started.elapsed() <= lock_duration + Duration::from_millis(100));
             assert_eq!(
                 fs::read(target.join("agentctl.exe")).expect("published binary"),
                 b"package"
@@ -1205,7 +1215,7 @@ mod tests {
                 .expect_err("release remains locked");
 
             assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
-            assert_eq!(started.elapsed(), Duration::from_secs(5));
+            assert_eq!(started.elapsed(), Duration::from_secs(15));
             assert!(binary.is_file());
             assert!(!target.exists());
         }
@@ -1256,7 +1266,7 @@ mod tests {
             .advance(&paths, UpdatePhase::Prepared)
             .expect("unfinished journal");
 
-        let error = UpdateJournal::read(&paths).expect_err("release outside install root");
+        let error = UpdateJournal::read_unfinished(&paths).expect_err("release outside install root");
         assert!(
             error.to_string().contains("release outside the install root"),
             "{error}"
