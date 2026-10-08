@@ -824,9 +824,11 @@ impl CreateForm {
         }
     }
 
-    /// Returns the selected manifest's name, shown grayed while nothing is typed.
-    pub(crate) fn placeholder(&self) -> Option<&str> {
-        self.candidate()?.name.as_deref().ok()
+    /// Suggests the selected manifest's name with the first free number, such as `worker-1`, shown grayed while
+    /// nothing is typed.
+    pub(crate) fn placeholder(&self, agents: &[Agent]) -> Option<String> {
+        let name = self.candidate()?.name.as_deref().ok()?;
+        Some(numbered_name(name, agents))
     }
 
     /// Applies one key press; a submitted or cancelled form returns its Action.
@@ -903,7 +905,7 @@ impl CreateForm {
             .ok_or_else(|| "no Agent manifests found; apply one with agentctl apply".to_owned())?;
         let manifest_name = candidate.name.as_ref().map_err(Clone::clone)?;
         let name = if self.name.is_empty() {
-            manifest_name.clone()
+            numbered_name(manifest_name, agents)
         } else {
             self.name.clone()
         };
@@ -918,6 +920,15 @@ impl CreateForm {
             form: self.clone(),
         })
     }
+}
+
+/// Returns `name-N` for the lowest N from 1 that no Agent uses, or `name` itself when no numbered name fits.
+fn numbered_name(name: &str, agents: &[Agent]) -> String {
+    (1..=u32::MAX)
+        .map(|number| format!("{name}-{number}"))
+        .take_while(|numbered| numbered.len() <= ::sandbox::MAX_SANDBOX_NAME_BYTES)
+        .find(|numbered| agents.iter().all(|agent| agent.metadata.name != *numbered))
+        .unwrap_or_else(|| name.to_owned())
 }
 
 fn wrapped_index(current: usize, length: usize, delta: isize) -> usize {
@@ -3738,13 +3749,13 @@ mod tests {
 
         app.on_key(key(KeyCode::Esc));
         app.open_queued_create();
-        assert_eq!(create_form(&app).placeholder(), Some("worker"));
+        assert_eq!(create_form(&app).placeholder(&app.agents).as_deref(), Some("worker-1"));
         assert!(app.queued_candidates.is_none());
 
         let mut app = populated();
         app.discovering = true;
         app.manifests_discovered(candidates(&[("/sources/worker", "worker")]));
-        assert_eq!(create_form(&app).placeholder(), Some("worker"));
+        assert_eq!(create_form(&app).placeholder(&app.agents).as_deref(), Some("worker-1"));
     }
 
     #[test]
@@ -3770,7 +3781,7 @@ mod tests {
         assert_eq!(form.agent, 1);
         assert_eq!(form.variant, 1);
         assert_eq!(form.variant_label(), Some("nested".into()));
-        assert_eq!(form.placeholder(), Some("worker-nested"));
+        assert_eq!(form.placeholder(&app.agents).as_deref(), Some("worker-nested-1"));
         assert_eq!(app.hints(), &CREATE_AGENT_HINTS);
     }
 
@@ -3788,7 +3799,7 @@ mod tests {
             panic!("expected a CreateAgent action");
         };
         assert_eq!(manifest, PathBuf::from("/sources/fresh/agent.yaml"));
-        assert_eq!(name, "fresh");
+        assert_eq!(name, "fresh-1");
         assert_eq!(env_file, None);
         assert!(app.modal.is_none());
     }
@@ -3817,9 +3828,9 @@ mod tests {
     fn create_form_placeholder_follows_selection_and_typed_names_win() {
         let mut app = populated();
         app.open_create(candidates(&[("/a", "alpha"), ("/b", "beta")]));
-        assert_eq!(create_form(&app).placeholder(), Some("alpha"));
+        assert_eq!(create_form(&app).placeholder(&app.agents).as_deref(), Some("alpha-1"));
         app.on_key(key(KeyCode::Right));
-        assert_eq!(create_form(&app).placeholder(), Some("beta"));
+        assert_eq!(create_form(&app).placeholder(&app.agents).as_deref(), Some("beta-1"));
         app.on_key(key(KeyCode::Tab));
         app.on_key(key(KeyCode::Tab));
         app.on_key(key(KeyCode::Char('m')));
@@ -3834,16 +3845,39 @@ mod tests {
     }
 
     #[test]
+    fn create_form_numbers_the_placeholder_past_taken_names() {
+        let mut app = populated();
+        app.apply_snapshot(vec![agent("worker"), agent("worker-1"), agent("worker-3")], Vec::new());
+        app.open_create(candidates(&[("/sources/worker", "worker")]));
+        assert_eq!(create_form(&app).placeholder(&app.agents).as_deref(), Some("worker-2"));
+        let Action::CreateAgent { name, .. } = app.on_key(key(KeyCode::Enter)) else {
+            panic!("expected a CreateAgent action");
+        };
+        assert_eq!(name, "worker-2");
+
+        let longest = "a".repeat(::sandbox::MAX_SANDBOX_NAME_BYTES);
+        assert_eq!(numbered_name(&longest, &[]), longest);
+        let almost = "a".repeat(::sandbox::MAX_SANDBOX_NAME_BYTES - 2);
+        assert_eq!(numbered_name(&almost, &[]), format!("{almost}-1"));
+    }
+
+    #[test]
     fn create_form_reports_duplicates_and_invalid_names_on_submit() {
         let mut app = populated();
         app.open_create(candidates(&[("/sources/worker", "worker")]));
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Tab));
+        for character in "worker".chars() {
+            app.on_key(key(KeyCode::Char(character)));
+        }
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
         assert_eq!(
             create_form(&app).error.as_deref(),
             Some("agent \"worker\" already exists")
         );
-        app.on_key(key(KeyCode::Tab));
-        app.on_key(key(KeyCode::Tab));
+        for _ in 0.."worker".len() {
+            app.on_key(key(KeyCode::Backspace));
+        }
         app.on_key(key(KeyCode::Char('-')));
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
         let error = create_form(&app).error.as_deref().expect("invalid name error");
@@ -3864,7 +3898,7 @@ mod tests {
             PathBuf::from("/gone/agent.yaml"),
             Err("manifest cannot be decoded".into()),
         )]);
-        assert_eq!(create_form(&app).placeholder(), None);
+        assert_eq!(create_form(&app).placeholder(&app.agents), None);
         app.on_key(key(KeyCode::Enter));
         assert_eq!(create_form(&app).error.as_deref(), Some("manifest cannot be decoded"));
         app.on_key(key(KeyCode::Esc));
@@ -3888,7 +3922,7 @@ mod tests {
         app.on_key(key(KeyCode::Right));
         let form = create_form(&app);
         assert_eq!(form.variant_label(), Some("broken".into()));
-        assert_eq!(form.placeholder(), None);
+        assert_eq!(form.placeholder(&app.agents), None);
 
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
         assert_eq!(
@@ -3906,8 +3940,9 @@ mod tests {
             Ok("builder-nested".into()),
         ));
         app.open_create(discovered);
-        app.on_key(key(KeyCode::Enter));
-        assert!(create_form(&app).error.is_some());
+        if let Some(Modal::CreateAgent(form)) = &mut app.modal {
+            form.error = Some("rejected".into());
+        }
         app.on_key(key(KeyCode::Left));
         let form = create_form(&app);
         assert_eq!(form.agent, 1);
@@ -3924,7 +3959,10 @@ mod tests {
         app.on_key(key(KeyCode::Right));
         assert_eq!(create_form(&app).variant, 1);
         assert_eq!(create_form(&app).variant_label(), Some("nested".into()));
-        assert_eq!(create_form(&app).placeholder(), Some("builder-nested"));
+        assert_eq!(
+            create_form(&app).placeholder(&app.agents).as_deref(),
+            Some("builder-nested-1")
+        );
     }
 
     #[test]
