@@ -109,7 +109,10 @@ try {
 
     $Previous = $null
     $Current = Join-Path $InstallRoot "current"
-    if (Test-Path $Current -PathType Leaf) { $Previous = (Get-Content $Current -Raw).Trim() }
+    if (Test-Path $Current -PathType Leaf) {
+        $Candidate = (Get-Content $Current -Raw).Trim()
+        if ($Candidate -and (Test-Path -LiteralPath $Candidate -PathType Container)) { $Previous = $Candidate }
+    }
     $Journal = [pscustomobject]@{
         targetRelease = $Target
         targetVersion = $Version

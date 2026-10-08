@@ -120,6 +120,7 @@ if [ -L "${install_root}/current" ]; then
     /*) ;;
     *) previous="${install_root}/${previous}" ;;
   esac
+  [ -d "${previous}" ] || previous=""
 fi
 set -- --home "${agent_home}" self __complete-update \
   --install-root "${install_root}" --bin-directory "${bin_directory}" \

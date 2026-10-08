@@ -23,6 +23,8 @@ const JOURNAL_FORMAT: u32 = 1;
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_mins(1);
 const INSTALL_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(windows)]
+const RELEASE_RENAME_TIMEOUT: Duration = Duration::from_secs(15);
 const BINARY_STEMS: [&str; 2] = ["agentctl", "agentd"];
 
 /// Filesystem locations for one managed Agent installation.
@@ -320,10 +322,39 @@ pub async fn publish_release(paths: &InstallPaths, source: &Path, version: &str)
         fs::copy(source.join(&binary), staging.path().join(binary))?;
     }
     validate_release_directory(staging.path(), version)?;
-    fs::rename(staging.path(), &final_path)?;
+    #[cfg(windows)]
+    let published = rename_release(staging.path(), &final_path).await;
+    #[cfg(not(windows))]
+    let published = fs::rename(staging.path(), &final_path);
+    published.map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "publish Agent release {} to {}: {error}",
+                staging.path().display(),
+                final_path.display()
+            ),
+        )
+    })?;
     #[cfg(unix)]
     sync_directory(&paths.releases())?;
     Ok(final_path)
+}
+
+#[cfg(windows)]
+async fn rename_release(source: &Path, target: &Path) -> std::io::Result<()> {
+    let deadline = tokio::time::Instant::now() + RELEASE_RENAME_TIMEOUT;
+    loop {
+        match fs::rename(source, target) {
+            // Freshly executed binaries can remain locked by Windows scanners.
+            // ERROR_SHARING_VIOLATION does not map to PermissionDenied in Rust.
+            Err(error) if matches!(error.raw_os_error(), Some(5 | 32)) && tokio::time::Instant::now() < deadline => {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                tokio::time::sleep(Duration::from_millis(100).min(remaining)).await;
+            }
+            result => return result,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -358,12 +389,12 @@ impl UpdateJournal {
         }
     }
 
-    /// Reads the journal when one exists.
+    /// Reads an unfinished journal, treating completed journals as absent.
     ///
     /// # Errors
     ///
     /// Returns an error for invalid, unsupported, or unsafe journal data.
-    pub fn read(paths: &InstallPaths) -> Result<Option<Self>, Error> {
+    pub fn read_unfinished(paths: &InstallPaths) -> Result<Option<Self>, Error> {
         let bytes = match fs::read(paths.journal()) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -372,6 +403,9 @@ impl UpdateJournal {
         let journal: Self = serde_json::from_slice(&bytes)?;
         if journal.format_version != JOURNAL_FORMAT {
             return Err(Error::Invalid("unsupported Agent update journal format".into()));
+        }
+        if journal.phase == UpdatePhase::Complete {
+            return Ok(None);
         }
         journal.validate(paths)?;
         Ok(Some(journal))
@@ -419,8 +453,17 @@ impl UpdateJournal {
                     "Agent update journal names a release outside the install root".into(),
                 ));
             }
-            let resolved = fs::canonicalize(path)
-                .map_err(|_| Error::Invalid("Agent update journal names a release that no longer exists".into()))?;
+            let resolved = fs::canonicalize(path).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    Error::Invalid(format!(
+                        "Agent update journal {} names a release that no longer exists: {}",
+                        paths.journal().display(),
+                        path.display()
+                    ))
+                } else {
+                    Error::Io(error)
+                }
+            })?;
             if resolved.parent() != Some(releases.as_path()) {
                 return Err(Error::Invalid(
                     "Agent update journal names a release outside the install root".into(),
@@ -431,13 +474,24 @@ impl UpdateJournal {
     }
 }
 
-/// Reads the active release pointer.
+/// Reads the active release pointer, treating a missing release as absent.
 ///
 /// # Errors
 ///
-/// Returns an error when the pointer cannot be read.
+/// Returns an error when the pointer or release cannot be read, or the release is not a directory.
 pub fn current_release(paths: &InstallPaths) -> Result<Option<PathBuf>, Error> {
-    read_current(paths)
+    let Some(release) = read_current(paths)? else {
+        return Ok(None);
+    };
+    match fs::metadata(&release) {
+        Ok(metadata) if metadata.is_dir() => Ok(Some(release)),
+        Ok(_) => Err(Error::Invalid(format!(
+            "current Agent release is not a directory: {}",
+            release.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(unix)]
@@ -537,7 +591,7 @@ pub fn prune_releases(paths: &InstallPaths, previous: Option<&Path>) -> Result<(
     let mut keep = BTreeSet::new();
     keep.extend(current_release(paths)?);
     keep.extend(previous.map(Path::to_path_buf));
-    if let Some(journal) = UpdateJournal::read(paths)?.filter(|journal| journal.phase != UpdatePhase::Complete) {
+    if let Some(journal) = UpdateJournal::read_unfinished(paths)? {
         keep.insert(journal.target_release);
         keep.extend(journal.previous_release);
     }
@@ -969,6 +1023,223 @@ fn sync_directory(path: &Path) -> Result<(), Error> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn completed_journal_does_not_require_retained_releases() {
+        for (keep_previous, keep_target) in [(true, false), (false, true), (false, false)] {
+            let temporary = tempfile::TempDir::new().expect("temporary directory");
+            let paths =
+                InstallPaths::new(temporary.path().join("install"), temporary.path().join("bin")).expect("paths");
+            let previous = paths.releases().join("previous");
+            let target = paths.releases().join("target");
+            if keep_previous {
+                fs::create_dir_all(&previous).expect("previous release");
+            }
+            if keep_target {
+                fs::create_dir_all(&target).expect("target release");
+            }
+            let mut journal = UpdateJournal::new(Some(previous), target, "v2.0.0".into());
+            journal
+                .advance(&paths, UpdatePhase::Complete)
+                .expect("completed journal");
+
+            assert_eq!(
+                UpdateJournal::read_unfinished(&paths).expect("ignore completed journal"),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn unfinished_journal_still_requires_its_releases() {
+        for phase in [UpdatePhase::Prepared, UpdatePhase::Migrated, UpdatePhase::Activated] {
+            for missing_previous in [false, true] {
+                let temporary = tempfile::TempDir::new().expect("temporary directory");
+                let paths =
+                    InstallPaths::new(temporary.path().join("install"), temporary.path().join("bin")).expect("paths");
+                let previous = paths.releases().join("previous");
+                let target = paths.releases().join("target");
+                fs::create_dir_all(if missing_previous { &target } else { &previous }).expect("retained release");
+                let mut journal = UpdateJournal::new(Some(previous), target, "v2.0.0".into());
+                journal.advance(&paths, phase).expect("unfinished journal");
+
+                let error = UpdateJournal::read_unfinished(&paths).expect_err("missing release");
+                assert!(error.to_string().contains("release that no longer exists"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn completed_journal_still_requires_a_supported_format() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let paths = InstallPaths::new(temporary.path().join("install"), temporary.path().join("bin")).expect("paths");
+        let mut journal = UpdateJournal::new(None, paths.releases().join("missing"), "v2.0.0".into());
+        journal.format_version = JOURNAL_FORMAT + 1;
+        journal
+            .advance(&paths, UpdatePhase::Complete)
+            .expect("completed journal");
+
+        let error = UpdateJournal::read_unfinished(&paths).expect_err("unsupported format");
+        assert!(
+            error.to_string().contains("unsupported Agent update journal format"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn current_release_ignores_a_dangling_pointer() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let paths = InstallPaths::new(temporary.path().join("install"), temporary.path().join("bin")).expect("paths");
+        let release = paths.releases().join("previous");
+        fs::create_dir_all(&release).expect("release");
+        activate_release(&paths, &release).expect("activation");
+        assert!(current_release(&paths).expect("current release").is_some());
+        fs::remove_dir(&release).expect("prune release");
+
+        assert_eq!(current_release(&paths).expect("missing current release"), None);
+    }
+
+    #[test]
+    fn pruning_ignores_completed_journals_with_missing_releases() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let paths = InstallPaths::new(temporary.path().join("install"), temporary.path().join("bin")).expect("paths");
+        let current = paths.releases().join("current");
+        let obsolete = paths.releases().join("obsolete");
+        fs::create_dir_all(&current).expect("current release");
+        fs::create_dir(&obsolete).expect("obsolete release");
+        activate_release(&paths, &current).expect("activation");
+        let mut journal = UpdateJournal::new(
+            Some(paths.releases().join("missing-previous")),
+            paths.releases().join("missing-target"),
+            "v2.0.0".into(),
+        );
+        journal
+            .advance(&paths, UpdatePhase::Complete)
+            .expect("completed journal");
+
+        prune_releases(&paths, None).expect("prune releases");
+
+        assert!(current.is_dir());
+        assert!(!obsolete.exists());
+    }
+
+    #[test]
+    fn pruning_preserves_releases_needed_by_an_unfinished_update() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let paths = InstallPaths::new(temporary.path().join("install"), temporary.path().join("bin")).expect("paths");
+        let current = paths.releases().join("current");
+        let previous = paths.releases().join("previous");
+        let target = paths.releases().join("target");
+        let obsolete = paths.releases().join("obsolete");
+        for release in [&current, &previous, &target, &obsolete] {
+            fs::create_dir_all(release).expect("release");
+        }
+        activate_release(&paths, &current).expect("activation");
+        let mut journal = UpdateJournal::new(Some(previous.clone()), target.clone(), "v2.0.0".into());
+        journal
+            .advance(&paths, UpdatePhase::Migrated)
+            .expect("unfinished journal");
+
+        prune_releases(&paths, None).expect("prune releases");
+
+        for release in [current, previous, target] {
+            assert!(release.is_dir(), "{} must be retained", release.display());
+        }
+        assert!(!obsolete.exists());
+    }
+
+    #[cfg(windows)]
+    fn lock_release_path(path: &Path) -> File {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        // Allow readers and writers, but hold back FILE_SHARE_DELETE, as a
+        // scanner can while inspecting a freshly executed release.
+        OpenOptions::new()
+            .read(true)
+            .share_mode(0x0000_0001 | 0x0000_0002)
+            // FILE_FLAG_BACKUP_SEMANTICS opens a directory.
+            .custom_flags(if path.is_dir() { 0x0200_0000 } else { 0 })
+            .open(path)
+            .expect("lock release path")
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn release_rename_waits_for_a_transient_windows_lock() {
+        for (lock_directory, lock_duration) in [
+            (false, Duration::from_millis(150)),
+            (true, Duration::from_millis(150)),
+            (false, Duration::from_secs(8)),
+            (true, Duration::from_secs(8)),
+        ] {
+            let temporary = tempfile::TempDir::new().expect("temporary directory");
+            let source = temporary.path().join("staging");
+            let target = temporary.path().join("published");
+            let binary = source.join("agentctl.exe");
+            fs::create_dir(&source).expect("staging directory");
+            fs::write(&binary, b"package").expect("binary");
+            let lock = lock_release_path(if lock_directory { &source } else { &binary });
+            let error = fs::rename(&source, &target).expect_err("release is locked");
+            assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
+            let started = tokio::time::Instant::now();
+
+            let (result, ()) = tokio::join!(rename_release(&source, &target), async {
+                tokio::time::sleep(lock_duration).await;
+                drop(lock);
+            });
+
+            result.expect("publish after the lock is released");
+            assert!(started.elapsed() <= lock_duration + Duration::from_millis(100));
+            assert_eq!(
+                fs::read(target.join("agentctl.exe")).expect("published binary"),
+                b"package"
+            );
+            assert!(!source.exists());
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn release_rename_stops_retrying_a_persistent_windows_lock() {
+        for lock_directory in [false, true] {
+            let temporary = tempfile::TempDir::new().expect("temporary directory");
+            let source = temporary.path().join("staging");
+            let target = temporary.path().join("published");
+            let binary = source.join("agentctl.exe");
+            fs::create_dir(&source).expect("staging directory");
+            fs::write(&binary, b"package").expect("binary");
+            let _lock = lock_release_path(if lock_directory { &source } else { &binary });
+            let started = tokio::time::Instant::now();
+
+            let error = rename_release(&source, &target)
+                .await
+                .expect_err("release remains locked");
+
+            assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
+            assert_eq!(started.elapsed(), Duration::from_secs(15));
+            assert!(binary.is_file());
+            assert!(!target.exists());
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn release_rename_does_not_retry_unrelated_errors() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let source = temporary.path().join("staging");
+        let target = temporary.path().join("missing/published");
+        fs::create_dir(&source).expect("staging directory");
+        let started = tokio::time::Instant::now();
+
+        let error = rename_release(&source, &target)
+            .await
+            .expect_err("missing parent directory");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert!(source.is_dir());
+        assert!(!target.exists());
+    }
+
     #[cfg(windows)]
     #[test]
     fn command_paths_do_not_use_the_windows_verbatim_prefix() {
@@ -988,8 +1259,18 @@ mod tests {
         let root = temporary.path().join("root");
         let paths = InstallPaths::new(root, temporary.path().join("bin")).expect("paths");
         fs::create_dir_all(paths.releases()).expect("releases");
-        let journal = UpdateJournal::new(None, temporary.path().join("elsewhere"), "v2.0.0".into());
-        assert!(journal.validate(&paths).is_err());
+        let outside = temporary.path().join("elsewhere");
+        fs::create_dir(&outside).expect("release outside install root");
+        let mut journal = UpdateJournal::new(None, outside, "v2.0.0".into());
+        journal
+            .advance(&paths, UpdatePhase::Prepared)
+            .expect("unfinished journal");
+
+        let error = UpdateJournal::read_unfinished(&paths).expect_err("release outside install root");
+        assert!(
+            error.to_string().contains("release outside the install root"),
+            "{error}"
+        );
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

@@ -4,7 +4,7 @@ set -euo pipefail
 
 old_version="v0.0.1-dev.upgrade-smoke"
 target_version="v0.1.0-preview.2.smoke"
-smoke_root="$(mktemp -d /tmp/au.XXXXXXXX)"
+smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/au.XXXXXXXX")"
 export AGENT_SMOKE_ID="${smoke_root##*/}"
 # Build outside smoke_root: CI runners keep /tmp on a small tmpfs, and the two
 # dev-profile builds below do not fit there.
@@ -132,6 +132,38 @@ if [ "${RUNNER_OS:-}" = "Windows" ]; then
       throw "installer did not replace a newer release with development build $actual"
     }
   '
+
+  # Completed journals are history, even when their releases have been pruned.
+  # shellcheck disable=SC2016 # PowerShell expands its own environment variables.
+  pwsh -NoProfile -Command '
+    $journalPath = Join-Path $env:AGENT_INSTALL_ROOT "update.json"
+    $journal = Get-Content $journalPath -Raw | ConvertFrom-Json
+    $journal.previousRelease = Join-Path $env:AGENT_INSTALL_ROOT "releases/missing-previous"
+    $journal.targetRelease = Join-Path $env:AGENT_INSTALL_ROOT "releases/missing-target"
+    $journal | ConvertTo-Json | Set-Content $journalPath
+    $agentctl = Join-Path $env:AGENT_SMOKE_BIN "agentctl.cmd"
+    & $agentctl --home $env:AGENT_HOME self update --check --version $env:AGENT_VERSION
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $agentctl --home $env:AGENT_HOME get agents
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    Join-Path $env:AGENT_INSTALL_ROOT "releases/missing-current" |
+      Set-Content (Join-Path $env:AGENT_INSTALL_ROOT "current")
+  '
+  # The installer repairs a dangling current pointer without retaining it as
+  # the previous release in the next update journal.
+  pwsh -NoProfile -File "$(cygpath -w agentctl/install.ps1)"
+  # shellcheck disable=SC2016 # PowerShell expands its own environment variables.
+  pwsh -NoProfile -Command '
+    $journal = Get-Content (Join-Path $env:AGENT_INSTALL_ROOT "update.json") -Raw | ConvertFrom-Json
+    if ($journal.phase -ne "complete" -or $journal.previousRelease) {
+      throw "installer did not finish recovery from missing releases"
+    }
+    $agentctl = Join-Path $env:AGENT_SMOKE_BIN "agentctl.cmd"
+    $actual = (& $agentctl --version | Out-String).Trim()
+    if ($actual -ne "agentctl $env:AGENT_VERSION") { throw "recovered launcher reports $actual" }
+    & $agentctl --home $env:AGENT_HOME get agents
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  '
 else
   # Standalone installation
 
@@ -173,4 +205,23 @@ else
   export AGENT_VERSION="${old_version}"
   ./agentctl/install.sh
   test "$("${agentctl}" --version)" = "agentctl ${old_version}"
+
+  # Completed journals and dangling current links must not block recovery.
+  cat > "${AGENT_INSTALL_ROOT}/update.json" <<EOF
+{
+  "formatVersion": 1,
+  "previousRelease": "${AGENT_INSTALL_ROOT}/releases/missing-previous",
+  "targetRelease": "${AGENT_INSTALL_ROOT}/releases/missing-target",
+  "targetVersion": "${old_version}",
+  "phase": "complete"
+}
+EOF
+  "${agentctl}" --home "${AGENT_HOME}" self update --check --version "${old_version}"
+  "${agentctl}" --home "${AGENT_HOME}" get agents
+  ln -sfn "${AGENT_INSTALL_ROOT}/releases/missing-current" "${AGENT_INSTALL_ROOT}/current"
+  ./agentctl/install.sh
+  test "$("${agentctl}" --version)" = "agentctl ${old_version}"
+  grep -q '^  "phase": "complete"$' "${AGENT_INSTALL_ROOT}/update.json"
+  grep -q '^  "previousRelease": null,$' "${AGENT_INSTALL_ROOT}/update.json"
+  "${agentctl}" --home "${AGENT_HOME}" get agents
 fi
