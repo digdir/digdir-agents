@@ -20,15 +20,17 @@ lists the targets; run `make fmt lint build test` before reporting completion. `
 Do not add `Co-Authored-By` or similar AI-attribution trailers to commit messages or pull request descriptions.
 
 To run a nested Agent, log the nested `agentd` in with the placeholders this Sandbox already holds, then apply the
-`nested` variant, which builds its image from the checkout. Use `agents/self-dev/full` instead of `minimal` for a
-nested Agent with a browser and a desktop.
+`nested` variant from the task's worktree: it builds its image from the checkout it is applied from, so applying it
+from the primary checkout tests `main` instead of your change. Use `agents/self-dev/full` instead of `minimal` for a
+nested Agent with a browser and a desktop. An Agent's source directory cannot change, so delete an earlier
+`agentctl-dev-nested` applied from another worktree first.
 
 ```sh
 printf '%s\n' "$AGENT_CLAUDE_ACCESS_TOKEN" | agentctl claude login --from-stdin
 agentctl codex login --from-stdin < ~/.codex/auth.json
 printf 'GITHUB_TOKEN=%s\nGIT_USER_NAME=%s\nGIT_USER_EMAIL=%s\n' \
   "$GITHUB_TOKEN" "$GIT_USER_NAME" "$GIT_USER_EMAIL" > ~/nested.env
-cd digdir-agents/agents/self-dev/minimal
+cd /home/agent/code/.worktrees/<task>/agents/self-dev/minimal
 agentctl apply --variant nested --env-file ~/nested.env
 ```
 

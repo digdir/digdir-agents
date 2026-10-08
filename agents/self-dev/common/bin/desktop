@@ -263,6 +263,8 @@ command_windows() {
     $json && printf '[\n'
     local first=true
     for id in $(window_ids); do
+        # The eval below assigns every variable xdotool reports; declaring them keeps them local.
+        # shellcheck disable=SC2034  # SCREEN is reported but not needed.
         local WINDOW X Y WIDTH HEIGHT SCREEN geometry
         # A window can close between listing and inspecting it; it is then simply not listed.
         geometry=$(xdotool getwindowgeometry --shell "$id" 2>/dev/null) || continue

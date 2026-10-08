@@ -3,10 +3,10 @@
 set -eu
 
 : "${AGENT_DESKTOP_DISPLAY:=:1}"
-export DISPLAY=$AGENT_DESKTOP_DISPLAY
+export DISPLAY="$AGENT_DESKTOP_DISPLAY"
 # xdotool decodes text with the locale's character set and refuses multi-byte input under the
 # POSIX locale, so without this the desktop cannot type æ, ø or å.
-export LC_ALL=${LC_ALL:-C.UTF-8}
+export LC_ALL="${LC_ALL:-C.UTF-8}"
 
 for _ in $(seq 1 100); do
     xdpyinfo >/dev/null 2>&1 && break

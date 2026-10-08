@@ -26,24 +26,14 @@ concurrency:
 
 env:
   CONTEXT: agents/self-dev
+  REGISTRY: ghcr.io/digdir/digdir-agents
 
 jobs:
   build:
     if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft) }}
-    name: Build ${{ matrix.target }} image
+    name: Build images
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: minimal
-            repository: ghcr.io/digdir/digdir-agents/agentctl-self-dev-minimal
-          # The full image is one stage on top of minimal, so it warms its build from that image's cache as well as its
-          # own and only rebuilds the full layers.
-          - target: full
-            repository: ghcr.io/digdir/digdir-agents/agentctl-self-dev-full
-            extra_cache: ghcr.io/digdir/digdir-agents/agentctl-self-dev-minimal
+    timeout-minutes: 90
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -71,33 +61,34 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
 
-      - name: Build and publish image
+      # Both images are built in one job, minimal first: full is minimal plus its own stage, so its build reuses the
+      # minimal layers just built and publishes them with the same digests, and a host that has minimal only pulls the
+      # full layers.
+      - name: Build and publish images
         env:
           PUBLISH: ${{ github.ref == 'refs/heads/main' }}
-          IMAGE_REPOSITORY: ${{ matrix.repository }}
-          EXTRA_CACHE: ${{ matrix.extra_cache }}
-          TARGET: ${{ matrix.target }}
         run: |
           set -eu
 
-          set --
-          if [ "${PUBLISH}" = "true" ]; then
-            set -- \
-              --tag "${IMAGE_REPOSITORY}:sha-${GITHUB_SHA::10}" \
-              --tag "${IMAGE_REPOSITORY}:latest" \
-              --push \
-              --cache-to "type=registry,ref=${IMAGE_REPOSITORY}:buildcache,mode=max,image-manifest=true"
-          fi
-          if [ -n "${EXTRA_CACHE}" ]; then
-            set -- "$@" --cache-from "type=registry,ref=${EXTRA_CACHE}:buildcache"
-          fi
+          for target in minimal full; do
+            repository="${REGISTRY}/agentctl-self-dev-${target}"
+            set --
+            if [ "${PUBLISH}" = "true" ]; then
+              set -- \
+                --tag "${repository}:sha-${GITHUB_SHA::10}" \
+                --tag "${repository}:latest" \
+                --push \
+                --cache-to "type=registry,ref=${repository}:buildcache,mode=max,image-manifest=true"
+            fi
 
-          docker buildx build \
-            --provenance=false \
-            --sbom=false \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --cache-from "type=registry,ref=${IMAGE_REPOSITORY}:buildcache" \
-            --platform linux/amd64,linux/arm64 \
-            --target "${TARGET}" \
-            "$@" \
-            "${CONTEXT}"
+            docker buildx build \
+              --provenance=false \
+              --sbom=false \
+              --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+              --cache-from "type=registry,ref=${REGISTRY}/agentctl-self-dev-minimal:buildcache" \
+              --cache-from "type=registry,ref=${repository}:buildcache" \
+              --platform linux/amd64,linux/arm64 \
+              --target "${target}" \
+              "$@" \
+              "${CONTEXT}"
+          done

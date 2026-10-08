@@ -275,6 +275,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 ENV XDG_RUNTIME_DIR=/run/user/1000
 
 # ffmpeg converts and inspects browser captures and libnss3-tools imports the Agent CA into Chromium.
+# xdg-utils lets `xdg-open`, and agentctl's open actions, open links on the desktop as on any other.
 # The rest is a minimal X11 desktop: one process that is both X and VNC server, a window manager, a
 # panel, the input and window tools the `desktop` helper uses, AT-SPI for `desktop tree`, and sakura
 # as the terminal, whose text AT-SPI exposes too. wmctrl is left out because its build here segfaults
@@ -294,6 +295,7 @@ RUN apt-get update \
         tint2 \
         x11-utils \
         x11-xserver-utils \
+        xdg-utils \
         xdotool \
     && rm -rf /var/lib/apt/lists/* \
     && test "$(id -u agent)" = 1000 \
@@ -381,6 +383,8 @@ COPY common/desktop-tint2rc /etc/xdg/tint2/tint2rc
 COPY --chmod=0755 common/desktop-session.sh /usr/local/libexec/agent-desktop-session
 COPY --chmod=0755 common/bin/chromium common/bin/desktop common/bin/desktop-terminal /usr/local/bin/
 COPY common/desktop-terminal.desktop /usr/local/share/applications/desktop-terminal.desktop
+COPY common/chromium.desktop /usr/local/share/applications/chromium.desktop
+COPY common/mimeapps.list /etc/xdg/mimeapps.list
 
 # xdotool refuses multi-byte characters such as æ, ø and å under the POSIX locale.
 ENV LANG=C.UTF-8
@@ -410,7 +414,8 @@ RUN systemctl enable agent-browser-ca-init.service \
         && ffmpeg -version | head -1 \
         && AGENT_BROWSER_CA_READY_FILE=/dev/null chromium --version \
         && /usr/local/libexec/agent-playwright-chromium --headless --version \
-        && desktop help >/dev/null' \
+        && desktop help >/dev/null \
+        && test "$(xdg-mime query default x-scheme-handler/https)" = chromium.desktop' \
     && rm -rf /tmp/image-checks \
     && python3 -c 'import pyatspi' \
     && test -f /usr/share/dbus-1/services/org.a11y.Bus.service \

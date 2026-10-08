@@ -16,7 +16,7 @@ update them together.
 
 Install the current platform with `make user-install` from the repository root; it replaces and restarts `agentd`, and
 refuses while any Session reports `Working` (#149, #150), so archive or delete earlier test Sessions first. Test the
-self-dev image built from the branch: from `agents/self-dev/minimal`,
+self-dev image built from the branch: from `agents/self-dev/minimal` in the branch's checkout,
 `agentctl apply --variant nested --env-file <file> --wait` builds it with both harnesses and fits inside another
 Agent. Keep the env file outside the checkout. Use fresh Session names and confirm `claude --version` and
 `codex --version` in the Sandbox; testing an existing Sandbox does not prove the rebuilt image works.
