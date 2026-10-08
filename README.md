@@ -42,6 +42,7 @@ rot:
 |---|---|
 | `agentctl/` | CLI + generisk «Session API»-backend (modell-/harness-uavhengig). |
 | `sandbox/` | Sandbox-SDK; implementasjon basert på digdir-forkene [microsandbox](https://github.com/digdir/microsandbox) og [libkrunfw](https://github.com/digdir/libkrunfw). Konsumeres som git-ref-dependency fra altinn-studio inntil videre. |
+| [`agents/self-dev/`](agents/self-dev/) | agentctl-agenten som utvikler agent-plattformen selv, i en `minimal`- og en `full`-utgave (med nettleser og skrivebord). Ikke en del av orkestrator-pipelinen over. |
 
 De eies av innflytterteamet (egne CODEOWNERS-stier) og tar med egne
 CI-jobber for sine stier. Hvert område kjører bare når stiene dets endres,

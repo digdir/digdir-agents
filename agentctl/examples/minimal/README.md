@@ -1,39 +1,36 @@
 # Minimal Agent
 
-This manifest-secret-free example exercises the core Agent lifecycle with mediated Claude Code authentication and one
-or more persistent tmux sessions. It does not require a `.env` file or expose secrets to
-the network mediator. Its small local Dockerfile contains only the tools needed for this
-flow on the multi-platform Ubuntu 26.04 LTS base, and its layered root filesystem keeps the smoke-test sandbox
-capacity-efficient. Sessions start in the platform's stable `/home/agent/code` workspace root; this example is
-intentionally repository-free and uses the
-Sandbox Provider's backend init instead of an image entrypoint. A builder that needs a boot-time checkout should use an
-image init or entrypoint, like the self-development example, which offers both a boot-time clone and a bind-mounted
-host checkout. Sessions can instead clone repositories on demand when their
-Agent declares a suitable mediated secret. It is not intended for running Docker inside the Agent.
+The smallest useful Agent: Claude Code in a Sandbox, with no repository checkout and no secrets. Start here to learn
+how an Agent is put together, then look at [`agents/self-dev`](../../../agents/self-dev) for one that is used every
+day.
+
+| File | Purpose |
+| --- | --- |
+| [`agent.yaml`](agent.yaml) | The manifest: image, resources, instructions, harness and network |
+| [`Dockerfile`](Dockerfile) | The image: Ubuntu with Git, the GitHub CLI, tmux and Claude Code |
+| [`instructions.md`](instructions.md) | What Claude Code is told about this computer, installed as `~/.claude/CLAUDE.md` |
+| [`claude-state.json`](claude-state.json) | Claude Code state baked into the image, so first-run prompts are skipped |
+| [`home/`](home) | Files copied into `/home/agent` on every reconciliation; empty here |
+
+## Try it
+
+From this directory:
 
 ```sh
-agentctl claude login
-agentctl apply --name agent-test --wait
-agentctl get agent agent-test
-agentctl describe agent/agent-test
-agentctl wait --for=condition=Ready agent/agent-test --timeout=10m
-agentctl exec agent/agent-test -- pwd
-agentctl exec -it agent/agent-test -- bash
-agentctl attach session/s1 --agent agent-test
-agentctl get sessions --agent agent-test
+agentctl claude login                  # once per host
+agentctl apply --wait                  # build the image and start the Agent
+agentctl attach session/s1             # start Claude Code in a Session; detach with Ctrl-b d
+agentctl exec -it agent/minimal -- bash
+agentctl delete agent/minimal
 ```
 
-`--wait` keeps `apply` attached and streams provisioning progress until the Agent is Ready; `wait`
-does the same for an Agent that was applied earlier. Both stop with an error when desired state
-is invalid and otherwise follow background retries until the timeout.
+`agentctl` finds the Agent from the directory you are in, so Session commands need no `--agent` here. Run
+`agentctl tui` for the same operations in a terminal UI.
 
-When the current directory is inside the source directory of exactly one applied Agent, `agentctl exec -- pwd` and
-Session commands infer the Agent; for example, `agentctl attach session/s1` works from this directory after applying
-without another Agent name from the same source.
+## Going further
 
-Run these commands from this directory so paths in the manifest resolve against the intended example inputs.
-The image seeds Claude's mutable `.claude.json` once for first-run prompts. Configuration intentionally placed in the
-`home/` source is reapplied every reconciliation pass instead; that is appropriate for builder-owned declarative files
-such as a Codex `config.toml`, and is also available when continuous ownership of Claude state is desired.
-The builder-wide `instructions.md` payload is declared through `spec.instructions`; the Claude adapter installs it as
-`~/.claude/CLAUDE.md`.
+- A repository checkout at boot needs an image with an init system and a boot-time service, like
+  [`agents/self-dev`](../../../agents/self-dev).
+- Access to GitHub or another service needs a mediated secret: the token stays on the host, and the network mediator
+  substitutes it into requests to the hosts the manifest allows.
+- Variants such as `agent.nested.yaml` extend `agent.yaml` and change only what differs.

@@ -2,7 +2,7 @@
 
 Runs Codex or Claude Code directly through the Sandbox SDK in a microVM (Microsandbox), with the current Git worktree
 bind mounted along with Codex/Claude configuration from the current user's home directory. It exercises the Sandbox
-layer alone, without `agentd`; the Agent-layer equivalent is `agentctl/examples/self-dev`.
+layer alone, without `agentd`; the Agent-layer equivalent is `agents/self-dev`.
 
 Installed tools:
 - .NET 10

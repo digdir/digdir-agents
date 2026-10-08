@@ -42,3 +42,6 @@ sandbox/                      @martinothamar
 /.editorconfig                @martinothamar
 /.github/workflows/rust.yml   @martinothamar
 /.github/workflows/agentctl-*.yml        @martinothamar
+# agentctl-agenten som utvikler plattformen selv. Står etter **/Dockerfile slik at
+# dens Dockerfile følger agentctl-eierskapet.
+/agents/self-dev/             @martinothamar

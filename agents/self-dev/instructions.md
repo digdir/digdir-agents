@@ -6,14 +6,10 @@ Rust workspace at its root. Never delete, reset or reclone that directory. If th
 are cloned beside it, at `/home/agent/code/microsandbox` and `/home/agent/code/libkrunfw`, with `upstream` remotes for
 their upstream repositories; each fork's `CONTRIBUTING-digdir.md` describes how to change it.
 
-Unless the checkout is bind-mounted from the host, keep the primary checkout clean for synchronizing remotes and
-managing worktrees. Do each task in its own Git worktree under `/home/agent/code/.worktrees/`, starting new work from
-the current `origin/main`. Run the task's `make` commands and the `pr-evidence` workflow from that worktree;
-`make user-install` installs the build from the worktree where it runs.
-
-If `mount | grep digdir-agents` shows that the checkout is bind-mounted from the host, treat it as the task's existing
-worktree and work on its current branch. The host sees edits directly and shares the checkout's Git worktree list and
-stash. Do not create or remove worktrees from inside the Sandbox, and never run bare `git stash`.
+Keep the primary checkout clean for synchronizing remotes and managing worktrees. Do each task in its own Git worktree
+under `/home/agent/code/.worktrees/`, starting new work from the current `origin/main`. Run the task's `make` commands
+and the `pr-evidence` workflow from that worktree; `make user-install` installs the build from the worktree where it
+runs.
 
 Read `agentctl/AGENTS.md` first. Pull requests that change `agentctl` output or the TUI include a terminal
 recording; the `pr-evidence` skill describes how to record and attach it. The `changelog` skill describes how to write
@@ -24,14 +20,15 @@ lists the targets; run `make fmt lint build test` before reporting completion. `
 Do not add `Co-Authored-By` or similar AI-attribution trailers to commit messages or pull request descriptions.
 
 To run a nested Agent, log the nested `agentd` in with the placeholders this Sandbox already holds, then apply the
-`nested` variant with its secret file outside any bind-mounted directory:
+`nested` variant, which builds its image from the checkout. Use `agents/self-dev/full` instead of `minimal` for a
+nested Agent with a browser and a desktop.
 
 ```sh
 printf '%s\n' "$AGENT_CLAUDE_ACCESS_TOKEN" | agentctl claude login --from-stdin
 agentctl codex login --from-stdin < ~/.codex/auth.json
 printf 'GITHUB_TOKEN=%s\nGIT_USER_NAME=%s\nGIT_USER_EMAIL=%s\n' \
   "$GITHUB_TOKEN" "$GIT_USER_NAME" "$GIT_USER_EMAIL" > ~/nested.env
-cd digdir-agents/agentctl/examples/self-dev
+cd digdir-agents/agents/self-dev/minimal
 agentctl apply --variant nested --env-file ~/nested.env
 ```
 

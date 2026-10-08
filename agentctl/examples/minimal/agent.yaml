@@ -1,9 +1,12 @@
+# The smallest useful Agent: Claude Code in a Sandbox, with no repository and no secrets.
 apiVersion: agents.platform/v1alpha1
 kind: Agent
 metadata:
+  # The default name; `agentctl apply --name` picks another.
   name: minimal
 spec:
   sandbox:
+    # Built from the Dockerfile beside this manifest. Paths in a manifest resolve against its directory.
     image:
       type: build
       context: .
@@ -13,20 +16,26 @@ spec:
     resources:
       cpu: "4"
       memory: "8Gi"
+      # A layered root filesystem stores only what the Sandbox writes on top of the image.
       rootFilesystem:
         capacity: "64Gi"
         mode: layered
+  # Files copied into /home/agent on every reconciliation. Empty here.
   home:
     source: home
+  # Installed where each harness reads its instructions; for Claude Code, ~/.claude/CLAUDE.md.
   instructions:
     - source: instructions.md
   harnesses:
+    # Mediated: the Claude login stays on the host, and the Sandbox sees only a placeholder.
     - type: claudeCode
       auth: mediated
       # The mediated token cannot list Fable in the /model picker, so new Sessions select it at launch.
       defaults:
         model: fable
+  # No secrets, so no `.env` file is needed.
   secrets: []
+  # All traffic passes through the host's network mediator.
   network:
     mode: mediated
     allow: all

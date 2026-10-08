@@ -1,19 +1,19 @@
-# Builds the self-development Agent's image from agentctl/examples/self-dev. Pull requests only build and smoke-test
-# it; main, including a manual run on main, also publishes it to GHCR as `latest` and `sha-<commit>`.
-name: agentctl self-dev image
+# Builds the self-development Agent's images from agents/self-dev. Pull requests only build and smoke-test them; main,
+# including a manual run on main, also publishes them to GHCR as `latest` and `sha-<commit>`.
+name: agentctl self-dev images
 
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed]
     paths:
-      - agentctl/examples/self-dev/**
-      - .github/workflows/agentctl-self-dev-image.yml
+      - agents/self-dev/**
+      - .github/workflows/agentctl-self-dev-images.yml
   push:
     branches:
       - main
     paths:
-      - agentctl/examples/self-dev/**
-      - .github/workflows/agentctl-self-dev-image.yml
+      - agents/self-dev/**
+      - .github/workflows/agentctl-self-dev-images.yml
   workflow_dispatch:
 
 permissions:
@@ -21,26 +21,36 @@ permissions:
   packages: write
 
 concurrency:
-  group: agentctl-self-dev-image-${{ github.event.pull_request.number || github.ref }}
+  group: agentctl-self-dev-images-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
-  IMAGE_REPOSITORY: ghcr.io/digdir/digdir-agents/agent-self-dev
-  CONTEXT: agentctl/examples/self-dev
+  CONTEXT: agents/self-dev
 
 jobs:
   build:
     if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft) }}
-    name: Build self-dev image
+    name: Build ${{ matrix.target }} image
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: minimal
+            repository: ghcr.io/digdir/digdir-agents/agentctl-self-dev-minimal
+          # The full image is one stage on top of minimal, so it warms its build from that image's cache as well as its
+          # own and only rebuilds the full layers.
+          - target: full
+            repository: ghcr.io/digdir/digdir-agents/agentctl-self-dev-full
+            extra_cache: ghcr.io/digdir/digdir-agents/agentctl-self-dev-minimal
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: |
-            agentctl/examples/self-dev
+            agents/self-dev
 
       - name: Set up Docker
         uses: docker/setup-docker-action@e43656e248c0bd0647d3f5c195d116aacf6fcaf4 # v4.7.0
@@ -64,6 +74,9 @@ jobs:
       - name: Build and publish image
         env:
           PUBLISH: ${{ github.ref == 'refs/heads/main' }}
+          IMAGE_REPOSITORY: ${{ matrix.repository }}
+          EXTRA_CACHE: ${{ matrix.extra_cache }}
+          TARGET: ${{ matrix.target }}
         run: |
           set -eu
 
@@ -75,6 +88,9 @@ jobs:
               --push \
               --cache-to "type=registry,ref=${IMAGE_REPOSITORY}:buildcache,mode=max,image-manifest=true"
           fi
+          if [ -n "${EXTRA_CACHE}" ]; then
+            set -- "$@" --cache-from "type=registry,ref=${EXTRA_CACHE}:buildcache"
+          fi
 
           docker buildx build \
             --provenance=false \
@@ -82,37 +98,34 @@ jobs:
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --cache-from "type=registry,ref=${IMAGE_REPOSITORY}:buildcache" \
             --platform linux/amd64,linux/arm64 \
+            --target "${TARGET}" \
             "$@" \
             "${CONTEXT}"
 
       # The multi-platform build above loads no image. Load the native one separately (fully cached by the step above)
-      # and check the tools the Agent's instructions and skills use.
+      # and exercise the tools the Agent's instructions and skills use.
       - name: Smoke test amd64 image
+        env:
+          IMAGE_REPOSITORY: ${{ matrix.repository }}
+          EXTRA_CACHE: ${{ matrix.extra_cache }}
+          TARGET: ${{ matrix.target }}
         run: |
           set -eu
+          set --
+          if [ -n "${EXTRA_CACHE}" ]; then
+            set -- --cache-from "type=registry,ref=${EXTRA_CACHE}:buildcache"
+          fi
           docker buildx build \
             --provenance=false \
             --sbom=false \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --cache-from "type=registry,ref=${IMAGE_REPOSITORY}:buildcache" \
+            "$@" \
             --platform linux/amd64 \
+            --target "${TARGET}" \
             --load \
-            --tag agent-self-dev:smoke \
+            --tag "agentctl-self-dev-${TARGET}:smoke" \
             "${CONTEXT}"
-          docker run --rm --entrypoint bash agent-self-dev:smoke -c '
-            set -eu
-            claude --version
-            codex --version
-            gh --version
-            gh stack --help >/dev/null
-            shellcheck --version
-            actionlint --version
-            yq --version
-            cargo deny --version
-            cargo about --version
-            python3 --version
-            asciinema --version
-            agg --version
-            cargo --version
-            node --version
-          '
+          docker run --rm --init --ipc=host --security-opt seccomp=unconfined --entrypoint bash \
+            --volume "${PWD}/${CONTEXT}/smoke.sh:/smoke.sh:ro" \
+            "agentctl-self-dev-${TARGET}:smoke" /smoke.sh "${TARGET}"
