@@ -428,16 +428,41 @@ async fn endpoint_negotiation_is_not_coupled_to_ethernet() {
 }
 
 #[tokio::test(flavor = "local")]
-async fn image_is_immutable_after_materialization() {
-    let service = SandboxService::new(Rc::new(memory::Provider::new()));
-    let mut request = request();
-    let _ = service.ensure(&request).await.expect("first ensure");
-    request.spec_mut().image = ImageSource::Reference {
-        reference: "example.test/other:latest".to_string(),
-    };
+async fn what_a_sandbox_was_materialized_from_is_immutable() {
+    type Change = fn(&mut SandboxSpec);
+    let cases: [(&str, Change); 4] = [
+        ("image", |spec| {
+            spec.image = ImageSource::Reference {
+                reference: "example.test/other:latest".to_string(),
+            };
+        }),
+        ("platform", |spec| spec.platform = Platform::native("windows")),
+        ("initSystem", |spec| spec.init_system = sandbox::init::InitSystem::Image),
+        ("resources.rootFilesystem.mode", |spec| {
+            spec.resources = SandboxResources::new(
+                spec.resources.cpu(),
+                spec.resources.memory(),
+                RootFilesystem::direct(spec.resources.root_filesystem().capacity()),
+            );
+        }),
+    ];
 
-    let error = service.ensure(&request).await.expect_err("image change should fail");
-    assert!(matches!(error, Error::Immutable("image")));
+    for (field, change) in cases {
+        let backend = Rc::new(memory::Provider::with_platforms(
+            Platform::native("linux"),
+            [Platform::native("windows")],
+        ));
+        let service = SandboxService::new(backend);
+        let mut request = request();
+        let _ = service.ensure(&request).await.expect("first ensure");
+        change(request.spec_mut());
+
+        let error = service.ensure(&request).await.expect_err(field);
+        assert!(
+            matches!(error, Error::Immutable(immutable) if immutable == field),
+            "{field}: {error:?}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "local")]
@@ -493,26 +518,6 @@ async fn ensure_rejects_invalid_environment_before_materialization() {
         }
     ));
     assert_eq!(backend.count(), 0);
-}
-
-#[tokio::test(flavor = "local")]
-async fn root_filesystem_mode_is_immutable() {
-    let backend = Rc::new(memory::Provider::new());
-    let service = SandboxService::new(backend);
-    let mut request = request();
-    let _ = service.ensure(&request).await.expect("first ensure");
-    request.spec_mut().resources = SandboxResources::new(
-        request.spec().resources.cpu(),
-        request.spec().resources.memory(),
-        sandbox::RootFilesystem::direct(request.spec().resources.root_filesystem().capacity()),
-    );
-
-    let error = service
-        .ensure(&request)
-        .await
-        .expect_err("root filesystem mode change should fail");
-
-    assert!(matches!(error, Error::Immutable("resources.rootFilesystem.mode")));
 }
 
 #[tokio::test(flavor = "local")]
@@ -752,50 +757,4 @@ async fn ensure_rejects_a_root_mode_the_image_backend_cannot_materialize() {
         }
     ));
     assert_eq!(provider.backend.count(), 0);
-}
-
-#[tokio::test(flavor = "local")]
-async fn platform_is_immutable_after_materialization() {
-    let linux = Platform::native("linux");
-    let windows = Platform::native("windows");
-    let backend = Rc::new(memory::Provider::with_platforms(linux.clone(), [windows.clone()]));
-    let service = SandboxService::new(backend);
-    let linux_request = request();
-    let _ = service.ensure(&linux_request).await.expect("first ensure");
-    let windows_request = EnsureSandboxRequest::new(
-        linux_request.name().clone(),
-        SandboxSpec {
-            platform: windows,
-            ..linux_request.spec().clone()
-        },
-    );
-
-    let error = service
-        .ensure(&windows_request)
-        .await
-        .expect_err("Platform change should fail");
-
-    assert!(matches!(error, Error::Immutable("platform")));
-}
-
-#[tokio::test(flavor = "local")]
-async fn init_system_is_immutable_after_materialization() {
-    let backend = Rc::new(memory::Provider::new());
-    let service = SandboxService::new(backend);
-    let backend_init = request();
-    let _ = service.ensure(&backend_init).await.expect("first ensure");
-    let image_init = EnsureSandboxRequest::new(
-        backend_init.name().clone(),
-        SandboxSpec {
-            init_system: sandbox::init::InitSystem::Image,
-            ..backend_init.spec().clone()
-        },
-    );
-
-    let error = service
-        .ensure(&image_init)
-        .await
-        .expect_err("init system change should fail");
-
-    assert!(matches!(error, Error::Immutable("initSystem")));
 }

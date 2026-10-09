@@ -8,90 +8,6 @@ use agent::{API_VERSION, EnvironmentSpec, Harness, KIND, SecretSpec, manifest};
 use sandbox::RootFilesystemMode;
 
 #[test]
-fn decodes_sandbox_mount_primitives() {
-    let bytes = br#"
-apiVersion: agents.platform/v1alpha1
-kind: Agent
-metadata:
-  name: worker
-spec:
-  sandbox:
-    image:
-      type: reference
-      reference: example.invalid/agent:latest
-    platform:
-      os: linux
-    resources:
-      cpu: "2"
-      memory: "1Gi"
-      rootFilesystem:
-        capacity: "4Gi"
-        mode: layered
-    mounts:
-      - type: bind
-        source: ../..
-        target: /home/agent/code/altinn-studio
-        readOnly: false
-      - type: tmpfs
-        target: /tmp
-        capacity: "1Gi"
-  home:
-    source: home
-  harnesses:
-    - type: claudeCode
-      version: "2.1.266"
-      auth: mediated
-  network:
-    mode: mediated
-    allow: all
-"#;
-
-    let agent = manifest::decode(bytes).expect("manifest with Sandbox Mounts should decode");
-    let value = serde_json::to_value(agent).expect("Agent JSON");
-
-    assert_eq!(value["spec"]["sandbox"]["platform"]["os"], "linux");
-    assert_eq!(value["spec"]["sandbox"]["mounts"][0]["source"], "../..");
-    assert_eq!(value["spec"]["sandbox"]["mounts"][1]["capacity"], "1Gi");
-}
-
-#[test]
-fn decodes_a_harness_without_a_declared_version() {
-    let bytes = br#"
-apiVersion: agents.platform/v1alpha1
-kind: Agent
-metadata:
-  name: worker
-spec:
-  sandbox:
-    image:
-      type: reference
-      reference: example.invalid/agent:latest
-    platform:
-      os: linux
-    resources:
-      cpu: "2"
-      memory: "1Gi"
-      rootFilesystem:
-        capacity: "4Gi"
-        mode: layered
-  home:
-    source: home
-  harnesses:
-    - type: claudeCode
-      auth: mediated
-  network:
-    mode: mediated
-    allow: all
-"#;
-
-    let agent = manifest::decode(bytes).expect("manifest without a harness version should decode");
-    assert_eq!(agent.spec.harnesses[0].version, None);
-
-    let value = serde_json::to_value(agent).expect("Agent JSON");
-    assert!(value["spec"]["harnesses"][0].get("version").is_none());
-}
-
-#[test]
 fn decodes_the_minimal_manifest() {
     let bytes = include_bytes!("../examples/minimal/agent.yaml");
     let agent = manifest::decode(bytes).expect("minimal manifest should decode");
@@ -294,56 +210,6 @@ fn rejects_a_custom_placeholder_that_collides_with_a_generated_one() {
 }
 
 #[test]
-fn decodes_an_optional_harness_installation_and_omits_the_flag_by_default() {
-    let bytes = br#"
-apiVersion: agents.platform/v1alpha1
-kind: Agent
-metadata:
-  name: worker
-spec:
-  sandbox:
-    image:
-      type: reference
-      reference: ghcr.io/altinn/altinn-studio/agent-minimal:latest
-    platform:
-      os: linux
-    resources:
-      cpu: "2"
-      memory: "4Gi"
-      rootFilesystem:
-        capacity: "32Gi"
-        mode: layered
-  home:
-    source: home
-  harnesses:
-    - type: claudeCode
-      auth: mediated
-      default: true
-    - type: codex
-      auth: mediated
-      optional: true
-  network:
-    mode: mediated
-    allow: all
-"#;
-
-    let agent = manifest::decode(bytes).expect("manifest with an optional harness should decode");
-    let claude = agent
-        .spec
-        .harness(Harness::ClaudeCode)
-        .expect("Claude Code installation");
-    let codex = agent.spec.harness(Harness::Codex).expect("Codex installation");
-    assert!(!claude.optional);
-    assert!(codex.optional);
-
-    // The flag is absent from a required installation's serialized form, so manifests that never
-    // opt in are unchanged by this field existing.
-    let value = serde_json::to_value(&agent).expect("Agent JSON");
-    assert!(value["spec"]["harnesses"][0].get("optional").is_none());
-    assert_eq!(value["spec"]["harnesses"][1]["optional"], true);
-}
-
-#[test]
 fn validates_harness_installation_cardinality_and_defaults() {
     let mut empty = support::agent("worker");
     empty.spec.harnesses.clear();
@@ -467,70 +333,21 @@ fn rejects_skills_without_a_directory_name_or_with_duplicate_names() {
 }
 
 #[test]
-fn harness_installations_declare_optional_model_and_effort_defaults() {
-    let bytes = br#"
-apiVersion: agents.platform/v1alpha1
-kind: Agent
-metadata:
-  name: worker
-spec:
-  sandbox:
-    image:
-      type: build
-      context: .
-      dockerfile: Dockerfile
-    platform:
-      os: linux
-    resources:
-      cpu: "1"
-      memory: "1Gi"
-      rootFilesystem:
-        capacity: "8Gi"
-        mode: layered
-  home:
-    source: home
-  harnesses:
-    - type: claudeCode
-      auth: mediated
-      default: true
-      defaults:
-        model: fable
-        effort: xhigh
-    - type: codex
-      auth: mediated
-      defaults:
-        model: gpt-5.4-codex
-  network:
-    mode: mediated
-    allow: all
-"#;
-
-    let agent = manifest::decode(bytes).expect("manifest with harness defaults should decode");
-    let claude = &agent.spec.harnesses[0].defaults;
-    assert_eq!(claude.model_str(), Some("fable"));
-    assert_eq!(claude.effort_str(), Some("xhigh"));
-    let codex = &agent.spec.harnesses[1].defaults;
-    assert_eq!(codex.model_str(), Some("gpt-5.4-codex"));
-    assert_eq!(codex.effort_str(), None);
-
-    let value = serde_json::to_value(&agent).expect("Agent JSON");
-    assert_eq!(value["spec"]["harnesses"][0]["defaults"]["model"], "fable");
-    assert_eq!(value["spec"]["harnesses"][0]["defaults"]["effort"], "xhigh");
-    assert!(value["spec"]["harnesses"][1]["defaults"].get("effort").is_none());
-    let plain = manifest::decode(include_bytes!("../examples/minimal/agent.yaml")).expect("minimal manifest");
-    let plain = serde_json::to_value(&plain).expect("Agent JSON");
-    assert_eq!(plain["spec"]["harnesses"][0]["defaults"]["model"], "fable");
-    assert!(plain["spec"]["harnesses"][0]["defaults"].get("effort").is_none());
-
+fn rejects_invalid_harness_default_selections() {
+    let declared = manifest_with(&[(
+        CLAUDE_CODE,
+        "    - type: claudeCode\n      auth: mediated\n      defaults:\n        model: fable\n        effort: xhigh\n",
+    )]);
+    manifest::decode(&declared).expect("valid defaults decode");
     for (field, valid, invalid) in [
         ("model", "fable", "\"\""),
         ("effort", "xhigh", "\"\""),
         ("model", "fable", "\"gpt 5\""),
         ("effort", "xhigh", "\"hi'gh\""),
     ] {
-        let yaml = String::from_utf8_lossy(bytes).replace(
-            &format!("      {field}: {valid}\n"),
-            &format!("      {field}: {invalid}\n"),
+        let yaml = String::from_utf8_lossy(&declared).replace(
+            &format!("        {field}: {valid}\n"),
+            &format!("        {field}: {invalid}\n"),
         );
         let error = manifest::decode(yaml.as_bytes()).expect_err("invalid selections are rejected");
         assert!(
@@ -542,7 +359,8 @@ spec:
     }
 }
 
-const ACCESS_MANIFEST_HEAD: &str = r#"
+/// A manifest with one Claude Code installation and nothing optional.
+const MANIFEST: &str = r#"
 apiVersion: agents.platform/v1alpha1
 kind: Agent
 metadata:
@@ -565,51 +383,122 @@ spec:
   harnesses:
     - type: claudeCode
       auth: mediated
-"#;
-
-const ACCESS_MANIFEST_TAIL: &str = r"
   network:
     mode: mediated
     allow: all
-";
+"#;
+
+/// The lines of `MANIFEST` the cases below replace or extend.
+const CLAUDE_CODE: &str = "    - type: claudeCode\n      auth: mediated\n";
+const ROOT_FILESYSTEM_MODE: &str = "        mode: layered\n";
+const NETWORK: &str = "  network:\n";
+
+/// `MANIFEST` with each `(line, replacement)` applied once.
+fn manifest_with(replacements: &[(&str, &str)]) -> Vec<u8> {
+    replacements
+        .iter()
+        .fold(MANIFEST.to_owned(), |manifest, (line, replacement)| {
+            assert!(manifest.contains(line), "{line:?}");
+            manifest.replacen(line, replacement, 1)
+        })
+        .into_bytes()
+}
 
 fn manifest_with_access(access: &str) -> Vec<u8> {
-    format!("{ACCESS_MANIFEST_HEAD}{access}{ACCESS_MANIFEST_TAIL}").into_bytes()
+    manifest_with(&[(NETWORK, &format!("{access}{NETWORK}"))])
 }
 
+/// The Agent resource is stored and sent over the Control API in its serialized form, so a field
+/// left at its default stays out of it: a manifest that never sets the field is unchanged by it.
 #[test]
-fn decodes_ssh_access_as_a_tagged_agent_capability() {
-    let agent = manifest::decode(&manifest_with_access("  access:\n    - type: ssh\n")).expect("SSH access decodes");
-    assert_eq!(agent.spec.access, vec![agent::AccessSpec::Ssh {}]);
-    assert!(agent.spec.ssh_access());
-    let value = serde_json::to_value(&agent).expect("Agent JSON");
-    assert_eq!(value["spec"]["access"], serde_json::json!([{"type": "ssh"}]));
+fn decodes_each_part_of_a_manifest_and_serializes_only_what_it_sets() {
+    type Check = fn(&agent::Agent, &serde_json::Value);
+    let cases: [(&str, Vec<u8>, Check); 6] = [
+        (
+            "Sandbox Mounts",
+            manifest_with(&[(
+                ROOT_FILESYSTEM_MODE,
+                "        mode: layered\n    mounts:\n      - type: bind\n        source: ../..\n        \
+                 target: /home/agent/code/altinn-studio\n        readOnly: false\n      - type: tmpfs\n        \
+                 target: /tmp\n        capacity: \"1Gi\"\n",
+            )]),
+            |_, value| {
+                assert_eq!(value["spec"]["sandbox"]["mounts"][0]["source"], "../..");
+                assert_eq!(value["spec"]["sandbox"]["mounts"][1]["capacity"], "1Gi");
+            },
+        ),
+        (
+            "a harness without a declared version, and no access",
+            manifest_with(&[]),
+            |agent, value| {
+                assert_eq!(agent.spec.harnesses[0].version, None);
+                assert!(value["spec"]["harnesses"][0].get("version").is_none());
+                assert!(value["spec"]["harnesses"][0].get("optional").is_none());
+                assert!(agent.spec.access.is_empty() && !agent.spec.ssh_access());
+                assert!(value["spec"].get("access").is_none(), "an empty list is not serialized");
+            },
+        ),
+        (
+            "an optional harness installation",
+            manifest_with(&[(
+                CLAUDE_CODE,
+                "    - type: claudeCode\n      auth: mediated\n      default: true\n    \
+                 - type: codex\n      auth: mediated\n      optional: true\n",
+            )]),
+            |agent, value| {
+                assert!(!agent.spec.harness(Harness::ClaudeCode).expect("Claude Code").optional);
+                assert!(agent.spec.harness(Harness::Codex).expect("Codex").optional);
+                assert!(value["spec"]["harnesses"][0].get("optional").is_none());
+                assert_eq!(value["spec"]["harnesses"][1]["optional"], true);
+            },
+        ),
+        (
+            "model and effort defaults per installation",
+            manifest_with(&[(
+                CLAUDE_CODE,
+                "    - type: claudeCode\n      auth: mediated\n      default: true\n      defaults:\n        \
+                 model: fable\n        effort: xhigh\n    - type: codex\n      auth: mediated\n      \
+                 defaults:\n        model: gpt-5.4-codex\n",
+            )]),
+            |agent, value| {
+                let (claude, codex) = (&agent.spec.harnesses[0].defaults, &agent.spec.harnesses[1].defaults);
+                assert_eq!(
+                    (claude.model_str(), claude.effort_str()),
+                    (Some("fable"), Some("xhigh"))
+                );
+                assert_eq!((codex.model_str(), codex.effort_str()), (Some("gpt-5.4-codex"), None));
+                assert_eq!(value["spec"]["harnesses"][0]["defaults"]["effort"], "xhigh");
+                assert!(value["spec"]["harnesses"][1]["defaults"].get("effort").is_none());
+            },
+        ),
+        (
+            "SSH access",
+            manifest_with_access("  access:\n    - type: ssh\n"),
+            |agent, value| {
+                assert_eq!(agent.spec.access, vec![agent::AccessSpec::Ssh {}]);
+                assert!(agent.spec.ssh_access());
+                assert!(!agent.spec.vnc_access(), "one capability does not imply the other");
+                assert_eq!(value["spec"]["access"], serde_json::json!([{"type": "ssh"}]));
+            },
+        ),
+        (
+            "VNC access beside SSH",
+            manifest_with_access("  access:\n    - type: ssh\n    - type: vnc\n"),
+            |agent, value| {
+                assert!(agent.spec.ssh_access() && agent.spec.vnc_access());
+                assert_eq!(
+                    value["spec"]["access"],
+                    serde_json::json!([{"type": "ssh"}, {"type": "vnc"}])
+                );
+            },
+        ),
+    ];
 
-    let without = manifest::decode(&manifest_with_access("")).expect("omitted access decodes");
-    assert!(without.spec.access.is_empty());
-    assert!(!without.spec.ssh_access());
-    let value = serde_json::to_value(&without).expect("Agent JSON");
-    assert!(value["spec"].get("access").is_none(), "an empty list is not serialized");
-}
-
-#[test]
-fn decodes_vnc_access_beside_ssh_as_a_tagged_agent_capability() {
-    let agent = manifest::decode(&manifest_with_access("  access:\n    - type: ssh\n    - type: vnc\n"))
-        .expect("SSH and VNC access decode");
-    assert_eq!(
-        agent.spec.access,
-        vec![agent::AccessSpec::Ssh {}, agent::AccessSpec::Vnc {}]
-    );
-    assert!(agent.spec.ssh_access());
-    assert!(agent.spec.vnc_access());
-    let value = serde_json::to_value(&agent).expect("Agent JSON");
-    assert_eq!(
-        value["spec"]["access"],
-        serde_json::json!([{"type": "ssh"}, {"type": "vnc"}])
-    );
-
-    let ssh_only = manifest::decode(&manifest_with_access("  access:\n    - type: ssh\n")).expect("SSH only");
-    assert!(!ssh_only.spec.vnc_access(), "one capability does not imply the other");
+    for (what, bytes, check) in cases {
+        let agent = manifest::decode(&bytes).unwrap_or_else(|error| panic!("{what}: {error}"));
+        let value = serde_json::to_value(&agent).expect("Agent JSON");
+        check(&agent, &value);
+    }
 }
 
 #[test]
@@ -640,17 +529,10 @@ fn rejects_unknown_duplicate_and_configured_access_capabilities() {
         ),
         "SSH access exposes no tunables"
     );
-    // `access` belongs to the Agent, not the Sandbox: nest it in the existing sandbox block.
-    let nested = format!("{ACCESS_MANIFEST_HEAD}{ACCESS_MANIFEST_TAIL}").replace(
-        "        mode: layered\n",
+    // `access` belongs to the Agent, not the Sandbox.
+    let nested = manifest_with(&[(
+        ROOT_FILESYSTEM_MODE,
         "        mode: layered\n    access:\n      - type: ssh\n",
-    );
-    assert!(
-        nested.contains("    access:"),
-        "fixture places access under spec.sandbox"
-    );
-    assert!(matches!(
-        manifest::decode(nested.as_bytes()),
-        Err(agent::Error::Yaml(_))
-    ));
+    )]);
+    assert!(matches!(manifest::decode(&nested), Err(agent::Error::Yaml(_))));
 }

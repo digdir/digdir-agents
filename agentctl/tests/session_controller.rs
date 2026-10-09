@@ -1925,13 +1925,14 @@ async fn a_session_admitted_before_convergence_is_parked_until_its_optional_harn
     );
 }
 
-/// A failed convergence pass keeps a valid observation, so the refusal must still apply.
+/// A Session on a harness the Agent's Sandbox does not carry is refused, Ready or not.
 ///
-/// The Agent materialized its Sandbox and observed only Claude Code, then a later pass failed and
-/// cleared readiness while preserving that observation. Gating on readiness would defer here, bind
-/// the name to Codex, and then skip the post-convergence check when `converge` returns the failure.
+/// A failed convergence pass keeps a valid observation, so the refusal must still apply: the Agent
+/// materialized its Sandbox and observed only Claude Code, then a later pass failed and cleared
+/// readiness while preserving that observation. Gating on readiness would defer there, bind the
+/// name to Codex, and then skip the post-convergence check when `converge` returns the failure.
 #[tokio::test(flavor = "local")]
-async fn an_unready_agent_with_a_materialized_observation_still_refuses_an_absent_harness() {
+async fn a_session_on_a_harness_the_agent_does_not_carry_is_refused_without_persisting() {
     let directory = TempDir::new().expect("temporary directory");
     let SelectionFixture {
         database,
@@ -1940,91 +1941,51 @@ async fn an_unready_agent_with_a_materialized_observation_still_refuses_an_absen
         agent_task,
         session_task,
     } = selection_fixture(&directory).await;
+    let not_ready = vec![Condition {
+        kind: "Ready".into(),
+        status: ConditionStatus::False,
+        reason: "SshAccessFailed".into(),
+        message: "ssh access failed".into(),
+        last_transition_time: None,
+    }];
 
-    database
-        .update_status(
-            record.id,
-            record.agent.metadata.generation,
-            Status::observed(
-                record.agent.metadata.generation,
-                Some(observing(&record, &[agent::Harness::ClaudeCode])),
-                vec![Condition {
-                    kind: "Ready".into(),
-                    status: ConditionStatus::False,
-                    reason: "SshAccessFailed".into(),
-                    message: "ssh access failed".into(),
-                    last_transition_time: None,
-                }],
-            ),
-        )
-        .await
-        .expect("observed status");
+    for conditions in [record.agent.status.conditions.clone(), not_ready] {
+        let generation = database.get(record.id).await.expect("Agent").agent.metadata.generation;
+        database
+            .update_status(
+                record.id,
+                generation,
+                Status::observed(
+                    record.agent.metadata.generation,
+                    Some(observing(&record, &[agent::Harness::ClaudeCode])),
+                    conditions.clone(),
+                ),
+            )
+            .await
+            .expect("observed status");
 
-    let name = SessionName::new("codex-session").expect("name");
-    let error = service
-        .ensure(
-            "worker",
-            &name,
-            SessionRequest {
-                harness: Some(agent::Harness::Codex),
-                ..SessionRequest::default()
-            },
-            WaitPolicy::FirstPass,
-        )
-        .await
-        .expect_err("an absent harness is refused even while the Agent is not ready");
-    assert!(error.to_string().contains("is not installed"), "{error}");
-    assert!(matches!(
-        database.get_agent_session("worker", &name).await,
-        Err(Error::NotFound)
-    ));
-
-    agent_task.abort();
-    session_task.abort();
-}
-
-#[tokio::test(flavor = "local")]
-async fn a_session_on_an_optional_harness_the_agent_does_not_carry_is_refused_without_persisting() {
-    let directory = TempDir::new().expect("temporary directory");
-    let SelectionFixture {
-        database,
-        record,
-        service,
-        agent_task,
-        session_task,
-    } = selection_fixture(&directory).await;
-
-    database
-        .update_status(
-            record.id,
-            record.agent.metadata.generation,
-            Status::observed(
-                record.agent.metadata.generation,
-                Some(observing(&record, &[agent::Harness::ClaudeCode])),
-                record.agent.status.conditions.clone(),
-            ),
-        )
-        .await
-        .expect("observed status");
-
-    let name = SessionName::new("codex-session").expect("name");
-    let error = service
-        .ensure(
-            "worker",
-            &name,
-            SessionRequest {
-                harness: Some(agent::Harness::Codex),
-                ..SessionRequest::default()
-            },
-            WaitPolicy::FirstPass,
-        )
-        .await
-        .expect_err("an uninstalled optional harness is refused");
-    assert!(error.to_string().contains("is not installed"), "{error}");
-    assert!(matches!(
-        database.get_agent_session("worker", &name).await,
-        Err(Error::NotFound)
-    ));
+        let name = SessionName::new("codex-session").expect("name");
+        let error = service
+            .ensure(
+                "worker",
+                &name,
+                SessionRequest {
+                    harness: Some(agent::Harness::Codex),
+                    ..SessionRequest::default()
+                },
+                WaitPolicy::FirstPass,
+            )
+            .await
+            .expect_err("an uninstalled optional harness is refused");
+        assert!(
+            error.to_string().contains("is not installed"),
+            "{conditions:?}: {error}"
+        );
+        assert!(matches!(
+            database.get_agent_session("worker", &name).await,
+            Err(Error::NotFound)
+        ));
+    }
 
     agent_task.abort();
     session_task.abort();
@@ -2085,11 +2046,6 @@ async fn session_ensure_resolves_explicit_and_implicit_harnesses() {
 
     assert_eq!(explicit.session.harness, agent::Harness::Codex);
     assert_eq!(implicit.session.harness, agent::Harness::ClaudeCode);
-    // Manifest defaults fill omitted selections per installation, and nothing else.
-    assert_eq!(explicit.session.model_selection.model_str(), None);
-    assert_eq!(explicit.session.model_selection.effort_str(), Some("high"));
-    assert_eq!(implicit.session.model_selection.model_str(), Some("fable"));
-    assert_eq!(implicit.session.model_selection.effort_str(), None);
 
     let conflict = service
         .ensure(
@@ -2141,11 +2097,23 @@ fn recorded(session: &agent::sessions::Session) -> (Option<&str>, Option<&str>) 
 async fn session_ensure_resolves_model_and_effort_with_manifest_defaults() {
     let directory = TempDir::new().expect("temporary directory");
     let fixture = selection_fixture(&directory).await;
+    // Manifest defaults fill omitted selections per installation, and nothing else.
     let implicit = fixture
         .ensure("implicit", SessionRequest::default())
         .await
         .expect("implicit default Session");
     assert_eq!(recorded(&implicit), (Some("fable"), None));
+    let codex = fixture
+        .ensure(
+            "codex",
+            SessionRequest {
+                harness: Some(agent::Harness::Codex),
+                ..SessionRequest::default()
+            },
+        )
+        .await
+        .expect("Codex Session");
+    assert_eq!(recorded(&codex), (None, Some("high")));
 
     let chosen = fixture
         .ensure("chosen", selection(Some("claude-opus-5"), Some("low")))
