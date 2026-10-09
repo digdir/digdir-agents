@@ -246,22 +246,6 @@ pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
 mod tests {
     use tempfile::TempDir;
 
-    use crate::harness::{Effort, LaunchRequest, Model, ModelSelection};
-
-    const UNSELECTED: ModelSelection = ModelSelection {
-        model: None,
-        effort: None,
-    };
-
-    fn request<'a>(resume: Option<&'a str>, initial_prompt: Option<&'a str>) -> LaunchRequest<'a> {
-        LaunchRequest {
-            home: "/home/agent",
-            resume,
-            initial_prompt,
-            model_selection: &UNSELECTED,
-        }
-    }
-
     #[test]
     fn input_readiness_waits_for_the_initialized_composer() {
         let title = "01234567-1234-1234-1234-12345...";
@@ -289,92 +273,131 @@ mod tests {
         assert!(!stale.exists());
         assert!(unrelated.exists());
     }
+}
 
-    #[test]
-    fn every_executed_launch_uses_inline_scrollback_once() {
-        for resume in [None, Some("160cdb4b-5997-464c-9d22-602786eb45d4")] {
-            let launch = super::launch_linux(&request(resume, None));
-            // Resume has two mutually exclusive commands: resume and fresh fallback.
-            let commands = launch.command.split("codex ").skip(1).collect::<Vec<_>>();
-            assert_eq!(commands.len(), if resume.is_some() { 2 } else { 1 });
-            for command in commands {
-                assert_eq!(command.matches("tui.alternate_screen=\"never\"").count(), 1);
-                assert!(!command.contains("raw_output_mode"));
-            }
+/// Launches run under `sh` with a stub `codex` that records its arguments, in a temporary home
+/// standing in for the guest's.
+#[cfg(test)]
+#[cfg(unix)]
+mod launch_tests {
+    use tempfile::TempDir;
+
+    use crate::harness::{Effort, LaunchRequest, Model, ModelSelection};
+
+    const UNSELECTED: ModelSelection = ModelSelection {
+        model: None,
+        effort: None,
+    };
+
+    fn request<'a>(resume: Option<&'a str>, initial_prompt: Option<&'a str>) -> LaunchRequest<'a> {
+        LaunchRequest {
+            home: "/home/agent",
+            resume,
+            initial_prompt,
+            model_selection: &UNSELECTED,
         }
     }
 
+    const NATIVE: &str = "160cdb4b-5997-464c-9d22-602786eb45d4";
+
+    /// A Codex home whose `sessions` directory holds a rollout named `rollout`, if any.
+    fn home_with_rollout(rollout: Option<&str>) -> TempDir {
+        let home = TempDir::new().expect("temporary home");
+        let day = home.path().join(".codex/sessions/2026/10/09");
+        std::fs::create_dir_all(&day).expect("sessions directory");
+        if let Some(rollout) = rollout {
+            std::fs::write(day.join(rollout), "{}\n").expect("rollout");
+        }
+        home
+    }
+
+    /// The arguments Codex starts with when `request` launches it in `home`.
+    fn launched(home: &TempDir, request: &LaunchRequest<'_>) -> Vec<String> {
+        let home = home.path().to_str().expect("UTF-8 home");
+        let launch = super::launch_linux(&LaunchRequest { home, ..*request });
+        crate::harness::run_launch("codex", &launch).expect("Codex started")
+    }
+
+    fn count(arguments: &[String], value: &str) -> usize {
+        arguments.iter().filter(|argument| *argument == value).count()
+    }
+
+    fn has_pair(arguments: &[String], flag: &str, value: &str) -> bool {
+        arguments.windows(2).any(|pair| pair[0] == flag && pair[1] == value)
+    }
+
     #[test]
-    fn every_executed_launch_runs_without_the_shared_server() {
-        for resume in [None, Some("160cdb4b-5997-464c-9d22-602786eb45d4")] {
-            let launch = super::launch_linux(&request(resume, None));
-            let commands = launch.command.split("codex ").skip(1).collect::<Vec<_>>();
-            assert_eq!(commands.len(), if resume.is_some() { 2 } else { 1 });
-            for command in commands {
-                assert_eq!(command.matches("--no-daemon").count(), 1);
-            }
+    fn every_launch_renders_inline_without_the_shared_server_and_trusts_the_session_root() {
+        let rollout = format!("rollout-2026-10-09T00-00-00-{NATIVE}.jsonl");
+        for (rollout, resume) in [
+            (None, None),
+            (None, Some(NATIVE)),
+            (Some(rollout.as_str()), Some(NATIVE)),
+        ] {
+            let arguments = launched(&home_with_rollout(rollout), &request(resume, None));
+            assert_eq!(count(&arguments, "tui.alternate_screen=\"never\""), 1, "{arguments:?}");
+            assert_eq!(count(&arguments, "--no-daemon"), 1, "{arguments:?}");
+            assert!(has_pair(&arguments, "-c", "cli_auth_credentials_store=\"file\""));
+            assert!(has_pair(
+                &arguments,
+                "-c",
+                "projects./home/agent/code.trust_level=\"trusted\""
+            ));
+            assert!(!arguments.iter().any(|argument| argument.contains("raw_output_mode")));
         }
     }
 
     #[test]
     fn resume_launch_requires_a_native_rollout() {
-        let native = "160cdb4b-5997-464c-9d22-602786eb45d4";
-        let launch = super::launch_linux(&request(Some(native), None));
-
-        assert!(launch.command.contains("/home/agent/.codex/sessions"));
-        assert!(
-            launch
-                .command
-                .contains("rollout-*-160cdb4b-5997-464c-9d22-602786eb45d4.jsonl'")
-        );
-        assert!(
-            launch
-                .command
-                .contains("rollout-*-160cdb4b-5997-464c-9d22-602786eb45d4.jsonl.zst'")
-        );
-        assert!(!launch.command.contains("_*.jsonl"));
-        assert!(!launch.command.contains(".jsonl*"));
-        assert!(
-            launch
-                .command
-                .contains("codex resume --dangerously-bypass-approvals-and-sandbox")
-        );
-        assert!(launch.command.contains("cli_auth_credentials_store=\"file\""));
-        assert!(
-            launch
-                .command
-                .contains("projects./home/agent/code.trust_level=\"trusted\"")
-        );
-        assert!(launch.command.contains(native));
-        assert!(launch.command.contains("else exec codex"));
+        for rollout in [
+            format!("rollout-2026-10-09T00-00-00-{NATIVE}.jsonl"),
+            format!("rollout-2026-10-09T00-00-00-{NATIVE}.jsonl.zst"),
+        ] {
+            let arguments = launched(&home_with_rollout(Some(&rollout)), &request(Some(NATIVE), None));
+            assert_eq!(arguments.first().map(String::as_str), Some("resume"), "{rollout}");
+            assert_eq!(arguments.last().map(String::as_str), Some(NATIVE), "{rollout}");
+        }
+        for rollout in [
+            None,
+            Some(format!("rollout-2026-10-09T00-00-00-{NATIVE}_old.jsonl")),
+            Some(format!("rollout-2026-10-09T00-00-00-{NATIVE}.jsonl.bak")),
+        ] {
+            let arguments = launched(&home_with_rollout(rollout.as_deref()), &request(Some(NATIVE), None));
+            assert!(!arguments.contains(&"resume".to_owned()), "{rollout:?}: {arguments:?}");
+            assert!(!arguments.contains(&NATIVE.to_owned()), "{rollout:?}: {arguments:?}");
+        }
     }
 
     #[test]
     fn non_uuid_native_id_is_not_a_codex_resume_target() {
-        let launch = super::launch_linux(&request(Some("opaque-harness-id"), None));
+        let home = home_with_rollout(Some("rollout-2026-10-09T00-00-00-opaque-harness-id.jsonl"));
+        let arguments = launched(&home, &request(Some("opaque-harness-id"), None));
 
-        assert!(!launch.command.contains("codex resume"));
+        assert!(!arguments.contains(&"resume".to_owned()), "{arguments:?}");
     }
 
     #[test]
-    fn a_fresh_launch_passes_the_first_prompt_as_one_quoted_argument() {
-        let launch = super::launch_linux(&request(None, Some("fix it's\nbroken")));
+    fn a_fresh_launch_passes_the_first_prompt_as_one_argument() {
+        // `--` keeps a prompt that starts with `-` or names a subcommand positional.
+        let arguments = launched(&home_with_rollout(None), &request(None, Some("fix it's\nbroken")));
 
         assert!(
-            // `--` keeps a prompt that starts with `-` or names a subcommand positional.
-            launch.command.ends_with(" -- 'fix it'\\''s\nbroken'"),
-            "{}",
-            launch.command
+            arguments.ends_with(&["--".to_owned(), "fix it's\nbroken".to_owned()]),
+            "{arguments:?}"
         );
-        assert!(!launch.command.contains("codex resume"));
+        assert!(!arguments.contains(&"resume".to_owned()));
     }
 
     #[test]
     fn launches_select_no_model_or_effort_unless_the_session_carries_them() {
-        let launch = super::launch_linux(&request(None, None));
+        let arguments = launched(&home_with_rollout(None), &request(None, None));
 
-        assert!(!launch.command.contains(" -m "));
-        assert!(!launch.command.contains("model_reasoning_effort"));
+        assert!(!arguments.contains(&"-m".to_owned()), "{arguments:?}");
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.contains("model_reasoning_effort"))
+        );
     }
 
     #[test]
@@ -383,18 +406,22 @@ mod tests {
             model: Some(Model::new("gpt-5.4-codex").expect("model")),
             effort: Some(Effort::new("high").expect("effort")),
         };
-        let launch = super::launch_linux(&LaunchRequest {
+        let selected = LaunchRequest {
             model_selection: &selection,
-            ..request(Some("160cdb4b-5997-464c-9d22-602786eb45d4"), Some("go"))
-        });
+            ..request(Some(NATIVE), Some("go"))
+        };
+        let rollout = format!("rollout-2026-10-09T00-00-00-{NATIVE}.jsonl");
 
-        let selection = "-m 'gpt-5.4-codex' -c 'model_reasoning_effort=\"high\"'";
-        assert_eq!(launch.command.matches(selection).count(), 2, "{}", launch.command);
-        assert!(
-            launch
-                .command
-                .contains(&format!("{selection} 160cdb4b-5997-464c-9d22-602786eb45d4;"))
-        );
-        assert!(launch.command.contains(&format!("{selection} -- 'go'")));
+        let resumed = launched(&home_with_rollout(Some(&rollout)), &selected);
+        let fresh = launched(&home_with_rollout(None), &selected);
+        for arguments in [&resumed, &fresh] {
+            assert!(has_pair(arguments, "-m", "gpt-5.4-codex"), "{arguments:?}");
+            assert!(
+                has_pair(arguments, "-c", "model_reasoning_effort=\"high\""),
+                "{arguments:?}"
+            );
+        }
+        assert_eq!(resumed.last().map(String::as_str), Some(NATIVE));
+        assert!(fresh.ends_with(&["--".to_owned(), "go".to_owned()]), "{fresh:?}");
     }
 }

@@ -518,6 +518,43 @@ pub(crate) const fn test_harness() -> Harness {
     Harness::ClaudeCode
 }
 
+/// Runs a launch command under `sh` in place of the guest's tmux pane, with a stub `program`
+/// on `PATH` that records the arguments it starts with, and returns them, or `None` when the
+/// command did not start it.
+#[cfg(test)]
+#[cfg(unix)]
+pub(crate) fn run_launch(program: &str, launch: &ProcessLaunch) -> Option<Vec<String>> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let stub = directory.path().join(program);
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\nfor argument in \"$@\"; do printf '%s\\0' \"$argument\"; done > \"$RECORDED_ARGUMENTS\"\n",
+    )
+    .expect("stub");
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("stub permissions");
+    let recorded = directory.path().join("arguments");
+    let path = std::env::var("PATH").unwrap_or_default();
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&launch.command)
+        .envs(launch.environment.iter().map(|(name, value)| (name, value)))
+        .env("PATH", format!("{}:{path}", directory.path().display()))
+        .env("RECORDED_ARGUMENTS", &recorded)
+        .status()
+        .expect("sh");
+    assert!(status.success(), "{}", launch.command);
+    let arguments = std::fs::read(&recorded).ok()?;
+    Some(
+        String::from_utf8(arguments)
+            .expect("UTF-8 arguments")
+            .split_terminator('\0')
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

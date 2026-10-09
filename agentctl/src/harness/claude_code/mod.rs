@@ -226,14 +226,14 @@ pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
 
 #[cfg(test)]
 mod tests {
-    use crate::harness::{Effort, LaunchRequest, Model, ModelSelection};
+    use crate::harness::{LaunchRequest, ModelSelection};
 
     const UNSELECTED: ModelSelection = ModelSelection {
         model: None,
         effort: None,
     };
 
-    fn request<'a>(resume: Option<&'a str>, initial_prompt: Option<&'a str>) -> LaunchRequest<'a> {
+    pub(super) fn request<'a>(resume: Option<&'a str>, initial_prompt: Option<&'a str>) -> LaunchRequest<'a> {
         LaunchRequest {
             home: "/home/agent",
             resume,
@@ -254,19 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_launch_requires_a_native_transcript() {
-        let native = "160cdb4b-5997-464c-9d22-602786eb45d4";
-        let launch = super::launch_linux(&request(Some(native), None));
-
-        assert!(launch.command.contains("/home/agent/.claude/projects"));
-        assert!(launch.command.contains("160cdb4b-5997-464c-9d22-602786eb45d4.jsonl"));
-        assert!(launch.command.contains("--resume 160cdb4b-5997-464c-9d22-602786eb45d4"));
-        assert!(launch.command.contains("else exec claude"));
-        assert!(launch.environment.contains(&("DISABLE_AUTOUPDATER".into(), "1".into())));
-    }
-
-    #[test]
-    fn launches_in_tmux_scrollback_instead_of_the_alternate_screen() {
+    fn launches_in_tmux_scrollback_with_updates_off() {
         let launch = super::launch_linux(&request(None, None));
 
         assert!(
@@ -274,35 +262,102 @@ mod tests {
                 .environment
                 .contains(&(super::DISABLE_ALTERNATE_SCREEN_ENVIRONMENT.into(), "1".into()))
         );
+        assert!(launch.environment.contains(&("DISABLE_AUTOUPDATER".into(), "1".into())));
         assert!(super::manages_environment(super::DISABLE_ALTERNATE_SCREEN_ENVIRONMENT));
+    }
+}
+
+/// Launches run under `sh` with a stub `claude` that records its arguments, in a temporary home
+/// standing in for the guest's.
+#[cfg(test)]
+#[cfg(unix)]
+mod launch_tests {
+    use tempfile::TempDir;
+
+    use super::tests::request;
+    use crate::harness::{Effort, LaunchRequest, Model, ModelSelection};
+
+    const NATIVE: &str = "160cdb4b-5997-464c-9d22-602786eb45d4";
+
+    /// A Claude Code home whose project directory holds a transcript named `transcript`, if any.
+    fn home_with_transcript(transcript: Option<&str>) -> TempDir {
+        let home = TempDir::new().expect("temporary home");
+        let project = home.path().join(".claude/projects/-home-agent-code");
+        std::fs::create_dir_all(&project).expect("project directory");
+        if let Some(transcript) = transcript {
+            std::fs::write(project.join(transcript), "{}\n").expect("transcript");
+        }
+        home
+    }
+
+    /// The arguments Claude Code starts with when `request` launches it in `home`.
+    fn launched(home: &TempDir, request: &LaunchRequest<'_>) -> Vec<String> {
+        let home = home.path().to_str().expect("UTF-8 home");
+        let launch = super::launch_linux(&LaunchRequest { home, ..*request });
+        crate::harness::run_launch("claude", &launch).expect("Claude Code started")
+    }
+
+    fn has_pair(arguments: &[String], flag: &str, value: &str) -> bool {
+        arguments.windows(2).any(|pair| pair[0] == flag && pair[1] == value)
+    }
+
+    #[test]
+    fn every_launch_skips_permission_prompts_and_reads_the_agent_settings() {
+        let home = home_with_transcript(None);
+        let arguments = launched(&home, &request(None, None));
+
+        assert_eq!(
+            arguments.first().map(String::as_str),
+            Some("--dangerously-skip-permissions")
+        );
+        let settings = home.path().join(".claude/agent-settings.json");
+        assert!(has_pair(&arguments, "--settings", settings.to_str().expect("UTF-8")));
+    }
+
+    #[test]
+    fn resume_launch_requires_a_native_transcript() {
+        let transcript = format!("{NATIVE}.jsonl");
+        let resumed = launched(&home_with_transcript(Some(&transcript)), &request(Some(NATIVE), None));
+        assert!(
+            resumed.ends_with(&["--resume".to_owned(), NATIVE.to_owned()]),
+            "{resumed:?}"
+        );
+
+        for transcript in [None, Some(format!("{NATIVE}.jsonl.bak"))] {
+            let fresh = launched(
+                &home_with_transcript(transcript.as_deref()),
+                &request(Some(NATIVE), None),
+            );
+            assert!(!fresh.contains(&"--resume".to_owned()), "{transcript:?}: {fresh:?}");
+        }
     }
 
     #[test]
     fn non_uuid_native_id_is_not_a_claude_resume_target() {
-        let launch = super::launch_linux(&request(Some("opaque-harness-id"), None));
+        let home = home_with_transcript(Some("opaque-harness-id.jsonl"));
+        let arguments = launched(&home, &request(Some("opaque-harness-id"), None));
 
-        assert!(!launch.command.contains("--resume"));
+        assert!(!arguments.contains(&"--resume".to_owned()), "{arguments:?}");
     }
 
     #[test]
-    fn a_fresh_launch_passes_the_first_prompt_as_one_quoted_argument() {
-        let launch = super::launch_linux(&request(None, Some("fix it's\nbroken")));
+    fn a_fresh_launch_passes_the_first_prompt_as_one_argument() {
+        // `--` keeps a prompt that starts with `-` or names a subcommand positional.
+        let arguments = launched(&home_with_transcript(None), &request(None, Some("fix it's\nbroken")));
 
         assert!(
-            // `--` keeps a prompt that starts with `-` or names a subcommand positional.
-            launch.command.ends_with(" -- 'fix it'\\''s\nbroken'"),
-            "{}",
-            launch.command
+            arguments.ends_with(&["--".to_owned(), "fix it's\nbroken".to_owned()]),
+            "{arguments:?}"
         );
-        assert!(!launch.command.contains("--resume"));
+        assert!(!arguments.contains(&"--resume".to_owned()));
     }
 
     #[test]
     fn launches_select_no_model_or_effort_unless_the_session_carries_them() {
-        let launch = super::launch_linux(&request(None, None));
+        let arguments = launched(&home_with_transcript(None), &request(None, None));
 
-        assert!(!launch.command.contains("--model"));
-        assert!(!launch.command.contains("--effort"));
+        assert!(!arguments.contains(&"--model".to_owned()), "{arguments:?}");
+        assert!(!arguments.contains(&"--effort".to_owned()), "{arguments:?}");
     }
 
     #[test]
@@ -311,18 +366,22 @@ mod tests {
             model: Some(Model::new("fable").expect("model")),
             effort: Some(Effort::new("xhigh").expect("effort")),
         };
-        let launch = super::launch_linux(&LaunchRequest {
+        let selected = LaunchRequest {
             model_selection: &selection,
-            ..request(Some("160cdb4b-5997-464c-9d22-602786eb45d4"), Some("go"))
-        });
+            ..request(Some(NATIVE), Some("go"))
+        };
+        let transcript = format!("{NATIVE}.jsonl");
 
-        assert_eq!(
-            launch.command.matches("--model 'fable' --effort 'xhigh'").count(),
-            2,
-            "{}",
-            launch.command
+        let resumed = launched(&home_with_transcript(Some(&transcript)), &selected);
+        let fresh = launched(&home_with_transcript(None), &selected);
+        for arguments in [&resumed, &fresh] {
+            assert!(has_pair(arguments, "--model", "fable"), "{arguments:?}");
+            assert!(has_pair(arguments, "--effort", "xhigh"), "{arguments:?}");
+        }
+        assert!(
+            resumed.ends_with(&["--resume".to_owned(), NATIVE.to_owned()]),
+            "{resumed:?}"
         );
-        assert!(launch.command.contains("--effort 'xhigh' --resume 160cdb4b"));
-        assert!(launch.command.contains("--effort 'xhigh' -- 'go'"));
+        assert!(fresh.ends_with(&["--".to_owned(), "go".to_owned()]), "{fresh:?}");
     }
 }
