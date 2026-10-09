@@ -59,7 +59,7 @@ lint-fix: ## Apply safe Clippy fixes
 	@cargo clippy $(PACKAGES) --all-targets --all-features --fix --allow-dirty --locked
 	@echo "✓ Lint fixes applied"
 
-test: changelog-test ## Run all tests
+test: changelog-test ## Run all tests; requires Node.js, and the OpenSSH client on Unix
 	@echo "Testing Rust crates..."
 	@cargo test $(PACKAGES) --all-targets --locked
 	@echo "✓ Tests passed"
