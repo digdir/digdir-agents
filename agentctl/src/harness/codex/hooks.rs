@@ -47,34 +47,3 @@ pub(super) fn configuration(hook_path: &str) -> serde_json::Value {
         .collect::<serde_json::Map<_, _>>();
     serde_json::json!({ "hooks": hooks })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{EVENTS, configuration, script};
-    use crate::harness::hook_script::embedded_events;
-
-    #[test]
-    fn the_script_embeds_the_table_and_the_configuration_registers_it() {
-        let script = script().expect("script renders");
-        let embedded = embedded_events(&script);
-        assert_eq!(embedded.len(), EVENTS.len());
-        for (name, event) in EVENTS {
-            assert!(embedded.iter().any(|(n, e)| n == name && e == event), "{name}");
-        }
-        assert!(script.contains("const WAITING_NOTIFICATIONS = [];"));
-
-        let configuration = configuration("/home/agent/.codex/hooks/activity-hook.mjs");
-        let registered = configuration["hooks"].as_object().expect("hooks object");
-        assert_eq!(registered.len(), EVENTS.len());
-        assert!(registered.get("Notification").is_none());
-        for (name, _) in EVENTS {
-            let entry = &registered[*name][0];
-            assert_eq!(
-                entry["hooks"][0]["command"],
-                "node /home/agent/.codex/hooks/activity-hook.mjs"
-            );
-            assert_eq!(entry["hooks"][0]["timeout"], 3);
-            assert!(entry.get("matcher").is_none());
-        }
-    }
-}

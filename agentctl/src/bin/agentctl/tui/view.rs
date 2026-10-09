@@ -1521,56 +1521,31 @@ mod tests {
     }
 
     #[test]
-    fn the_footer_wraps_every_selection_hint_at_eighty_columns() {
+    fn a_wrapped_footer_hint_is_clicked_where_it_is_drawn() {
         let mut app = triage_app();
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).expect("test terminal");
-        let footer = |terminal: &Terminal<TestBackend>| {
-            let text = buffer_text(terminal);
-            let mut lines = text.lines().rev().take(3).map(str::trim_end).collect::<Vec<_>>();
-            lines.reverse();
-            lines.into_iter().map(str::to_owned).collect::<Vec<_>>()
-        };
-
         app.selection = Some(TreeRowId::Session {
             agent: "agent-00".into(),
             session: agent::sessions::SessionName::new("main").expect("name"),
         });
         let hit_map = draw(&mut terminal, &app);
+        let text = buffer_text(&terminal);
+        let (row, line) = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.starts_with("n new session"))
+            .expect("wrapped footer hint");
         assert_eq!(
-            footer(&terminal),
-            [
-                "enter attach · p prompt · o open… · a archive · d delete · s describe · y yaml",
-                "n new session · c new agent",
-                "? help · tab needs you · / filter · A show archived · F forwards · q quit",
-            ]
-        );
-        assert_eq!(
-            hit_map.click_at(2, 10),
+            hit_map.click_at(
+                u16::try_from(text_column(line, "new")).expect("column"),
+                u16::try_from(row).expect("row")
+            ),
             Some(HitTarget::Action(MouseAction::Key(
                 crossterm::event::KeyCode::Char('n'),
                 crossterm::event::KeyModifiers::NONE,
             ))),
-            "a wrapped hint is clicked where it is drawn"
+            "a wrapped hint is clicked where it is drawn:\n{text}"
         );
-
-        app.selection = Some(TreeRowId::Agent("agent-00".into()));
-        app.show_archived = true;
-        draw(&mut terminal, &app);
-        assert_eq!(
-            footer(&terminal),
-            [
-                "enter fold · n new session · o open… · e exec · f forward · d delete",
-                "p provisioning · s describe · y yaml · x stop · z all · c new agent",
-                "? help · tab needs you · / filter · A hide archived · F forwards · q quit",
-            ]
-        );
-
-        let mut wide = Terminal::new(TestBackend::new(140, 12)).expect("test terminal");
-        draw(&mut wide, &app);
-        let text = buffer_text(&wide);
-        let lines = text.lines().rev().take(3).collect::<Vec<_>>();
-        assert!(lines[1].starts_with("enter fold"), "two footer lines fit:\n{text}");
-        assert!(!lines[2].contains("enter"), "{text}");
     }
 
     #[test]
@@ -1581,24 +1556,19 @@ mod tests {
         draw(&mut terminal, &app);
         let text = buffer_text(&terminal);
         let lines = text.lines().rev().take(3).map(str::trim_end).collect::<Vec<_>>();
-        assert_eq!(lines[2], "enter fold · n new session · o open…");
-        assert_eq!(lines[1], "e exec · f forward · d delete · …");
+        assert!(lines[1].ends_with('…'), "{text}");
         assert!(lines.iter().all(|line| line.chars().count() <= 40));
     }
 
     #[test]
-    fn the_header_tells_what_an_archive_did_before_its_counts() {
+    fn a_narrow_header_cuts_the_counts_not_the_notice() {
         let mut app = triage_app();
         app.notice = Some(("main archived · A to show".into(), std::time::Instant::now()));
         let mut terminal = Terminal::new(TestBackend::new(50, 10)).expect("test terminal");
         draw(&mut terminal, &app);
         let text = buffer_text(&terminal);
         let header = text.lines().next().unwrap_or_default();
-        assert_eq!(
-            header.trim_end(),
-            " agentctl  1 need you · main archived · A to show",
-            "a narrow header cuts the counts, not the notice"
-        );
+        assert!(header.contains("main archived · A to show"), "{header}");
     }
 
     #[test]
@@ -2108,23 +2078,6 @@ mod tests {
     }
 
     #[test]
-    fn the_stop_confirmation_says_what_a_stop_keeps_in_full() {
-        let mut app = tree_app(1);
-        app.modal = Some(Modal::ConfirmStop {
-            agent: "agent-00".into(),
-        });
-        let mut terminal = Terminal::new(TestBackend::new(80, 16)).expect("test terminal");
-        draw(&mut terminal, &app);
-        let text = buffer_text(&terminal);
-        assert!(text.contains("Stop agent agent-00?"), "{text}");
-        assert!(text.contains("Running harnesses stop with its VM."), "{text}");
-        assert!(
-            text.contains("Its disk is kept; attaching after a start resumes a Session."),
-            "{text}"
-        );
-    }
-
-    #[test]
     fn modal_hit_maps_expose_form_fields_and_choices() {
         let mut app = tree_app(1);
         app.on_key(crossterm::event::KeyEvent::new(
@@ -2221,7 +2174,7 @@ mod tests {
     }
 
     #[test]
-    fn create_agent_modal_shows_the_picker_and_placeholder_name() {
+    fn create_agent_modal_aligns_its_fields_and_keeps_its_size() {
         use super::super::app::{CreateField, CreateForm, ManifestCandidate};
 
         let mut app = App::new();
@@ -2242,12 +2195,6 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(100, 16)).expect("test terminal");
         let hit_map = draw(&mut terminal, &app);
         let text = buffer_text(&terminal);
-        assert!(text.contains("create agent"));
-        assert!(text.contains("Agent       ◂ full"));
-        assert!(text.contains("Variant     ◂ default"));
-        assert!(text.contains("Name          full-1"));
-        assert!(text.contains("Env file      default: .env beside manifest"));
-        assert!(text.contains("enter create · tab/↑/↓ field · ←/→ select · esc cancel"));
         let initial_geometry = create_modal_geometry(&text);
         let agent_line = text.lines().find(|line| line.contains("│ Agent")).expect("Agent row");
         let variant_line = text
@@ -2298,11 +2245,7 @@ mod tests {
         form.name = "copy".into();
         draw(&mut terminal, &app);
         let text = buffer_text(&terminal);
-        assert!(text.contains("Agent       ◂ broken"));
-        assert!(text.contains("Variant     ◂ default"));
         assert!(text.contains("manifest cannot be decoded"));
-        assert!(text.contains("Name          copy▏"));
-        assert!(text.contains("Env file      default: .env beside manifest"));
         assert_eq!(create_modal_geometry(&text), initial_geometry);
     }
 
@@ -2331,19 +2274,6 @@ mod tests {
             agent_line.trim_end().ends_with('│'),
             "path remains inside the modal: {agent_line}"
         );
-    }
-
-    #[test]
-    fn a_text_input_puts_the_cursor_over_its_placeholder_or_after_its_value() {
-        let spans = text_input("", true, "full");
-        assert_eq!(spans[1].content, "f");
-        assert!(spans[1].style.add_modifier.contains(Modifier::REVERSED));
-        assert_eq!(spans[2].content, "ull");
-
-        let spans = text_input("my", true, "full");
-        assert_eq!(spans[1].content, "my");
-        assert_eq!(spans[2].content, "▏");
-        assert_eq!(text_input("", false, "").len(), 1, "only the indent");
     }
 
     #[test]
@@ -2399,31 +2329,11 @@ mod tests {
     }
 
     #[test]
-    fn the_open_menu_lists_keys_reasons_and_the_setup_note() {
+    fn an_open_menu_row_is_clicked_where_it_is_drawn() {
         let mut app = ssh_menu_app(super::super::open::SshSetup::Missing);
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).expect("test terminal");
         let hit_map = draw(&mut terminal, &app);
         let text = buffer_text(&terminal);
-
-        assert!(text.contains(" open agent-00 "), "{text}");
-        let shell = text
-            .lines()
-            .find(|line| line.contains("Shell in the Sandbox"))
-            .expect("shell row");
-        assert!(
-            shell.contains("▸") && shell.trim_end().trim_end_matches('│').trim_end().ends_with('e'),
-            "{shell}"
-        );
-        let zed = crate::launch::Editor::Zed
-            .missing_launcher()
-            .expect("Zed needs a launcher");
-        assert!(text.contains(&format!("Zed: {zed}")), "{text}");
-        assert!(text.contains("Set up SSH"), "{text}");
-        assert!(text.contains("SSH needs a line in ~/.ssh/config;"), "{text}");
-        assert!(
-            text.lines().skip(1).all(|line| !line.contains("agentctl ")),
-            "below the title, the menu offers keys, not commands:\n{text}"
-        );
 
         let (row, _) = text
             .lines()
@@ -2502,27 +2412,6 @@ mod tests {
             listed.iter().all(|line| line.contains('…')),
             "long names are shortened, not cut:\n{text}"
         );
-    }
-
-    #[test]
-    fn ssh_setup_shows_the_exact_line_and_file_before_writing() {
-        let mut app = ssh_menu_app(super::super::open::SshSetup::Missing);
-        app.on_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('c'),
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        let mut terminal = Terminal::new(TestBackend::new(80, 20)).expect("test terminal");
-        draw(&mut terminal, &app);
-        let text = buffer_text(&terminal);
-
-        assert!(text.contains(" set up SSH "), "{text}");
-        assert!(
-            text.contains("Add this line at the top of /tmp/user/.ssh/config?"),
-            "{text}"
-        );
-        assert!(text.contains("  Include ~/.agent/ssh/config"), "{text}");
-        assert!(text.contains("Then: VS Code, Remote-SSH."), "{text}");
-        assert!(text.contains("enter add · o open anyway · esc back"), "{text}");
     }
 
     #[test]

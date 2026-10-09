@@ -1032,7 +1032,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "local")]
-    #[ignore = "requires Internet access"]
+    #[ignore = "requires access to the public Docker registry"]
     async fn imported_prepared_roots_are_recorded_in_the_image_catalog() {
         use sandbox::image::ImageBackend as _;
 
@@ -1098,7 +1098,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "local")]
-    #[ignore = "requires Internet access"]
+    #[ignore = "requires access to the public Docker registry"]
     async fn a_tagged_image_is_recorded_by_its_manifest_digest() {
         use sandbox::image::ImageBackend as _;
 

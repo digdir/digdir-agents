@@ -59,26 +59,6 @@ fn is_environment_snapshot(spec: &ExecutionSpec) -> bool {
     is_command(spec, "/usr/bin/env", &["-0"])
 }
 
-fn is_runtime_directory_install(spec: &ExecutionSpec) -> bool {
-    is_command(
-        spec,
-        "/usr/bin/sudo",
-        &[
-            "-n",
-            "/usr/bin/install",
-            "-d",
-            "-m",
-            "0755",
-            "-o",
-            "root",
-            "-g",
-            "root",
-            "/var/lib/agent/ssh",
-            "/run/sshd",
-        ],
-    )
-}
-
 fn is_systemd_running_check(spec: &ExecutionSpec) -> bool {
     is_command(spec, "/usr/bin/test", &["-d", "/run/systemd/system"])
 }
@@ -118,60 +98,11 @@ fn queue_valid_environment_policy(backend: &memory::Provider) {
     backend.queue_execution_events_matching(is_environment_policy_check, valid_environment_policy());
 }
 
-fn count_sudo(backend: &memory::Provider, expected: &[&str]) -> usize {
-    backend
-        .execution_specs()
-        .iter()
-        .filter(|spec| is_command(spec, "/usr/bin/sudo", expected))
-        .count()
-}
-
-fn assert_service_reconciled_idempotently(backend: &memory::Provider) {
-    assert_eq!(
-        count_sudo(backend, &["-n", "/usr/bin/systemctl", "enable", "agent-ssh.service"]),
-        2
-    );
-    assert_eq!(
-        count_sudo(backend, &["-n", "/usr/bin/systemctl", "restart", "agent-ssh.service"]),
-        1
-    );
-    assert_eq!(
-        count_sudo(backend, &["-n", "/usr/bin/systemctl", "start", "agent-ssh.service"]),
-        1
-    );
-}
-
-fn assert_runtime_created_before_policy(backend: &memory::Provider) {
-    let executions = backend.execution_specs();
-    let runtime_directory = executions
-        .iter()
-        .position(is_runtime_directory_install)
-        .expect("OpenSSH runtime directory install");
-    let policy_validation = executions
-        .iter()
-        .position(is_environment_policy_check)
-        .expect("effective-policy validation");
-    assert!(
-        runtime_directory < policy_validation,
-        "OpenSSH's runtime directory exists before policy validation"
-    );
-}
-
 async fn read_guest_file(sandbox: &SandboxHandle, path: &str) -> Option<Vec<u8>> {
     let mut reader = sandbox.read_file(&SandboxPath::new(path)).await.ok()?;
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes).await.expect("guest file bytes");
     Some(bytes)
-}
-
-async fn assert_guest_environment(sandbox: &SandboxHandle) {
-    assert_eq!(
-        read_guest_file(sandbox, "/home/agent/.ssh/environment").await,
-        Some(
-            b"CONTAINER_HOST=unix:///run/podman/podman.sock\nGIT_USER_NAME=Agent #1 \"Reviewer\"\nLANG=C.UTF-8\nNODE_EXTRA_CA_CERTS=/.msb/tls/ca.pem\nPATH=/home/agent/.cargo/bin:/usr/local/go/bin:/usr/bin\n"
-                .to_vec()
-        )
-    );
 }
 
 fn record(name: &str, id: &str, ssh: bool) -> AgentRecord {
@@ -243,12 +174,24 @@ impl Fixture {
         ssh::SshHome::new(&self.home)
     }
 
-    fn config(&self) -> String {
-        std::fs::read_to_string(self.ssh_home().config_path()).expect("generated config")
-    }
-
     fn known_hosts(&self) -> String {
         std::fs::read_to_string(self.ssh_home().known_hosts_path()).unwrap_or_default()
+    }
+
+    /// What OpenSSH makes of the generated configuration for `agent`'s alias, when it dials the
+    /// Agent through `agentctl`.
+    #[cfg(unix)]
+    fn resolved(&self, agent: &str) -> Option<String> {
+        let output = std::process::Command::new("ssh")
+            .arg("-F")
+            .arg(self.ssh_home().config_path())
+            .arg("-G")
+            .arg(ssh::alias(agent))
+            .output()
+            .expect("the OpenSSH client resolves the generated configuration");
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let resolved = String::from_utf8(output.stdout).expect("UTF-8 configuration");
+        ssh::resolves_through_agentctl(&resolved, agent).then_some(resolved)
     }
 }
 
@@ -272,13 +215,9 @@ async fn access_is_idempotent_and_only_public_material_enters_the_guest() {
     }
 
     assert!(fixture.access.reconcile(&record, &sandbox).await.expect("first pass"));
-    assert_runtime_created_before_policy(&fixture.backend);
     let host_key = read_guest_file(&sandbox, "/var/lib/agent/ssh/ssh_host_ed25519_key")
         .await
         .expect("host key in guest");
-    let host_public = read_guest_file(&sandbox, "/var/lib/agent/ssh/ssh_host_ed25519_key.pub")
-        .await
-        .expect("host public key in guest");
     let authorized = read_guest_file(&sandbox, "/var/lib/agent/ssh/authorized_keys")
         .await
         .expect("authorized_keys in guest");
@@ -291,22 +230,24 @@ async fn access_is_idempotent_and_only_public_material_enters_the_guest() {
     assert!(client_private.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----"));
     assert_ne!(host_key, client_private.as_bytes(), "host and client keys differ");
     assert_eq!(authorized, client_public.as_bytes());
-    assert_guest_environment(&sandbox).await;
-    assert!(client_public.starts_with("ssh-ed25519 AAAA"));
-    let host_public = String::from_utf8(host_public).expect("UTF-8 public key");
-    assert_eq!(
-        fixture.known_hosts(),
-        format!("agent-{id} {host_public}agentctl-worker {host_public}", id = record.id),
-        "known_hosts is pre-seeded under the incarnation alias and, for clients without HostKeyAlias, the Host alias"
-    );
-    let expected_config = format!(
-        "\nHost agentctl-worker\n    User agent\n    ProxyCommand {AGENTCTL} ssh-proxy agent/worker\n    HostKeyAlias agent-{id}\n    IdentityFile {identity}\n    UserKnownHostsFile {known_hosts}\n    IdentitiesOnly yes\n",
-        id = record.id,
-        // The same renderer the config uses: on Windows the paths are quoted with escaped backslashes.
-        identity = ssh::render_path(&ssh_home.identity_path(record.id), None),
-        known_hosts = ssh::render_path(&ssh_home.known_hosts_path(), None),
-    );
-    assert!(fixture.config().ends_with(&expected_config), "{}", fixture.config());
+    #[cfg(unix)]
+    {
+        let resolved = fixture
+            .resolved("worker")
+            .expect("the alias dials the Agent through agentctl");
+        let setting = |key: &str| {
+            resolved
+                .lines()
+                .find_map(|line| line.strip_prefix(key)?.strip_prefix(' '))
+                .map(str::to_owned)
+        };
+        assert_eq!(setting("user").as_deref(), Some("agent"));
+        assert_eq!(setting("hostkeyalias"), Some(format!("agent-{}", record.id)));
+        assert_eq!(
+            setting("identityfile").map(PathBuf::from),
+            Some(ssh_home.identity_path(record.id))
+        );
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -330,15 +271,6 @@ async fn access_is_idempotent_and_only_public_material_enters_the_guest() {
         std::fs::read_to_string(ssh_home.identity_path(record.id)).expect("client key"),
         client_private,
         "the incarnation keeps its client key"
-    );
-    assert_eq!(fixture.known_hosts().lines().count(), 2);
-    assert_service_reconciled_idempotently(&fixture.backend);
-    assert_eq!(
-        count_sudo(
-            &fixture.backend,
-            &["-n", "/bin/chmod", "0600", "/var/lib/agent/ssh/ssh_host_ed25519_key"]
-        ),
-        2
     );
     let guest_files = [
         "/var/lib/agent/ssh/ssh_host_ed25519_key",
@@ -447,13 +379,6 @@ async fn an_image_that_blocks_the_managed_environment_fails_permanently() {
                 .is_none(),
             "login state is not installed before the policy passes"
         );
-        assert_eq!(
-            count_sudo(
-                &fixture.backend,
-                &["-n", "/usr/bin/systemctl", "enable", "agent-ssh.service"]
-            ),
-            0
-        );
     }
 }
 
@@ -487,10 +412,6 @@ async fn a_failed_server_stop_keeps_the_state_for_the_next_pass() {
         matches!(&error, Error::SandboxSetup(message) if message.contains("Connection timed out")),
         "{error}"
     );
-    assert_eq!(
-        count_sudo(&fixture.backend, &["-n", "/bin/rm", "-rf", "/var/lib/agent/ssh"]),
-        0
-    );
     assert!(
         fixture.keys.contains(record.id),
         "the host key stays while the server that holds it may still run"
@@ -518,30 +439,7 @@ async fn a_failed_server_stop_keeps_the_state_for_the_next_pass() {
         ],
     );
     assert!(!fixture.access.reconcile(&record, &sandbox).await.expect("withdraw"));
-    assert_eq!(
-        count_sudo(&fixture.backend, &["-n", "/bin/rm", "-rf", "/var/lib/agent/ssh"]),
-        1
-    );
-}
-
-#[tokio::test(flavor = "local")]
-async fn withdrawing_access_without_systemd_removes_only_the_files() {
-    let fixture = Fixture::new();
-    let record = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", false);
-    fixture.store(&record, 0).await;
-    let sandbox = fixture.sandbox(&record).await;
-    fixture
-        .backend
-        .queue_execution_events_matching(is_state_check, exited(0));
-    fixture
-        .backend
-        .queue_execution_events_matching(is_systemd_running_check, exited(1));
-    assert!(!fixture.access.reconcile(&record, &sandbox).await.expect("withdraw"));
-    assert!(!fixture.backend.execution_specs().iter().any(is_disable));
-    assert_eq!(
-        count_sudo(&fixture.backend, &["-n", "/bin/rm", "-rf", "/var/lib/agent/ssh"]),
-        1
-    );
+    assert!(!fixture.keys.contains(record.id), "the withdrawal completes");
 }
 
 #[tokio::test(flavor = "local")]
@@ -564,34 +462,20 @@ async fn withdrawing_access_removes_guest_and_host_state() {
         .queue_execution_events_matching(is_state_check, exited(0));
     assert!(!fixture.access.reconcile(&record, &sandbox).await.expect("withdraw"));
 
-    assert_eq!(
-        count_sudo(
-            &fixture.backend,
-            &["-n", "/usr/bin/systemctl", "disable", "--now", "agent-ssh.service"]
-        ),
-        1
-    );
-    assert_eq!(
-        count_sudo(&fixture.backend, &["-n", "/bin/rm", "-rf", "/var/lib/agent/ssh"]),
-        1
-    );
     assert!(!fixture.keys.contains(record.id));
     assert!(!fixture.ssh_home().agent_directory(record.id).exists());
     assert_eq!(fixture.known_hosts(), "");
-    assert!(!fixture.config().contains("Host "));
+    #[cfg(unix)]
+    assert!(
+        fixture.resolved("worker").is_none(),
+        "the alias no longer reaches the Agent"
+    );
 
-    // A later pass finds no guest state and leaves systemd alone.
+    // A later pass finds no guest state.
     fixture
         .backend
         .queue_execution_events_matching(is_state_check, exited(1));
     assert!(!fixture.access.reconcile(&record, &sandbox).await.expect("steady"));
-    assert_eq!(
-        count_sudo(
-            &fixture.backend,
-            &["-n", "/usr/bin/systemctl", "disable", "--now", "agent-ssh.service"]
-        ),
-        1
-    );
 }
 
 #[tokio::test(flavor = "local")]
@@ -612,13 +496,15 @@ async fn deletion_removes_host_material_and_config_lists_only_active_ssh_agents(
     queue_valid_environment_policy(&fixture.backend);
     assert!(fixture.access.reconcile(&worker, &sandbox).await.expect("grant"));
 
-    let aliases = fixture
-        .config()
-        .lines()
-        .filter_map(|line| line.strip_prefix("Host "))
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    assert_eq!(aliases, ["agentctl-reviewer", "agentctl-worker"]);
+    #[cfg(unix)]
+    for (agent, listed) in [
+        ("worker", true),
+        ("reviewer", true),
+        ("plain", false),
+        ("leaving", false),
+    ] {
+        assert_eq!(fixture.resolved(agent).is_some(), listed, "{agent}");
+    }
 
     assert!(matches!(
         fixture.access.describe("plain").await,

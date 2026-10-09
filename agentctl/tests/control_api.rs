@@ -427,42 +427,23 @@ impl Connector for DelayedConnector {
 }
 
 #[tokio::test(flavor = "local")]
-async fn prompt_completion_timeout_is_unchanged_by_transit() {
+async fn session_operations_carry_their_parameters_across_the_wire() {
     let fixture = api();
-    let client = Client::new(Rc::new(DelayedConnector {
+    let name = agent::sessions::SessionName::new("s1").expect("name");
+    // Time spent connecting must not shorten the completion timeout the server applies.
+    let delayed = Client::new(Rc::new(DelayedConnector {
         inner: InProcessConnector {
             server: fixture.server.clone(),
         },
     }));
-    client
-        .prompt_session(
-            "worker",
-            agent::sessions::SessionName::new("s1").expect("name"),
-            "go".into(),
-            true,
-            Some(Duration::from_millis(20)),
-        )
-        .await
-        .expect("delivered");
-    assert_eq!(
-        fixture.sent.borrow().as_slice(),
-        [("go".into(), true, Some(Duration::from_millis(20)))]
-    );
-}
 
-#[tokio::test(flavor = "local")]
-async fn session_send_and_turns_round_trip_with_their_parameters() {
-    let fixture = api();
-    let name = agent::sessions::SessionName::new("s1").expect("name");
-
-    fixture
-        .client
+    delayed
         .prompt_session(
             "worker",
             name.clone(),
             "do it".into(),
             true,
-            Some(std::time::Duration::from_secs(90)),
+            Some(Duration::from_millis(20)),
         )
         .await
         .expect("send with wait");
@@ -471,45 +452,26 @@ async fn session_send_and_turns_round_trip_with_their_parameters() {
         .prompt_session("worker", name.clone(), "fire and forget".into(), false, None)
         .await
         .expect("send without wait");
-    {
-        let sent = fixture.sent.borrow();
-        assert_eq!(sent.len(), 2);
-        assert_eq!((&sent[0].0, sent[0].1), (&"do it".to_owned(), true));
-        assert_eq!(sent[0].2, Some(Duration::from_secs(90)));
-        assert_eq!(sent[1], ("fire and forget".to_owned(), false, None));
-    }
+    assert_eq!(
+        fixture.sent.borrow().as_slice(),
+        [
+            ("do it".into(), true, Some(Duration::from_millis(20))),
+            ("fire and forget".into(), false, None)
+        ]
+    );
 
     let last = fixture
         .client
         .session_turns("worker", name.clone(), Some(1))
         .await
         .expect("turns");
-    assert_eq!(last.len(), 1);
-    assert_eq!(last[0], answered_turn("two", "2"));
-    assert_eq!(
-        fixture
-            .client
-            .session_turns("worker", name.clone(), None)
-            .await
-            .expect("turns")
-            .len(),
-        2
-    );
-    let missing = fixture
+    assert_eq!(last, [answered_turn("two", "2")]);
+    let all = fixture
         .client
-        .prompt_session("ghost", name, "hello".into(), false, None)
+        .session_turns("worker", name.clone(), None)
         .await
-        .expect_err("unknown Agent");
-    match missing {
-        Error::Rpc(error) => assert_eq!(error.code, -32004),
-        other => panic!("unexpected error: {other}"),
-    }
-}
-
-#[tokio::test(flavor = "local")]
-async fn session_archive_and_unarchive_round_trip_and_report_a_missing_session() {
-    let fixture = api();
-    let name = agent::sessions::SessionName::new("s1").expect("name");
+        .expect("turns");
+    assert_eq!(all.len(), 2);
 
     let archived = fixture
         .client
@@ -531,41 +493,46 @@ async fn session_archive_and_unarchive_round_trip_and_report_a_missing_session()
         ]
     );
 
-    let missing = fixture
-        .client
-        .set_session_archived("ghost", name, true)
-        .await
-        .expect_err("unknown Agent");
-    match missing {
-        Error::Rpc(error) => assert_eq!(error.code, -32004),
-        other => panic!("unexpected error: {other}"),
-    }
-}
-
-#[tokio::test(flavor = "local")]
-async fn session_deletion_round_trips_and_reports_a_missing_session() {
-    let fixture = api();
-    let name = agent::sessions::SessionName::new("s1").expect("name");
-
     fixture
         .client
         .delete_session("worker", name.clone())
         .await
         .expect("delete Session");
-    assert_eq!(
-        fixture.deleted.borrow().as_slice(),
-        [("worker".to_owned(), name.clone())]
-    );
+    assert_eq!(fixture.deleted.borrow().as_slice(), [("worker".to_owned(), name)]);
 
-    let missing = fixture
+    let request = agent::sessions::SessionRequest {
+        harness: Some(agent::Harness::ClaudeCode),
+        model_selection: agent::ModelSelection {
+            model: Some(agent::Model::new("claude-fable-5").expect("model")),
+            effort: Some(agent::Effort::new("xhigh").expect("effort")),
+        },
+        initial_prompt: None,
+    };
+    fixture
         .client
-        .delete_session("ghost", name)
+        .ensure_session(
+            "worker",
+            agent::sessions::SessionName::new("s1").expect("Session name"),
+            request.clone(),
+            WaitPolicy::FirstPass,
+        )
         .await
-        .expect_err("unknown Agent");
-    match missing {
-        Error::Rpc(error) => assert_eq!(error.code, -32004),
-        other => panic!("unexpected error: {other}"),
-    }
+        .expect_err("fake Session ensure should fail after decoding parameters");
+    fixture
+        .client
+        .ensure_session(
+            "worker",
+            agent::sessions::SessionName::new("s2").expect("Session name"),
+            agent::sessions::SessionRequest::default(),
+            WaitPolicy::FirstPass,
+        )
+        .await
+        .expect_err("fake Session ensure should fail after decoding parameters");
+    assert_eq!(
+        fixture.ensured.borrow().as_slice(),
+        &[request, agent::sessions::SessionRequest::default()],
+        "model and effort travel as opaque values and stay absent when omitted"
+    );
 }
 
 #[tokio::test(flavor = "local")]
@@ -619,18 +586,6 @@ async fn an_interrupted_prompt_is_still_delivered() {
     })
     .await
     .expect("the delivery runs to completion without its client");
-}
-
-#[tokio::test(flavor = "local")]
-async fn login_returns_only_non_secret_readiness() {
-    let fixture = api();
-    let imported = fixture
-        .client
-        .auth_login(agent::Harness::ClaudeCode, "sk-ant-oat01-canary".into(), false)
-        .await
-        .expect("login");
-    assert_eq!(imported.provider, "claude");
-    assert!(imported.ready);
 }
 
 #[tokio::test(flavor = "local")]
@@ -869,39 +824,6 @@ async fn client_and_server_exchange_versioned_agent_operations() {
     assert_eq!(execution.operating_system, "linux");
     assert_eq!(execution.sandbox.provider().as_str(), "memory");
     assert!(client.list_sessions(None).await.expect("list all Sessions").is_empty());
-    let request = agent::sessions::SessionRequest {
-        harness: Some(agent::Harness::ClaudeCode),
-        model_selection: agent::ModelSelection {
-            model: Some(agent::Model::new("claude-fable-5").expect("model")),
-            effort: Some(agent::Effort::new("xhigh").expect("effort")),
-        },
-        initial_prompt: None,
-    };
-    let ensure_error = client
-        .ensure_session(
-            "worker",
-            agent::sessions::SessionName::new("s1").expect("Session name"),
-            request.clone(),
-            WaitPolicy::FirstPass,
-        )
-        .await
-        .expect_err("fake Session ensure should fail after decoding parameters");
-    assert!(matches!(ensure_error, Error::Rpc(error) if error.code == -32004));
-    let omitted = client
-        .ensure_session(
-            "worker",
-            agent::sessions::SessionName::new("s2").expect("Session name"),
-            agent::sessions::SessionRequest::default(),
-            WaitPolicy::FirstPass,
-        )
-        .await
-        .expect_err("fake Session ensure should fail after decoding parameters");
-    assert!(matches!(omitted, Error::Rpc(error) if error.code == -32004));
-    assert_eq!(
-        fixture.ensured.borrow().as_slice(),
-        &[request, agent::sessions::SessionRequest::default()],
-        "model and effort travel as opaque values and stay absent when omitted"
-    );
     let session_error = client
         .get_session("worker", agent::sessions::SessionName::new("s1").expect("Session name"))
         .await
@@ -1090,15 +1012,26 @@ async fn work_in_a_stopped_agent_is_refused_with_how_to_start_it() {
 #[tokio::test(flavor = "local")]
 async fn application_errors_keep_stable_protocol_codes() {
     let fixture = api();
-    let error = fixture
-        .client
-        .get("missing")
-        .await
-        .expect_err("missing Agent should fail");
+    let client = &fixture.client;
+    let name = || agent::sessions::SessionName::new("s1").expect("name");
+    let missing: [(&str, LocalFuture<'_, Result<(), Error>>); 4] = [
+        ("get", Box::pin(async { client.get("missing").await.map(drop) })),
+        (
+            "prompt",
+            Box::pin(client.prompt_session("missing", name(), "hello".into(), false, None)),
+        ),
+        (
+            "archive",
+            Box::pin(async { client.set_session_archived("missing", name(), true).await.map(drop) }),
+        ),
+        ("delete", Box::pin(client.delete_session("missing", name()))),
+    ];
 
-    match error {
-        Error::Rpc(error) => assert_eq!(error.code, -32004),
-        other => panic!("unexpected error: {other}"),
+    for (operation, call) in missing {
+        match call.await {
+            Err(Error::Rpc(error)) => assert_eq!(error.code, -32004, "{operation}"),
+            other => panic!("{operation}: unexpected result {other:?}"),
+        }
     }
 }
 

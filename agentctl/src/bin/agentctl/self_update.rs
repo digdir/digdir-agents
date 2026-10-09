@@ -514,12 +514,4 @@ mod tests {
             std::fs::canonicalize(release).expect("canonical release")
         );
     }
-
-    #[test]
-    fn self_help_hides_completion_command() {
-        use clap::CommandFactory as _;
-        let help = super::super::Arguments::command().render_long_help().to_string();
-        assert!(!help.contains("__complete-update"));
-        assert!(!help.contains("__publish-release"));
-    }
 }

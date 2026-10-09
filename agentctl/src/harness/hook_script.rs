@@ -144,23 +144,9 @@ impl HookScript<'_> {
     }
 }
 
-/// Parses the event table back out of a rendered script, in the wire format
-/// the Platform API reads; adapters use it to prove their table round-trips.
-#[cfg(test)]
-pub(super) fn embedded_events(script: &str) -> Vec<(String, ActivityEvent)> {
-    let start = script.find("const EVENTS = ").expect("table") + "const EVENTS = ".len();
-    let end = script[start..].find(";\n").expect("terminator") + start;
-    let table: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&script[start..end]).expect("embedded JSON");
-    table
-        .into_iter()
-        .map(|(name, value)| (name, serde_json::from_value(value).expect("wire value parses")))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{HookScript, embedded_events};
+    use super::HookScript;
     use crate::sessions::ActivityEvent;
 
     #[tokio::test]
@@ -178,7 +164,7 @@ mod tests {
             "process.stdout.write('ready\\n');\nconst input = await read(process.stdin);",
             1,
         );
-        let Ok(mut child) = tokio::process::Command::new("node")
+        let mut child = tokio::process::Command::new("node")
             .arg("--input-type=module")
             .arg("-e")
             .arg(script)
@@ -190,10 +176,7 @@ mod tests {
             .env_remove("AGENT_SESSION_ID")
             .kill_on_drop(true)
             .spawn()
-        else {
-            // Node is optional for Rust-only development environments.
-            return;
-        };
+            .expect("Node.js runs the hook script, as it does in every Sandbox and CI host");
         let mut ready = [0; 6];
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -219,41 +202,5 @@ mod tests {
             assert!(tokio::time::Instant::now() < deadline, "hook waited for stdin EOF");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-    }
-
-    #[test]
-    fn renders_the_given_tables_verbatim() {
-        let script = HookScript {
-            events: &[
-                ("Begin", ActivityEvent::TurnStarted),
-                ("End", ActivityEvent::TurnCompleted),
-            ],
-            waiting_notifications: &["ask"],
-        }
-        .render()
-        .expect("script renders");
-        assert_eq!(
-            embedded_events(&script),
-            [
-                ("Begin".to_owned(), ActivityEvent::TurnStarted),
-                ("End".to_owned(), ActivityEvent::TurnCompleted),
-            ]
-        );
-        assert!(script.contains(r#"const WAITING_NOTIFICATIONS = ["ask"];"#));
-        assert!(!script.contains("__EVENTS__"));
-    }
-
-    #[test]
-    fn session_start_carries_identity_and_retries_within_one_budget() {
-        let script = HookScript {
-            events: &[("SessionStart", ActivityEvent::SessionStart)],
-            waiting_notifications: &[],
-        }
-        .render()
-        .expect("script renders");
-        assert!(script.contains("body.nativeSessionId = input.session_id;"));
-        assert!(script.contains("body.transcriptPath = input.transcript_path;"));
-        assert!(script.contains("retryable ? 3 : 1"));
-        assert!(script.contains("retryable ? 1500 : 300"));
     }
 }

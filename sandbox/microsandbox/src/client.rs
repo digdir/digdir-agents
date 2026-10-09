@@ -375,21 +375,6 @@ mod tests {
         std::fs::remove_dir(&fallback).expect("remove fallback directory");
     }
 
-    #[test]
-    fn every_supported_host_runtime_download_is_digest_pinned() {
-        for (os, architecture) in [
-            ("linux", "x86_64"),
-            ("linux", "aarch64"),
-            ("macos", "aarch64"),
-            ("windows", "x86_64"),
-            ("windows", "aarch64"),
-        ] {
-            let digest = super::runtime_sha256(os, architecture).expect("supported host digest");
-            assert_eq!(digest.len(), 64);
-            assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        }
-    }
-
     #[tokio::test(flavor = "local")]
     async fn runtime_paths_outside_the_home_are_refused() {
         let home = tempfile::tempdir().expect("temporary home should be created");

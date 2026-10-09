@@ -956,6 +956,12 @@ pub enum NetworkEndpoint {
     Control(NetworkControlEndpoint),
 }
 
+// A Network Backend may drive a live endpoint on a dedicated thread.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<NetworkEndpoint>();
+};
+
 impl NetworkEndpoint {
     /// Returns the immutable contract represented by this endpoint.
     #[must_use]

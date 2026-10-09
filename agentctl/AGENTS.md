@@ -54,7 +54,8 @@ Use Tokio's `LocalRuntime` for asynchronous work. Keep control-plane state singl
 
 ## Development
 
-Run `make help` at the repository root to list the available development targets.
+Run `make help` at the repository root to list the available development targets. `make test` needs Node.js, and on
+Unix the OpenSSH client: tests run the generated hook script and resolve generated SSH configuration with them.
 
 Follow [MICROSANDBOX.md](../sandbox/MICROSANDBOX.md) when updating the Microsandbox source and runtime pins. The
 forks are synchronized and their runtimes released in digdir/microsandbox and digdir/libkrunfw.
