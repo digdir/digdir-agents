@@ -221,6 +221,7 @@ async fn run_lifecycle_execution(
 /// Session's recorded model selection is part of every launch, resumed or not.
 fn launch_arguments(
     session: &Session,
+    platform_api_url: &str,
     token: &LaunchToken,
     resume: Option<&str>,
     initial_message: Option<&str>,
@@ -240,6 +241,13 @@ fn launch_arguments(
         ("CONTAINER_HOST".into(), crate::sandbox::platform::CONTAINER_HOST.into()),
         ("AGENT_SESSION_ID".into(), session.id.to_string()),
         ("AGENT_SESSION_TOKEN".into(), token.expose()),
+        // TODO: Remove once released: hook scripts installed by earlier releases read the
+        // endpoint only from here, and a relaunch after an upgrade can run before setup
+        // replaces them. Current hook scripts read `PLATFORM_API_URL_FILE` instead.
+        (
+            "AGENT_SESSION_HOOK_URL".into(),
+            format!("{platform_api_url}{}", crate::platform_api::SESSION_HOOKS_PATH),
+        ),
     ]);
     for (name, value) in session_environment {
         arguments.push("-e".into());
@@ -250,9 +258,6 @@ fn launch_arguments(
 }
 
 /// Creates the named detached tmux session running the harness.
-///
-/// The Platform API URL is installed first: a launch can come before the
-/// first Agent setup pass after a daemon restart, which installs it too.
 async fn launch(
     session: &Session,
     sandbox: &SandboxHandle,
@@ -261,8 +266,7 @@ async fn launch(
     resume: Option<&str>,
     initial_message: Option<&str>,
 ) -> Result<(), Error> {
-    crate::sandbox::platform::install_platform_api_url(sandbox, platform_api_url).await?;
-    let arguments = launch_arguments(session, token, resume, initial_message);
+    let arguments = launch_arguments(session, platform_api_url, token, resume, initial_message);
     let created = run_lifecycle_execution(
         sandbox,
         ExecutionSpec::command(SandboxPath::new("/usr/bin/tmux"), arguments)
@@ -787,12 +791,19 @@ mod tests {
         let session = test_session(selection);
         let token = super::LaunchToken::generate();
         for resume in [None, Some("160cdb4b-5997-464c-9d22-602786eb45d4")] {
-            let arguments = super::launch_arguments(&session, &token, resume, None);
+            let arguments = super::launch_arguments(&session, "http://platform-api", &token, resume, None);
+            assert!(arguments.contains(&"AGENT_SESSION_HOOK_URL=http://platform-api/v1/session/hooks".to_owned()));
             let command = arguments.last().expect("tmux command");
             assert!(command.contains("'haiku'") && command.contains("'low'"), "{command}");
             assert_eq!(command.contains("--resume"), resume.is_some(), "{command}");
         }
-        let plain = super::launch_arguments(&test_session(crate::ModelSelection::default()), &token, None, None);
+        let plain = super::launch_arguments(
+            &test_session(crate::ModelSelection::default()),
+            "http://platform-api",
+            &token,
+            None,
+            None,
+        );
         assert!(!plain.last().expect("tmux command").contains("haiku"));
     }
 
@@ -800,7 +811,13 @@ mod tests {
     fn terminal_options_precede_creation_and_attachment() {
         let session = test_session(crate::ModelSelection::default());
         let options = super::terminal_options();
-        let launch = super::launch_arguments(&session, &super::LaunchToken::generate(), None, None);
+        let launch = super::launch_arguments(
+            &session,
+            "http://platform-api",
+            &super::LaunchToken::generate(),
+            None,
+            None,
+        );
         assert!(launch.starts_with(&options));
         assert_eq!(launch[options.len()], "new-session");
         let attach = super::attach_arguments(&session);

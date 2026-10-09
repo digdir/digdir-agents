@@ -316,7 +316,7 @@ mod tests {
             ]
         );
         assert!(script.contains(r#"const WAITING_NOTIFICATIONS = ["ask"];"#));
-        assert!(!script.contains("__EVENTS__"));
+        assert!(!script.contains("__"), "every placeholder is rendered");
     }
 
     #[test]
