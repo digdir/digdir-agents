@@ -14,6 +14,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Changed
 
+- `agentctl tui` suggests a numbered name when it creates an Agent, such as `agentctl-dev-1`, skipping names already in use; type a name to use another. ([#158](https://github.com/digdir/digdir-agents/pull/158))
 - Sessions are tested with Claude Code 2.1.292 and Codex CLI 0.160.1, so Agents with their own images can install these versions. ([#154](https://github.com/digdir/digdir-agents/pull/154))
 
 ### Fixed

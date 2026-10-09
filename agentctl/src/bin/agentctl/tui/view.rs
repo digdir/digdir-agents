@@ -825,7 +825,7 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal, hit_map
                 .render(frame, area, FORM_WIDTH, hit_map);
         }
         Modal::NewSession(form) => render_new_session(frame, area, form, hit_map),
-        Modal::CreateAgent(form) => render_create_agent(frame, area, form, hit_map),
+        Modal::CreateAgent(form) => render_create_agent(frame, area, form, &app.agents, hit_map),
         Modal::PortForward(form) => render_port_forward(frame, area, form, hit_map),
         Modal::Help => render_help(frame, area, hit_map),
         Modal::Open(menu) => render_open(frame, area, menu, hit_map),
@@ -1057,7 +1057,13 @@ fn selection_hint(manifest_default: Option<&str>) -> String {
     )
 }
 
-fn render_create_agent(frame: &mut Frame, area: Rect, form: &super::app::CreateForm, hit_map: &mut HitMap) {
+fn render_create_agent(
+    frame: &mut Frame,
+    area: Rect,
+    form: &super::app::CreateForm,
+    agents: &[agent::Agent],
+    hit_map: &mut HitMap,
+) {
     let candidate_error = form.candidate().and_then(|candidate| candidate.name.as_ref().err());
     let mut widget = Form::new(" create agent ", Color::Cyan, &CREATE_AGENT_HINTS)
         .error(form.error.as_ref().or(candidate_error).map(String::as_str));
@@ -1109,7 +1115,7 @@ fn render_create_agent(frame: &mut Frame, area: Rect, form: &super::app::CreateF
             text_input(
                 &form.name,
                 form.field == CreateField::Name,
-                form.placeholder().unwrap_or_default(),
+                &form.placeholder(agents).unwrap_or_default(),
             ),
         ))
         .row(labeled(
@@ -2239,7 +2245,7 @@ mod tests {
         assert!(text.contains("create agent"));
         assert!(text.contains("Agent       ◂ full"));
         assert!(text.contains("Variant     ◂ default"));
-        assert!(text.contains("Name          full"));
+        assert!(text.contains("Name          full-1"));
         assert!(text.contains("Env file      default: .env beside manifest"));
         assert!(text.contains("enter create · tab/↑/↓ field · ←/→ select · esc cancel"));
         let initial_geometry = create_modal_geometry(&text);
