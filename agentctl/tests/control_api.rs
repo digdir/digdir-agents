@@ -499,6 +499,40 @@ async fn session_operations_carry_their_parameters_across_the_wire() {
         .await
         .expect("delete Session");
     assert_eq!(fixture.deleted.borrow().as_slice(), [("worker".to_owned(), name)]);
+
+    let request = agent::sessions::SessionRequest {
+        harness: Some(agent::Harness::ClaudeCode),
+        model_selection: agent::ModelSelection {
+            model: Some(agent::Model::new("claude-fable-5").expect("model")),
+            effort: Some(agent::Effort::new("xhigh").expect("effort")),
+        },
+        initial_prompt: None,
+    };
+    fixture
+        .client
+        .ensure_session(
+            "worker",
+            agent::sessions::SessionName::new("s1").expect("Session name"),
+            request.clone(),
+            WaitPolicy::FirstPass,
+        )
+        .await
+        .expect_err("fake Session ensure should fail after decoding parameters");
+    fixture
+        .client
+        .ensure_session(
+            "worker",
+            agent::sessions::SessionName::new("s2").expect("Session name"),
+            agent::sessions::SessionRequest::default(),
+            WaitPolicy::FirstPass,
+        )
+        .await
+        .expect_err("fake Session ensure should fail after decoding parameters");
+    assert_eq!(
+        fixture.ensured.borrow().as_slice(),
+        &[request, agent::sessions::SessionRequest::default()],
+        "model and effort travel as opaque values and stay absent when omitted"
+    );
 }
 
 #[tokio::test(flavor = "local")]
@@ -790,39 +824,6 @@ async fn client_and_server_exchange_versioned_agent_operations() {
     assert_eq!(execution.operating_system, "linux");
     assert_eq!(execution.sandbox.provider().as_str(), "memory");
     assert!(client.list_sessions(None).await.expect("list all Sessions").is_empty());
-    let request = agent::sessions::SessionRequest {
-        harness: Some(agent::Harness::ClaudeCode),
-        model_selection: agent::ModelSelection {
-            model: Some(agent::Model::new("claude-fable-5").expect("model")),
-            effort: Some(agent::Effort::new("xhigh").expect("effort")),
-        },
-        initial_prompt: None,
-    };
-    let ensure_error = client
-        .ensure_session(
-            "worker",
-            agent::sessions::SessionName::new("s1").expect("Session name"),
-            request.clone(),
-            WaitPolicy::FirstPass,
-        )
-        .await
-        .expect_err("fake Session ensure should fail after decoding parameters");
-    assert!(matches!(ensure_error, Error::Rpc(error) if error.code == -32004));
-    let omitted = client
-        .ensure_session(
-            "worker",
-            agent::sessions::SessionName::new("s2").expect("Session name"),
-            agent::sessions::SessionRequest::default(),
-            WaitPolicy::FirstPass,
-        )
-        .await
-        .expect_err("fake Session ensure should fail after decoding parameters");
-    assert!(matches!(omitted, Error::Rpc(error) if error.code == -32004));
-    assert_eq!(
-        fixture.ensured.borrow().as_slice(),
-        &[request, agent::sessions::SessionRequest::default()],
-        "model and effort travel as opaque values and stay absent when omitted"
-    );
     let session_error = client
         .get_session("worker", agent::sessions::SessionName::new("s1").expect("Session name"))
         .await

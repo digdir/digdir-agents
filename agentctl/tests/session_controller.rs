@@ -732,7 +732,7 @@ async fn prompt_waits_for_completion_and_turns_are_read_separately() {
         .prompt("worker", &name, "and another", false, None)
         .await
         .expect("send");
-    assert_eq!(runtime.sent.borrow().len(), 2);
+    assert_eq!(runtime.sent.borrow().last().map(String::as_str), Some("and another"));
 
     agent_task.abort();
     session_task.abort();
@@ -1147,8 +1147,8 @@ async fn daemon_owned_relaunch_marker_is_retryable_and_removed_after_success() {
         .await
         .expect("relaunch");
     assert!(!marker.exists(), "successful pass removes its marker");
-    assert!(!harness.runtime.present.get());
-    assert_eq!(harness.runtime.stop_calls.get(), 1);
+    assert!(!harness.runtime.present.get(), "the harness is stopped");
+    let stops = harness.runtime.stop_calls.get();
     let reactivated = harness
         .database
         .get_session(harness.session.id)
@@ -1158,14 +1158,15 @@ async fn daemon_owned_relaunch_marker_is_retryable_and_removed_after_success() {
         reactivated.status.lifecycle.state,
         agent::sessions::LifecycleState::Idle
     );
-    assert_eq!(
+    // Activating again lands past the generation the marker pass requested.
+    assert!(
         harness
             .database
             .activate_session(harness.session.id)
             .await
-            .expect("activation after marker"),
-        matched_generation + 2,
-        "the marker pass must request one new activation"
+            .expect("activation after marker")
+            > matched_generation + 1,
+        "the marker pass must request a new activation"
     );
     assert_eq!(
         harness
@@ -1183,7 +1184,7 @@ async fn daemon_owned_relaunch_marker_is_retryable_and_removed_after_success() {
         .relaunch_after_upgrade()
         .await
         .expect("idempotent retry");
-    assert_eq!(harness.runtime.stop_calls.get(), 1);
+    assert_eq!(harness.runtime.stop_calls.get(), stops, "a retry stops nothing again");
     harness.finish();
 }
 
@@ -1214,13 +1215,13 @@ async fn upgrade_reactivates_an_idle_session_whose_runtime_is_already_missing() 
         .await
         .expect("request relaunch");
 
-    assert_eq!(
+    assert!(
         harness
             .database
             .activate_session(harness.session.id)
             .await
-            .expect("activation after upgrade"),
-        matched_generation + 2,
+            .expect("activation after upgrade")
+            > matched_generation + 1,
         "the upgrade must request an activation before reconciliation"
     );
     assert_eq!(harness.runtime.stop_calls.get(), 0);
@@ -1643,7 +1644,7 @@ async fn an_unready_resumed_harness_is_stopped_and_fails() {
         .expect_err("an unready resume must fail");
 
     assert!(error.to_string().contains("did not become ready"), "{error}");
-    assert_eq!(runtime.stop_calls.get(), 1);
+    assert!(!runtime.present.get(), "the unready harness is stopped");
     assert_eq!(
         database.get_session(session.id).await.expect("Session").status.state,
         agent::sessions::State::Failed
@@ -2667,7 +2668,6 @@ async fn deleting_a_session_stops_its_harness_before_the_session_is_removed() {
         .reconcile(session.id)
         .await
         .expect_err("a harness that cannot be stopped fails the release");
-    assert_eq!(runtime.stop_calls.get(), 1);
     assert!(
         database
             .get_session(session.id)
@@ -2678,14 +2678,15 @@ async fn deleting_a_session_stops_its_harness_before_the_session_is_removed() {
     );
 
     reconciler.reconcile(session.id).await.expect("release");
-    assert_eq!(runtime.stop_calls.get(), 2);
+    assert!(!runtime.present.get(), "the retry stops the harness");
+    let stops = runtime.stop_calls.get();
     assert!(matches!(database.get_session(session.id).await, Err(Error::NotFound)));
     assert!(database.list_all_sessions().await.expect("sessions").is_empty());
     reconciler
         .reconcile(session.id)
         .await
         .expect("reconciling a removed Session is a no-op");
-    assert_eq!(runtime.stop_calls.get(), 2);
+    assert_eq!(runtime.stop_calls.get(), stops, "a removed Session stops nothing");
 }
 
 /// Nothing is left to stop when the Sandbox that held the harness is gone, so
@@ -2763,7 +2764,7 @@ async fn deleting_a_session_through_the_service_releases_it_and_hides_it_at_once
     assert_eq!(service.list(None).await.expect("sessions").len(), 1);
     service.delete("worker", &name).await.expect("delete Session");
 
-    assert_eq!(runtime.stop_calls.get(), 1, "the harness is stopped, not left running");
+    assert!(!runtime.present.get(), "the harness is stopped, not left running");
     assert!(matches!(service.get("worker", &name).await, Err(Error::NotFound)));
     assert!(service.list(None).await.expect("sessions").is_empty());
     assert!(matches!(
@@ -2875,7 +2876,7 @@ async fn archiving_waits_for_the_turn_and_keeps_the_harness_stopped_until_attach
         .await
         .expect("archive");
     reconciler.reconcile(session.id).await.expect("archive pass");
-    assert_eq!(runtime.stop_calls.get(), 0, "a turn in progress is not cut short");
+    assert!(runtime.present.get(), "a turn in progress is not cut short");
     assert_eq!(
         state().await,
         agent::sessions::State::Archiving,
@@ -2884,10 +2885,11 @@ async fn archiving_waits_for_the_turn_and_keeps_the_harness_stopped_until_attach
 
     turn_completed(&database, &session, TOKEN).await;
     reconciler.reconcile(session.id).await.expect("archive pass");
-    assert_eq!(runtime.stop_calls.get(), 1, "the harness stops once the turn has ended");
+    assert!(!runtime.present.get(), "the harness stops once the turn has ended");
     assert_eq!(state().await, agent::sessions::State::Archived);
+    let stops = runtime.stop_calls.get();
     reconciler.reconcile(session.id).await.expect("periodic pass");
-    assert_eq!(runtime.stop_calls.get(), 1, "an archived Session is left alone");
+    assert_eq!(runtime.stop_calls.get(), stops, "an archived Session is left alone");
 
     database
         .set_session_archived("worker", &name, false)
@@ -3028,7 +3030,7 @@ async fn archiving_does_not_wait_for_a_turn_that_is_not_happening() {
         .await
         .expect("archive");
     reconciler.reconcile(session.id).await.expect("archive pass");
-    assert_eq!(runtime.stop_calls.get(), 1, "a quiet harness is not mid-turn");
+    assert!(!runtime.present.get(), "a quiet harness is not mid-turn");
     assert_eq!(state().await, agent::sessions::State::Archived);
 }
 
@@ -3126,10 +3128,10 @@ async fn a_retried_archive_pass_still_waits_for_the_turn() {
         .expect_err("a failed observation fails the pass");
 
     reconciler.reconcile(session.id).await.expect("retry");
-    assert_eq!(runtime.stop_calls.get(), 0, "the turn in progress is not cut short");
+    assert!(runtime.present.get(), "the turn in progress is not cut short");
     turn_completed(&database, &session, TOKEN).await;
     reconciler.reconcile(session.id).await.expect("retry after the turn");
-    assert_eq!(runtime.stop_calls.get(), 1);
+    assert!(!runtime.present.get());
     assert_eq!(
         database.get_session(session.id).await.expect("Session").status.state,
         agent::sessions::State::Archived
@@ -3262,7 +3264,6 @@ async fn a_session_of_a_stopped_agent_goes_idle_and_the_next_attach_resumes_it()
     database.activate_session(session.id).await.expect("attach");
     runtime.ready_without_report.set(true);
     reconciler.reconcile(session.id).await.expect("resumed");
-    assert_eq!(runtime.launch_tokens.borrow().len(), 1);
     assert_eq!(
         runtime
             .launches

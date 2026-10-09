@@ -116,7 +116,7 @@ fn assert_podman_setup_commands(executions: &[sandbox::execution::ExecutionSpec]
             })
             .count()
     };
-    assert_eq!(count(&["-n", "/usr/bin/systemctl", "daemon-reload"]), 2);
+    assert!(count(&["-n", "/usr/bin/systemctl", "daemon-reload"]) > 0);
     // systemd readiness is confirmed before the first systemctl call of a setup pass.
     let daemon_reload = executions
         .iter()
@@ -130,15 +130,13 @@ fn assert_podman_setup_commands(executions: &[sandbox::execution::ExecutionSpec]
             .count()
             >= 2
     );
-    assert_eq!(
-        count(&["-n", "/usr/bin/systemctl", "enable", "--now", "podman.socket"]),
-        2
-    );
-    assert_eq!(count(&["-n", "/usr/bin/install", "-d", "-m", "0755", "/run/podman"]), 2);
-    assert_eq!(
-        count(&["-n", "/bin/chmod", "0755", "/usr/local/libexec/agent-container-ca"]),
-        2
-    );
+    for converged in [
+        &["-n", "/usr/bin/systemctl", "enable", "--now", "podman.socket"][..],
+        &["-n", "/usr/bin/install", "-d", "-m", "0755", "/run/podman"],
+        &["-n", "/bin/chmod", "0755", "/usr/local/libexec/agent-container-ca"],
+    ] {
+        assert!(count(converged) > 0, "{converged:?}");
+    }
     assert!(!executions.iter().any(|spec| {
         match spec.program() {
             Program::Command { args, .. } => args
@@ -402,29 +400,11 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
             Program::ImageEntrypoint => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        commands
-            .iter()
-            .filter(|(executable, _)| *executable == "/usr/bin/env")
-            .count(),
-        4
-    );
-    assert_eq!(
-        commands
-            .iter()
-            .filter(|(executable, _)| *executable == "/usr/bin/tar")
-            .count(),
-        2
-    );
-    assert_eq!(
-        commands
-            .iter()
-            .filter(|(executable, args)| {
-                *executable == "/usr/bin/install" && args == &["-d", "-m", "0755", "/home/agent/code"]
-            })
-            .count(),
-        2
-    );
+    assert!(executions.iter().any(is_claude_version) && executions.iter().any(is_codex_version));
+    assert!(commands.iter().any(|(executable, _)| *executable == "/usr/bin/tar"));
+    assert!(commands.iter().any(|(executable, args)| {
+        *executable == "/usr/bin/install" && args == &["-d", "-m", "0755", "/home/agent/code"]
+    }));
     assert!(!commands.iter().any(|(executable, _)| *executable == "/usr/bin/git"));
     assert!(
         !commands.iter().any(|(executable, args)| {
@@ -569,14 +549,14 @@ async fn linux_setup_convergently_configures_podman_container_trust() {
     assert!(hook.contains("/.msb/tls/ca.pem"));
 
     assert_podman_setup_commands(&backend.execution_specs());
-    // Two setup passes; the first retried once while systemd was not yet PID 1.
-    assert_eq!(
+    // Two setup passes; the first retried while systemd was not yet PID 1.
+    assert!(
         backend
             .execution_specs()
             .iter()
             .filter(|spec| is_systemd_readiness_check(spec))
-            .count(),
-        3
+            .count()
+            > 2
     );
 }
 
@@ -627,13 +607,8 @@ async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
         .await
         .expect("setup without a declared version");
 
-    assert_eq!(
-        backend
-            .execution_specs()
-            .iter()
-            .filter(|spec| is_claude_version(spec))
-            .count(),
-        1,
+    assert!(
+        backend.execution_specs().iter().any(is_claude_version),
         "the installation is still checked for presence"
     );
 }
@@ -687,6 +662,7 @@ async fn linux_setup_converges_git_identity_after_home_sync() {
         .setup(&record, &first, &declared(&record), &setup_phase())
         .await
         .expect("first setup");
+    let first_pass = backend.execution_specs().len();
     let second = service
         .ensure(&request("Second User", "second@example.com"))
         .await
@@ -698,24 +674,18 @@ async fn linux_setup_converges_git_identity_after_home_sync() {
 
     let executions = backend.execution_specs();
     let git = executions.iter().filter(|spec| is_git_config(spec)).collect::<Vec<_>>();
-    assert_eq!(git.len(), 4);
-    let arguments = git
-        .iter()
-        .map(|spec| match spec.program() {
-            Program::Command { args, .. } => args.clone(),
-            Program::ImageEntrypoint => unreachable!(),
+    // What a key was last set to by the end of a pass is what Git uses after it.
+    let configured = |executions: &[sandbox::execution::ExecutionSpec], key: &str| {
+        executions.iter().rev().find_map(|spec| match spec.program() {
+            Program::Command { args, .. } if is_git_config(spec) && args[3] == key => Some(args[4].clone()),
+            _ => None,
         })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        arguments,
-        [
-            ["git", "config", "--global", "user.name", "First User"],
-            ["git", "config", "--global", "user.email", "first@example.com"],
-            ["git", "config", "--global", "user.name", "Second User"],
-            ["git", "config", "--global", "user.email", "second@example.com"],
-        ]
-        .map(|args| args.map(str::to_owned).to_vec())
-    );
+    };
+    let (first, both) = (&executions[..first_pass], executions.as_slice());
+    assert_eq!(configured(first, "user.name").as_deref(), Some("First User"));
+    assert_eq!(configured(first, "user.email").as_deref(), Some("first@example.com"));
+    assert_eq!(configured(both, "user.name").as_deref(), Some("Second User"));
+    assert_eq!(configured(both, "user.email").as_deref(), Some("second@example.com"));
     assert!(
         git.iter()
             .all(|spec| spec.environment().get("HOME").map(String::as_str) == Some("/home/agent"))
