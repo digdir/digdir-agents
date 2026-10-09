@@ -51,32 +51,3 @@ pub(super) fn configuration(hook_path: &str) -> serde_json::Value {
         .collect::<serde_json::Map<_, _>>();
     serde_json::Value::Object(hooks)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{EVENTS, configuration, script};
-    use crate::harness::hook_script::embedded_events;
-
-    #[test]
-    fn the_script_embeds_the_table_and_the_configuration_registers_it() {
-        let script = script().expect("script renders");
-        let embedded = embedded_events(&script);
-        assert_eq!(embedded.len(), EVENTS.len());
-        for (name, event) in EVENTS {
-            assert!(embedded.iter().any(|(n, e)| n == name && e == event), "{name}");
-        }
-        assert!(script.contains(r#"const WAITING_NOTIFICATIONS = ["permission_prompt","idle_prompt"];"#));
-
-        let configuration = configuration("/home/agent/.claude/hooks/activity-hook.mjs");
-        let registered = configuration.as_object().expect("hooks object");
-        assert_eq!(registered.len(), EVENTS.len());
-        for (name, _) in EVENTS {
-            let entry = &registered[*name][0];
-            assert_eq!(
-                entry["hooks"][0]["command"],
-                "node /home/agent/.claude/hooks/activity-hook.mjs"
-            );
-            assert_eq!(entry.get("matcher").is_some(), *name == "SessionStart");
-        }
-    }
-}

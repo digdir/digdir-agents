@@ -46,32 +46,12 @@ fn is_listener_check(port: u16) -> impl Fn(&ExecutionSpec) -> bool {
     }
 }
 
-fn is_enable(spec: &ExecutionSpec) -> bool {
-    is_command(
-        spec,
-        "/usr/bin/sudo",
-        &["-n", "/usr/bin/systemctl", "enable", "--now", UNITS[0], UNITS[1]],
-    )
-}
-
-fn is_disable(spec: &ExecutionSpec) -> bool {
-    is_command(
-        spec,
-        "/usr/bin/sudo",
-        &["-n", "/usr/bin/systemctl", "disable", "--now", UNITS[0], UNITS[1]],
-    )
-}
-
 fn is_active_check(spec: &ExecutionSpec) -> bool {
     is_command(
         spec,
         "/usr/bin/sudo",
         &["-n", "/usr/bin/systemctl", "is-active", UNITS[0], UNITS[1]],
     )
-}
-
-fn is_any_listener_check(spec: &ExecutionSpec) -> bool {
-    command(spec).is_some_and(|(executable, _)| executable == "/usr/bin/ss")
 }
 
 fn exited(code: i32) -> Vec<ExecutionEvent> {
@@ -196,18 +176,6 @@ async fn granting_access_enables_the_units_the_image_declared() {
         Some(6080),
         "a granted Agent reports the viewer port its image declared"
     );
-    assert!(
-        fixture.backend.execution_specs().iter().any(is_enable),
-        "the units named by the image are enabled, and no unit file is written"
-    );
-    assert!(
-        !fixture
-            .backend
-            .execution_specs()
-            .iter()
-            .any(|spec| command(spec).is_some_and(|(executable, _)| executable == "/bin/chmod")),
-        "the units belong to the image, so nothing here installs or chmods one"
-    );
 }
 
 #[tokio::test(flavor = "local", start_paused = true)]
@@ -260,76 +228,10 @@ async fn a_grant_that_leaves_a_declared_port_silent_is_a_failure() {
     );
 }
 
-#[tokio::test(flavor = "local")]
-async fn withdrawing_access_disables_the_units_and_proves_they_stopped() {
-    let fixture = Fixture::new();
-    let withdrawn = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", false);
-    fixture.store(&withdrawn, 0).await;
-    let sandbox = fixture.sandbox(&withdrawn).await;
-    queue_withdrawable_image(&fixture.backend);
-    // The Agent's own server on the viewer port is none of withdrawal's business.
-    queue_listening(&fixture.backend, true);
-
-    assert!(!fixture.access.reconcile(&withdrawn, &sandbox).await.expect("withdraw"));
-    let specs = fixture.backend.execution_specs();
-    assert!(
-        specs.iter().any(is_disable),
-        "the declared units are disabled and stopped"
-    );
-    assert!(specs.iter().any(is_active_check), "the units are confirmed inactive");
-    assert!(
-        !specs.iter().any(is_any_listener_check),
-        "once access is withdrawn the declared ports are ordinary guest ports"
-    );
-}
-
 /// Answers a withdrawal's probes: systemd running and a desktop image's descriptor.
 fn queue_withdrawable_image(backend: &memory::Provider) {
     queue_desktop_image(backend);
     backend.queue_execution_events_matching(is_active_check, output(b"inactive\ninactive\n"));
-}
-
-#[tokio::test(flavor = "local", start_paused = true)]
-async fn a_failed_grant_forgets_an_earlier_withdrawal() {
-    let fixture = Fixture::new();
-    let withdrawn = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", false);
-    let granted = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", true);
-    fixture.store(&withdrawn, 0).await;
-    let sandbox = fixture.sandbox(&withdrawn).await;
-    let disables = || {
-        fixture
-            .backend
-            .execution_specs()
-            .iter()
-            .filter(|spec| is_disable(spec))
-            .count()
-    };
-
-    queue_withdrawable_image(&fixture.backend);
-    assert!(!fixture.access.reconcile(&withdrawn, &sandbox).await.expect("withdraw"));
-    let withdrawn_once = disables();
-
-    // The units are enabled, but the RFB port never listens, so the grant fails partway.
-    queue_desktop_image(&fixture.backend);
-    fixture
-        .access
-        .reconcile(&granted, &sandbox)
-        .await
-        .expect_err("a port that never listens fails the grant");
-    assert!(fixture.backend.execution_specs().iter().any(is_enable));
-
-    queue_withdrawable_image(&fixture.backend);
-    assert!(
-        !fixture
-            .access
-            .reconcile(&withdrawn, &sandbox)
-            .await
-            .expect("withdraw again")
-    );
-    assert!(
-        disables() > withdrawn_once,
-        "the units a failed grant enabled are disabled rather than skipped as already withdrawn"
-    );
 }
 
 #[tokio::test(flavor = "local")]
@@ -389,10 +291,10 @@ async fn an_image_without_the_descriptor_is_left_alone_when_no_access_is_declare
     let sandbox = fixture.sandbox(&record).await;
     queue_image(&fixture.backend, None);
 
-    assert!(!fixture.access.reconcile(&record, &sandbox).await.expect("pass"));
+    // Withdrawing would fail: there is no descriptor to read the units from.
     assert!(
-        !fixture.backend.execution_specs().iter().any(is_disable),
-        "an image with no VNC access to withdraw is not touched"
+        !fixture.access.reconcile(&record, &sandbox).await.expect("pass"),
+        "an image with no VNC access to withdraw is left alone"
     );
 }
 

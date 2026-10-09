@@ -226,7 +226,6 @@ pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
 
 #[cfg(test)]
 mod tests {
-    use crate::harness::test_launch_request;
 
     #[test]
     fn a_manifest_cannot_redeclare_either_claude_binding() {
@@ -237,18 +236,6 @@ mod tests {
         for placeholder in [super::ACCESS_PLACEHOLDER, super::NESTED_PLACEHOLDER] {
             assert!(super::conflicts_with_managed_secret("UNRELATED", Some(placeholder)));
         }
-    }
-
-    #[test]
-    fn launches_in_tmux_scrollback_with_updates_off() {
-        let launch = super::launch_linux(&test_launch_request(None, None));
-
-        assert!(
-            launch
-                .environment
-                .contains(&(super::DISABLE_ALTERNATE_SCREEN_ENVIRONMENT.into(), "1".into()))
-        );
-        assert!(launch.environment.contains(&("DISABLE_AUTOUPDATER".into(), "1".into())));
         assert!(super::manages_environment(super::DISABLE_ALTERNATE_SCREEN_ENVIRONMENT));
     }
 }

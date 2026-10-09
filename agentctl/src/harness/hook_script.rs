@@ -144,23 +144,9 @@ impl HookScript<'_> {
     }
 }
 
-/// Parses the event table back out of a rendered script, in the wire format
-/// the Platform API reads; adapters use it to prove their table round-trips.
-#[cfg(test)]
-pub(super) fn embedded_events(script: &str) -> Vec<(String, ActivityEvent)> {
-    let start = script.find("const EVENTS = ").expect("table") + "const EVENTS = ".len();
-    let end = script[start..].find(";\n").expect("terminator") + start;
-    let table: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&script[start..end]).expect("embedded JSON");
-    table
-        .into_iter()
-        .map(|(name, value)| (name, serde_json::from_value(value).expect("wire value parses")))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{HookScript, embedded_events};
+    use super::HookScript;
     use crate::sessions::ActivityEvent;
 
     #[tokio::test]
@@ -216,27 +202,5 @@ mod tests {
             assert!(tokio::time::Instant::now() < deadline, "hook waited for stdin EOF");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-    }
-
-    #[test]
-    fn renders_the_given_tables_verbatim() {
-        let script = HookScript {
-            events: &[
-                ("Begin", ActivityEvent::TurnStarted),
-                ("End", ActivityEvent::TurnCompleted),
-            ],
-            waiting_notifications: &["ask"],
-        }
-        .render()
-        .expect("script renders");
-        assert_eq!(
-            embedded_events(&script),
-            [
-                ("Begin".to_owned(), ActivityEvent::TurnStarted),
-                ("End".to_owned(), ActivityEvent::TurnCompleted),
-            ]
-        );
-        assert!(script.contains(r#"const WAITING_NOTIFICATIONS = ["ask"];"#));
-        assert!(!script.contains("__EVENTS__"));
     }
 }

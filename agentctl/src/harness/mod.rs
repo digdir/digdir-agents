@@ -520,6 +520,7 @@ pub(crate) const fn test_harness() -> Harness {
 
 /// A launch request for tests, with no model or effort selected.
 #[cfg(test)]
+#[cfg(unix)]
 pub(crate) const fn test_launch_request<'a>(
     resume: Option<&'a str>,
     initial_prompt: Option<&'a str>,

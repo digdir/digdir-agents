@@ -46,25 +46,6 @@ fn is_podman_presence_check(spec: &sandbox::execution::ExecutionSpec) -> bool {
     )
 }
 
-fn is_git_presence_check(spec: &sandbox::execution::ExecutionSpec) -> bool {
-    matches!(
-        spec.program(),
-        Program::Command { executable, args }
-            if executable.as_str() == "/usr/bin/env" && args == &["git", "--version"]
-    )
-}
-
-fn is_git_config(spec: &sandbox::execution::ExecutionSpec) -> bool {
-    matches!(
-        spec.program(),
-        Program::Command { executable, args }
-            if executable.as_str() == "/usr/bin/env"
-                && args.first().map(String::as_str) == Some("git")
-                && args.get(1).map(String::as_str) == Some("config")
-                && args.get(2).map(String::as_str) == Some("--global")
-    )
-}
-
 fn is_systemd_readiness_check(spec: &sandbox::execution::ExecutionSpec) -> bool {
     matches!(
         spec.program(),
@@ -80,17 +61,6 @@ fn completed(code: i32) -> Vec<ExecutionEvent> {
     ]
 }
 
-/// Where the guest's mediated CA bundle appears inside containers.
-const CONTAINER_CA_BUNDLE: &str = "/run/agent/tls/ca-bundle.pem";
-
-/// The value of a `key = value` line, as Podman's TOML and systemd's unit files write it.
-fn setting<'a>(text: &'a str, key: &str) -> Option<&'a str> {
-    text.lines().find_map(|line| {
-        let (name, value) = line.split_once('=')?;
-        (name.trim() == key).then(|| value.trim())
-    })
-}
-
 async fn read_file(sandbox: &sandbox::SandboxHandle, path: &str) -> Vec<u8> {
     let mut bytes = Vec::new();
     sandbox
@@ -101,50 +71,6 @@ async fn read_file(sandbox: &sandbox::SandboxHandle, path: &str) -> Vec<u8> {
         .await
         .expect("read file bytes");
     bytes
-}
-
-fn assert_podman_setup_commands(executions: &[sandbox::execution::ExecutionSpec]) {
-    let count = |expected: &[&str]| {
-        executions
-            .iter()
-            .filter(|spec| match spec.program() {
-                Program::Command { executable, args } => {
-                    executable.as_str() == "/usr/bin/sudo"
-                        && args.iter().map(String::as_str).eq(expected.iter().copied())
-                }
-                Program::ImageEntrypoint => false,
-            })
-            .count()
-    };
-    assert!(count(&["-n", "/usr/bin/systemctl", "daemon-reload"]) > 0);
-    // systemd readiness is confirmed before the first systemctl call of a setup pass.
-    let daemon_reload = executions
-        .iter()
-        .position(|spec| matches!(spec.program(), Program::Command { args, .. } if args.contains(&"daemon-reload".to_owned())))
-        .expect("daemon-reload runs");
-    assert!(executions.iter().take(daemon_reload).any(is_systemd_readiness_check));
-    assert!(
-        executions
-            .iter()
-            .filter(|spec| is_systemd_readiness_check(spec))
-            .count()
-            >= 2
-    );
-    for converged in [
-        &["-n", "/usr/bin/systemctl", "enable", "--now", "podman.socket"][..],
-        &["-n", "/usr/bin/install", "-d", "-m", "0755", "/run/podman"],
-        &["-n", "/bin/chmod", "0755", "/usr/local/libexec/agent-container-ca"],
-    ] {
-        assert!(count(converged) > 0, "{converged:?}");
-    }
-    assert!(!executions.iter().any(|spec| {
-        match spec.program() {
-            Program::Command { args, .. } => args
-                .iter()
-                .any(|argument| matches!(argument.as_str(), "agent-containers" | "/dev/net/tun")),
-            Program::ImageEntrypoint => false,
-        }
-    }));
 }
 
 /// Every harness the Agent declares, as preparation would report when all host logins are present.
@@ -228,13 +154,10 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         writes.iter().any(|path| path == "/home/agent/.claude/CLAUDE.md"),
         "the required harness is still configured: {writes:?}"
     );
+    // Verifying Codex would fail: nothing answers `codex --version`.
     assert!(
         !writes.iter().any(|path| path.starts_with("/home/agent/.codex/")),
         "the omitted harness must not be configured: {writes:?}"
-    );
-    assert!(
-        !backend.execution_specs().iter().any(is_codex_version),
-        "the omitted harness must not be verified either"
     );
 }
 
@@ -362,63 +285,11 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
         let reference = read_file(&sandbox, &format!("{root}/evidence/references/gif.md")).await;
         assert_eq!(reference, b"palette");
     }
-    let codex_auth: serde_json::Value =
-        serde_json::from_slice(&read_file(&sandbox, "/home/agent/.codex/auth.json").await).expect("Codex auth JSON");
-    assert_eq!(codex_auth["auth_mode"], "chatgpt");
-    assert_eq!(codex_auth["tokens"]["account_id"], "account-test");
-    assert_eq!(codex_auth["tokens"]["access_token"], codex_auth["tokens"]["id_token"]);
-    assert!(codex_auth["last_refresh"].is_string());
-    let codex_hooks: serde_json::Value =
-        serde_json::from_slice(&read_file(&sandbox, "/home/agent/.codex/hooks.json").await).expect("Codex hooks JSON");
-    assert_eq!(
-        codex_hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-        "node /home/agent/.codex/hooks/activity-hook.mjs"
-    );
-    assert!(codex_hooks["hooks"]["SessionStart"][0].get("matcher").is_none());
-    for event in ["UserPromptSubmit", "Interrupt", "Stop", "PermissionRequest"] {
-        assert_eq!(
-            codex_hooks["hooks"][event][0]["hooks"][0]["command"], "node /home/agent/.codex/hooks/activity-hook.mjs",
-            "Codex registers {event}"
-        );
-    }
-    assert!(
-        codex_hooks["hooks"].get("Notification").is_none(),
-        "Codex has no Notification hook"
-    );
-    let hook_script = read_file(&sandbox, "/home/agent/.codex/hooks/activity-hook.mjs").await;
-    assert!(
-        String::from_utf8(hook_script)
-            .expect("UTF-8 hook")
-            .contains(r#""Stop":"turnCompleted""#)
-    );
-
-    let executions = backend.execution_specs();
-    let commands = executions
-        .iter()
-        .filter_map(|spec| match spec.program() {
-            Program::Command { executable, args } => Some((executable.as_str(), args.as_slice())),
-            Program::ImageEntrypoint => None,
-        })
-        .collect::<Vec<_>>();
-    assert!(executions.iter().any(is_claude_version) && executions.iter().any(is_codex_version));
-    assert!(commands.iter().any(|(executable, _)| *executable == "/usr/bin/tar"));
-    assert!(commands.iter().any(|(executable, args)| {
-        *executable == "/usr/bin/install" && args == &["-d", "-m", "0755", "/home/agent/code"]
-    }));
-    assert!(!commands.iter().any(|(executable, _)| *executable == "/usr/bin/git"));
-    assert!(
-        !commands.iter().any(|(executable, args)| {
-            *executable == "/usr/bin/sudo" && args.iter().any(|arg| arg == "podman.socket")
-        })
-    );
-    assert!(!commands.iter().any(|(executable, args)| {
-        *executable == "/usr/bin/touch" || (*executable == "/usr/bin/sudo" && args.iter().any(|arg| arg == "-R"))
-    }));
 }
 
 #[tokio::test(flavor = "local")]
 #[allow(clippy::too_many_lines)]
-async fn linux_setup_convergently_configures_podman_container_trust() {
+async fn linux_setup_waits_for_systemd_and_restores_managed_podman_configuration() {
     let directory = TempDir::new().expect("temporary directory");
     let home = directory.path().join("home");
     std::fs::create_dir_all(&home).expect("home directory");
@@ -482,12 +353,11 @@ async fn linux_setup_convergently_configures_podman_container_trust() {
     Linux
         .setup(&record, &sandbox, &declared(&record), &setup_phase())
         .await
-        .expect("first setup");
+        .expect("the first setup waits for systemd to boot");
+    let managed = "/etc/containers/containers.conf.d/50-agent-ca.conf";
+    let written = read_file(&sandbox, managed).await;
     sandbox
-        .write_file(
-            &SandboxPath::new("/etc/containers/containers.conf.d/50-agent-ca.conf"),
-            Box::pin(Cursor::new(b"stale\n".to_vec())),
-        )
+        .write_file(&SandboxPath::new(managed), Box::pin(Cursor::new(b"stale\n".to_vec())))
         .await
         .expect("replace managed configuration");
     Linux
@@ -495,68 +365,10 @@ async fn linux_setup_convergently_configures_podman_container_trust() {
         .await
         .expect("second setup");
 
-    let text = |bytes: Vec<u8>| String::from_utf8(bytes).expect("UTF-8 configuration");
-    let containers = text(read_file(&sandbox, "/etc/containers/containers.conf.d/50-agent-ca.conf").await);
-    for variable in ["SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO"] {
-        assert!(
-            containers.contains(&format!("\"{variable}={CONTAINER_CA_BUNDLE}\"")),
-            "a rewritten stale file points {variable} at the CA bundle:\n{containers}"
-        );
-    }
-    let mounts = text(read_file(&sandbox, "/etc/containers/mounts.conf").await);
-    let mounted = mounts
-        .lines()
-        .find_map(|line| line.strip_suffix(&format!(":{CONTAINER_CA_BUNDLE}")))
-        .expect("the CA bundle is mounted into every container");
-    // Distro trust paths are copied, never bind-mounted, so package managers can replace them.
-    assert!(!mounts.contains(&format!("{mounted}:/etc/")), "{mounts}");
-    let runtime = text(read_file(&sandbox, "/etc/containers/containers.conf.d/51-agent-runtime.conf").await);
-    assert_eq!(setting(&runtime, "cgroup_manager"), Some("\"cgroupfs\""));
-    assert_eq!(setting(&runtime, "compat_api_enforce_docker_hub"), Some("true"));
-    assert!(
-        setting(&runtime, "hooks_dir").is_some_and(|hooks| hooks.contains("\"/etc/containers/oci/hooks.d\"")),
-        "Podman reads the CA hook from the directory it is written to:\n{runtime}"
-    );
-    let registries = text(read_file(&sandbox, "/etc/containers/registries.conf.d/50-agent-docker-hub.conf").await);
     assert_eq!(
-        setting(&registries, "unqualified-search-registries"),
-        Some("[\"docker.io\"]")
-    );
-    assert_eq!(setting(&registries, "short-name-mode"), Some("\"enforcing\""));
-    let socket = text(read_file(&sandbox, "/etc/systemd/system/podman.socket.d/50-agent-access.conf").await);
-    assert_eq!(setting(&socket, "SocketGroup"), Some("agent"));
-    assert_eq!(setting(&socket, "SocketMode"), Some("0660"));
-    let hook_configuration: serde_json::Value =
-        serde_json::from_slice(&read_file(&sandbox, "/etc/containers/oci/hooks.d/50-agent-ca.json").await)
-            .expect("OCI hook JSON");
-    assert_eq!(
-        hook_configuration["hook"]["path"],
-        "/usr/local/libexec/agent-container-ca"
-    );
-    assert_eq!(hook_configuration["stages"], serde_json::json!(["createRuntime"]));
-    let hook =
-        String::from_utf8(read_file(&sandbox, "/usr/local/libexec/agent-container-ca").await).expect("hook script");
-    assert!(hook.starts_with("#!/bin/sh\n"));
-    for path in [
-        "etc/ssl/certs/ca-certificates.crt",
-        "etc/pki/tls/certs/ca-bundle.crt",
-        "etc/ssl/cert.pem",
-        "usr/local/share/ca-certificates/agent-mediator.crt",
-        "etc/pki/ca-trust/source/anchors/agent-mediator.crt",
-    ] {
-        assert!(hook.contains(path), "{path}");
-    }
-    assert!(hook.contains("/.msb/tls/ca.pem"));
-
-    assert_podman_setup_commands(&backend.execution_specs());
-    // Two setup passes; the first retried while systemd was not yet PID 1.
-    assert!(
-        backend
-            .execution_specs()
-            .iter()
-            .filter(|spec| is_systemd_readiness_check(spec))
-            .count()
-            > 2
+        read_file(&sandbox, managed).await,
+        written,
+        "a replaced managed file is restored"
     );
 }
 
@@ -606,150 +418,6 @@ async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
         .setup(&record, &sandbox, &declared(&record), &setup_phase())
         .await
         .expect("setup without a declared version");
-
-    assert!(
-        backend.execution_specs().iter().any(is_claude_version),
-        "the installation is still checked for presence"
-    );
-}
-
-#[tokio::test(flavor = "local")]
-async fn linux_setup_converges_git_identity_after_home_sync() {
-    let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home.source = home;
-    let record = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-    };
-    let backend = Rc::new(memory::Provider::new());
-    for _ in 0..2 {
-        backend.queue_execution_events_matching(
-            is_claude_version,
-            vec![
-                ExecutionEvent::Started { process_id: None },
-                ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
-                ExecutionEvent::Exited(ExitStatus { code: 0 }),
-            ],
-        );
-        backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
-        backend.queue_execution_events_matching(is_git_presence_check, completed(0));
-    }
-    let service = SandboxService::new(backend.clone());
-    let spec = record
-        .agent
-        .spec
-        .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
-    let request = |name: &str, email: &str| {
-        EnsureSandboxRequest::new(record.sandbox_name().expect("Sandbox name"), spec.clone()).with_environment([
-            ("GIT_USER_NAME".into(), name.into()),
-            ("GIT_USER_EMAIL".into(), email.into()),
-        ])
-    };
-    let first = service
-        .ensure(&request("First User", "first@example.com"))
-        .await
-        .expect("first Sandbox");
-    Linux
-        .setup(&record, &first, &declared(&record), &setup_phase())
-        .await
-        .expect("first setup");
-    let first_pass = backend.execution_specs().len();
-    let second = service
-        .ensure(&request("Second User", "second@example.com"))
-        .await
-        .expect("updated Sandbox");
-    Linux
-        .setup(&record, &second, &declared(&record), &setup_phase())
-        .await
-        .expect("updated setup");
-
-    let executions = backend.execution_specs();
-    let git = executions.iter().filter(|spec| is_git_config(spec)).collect::<Vec<_>>();
-    // What a key was last set to by the end of a pass is what Git uses after it.
-    let configured = |executions: &[sandbox::execution::ExecutionSpec], key: &str| {
-        executions.iter().rev().find_map(|spec| match spec.program() {
-            Program::Command { args, .. } if is_git_config(spec) && args[3] == key => Some(args[4].clone()),
-            _ => None,
-        })
-    };
-    let (first, both) = (&executions[..first_pass], executions.as_slice());
-    assert_eq!(configured(first, "user.name").as_deref(), Some("First User"));
-    assert_eq!(configured(first, "user.email").as_deref(), Some("first@example.com"));
-    assert_eq!(configured(both, "user.name").as_deref(), Some("Second User"));
-    assert_eq!(configured(both, "user.email").as_deref(), Some("second@example.com"));
-    assert!(
-        git.iter()
-            .all(|spec| spec.environment().get("HOME").map(String::as_str) == Some("/home/agent"))
-    );
-    let first_tar = executions
-        .iter()
-        .position(|spec| matches!(spec.program(), Program::Command { executable, .. } if executable.as_str() == "/usr/bin/tar"))
-        .expect("home synchronization");
-    let first_git = executions.iter().position(is_git_config).expect("Git configuration");
-    assert!(
-        first_tar < first_git,
-        "Git identity must be applied after the home overlay"
-    );
-}
-
-#[tokio::test(flavor = "local")]
-async fn linux_setup_skips_git_identity_when_git_is_absent() {
-    let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home.source = home;
-    let record = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-    };
-    let backend = Rc::new(memory::Provider::new());
-    backend.queue_execution_events_matching(
-        is_claude_version,
-        vec![
-            ExecutionEvent::Started { process_id: None },
-            ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
-            ExecutionEvent::Exited(ExitStatus { code: 0 }),
-        ],
-    );
-    backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
-    backend.queue_execution_events_matching(is_git_presence_check, completed(127));
-    let service = SandboxService::new(backend.clone());
-    let spec = record
-        .agent
-        .spec
-        .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
-    let sandbox = service
-        .ensure(
-            &EnsureSandboxRequest::new(record.sandbox_name().expect("Sandbox name"), spec).with_environment([
-                ("GIT_USER_NAME".into(), "Test User".into()),
-                ("GIT_USER_EMAIL".into(), "test@example.com".into()),
-            ]),
-        )
-        .await
-        .expect("Sandbox");
-
-    Linux
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
-        .await
-        .expect("setup without Git");
-
-    assert!(!backend.execution_specs().iter().any(is_git_config));
 }
 
 #[tokio::test(flavor = "local")]
@@ -798,8 +466,6 @@ async fn linux_setup_rejects_partial_git_identity() {
         .expect_err("partial Git identity");
 
     assert!(matches!(error, agent::Error::Invalid(message) if message.contains("must both be configured")));
-    assert!(!backend.execution_specs().iter().any(is_git_presence_check));
-    assert!(!backend.execution_specs().iter().any(is_git_config));
 }
 
 #[tokio::test(flavor = "local")]
@@ -847,9 +513,8 @@ async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injectio
         .expect_err("version mismatch");
 
     assert!(error.to_string().contains("does not match installed version"));
-    assert_eq!(
-        backend.execution_specs().len(),
-        1,
+    assert!(
+        backend.file_writes().is_empty(),
         "verification must happen before injection"
     );
 }

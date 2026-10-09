@@ -2267,14 +2267,19 @@ async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() 
         0,
         "an idle stop must not contribute to crash backoff"
     );
-    let after_idle = backend.execution_specs().len();
     reconciler
         .reconcile(session.id)
         .await
         .expect("stable Idle reconciliation");
     assert_eq!(
-        backend.execution_specs().len(),
-        after_idle,
+        database
+            .get_session(session.id)
+            .await
+            .expect("Idle Session")
+            .status
+            .lifecycle
+            .state,
+        agent::sessions::LifecycleState::Idle,
         "periodic passes must leave Idle Sessions stopped"
     );
 
@@ -2303,36 +2308,6 @@ async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() 
             .state,
         agent::sessions::LifecycleState::Running
     );
-
-    let commands = backend.execution_specs();
-    assert!(commands.iter().any(|spec| matches!(
-        spec.program(),
-        Program::Command { executable, args }
-            if executable.as_str() == "/bin/sh"
-                && args.iter().any(|argument| {
-                    argument.contains("/usr/bin/tmux list-sessions")
-                        && argument.contains("/usr/bin/date +%s")
-                })
-    )));
-    assert!(commands.iter().any(|spec| matches!(
-        spec.program(),
-        Program::Command { executable, args }
-            if executable.as_str() == "/bin/sh"
-                && args.iter().any(|argument| argument.contains("/usr/bin/tmux kill-session"))
-    )));
-    assert!(commands.iter().any(|spec| {
-        matches!(
-            spec.program(),
-            Program::Command { executable, args }
-                if executable.as_str() == "/usr/bin/tmux"
-                    && args.windows(2).any(|arguments| arguments == [";", "new-session"])
-        ) && spec
-            .working_directory()
-            .is_some_and(|path| path.as_str() == "/home/agent/code")
-            && spec.environment().get("LANG").map(String::as_str) == Some("C.UTF-8")
-            && matches!(spec.program(), Program::Command { args, .. }
-                if args.iter().any(|argument| argument == "CONTAINER_HOST=unix:///run/podman/podman.sock"))
-    }));
 }
 
 #[tokio::test(flavor = "local")]

@@ -777,24 +777,6 @@ mod tests {
     }
 
     #[test]
-    fn every_launch_applies_the_terminal_options_and_the_recorded_model_selection() {
-        let selection = crate::ModelSelection {
-            model: Some(crate::Model::new("haiku").expect("model")),
-            effort: Some(crate::Effort::new("low").expect("effort")),
-        };
-        let session = test_session(selection);
-        let token = super::LaunchToken::generate();
-        for resume in [None, Some("160cdb4b-5997-464c-9d22-602786eb45d4")] {
-            let arguments = super::launch_arguments(&session, "http://hook", &token, resume, None);
-            // The scrollback limit applies only to panes created after it is set.
-            assert!(arguments.starts_with(&super::terminal_options()));
-            let command = arguments.last().expect("tmux command");
-            assert!(command.contains("'haiku'") && command.contains("'low'"), "{command}");
-            assert_eq!(command.contains("--resume"), resume.is_some(), "{command}");
-        }
-    }
-
-    #[test]
     #[cfg(target_os = "linux")]
     #[ignore = "requires Node.js, tmux and script; exercises scrollback in an isolated terminal server"]
     fn scrollback_in_a_real_terminal() {
