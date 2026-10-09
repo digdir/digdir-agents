@@ -11,8 +11,7 @@ use crate::Error;
 
 pub use linux::Linux;
 pub(crate) use linux::{
-    CONTAINER_HOST, HOME, PLATFORM_API_URL_FILE, PORTABLE_TERMINAL, USER, UTF8_LOCALE, WORKING_DIRECTORY,
-    install_platform_api_url, run_checked,
+    CONTAINER_HOST, HOME, PLATFORM_API_URL_FILE, PORTABLE_TERMINAL, USER, UTF8_LOCALE, WORKING_DIRECTORY, run_checked,
 };
 
 /// Builds the Agent-conventional Execution environment for one Sandbox OS.

@@ -15,8 +15,9 @@ pub(crate) const HOME: &str = "/home/agent";
 pub(crate) const WORKING_DIRECTORY: &str = "/home/agent/code";
 pub(crate) const CONTAINER_HOST: &str = "unix:///run/podman/podman.sock";
 /// Holds the Platform API base URL reachable from the Sandbox, read by harness hooks on every
-/// report. `agentd` binds a new host port on every start, so Agent setup and every Session
-/// launch rewrite the file and harnesses that outlive a daemon restart follow it.
+/// report. `agentd` binds a new host port on every start; Agent setup rewrites the file first
+/// thing on every pass, so harnesses that outlive a daemon restart follow it as soon as the
+/// Sandbox's network policy lets them reach the new port.
 pub(crate) const PLATFORM_API_URL_FILE: &str = "/etc/agent-platform-api-url";
 const HOME_ARCHIVE: &str = "/tmp/agent-home.tar";
 /// Locale every Sandbox process runs with; the image ships it, so UTF-8 output
@@ -136,11 +137,7 @@ impl Linux {
 }
 
 /// Points harness hooks in the Sandbox at `platform_api_url`.
-///
-/// # Errors
-///
-/// Returns an error when the Sandbox cannot write the file.
-pub(crate) async fn install_platform_api_url(sandbox: &SandboxHandle, platform_api_url: &str) -> Result<(), Error> {
+async fn install_platform_api_url(sandbox: &SandboxHandle, platform_api_url: &str) -> Result<(), Error> {
     write_if_changed(
         sandbox,
         PLATFORM_API_URL_FILE,
@@ -203,6 +200,8 @@ impl Linux {
             .iter()
             .filter(|installation| harnesses.contains(&installation.kind))
             .collect();
+        // Before anything that can fail, so a pass that fails later still moves running harnesses.
+        install_platform_api_url(sandbox, &self.platform_api_url).await?;
         for installation in &installations {
             let step = steps.start_step(format!("Verify {}", installation.kind.as_str())).await;
             harness::verify_linux(installation.kind, sandbox, installation.version.as_deref()).await?;
@@ -219,9 +218,6 @@ impl Linux {
         step.complete().await;
         let instructions = read_instructions(record).await?;
         let skills = read_skills(record).await?;
-        if !installations.is_empty() {
-            install_platform_api_url(sandbox, &self.platform_api_url).await?;
-        }
         for installation in &installations {
             let step = steps
                 .start_step(format!(
