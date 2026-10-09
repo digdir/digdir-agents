@@ -652,7 +652,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "local")]
-    #[ignore = "seeds the Microsandbox database with python3"]
+    #[ignore = "requires python3 to seed the Microsandbox database"]
     async fn migration_keeps_the_image_of_a_sandbox_whose_first_start_was_interrupted() {
         let home = Home::open().await;
         let previous_files = record_moved_tag(&home).await;
@@ -747,7 +747,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "local")]
-    #[ignore = "requires Internet access"]
+    #[ignore = "requires access to the public Docker registry"]
     async fn a_sandbox_fetches_an_image_the_cache_lost_by_digest() {
         let manifest_digest = match std::env::consts::ARCH {
             "x86_64" => "sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6",

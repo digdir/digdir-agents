@@ -70,9 +70,10 @@ changelog-validate: ## Check that agentctl/CHANGELOG.md has the expected structu
 changelog-test: ## Run the changelog.sh tests
 	@./agentctl/changelog_test.sh
 
-test-e2e: ## Run integration tests that require Docker, Internet access, and KVM
+test-e2e: ## Run integration tests that require Docker, Internet access, KVM, Node.js, tmux and script
 	@echo "Running end-to-end tests..."
 	@cargo test -p sandbox-microsandbox --tests --locked -- --ignored
+	@cargo test -p agent --lib --locked -- --ignored
 	@echo "✓ End-to-end tests passed"
 
 deps: ## Print the workspace dependency graph

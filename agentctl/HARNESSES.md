@@ -68,8 +68,9 @@ in two consecutive polls.
 Inspect `get sessions` (including `-o json`) and `turns` alongside the terminal. Check user messages, assistant answers,
 tool results and turn boundaries, including after compaction. A successful model response alone is insufficient.
 
-Run the normal formatting, lint and test checks, plus `cargo test -p agent --lib -- --ignored` on a host with Node.js
-and tmux. Those tests drive tmux with a synthetic program, not the harnesses, so they do not replace a live check; the
-scrollback and Ctrl-Z checks also require Linux and util-linux `script`. Record in the PR, for each check and harness,
-the result or why it was not run, with the tested versions and commands. Update adapter fixtures when native output
-changes, and add a changelog entry. Never publish credentials or authentication-bearing process arguments.
+Run the normal formatting, lint and test checks, plus `cargo test -p agent --lib -- --ignored`, which `make test-e2e`
+also runs, on a host with Node.js and tmux. Those tests drive tmux with a synthetic program, not the harnesses, so they
+do not replace a live check; the scrollback and Ctrl-Z checks also require Linux and util-linux `script`. Record in the
+PR, for each check and harness, the result or why it was not run, with the tested versions and commands. Update adapter
+fixtures when native output changes, and add a changelog entry. Never publish credentials or authentication-bearing
+process arguments.
