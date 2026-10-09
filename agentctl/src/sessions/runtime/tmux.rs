@@ -621,14 +621,13 @@ fn parse_transcript_suffix(
 #[cfg(test)]
 mod tests {
     use sandbox::execution::ExitStatus;
-    use time::OffsetDateTime;
 
     use crate::{
         harness,
-        sessions::{Activity, Lifecycle, Part, Phase, Reported, Status},
+        sessions::{Activity, Part, Phase},
     };
 
-    use super::{Observation, Session, input_ready_in, parse_transcript_suffix};
+    use super::{Observation, input_ready_in, parse_transcript_suffix};
 
     #[test]
     fn a_truncated_suffix_starts_at_the_first_complete_turn() {
@@ -759,75 +758,83 @@ mod tests {
         assert!(error.to_string().contains("exit code 2"));
     }
 
-    fn test_session(model_selection: crate::ModelSelection) -> Session {
-        Session {
-            id: "dd4cdbaf-9ea0-477e-96dd-bbd6b1e4f7dc".parse().expect("Session ID"),
-            agent_id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-            agent: "worker".into(),
-            name: "s1".to_string().try_into().expect("Session name"),
-            harness: crate::harness::test_harness(),
-            model_selection,
-            created_at: OffsetDateTime::UNIX_EPOCH,
-            deletion_timestamp: None,
-            archived_at: None,
-            status: Status::new(Lifecycle::running(), Reported::default()),
-            activation_generation: 0,
-            observed_activation_generation: 0,
+    /// Real tmux and terminal clients, driven by Node.js through `script`, which is Linux-only here.
+    #[cfg(target_os = "linux")]
+    mod real_terminal {
+        use time::OffsetDateTime;
+
+        use crate::sessions::{Lifecycle, Reported, Session, Status};
+
+        use super::super::{attach_request, session_name, terminal_options};
+
+        fn test_session(model_selection: crate::ModelSelection) -> Session {
+            Session {
+                id: "dd4cdbaf-9ea0-477e-96dd-bbd6b1e4f7dc".parse().expect("Session ID"),
+                agent_id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
+                agent: "worker".into(),
+                name: "s1".to_string().try_into().expect("Session name"),
+                harness: crate::harness::test_harness(),
+                model_selection,
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                deletion_timestamp: None,
+                archived_at: None,
+                status: Status::new(Lifecycle::running(), Reported::default()),
+                activation_generation: 0,
+                observed_activation_generation: 0,
+            }
         }
-    }
 
-    /// The arguments, environment and detach keys the runtime attaches a terminal with, for a
-    /// driver to attach a real client exactly as the runtime does.
-    fn attachment(session: &Session) -> String {
-        let request = super::attach_request(session);
-        let sandbox::execution::Program::Command { args, .. } = request.spec().program() else {
-            panic!("tmux attaches by command");
-        };
-        serde_json::json!({
-            "arguments": args,
-            "environment": request.spec().environment(),
-            "detachKeys": request.detach_keys(),
-        })
-        .to_string()
-    }
+        /// The arguments, environment and detach keys the runtime attaches a terminal with, for a
+        /// driver to attach a real client exactly as the runtime does.
+        fn attachment(session: &Session) -> String {
+            let request = attach_request(session);
+            let sandbox::execution::Program::Command { args, .. } = request.spec().program() else {
+                panic!("tmux attaches by command");
+            };
+            serde_json::json!({
+                "arguments": args,
+                "environment": request.spec().environment(),
+                "detachKeys": request.detach_keys(),
+            })
+            .to_string()
+        }
 
-    #[test]
-    #[cfg(target_os = "linux")]
-    #[ignore = "requires Node.js, tmux and script; exercises scrollback, UTF-8 and detaching in an isolated terminal server"]
-    fn scrollback_in_a_real_terminal() {
-        let session = test_session(crate::ModelSelection::default());
-        let output = std::process::Command::new("node")
-            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/tmux_scrollback.mjs"))
-            .arg(serde_json::to_string(&super::terminal_options()).expect("options"))
-            .arg(attachment(&session))
-            .arg(super::session_name(&session))
-            .output()
-            .expect("Node.js");
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+        #[test]
+        #[ignore = "requires Node.js, tmux and script; exercises scrollback, UTF-8 and detaching in an isolated terminal server"]
+        fn scrollback_in_a_real_terminal() {
+            let session = test_session(crate::ModelSelection::default());
+            let output = std::process::Command::new("node")
+                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/tmux_scrollback.mjs"))
+                .arg(serde_json::to_string(&terminal_options()).expect("options"))
+                .arg(attachment(&session))
+                .arg(session_name(&session))
+                .output()
+                .expect("Node.js");
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
 
-    #[test]
-    #[cfg(target_os = "linux")]
-    #[ignore = "requires Node.js, tmux and script; exercises Ctrl-Z in an isolated terminal server"]
-    fn suspend_is_refused_in_a_real_terminal() {
-        let session = test_session(crate::ModelSelection::default());
-        let output = std::process::Command::new("node")
-            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/tmux_suspend.mjs"))
-            .arg(serde_json::to_string(&super::terminal_options()).expect("options"))
-            .arg(attachment(&session))
-            .arg(super::session_name(&session))
-            .output()
-            .expect("Node.js");
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        #[test]
+        #[ignore = "requires Node.js, tmux and script; exercises Ctrl-Z in an isolated terminal server"]
+        fn suspend_is_refused_in_a_real_terminal() {
+            let session = test_session(crate::ModelSelection::default());
+            let output = std::process::Command::new("node")
+                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/tmux_suspend.mjs"))
+                .arg(serde_json::to_string(&terminal_options()).expect("options"))
+                .arg(attachment(&session))
+                .arg(session_name(&session))
+                .output()
+                .expect("Node.js");
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 }
