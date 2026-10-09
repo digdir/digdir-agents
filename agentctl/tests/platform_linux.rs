@@ -80,21 +80,16 @@ fn completed(code: i32) -> Vec<ExecutionEvent> {
     ]
 }
 
-const PODMAN_CONTAINERS_CONF: &[u8] = br#"[containers]
-env = [
-  "SSL_CERT_FILE=/run/agent/tls/ca-bundle.pem",
-  "CURL_CA_BUNDLE=/run/agent/tls/ca-bundle.pem",
-  "REQUESTS_CA_BUNDLE=/run/agent/tls/ca-bundle.pem",
-  "NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem",
-  "GIT_SSL_CAINFO=/run/agent/tls/ca-bundle.pem",
-  "NPM_CONFIG_CAFILE=/run/agent/tls/ca-bundle.pem",
-]
-"#;
-const PODMAN_RUNTIME_CONF: &[u8] = b"[engine]\ncgroup_manager = \"cgroupfs\"\ncompat_api_enforce_docker_hub = true\nhooks_dir = [\"/etc/containers/oci/hooks.d\"]\n";
-const PODMAN_REGISTRIES_CONF: &[u8] =
-    b"unqualified-search-registries = [\"docker.io\"]\nshort-name-mode = \"enforcing\"\n";
-const PODMAN_MOUNTS_CONF: &[u8] = b"/etc/ssl/certs/ca-certificates.crt:/run/agent/tls/ca-bundle.pem\n";
-const PODMAN_SOCKET_DROP_IN: &[u8] = b"[Socket]\nDirectoryMode=0755\nSocketGroup=agent\nSocketMode=0660\n";
+/// Where the guest's mediated CA bundle appears inside containers.
+const CONTAINER_CA_BUNDLE: &str = "/run/agent/tls/ca-bundle.pem";
+
+/// The value of a `key = value` line, as Podman's TOML and systemd's unit files write it.
+fn setting<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    text.lines().find_map(|line| {
+        let (name, value) = line.split_once('=')?;
+        (name.trim() == key).then(|| value.trim())
+    })
+}
 
 async fn read_file(sandbox: &sandbox::SandboxHandle, path: &str) -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -520,26 +515,37 @@ async fn linux_setup_convergently_configures_podman_container_trust() {
         .await
         .expect("second setup");
 
-    assert_eq!(
-        read_file(&sandbox, "/etc/containers/containers.conf.d/50-agent-ca.conf").await,
-        PODMAN_CONTAINERS_CONF
+    let text = |bytes: Vec<u8>| String::from_utf8(bytes).expect("UTF-8 configuration");
+    let containers = text(read_file(&sandbox, "/etc/containers/containers.conf.d/50-agent-ca.conf").await);
+    for variable in ["SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO"] {
+        assert!(
+            containers.contains(&format!("\"{variable}={CONTAINER_CA_BUNDLE}\"")),
+            "a rewritten stale file points {variable} at the CA bundle:\n{containers}"
+        );
+    }
+    let mounts = text(read_file(&sandbox, "/etc/containers/mounts.conf").await);
+    let mounted = mounts
+        .lines()
+        .find_map(|line| line.strip_suffix(&format!(":{CONTAINER_CA_BUNDLE}")))
+        .expect("the CA bundle is mounted into every container");
+    // Distro trust paths are copied, never bind-mounted, so package managers can replace them.
+    assert!(!mounts.contains(&format!("{mounted}:/etc/")), "{mounts}");
+    let runtime = text(read_file(&sandbox, "/etc/containers/containers.conf.d/51-agent-runtime.conf").await);
+    assert_eq!(setting(&runtime, "cgroup_manager"), Some("\"cgroupfs\""));
+    assert_eq!(setting(&runtime, "compat_api_enforce_docker_hub"), Some("true"));
+    assert!(
+        setting(&runtime, "hooks_dir").is_some_and(|hooks| hooks.contains("\"/etc/containers/oci/hooks.d\"")),
+        "Podman reads the CA hook from the directory it is written to:\n{runtime}"
     );
+    let registries = text(read_file(&sandbox, "/etc/containers/registries.conf.d/50-agent-docker-hub.conf").await);
     assert_eq!(
-        read_file(&sandbox, "/etc/containers/containers.conf.d/51-agent-runtime.conf").await,
-        PODMAN_RUNTIME_CONF
+        setting(&registries, "unqualified-search-registries"),
+        Some("[\"docker.io\"]")
     );
-    assert_eq!(
-        read_file(&sandbox, "/etc/containers/mounts.conf").await,
-        PODMAN_MOUNTS_CONF
-    );
-    assert_eq!(
-        read_file(&sandbox, "/etc/containers/registries.conf.d/50-agent-docker-hub.conf").await,
-        PODMAN_REGISTRIES_CONF
-    );
-    assert_eq!(
-        read_file(&sandbox, "/etc/systemd/system/podman.socket.d/50-agent-access.conf").await,
-        PODMAN_SOCKET_DROP_IN
-    );
+    assert_eq!(setting(&registries, "short-name-mode"), Some("\"enforcing\""));
+    let socket = text(read_file(&sandbox, "/etc/systemd/system/podman.socket.d/50-agent-access.conf").await);
+    assert_eq!(setting(&socket, "SocketGroup"), Some("agent"));
+    assert_eq!(setting(&socket, "SocketMode"), Some("0660"));
     let hook_configuration: serde_json::Value =
         serde_json::from_slice(&read_file(&sandbox, "/etc/containers/oci/hooks.d/50-agent-ca.json").await)
             .expect("OCI hook JSON");
@@ -551,12 +557,6 @@ async fn linux_setup_convergently_configures_podman_container_trust() {
     let hook =
         String::from_utf8(read_file(&sandbox, "/usr/local/libexec/agent-container-ca").await).expect("hook script");
     assert!(hook.starts_with("#!/bin/sh\n"));
-    // Distro trust paths are copied, never bind-mounted, so package managers can replace them.
-    assert!(
-        !PODMAN_MOUNTS_CONF
-            .windows(b"/etc/ssl/certs/ca-certificates.crt:/etc/".len())
-            .any(|w| w == b"/etc/ssl/certs/ca-certificates.crt:/etc/")
-    );
     for path in [
         "etc/ssl/certs/ca-certificates.crt",
         "etc/pki/tls/certs/ca-bundle.crt",

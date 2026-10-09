@@ -444,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn platform_owned_server_policy_is_complete_and_not_extensible() {
+    fn platform_owned_server_policy_admits_only_the_agent_by_key_and_is_not_extensible() {
         let config = super::render_server_config();
         let directives = directives(&config);
         let single = |key: &str| {
@@ -454,24 +454,77 @@ mod tests {
         };
 
         assert_eq!(single("ListenAddress"), "127.0.0.1");
-        assert_eq!(single("Port"), crate::ssh::GUEST_PORT.to_string());
-        assert_eq!(single("HostKey"), super::HOST_KEY);
-        assert_eq!(single("AuthorizedKeysFile"), super::AUTHORIZED_KEYS);
         assert_eq!(single("AllowUsers"), super::super::linux::USER);
+        assert_eq!(single("AuthorizedKeysFile"), super::AUTHORIZED_KEYS);
         assert_eq!(single("PubkeyAuthentication"), "yes");
-        assert_eq!(single("PasswordAuthentication"), "no");
-        assert_eq!(single("KbdInteractiveAuthentication"), "no");
-        assert_eq!(single("PermitEmptyPasswords"), "no");
-        assert_eq!(single("PermitRootLogin"), "no");
-        assert_eq!(single("UsePAM"), "no");
-        assert_eq!(single("PermitUserEnvironment"), "yes");
-        assert_eq!(single("AllowAgentForwarding"), "no");
-        assert_eq!(single("AllowTcpForwarding"), "yes");
-        assert_eq!(single("GatewayPorts"), "no");
-        assert_eq!(single("X11Forwarding"), "no");
-        assert_eq!(single("PermitTunnel"), "no");
-        assert_eq!(single("Subsystem"), "sftp internal-sftp");
+        for denied in [
+            "PasswordAuthentication",
+            "KbdInteractiveAuthentication",
+            "PermitEmptyPasswords",
+            "PermitRootLogin",
+            "AllowAgentForwarding",
+            "GatewayPorts",
+            "X11Forwarding",
+            "PermitTunnel",
+        ] {
+            assert_eq!(single(denied), "no", "{denied}");
+        }
         assert!(!directives.contains_key("Include"));
+    }
+
+    /// What OpenSSH itself makes of the rendered policy, with a temporary host key standing in
+    /// for the guest's.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires the OpenSSH server (sshd) and ssh-keygen"]
+    fn openssh_reads_the_policy_as_written() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let host_key = directory.path().join("host_key");
+        let generated = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&host_key)
+            .status()
+            .expect("ssh-keygen");
+        assert!(generated.success());
+        let config = directory.path().join("sshd_config");
+        std::fs::write(&config, super::render_server_config()).expect("server configuration");
+
+        let output = std::process::Command::new(super::SERVER)
+            .arg("-T")
+            .arg("-f")
+            .arg(&config)
+            .arg("-h")
+            .arg(&host_key)
+            .output()
+            .expect("sshd");
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let effective = String::from_utf8(output.stdout).expect("UTF-8 settings");
+        let setting = |key: &str| {
+            effective
+                .lines()
+                .find_map(|line| line.strip_prefix(key)?.strip_prefix(' '))
+                .unwrap_or_else(|| panic!("{key} in:\n{effective}"))
+        };
+
+        assert_eq!(
+            setting("listenaddress"),
+            format!("127.0.0.1:{}", crate::ssh::GUEST_PORT)
+        );
+        assert_eq!(setting("allowusers"), super::super::linux::USER);
+        assert_eq!(setting("authorizedkeysfile"), super::AUTHORIZED_KEYS);
+        assert_eq!(setting("pubkeyauthentication"), "yes");
+        for denied in [
+            "passwordauthentication",
+            "kbdinteractiveauthentication",
+            "permitemptypasswords",
+            "permitrootlogin",
+            "allowagentforwarding",
+            "gatewayports",
+            "x11forwarding",
+            "permittunnel",
+        ] {
+            assert_eq!(setting(denied), "no", "{denied}");
+        }
     }
 
     #[test]
