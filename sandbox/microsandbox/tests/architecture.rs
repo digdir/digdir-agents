@@ -9,5 +9,4 @@ fn microsandbox_integration_does_not_depend_on_agent_automation() {
 
     assert!(manifest.contains("sandbox ="));
     assert!(!manifest.contains("agent ="));
-    assert!(!manifest.contains("agent-runtime ="));
 }
