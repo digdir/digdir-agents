@@ -518,6 +518,31 @@ pub(crate) const fn test_harness() -> Harness {
     Harness::ClaudeCode
 }
 
+/// A launch request for tests, with no model or effort selected.
+#[cfg(test)]
+pub(crate) const fn test_launch_request<'a>(
+    resume: Option<&'a str>,
+    initial_prompt: Option<&'a str>,
+) -> LaunchRequest<'a> {
+    const UNSELECTED: ModelSelection = ModelSelection {
+        model: None,
+        effort: None,
+    };
+    LaunchRequest {
+        home: "/home/agent",
+        resume,
+        initial_prompt,
+        model_selection: &UNSELECTED,
+    }
+}
+
+/// Reports whether `flag` is immediately followed by `value` among `arguments`.
+#[cfg(test)]
+#[cfg(unix)]
+pub(crate) fn has_pair(arguments: &[String], flag: &str, value: &str) -> bool {
+    arguments.windows(2).any(|pair| pair[0] == flag && pair[1] == value)
+}
+
 /// Runs a launch command under `sh` in place of the guest's tmux pane, with a stub `program`
 /// on `PATH` that records the arguments it starts with, and returns them, or `None` when the
 /// command did not start it.
@@ -528,6 +553,7 @@ pub(crate) fn run_launch(program: &str, launch: &ProcessLaunch) -> Option<Vec<St
 
     let directory = tempfile::tempdir().expect("temporary directory");
     let stub = directory.path().join(program);
+    // `fs::write` closes the stub before it runs.
     std::fs::write(
         &stub,
         "#!/bin/sh\nfor argument in \"$@\"; do printf '%s\\0' \"$argument\"; done > \"$RECORDED_ARGUMENTS\"\n",
@@ -536,15 +562,33 @@ pub(crate) fn run_launch(program: &str, launch: &ProcessLaunch) -> Option<Vec<St
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("stub permissions");
     let recorded = directory.path().join("arguments");
     let path = std::env::var("PATH").unwrap_or_default();
-    let status = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&launch.command)
-        .envs(launch.environment.iter().map(|(name, value)| (name, value)))
-        .env("PATH", format!("{}:{path}", directory.path().display()))
-        .env("RECORDED_ARGUMENTS", &recorded)
-        .status()
-        .expect("sh");
-    assert!(status.success(), "{}", launch.command);
+    let run = || {
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&launch.command)
+            .envs(launch.environment.iter().map(|(name, value)| (name, value)))
+            .env("PATH", format!("{}:{path}", directory.path().display()))
+            .env("RECORDED_ARGUMENTS", &recorded)
+            .output()
+            .expect("sh")
+    };
+    // A process another test thread forks while the stub is being written inherits its write
+    // descriptor until that process execs, and executing the stub meanwhile fails with ETXTBSY.
+    let mut output = run();
+    for _ in 0..100 {
+        let busy = output.status.code() == Some(126) && String::from_utf8_lossy(&output.stderr).contains("busy");
+        if !busy {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        output = run();
+    }
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        launch.command,
+        String::from_utf8_lossy(&output.stderr)
+    );
     let arguments = std::fs::read(&recorded).ok()?;
     Some(
         String::from_utf8(arguments)

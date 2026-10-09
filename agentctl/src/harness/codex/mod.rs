@@ -282,21 +282,7 @@ mod tests {
 mod launch_tests {
     use tempfile::TempDir;
 
-    use crate::harness::{Effort, LaunchRequest, Model, ModelSelection};
-
-    const UNSELECTED: ModelSelection = ModelSelection {
-        model: None,
-        effort: None,
-    };
-
-    fn request<'a>(resume: Option<&'a str>, initial_prompt: Option<&'a str>) -> LaunchRequest<'a> {
-        LaunchRequest {
-            home: "/home/agent",
-            resume,
-            initial_prompt,
-            model_selection: &UNSELECTED,
-        }
-    }
+    use crate::harness::{Effort, LaunchRequest, Model, ModelSelection, has_pair, test_launch_request};
 
     const NATIVE: &str = "160cdb4b-5997-464c-9d22-602786eb45d4";
 
@@ -322,10 +308,6 @@ mod launch_tests {
         arguments.iter().filter(|argument| *argument == value).count()
     }
 
-    fn has_pair(arguments: &[String], flag: &str, value: &str) -> bool {
-        arguments.windows(2).any(|pair| pair[0] == flag && pair[1] == value)
-    }
-
     #[test]
     fn every_launch_renders_inline_without_the_shared_server_and_trusts_the_session_root() {
         let rollout = format!("rollout-2026-10-09T00-00-00-{NATIVE}.jsonl");
@@ -334,7 +316,7 @@ mod launch_tests {
             (None, Some(NATIVE)),
             (Some(rollout.as_str()), Some(NATIVE)),
         ] {
-            let arguments = launched(&home_with_rollout(rollout), &request(resume, None));
+            let arguments = launched(&home_with_rollout(rollout), &test_launch_request(resume, None));
             assert_eq!(count(&arguments, "tui.alternate_screen=\"never\""), 1, "{arguments:?}");
             assert_eq!(count(&arguments, "--no-daemon"), 1, "{arguments:?}");
             assert!(has_pair(&arguments, "-c", "cli_auth_credentials_store=\"file\""));
@@ -353,7 +335,10 @@ mod launch_tests {
             format!("rollout-2026-10-09T00-00-00-{NATIVE}.jsonl"),
             format!("rollout-2026-10-09T00-00-00-{NATIVE}.jsonl.zst"),
         ] {
-            let arguments = launched(&home_with_rollout(Some(&rollout)), &request(Some(NATIVE), None));
+            let arguments = launched(
+                &home_with_rollout(Some(&rollout)),
+                &test_launch_request(Some(NATIVE), None),
+            );
             assert_eq!(arguments.first().map(String::as_str), Some("resume"), "{rollout}");
             assert_eq!(arguments.last().map(String::as_str), Some(NATIVE), "{rollout}");
         }
@@ -362,7 +347,10 @@ mod launch_tests {
             Some(format!("rollout-2026-10-09T00-00-00-{NATIVE}_old.jsonl")),
             Some(format!("rollout-2026-10-09T00-00-00-{NATIVE}.jsonl.bak")),
         ] {
-            let arguments = launched(&home_with_rollout(rollout.as_deref()), &request(Some(NATIVE), None));
+            let arguments = launched(
+                &home_with_rollout(rollout.as_deref()),
+                &test_launch_request(Some(NATIVE), None),
+            );
             assert!(!arguments.contains(&"resume".to_owned()), "{rollout:?}: {arguments:?}");
             assert!(!arguments.contains(&NATIVE.to_owned()), "{rollout:?}: {arguments:?}");
         }
@@ -371,7 +359,7 @@ mod launch_tests {
     #[test]
     fn non_uuid_native_id_is_not_a_codex_resume_target() {
         let home = home_with_rollout(Some("rollout-2026-10-09T00-00-00-opaque-harness-id.jsonl"));
-        let arguments = launched(&home, &request(Some("opaque-harness-id"), None));
+        let arguments = launched(&home, &test_launch_request(Some("opaque-harness-id"), None));
 
         assert!(!arguments.contains(&"resume".to_owned()), "{arguments:?}");
     }
@@ -379,7 +367,10 @@ mod launch_tests {
     #[test]
     fn a_fresh_launch_passes_the_first_prompt_as_one_argument() {
         // `--` keeps a prompt that starts with `-` or names a subcommand positional.
-        let arguments = launched(&home_with_rollout(None), &request(None, Some("fix it's\nbroken")));
+        let arguments = launched(
+            &home_with_rollout(None),
+            &test_launch_request(None, Some("fix it's\nbroken")),
+        );
 
         assert!(
             arguments.ends_with(&["--".to_owned(), "fix it's\nbroken".to_owned()]),
@@ -390,7 +381,7 @@ mod launch_tests {
 
     #[test]
     fn launches_select_no_model_or_effort_unless_the_session_carries_them() {
-        let arguments = launched(&home_with_rollout(None), &request(None, None));
+        let arguments = launched(&home_with_rollout(None), &test_launch_request(None, None));
 
         assert!(!arguments.contains(&"-m".to_owned()), "{arguments:?}");
         assert!(
@@ -408,7 +399,7 @@ mod launch_tests {
         };
         let selected = LaunchRequest {
             model_selection: &selection,
-            ..request(Some(NATIVE), Some("go"))
+            ..test_launch_request(Some(NATIVE), Some("go"))
         };
         let rollout = format!("rollout-2026-10-09T00-00-00-{NATIVE}.jsonl");
 
