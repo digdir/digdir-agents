@@ -8,11 +8,21 @@ import { setTimeout } from "node:timers/promises";
 
 // Arguments come from the runtime's actual command builders, not a copy of its policy.
 const options = JSON.parse(process.argv[2]);
-const attach = JSON.parse(process.argv[3]);
+const attachment = JSON.parse(process.argv[3]);
+const attach = attachment.arguments;
 const session = process.argv[4];
 const directory = await mkdtemp(join(tmpdir(), "tmux-scrollback-"));
 const socket = join(directory, "socket");
 const env = { ...process.env, TERM: "xterm-256color", TMUX: "" };
+// A client runs in the environment the runtime attaches with: neither the host's locale nor a
+// TMUX variable, which makes a client assume UTF-8, may decide for it.
+const { LC_ALL, LC_CTYPE, TMUX, ...inherited } = process.env;
+const clientEnv = { ...inherited, ...attachment.environment };
+// Docker-style detach keys, such as "ctrl-b,d", as the bytes a terminal sends for them.
+const detachBytes = attachment.detachKeys
+  .split(",")
+  .map((key) => (key.startsWith("ctrl-") ? String.fromCharCode(key.charCodeAt(5) & 0x1f) : key))
+  .join("");
 const tmux = (...args) => execFileSync("tmux", ["-S", socket, "-f", "/dev/null", ...args], { encoding: "utf8", env }).trim();
 const format = (target, value) => tmux("display-message", "-p", "-t", target, `#{${value}}`);
 async function until(predicate) {
@@ -71,7 +81,7 @@ exec sleep 120
   const command = ["tmux", "-S", socket, ...attach].map(quote).join(" ");
   for (let attempt = 0; attempt < 2; attempt++) {
     tmux("set-option", "-t", pane, "mouse", "off");
-    client = spawn("script", ["-q", "-c", command, "/dev/null"], { env, stdio: ["pipe", "ignore", "pipe"] });
+    client = spawn("script", ["-q", "-c", command, "/dev/null"], { env: clientEnv, stdio: ["pipe", "ignore", "pipe"] });
     let errors = "";
     client.stderr.on("data", (data) => { errors += data; });
     await until(() => format(pane, "session_attached") === "1");
@@ -89,7 +99,7 @@ exec sleep 120
 
   const alternateAttach = attach.map((arg) => arg.replace(session, "alternate"));
   const alternateCommand = ["tmux", "-S", socket, ...alternateAttach].map(quote).join(" ");
-  client = spawn("script", ["-q", "-c", alternateCommand, "/dev/null"], { env, stdio: ["pipe", "ignore", "ignore"] });
+  client = spawn("script", ["-q", "-c", alternateCommand, "/dev/null"], { env: clientEnv, stdio: ["pipe", "ignore", "ignore"] });
   await until(() => format("=alternate:", "session_attached") === "1");
   const wheel = "\x1b[<64;5;5M";
   client.stdin.write(wheel);
@@ -101,6 +111,25 @@ exec sleep 120
   assert.equal(await exited, 0);
   client = undefined;
   console.log("PASS: wheel events reach a fullscreen application that requests mouse input");
+
+  // The runtime's attach environment renders UTF-8, and its detach keys end the client, not the Session.
+  const text = "blåbærsyltetøy ✓";
+  tmux("new-session", "-d", "-x", "80", "-y", "10", "-s", "utf8", `printf '%s\\n' '${text}'; exec sleep 120`);
+  await until(() => tmux("capture-pane", "-p", "-t", "=utf8:").includes(text));
+  const utf8Attach = attach.map((arg) => arg.replace(session, "utf8"));
+  const utf8Command = ["tmux", "-S", socket, ...utf8Attach].map(quote).join(" ");
+  client = spawn("script", ["-q", "-c", utf8Command, "/dev/null"], { env: clientEnv, stdio: ["pipe", "pipe", "ignore"] });
+  let drawn = Buffer.alloc(0);
+  client.stdout.on("data", (data) => { drawn = Buffer.concat([drawn, data]); });
+  await until(() => format("=utf8:", "session_attached") === "1" && drawn.toString("utf8").includes(text));
+  const detached = new Promise((resolve) => client.once("exit", resolve));
+  client.stdin.write(detachBytes);
+  const timedOut = setTimeout(5000).then(() => assert.fail("the detach keys did not end the client"));
+  assert.equal(await Promise.race([detached, timedOut]), 0, "the detach keys end the client");
+  client = undefined;
+  assert.equal(format("=utf8:", "session_attached"), "0");
+  assert.ok(tmux("capture-pane", "-p", "-t", "=utf8:").includes(text), "the Session survives detaching");
+  console.log("PASS: the attach environment renders UTF-8; the detach keys detach and the Session survives");
 
 } finally {
   client?.kill();

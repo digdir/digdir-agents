@@ -776,15 +776,30 @@ mod tests {
         }
     }
 
+    /// The arguments, environment and detach keys the runtime attaches a terminal with, for a
+    /// driver to attach a real client exactly as the runtime does.
+    fn attachment(session: &Session) -> String {
+        let request = super::attach_request(session);
+        let sandbox::execution::Program::Command { args, .. } = request.spec().program() else {
+            panic!("tmux attaches by command");
+        };
+        serde_json::json!({
+            "arguments": args,
+            "environment": request.spec().environment(),
+            "detachKeys": request.detach_keys(),
+        })
+        .to_string()
+    }
+
     #[test]
     #[cfg(target_os = "linux")]
-    #[ignore = "requires Node.js, tmux and script; exercises scrollback in an isolated terminal server"]
+    #[ignore = "requires Node.js, tmux and script; exercises scrollback, UTF-8 and detaching in an isolated terminal server"]
     fn scrollback_in_a_real_terminal() {
         let session = test_session(crate::ModelSelection::default());
         let output = std::process::Command::new("node")
             .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/tmux_scrollback.mjs"))
             .arg(serde_json::to_string(&super::terminal_options()).expect("options"))
-            .arg(serde_json::to_string(&super::attach_arguments(&session)).expect("attachment"))
+            .arg(attachment(&session))
             .arg(super::session_name(&session))
             .output()
             .expect("Node.js");
@@ -804,7 +819,7 @@ mod tests {
         let output = std::process::Command::new("node")
             .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/tmux_suspend.mjs"))
             .arg(serde_json::to_string(&super::terminal_options()).expect("options"))
-            .arg(serde_json::to_string(&super::attach_arguments(&session)).expect("attachment"))
+            .arg(attachment(&session))
             .arg(super::session_name(&session))
             .output()
             .expect("Node.js");

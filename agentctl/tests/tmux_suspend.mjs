@@ -7,11 +7,16 @@ import { setTimeout } from "node:timers/promises";
 
 // Arguments come from the runtime's actual command builders, not a copy of its policy.
 const options = JSON.parse(process.argv[2]);
-const attach = JSON.parse(process.argv[3]);
+const attachment = JSON.parse(process.argv[3]);
+const attach = attachment.arguments;
 const session = process.argv[4];
 const directory = await mkdtemp(join(tmpdir(), "tmux-suspend-"));
 const socket = join(directory, "socket");
 const env = { ...process.env, TERM: "xterm-256color", TMUX: "" };
+// A client runs in the environment the runtime attaches with: neither the host's locale nor a
+// TMUX variable, which makes a client assume UTF-8, may decide for it.
+const { LC_ALL, LC_CTYPE, TMUX, ...inherited } = process.env;
+const clientEnv = { ...inherited, ...attachment.environment };
 const tmux = (...args) => execFileSync("tmux", ["-S", socket, "-f", "/dev/null", ...args], { encoding: "utf8", env }).trim();
 const format = (target, value) => tmux("display-message", "-p", "-t", target, `#{${value}}`);
 const stopped = (pid) => execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim().startsWith("T");
@@ -34,7 +39,7 @@ let client;
 async function attached(name, target, probe) {
   const args = attach.map((arg) => arg.replaceAll(session, name));
   const command = ["tmux", "-S", socket, ...args].map(quote).join(" ");
-  client = spawn("script", ["-q", "-c", command, "/dev/null"], { env, stdio: ["pipe", "ignore", "ignore"] });
+  client = spawn("script", ["-q", "-c", command, "/dev/null"], { env: clientEnv, stdio: ["pipe", "ignore", "ignore"] });
   await until(() => format(`=${name}:`, "session_attached") === "1");
   client.stdin.write(`${probe}\n`);
   await until(() => tmux("capture-pane", "-p", "-t", target).includes(probe));
