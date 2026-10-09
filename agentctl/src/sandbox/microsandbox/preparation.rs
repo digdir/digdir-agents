@@ -177,28 +177,19 @@ mod tests {
     }
 
     #[test]
-    fn optional_secret_omits_missing_and_empty_values() -> Result<(), crate::Error> {
+    fn an_optional_secret_omits_a_missing_or_empty_value_and_a_required_one_rejects_it() -> Result<(), crate::Error> {
         let mut environment = BTreeMap::new();
         assert_eq!(secret_value(&environment, &secret(true))?, None);
+        assert!(
+            matches!(secret_value(&environment, &secret(false)), Err(crate::Error::Invalid(message)) if message.contains("API_TOKEN"))
+        );
 
         environment.insert("API_TOKEN".into(), Zeroizing::new(String::new()));
         assert_eq!(secret_value(&environment, &secret(true))?, None);
-        Ok(())
-    }
 
-    #[test]
-    fn optional_secret_selects_a_present_value() -> Result<(), crate::Error> {
-        let environment = BTreeMap::from([("API_TOKEN".into(), Zeroizing::new("token".into()))]);
-
+        environment.insert("API_TOKEN".into(), Zeroizing::new("token".into()));
         assert_eq!(secret_value(&environment, &secret(true))?, Some("token"));
+        assert_eq!(secret_value(&environment, &secret(false))?, Some("token"));
         Ok(())
-    }
-
-    #[test]
-    fn required_secret_still_rejects_a_missing_value() {
-        let environment = BTreeMap::new();
-        let error = secret_value(&environment, &secret(false));
-
-        assert!(matches!(error, Err(crate::Error::Invalid(message)) if message.contains("API_TOKEN")));
     }
 }

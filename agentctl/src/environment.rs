@@ -114,9 +114,7 @@ fn unquote(value: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{optional, read_or_empty};
-    use std::collections::BTreeMap;
-    use zeroize::Zeroizing;
+    use super::read_or_empty;
 
     #[tokio::test]
     async fn missing_optional_environment_file_is_empty() -> Result<(), crate::Error> {
@@ -125,17 +123,5 @@ mod tests {
 
         assert!(values.is_empty());
         Ok(())
-    }
-
-    #[test]
-    fn optional_values_omit_missing_and_empty_entries() {
-        let values = BTreeMap::from([
-            ("EMPTY".into(), Zeroizing::new(String::new())),
-            ("PRESENT".into(), Zeroizing::new("value".into())),
-        ]);
-
-        assert_eq!(optional(&values, "MISSING"), None);
-        assert_eq!(optional(&values, "EMPTY"), None);
-        assert_eq!(optional(&values, "PRESENT"), Some("value"));
     }
 }

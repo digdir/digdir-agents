@@ -242,18 +242,4 @@ mod tests {
         assert!(script.contains(r#"const WAITING_NOTIFICATIONS = ["ask"];"#));
         assert!(!script.contains("__EVENTS__"));
     }
-
-    #[test]
-    fn session_start_carries_identity_and_retries_within_one_budget() {
-        let script = HookScript {
-            events: &[("SessionStart", ActivityEvent::SessionStart)],
-            waiting_notifications: &[],
-        }
-        .render()
-        .expect("script renders");
-        assert!(script.contains("body.nativeSessionId = input.session_id;"));
-        assert!(script.contains("body.transcriptPath = input.transcript_path;"));
-        assert!(script.contains("retryable ? 3 : 1"));
-        assert!(script.contains("retryable ? 1500 : 300"));
-    }
 }

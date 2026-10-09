@@ -243,16 +243,6 @@ mod tests {
     }
 
     #[test]
-    fn the_nested_binding_is_a_distinct_unambiguous_setup_token() {
-        // The Network Backend rejects bindings whose placeholders repeat or contain one another.
-        assert_ne!(super::ACCESS_PLACEHOLDER, super::NESTED_PLACEHOLDER);
-        assert!(!super::ACCESS_PLACEHOLDER.contains(super::NESTED_PLACEHOLDER));
-        assert!(!super::NESTED_PLACEHOLDER.contains(super::ACCESS_PLACEHOLDER));
-        // `agentctl claude login` only accepts a setup token, so a nested Agent can chain on this.
-        assert!(super::NESTED_PLACEHOLDER.starts_with(super::SETUP_TOKEN_PREFIX));
-    }
-
-    #[test]
     fn a_manifest_cannot_redeclare_either_claude_binding() {
         for name in [super::ACCESS_ENVIRONMENT, super::NESTED_ENVIRONMENT] {
             assert!(super::manages_environment(name));

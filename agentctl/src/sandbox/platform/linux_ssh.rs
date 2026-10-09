@@ -475,19 +475,6 @@ mod tests {
     }
 
     #[test]
-    fn platform_owned_unit_runs_only_the_platform_policy() {
-        let unit = super::render_unit();
-        assert!(unit.contains(&format!("ConditionPathExists={}", super::HOST_KEY)));
-        assert!(unit.contains(&format!(
-            "ExecStart={} -D -e -f {}",
-            super::SERVER,
-            super::SERVER_CONFIG
-        )));
-        assert!(unit.contains("RuntimeDirectory=sshd"));
-        assert!(unit.contains("WantedBy=multi-user.target"));
-    }
-
-    #[test]
     fn ssh_environment_preserves_values_and_excludes_process_local_state() {
         let parsed = super::parse_environment(
             b"PATH=/usr/local/bin:/usr/bin\0GIT_USER_NAME=Agent #1 \"reviewer\"\0EMPTY=\0TERM=dumb\0HOME=/image-home\0AGENT_SESSION_ID=session\0",

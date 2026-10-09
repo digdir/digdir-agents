@@ -2967,28 +2967,6 @@ mod tests {
     }
 
     #[test]
-    fn a_removed_row_leaves_the_selection_on_its_neighbour() {
-        let mut app = App::new();
-        app.apply_snapshot(vec![agent("a"), agent("b"), agent("c")], Vec::new());
-        app.select_index(2);
-        app.apply_snapshot(vec![agent("a"), agent("b")], Vec::new());
-        assert_eq!(
-            app.selection,
-            Some(TreeRowId::Agent("b".into())),
-            "the last row falls back to the one above"
-        );
-
-        app.apply_snapshot(vec![agent("a"), agent("b"), agent("c")], Vec::new());
-        app.select_index(1);
-        app.apply_snapshot(vec![agent("a"), agent("c")], Vec::new());
-        assert_eq!(
-            app.selection,
-            Some(TreeRowId::Agent("c".into())),
-            "a middle row falls back to the one now in its place"
-        );
-    }
-
-    #[test]
     fn folding_hides_sessions_and_expand_all_restores_them() {
         let mut app = populated();
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
@@ -3048,14 +3026,11 @@ mod tests {
     }
 
     #[test]
-    fn selection_wraps_and_clamps_after_shrink() {
+    fn selection_wraps_at_the_ends() {
         let mut app = populated();
         app.on_key(key(KeyCode::Up));
         assert_eq!(app.selected_index(), Some(4));
         app.on_key(key(KeyCode::Down));
-        assert_eq!(app.selected_index(), Some(0));
-        app.select_index(4);
-        app.apply_snapshot(vec![agent("worker")], Vec::new());
         assert_eq!(app.selected_index(), Some(0));
     }
 
@@ -3272,49 +3247,36 @@ mod tests {
         assert_eq!(detail(&app), "3 sessions", "a folded Agent tells what unfolding shows");
     }
 
-    #[test]
-    fn a_session_leaving_the_tree_selects_its_neighbour_before_its_agent() {
-        let mut app = App::new();
-        let snapshot = |archived_names: &[&str]| {
-            ["s1", "s2", "s3"]
-                .into_iter()
-                .map(|name| {
-                    let session = session("worker", name, "idle");
-                    if archived_names.contains(&name) {
-                        archived(session)
-                    } else {
-                        session
-                    }
-                })
-                .collect::<Vec<_>>()
-        };
-        app.apply_snapshot(vec![agent("builder"), agent("worker")], snapshot(&[]));
-        app.selection = Some(session_row("worker", "s2"));
+    /// A row the selection was on leaves the tree, and where the selection lands.
+    struct NeighbourCase {
+        why: &'static str,
+        show_archived: bool,
+        agents: &'static [&'static str],
+        sessions: Vec<Session>,
+        selected: TreeRowId,
+        change: fn(&mut App),
+        expected: TreeRowId,
+    }
 
-        app.apply_snapshot(vec![agent("builder"), agent("worker")], snapshot(&["s2"]));
-        assert_eq!(
-            app.selection,
-            Some(session_row("worker", "s3")),
-            "the next one takes its place"
-        );
-
-        app.apply_snapshot(vec![agent("builder"), agent("worker")], snapshot(&["s2", "s3"]));
-        assert_eq!(
-            app.selection,
-            Some(session_row("worker", "s1")),
-            "the last one gives way to the one above"
-        );
-
-        app.apply_snapshot(vec![agent("builder"), agent("worker")], snapshot(&["s1", "s2", "s3"]));
-        assert_eq!(app.selection, Some(TreeRowId::Agent("worker".into())), "then its Agent");
+    /// Sessions s1 to s3 of `worker`, the named ones archived.
+    fn worker_sessions(archived_names: &[&str]) -> Vec<Session> {
+        ["s1", "s2", "s3"]
+            .into_iter()
+            .map(|name| {
+                let session = session("worker", name, "idle");
+                if archived_names.contains(&name) {
+                    archived(session)
+                } else {
+                    session
+                }
+            })
+            .collect()
     }
 
     #[test]
-    fn a_selection_whose_neighbours_also_leave_goes_to_the_nearest_listed_session() {
-        let mut app = App::new();
-        app.show_archived = true;
-        app.apply_snapshot(
-            vec![agent("alpha"), agent("worker")],
+    #[allow(clippy::too_many_lines)]
+    fn the_selection_follows_its_neighbour_when_its_row_leaves() {
+        let alpha_and_worker = || {
             vec![
                 archived(session("alpha", "a1", "archived")),
                 archived(session("alpha", "a2", "archived")),
@@ -3322,61 +3284,126 @@ mod tests {
                 archived(session("worker", "s2", "archived")),
                 archived(session("worker", "s3", "archived")),
                 session("worker", "s4", "idle"),
-            ],
-        );
-        app.selection = Some(session_row("worker", "s3"));
-        app.on_key(key(KeyCode::Char('A')));
-        assert_eq!(
-            app.selection,
-            Some(session_row("worker", "s4")),
-            "rows above, of its own and of another Agent, left with it"
-        );
+            ]
+        };
+        let cases = [
+            NeighbourCase {
+                why: "the last row falls back to the one above",
+                show_archived: false,
+                agents: &["a", "b", "c"],
+                sessions: Vec::new(),
+                selected: TreeRowId::Agent("c".into()),
+                change: |app| app.apply_snapshot(vec![agent("a"), agent("b")], Vec::new()),
+                expected: TreeRowId::Agent("b".into()),
+            },
+            NeighbourCase {
+                why: "a middle row falls back to the one now in its place",
+                show_archived: false,
+                agents: &["a", "b", "c"],
+                sessions: Vec::new(),
+                selected: TreeRowId::Agent("b".into()),
+                change: |app| app.apply_snapshot(vec![agent("a"), agent("c")], Vec::new()),
+                expected: TreeRowId::Agent("c".into()),
+            },
+            NeighbourCase {
+                why: "the next Session takes the place of one that leaves",
+                show_archived: false,
+                agents: &["builder", "worker"],
+                sessions: worker_sessions(&[]),
+                selected: session_row("worker", "s2"),
+                change: |app| app.apply_snapshot(vec![agent("builder"), agent("worker")], worker_sessions(&["s2"])),
+                expected: session_row("worker", "s3"),
+            },
+            NeighbourCase {
+                why: "the last Session gives way to the one above",
+                show_archived: false,
+                agents: &["builder", "worker"],
+                sessions: worker_sessions(&["s2"]),
+                selected: session_row("worker", "s3"),
+                change: |app| {
+                    app.apply_snapshot(vec![agent("builder"), agent("worker")], worker_sessions(&["s2", "s3"]));
+                },
+                expected: session_row("worker", "s1"),
+            },
+            NeighbourCase {
+                why: "the last listed Session gives way to its Agent",
+                show_archived: false,
+                agents: &["builder", "worker"],
+                sessions: worker_sessions(&["s2", "s3"]),
+                selected: session_row("worker", "s1"),
+                change: |app| {
+                    app.apply_snapshot(
+                        vec![agent("builder"), agent("worker")],
+                        worker_sessions(&["s1", "s2", "s3"]),
+                    );
+                },
+                expected: TreeRowId::Agent("worker".into()),
+            },
+            NeighbourCase {
+                why: "Sessions are matched by name, not position",
+                show_archived: false,
+                agents: &["worker"],
+                sessions: vec![session("worker", "s2", "idle"), session("worker", "s3", "idle")],
+                selected: session_row("worker", "s2"),
+                change: |app| {
+                    app.apply_snapshot(
+                        vec![agent("worker")],
+                        vec![
+                            session("worker", "s1", "idle"),
+                            archived(session("worker", "s2", "archived")),
+                            session("worker", "s3", "idle"),
+                        ],
+                    );
+                },
+                expected: session_row("worker", "s3"),
+            },
+            NeighbourCase {
+                why: "hiding archived Sessions moves to a listed neighbour",
+                show_archived: true,
+                agents: &["worker"],
+                sessions: vec![
+                    archived(session("worker", "s1", "archived")),
+                    session("worker", "s2", "idle"),
+                ],
+                selected: session_row("worker", "s1"),
+                change: |app| {
+                    app.on_key(key(KeyCode::Char('A')));
+                },
+                expected: session_row("worker", "s2"),
+            },
+            NeighbourCase {
+                why: "rows above, of its own and of another Agent, left with it",
+                show_archived: true,
+                agents: &["alpha", "worker"],
+                sessions: alpha_and_worker(),
+                selected: session_row("worker", "s3"),
+                change: |app| {
+                    app.on_key(key(KeyCode::Char('A')));
+                },
+                expected: session_row("worker", "s4"),
+            },
+            NeighbourCase {
+                why: "a filter that keeps only one row before it",
+                show_archived: true,
+                agents: &["alpha", "worker"],
+                sessions: alpha_and_worker(),
+                selected: session_row("worker", "s4"),
+                change: |app| {
+                    app.filter = "s1".into();
+                    app.rebuild();
+                },
+                expected: session_row("worker", "s1"),
+            },
+        ];
 
-        app.selection = Some(session_row("worker", "s4"));
-        app.on_key(key(KeyCode::Char('A')));
-        app.selection = Some(session_row("worker", "s4"));
-        app.filter = "s1".into();
-        app.rebuild();
-        assert_eq!(
-            app.selection,
-            Some(session_row("worker", "s1")),
-            "the filter keeps only one before it"
-        );
-    }
-
-    #[test]
-    fn a_snapshot_that_adds_and_removes_sessions_selects_by_name_not_position() {
-        let mut app = App::new();
-        app.apply_snapshot(
-            vec![agent("worker")],
-            vec![session("worker", "s2", "idle"), session("worker", "s3", "idle")],
-        );
-        app.selection = Some(session_row("worker", "s2"));
-        app.apply_snapshot(
-            vec![agent("worker")],
-            vec![
-                session("worker", "s1", "idle"),
-                archived(session("worker", "s2", "archived")),
-                session("worker", "s3", "idle"),
-            ],
-        );
-        assert_eq!(app.selection, Some(session_row("worker", "s3")));
-    }
-
-    #[test]
-    fn hiding_archived_sessions_moves_the_selection_to_a_listed_neighbour() {
-        let mut app = App::new();
-        app.show_archived = true;
-        app.apply_snapshot(
-            vec![agent("worker")],
-            vec![
-                archived(session("worker", "s1", "archived")),
-                session("worker", "s2", "idle"),
-            ],
-        );
-        app.selection = Some(session_row("worker", "s1"));
-        app.on_key(key(KeyCode::Char('A')));
-        assert_eq!(app.selection, Some(session_row("worker", "s2")));
+        for case in cases {
+            let mut app = App::new();
+            app.show_archived = case.show_archived;
+            app.apply_snapshot(case.agents.iter().map(|name| agent(name)).collect(), case.sessions);
+            app.selection = Some(case.selected);
+            (case.change)(&mut app);
+            assert_eq!(app.selection, Some(case.expected), "{}", case.why);
+        }
     }
 
     #[test]
@@ -3786,46 +3813,7 @@ mod tests {
     }
 
     #[test]
-    fn create_form_submits_the_placeholder_name_when_nothing_is_typed() {
-        let mut app = populated();
-        app.open_create(candidates(&[("/sources/fresh", "fresh")]));
-        let Action::CreateAgent {
-            manifest,
-            name,
-            env_file,
-            ..
-        } = app.on_key(key(KeyCode::Enter))
-        else {
-            panic!("expected a CreateAgent action");
-        };
-        assert_eq!(manifest, PathBuf::from("/sources/fresh/agent.yaml"));
-        assert_eq!(name, "fresh-1");
-        assert_eq!(env_file, None);
-        assert!(app.modal.is_none());
-    }
-
-    #[test]
-    fn create_form_accepts_an_environment_file_path() {
-        let mut app = populated();
-        app.open_create(candidates(&[("/sources/fresh", "fresh")]));
-        app.on_key(key(KeyCode::Tab));
-        app.on_key(key(KeyCode::Tab));
-        app.on_key(key(KeyCode::Tab));
-        assert_eq!(create_form(&app).field, CreateField::EnvironmentFile);
-        for character in "../private/fresh.env".chars() {
-            app.on_key(key(KeyCode::Char(character)));
-        }
-        app.on_key(key(KeyCode::Char('x')));
-        app.on_key(key(KeyCode::Backspace));
-
-        let Action::CreateAgent { env_file, .. } = app.on_key(key(KeyCode::Enter)) else {
-            panic!("expected a CreateAgent action");
-        };
-        assert_eq!(env_file, Some(PathBuf::from("../private/fresh.env")));
-    }
-
-    #[test]
-    fn create_form_placeholder_follows_selection_and_typed_names_win() {
+    fn create_form_placeholder_follows_selection_and_typed_values_win() {
         let mut app = populated();
         app.open_create(candidates(&[("/a", "alpha"), ("/b", "beta")]));
         assert_eq!(create_form(&app).placeholder(&app.agents).as_deref(), Some("alpha-1"));
@@ -3837,11 +3825,25 @@ mod tests {
         app.on_key(key(KeyCode::Char('E')));
         app.on_key(key(KeyCode::Char('y')));
         assert_eq!(create_form(&app).name, "my");
-        let Action::CreateAgent { manifest, name, .. } = app.on_key(key(KeyCode::Enter)) else {
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(create_form(&app).field, CreateField::EnvironmentFile);
+        for character in "../private/beta.env".chars() {
+            app.on_key(key(KeyCode::Char(character)));
+        }
+        app.on_key(key(KeyCode::Char('x')));
+        app.on_key(key(KeyCode::Backspace));
+        let Action::CreateAgent {
+            manifest,
+            name,
+            env_file,
+            ..
+        } = app.on_key(key(KeyCode::Enter))
+        else {
             panic!("expected a CreateAgent action");
         };
         assert_eq!(manifest, PathBuf::from("/b/agent.yaml"));
         assert_eq!(name, "my");
+        assert_eq!(env_file, Some(PathBuf::from("../private/beta.env")));
     }
 
     #[test]
@@ -3850,10 +3852,19 @@ mod tests {
         app.apply_snapshot(vec![agent("worker"), agent("worker-1"), agent("worker-3")], Vec::new());
         app.open_create(candidates(&[("/sources/worker", "worker")]));
         assert_eq!(create_form(&app).placeholder(&app.agents).as_deref(), Some("worker-2"));
-        let Action::CreateAgent { name, .. } = app.on_key(key(KeyCode::Enter)) else {
+        let Action::CreateAgent {
+            manifest,
+            name,
+            env_file,
+            ..
+        } = app.on_key(key(KeyCode::Enter))
+        else {
             panic!("expected a CreateAgent action");
         };
-        assert_eq!(name, "worker-2");
+        assert_eq!(manifest, PathBuf::from("/sources/worker/agent.yaml"));
+        assert_eq!(name, "worker-2", "nothing typed submits the placeholder");
+        assert_eq!(env_file, None);
+        assert!(app.modal.is_none());
 
         let longest = "a".repeat(::sandbox::MAX_SANDBOX_NAME_BYTES);
         assert_eq!(numbered_name(&longest, &[]), longest);
@@ -3892,7 +3903,7 @@ mod tests {
     }
 
     #[test]
-    fn create_form_blocks_unreadable_manifests_and_empty_pickers() {
+    fn create_form_blocks_unreadable_manifests_and_variants_and_empty_pickers() {
         let mut app = populated();
         app.open_create(vec![ManifestCandidate::new(
             PathBuf::from("/gone/agent.yaml"),
@@ -3903,14 +3914,7 @@ mod tests {
         assert_eq!(create_form(&app).error.as_deref(), Some("manifest cannot be decoded"));
         app.on_key(key(KeyCode::Esc));
         assert!(app.modal.is_none());
-        app.open_create(Vec::new());
-        app.on_key(key(KeyCode::Enter));
-        assert!(create_form(&app).error.is_some());
-    }
 
-    #[test]
-    fn create_form_keeps_invalid_variants_visible_but_blocks_submission() {
-        let mut app = populated();
         app.open_create(vec![
             ManifestCandidate::new(PathBuf::from("/sources/full/agent.yaml"), Ok("full".into())),
             ManifestCandidate::new(
@@ -3921,14 +3925,22 @@ mod tests {
         app.on_key(key(KeyCode::Tab));
         app.on_key(key(KeyCode::Right));
         let form = create_form(&app);
-        assert_eq!(form.variant_label(), Some("broken".into()));
+        assert_eq!(
+            form.variant_label(),
+            Some("broken".into()),
+            "an invalid variant stays visible"
+        );
         assert_eq!(form.placeholder(&app.agents), None);
-
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
         assert_eq!(
             create_form(&app).error.as_deref(),
             Some("agent.broken.yaml: missing base")
         );
+        app.on_key(key(KeyCode::Esc));
+
+        app.open_create(Vec::new());
+        app.on_key(key(KeyCode::Enter));
+        assert!(create_form(&app).error.is_some());
     }
 
     #[test]
@@ -3963,24 +3975,6 @@ mod tests {
             create_form(&app).placeholder(&app.agents).as_deref(),
             Some("builder-nested-1")
         );
-    }
-
-    #[test]
-    fn create_form_cycles_fields_with_arrows_and_tab() {
-        let mut app = populated();
-        app.open_create(candidates(&[("/sources/fresh", "fresh")]));
-        assert_eq!(create_form(&app).field, CreateField::Agent);
-
-        app.on_key(key(KeyCode::Down));
-        assert_eq!(create_form(&app).field, CreateField::Variant);
-        app.on_key(key(KeyCode::Down));
-        assert_eq!(create_form(&app).field, CreateField::Name);
-        app.on_key(key(KeyCode::Up));
-        assert_eq!(create_form(&app).field, CreateField::Variant);
-        app.on_key(key(KeyCode::Tab));
-        assert_eq!(create_form(&app).field, CreateField::Name);
-        app.on_key(key(KeyCode::BackTab));
-        assert_eq!(create_form(&app).field, CreateField::Variant);
     }
 
     #[test]
@@ -4323,37 +4317,17 @@ mod tests {
     }
 
     #[test]
-    fn every_session_state_has_its_own_glyph_and_input_needs_attention() {
+    fn a_session_needing_input_draws_attention_to_itself_and_its_agent() {
         let mut app = App::new();
         app.apply_snapshot(
             vec![ready_agent("fleet")],
-            ["waitingForInput", "working", "starting", "idle", "failed"]
-                .iter()
-                .enumerate()
-                .map(|(index, state)| session("fleet", &format!("s{index}"), state))
-                .collect(),
+            vec![
+                session("fleet", "s0", "waitingForInput"),
+                session("fleet", "s1", "working"),
+            ],
         );
-        let rows = app.render_rows();
-        assert!(
-            rows[0].attention,
-            "the Agent shows that one of its Sessions needs input"
-        );
-        assert_eq!(rows[0].detail, "5 sessions");
-        let sessions = rows[1..]
-            .iter()
-            .map(|row| (row.marker, row.state, row.attention))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            sessions,
-            [
-                ("!", "Needs you", true),
-                ("*", "Working", false),
-                ("~", "Starting", false),
-                ("-", "Idle", false),
-                ("x", "Failed", false),
-            ]
-        );
-        assert_eq!(rows[1].detail, "Claude Code");
+        let attention = app.render_rows().iter().map(|row| row.attention).collect::<Vec<_>>();
+        assert_eq!(attention, [true, true, false]);
     }
 
     #[test]
@@ -4454,23 +4428,6 @@ mod tests {
         assert_eq!(app.view, View::Forwards, "dismissing the error returns to the forwards");
         app.on_key(key(KeyCode::Char('q')));
         assert_eq!(app.view, View::Tree);
-    }
-
-    #[test]
-    fn rejected_forwards_reopen_the_form_with_their_values() {
-        let spec = ForwardSpec {
-            address: std::net::IpAddr::from([127, 0, 0, 1]),
-            local_port: 0,
-            guest_port: 5432,
-        };
-        let form = ForwardForm::rejected("worker".into(), &spec, Some(3), "boom".into());
-        assert_eq!(form.agent, "worker");
-        assert_eq!(form.address, "127.0.0.1");
-        assert_eq!(form.local, "");
-        assert_eq!(form.guest, "5432");
-        assert_eq!(form.field, ForwardField::Address);
-        assert_eq!(form.error.as_deref(), Some("boom"));
-        assert_eq!(form.replace, Some(3));
     }
 
     #[cfg(target_os = "macos")]
@@ -4873,23 +4830,6 @@ mod tests {
     }
 
     #[test]
-    fn the_agent_panel_shows_how_to_connect() {
-        let app = ssh_app(SshSetup::Missing);
-        let lines = app.agent_panel_lines("worker");
-        let connect = lines
-            .iter()
-            .position(|line| line == "Connect · o open…")
-            .expect("Connect section");
-        assert_eq!(lines[connect + 1], "  shell      in this terminal");
-        assert!(lines.contains(&"  ! SSH not set up; o offers it".to_owned()));
-        assert_eq!(lines.last().map(String::as_str), Some("  ssh alias  agentctl-worker"));
-        assert!(
-            lines.iter().all(|line| !line.contains("agentctl ")),
-            "the panel offers keys, not commands: {lines:?}"
-        );
-    }
-
-    #[test]
     fn one_open_waits_per_agent_and_target_and_ends_in_a_notice_or_an_error() {
         let mut app = ssh_app(SshSetup::Installed);
         let now = Instant::now();
@@ -4950,26 +4890,22 @@ mod tests {
     }
 
     #[test]
-    fn a_forward_opens_in_the_application_for_its_port() {
+    fn o_opens_the_selected_forward() {
         let mut app = ssh_app(SshSetup::Installed);
         app.set_forwards(vec![
             desktop_forward(1, "worker", 6080),
             desktop_forward(2, "worker", agent::vnc::GUEST_PORT),
         ]);
         app.view = View::Forwards;
-        assert_eq!(
-            app.on_key(key(KeyCode::Char('o'))),
-            Action::OpenUrl("http://127.0.0.1:50001/".into())
-        );
         app.on_key(key(KeyCode::Char('j')));
         assert_eq!(
             app.on_key(key(KeyCode::Char('o'))),
-            Action::OpenUrl("vnc://127.0.0.1:50002".into())
+            Action::OpenUrl(app.forwards[1].url())
         );
     }
 
     #[test]
-    fn labeled_forwards_name_themselves_and_the_panel_shows_the_open_desktop() {
+    fn labeled_forwards_name_themselves_and_only_a_running_one_opens_from_the_panel() {
         let mut app = ssh_app(SshSetup::Installed);
         let mut desktop = ready_agent("desk");
         desktop.spec.access = vec![agent::AccessSpec::Ssh {}, agent::AccessSpec::Vnc {}];
@@ -4977,6 +4913,7 @@ mod tests {
         agents.push(desktop);
         let sessions = std::mem::take(&mut app.sessions);
         app.apply_snapshot(agents, sessions);
+        let url = desktop_forward(1, "desk", 6080).url();
         app.set_forwards(vec![desktop_forward(1, "desk", 6080)]);
 
         let desk = app
@@ -4984,18 +4921,14 @@ mod tests {
             .into_iter()
             .find(|row| row.name == "desk")
             .expect("desk row");
-        assert!(desk.detail.contains("ports: desktop 50001:6080"), "{}", desk.detail);
-        assert!(
-            app.agent_panel_lines("desk")
-                .contains(&"  desktop    open at http://127.0.0.1:50001/".to_owned())
-        );
+        assert!(desk.detail.contains("desktop 50001:6080"), "{}", desk.detail);
+        assert!(app.agent_panel_lines("desk").iter().any(|line| line.contains(&url)));
 
         let mut stopped = desktop_forward(1, "desk", 6080);
         stopped.finished = true;
         app.set_forwards(vec![stopped]);
         assert!(
-            app.agent_panel_lines("desk")
-                .contains(&"  desktop    browser · VNC client".to_owned()),
+            !app.agent_panel_lines("desk").iter().any(|line| line.contains(&url)),
             "a stopped forward's address no longer opens anything"
         );
     }

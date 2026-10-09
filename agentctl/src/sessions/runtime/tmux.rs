@@ -777,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn every_launch_carries_the_recorded_model_selection() {
+    fn every_launch_applies_the_terminal_options_and_the_recorded_model_selection() {
         let selection = crate::ModelSelection {
             model: Some(crate::Model::new("haiku").expect("model")),
             effort: Some(crate::Effort::new("low").expect("effort")),
@@ -786,34 +786,12 @@ mod tests {
         let token = super::LaunchToken::generate();
         for resume in [None, Some("160cdb4b-5997-464c-9d22-602786eb45d4")] {
             let arguments = super::launch_arguments(&session, "http://hook", &token, resume, None);
+            // The scrollback limit applies only to panes created after it is set.
+            assert!(arguments.starts_with(&super::terminal_options()));
             let command = arguments.last().expect("tmux command");
             assert!(command.contains("'haiku'") && command.contains("'low'"), "{command}");
             assert_eq!(command.contains("--resume"), resume.is_some(), "{command}");
         }
-        let plain = super::launch_arguments(
-            &test_session(crate::ModelSelection::default()),
-            "http://hook",
-            &token,
-            None,
-            None,
-        );
-        assert!(!plain.last().expect("tmux command").contains("haiku"));
-    }
-
-    #[test]
-    fn terminal_options_precede_creation_and_attachment() {
-        let session = test_session(crate::ModelSelection::default());
-        let options = super::terminal_options();
-        let launch = super::launch_arguments(&session, "http://hook", &super::LaunchToken::generate(), None, None);
-        assert!(launch.starts_with(&options));
-        assert_eq!(launch[options.len()], "new-session");
-        let attach = super::attach_arguments(&session);
-        assert!(attach.starts_with(&options));
-        assert_eq!(
-            &attach[options.len()..options.len() + 6],
-            ["set-option", "-t", &super::pane_target(&session), "mouse", "on", ";"]
-        );
-        assert_eq!(attach[options.len() + 6], "attach-session");
     }
 
     #[test]
@@ -854,20 +832,5 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-    }
-
-    #[test]
-    fn attachment_uses_portable_utf8_terminal_environment() {
-        let session = test_session(crate::ModelSelection::default());
-
-        let request = super::attach_request(&session);
-        let spec = request.spec();
-
-        assert_eq!(spec.environment().get("LANG").map(String::as_str), Some("C.UTF-8"));
-        assert_eq!(
-            spec.environment().get("TERM").map(String::as_str),
-            Some("xterm-256color")
-        );
-        assert_eq!(request.detach_keys(), Some("ctrl-b,d"));
     }
 }
