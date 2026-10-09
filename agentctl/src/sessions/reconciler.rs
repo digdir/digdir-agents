@@ -34,26 +34,26 @@ pub struct Reconciler {
     sessions: SharedStore,
     sandboxes: Rc<AgentSandboxes>,
     runtime: Rc<dyn SessionRuntime>,
-    session_hook_url: String,
+    platform_api_url: String,
 }
 
 impl Reconciler {
     /// Creates a Session reconciler over durable state and the Agent Sandbox service.
     ///
-    /// `session_hook_url` is the Sandbox-reachable start-hook endpoint handed to
-    /// every harness launch.
+    /// `platform_api_url` is the Sandbox-reachable Platform API base URL handed
+    /// to every harness launch.
     #[must_use]
     pub fn new(
         sessions: SharedStore,
         sandboxes: Rc<AgentSandboxes>,
         runtime: Rc<dyn SessionRuntime>,
-        session_hook_url: String,
+        platform_api_url: String,
     ) -> Self {
         Self {
             sessions,
             sandboxes,
             runtime,
-            session_hook_url,
+            platform_api_url,
         }
     }
 
@@ -260,7 +260,7 @@ impl Reconciler {
             .start(
                 session,
                 sandbox,
-                &self.session_hook_url,
+                &self.platform_api_url,
                 &token,
                 resume,
                 initial_prompt.as_deref().filter(|_| resume.is_none()),

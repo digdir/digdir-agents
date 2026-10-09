@@ -19,6 +19,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Fixed
 
+- `agentd` starts even when Windows or another program has reserved the port it used before, so `agentctl tui` no longer fails after a reboot with "automatic startup exited with exit code: 1". ([#160](https://github.com/digdir/digdir-agents/issues/160))
 - Windows installation and updates tolerate temporary file locks while publishing a release. ([#152](https://github.com/digdir/digdir-agents/issues/152))
 - Completed updates no longer block commands or installation when old releases have been removed, and reinstalling repairs a current release pointer that names a missing release. ([#153](https://github.com/digdir/digdir-agents/issues/153))
 

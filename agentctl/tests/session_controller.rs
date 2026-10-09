@@ -370,7 +370,7 @@ impl agent::sessions::SessionRuntime for FakeRuntime {
         &'a self,
         _session: &'a agent::sessions::Session,
         _sandbox: &'a SandboxHandle,
-        _session_hook_url: &'a str,
+        _platform_api_url: &'a str,
         token: &'a agent::sessions::LaunchToken,
         resume: Option<&'a str>,
         initial_prompt: Option<&'a str>,
