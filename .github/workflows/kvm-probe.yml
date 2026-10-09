@@ -1,0 +1,67 @@
+# Throwaway probe: can GitHub-hosted runners boot Microsandbox VMs for the e2e tests? Runs only on pushes to this
+# branch; not intended for main.
+name: kvm-probe
+
+on:
+  push:
+    branches: [ci-kvm-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Microsandbox e2e on ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Describe virtualization
+        run: |
+          uname -a
+          nproc
+          free -h
+          grep -m1 -oE 'vmx|svm' /proc/cpuinfo || echo "no vmx/svm CPU flag"
+          ls -l /dev/kvm || echo "no /dev/kvm"
+          docker version --format '{{.Server.Version}}' || echo "no Docker Engine"
+
+      - name: Grant the runner user access to /dev/kvm
+        run: |
+          test -e /dev/kvm
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libcap-ng-dev
+
+      - name: Install Rust toolchain
+        run: |
+          RUST_VERSION="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "${RUST_VERSION}"
+          rustup toolchain install "${RUST_VERSION}" --profile minimal
+          rustup default "${RUST_VERSION}"
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+
+      - name: Build e2e tests
+        run: cargo test -p sandbox-microsandbox --tests --locked --no-run
+
+      - name: Run Microsandbox e2e tests
+        run: time cargo test -p sandbox-microsandbox --tests --locked --no-fail-fast -- --ignored --test-threads=1
