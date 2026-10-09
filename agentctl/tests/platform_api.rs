@@ -66,7 +66,7 @@ async fn request_to(port: u16, path: &str, token: &str, body: &str) -> u16 {
 }
 
 async fn request(port: u16, token: &str, body: &str) -> u16 {
-    request_to(port, "/v1/session/hooks", token, body).await
+    request_to(port, agent::platform_api::SESSION_HOOKS_PATH, token, body).await
 }
 
 #[tokio::test(flavor = "local")]
@@ -99,9 +99,7 @@ async fn session_reports_require_the_current_launch_token() {
         .await
         .expect("record launch");
 
-    let listener = agent::platform_api::bind_persistent(&directory.path().join("platform-api-port"))
-        .await
-        .expect("bind Platform API listener");
+    let listener = agent::platform_api::bind().await.expect("bind Platform API listener");
     let port = listener.local_addr().expect("local address").port();
     let reported_errors = Rc::new(std::cell::Cell::new(0));
     let error_count = reported_errors.clone();
@@ -332,9 +330,7 @@ async fn platform_api_bounds_stalled_connections() {
     const TOKEN: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     let directory = TempDir::new().expect("temporary directory");
     let database = persistence::Database::open(&directory.path().join("agent.db")).expect("database");
-    let listener = agent::platform_api::bind_persistent(&directory.path().join("platform-api-port"))
-        .await
-        .expect("bind Platform API listener");
+    let listener = agent::platform_api::bind().await.expect("bind Platform API listener");
     let port = listener.local_addr().expect("local address").port();
     let server = Rc::new(agent::platform_api::Server::new(
         Rc::new(database),
@@ -355,7 +351,7 @@ async fn platform_api_bounds_stalled_connections() {
 
     let blocked = tokio::time::timeout(
         Duration::from_millis(100),
-        request_to(port, "/v1/session/hooks", TOKEN, "{}"),
+        request_to(port, agent::platform_api::SESSION_HOOKS_PATH, TOKEN, "{}"),
     )
     .await;
     assert!(blocked.is_err(), "a connection beyond the limit must wait for capacity");
@@ -363,7 +359,7 @@ async fn platform_api_bounds_stalled_connections() {
     drop(stalled.pop());
     let status = tokio::time::timeout(
         Duration::from_secs(1),
-        request_to(port, "/v1/session/hooks", TOKEN, "{}"),
+        request_to(port, agent::platform_api::SESSION_HOOKS_PATH, TOKEN, "{}"),
     )
     .await
     .expect("request should proceed after capacity is released");

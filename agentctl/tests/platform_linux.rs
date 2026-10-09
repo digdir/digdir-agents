@@ -17,6 +17,8 @@ use sandbox::{
 use tempfile::TempDir;
 use tokio::io::AsyncReadExt as _;
 
+const PLATFORM_API_URL: &str = "http://host.microsandbox.internal:4100";
+
 /// Setup steps whose progress is discarded.
 fn setup_phase() -> sandbox::SandboxProgress {
     sandbox::ProgressReporter::from_callback(|_| {}).steps()
@@ -221,7 +223,7 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         .await
         .expect("Sandbox");
 
-    Linux
+    Linux::new(PLATFORM_API_URL)
         .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
         .await
         .expect("setup");
@@ -322,7 +324,7 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
         )
         .await
         .expect("Sandbox");
-    let platform = Linux;
+    let platform = Linux::new(PLATFORM_API_URL);
 
     platform
         .setup(&record, &sandbox, &declared(&record), &setup_phase())
@@ -504,7 +506,7 @@ async fn linux_setup_convergently_configures_podman_container_trust() {
             ExecutionEvent::Exited(ExitStatus { code: 1 }),
         ],
     );
-    Linux
+    Linux::new(PLATFORM_API_URL)
         .setup(&record, &sandbox, &declared(&record), &setup_phase())
         .await
         .expect("first setup");
@@ -515,7 +517,7 @@ async fn linux_setup_convergently_configures_podman_container_trust() {
         )
         .await
         .expect("replace managed configuration");
-    Linux
+    Linux::new(PLATFORM_API_URL)
         .setup(&record, &sandbox, &declared(&record), &setup_phase())
         .await
         .expect("second setup");
@@ -622,7 +624,7 @@ async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
         .await
         .expect("Sandbox");
 
-    Linux
+    Linux::new(PLATFORM_API_URL)
         .setup(&record, &sandbox, &declared(&record), &setup_phase())
         .await
         .expect("setup without a declared version");
@@ -636,6 +638,84 @@ async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
         1,
         "the installation is still checked for presence"
     );
+}
+
+/// A restarted `agentd` listens on a new port; its first setup pass moves harnesses that kept
+/// running onto it, and an unchanged port is not rewritten.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
+    const RESTARTED_URL: &str = "http://host.microsandbox.internal:4200";
+    let directory = TempDir::new().expect("temporary directory");
+    let home = directory.path().join("home");
+    std::fs::create_dir_all(&home).expect("home directory");
+    std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home.source = home;
+    resource.spec.harnesses[0].version = None;
+    let record = AgentRecord {
+        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
+        source_directory: PathBuf::from(directory.path()),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    };
+    let backend = Rc::new(memory::Provider::new());
+    for _ in 0..3 {
+        backend.queue_execution_events_matching(
+            is_claude_version,
+            vec![
+                ExecutionEvent::Started { process_id: None },
+                ExecutionEvent::Stdout("2.1.258 (Claude Code)\n".into()),
+                ExecutionEvent::Exited(ExitStatus { code: 0 }),
+            ],
+        );
+        backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    }
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+    let url_writes = || {
+        backend
+            .file_writes()
+            .iter()
+            .filter(|path| path.as_str() == "/etc/agent-platform-api-url")
+            .count()
+    };
+
+    Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("first setup");
+    assert_eq!(
+        read_file(&sandbox, "/etc/agent-platform-api-url").await,
+        format!("{PLATFORM_API_URL}\n").as_bytes()
+    );
+    Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("unchanged setup");
+    assert_eq!(url_writes(), 1, "an unchanged URL is not rewritten");
+
+    Linux::new(RESTARTED_URL)
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("setup after a restart");
+    assert_eq!(
+        read_file(&sandbox, "/etc/agent-platform-api-url").await,
+        format!("{RESTARTED_URL}\n").as_bytes()
+    );
+    assert_eq!(url_writes(), 2);
 }
 
 #[tokio::test(flavor = "local")]
@@ -683,7 +763,7 @@ async fn linux_setup_converges_git_identity_after_home_sync() {
         .ensure(&request("First User", "first@example.com"))
         .await
         .expect("first Sandbox");
-    Linux
+    Linux::new(PLATFORM_API_URL)
         .setup(&record, &first, &declared(&record), &setup_phase())
         .await
         .expect("first setup");
@@ -691,7 +771,7 @@ async fn linux_setup_converges_git_identity_after_home_sync() {
         .ensure(&request("Second User", "second@example.com"))
         .await
         .expect("updated Sandbox");
-    Linux
+    Linux::new(PLATFORM_API_URL)
         .setup(&record, &second, &declared(&record), &setup_phase())
         .await
         .expect("updated setup");
@@ -774,7 +854,7 @@ async fn linux_setup_skips_git_identity_when_git_is_absent() {
         .await
         .expect("Sandbox");
 
-    Linux
+    Linux::new(PLATFORM_API_URL)
         .setup(&record, &sandbox, &declared(&record), &setup_phase())
         .await
         .expect("setup without Git");
@@ -822,7 +902,7 @@ async fn linux_setup_rejects_partial_git_identity() {
         .await
         .expect("Sandbox");
 
-    let error = Linux
+    let error = Linux::new(PLATFORM_API_URL)
         .setup(&record, &sandbox, &declared(&record), &setup_phase())
         .await
         .expect_err("partial Git identity");
@@ -871,7 +951,7 @@ async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injectio
         .await
         .expect("Sandbox");
 
-    let error = Linux
+    let error = Linux::new(PLATFORM_API_URL)
         .setup(&record, &sandbox, &declared(&record), &setup_phase())
         .await
         .expect_err("version mismatch");
@@ -939,7 +1019,7 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
         .await
         .expect("Sandbox");
 
-    let error = Linux
+    let error = Linux::new(PLATFORM_API_URL)
         .setup(&record, &sandbox, &declared(&record), &setup_phase())
         .await
         .expect_err("FIFO must be rejected");

@@ -115,12 +115,13 @@ async fn open_sandboxes(
         )
         .await?,
     );
-    let session_hook_url = microsandbox.platform_url("/v1/session/hooks")?;
+    let platform_api_url = microsandbox.platform_url();
     let provider: Rc<dyn agent::sandbox::Provider> = microsandbox;
-    let platform: Rc<dyn agent::sandbox::PlatformAdapter> = Rc::new(agent::sandbox::platform::Linux);
+    let platform: Rc<dyn agent::sandbox::PlatformAdapter> =
+        Rc::new(agent::sandbox::platform::Linux::new(platform_api_url.clone()));
     Ok((
         Rc::new(agent::sandbox::Service::new([provider], [platform])?),
-        session_hook_url,
+        platform_api_url,
     ))
 }
 
@@ -132,9 +133,11 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     let store = Rc::new(database.clone());
     let credentials = Rc::new(agent::harness::AuthenticationManager::new(database.clone()));
     let policy = Rc::new(agent::authorization::AgentPolicyEngine::new());
-    let platform_api_listener = agent::platform_api::bind_persistent(&home.path().join("platform-api-port")).await?;
+    let platform_api_listener = agent::platform_api::bind().await?;
+    // Earlier releases reused a port persisted here; nothing reads it any more.
+    let _ = tokio::fs::remove_file(home.path().join("platform-api-port")).await;
     let platform_api_port = platform_api_listener.local_addr()?.port();
-    let (sandboxes, session_hook_url) =
+    let (sandboxes, platform_api_url) =
         open_sandboxes(&home, &database, credentials.clone(), policy, platform_api_port).await?;
     let session_reports: Rc<dyn agent::sessions::SessionReports> = store.clone();
     let session_store: Rc<dyn agent::sessions::SessionStore> = store.clone();
@@ -152,7 +155,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
             session_store.clone(),
             agent_sandboxes.clone(),
             session_runtime.clone(),
-            session_hook_url,
+            platform_api_url,
         ));
     let (session_controller, session_wakeup) = agent::sessions::Controller::new(
         session_store.clone(),
