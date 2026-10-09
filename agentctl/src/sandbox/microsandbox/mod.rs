@@ -96,18 +96,10 @@ impl Adapter {
         })
     }
 
-    /// Resolves a platform route to the URL reachable from this Provider's Sandboxes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless `path` is an absolute HTTP path.
-    pub fn platform_url(&self, path: &str) -> Result<String, Error> {
-        if !path.starts_with('/') || path.starts_with("//") {
-            return Err(Error::Invalid(
-                "platform endpoint path must start with exactly one '/'".into(),
-            ));
-        }
-        Ok(format!("http://{HOST_ALIAS}:{}{path}", self.platform_port))
+    /// The Platform API base URL reachable from this Provider's Sandboxes.
+    #[must_use]
+    pub fn platform_url(&self) -> String {
+        format!("http://{HOST_ALIAS}:{}", self.platform_port)
     }
 
     fn sandbox_spec(&self, record: &AgentRecord) -> ::sandbox::SandboxSpec {
