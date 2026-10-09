@@ -178,7 +178,7 @@ mod tests {
             "process.stdout.write('ready\\n');\nconst input = await read(process.stdin);",
             1,
         );
-        let Ok(mut child) = tokio::process::Command::new("node")
+        let mut child = tokio::process::Command::new("node")
             .arg("--input-type=module")
             .arg("-e")
             .arg(script)
@@ -190,10 +190,7 @@ mod tests {
             .env_remove("AGENT_SESSION_ID")
             .kill_on_drop(true)
             .spawn()
-        else {
-            // Node is optional for Rust-only development environments.
-            return;
-        };
+            .expect("Node.js runs the hook script, as it does in every Sandbox and CI host");
         let mut ready = [0; 6];
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
