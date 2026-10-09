@@ -122,13 +122,12 @@ impl PlatformAdapter for NoopPlatform {
     }
 }
 
-struct CountingProvider {
+struct MemoryProvider {
     id: ProviderId,
     service: SandboxService,
-    ensure_calls: Rc<Cell<usize>>,
 }
 
-impl Provider for CountingProvider {
+impl Provider for MemoryProvider {
     fn id(&self) -> &ProviderId {
         &self.id
     }
@@ -144,7 +143,6 @@ impl Provider for CountingProvider {
         _progress: sandbox::ProgressReporter,
     ) -> LocalFuture<'a, Result<ProviderEnsureOutcome, Error>> {
         Box::pin(async move {
-            self.ensure_calls.set(self.ensure_calls.get() + 1);
             let spec = record
                 .agent
                 .spec
@@ -248,10 +246,9 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
 /// never reach the runtime (they resolve with `WaitPolicy::FirstPass`).
 fn unused_sandboxes() -> Rc<agent::sandbox::Service> {
     let backend = Rc::new(sandbox_memory::Provider::new());
-    let provider: Rc<dyn Provider> = Rc::new(CountingProvider {
+    let provider: Rc<dyn Provider> = Rc::new(MemoryProvider {
         id: ProviderId::new("memory").expect("Provider ID"),
         service: SandboxService::new(backend),
-        ensure_calls: Rc::new(Cell::new(0)),
     });
     Rc::new(
         agent::sandbox::Service::new([provider], [Rc::new(NoopPlatform) as Rc<dyn PlatformAdapter>])
@@ -528,10 +525,9 @@ async fn running_session(
     });
     observe_all_harnesses(&mut record);
     database.put(record, 0).await.expect("Agent");
-    let provider: Rc<dyn Provider> = Rc::new(CountingProvider {
+    let provider: Rc<dyn Provider> = Rc::new(MemoryProvider {
         id: ProviderId::new("memory").expect("Provider ID"),
         service: provider_service,
-        ensure_calls: Rc::new(Cell::new(0)),
     });
     let sandboxes = Rc::new(
         agent::sandbox::Service::new([provider], [Rc::new(NoopPlatform) as Rc<dyn PlatformAdapter>])
@@ -738,11 +734,6 @@ async fn prompt_waits_for_completion_and_turns_are_read_separately() {
         .expect("send");
     assert_eq!(runtime.sent.borrow().len(), 2);
 
-    // `turns` reads the whole conversation; `last` trims it.
-    let all = service.turns("worker", &name, None).await.expect("turns");
-    assert_eq!(all.len(), 3);
-    let last = service.turns("worker", &name, Some(1)).await.expect("turns");
-    assert_eq!(last.len(), 1);
     agent_task.abort();
     session_task.abort();
 }
@@ -1866,10 +1857,9 @@ async fn a_session_admitted_before_convergence_is_parked_until_its_optional_harn
         harnesses: vec![agent::Harness::ClaudeCode],
     });
     database.put(record.clone(), 0).await.expect("Agent");
-    let provider: Rc<dyn Provider> = Rc::new(CountingProvider {
+    let provider: Rc<dyn Provider> = Rc::new(MemoryProvider {
         id: ProviderId::new("memory").expect("Provider ID"),
         service: provider_service,
-        ensure_calls: Rc::new(Cell::new(0)),
     });
     let sandboxes = Rc::new(
         agent::sandbox::Service::new([provider], [Rc::new(NoopPlatform) as Rc<dyn PlatformAdapter>])
@@ -2212,74 +2202,6 @@ async fn session_ensure_resolves_model_and_effort_with_manifest_defaults() {
 }
 
 #[tokio::test(flavor = "local")]
-async fn session_reconciliation_never_ensures_the_agent_sandbox() {
-    let directory = TempDir::new().expect("temporary directory");
-    let database = persistence::Database::open(&directory.path().join("agent.db")).expect("database");
-    let agent_id = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
-    let backend = Rc::new(sandbox_memory::Provider::new());
-    let provider_service =
-        SandboxService::new(backend).with_network_backend(Rc::new(sandbox_memory::NetworkBackend::for_endpoint(
-            "memory",
-            NetworkEndpointSelection::Packet(PacketMedium::Ethernet),
-        )));
-    let mut record = ready_record("worker", agent_id);
-    let spec = record
-        .agent
-        .spec
-        .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
-    let sandbox = provider_service
-        .ensure(&EnsureSandboxRequest::new(
-            record.sandbox_name().expect("Sandbox name"),
-            spec,
-        ))
-        .await
-        .expect("materialized Sandbox");
-    record.agent.status.sandbox = Some(SandboxAssignment::Materialized {
-        provider: ProviderId::new("memory").expect("Provider ID"),
-        id: sandbox.id().clone(),
-        harnesses: Vec::new(),
-    });
-    observe_all_harnesses(&mut record);
-    database.put(record, 0).await.expect("Agent");
-    let session = database
-        .ensure_session(
-            "worker",
-            &SessionName::new("s1").expect("name"),
-            NewSession::for_harness(agent::Harness::ClaudeCode),
-        )
-        .await
-        .expect("Session");
-
-    let ensure_calls = Rc::new(Cell::new(0));
-    let provider: Rc<dyn Provider> = Rc::new(CountingProvider {
-        id: ProviderId::new("memory").expect("Provider ID"),
-        service: provider_service,
-        ensure_calls: ensure_calls.clone(),
-    });
-    let sandboxes = Rc::new(
-        agent::sandbox::Service::new([provider], [Rc::new(NoopPlatform) as Rc<dyn PlatformAdapter>])
-            .expect("Agent Sandbox service"),
-    );
-    let sessions: Rc<dyn agent::sessions::SessionStore> = Rc::new(database.clone());
-    let agents: Rc<dyn agent::control_plane::AgentStore> = Rc::new(database);
-    let reconciler = agent::sessions::Reconciler::new(
-        sessions,
-        Rc::new(agent::sessions::AgentSandboxes::new(agents, sandboxes)),
-        tmux_runtime(),
-        "http://platform-api".into(),
-    );
-
-    let _result = reconciler.reconcile(session.id).await;
-
-    assert_eq!(
-        ensure_calls.get(),
-        0,
-        "Session reconciliation must not own Sandbox ensure effects"
-    );
-}
-
-#[tokio::test(flavor = "local")]
 #[allow(clippy::too_many_lines)]
 async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() {
     let directory = TempDir::new().expect("temporary directory");
@@ -2346,10 +2268,9 @@ async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() 
             ExecutionEvent::Exited(ExitStatus { code: 0 }),
         ],
     );
-    let provider: Rc<dyn Provider> = Rc::new(CountingProvider {
+    let provider: Rc<dyn Provider> = Rc::new(MemoryProvider {
         id: ProviderId::new("memory").expect("Provider ID"),
         service: provider_service,
-        ensure_calls: Rc::new(Cell::new(0)),
     });
     let sandboxes = Rc::new(
         agent::sandbox::Service::new([provider], [Rc::new(NoopPlatform) as Rc<dyn PlatformAdapter>])

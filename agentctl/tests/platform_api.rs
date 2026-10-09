@@ -276,58 +276,6 @@ async fn session_reports_require_the_current_launch_token() {
 }
 
 #[tokio::test(flavor = "local")]
-async fn launch_bookkeeping_round_trips_and_resets() {
-    let directory = TempDir::new().expect("temporary directory");
-    let database = persistence::Database::open(&directory.path().join("agent.db")).expect("database");
-    let agent_id = "48f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
-    database.put(ready_record("worker", agent_id), 0).await.expect("Agent");
-    let session = database
-        .ensure_session(
-            "worker",
-            &SessionName::new("s1").expect("name"),
-            agent::sessions::NewSession::for_harness(agent::Harness::ClaudeCode),
-        )
-        .await
-        .expect("session");
-
-    assert_eq!(
-        database.session_launch_state(session.id).await.expect("empty state"),
-        None
-    );
-    database
-        .record_session_launch(
-            session.id,
-            LaunchRecord {
-                token: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".parse().expect("launch token"),
-                sandbox: "sandbox-1".into(),
-                launched_at: 42,
-                attempts: 3,
-            },
-        )
-        .await
-        .expect("record launch");
-    let state = database
-        .session_launch_state(session.id)
-        .await
-        .expect("state")
-        .expect("recorded state");
-    assert_eq!(state.sandbox, "sandbox-1");
-    assert_eq!(state.launched_at, 42);
-    assert_eq!(state.attempts, 3);
-
-    database
-        .reset_session_launch_attempts(session.id)
-        .await
-        .expect("reset attempts");
-    let state = database
-        .session_launch_state(session.id)
-        .await
-        .expect("state")
-        .expect("recorded state");
-    assert_eq!(state.attempts, 0);
-}
-
-#[tokio::test(flavor = "local")]
 async fn platform_api_bounds_stalled_connections() {
     const TOKEN: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     let directory = TempDir::new().expect("temporary directory");

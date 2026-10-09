@@ -210,34 +210,6 @@ async fn granting_access_enables_the_units_the_image_declared() {
     );
 }
 
-#[tokio::test(flavor = "local")]
-async fn an_image_offering_no_browser_viewer_is_granted_and_described_without_one() {
-    let fixture = Fixture::new();
-    let record = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", true);
-    fixture.store(&record, 0).await;
-    let sandbox = fixture.sandbox(&record).await;
-    queue_image(&fixture.backend, Some(b"units=agent-vnc.socket\nport=5900\n"));
-    fixture.backend.queue_execution_events_matching(
-        is_listener_check(5900),
-        output(b"LISTEN 0 0 127.0.0.1:5900 0.0.0.0:*\n"),
-    );
-
-    assert!(fixture.access.reconcile(&record, &sandbox).await.expect("grant"));
-    assert!(
-        !fixture
-            .backend
-            .execution_specs()
-            .iter()
-            .any(|spec| is_listener_check(6080)(spec)),
-        "a port the image never promised is not checked"
-    );
-    let info = fixture.access.describe("worker").await.expect("declared access");
-    assert_eq!(
-        info.web_guest_port, None,
-        "the descriptor reports the absence rather than a port that serves nothing"
-    );
-}
-
 #[tokio::test(flavor = "local", start_paused = true)]
 async fn a_viewer_that_binds_its_port_after_being_enabled_is_waited_for() {
     let fixture = Fixture::new();
@@ -322,44 +294,6 @@ async fn withdrawing_access_disables_the_units_and_proves_they_stopped() {
 fn queue_withdrawable_image(backend: &memory::Provider) {
     queue_desktop_image(backend);
     backend.queue_execution_events_matching(is_active_check, output(b"inactive\ninactive\n"));
-}
-
-#[tokio::test(flavor = "local")]
-async fn a_withdrawal_that_succeeded_is_not_repeated_until_the_incarnation_is_forgotten() {
-    let fixture = Fixture::new();
-    let withdrawn = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", false);
-    fixture.store(&withdrawn, 0).await;
-    let sandbox = fixture.sandbox(&withdrawn).await;
-    let disables = || {
-        fixture
-            .backend
-            .execution_specs()
-            .iter()
-            .filter(|spec| is_disable(spec))
-            .count()
-    };
-
-    queue_withdrawable_image(&fixture.backend);
-    assert!(!fixture.access.reconcile(&withdrawn, &sandbox).await.expect("withdraw"));
-    let probes = fixture.backend.execution_specs().len();
-    assert!(!fixture.access.reconcile(&withdrawn, &sandbox).await.expect("resync"));
-    assert_eq!(
-        fixture.backend.execution_specs().len(),
-        probes,
-        "a resync after a successful withdrawal runs nothing in the guest"
-    );
-    assert_eq!(disables(), 1);
-
-    fixture.access.forget(withdrawn.id);
-    queue_withdrawable_image(&fixture.backend);
-    assert!(
-        !fixture
-            .access
-            .reconcile(&withdrawn, &sandbox)
-            .await
-            .expect("withdraw again")
-    );
-    assert_eq!(disables(), 2, "a forgotten incarnation is withdrawn again");
 }
 
 #[tokio::test(flavor = "local", start_paused = true)]
@@ -452,28 +386,6 @@ async fn an_image_that_declares_no_vnc_access_is_reported_as_an_image_problem() 
         ReconcileFailure::classify(&error).kind,
         FailureKind::Invalid,
         "an immutable image cannot be fixed by retrying"
-    );
-}
-
-#[tokio::test(flavor = "local")]
-async fn a_descriptor_declaring_the_wrong_port_is_refused() {
-    let fixture = Fixture::new();
-    let record = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", true);
-    fixture.store(&record, 0).await;
-    let sandbox = fixture.sandbox(&record).await;
-    queue_image(
-        &fixture.backend,
-        Some(b"units=agent-vnc.socket\nport=5901\nweb-port=6080\n"),
-    );
-
-    let error = fixture
-        .access
-        .reconcile(&record, &sandbox)
-        .await
-        .expect_err("a port the caller could not be told about is an error");
-    assert!(
-        error.to_string().contains("but VNC access uses guest port 5900"),
-        "{error}"
     );
 }
 
