@@ -22,7 +22,8 @@ jobs:
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libcap-ng-dev
+          # tmux drives the real-terminal tests; the runner image provides Node.js and util-linux script.
+          sudo apt-get install --yes --no-install-recommends libcap-ng-dev tmux
 
       - name: Install Rust toolchain
         run: |
@@ -53,6 +54,9 @@ jobs:
 
       - name: Run tests
         run: make test
+
+      - name: Run real-terminal tests
+        run: make test-terminal
 
       - name: Test installation and managed upgrade
         run: ./agentctl/installation-test.sh

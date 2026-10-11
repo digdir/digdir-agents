@@ -895,6 +895,28 @@ async fn sandbox_runtime_restart_notifies_sessions_without_an_identity_change() 
 }
 
 #[tokio::test(flavor = "local")]
+async fn releasing_a_deleted_agent_notifies_its_sessions() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let backend = Rc::new(sandbox_memory::Provider::new());
+    let provider: Rc<dyn Provider> = Rc::new(MemoryProvider::new(backend));
+    let notifications = Rc::new(SessionNotificationCounter::default());
+    let reconciler = reconciler(store.clone(), provider).with_session_notifier(notifications.clone());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let id = store.get_by_name("worker").await.expect("Agent").id;
+
+    reconciler.reconcile(id).await.expect("materialize");
+    let before = notifications.0.get();
+    control_plane.delete("worker").await.expect("delete");
+    reconciler.reconcile(id).await.expect("release");
+
+    assert!(
+        notifications.0.get() > before,
+        "Sessions must learn that their Agent is gone, so they stop"
+    );
+}
+
+#[tokio::test(flavor = "local")]
 async fn repeated_apply_is_idempotent_and_immutable_fields_are_rejected() {
     let fixture = fixture();
     let request = apply_request("worker");
