@@ -19,6 +19,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Fixed
 
+- On Linux and macOS, installing with `install.sh` no longer fails with "curl: (22) The requested URL returned error: 422", or 403 on later attempts, while it looks up the latest release. ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#170](https://github.com/digdir/digdir-agents/pull/170))
 - `agentctl` commands, such as `agentctl tui`, no longer fail after a reboot with "automatic startup exited with exit code: 1" when Windows or another program has reserved the port `agentd` used before. ([#160](https://github.com/digdir/digdir-agents/issues/160))
 - Windows installation and updates tolerate temporary file locks while publishing a release. ([#152](https://github.com/digdir/digdir-agents/issues/152))
 - Completed updates no longer block commands or installation when old releases have been removed, and reinstalling repairs a current release pointer that names a missing release. ([#153](https://github.com/digdir/digdir-agents/issues/153))
