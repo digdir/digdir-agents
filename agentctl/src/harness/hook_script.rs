@@ -255,6 +255,10 @@ mod tests {
     }
 
     /// Runs the hook for one `SessionStart` and returns the request line it sends to `listener`.
+    ///
+    /// An attempt that times out after its connection is accepted but before it sends a request
+    /// leaves a connection with no request line, and the hook retries on a new one, so connections
+    /// that close without a request are skipped.
     async fn report_request_line(script: &str, listener: &tokio::net::TcpListener) -> String {
         use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
@@ -276,16 +280,20 @@ mod tests {
             .await
             .expect("write hook payload");
         drop(stdin);
-        let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
-            .await
-            .expect("hook connected")
-            .expect("accept");
-        let mut line = String::new();
-        tokio::io::BufReader::new(stream)
-            .read_line(&mut line)
-            .await
-            .expect("request line");
+        let line = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let (stream, _) = listener.accept().await.expect("accept");
+                let mut line = String::new();
+                let read = tokio::io::BufReader::new(stream).read_line(&mut line).await;
+                // A connection reset before its request carries no request line either.
+                if read.is_ok() && !line.trim_end().is_empty() {
+                    return line.trim_end().to_owned();
+                }
+            }
+        })
+        .await
+        .expect("hook sent a request");
         child.kill().await.expect("stop hook");
-        line.trim_end().to_owned()
+        line
     }
 }
