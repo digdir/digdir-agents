@@ -597,6 +597,11 @@ async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injectio
         backend.file_writes().is_empty(),
         "verification must happen before injection"
     );
+    assert_eq!(
+        read_file(&sandbox, "/etc/agent-platform-api-url").await,
+        format!("{PLATFORM_API_URL}\n").as_bytes(),
+        "a pass that fails later still points running harnesses at the current endpoint"
+    );
 }
 
 // The host is what holds the FIFO; Windows has no mkfifo, and the Linux Sandbox setup runs the same

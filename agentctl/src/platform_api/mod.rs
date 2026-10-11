@@ -41,8 +41,8 @@ pub const SESSION_HOOKS_PATH: &str = "/v1/session/hooks";
 /// Binds the Platform API listener on a loopback port the operating system selects.
 ///
 /// The port is not stable across daemon starts: Sandboxes read the current
-/// endpoint from a file Agent setup and Session launches keep up to date, so a
-/// port reserved or taken while `agentd` was down never prevents startup.
+/// endpoint from a file Agent setup rewrites on every pass, so a port reserved
+/// or taken while `agentd` was down never prevents startup.
 ///
 /// # Errors
 ///

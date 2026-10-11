@@ -17,7 +17,7 @@ pub(crate) const CONTAINER_HOST: &str = "unix:///run/podman/podman.sock";
 /// Holds the Platform API base URL reachable from the Sandbox, read by harness hooks on every
 /// report. `agentd` binds a new host port on every start; Agent setup rewrites the file first
 /// thing on every pass, so harnesses that outlive a daemon restart follow it as soon as the
-/// Sandbox's network policy lets them reach the new port.
+/// restarted daemon starts the Sandbox's network.
 pub(crate) const PLATFORM_API_URL_FILE: &str = "/etc/agent-platform-api-url";
 const HOME_ARCHIVE: &str = "/tmp/agent-home.tar";
 /// Locale every Sandbox process runs with; the image ships it, so UTF-8 output
