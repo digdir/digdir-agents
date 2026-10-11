@@ -1,4 +1,4 @@
-.PHONY: help build user-install clean fmt lint lint-fix test test-terminal test-e2e check check-platforms deps deps-check \
+.PHONY: help build user-install clean fmt lint lint-fix test test-e2e check check-platforms deps deps-check \
 	changelog-validate changelog-test
 .DEFAULT_GOAL := help
 
@@ -70,13 +70,9 @@ changelog-validate: ## Check that agentctl/CHANGELOG.md has the expected structu
 changelog-test: ## Run the changelog.sh tests
 	@./agentctl/changelog_test.sh
 
-test-terminal: ## Run the real-tmux tests; requires Node.js, tmux and, on Linux, util-linux script
-	@echo "Running real-terminal tests..."
-	@cargo test -p agent --lib --locked -- --ignored
-	@echo "✓ Real-terminal tests passed"
-
-test-e2e: test-terminal ## Run integration tests that require Docker, Internet access, KVM, Node.js, tmux and script
+test-e2e: ## Run integration tests that require Docker, Internet access, KVM, Node.js, tmux and script
 	@echo "Running end-to-end tests..."
+	@cargo test -p agent --lib --locked -- --ignored
 	@cargo test -p sandbox-microsandbox --tests --locked -- --ignored
 	@echo "✓ End-to-end tests passed"
 
