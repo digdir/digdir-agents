@@ -222,29 +222,41 @@ mod tests {
         }
     }
 
-    /// The hook follows the endpoint file rather than an address fixed at launch, so a harness
-    /// that outlives a daemon restart reaches the new port.
+    /// A harness that outlives an `agentd` restart keeps its launch environment and its hook
+    /// script, so the hook must reach whichever endpoint the URL file names when it runs.
     #[tokio::test]
-    async fn hook_reports_to_the_endpoint_in_the_platform_api_url_file() {
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
+    async fn the_same_hook_follows_the_platform_api_url_file_to_a_new_port() {
         let directory = tempfile::TempDir::new().expect("temporary directory");
         let url_file = directory.path().join("platform-api-url");
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("listener");
-        let port = listener.local_addr().expect("address").port();
-        std::fs::write(&url_file, format!("http://127.0.0.1:{port}\n")).expect("URL file");
         let script = HookScript {
             events: &[("SessionStart", ActivityEvent::SessionStart)],
             waiting_notifications: &[],
         }
         .render()
         .expect("script")
+        // The guest path is not writable here; point the script at a file the test owns.
         .replacen(
             &serde_json::to_string(crate::sandbox::platform::PLATFORM_API_URL_FILE).expect("path"),
             &serde_json::to_string(&url_file).expect("path"),
             1,
         );
-        let Ok(mut child) = tokio::process::Command::new("node")
+
+        for _restart in 0..2 {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("listener");
+            let port = listener.local_addr().expect("address").port();
+            std::fs::write(&url_file, format!("http://127.0.0.1:{port}\n")).expect("URL file");
+            assert_eq!(
+                report_request_line(&script, &listener).await,
+                "POST /v1/session/hooks HTTP/1.1"
+            );
+        }
+    }
+
+    /// Runs the hook for one `SessionStart` and returns the request line it sends to `listener`.
+    async fn report_request_line(script: &str, listener: &tokio::net::TcpListener) -> String {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+
+        let mut child = tokio::process::Command::new("node")
             .arg("--input-type=module")
             .arg("-e")
             .arg(script)
@@ -255,29 +267,23 @@ mod tests {
             .env("AGENT_SESSION_ID", "session")
             .kill_on_drop(true)
             .spawn()
-        else {
-            // Node is optional for Rust-only development environments.
-            return;
-        };
+            .expect("Node.js runs the hook script, as it does in every Sandbox and CI host");
         let mut stdin = child.stdin.take().expect("stdin");
         stdin
             .write_all(br#"{"hook_event_name":"SessionStart","session_id":"native"}"#)
             .await
             .expect("write hook payload");
         drop(stdin);
-        let (mut stream, _) = tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
+        let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
             .await
             .expect("hook connected")
             .expect("accept");
-        let mut head = vec![0; 64];
-        let read = stream.read(&mut head).await.expect("request");
-        assert!(
-            head[..read].starts_with(format!("POST {} ", crate::platform_api::SESSION_HOOKS_PATH).as_bytes()),
-            "{}",
-            String::from_utf8_lossy(&head[..read])
-        );
-        drop(stream);
+        let mut line = String::new();
+        tokio::io::BufReader::new(stream)
+            .read_line(&mut line)
+            .await
+            .expect("request line");
         child.kill().await.expect("stop hook");
+        line.trim_end().to_owned()
     }
-
 }

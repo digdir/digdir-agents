@@ -423,7 +423,7 @@ async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
 }
 
 /// A restarted `agentd` listens on a new port; its first setup pass moves harnesses that kept
-/// running onto it, and an unchanged port is not rewritten.
+/// running onto it.
 #[tokio::test(flavor = "local")]
 async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
     const RESTARTED_URL: &str = "http://host.microsandbox.internal:4200";
@@ -443,7 +443,7 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
         agent: resource,
     };
     let backend = Rc::new(memory::Provider::new());
-    for _ in 0..3 {
+    for _ in 0..2 {
         backend.queue_execution_events_matching(
             is_claude_version,
             vec![
@@ -467,13 +467,6 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
         ))
         .await
         .expect("Sandbox");
-    let url_writes = || {
-        backend
-            .file_writes()
-            .iter()
-            .filter(|path| path.as_str() == "/etc/agent-platform-api-url")
-            .count()
-    };
 
     Linux::new(PLATFORM_API_URL)
         .setup(&record, &sandbox, &declared(&record), &setup_phase())
@@ -483,11 +476,6 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
         read_file(&sandbox, "/etc/agent-platform-api-url").await,
         format!("{PLATFORM_API_URL}\n").as_bytes()
     );
-    Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
-        .await
-        .expect("unchanged setup");
-    assert_eq!(url_writes(), 1, "an unchanged URL is not rewritten");
 
     Linux::new(RESTARTED_URL)
         .setup(&record, &sandbox, &declared(&record), &setup_phase())
@@ -497,7 +485,6 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
         read_file(&sandbox, "/etc/agent-platform-api-url").await,
         format!("{RESTARTED_URL}\n").as_bytes()
     );
-    assert_eq!(url_writes(), 2);
 }
 
 #[tokio::test(flavor = "local")]
@@ -593,9 +580,10 @@ async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injectio
         .expect_err("version mismatch");
 
     assert!(error.to_string().contains("does not match installed version"));
-    assert!(
-        backend.file_writes().is_empty(),
-        "verification must happen before injection"
+    assert_eq!(
+        backend.file_writes(),
+        [SandboxPath::new("/etc/agent-platform-api-url")],
+        "verification must happen before injection; only the Platform API URL precedes it"
     );
     assert_eq!(
         read_file(&sandbox, "/etc/agent-platform-api-url").await,

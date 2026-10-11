@@ -66,7 +66,7 @@ async fn request_to(port: u16, path: &str, token: &str, body: &str) -> u16 {
 }
 
 async fn request(port: u16, token: &str, body: &str) -> u16 {
-    request_to(port, agent::platform_api::SESSION_HOOKS_PATH, token, body).await
+    request_to(port, "/v1/session/hooks", token, body).await
 }
 
 #[tokio::test(flavor = "local")]
@@ -299,7 +299,7 @@ async fn platform_api_bounds_stalled_connections() {
 
     let blocked = tokio::time::timeout(
         Duration::from_millis(100),
-        request_to(port, agent::platform_api::SESSION_HOOKS_PATH, TOKEN, "{}"),
+        request_to(port, "/v1/session/hooks", TOKEN, "{}"),
     )
     .await;
     assert!(blocked.is_err(), "a connection beyond the limit must wait for capacity");
@@ -307,7 +307,7 @@ async fn platform_api_bounds_stalled_connections() {
     drop(stalled.pop());
     let status = tokio::time::timeout(
         Duration::from_secs(1),
-        request_to(port, agent::platform_api::SESSION_HOOKS_PATH, TOKEN, "{}"),
+        request_to(port, "/v1/session/hooks", TOKEN, "{}"),
     )
     .await
     .expect("request should proceed after capacity is released");
