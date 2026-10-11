@@ -54,13 +54,14 @@ if [ -z "${version}" ]; then
   page=1
   while [ -z "${version}" ]; do
     releases="$(curl -fsSL "https://api.github.com/repos/${repository}/releases?per_page=100&page=${page}")"
-    # GitHub returns compact or pretty-printed JSON, so put each tag on a line of its own.
+    # GitHub returns compact or pretty-printed JSON, so put each tag on a line of its own. The C
+    # locale keeps sed from stopping at bytes that are not valid in the user's locale.
     tags="$(printf '%s\n' "${releases}" \
-      | sed 's/"tag_name"/\
+      | LC_ALL=C sed 's/"tag_name"/\
 &/g' \
-      | sed -n 's/^"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+      | LC_ALL=C sed -n 's/^"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
     [ -n "${tags}" ] || break
-    version="$(printf '%s\n' "${tags}" | sed -n 's/^agentctl\/\(v.*\)$/\1/p' | head -n 1)"
+    version="$(printf '%s\n' "${tags}" | LC_ALL=C sed -n 's/^agentctl\/\(v.*\)$/\1/p' | head -n 1)"
     page=$((page + 1))
   done
 fi

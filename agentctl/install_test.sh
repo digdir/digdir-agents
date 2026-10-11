@@ -5,6 +5,9 @@
 # Nothing is installed: every installation path is under a temporary directory.
 #
 # Usage: install_test.sh   (or `make install-test`)
+#
+# INSTALL_TEST_SHELL selects the shell that runs install.sh (default `sh`). Bash enters POSIX mode
+# when POSIXLY_CORRECT is set: `INSTALL_TEST_SHELL=bash POSIXLY_CORRECT=1 install_test.sh`.
 
 set -eu
 
@@ -26,6 +29,10 @@ case "${url}" in
   https://api.github.com/repos/digdir/digdir-agents/releases\?per_page=100\&page=*)
     page="${url##*page=}"
     printf 'page %s\n' "${page}" >>"${INSTALL_TEST_CASE}/requests"
+    if [ -f "${INSTALL_TEST_CASE}/page-${page}.error" ]; then
+      echo "curl: (22) The requested URL returned error: $(cat "${INSTALL_TEST_CASE}/page-${page}.error")" >&2
+      exit 22
+    fi
     if [ -f "${INSTALL_TEST_CASE}/page-${page}.json" ]; then
       cat "${INSTALL_TEST_CASE}/page-${page}.json"
       exit 0
@@ -53,21 +60,36 @@ page() {
   cat >"${WORK}/$1/page-$2.json"
 }
 
-# run_installer <case> — runs the installer against the case's release pages and prints its requests.
+# page_error <case> <number> <status> — makes the request for a release page fail with <status>.
+page_error() {
+  mkdir -p "${WORK}/$1"
+  printf '%s\n' "$3" >"${WORK}/$1/page-$2.error"
+}
+
+# run_installer <case> — runs the installer against the case's release pages, in the locale
+# ${installer_locale} when it is set, and prints its requests.
+installer_locale=""
 run_installer() {
   case_directory="${WORK}/$1"
   mkdir -p "${case_directory}"
   : >"${case_directory}/requests"
+  status=0
   (
     unset AGENT_VERSION AGENT_LOCAL_ARCHIVE AGENT_INSTALL_MODE AGENT_GITHUB_REPOSITORY
+    if [ -n "${installer_locale}" ]; then
+      LC_ALL="${installer_locale}"
+      export LC_ALL
+    fi
     HOME="${case_directory}/home" \
       AGENT_HOME="${case_directory}/agent-home" \
       AGENT_INSTALL_ROOT="${case_directory}/install" \
       AGENT_INSTALL_DIR="${case_directory}/bin" \
       INSTALL_TEST_CASE="${case_directory}" \
+      TMPDIR="${case_directory}" \
       PATH="${WORK}/bin:${PATH}" \
-      sh "${INSTALLER}"
-  ) >"${case_directory}/stdout" 2>"${case_directory}/stderr" || :
+      "${INSTALL_TEST_SHELL:-sh}" "${INSTALLER}"
+  ) >"${case_directory}/stdout" 2>"${case_directory}/stderr" || status=$?
+  printf '%s\n' "${status}" >"${case_directory}/status"
   cat "${case_directory}/requests"
 }
 
@@ -76,10 +98,14 @@ download() {
 }
 
 # assert_requests <name> <case> <expected requests> [<stderr substring>]
+# The installer never succeeds here: at the latest, it stops at the archive download.
 assert_requests() {
   checks=$((checks + 1))
   actual="$(run_installer "$2")"
-  if [ "${actual}" != "$3" ]; then
+  if [ "$(cat "${WORK}/$2/status")" -eq 0 ]; then
+    failures=$((failures + 1))
+    printf 'FAIL %s: the installer succeeded\n' "$1"
+  elif [ "${actual}" != "$3" ]; then
     failures=$((failures + 1))
     printf 'FAIL %s: unexpected requests\n' "$1"
     printf '     expected:\n'
@@ -145,6 +171,39 @@ page 2" 'Could not resolve the latest agentctl release'
 printf '[]' | page empty 1
 assert_requests 'no releases at all ends the lookup' empty \
   "page 1" 'Could not resolve the latest agentctl release'
+
+page_error first-page-fails 1 403
+assert_requests 'a failed first page request stops the installer' first-page-fails \
+  "page 1" 'The requested URL returned error: 403'
+
+printf '%s' '[{"tag_name":"web/v2.0.0"}]' | page second-page-fails 1
+page_error second-page-fails 2 403
+assert_requests 'a failed later page request stops the installer' second-page-fails \
+  "page 1
+page 2" 'The requested URL returned error: 403'
+
+# GitHub lists releases newest first, so the first agentctl release wins over a higher version.
+printf '%s' '[{"tag_name":"agentctl/v0.1.0-preview.11"},{"tag_name":"agentctl/v0.1.0"}]' | page api-order 1
+assert_requests 'the first agentctl release in API order wins' api-order \
+  "page 1
+$(download v0.1.0-preview.11)"
+
+printf '%s' '[{"tag_name":"agentctl/v0.1.0"},{"tag_name":"agentctl/v0.1.0-preview.11"}]' | page api-order-reversed 1
+assert_requests 'the first agentctl release in API order wins when it has the higher version' \
+  api-order-reversed "page 1
+$(download v0.1.0)"
+
+# A byte that is not valid UTF-8 after the tag must not hide it in a UTF-8 locale.
+if locale -a 2>/dev/null | grep -Eiqx 'c\.utf-?8'; then
+  printf '[{"tag_name":"agentctl/v0.1.0-preview.10","body":"\377"}]' | page invalid-utf-8 1
+  installer_locale=C.UTF-8
+  assert_requests 'a byte that is not valid UTF-8 does not hide the release' invalid-utf-8 \
+    "page 1
+$(download v0.1.0-preview.10)"
+  installer_locale=""
+else
+  printf 'skip a byte that is not valid UTF-8 does not hide the release: no C.UTF-8 locale\n'
+fi
 
 printf '\n%d checks, %d failures\n' "${checks}" "${failures}"
 [ "${failures}" -eq 0 ]
