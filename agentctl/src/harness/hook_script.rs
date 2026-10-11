@@ -241,12 +241,14 @@ mod tests {
             1,
         );
 
-        for _restart in 0..2 {
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("listener");
+        // Both stay bound, so the restarted daemon's port differs from the first.
+        let first = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("listener");
+        let restarted = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("listener");
+        for listener in [&first, &restarted] {
             let port = listener.local_addr().expect("address").port();
             std::fs::write(&url_file, format!("http://127.0.0.1:{port}\n")).expect("URL file");
             assert_eq!(
-                report_request_line(&script, &listener).await,
+                report_request_line(&script, listener).await,
                 "POST /v1/session/hooks HTTP/1.1"
             );
         }

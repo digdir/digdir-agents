@@ -135,6 +135,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     let policy = Rc::new(agent::authorization::AgentPolicyEngine::new());
     let platform_api_listener = agent::platform_api::bind().await?;
     // Earlier releases reused a port persisted here; nothing reads it any more.
+    // TODO: Remove with `AGENT_SESSION_HOOK_URL` in the Session launch environment.
     let _ = tokio::fs::remove_file(home.path().join("platform-api-port")).await;
     let platform_api_port = platform_api_listener.local_addr()?.port();
     let (sandboxes, platform_api_url) =

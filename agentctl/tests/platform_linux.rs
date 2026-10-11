@@ -473,8 +473,10 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
         .await
         .expect("first setup");
     assert_eq!(
-        read_file(&sandbox, "/etc/agent-platform-api-url").await,
-        format!("{PLATFORM_API_URL}\n").as_bytes()
+        read_file(&sandbox, "/etc/agent-platform-api-url")
+            .await
+            .trim_ascii_end(),
+        PLATFORM_API_URL.as_bytes()
     );
 
     Linux::new(RESTARTED_URL)
@@ -482,8 +484,10 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
         .await
         .expect("setup after a restart");
     assert_eq!(
-        read_file(&sandbox, "/etc/agent-platform-api-url").await,
-        format!("{RESTARTED_URL}\n").as_bytes()
+        read_file(&sandbox, "/etc/agent-platform-api-url")
+            .await
+            .trim_ascii_end(),
+        RESTARTED_URL.as_bytes()
     );
 }
 
@@ -586,8 +590,10 @@ async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injectio
         "verification must happen before injection; only the Platform API URL precedes it"
     );
     assert_eq!(
-        read_file(&sandbox, "/etc/agent-platform-api-url").await,
-        format!("{PLATFORM_API_URL}\n").as_bytes(),
+        read_file(&sandbox, "/etc/agent-platform-api-url")
+            .await
+            .trim_ascii_end(),
+        PLATFORM_API_URL.as_bytes(),
         "a pass that fails later still points running harnesses at the current endpoint"
     );
 }

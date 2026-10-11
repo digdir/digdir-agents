@@ -201,6 +201,8 @@ impl Linux {
             .filter(|installation| harnesses.contains(&installation.kind))
             .collect();
         // Before anything that can fail, so a pass that fails later still moves running harnesses.
+        // Harnesses still running an earlier release's hook script follow only once a pass reaches
+        // harness bootstrap, which replaces that script.
         install_platform_api_url(sandbox, &self.platform_api_url).await?;
         for installation in &installations {
             let step = steps.start_step(format!("Verify {}", installation.kind.as_str())).await;

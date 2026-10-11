@@ -241,9 +241,11 @@ fn launch_arguments(
         ("CONTAINER_HOST".into(), crate::sandbox::platform::CONTAINER_HOST.into()),
         ("AGENT_SESSION_ID".into(), session.id.to_string()),
         ("AGENT_SESSION_TOKEN".into(), token.expose()),
-        // TODO: Remove once released: hook scripts installed by earlier releases read the
-        // endpoint only from here, and a relaunch after an upgrade can run before setup
-        // replaces them. Current hook scripts read `PLATFORM_API_URL_FILE` instead.
+        // TODO: Remove in the release after the first one with `PLATFORM_API_URL_FILE`, with
+        // agentd's removal of `platform-api-port`. Hook scripts installed by earlier releases
+        // read the endpoint only from here, and a relaunch after an upgrade can run before
+        // setup replaces them; current hook scripts read `PLATFORM_API_URL_FILE` instead. An
+        // upgrade that skips that release loses such a relaunch's reports until setup completes.
         (
             "AGENT_SESSION_HOOK_URL".into(),
             format!("{platform_api_url}{}", crate::platform_api::SESSION_HOOKS_PATH),
