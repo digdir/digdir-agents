@@ -12,6 +12,8 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
 
+## [0.1.0-preview.11] - 2026-10-12
+
 ### Changed
 
 - `agentctl tui` suggests a numbered name when it creates an Agent, such as `agentctl-dev-1`, skipping names already in use; type a name to use another. ([#158](https://github.com/digdir/digdir-agents/pull/158))
