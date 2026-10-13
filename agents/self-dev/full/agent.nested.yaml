@@ -1,0 +1,21 @@
+apiVersion: agents.platform/v1alpha1
+kind: AgentVariant
+extends: agent.yaml
+
+metadata:
+  name: agentctl-dev-nested
+
+# Reduced to fit inside another Agent, with the image built from this checkout so that changes to it can be tried.
+spec:
+  sandbox:
+    image:
+      type: build
+      context: ..
+      dockerfile: Dockerfile
+      target: full
+    resources:
+      cpu: "2"
+      memory: "3Gi"
+      rootFilesystem:
+        capacity: "24Gi"
+        mode: direct

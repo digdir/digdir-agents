@@ -1,5 +1,5 @@
 import type { NvtDriver } from "./nvt/driver.ts";
-import { fallbackReply, renderPrompt } from "./prompt.ts";
+import { fallbackReply, renderPrompt, type PromptDialect } from "./prompt.ts";
 import { TopicScheduler } from "./scheduler.ts";
 import type { TopicStore } from "./state.ts";
 import { instanceNameFor, type InstanceNameOptions } from "./topic.ts";
@@ -23,6 +23,8 @@ export interface BridgeOptions {
   idleTtlMs: number;
   /** Hvor agentens `triggers/` er mountet inne i instansen. Default `/triggers`. */
   instanceTriggersPath?: string;
+  /** Backend-dialekt for prompt- og fallback-tekstene. Default `nvt`. */
+  dialect?: PromptDialect;
   log?: (message: string) => void;
   /** Injiserbar for tester. */
   sleep?: (ms: number) => Promise<void>;
@@ -168,7 +170,12 @@ export class NvtBridge {
       await this.opts.store.markPrompted(topic, event.id);
       await this.opts.driver.sendPrompt(
         ref,
-        renderPrompt(event, topic, this.opts.instanceTriggersPath ?? "/triggers"),
+        renderPrompt(
+          event,
+          topic,
+          this.opts.instanceTriggersPath ?? "/triggers",
+          this.opts.dialect ?? "nvt",
+        ),
       );
       await this.opts.triggers.appendBridgeLog(event.id, "prompt injisert, venter på signal done");
 
@@ -286,12 +293,16 @@ export class NvtBridge {
     started_at: string,
     reason: "done-without-result" | "timeout",
   ): Promise<void> {
-    const reply = fallbackReply(reason, {
-      instance,
-      topic,
-      graceSeconds: Math.round(this.opts.resultGraceMs / 1000),
-      timeoutSeconds: Math.round(this.opts.promptTimeoutMs / 1000),
-    });
+    const reply = fallbackReply(
+      reason,
+      {
+        instance,
+        topic,
+        graceSeconds: Math.round(this.opts.resultGraceMs / 1000),
+        timeoutSeconds: Math.round(this.opts.promptTimeoutMs / 1000),
+      },
+      this.opts.dialect ?? "nvt",
+    );
     await this.opts.triggers.appendResult({
       id: event.id,
       status: "error",

@@ -1,5 +1,11 @@
-# Minimal CI — ment som required status check i branch protection, slik at
-# «grønn CI» er plattform-håndhevet før auto-merge (se doc/pr-prosess.md).
+# CI for the whole monorepo. `ci-gate` is the only required status check in
+# branch protection, so green CI is enforced by the platform before auto-merge
+# (see doc/pr-prosess.md).
+#
+# Each area is a reusable workflow that runs only when its paths change.
+# `ci-gate` fails when a job that ran failed or was cancelled, and passes when
+# areas were skipped. New areas are added here without changing branch
+# protection.
 name: CI
 
 on:
@@ -7,22 +13,79 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 jobs:
-  integrations:
-    name: integrations
+  changes:
+    name: changes
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: integrations
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      integrations: ${{ steps.areas.outputs.integrations }}
+      rust: ${{ steps.areas.outputs.rust }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: integrations/package-lock.json
-      - run: npm ci
-      - run: npm run typecheck
+      - name: Detect changed areas
+        id: areas
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Each area's paths, as an extended regular expression over the changed file names.
+          areas=(
+            'integrations=^(integrations/|\.github/workflows/(ci|integrations)\.yml$)'
+            'rust=^(agentctl/|sandbox/|\.cargo/|(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|rustfmt\.toml|clippy\.toml|deny\.toml|Makefile)$|\.github/workflows/(ci|rust)\.yml$)'
+          )
+          # A renamed file counts under both its old and its new name.
+          names='.filename, (.previous_filename // empty)'
+          every_area=false
+          if [ "${GITHUB_EVENT_NAME}" = pull_request ]; then
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq ".[] | ${names}" > changed.txt
+          elif [ "$(jq '.commits | length' "${GITHUB_EVENT_PATH}")" = 1 ]; then
+            # main is squash-merged, so a push is one commit.
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" --jq ".files[] | ${names}" > changed.txt
+          else
+            every_area=true
+          fi
+          for area in "${areas[@]}"; do
+            if [ "${every_area}" = true ] || grep -q -E "${area#*=}" changed.txt; then
+              echo "${area%%=*}=true" >> "${GITHUB_OUTPUT}"
+            else
+              echo "${area%%=*}=false" >> "${GITHUB_OUTPUT}"
+            fi
+          done
+
+  integrations:
+    needs: changes
+    if: needs.changes.outputs.integrations == 'true'
+    uses: ./.github/workflows/integrations.yml
+
+  rust:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    uses: ./.github/workflows/rust.yml
+
+  ci-gate:
+    name: ci-gate
+    if: always()
+    needs: [changes, integrations, rust]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check that no needed job failed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Results: ${RESULTS}"
+          for result in ${RESULTS}; do
+            case "${result}" in
+              success|skipped) ;;
+              *) echo "::error::A needed job ended with ${result}"; exit 1 ;;
+            esac
+          done

@@ -1,5 +1,6 @@
 import { NvtBridge } from "./bridge.ts";
 import { loadConfig } from "./config.ts";
+import { AgentctlDriver } from "./nvt/agentctl.ts";
 import { DockerNvtDriver } from "./nvt/docker.ts";
 import { DryRunNvtDriver } from "./nvt/dryrun.ts";
 import type { NvtDriver } from "./nvt/driver.ts";
@@ -28,7 +29,9 @@ const config = loadConfig();
 // «Permission denied» langt fra årsaken. Da er det bedre å ikke starte.
 if (!config.dryRun) {
   const pathCheck = { skip: config.skipPathCheck, log };
-  await assertAgentCanTraverse("NVT_ROOT", config.nvtRoot, pathCheck);
+  if (config.driver === "docker") {
+    await assertAgentCanTraverse("NVT_ROOT", config.nvtRoot, pathCheck);
+  }
   // Agenten skriver resultatlinja selv, så triggers/ må også være skrivbar for
   // uid 1000 — ellers ender hvert event i fallback-feil etter en time.
   await assertAgentCanTraverse("NVT_BRIDGE_TRIGGERS_DIR", config.triggersDir, {
@@ -39,23 +42,36 @@ if (!config.dryRun) {
 
 const driver: NvtDriver = config.dryRun
   ? new DryRunNvtDriver(log)
-  : new DockerNvtDriver({
-      nvtRoot: config.nvtRoot,
-      agentType: config.agentType,
-      autonomy: config.autonomy,
-      userMode: config.userMode,
-      tmuxSession: config.tmuxSession,
-      agentConfig: config.agentConfig,
-      panePatterns: config.panePatterns,
-      readyPollMs: config.readyPollMs,
-      maxEnterPresses: config.maxEnterPresses,
-      log,
-    });
+  : config.driver === "agentctl"
+    ? new AgentctlDriver({
+        bin: config.agentctl.bin,
+        agentDir: config.agentctl.agentDir,
+        agentName: config.agentctl.agentName,
+        log,
+      })
+    : new DockerNvtDriver({
+        nvtRoot: config.nvtRoot,
+        agentType: config.agentType,
+        autonomy: config.autonomy,
+        userMode: config.userMode,
+        tmuxSession: config.tmuxSession,
+        agentConfig: config.agentConfig,
+        panePatterns: config.panePatterns,
+        readyPollMs: config.readyPollMs,
+        maxEnterPresses: config.maxEnterPresses,
+        log,
+      });
 
 if (config.dryRun) {
   log("TØRRKJØRING (NVT_BRIDGE_DRY_RUN=1): ingen nvt-instanser startes");
 }
-if (config.userMode !== "non-root") {
+if (config.driver === "agentctl") {
+  log(
+    `driver: agentctl (kalibrert mot kilden; F1-E2E gjenstår — doc/plans/jr-paa-agentctl.md): ` +
+      `agent ${config.agentctl.agentName} fra ${config.agentctl.agentDir}`,
+  );
+}
+if (config.driver === "docker" && config.userMode !== "non-root") {
   // M0-funn 1: claude nekter --dangerously-skip-permissions som root, og
   // tmux-sesjonen dør innen 5 s. Vi stopper ikke — codex/interactive kan ha
   // andre behov — men det skal stå i loggen når det går galt.
@@ -76,6 +92,7 @@ const bridge = new NvtBridge({
   resultGraceMs: config.resultGraceMs,
   idleTtlMs: config.idleTtlMs,
   instanceTriggersPath: config.instanceTriggersPath,
+  dialect: config.driver === "agentctl" ? "agentctl" : "nvt",
   log,
 });
 
