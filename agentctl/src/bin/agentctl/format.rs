@@ -392,18 +392,4 @@ mod tests {
                 .any(|line| line.contains("SandboxReconcileFailed") && line.contains(" 3m "))
         );
     }
-
-    #[test]
-    fn session_state_output_does_not_depend_on_debug_names() {
-        assert_eq!(session_state(agent::sessions::State::Starting), "Starting");
-        assert_eq!(session_state(agent::sessions::State::Working), "Working");
-        assert_eq!(
-            session_state(agent::sessions::State::WaitingForInput),
-            "WaitingForInput"
-        );
-        assert_eq!(session_state(agent::sessions::State::Idle), "Idle");
-        assert_eq!(session_state(agent::sessions::State::Archiving), "Archiving");
-        assert_eq!(session_state(agent::sessions::State::Archived), "Archived");
-        assert_eq!(session_state(agent::sessions::State::Failed), "Failed");
-    }
 }

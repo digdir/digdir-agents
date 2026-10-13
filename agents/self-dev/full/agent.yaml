@@ -1,0 +1,67 @@
+apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  name: agentctl-dev
+spec:
+  sandbox:
+    image:
+      type: reference
+      reference: ghcr.io/digdir/digdir-agents/agentctl-self-dev-full:latest
+    platform:
+      os: linux
+    resources:
+      cpu: "4"
+      memory: "8Gi"
+      rootFilesystem:
+        capacity: "100Gi"
+        mode: direct
+    initSystem: image
+    # The Sandbox default sizes /tmp at a quarter of guest memory, capped at 512 MiB, which is
+    # too small for a large build's scratch space. A tmpfs holds only what is written to it.
+    # Chromium's shared memory lands here too, through --disable-dev-shm-usage.
+    mounts:
+      - type: tmpfs
+        target: /tmp
+        capacity: "2Gi"
+  home:
+    source: home
+  instructions:
+    - source: ../instructions.md
+    - source: desktop.md
+  skills:
+    - source: ../skills/pr-evidence
+    - source: ../skills/changelog
+    - source: ../skills/computer-use
+  harnesses:
+    - type: claudeCode
+      auth: mediated
+      default: true
+      defaults:
+        model: opus
+    # Optional: the Agent is created without Codex when the host has no Codex login, so nobody who only uses
+    # Claude Code is blocked. Run `agentctl codex login` and the next convergence installs it.
+    - type: codex
+      auth: mediated
+      optional: true
+  environment:
+    - name: GIT_USER_NAME
+    - name: GIT_USER_EMAIL
+  secrets:
+    - environment: GITHUB_TOKEN
+      # gh only attaches files with a token it classifies by prefix; the inert placeholder
+      # therefore carries the fine-grained PAT prefix and is far shorter than a real token.
+      placeholder: github_pat_AGENT_MEDIATED_GITHUB_TOKEN
+      allowedHosts:
+        - github.com
+        - api.github.com
+        - gist.github.com
+        - uploads.github.com
+  access:
+    - type: ssh
+    # Enables the image's VNC access units; without it the desktop runs with no port open.
+    - type: vnc
+  network:
+    mode: mediated
+    allow: all
+    deny:
+      - metadata.google.internal

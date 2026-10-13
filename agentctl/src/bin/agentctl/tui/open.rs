@@ -647,14 +647,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "local")]
     async fn ssh_setup_is_what_openssh_resolves_however_the_include_is_written() {
-        if std::process::Command::new(crate::ssh_client_executable())
+        std::process::Command::new(crate::ssh_client_executable())
             .arg("-V")
             .output()
-            .is_err()
-        {
-            eprintln!("skipped: no OpenSSH client");
-            return;
-        }
+            .expect("the OpenSSH client, which every Unix CI host has, resolves the configuration");
         let directory = tempfile::tempdir().expect("temporary directory");
         let generated = directory.path().join("generated").join("config");
         std::fs::create_dir_all(generated.parent().expect("parent")).expect("directory");

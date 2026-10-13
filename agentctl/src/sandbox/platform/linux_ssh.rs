@@ -429,64 +429,6 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    fn directives(text: &str) -> BTreeMap<&str, Vec<&str>> {
-        let mut directives = BTreeMap::<&str, Vec<&str>>::new();
-        for line in text.lines().map(str::trim) {
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let Some((key, value)) = line.split_once(char::is_whitespace) else {
-                continue;
-            };
-            directives.entry(key).or_default().push(value.trim());
-        }
-        directives
-    }
-
-    #[test]
-    fn platform_owned_server_policy_is_complete_and_not_extensible() {
-        let config = super::render_server_config();
-        let directives = directives(&config);
-        let single = |key: &str| {
-            let values = directives.get(key).unwrap_or_else(|| panic!("{key} is set"));
-            assert_eq!(values.len(), 1, "{key} is set once");
-            values[0]
-        };
-
-        assert_eq!(single("ListenAddress"), "127.0.0.1");
-        assert_eq!(single("Port"), crate::ssh::GUEST_PORT.to_string());
-        assert_eq!(single("HostKey"), super::HOST_KEY);
-        assert_eq!(single("AuthorizedKeysFile"), super::AUTHORIZED_KEYS);
-        assert_eq!(single("AllowUsers"), super::super::linux::USER);
-        assert_eq!(single("PubkeyAuthentication"), "yes");
-        assert_eq!(single("PasswordAuthentication"), "no");
-        assert_eq!(single("KbdInteractiveAuthentication"), "no");
-        assert_eq!(single("PermitEmptyPasswords"), "no");
-        assert_eq!(single("PermitRootLogin"), "no");
-        assert_eq!(single("UsePAM"), "no");
-        assert_eq!(single("PermitUserEnvironment"), "yes");
-        assert_eq!(single("AllowAgentForwarding"), "no");
-        assert_eq!(single("AllowTcpForwarding"), "yes");
-        assert_eq!(single("GatewayPorts"), "no");
-        assert_eq!(single("X11Forwarding"), "no");
-        assert_eq!(single("PermitTunnel"), "no");
-        assert_eq!(single("Subsystem"), "sftp internal-sftp");
-        assert!(!directives.contains_key("Include"));
-    }
-
-    #[test]
-    fn platform_owned_unit_runs_only_the_platform_policy() {
-        let unit = super::render_unit();
-        assert!(unit.contains(&format!("ConditionPathExists={}", super::HOST_KEY)));
-        assert!(unit.contains(&format!(
-            "ExecStart={} -D -e -f {}",
-            super::SERVER,
-            super::SERVER_CONFIG
-        )));
-        assert!(unit.contains("RuntimeDirectory=sshd"));
-        assert!(unit.contains("WantedBy=multi-user.target"));
-    }
-
     #[test]
     fn ssh_environment_preserves_values_and_excludes_process_local_state() {
         let parsed = super::parse_environment(

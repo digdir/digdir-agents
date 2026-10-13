@@ -1,5 +1,5 @@
 .PHONY: help build user-install clean fmt lint lint-fix test test-e2e check check-platforms deps deps-check \
-	changelog-validate changelog-test
+	changelog-validate changelog-test install-test
 .DEFAULT_GOAL := help
 
 USER_INSTALL_VERSION := v0.0.1-dev.$(shell date -u +%Y%m%d%H%M%S)
@@ -59,7 +59,7 @@ lint-fix: ## Apply safe Clippy fixes
 	@cargo clippy $(PACKAGES) --all-targets --all-features --fix --allow-dirty --locked
 	@echo "✓ Lint fixes applied"
 
-test: changelog-test ## Run all tests
+test: changelog-test install-test ## Run all tests; requires Node.js, and the OpenSSH client on Unix
 	@echo "Testing Rust crates..."
 	@cargo test $(PACKAGES) --all-targets --locked
 	@echo "✓ Tests passed"
@@ -70,8 +70,12 @@ changelog-validate: ## Check that agentctl/CHANGELOG.md has the expected structu
 changelog-test: ## Run the changelog.sh tests
 	@./agentctl/changelog_test.sh
 
-test-e2e: ## Run integration tests that require Docker, Internet access, and KVM
+install-test: ## Run the install.sh release lookup tests
+	@./agentctl/install_test.sh
+
+test-e2e: ## Run integration tests that require Docker, Internet access, KVM, Node.js, tmux and script
 	@echo "Running end-to-end tests..."
+	@cargo test -p agent --lib --locked -- --ignored
 	@cargo test -p sandbox-microsandbox --tests --locked -- --ignored
 	@echo "✓ End-to-end tests passed"
 

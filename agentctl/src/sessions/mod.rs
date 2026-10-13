@@ -722,7 +722,17 @@ pub async fn attach(home: &std::path::Path, target: &AttachTarget) -> Result<(),
 
 #[cfg(test)]
 mod tests {
-    use super::{Activity, Lifecycle, LifecycleState, Phase, Reported, State, Status};
+    use super::{Activity, LaunchToken, Lifecycle, LifecycleState, Phase, Reported, SessionName, State, Status};
+
+    #[test]
+    fn names_are_validated_when_deserialized_and_launch_tokens_are_redacted() {
+        assert!(SessionName::new("review_1").is_ok());
+        assert!(SessionName::new("contains spaces").is_err());
+        assert!(serde_json::from_str::<SessionName>(r#""contains spaces""#).is_err());
+
+        let token = LaunchToken::generate();
+        assert_eq!(format!("{token:?}"), "LaunchToken([redacted])");
+    }
 
     #[test]
     fn an_archived_session_is_refused_as_archived_whatever_its_harness_does() {

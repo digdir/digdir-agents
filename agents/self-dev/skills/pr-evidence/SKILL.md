@@ -1,6 +1,6 @@
 ---
 name: pr-evidence
-description: Help pull request reviewers understand changes to the agentctl and agentd developer experience through terminal recordings. Use when a change affects CLI output, provisioning progress or TUI workflows.
+description: Help pull request reviewers understand changes to the agentctl and agentd developer experience through terminal recordings and, on the full Agent, browser captures. Use when a change affects CLI output, provisioning progress, TUI workflows or a page in a browser.
 ---
 
 # Show the change to reviewers
@@ -12,6 +12,8 @@ running it locally. Explain the premise and starting state in the recording or P
 - Keep each attachment within 10 MiB. There is no fixed duration limit, but GIFs should be brief enough to follow
   without seeking. Split longer demonstrations into focused clips.
 - Capture actual behavior from the tested revision, using test data without secrets.
+
+The full Agent can also capture a browser; read [browser](references/browser.md) for that recipe.
 
 ## Record
 

@@ -50,12 +50,13 @@ pub trait SessionRuntime {
     /// `resume` continues that harness-native conversation. `initial_prompt`
     /// is the first operator prompt of a fresh conversation, handed to the
     /// harness at launch so it starts working immediately; it is never
-    /// combined with `resume`.
+    /// combined with `resume`. `platform_api_url` is the Platform API base
+    /// URL reachable from the Sandbox, where the harness reports activity.
     fn start<'a>(
         &'a self,
         session: &'a Session,
         sandbox: &'a SandboxHandle,
-        session_hook_url: &'a str,
+        platform_api_url: &'a str,
         token: &'a LaunchToken,
         resume: Option<&'a str>,
         initial_prompt: Option<&'a str>,

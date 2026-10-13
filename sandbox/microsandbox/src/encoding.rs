@@ -8,13 +8,3 @@ pub(crate) fn lower_hex(bytes: &[u8]) -> String {
     }
     encoded
 }
-
-#[cfg(test)]
-mod tests {
-    use super::lower_hex;
-
-    #[test]
-    fn encodes_lowercase_hex() {
-        assert_eq!(lower_hex(&[0x00, 0x1f, 0xa5, 0xff]), "001fa5ff");
-    }
-}

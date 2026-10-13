@@ -327,6 +327,7 @@ fn status_updates_stamp_condition_transitions_and_keep_the_failure_class() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn sessions_are_idempotent_and_survive_database_reopen() {
     let directory = TempDir::new().expect("temporary directory");
     let path = directory.path().join("control-plane.db");
@@ -385,6 +386,23 @@ fn sessions_are_idempotent_and_survive_database_reopen() {
             .await
             .expect("create session without selections");
         assert!(unselected.model_selection.is_empty());
+        first
+            .update_session_lifecycle(
+                created.id,
+                Lifecycle::starting("harness exited; relaunching after up to 10s of backoff"),
+                0,
+            )
+            .await
+            .expect("persist a failed launch");
+        let not_running = first
+            .session_attach_target(created.id)
+            .await
+            .expect_err("a Session that is not running cannot be attached")
+            .to_string();
+        assert!(
+            not_running.contains("Session \"s1\"") && not_running.contains("harness exited; relaunching"),
+            "the error identifies the Session and its lifecycle failure: {not_running}"
+        );
         first
             .update_session_lifecycle(created.id, Lifecycle::running(), 0)
             .await
@@ -505,39 +523,6 @@ fn concurrent_creation_only_conflicts_on_explicit_selections() {
                 .to_string()
                 .contains("already uses effort \"xhigh\", not \"low\""),
             "{unselected}"
-        );
-    });
-}
-
-#[test]
-fn attach_error_identifies_the_session_and_its_lifecycle_failure() {
-    let directory = TempDir::new().expect("temporary directory");
-    let store = persistence::Database::open(&directory.path().join("control-plane.db")).expect("open database");
-    LocalRuntime::new().expect("local runtime").block_on(async {
-        store
-            .put(ready_record("worker", test_agent_id()), 0)
-            .await
-            .expect("ready Agent");
-        let session = store
-            .ensure_session("worker", &SessionName::new("recovering").expect("Session name"), NewSession::for_harness(agent::Harness::Codex))
-            .await
-            .expect("Session");
-        store
-            .update_session_lifecycle(
-                session.id,
-                Lifecycle::starting("harness exited; relaunching after up to 10s of backoff"),
-                1,
-            )
-            .await
-            .expect("lifecycle");
-
-        assert_eq!(
-            store
-                .session_attach_target(session.id)
-                .await
-                .expect_err("Session is not running")
-                .to_string(),
-            "invalid Agent: Session \"recovering\" is not running: harness exited; relaunching after up to 10s of backoff"
         );
     });
 }
@@ -1143,6 +1128,60 @@ async fn initial_prompt_consumption_and_launch_record_commit_together() {
         None,
         "recovery after a crash never replays the prompt"
     );
+}
+
+#[tokio::test(flavor = "local")]
+async fn launch_bookkeeping_round_trips_and_resets() {
+    let directory = TempDir::new().expect("temporary directory");
+    let database = persistence::Database::open(&directory.path().join("agent.db")).expect("database");
+    database
+        .put(ready_record("worker", test_agent_id()), 0)
+        .await
+        .expect("Agent");
+    let session = database
+        .ensure_session(
+            "worker",
+            &SessionName::new("s1").expect("name"),
+            NewSession::for_harness(agent::Harness::ClaudeCode),
+        )
+        .await
+        .expect("session");
+
+    assert_eq!(
+        database.session_launch_state(session.id).await.expect("empty state"),
+        None
+    );
+    database
+        .record_session_launch(
+            session.id,
+            agent::sessions::LaunchRecord {
+                token: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".parse().expect("launch token"),
+                sandbox: "sandbox-1".into(),
+                launched_at: 42,
+                attempts: 3,
+            },
+        )
+        .await
+        .expect("record launch");
+    let state = database
+        .session_launch_state(session.id)
+        .await
+        .expect("state")
+        .expect("recorded state");
+    assert_eq!(state.sandbox, "sandbox-1");
+    assert_eq!(state.launched_at, 42);
+    assert_eq!(state.attempts, 3);
+
+    database
+        .reset_session_launch_attempts(session.id)
+        .await
+        .expect("reset attempts");
+    let state = database
+        .session_launch_state(session.id)
+        .await
+        .expect("state")
+        .expect("recorded state");
+    assert_eq!(state.attempts, 0);
 }
 
 #[tokio::test(flavor = "local")]

@@ -12,9 +12,19 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
 
+## [0.1.0-preview.11] - 2026-10-12
+
 ### Changed
 
-- Sessions are tested with Claude Code 2.1.292 and Codex CLI 0.160.1, so Agents with their own images can install these versions. ([#154](https://github.com/digdir/digdir-agents/pull/154))
+- `agentctl tui` suggests a numbered name when it creates an Agent, such as `agentctl-dev-1`, skipping names already in use; type a name to use another. ([#158](https://github.com/digdir/digdir-agents/pull/158))
+- Sessions are tested with Claude Code 2.1.296 and Codex CLI 0.162.1, so Agents with their own images can install these versions. ([#154](https://github.com/digdir/digdir-agents/pull/154), [#168](https://github.com/digdir/digdir-agents/pull/168))
+
+### Fixed
+
+- On Linux and macOS, installing with `install.sh` no longer fails with "curl: (22) The requested URL returned error: 422", or 403 on later attempts, while it looks up the latest release. ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#170](https://github.com/digdir/digdir-agents/pull/170))
+- `agentctl` commands, such as `agentctl tui`, no longer fail after a reboot with "automatic startup exited with exit code: 1" when Windows or another program has reserved the port `agentd` used before. ([#160](https://github.com/digdir/digdir-agents/issues/160))
+- Windows installation and updates tolerate temporary file locks while publishing a release. ([#152](https://github.com/digdir/digdir-agents/issues/152))
+- Completed updates no longer block commands or installation when old releases have been removed, and reinstalling repairs a current release pointer that names a missing release. ([#153](https://github.com/digdir/digdir-agents/issues/153))
 
 ## [0.1.0-preview.10] - 2026-10-06
 

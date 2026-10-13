@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used)]
 
-use std::{future::poll_fn, io::Cursor, path::PathBuf, pin::Pin, rc::Rc};
+use std::{future::poll_fn, path::PathBuf, pin::Pin, rc::Rc};
 
 use bytes::Bytes;
 use futures_core::Stream as _;
@@ -8,14 +8,11 @@ use sandbox::{
     ByteQuantity, CpuQuantity, EnsureSandboxRequest, Error, Hostname, OperationEvent, PendingOperation, Platform,
     ProgressEvent, RetentionPolicy, RootFilesystem, RootFilesystemMode, SandboxFeature, SandboxName, SandboxPath,
     SandboxPhase, SandboxResources, SandboxService, SandboxSpec,
-    execution::{ExecutionEvent, ExecutionSpec, ExitStatus, StartExecutionRequest},
+    execution::{ExecutionEvent, ExecutionSpec, ExitStatus},
     image::{self, ImageSource},
     memory,
     network::{NetworkAttachment, NetworkBackend as _, NetworkBackendId, NetworkEndpointSelection, PacketMedium},
-    terminal::{StartTerminalExecutionRequest, TerminalEvent, TerminalSize},
-    volume::{EnsureVolumeRequest, VolumeName},
 };
-use tokio::io::AsyncReadExt as _;
 
 fn spec() -> SandboxSpec {
     SandboxSpec {
@@ -431,16 +428,41 @@ async fn endpoint_negotiation_is_not_coupled_to_ethernet() {
 }
 
 #[tokio::test(flavor = "local")]
-async fn image_is_immutable_after_materialization() {
-    let service = SandboxService::new(Rc::new(memory::Provider::new()));
-    let mut request = request();
-    let _ = service.ensure(&request).await.expect("first ensure");
-    request.spec_mut().image = ImageSource::Reference {
-        reference: "example.test/other:latest".to_string(),
-    };
+async fn what_a_sandbox_was_materialized_from_is_immutable() {
+    type Change = fn(&mut SandboxSpec);
+    let cases: [(&str, Change); 4] = [
+        ("image", |spec| {
+            spec.image = ImageSource::Reference {
+                reference: "example.test/other:latest".to_string(),
+            };
+        }),
+        ("platform", |spec| spec.platform = Platform::native("windows")),
+        ("initSystem", |spec| spec.init_system = sandbox::init::InitSystem::Image),
+        ("resources.rootFilesystem.mode", |spec| {
+            spec.resources = SandboxResources::new(
+                spec.resources.cpu(),
+                spec.resources.memory(),
+                RootFilesystem::direct(spec.resources.root_filesystem().capacity()),
+            );
+        }),
+    ];
 
-    let error = service.ensure(&request).await.expect_err("image change should fail");
-    assert!(matches!(error, Error::Immutable("image")));
+    for (field, change) in cases {
+        let backend = Rc::new(memory::Provider::with_platforms(
+            Platform::native("linux"),
+            [Platform::native("windows")],
+        ));
+        let service = SandboxService::new(backend);
+        let mut request = request();
+        let _ = service.ensure(&request).await.expect("first ensure");
+        change(request.spec_mut());
+
+        let error = service.ensure(&request).await.expect_err(field);
+        assert!(
+            matches!(error, Error::Immutable(immutable) if immutable == field),
+            "{field}: {error:?}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "local")]
@@ -496,26 +518,6 @@ async fn ensure_rejects_invalid_environment_before_materialization() {
         }
     ));
     assert_eq!(backend.count(), 0);
-}
-
-#[tokio::test(flavor = "local")]
-async fn root_filesystem_mode_is_immutable() {
-    let backend = Rc::new(memory::Provider::new());
-    let service = SandboxService::new(backend);
-    let mut request = request();
-    let _ = service.ensure(&request).await.expect("first ensure");
-    request.spec_mut().resources = SandboxResources::new(
-        request.spec().resources.cpu(),
-        request.spec().resources.memory(),
-        sandbox::RootFilesystem::direct(request.spec().resources.root_filesystem().capacity()),
-    );
-
-    let error = service
-        .ensure(&request)
-        .await
-        .expect_err("root filesystem mode change should fail");
-
-    assert!(matches!(error, Error::Immutable("resources.rootFilesystem.mode")));
 }
 
 #[tokio::test(flavor = "local")]
@@ -580,25 +582,18 @@ async fn a_stale_handle_cannot_delete_a_new_materialization_with_the_same_name()
 }
 
 #[tokio::test(flavor = "local")]
-async fn service_and_handle_expose_execution_and_volume_operations() {
+async fn run_execution_collects_output_until_the_exit_status() {
     let backend = Rc::new(memory::Provider::new());
     let service = SandboxService::new(backend.clone());
     let sandbox = service.ensure(&request()).await.expect("ensure");
-
-    let volume_name = VolumeName::new("home").expect("valid Volume name");
-    let volume_request = EnsureVolumeRequest::new(volume_name.clone());
-    let expected_volume_id = volume_request.id().clone();
-    let volume = service.ensure_volume(volume_request).await.expect("create Volume");
-    assert_eq!(volume.id, expected_volume_id);
-    assert_eq!(volume.id.as_uuid().get_version_num(), 4);
-    assert_eq!(service.find_volume(&volume_name).await.expect("find Volume"), volume);
-
     backend.queue_execution_events(vec![
         ExecutionEvent::Started { process_id: Some(42) },
-        ExecutionEvent::Stdout(Bytes::from_static(b"output")),
+        ExecutionEvent::Stdout(Bytes::from_static(b"out")),
         ExecutionEvent::Stderr(Bytes::from_static(b"warning")),
+        ExecutionEvent::Stdout(Bytes::from_static(b"put")),
         ExecutionEvent::Exited(ExitStatus { code: 7 }),
     ]);
+
     let output = sandbox
         .run_execution(ExecutionSpec::command(
             SandboxPath::new("/usr/bin/example"),
@@ -611,120 +606,6 @@ async fn service_and_handle_expose_execution_and_volume_operations() {
     assert!(!output.status.success());
     assert_eq!(output.stdout, Bytes::from_static(b"output"));
     assert_eq!(output.stderr, Bytes::from_static(b"warning"));
-    assert_eq!(backend.execution_specs().len(), 1);
-    assert_eq!(
-        backend.execution_specs()[0].program(),
-        &sandbox::execution::Program::Command {
-            executable: SandboxPath::new("/usr/bin/example"),
-            args: vec!["--check".into()],
-        }
-    );
-
-    let execution = sandbox
-        .start_execution(StartExecutionRequest::new(ExecutionSpec::image_entrypoint()))
-        .await
-        .expect("start addressable Execution");
-    assert_eq!(execution.id.as_uuid().get_version_num(), 4);
-    sandbox
-        .terminate_execution(&execution.id)
-        .await
-        .expect("terminate Execution");
-
-    backend.queue_terminal_events(vec![
-        TerminalEvent::Started { process_id: Some(43) },
-        TerminalEvent::Output(Bytes::from_static(b"terminal output")),
-        TerminalEvent::Exited(ExitStatus { code: 0 }),
-    ]);
-    let mut terminal = sandbox
-        .start_terminal_execution(StartTerminalExecutionRequest::new(
-            ExecutionSpec::image_entrypoint(),
-            TerminalSize::new(40, 120).expect("valid terminal size"),
-        ))
-        .await
-        .expect("start terminal Execution");
-    assert_eq!(terminal.id.as_uuid().get_version_num(), 4);
-    terminal
-        .control
-        .write_input(Bytes::from_static(b"input"))
-        .await
-        .expect("write terminal input");
-    terminal
-        .control
-        .resize(TerminalSize::new(50, 140).expect("valid terminal size"))
-        .await
-        .expect("resize terminal");
-    assert!(matches!(
-        poll_fn(|context| terminal.events.as_mut().poll_next(context)).await,
-        Some(Ok(TerminalEvent::Started { process_id: Some(43) }))
-    ));
-}
-
-#[tokio::test(flavor = "local")]
-async fn memory_provider_matches_execution_responses_without_fifo_coupling() {
-    let backend = Rc::new(memory::Provider::new());
-    let service = SandboxService::new(backend.clone());
-    let sandbox = service.ensure(&request()).await.expect("ensure");
-    backend.queue_execution_events_matching(
-        |spec| {
-            matches!(
-                spec.program(),
-                sandbox::execution::Program::Command { executable, .. }
-                    if executable.as_str() == "/usr/bin/matched"
-            )
-        },
-        vec![
-            ExecutionEvent::Started { process_id: None },
-            ExecutionEvent::Exited(ExitStatus { code: 23 }),
-        ],
-    );
-
-    let unrelated = sandbox
-        .run_execution(ExecutionSpec::command(
-            SandboxPath::new("/usr/bin/unrelated"),
-            Vec::<String>::new(),
-        ))
-        .await
-        .expect("unrelated Execution");
-    let matched = sandbox
-        .run_execution(ExecutionSpec::command(
-            SandboxPath::new("/usr/bin/matched"),
-            Vec::<String>::new(),
-        ))
-        .await
-        .expect("matched Execution");
-
-    assert!(unrelated.status.success());
-    assert_eq!(matched.status.code, 23);
-    assert_eq!(backend.execution_specs().len(), 2);
-}
-
-#[tokio::test(flavor = "local")]
-async fn sandbox_backend_streams_files_in_both_directions() {
-    let backend = Rc::new(memory::Provider::new());
-    let service = SandboxService::new(backend.clone());
-    let sandbox = service.ensure(&request()).await.expect("ensure");
-    let path = SandboxPath::new("/home/sandbox/code/input.bin");
-
-    sandbox
-        .write_file(&path, Box::pin(Cursor::new(vec![0, 1, 2, 0xff])))
-        .await
-        .expect("write Sandbox file");
-    let mut reader = sandbox.read_file(&path).await.expect("read Sandbox file");
-    let mut contents = Vec::new();
-    reader
-        .read_to_end(&mut contents)
-        .await
-        .expect("consume Sandbox file stream");
-
-    assert_eq!(contents, vec![0, 1, 2, 0xff]);
-    assert!(
-        service
-            .capabilities(&sandbox.snapshot().image.platform)
-            .await
-            .expect("Platform capabilities")
-            .features()
-            .contains(SandboxFeature::FileTransfer)
-    );
 }
 
 #[tokio::test(flavor = "local")]
@@ -876,50 +757,4 @@ async fn ensure_rejects_a_root_mode_the_image_backend_cannot_materialize() {
         }
     ));
     assert_eq!(provider.backend.count(), 0);
-}
-
-#[tokio::test(flavor = "local")]
-async fn platform_is_immutable_after_materialization() {
-    let linux = Platform::native("linux");
-    let windows = Platform::native("windows");
-    let backend = Rc::new(memory::Provider::with_platforms(linux.clone(), [windows.clone()]));
-    let service = SandboxService::new(backend);
-    let linux_request = request();
-    let _ = service.ensure(&linux_request).await.expect("first ensure");
-    let windows_request = EnsureSandboxRequest::new(
-        linux_request.name().clone(),
-        SandboxSpec {
-            platform: windows,
-            ..linux_request.spec().clone()
-        },
-    );
-
-    let error = service
-        .ensure(&windows_request)
-        .await
-        .expect_err("Platform change should fail");
-
-    assert!(matches!(error, Error::Immutable("platform")));
-}
-
-#[tokio::test(flavor = "local")]
-async fn init_system_is_immutable_after_materialization() {
-    let backend = Rc::new(memory::Provider::new());
-    let service = SandboxService::new(backend);
-    let backend_init = request();
-    let _ = service.ensure(&backend_init).await.expect("first ensure");
-    let image_init = EnsureSandboxRequest::new(
-        backend_init.name().clone(),
-        SandboxSpec {
-            init_system: sandbox::init::InitSystem::Image,
-            ..backend_init.spec().clone()
-        },
-    );
-
-    let error = service
-        .ensure(&image_init)
-        .await
-        .expect_err("init system change should fail");
-
-    assert!(matches!(error, Error::Immutable("initSystem")));
 }

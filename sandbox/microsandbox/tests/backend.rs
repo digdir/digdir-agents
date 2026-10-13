@@ -106,6 +106,22 @@ async fn cache_directory_can_be_shared_without_sharing_provider_state() {
     assert!(second_home.join("state/sandboxes").is_dir());
 }
 
+/// A daemon's Provider and a client's, which attaches directly to a Sandbox's terminal, open the
+/// same home at once.
+#[tokio::test(flavor = "local")]
+async fn two_providers_can_open_the_same_home_at_once() {
+    let home = tempfile::tempdir().expect("temporary home should be created");
+    let daemon = MicrosandboxProvider::open(home.path())
+        .await
+        .expect("daemon Provider should open");
+    let attach = MicrosandboxProvider::open(home.path())
+        .await
+        .expect("direct attach Provider should open");
+
+    drop(attach);
+    drop(daemon);
+}
+
 #[tokio::test(flavor = "local")]
 #[ignore = "requires access to the public Docker registry"]
 async fn multi_platform_index_resolves_to_the_native_image_manifest() {

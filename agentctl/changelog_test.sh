@@ -101,6 +101,24 @@ fixture() {
   printf '%s\n' "${path}"
 }
 
+# releases <name> <version> [<version>…] — a changelog with an empty Unreleased section and one
+# dated release per version, listed in the given order, and prints the fixture's path.
+releases() {
+  name="$1"
+  shift
+  for version in "$@"; do
+    printf '\n## [%s] - 2026-09-01\n\n### Added\n\n- Release %s.\n' "${version}" "${version}"
+  done | {
+    printf '\n## [Unreleased]\n'
+    cat
+  } | fixture "${name}"
+}
+
+# released_on <name> <date> — a changelog whose only release is dated <date>.
+released_on() {
+  printf '\n## [Unreleased]\n\n## [1.0.0] - %s\n\n### Added\n\n- First release.\n' "$2" | fixture "$1"
+}
+
 # ---------------------------------------------------------------- validate ---
 
 good="$(fixture good <<'BODY'
@@ -230,141 +248,25 @@ BODY
 )"
 assert_status 'validate rejects a date that is not YYYY-MM-DD' 1 "${CHANGELOG}" validate "${bad_date}"
 
-out_of_order="$(fixture out-of-order <<'BODY'
-
-## [Unreleased]
-
-## [1.0.0] - 2026-08-01
-
-### Added
-
-- First release.
-
-## [1.1.0] - 2026-09-01
-
-### Added
-
-- Second release.
-BODY
-)"
+# Releases are listed newest first, in Semantic Versioning precedence.
 assert_status 'validate rejects released sections in ascending order' 1 \
-  "${CHANGELOG}" validate "${out_of_order}"
-
-prerelease_order="$(fixture prerelease-order <<'BODY'
-
-## [Unreleased]
-
-## [1.0.0-rc.1] - 2026-08-10
-
-### Added
-
-- Release candidate.
-
-## [1.0.0] - 2026-09-01
-
-### Added
-
-- First release.
-BODY
-)"
+  "${CHANGELOG}" validate "$(releases out-of-order 1.0.0 1.1.0)"
 assert_status 'validate rejects a prerelease listed above its own release' 1 \
-  "${CHANGELOG}" validate "${prerelease_order}"
-
-prerelease_numbers="$(fixture prerelease-numbers <<'BODY'
-
-## [Unreleased]
-
-## [1.0.0-preview.2] - 2026-09-01
-
-### Added
-
-- Second preview.
-
-## [1.0.0-preview.10] - 2026-08-01
-
-### Added
-
-- Tenth preview, released earlier by mistake.
-BODY
-)"
+  "${CHANGELOG}" validate "$(releases prerelease-order 1.0.0-rc.1 1.0.0)"
 assert_status 'validate compares numeric prerelease identifiers numerically' 1 \
-  "${CHANGELOG}" validate "${prerelease_numbers}"
-
-prerelease_lengths="$(fixture prerelease-lengths <<'BODY'
-
-## [Unreleased]
-
-## [1.0.0-alpha.1] - 2026-09-01
-
-### Added
-
-- Second alpha.
-
-## [1.0.0-alpha] - 2026-08-01
-
-### Added
-
-- First alpha.
-BODY
-)"
+  "${CHANGELOG}" validate "$(releases prerelease-numbers 1.0.0-preview.2 1.0.0-preview.10)"
 assert_status 'validate ranks a longer prerelease above a shorter prefix of it' 0 \
-  "${CHANGELOG}" validate "${prerelease_lengths}"
+  "${CHANGELOG}" validate "$(releases prerelease-lengths 1.0.0-alpha.1 1.0.0-alpha)"
 
-malformed_versions="$(fixture malformed-versions <<'BODY'
-
-## [Unreleased]
-
-## [01.0.0] - 2026-09-01
-
-### Added
-
-- A core number with a leading zero.
-BODY
-)"
+# Version syntax.
 assert_status 'validate rejects a leading zero in a core version number' 1 \
-  "${CHANGELOG}" validate "${malformed_versions}"
-
-empty_identifier="$(fixture empty-identifier <<'BODY'
-
-## [Unreleased]
-
-## [1.0.0-alpha..1] - 2026-09-01
-
-### Added
-
-- An empty prerelease identifier.
-BODY
-)"
+  "${CHANGELOG}" validate "$(releases core-leading-zero 01.0.0)"
 assert_status 'validate rejects an empty prerelease identifier' 1 \
-  "${CHANGELOG}" validate "${empty_identifier}"
-
-numeric_leading_zero="$(fixture numeric-leading-zero <<'BODY'
-
-## [Unreleased]
-
-## [1.0.0-preview.01] - 2026-09-01
-
-### Added
-
-- A numeric prerelease identifier with a leading zero.
-BODY
-)"
+  "${CHANGELOG}" validate "$(releases empty-identifier 1.0.0-alpha..1)"
 assert_status 'validate rejects a leading zero in a numeric prerelease identifier' 1 \
-  "${CHANGELOG}" validate "${numeric_leading_zero}"
-
-hyphenated_prerelease="$(fixture hyphenated-prerelease <<'BODY'
-
-## [Unreleased]
-
-## [1.0.0-rc-1.2] - 2026-09-01
-
-### Added
-
-- A hyphenated alphanumeric prerelease identifier.
-BODY
-)"
+  "${CHANGELOG}" validate "$(releases numeric-leading-zero 1.0.0-preview.01)"
 assert_status 'validate accepts hyphens inside a prerelease identifier' 0 \
-  "${CHANGELOG}" validate "${hyphenated_prerelease}"
+  "${CHANGELOG}" validate "$(releases hyphenated-prerelease 1.0.0-rc-1.2)"
 
 section_order="$(fixture section-order <<'BODY'
 
@@ -478,93 +380,17 @@ BODY
 assert_message 'validate rejects content outside a "###" section' 1 'must sit under' \
   "${CHANGELOG}" validate "${outside_section}"
 
-bad_month="$(fixture bad-month <<'BODY'
-
-## [Unreleased]
-
-## [1.0.0] - 2026-13-45
-
-### Added
-
-- An impossible date.
-BODY
-)"
-assert_status 'validate rejects an impossible month and day' 1 "${CHANGELOG}" validate "${bad_month}"
-
-impossible_dates="$(fixture impossible-dates <<'BODY'
-
-## [Unreleased]
-
-## [1.0.2] - 2026-02-31
-
-### Added
-
-- The 31st of February.
-BODY
-)"
-assert_message 'validate rejects a day past the end of the month' 1 '2026-02-31 is not a date' \
-  "${CHANGELOG}" validate "${impossible_dates}"
-
-short_month="$(fixture short-month <<'BODY'
-
-## [Unreleased]
-
-## [1.0.1] - 2026-04-31
-
-### Added
-
-- The 31st of April.
-BODY
-)"
-assert_message 'validate rejects the 31st of a 30-day month' 1 '2026-04-31 is not a date' \
-  "${CHANGELOG}" validate "${short_month}"
-
-common_year="$(fixture common-year <<'BODY'
-
-## [Unreleased]
-
-## [1.0.0] - 2025-02-29
-
-### Added
-
-- The 29th of February in a common year.
-BODY
-)"
-assert_message 'validate rejects 29 February outside a leap year' 1 '2025-02-29 is not a date' \
-  "${CHANGELOG}" validate "${common_year}"
-
-leap_years="$(fixture leap-years <<'BODY'
-
-## [Unreleased]
-
-## [2.0.0] - 2024-02-29
-
-### Added
-
-- A leap year divisible by four.
-
-## [1.0.0] - 2000-02-29
-
-### Added
-
-- A leap year divisible by four hundred.
-BODY
-)"
-assert_status 'validate accepts 29 February in a leap year' 0 "${CHANGELOG}" validate "${leap_years}"
-
-century="$(fixture century <<'BODY'
-
-## [Unreleased]
-
-## [1.0.0] - 1900-02-29
-
-### Added
-
-- A century that is not a leap year.
-BODY
-)"
-assert_message 'validate rejects 29 February in a non-leap century' 1 '1900-02-29 is not a date' \
-  "${CHANGELOG}" validate "${century}"
+# Release dates exist on the calendar: month lengths, and the leap-year rule at each boundary.
+assert_status 'validate rejects an impossible month and day' 1 \
+  "${CHANGELOG}" validate "$(released_on bad-month 2026-13-45)"
+for date in 2026-04-31 2025-02-29 1900-02-29; do
+  assert_message "validate rejects ${date}, which is not a date" 1 "${date} is not a date" \
+    "${CHANGELOG}" validate "$(released_on "date-${date}" "${date}")"
+done
+for date in 2024-02-29 2000-02-29; do
+  assert_status "validate accepts ${date} in a leap year" 0 \
+    "${CHANGELOG}" validate "$(released_on "date-${date}" "${date}")"
+done
 
 header_in_entry="${WORK}/header-in-entry.md"
 cat >"${header_in_entry}" <<'BODY'

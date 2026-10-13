@@ -8,6 +8,5 @@ fn sandbox_crate_has_no_higher_layer_or_concrete_backend_dependencies() {
         .expect("sandbox Cargo.toml should be readable");
 
     assert!(!manifest.contains("agent ="));
-    assert!(!manifest.contains("agent-runtime ="));
     assert!(!manifest.contains("sandbox-microsandbox ="));
 }

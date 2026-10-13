@@ -20,8 +20,19 @@ pub(super) struct HookScript<'a> {
 }
 
 const TEMPLATE: &str = r#"import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 
-const url = process.env.AGENT_SESSION_HOOK_URL;
+// agentd's port changes when it restarts, so the endpoint is read on every report.
+function platformUrl() {
+  try {
+    const base = readFileSync(__PLATFORM_API_URL_FILE__, "utf8").trim();
+    return base === "" ? null : base + __SESSION_HOOKS_PATH__;
+  } catch {
+    return null;
+  }
+}
+
+const url = platformUrl();
 const token = process.env.AGENT_SESSION_TOKEN;
 const sessionId = process.env.AGENT_SESSION_ID;
 
@@ -134,6 +145,14 @@ impl HookScript<'_> {
         let events = serde_json::to_string(&serde_json::Value::Object(events))?;
         let waiting = serde_json::to_string(self.waiting_notifications)?;
         Ok(TEMPLATE
+            .replace(
+                "__PLATFORM_API_URL_FILE__",
+                &serde_json::to_string(crate::sandbox::platform::PLATFORM_API_URL_FILE)?,
+            )
+            .replace(
+                "__SESSION_HOOKS_PATH__",
+                &serde_json::to_string(crate::platform_api::SESSION_HOOKS_PATH)?,
+            )
             .replace("__EVENTS__", &events)
             .replace("__WAITING_NOTIFICATIONS__", &waiting))
     }
@@ -144,23 +163,9 @@ impl HookScript<'_> {
     }
 }
 
-/// Parses the event table back out of a rendered script, in the wire format
-/// the Platform API reads; adapters use it to prove their table round-trips.
-#[cfg(test)]
-pub(super) fn embedded_events(script: &str) -> Vec<(String, ActivityEvent)> {
-    let start = script.find("const EVENTS = ").expect("table") + "const EVENTS = ".len();
-    let end = script[start..].find(";\n").expect("terminator") + start;
-    let table: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&script[start..end]).expect("embedded JSON");
-    table
-        .into_iter()
-        .map(|(name, value)| (name, serde_json::from_value(value).expect("wire value parses")))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{HookScript, embedded_events};
+    use super::HookScript;
     use crate::sessions::ActivityEvent;
 
     #[tokio::test]
@@ -178,22 +183,18 @@ mod tests {
             "process.stdout.write('ready\\n');\nconst input = await read(process.stdin);",
             1,
         );
-        let Ok(mut child) = tokio::process::Command::new("node")
+        let mut child = tokio::process::Command::new("node")
             .arg("--input-type=module")
             .arg("-e")
             .arg(script)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
-            .env_remove("AGENT_SESSION_HOOK_URL")
             .env_remove("AGENT_SESSION_TOKEN")
             .env_remove("AGENT_SESSION_ID")
             .kill_on_drop(true)
             .spawn()
-        else {
-            // Node is optional for Rust-only development environments.
-            return;
-        };
+            .expect("Node.js runs the hook script, as it does in every Sandbox and CI host");
         let mut ready = [0; 6];
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -221,39 +222,78 @@ mod tests {
         }
     }
 
-    #[test]
-    fn renders_the_given_tables_verbatim() {
-        let script = HookScript {
-            events: &[
-                ("Begin", ActivityEvent::TurnStarted),
-                ("End", ActivityEvent::TurnCompleted),
-            ],
-            waiting_notifications: &["ask"],
-        }
-        .render()
-        .expect("script renders");
-        assert_eq!(
-            embedded_events(&script),
-            [
-                ("Begin".to_owned(), ActivityEvent::TurnStarted),
-                ("End".to_owned(), ActivityEvent::TurnCompleted),
-            ]
-        );
-        assert!(script.contains(r#"const WAITING_NOTIFICATIONS = ["ask"];"#));
-        assert!(!script.contains("__EVENTS__"));
-    }
-
-    #[test]
-    fn session_start_carries_identity_and_retries_within_one_budget() {
+    /// A harness that outlives an `agentd` restart keeps its launch environment and its hook
+    /// script, so the hook must reach whichever endpoint the URL file names when it runs.
+    #[tokio::test]
+    async fn the_same_hook_follows_the_platform_api_url_file_to_a_new_port() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let url_file = directory.path().join("platform-api-url");
         let script = HookScript {
             events: &[("SessionStart", ActivityEvent::SessionStart)],
             waiting_notifications: &[],
         }
         .render()
-        .expect("script renders");
-        assert!(script.contains("body.nativeSessionId = input.session_id;"));
-        assert!(script.contains("body.transcriptPath = input.transcript_path;"));
-        assert!(script.contains("retryable ? 3 : 1"));
-        assert!(script.contains("retryable ? 1500 : 300"));
+        .expect("script")
+        // The guest path is not writable here; point the script at a file the test owns.
+        .replacen(
+            &serde_json::to_string(crate::sandbox::platform::PLATFORM_API_URL_FILE).expect("path"),
+            &serde_json::to_string(&url_file).expect("path"),
+            1,
+        );
+
+        // Both stay bound, so the restarted daemon's port differs from the first.
+        let first = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("listener");
+        let restarted = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("listener");
+        for listener in [&first, &restarted] {
+            let port = listener.local_addr().expect("address").port();
+            std::fs::write(&url_file, format!("http://127.0.0.1:{port}\n")).expect("URL file");
+            assert_eq!(
+                report_request_line(&script, listener).await,
+                "POST /v1/session/hooks HTTP/1.1"
+            );
+        }
+    }
+
+    /// Runs the hook for one `SessionStart` and returns the request line it sends to `listener`.
+    ///
+    /// An attempt that times out after its connection is accepted but before it sends a request
+    /// leaves a connection with no request line, and the hook retries on a new one, so connections
+    /// that close without a request are skipped.
+    async fn report_request_line(script: &str, listener: &tokio::net::TcpListener) -> String {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+
+        let mut child = tokio::process::Command::new("node")
+            .arg("--input-type=module")
+            .arg("-e")
+            .arg(script)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .env("AGENT_SESSION_TOKEN", "token")
+            .env("AGENT_SESSION_ID", "session")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("Node.js runs the hook script, as it does in every Sandbox and CI host");
+        let mut stdin = child.stdin.take().expect("stdin");
+        stdin
+            .write_all(br#"{"hook_event_name":"SessionStart","session_id":"native"}"#)
+            .await
+            .expect("write hook payload");
+        drop(stdin);
+        let line = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let (stream, _) = listener.accept().await.expect("accept");
+                let mut line = String::new();
+                let read = tokio::io::BufReader::new(stream).read_line(&mut line).await;
+                // A connection reset before its request carries no request line either.
+                if read.is_ok() && !line.trim_end().is_empty() {
+                    return line.trim_end().to_owned();
+                }
+            }
+        })
+        .await
+        .expect("hook sent a request");
+        child.kill().await.expect("stop hook");
+        line
     }
 }

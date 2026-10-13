@@ -60,6 +60,45 @@ jobs:
       - name: Check dependencies
         run: make deps-check
 
+  end-to-end:
+    name: End-to-end tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Hosted Linux runners have /dev/kvm, but only root may open it until a udev rule opens it to the runner user.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # The runner image provides Docker, Node.js and util-linux script.
+      - name: Install native build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libcap-ng-dev tmux
+
+      - name: Install Rust toolchain
+        run: |
+          RUST_VERSION="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "${RUST_VERSION}"
+          rustup toolchain install "${RUST_VERSION}" --profile minimal
+          rustup default "${RUST_VERSION}"
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run end-to-end tests
+        run: make test-e2e
+
   portable-hosts:
     name: Portable host (${{ matrix.name }})
     strategy:

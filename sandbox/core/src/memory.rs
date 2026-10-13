@@ -675,59 +675,15 @@ impl SandboxBackend for Provider {
     }
 }
 
-/// Sandbox-facing peer paired with an in-memory [`network::PacketEndpoint`].
-///
-/// This type supports endpoint contract tests and keeps the in-memory Sandbox
-/// Backend's side of each live connection open.
-pub struct PacketPeer {
-    from_sandbox: Option<mpsc::Sender<network::NetworkPacket>>,
-    to_sandbox: mpsc::Receiver<network::NetworkPacket>,
-    maximum_packet_length: usize,
-}
-
-impl PacketPeer {
-    /// Emits one packet as if it came from the Sandbox's virtual network device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the packet is too large or the Network Backend has
-    /// closed its receiving direction.
-    pub async fn emit_from_sandbox(&self, packet: network::NetworkPacket) -> Result<(), network::NetworkEndpointError> {
-        if packet.len() > self.maximum_packet_length {
-            return Err(network::NetworkEndpointError::PacketTooLarge {
-                actual: packet.len(),
-                maximum: self.maximum_packet_length,
-            });
-        }
-        let sender = self
-            .from_sandbox
-            .as_ref()
-            .ok_or(network::NetworkEndpointError::Closed)?;
-        sender
-            .send(packet)
-            .await
-            .map_err(|_| network::NetworkEndpointError::Closed)
-    }
-
-    /// Receives the next packet addressed to the Sandbox.
-    pub async fn receive_for_sandbox(&mut self) -> Option<network::NetworkPacket> {
-        self.to_sandbox.recv().await
-    }
-
-    /// Closes the direction in which the Sandbox emits packets.
-    pub fn close_from_sandbox(&mut self) {
-        self.from_sandbox = None;
-    }
-
-    /// Closes the direction in which the Sandbox receives packets.
-    pub fn close_to_sandbox(&mut self) {
-        self.to_sandbox.close();
-    }
+/// Sandbox side of an in-memory [`network::PacketEndpoint`], held to keep the live connection
+/// open.
+struct PacketPeer {
+    _from_sandbox: mpsc::Sender<network::NetworkPacket>,
+    _to_sandbox: mpsc::Receiver<network::NetworkPacket>,
 }
 
 /// Creates a bounded in-memory packet endpoint and its Sandbox-facing peer.
-#[must_use]
-pub fn packet_endpoint_pair(
+fn packet_endpoint_pair(
     capacity: NonZeroUsize,
     properties: network::PacketEndpointProperties,
 ) -> (network::PacketEndpoint, PacketPeer) {
@@ -746,9 +702,8 @@ pub fn packet_endpoint_pair(
             },
         ),
         PacketPeer {
-            from_sandbox: Some(from_sandbox),
-            to_sandbox,
-            maximum_packet_length,
+            _from_sandbox: from_sandbox,
+            _to_sandbox: to_sandbox,
         },
     )
 }

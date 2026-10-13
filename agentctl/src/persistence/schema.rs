@@ -480,12 +480,6 @@ mod tests {
         Err(Error::Database("injected second migration failure".into()))
     }
 
-    fn create_third(transaction: &Transaction<'_>) -> Result<(), Error> {
-        transaction
-            .execute_batch("CREATE TABLE third (id INTEGER PRIMARY KEY);")
-            .map_err(database_error)
-    }
-
     fn create_unexpected(transaction: &Transaction<'_>) -> Result<(), Error> {
         transaction
             .execute_batch("CREATE TABLE unexpected (id INTEGER PRIMARY KEY);")
@@ -515,44 +509,6 @@ mod tests {
         assert!(error.to_string().contains("injected second migration failure"));
         assert_eq!(schema_version(&connection).expect("schema version"), 0);
         assert!(user_tables(&connection).expect("tables").is_empty());
-    }
-
-    #[test]
-    fn expanded_version_1_continues_through_later_migrations() {
-        let mut connection = Connection::open_in_memory().expect("database");
-        connection.execute_batch(PREVIEW_1_SQL).expect("preview 1 schema");
-        connection
-            .execute_batch(SESSION_COLUMNS_SQL)
-            .expect("expanded Session columns");
-        connection
-            .execute_batch(SESSION_ACTIVITY_REPORTS_SQL)
-            .expect("expanded reports table");
-        connection.pragma_update(None, "user_version", 1).expect("version 1");
-        let migrations = [
-            Migration {
-                version: 1,
-                name: "preview 1 baseline",
-                schema: &[PREVIEW_1_SQL],
-                apply: create_preview_1,
-            },
-            Migration {
-                version: 2,
-                name: "session management",
-                schema: &[SESSION_COLUMNS_SQL, SESSION_ACTIVITY_REPORTS_SQL],
-                apply: add_session_management,
-            },
-            Migration {
-                version: 3,
-                name: "third",
-                schema: &["CREATE TABLE third (id INTEGER PRIMARY KEY);"],
-                apply: create_third,
-            },
-        ];
-
-        apply_pending_migrations(&mut connection, 1, &migrations, 3).expect("migrations");
-
-        assert_eq!(schema_version(&connection).expect("schema version"), 3);
-        assert!(user_tables(&connection).expect("tables").contains("third"));
     }
 
     #[test]

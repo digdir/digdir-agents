@@ -37,8 +37,8 @@ recorded in the fork.
    git grep -n -F -f <(printf '%s\n' <previous-bundle-digests>)
    ```
 
-4. Run `make fmt lint build test`, and `make test-e2e` on a host with Docker, Internet access and hardware
-   virtualization.
+4. Run `make fmt lint build test`, and `make test-e2e` on a host with Docker, Internet access, hardware
+   virtualization, Node.js, tmux and util-linux `script`.
 5. Exercise a first-run runtime installation from an empty provider home, so that stale local artifacts cannot hide
    a release or checksum error, and an upgrade from a provider home and database populated by the previous pin,
    where migrations run.

@@ -54,10 +54,14 @@ if [ -z "${version}" ]; then
   page=1
   while [ -z "${version}" ]; do
     releases="$(curl -fsSL "https://api.github.com/repos/${repository}/releases?per_page=100&page=${page}")"
-    version="$(printf '%s' "${releases}" \
-      | sed -n 's/.*"tag_name": "agentctl\/\(v[^"]*\)".*/\1/p' \
-      | head -n 1)"
-    [ "${releases}" != "[]" ] || break
+    # GitHub returns compact or pretty-printed JSON, so put each tag on a line of its own. The C
+    # locale keeps sed from stopping at bytes that are not valid in the user's locale.
+    tags="$(printf '%s\n' "${releases}" \
+      | LC_ALL=C sed 's/"tag_name"/\
+&/g' \
+      | LC_ALL=C sed -n 's/^"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+    [ -n "${tags}" ] || break
+    version="$(printf '%s\n' "${tags}" | LC_ALL=C sed -n 's/^agentctl\/\(v.*\)$/\1/p' | head -n 1)"
     page=$((page + 1))
   done
 fi
@@ -120,6 +124,7 @@ if [ -L "${install_root}/current" ]; then
     /*) ;;
     *) previous="${install_root}/${previous}" ;;
   esac
+  [ -d "${previous}" ] || previous=""
 fi
 set -- --home "${agent_home}" self __complete-update \
   --install-root "${install_root}" --bin-directory "${bin_directory}" \
