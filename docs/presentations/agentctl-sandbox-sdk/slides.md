@@ -373,6 +373,38 @@ class: tight
 
 </div>
 
+
+---
+
+<div class="kicker">Architecture · Security · honest limits</div>
+
+# What the Sandbox doesn't protect against
+
+<div class="grid grid-cols-2 gap-8 mt-4">
+
+<div class="flex flex-col gap-3">
+  <div class="flex items-center justify-between"><span class="title">Protected</span><span class="tag green">by design</span></div>
+  <div class="box green"><div class="title text-sm">Your machine</div><div class="sub">the agent has root only inside its own VM</div></div>
+  <div class="box green"><div class="title text-sm">Secret values</div><div class="sub">never in the VM, only sent to their allowed hosts</div></div>
+  <div class="box green"><div class="title text-sm">Other agents</div><div class="sub">separate VMs, disks and networks</div></div>
+  <div class="box green"><div class="title text-sm">The host network</div><div class="sub">only the Platform API is reachable</div></div>
+</div>
+
+<div class="flex flex-col gap-3" v-click>
+  <div class="flex items-center justify-between"><span class="title">Not protected</span><span class="tag coral">needs other controls</span></div>
+  <div class="box coral"><div class="title text-sm">Misuse of a token on its own hosts</div><div class="sub">anything the PAT allows on github.com, including a public gist</div></div>
+  <div class="box coral"><div class="title text-sm">Data leaving without secrets</div><div class="sub">with <code>allow: all</code>, code can be posted to any host</div></div>
+  <div class="box coral"><div class="title text-sm">Prompt injection</div><div class="sub">issues, web pages and dependencies can steer the agent</div></div>
+  <div class="box coral"><div class="title text-sm">Bad code</div><div class="sub">review is still the gate, not the Sandbox</div></div>
+  <div class="box coral"><div class="title text-sm">Sessions in one Sandbox</div><div class="sub">same user and tmux server, so one trust boundary</div></div>
+</div>
+
+</div>
+
+<div class="mt-4 text-sm muted text-center" v-click>
+Narrow tokens, tighter <code>allow</code> lists and review shrink the gap. The policy engine is where stricter rules can go.
+</div>
+
 ---
 
 <div class="kicker">Architecture</div>
@@ -766,35 +798,40 @@ flowchart LR
 
 ---
 
-<div class="kicker">Productivity</div>
+<div class="kicker">Productivity · a true story</div>
 
-# A day with sandboxed agents
+# How this deck was made
 
-<div class="grid grid-cols-4 gap-4 mt-10">
+<div class="grid grid-cols-5 gap-3 mt-8">
   <div class="card" v-click>
-    <div class="tag blue mb-3">08:30</div>
-    <h3>Kick off</h3>
-    <p>Three Sessions on three Agents: an issue, a flaky test and a docs update.</p>
+    <div class="tag blue mb-3">scaffold</div>
+    <h3>Empty deck</h3>
+    <p>An agent in an Altinn Sandbox set up Slidev and served it to my laptop with <code>agentctl port-forward</code>.</p>
   </div>
   <div class="card" v-click>
-    <div class="tag amber mb-3">09:00</div>
-    <h3>Meetings</h3>
-    <p>The agents build, spin up clusters, reproduce the bug and iterate. No prompts are waiting for you.</p>
+    <div class="tag amber mb-3">debug</div>
+    <h3>Forward refused</h3>
+    <p>Slidev listened on IPv6 loopback only. The agent found it with <code>ss</code> and fixed the dev script.</p>
   </div>
   <div class="card" v-click>
-    <div class="tag coral mb-3">11:00</div>
-    <h3>Review</h3>
-    <p>PRs come with screenshots and test output. Steer with a prompt or attach to the session.</p>
+    <div class="tag amber mb-3">research</div>
+    <h3>Read the source</h3>
+    <p>digdir-agents, altinn-studio and the Microsandbox network engine, to get the facts right.</p>
   </div>
   <div class="card" v-click>
-    <div class="tag green mb-3">11:30</div>
-    <h3>Hand-off</h3>
-    <p>Archive the done Sessions and keep the Agents for tomorrow. Disk, cache and history are still there.</p>
+    <div class="tag coral mb-3">verify</div>
+    <h3>Looked at every slide</h3>
+    <p>Headless Chromium screenshots after each change, to catch overflow and broken highlights.</p>
+  </div>
+  <div class="card" v-click>
+    <div class="tag green mb-3">deliver</div>
+    <h3>PR #176</h3>
+    <p>Blocked at first: the bot account had read-only access. Granted, then opened with screenshots.</p>
   </div>
 </div>
 
 <div v-click class="mt-10 text-center text-lg muted">
-This deck was written by an agent inside an Altinn Sandbox and served to this laptop with <code>agentctl port-forward</code>.
+My part: the topic, review comments and one permission change. No local setup.
 </div>
 
 ---
@@ -1048,6 +1085,32 @@ layout: center
   <div class="card"><h3>TUI</h3><p>Create an agent, start a Session, open it in VS Code or the desktop, port-forward</p></div>
   <div class="card"><h3>T3 Code fork</h3><p>Sandboxes as environments: new thread, PR watching, previews</p></div>
   <div class="card"><h3>Parallel</h3><p>Several agents on several tasks, reviewed as PRs</p></div>
+</div>
+
+
+---
+
+<div class="kicker">Honest limits</div>
+
+# What it costs
+
+<div class="grid grid-cols-2 gap-5 mt-6">
+  <div class="card" v-click>
+    <h3 class="c-sky">Laptop resources</h3>
+    <p><code>altinn-desktop</code> asks for 4 CPUs, 8 GiB memory and up to 64 GiB disk. Check your host before running several at once.</p>
+  </div>
+  <div class="card" v-click>
+    <h3 class="c-amber">Model usage</h3>
+    <p>Parallel agents multiply token use. Subscriptions and API budgets become a real line item.</p>
+  </div>
+  <div class="card" v-click>
+    <h3 class="c-coral">Review load</h3>
+    <p>Agents produce PRs faster than people review them. The bottleneck moves to the human.</p>
+  </div>
+  <div class="card" v-click>
+    <h3 class="c-green">Upkeep</h3>
+    <p>Images, harness version bumps with live compatibility tests and the Microsandbox fork pin all need maintenance.</p>
+  </div>
 </div>
 
 ---
