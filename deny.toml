@@ -18,6 +18,9 @@ ignore = [
   # bincode 2 is unmaintained and has no maintained successor release. Microsandbox and its
   # libkrun crates use it to serialize their own data; the advisory reports no vulnerability.
   { id = "RUSTSEC-2025-0141", reason = "unmaintained bincode 2 used by Microsandbox; no known vulnerability or safe upgrade" },
+  # unsafe-libyaml is archived and has no successor release. agentctl uses it through serde_yaml_ng to parse its own
+  # Agent manifests; the advisory reports no vulnerability. Moving to a safe-Rust YAML parser removes this entry.
+  { id = "RUSTSEC-2024-0449", reason = "unmaintained unsafe-libyaml used by serde_yaml_ng; no known vulnerability or safe upgrade" },
 ]
 
 [sources]
