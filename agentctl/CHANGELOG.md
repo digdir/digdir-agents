@@ -14,12 +14,12 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Added
 
-- Agents can offer Pi (`type: pi`, `auth: none`) as a third harness, with its providers, models and credentials supplied by the Agent's own Pi files and `spec.secrets`; the self-dev Agent is an example. The set of harness types cannot change after an Agent is created, so delete and re-apply an existing Agent to add Pi. ([agentctl/README.md](https://github.com/digdir/digdir-agents/tree/main/agentctl#pi))
+- Agents can offer Pi (`type: pi`, `auth: none`) as a third harness, with its providers, models and credentials supplied by the Agent's own Pi files and `spec.secrets`; the self-dev Agent is an example. The set of harness types cannot change after an Agent is created, so delete and re-apply an existing Agent to add Pi. ([agentctl/README.md](https://github.com/digdir/digdir-agents/tree/main/agentctl#pi), [#182](https://github.com/digdir/digdir-agents/pull/182))
 
 ### Changed
 
 - Sessions are tested with Claude Code 2.1.302 and Codex CLI 0.163.0, so Agents with their own images can install these versions. ([#181](https://github.com/digdir/digdir-agents/pull/181))
-- Terminals in Sessions now encode modified keys with tmux's CSI u format on tmux 3.5 and later, for every harness; Shift+Enter inserts a newline in Codex.
+- Terminals in Sessions now encode modified keys with tmux's CSI u format on tmux 3.5 and later, for every harness; Shift+Enter inserts a newline in Codex. ([#182](https://github.com/digdir/digdir-agents/pull/182))
 
 ### Security
 
