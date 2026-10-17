@@ -161,9 +161,8 @@ Each installation may declare `defaults` with a `model` and an `effort` level fo
 own vocabulary. The published manifests select `model: fable` for Claude Code because a mediated token cannot list
 Fable in the `/model` picker.
 `spec.instructions` names one harness-neutral Agent instruction file. Every declared Harness Adapter installs that source
-at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code and `~/.codex/AGENTS.md` for Codex. Pi has
-none the platform may write, so its activity extension adds them to the system prompt as a section of their own, beside
-the Agent's `AGENTS.md` and `APPEND_SYSTEM.md`.
+at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md` for Codex and
+`~/.pi/agent/AGENTS.md` for Pi.
 Repository-local instruction files continue to be discovered by the harness itself.
 
 Harness Adapters own authentication, version verification, managed configuration, hooks, native conversation IDs and
@@ -175,7 +174,8 @@ image or the user and is not used as a trusted bootstrap marker.
 Pi (`@earendil-works/pi-coding-agent`, `type: pi`) is configured by the Agent; `agentctl` knows no provider, gateway or
 model. The Agent's Dockerfile installs a pinned Pi and `fd-find`, its manifest declares the harness and the provider key
 as a secret, and its home overlay or image provides Pi's own files under `~/.pi/agent/`, such as a `models.json` that
-reads the key as `"apiKey": "$MY_GATEWAY_KEY"`. `agentctl` never writes under `~/.pi/agent/`.
+reads the key as `"apiKey": "$MY_GATEWAY_KEY"`. Under `~/.pi/agent/`, `agentctl` writes only `AGENTS.md`, from
+`spec.instructions`.
 
 ```yaml
   harnesses:
@@ -187,9 +187,8 @@ reads the key as `"apiKey": "$MY_GATEWAY_KEY"`. `agentctl` never writes under `~
       allowedHosts: [gateway.example.com]
 ```
 
-`--model`, `--effort` and `defaults` pass to `pi --model` and `pi --thinking` unchanged. The platform's instructions
-join Pi's system prompt as their own section, beside the Agent's `AGENTS.md` and `APPEND_SYSTEM.md`, and skills install
-in `~/.agents/skills`. Pi starts with `--approve`, trusting the working directory's `.pi` resources. The launch sets
+`--model`, `--effort` and `defaults` pass to `pi --model` and `pi --thinking` unchanged, and skills install in
+`~/.agents/skills`. Pi starts with `--approve`, trusting the working directory's `.pi` resources. The launch sets
 `NODE_EXTRA_CA_CERTS` to the mediation CA bundle, `PI_TELEMETRY=0` and `PI_SKIP_VERSION_CHECK=1` unless
 `spec.environment` sets them. See the [self-dev Agent](../agents/self-dev/README.md#pi) for a worked example.
 

@@ -8,16 +8,13 @@ use crate::harness::hook_script;
 
 const TEMPLATE: &str = include_str!("activity_extension.ts");
 
-/// Renders the activity extension, which the launch loads with `pi -e`. It adds the file at
-/// `instructions_file`, when there is one, to Pi's system prompt.
+/// Renders the activity extension, which the launch loads with `pi -e`.
 ///
 /// # Errors
 ///
 /// Returns an error when the endpoint locations cannot be encoded.
-pub(super) fn script(instructions_file: &str) -> Result<String, serde_json::Error> {
-    Ok(TEMPLATE
-        .replace("__REPORTER__", &hook_script::reporter()?)
-        .replace("__INSTRUCTIONS_FILE__", &serde_json::to_string(instructions_file)?))
+pub(super) fn script() -> Result<String, serde_json::Error> {
+    Ok(TEMPLATE.replace("__REPORTER__", &hook_script::reporter()?))
 }
 
 #[cfg(test)]
@@ -32,7 +29,7 @@ mod tests {
 
     #[test]
     fn the_rendered_extension_has_no_placeholders_left() {
-        let script = super::script("/x/instructions.md").expect("script");
+        let script = super::script().expect("script");
         assert!(!script.contains("__"), "{script}");
         assert!(script.contains("/etc/agent-platform-api-url"));
         assert!(script.contains("/v1/session/hooks"));
@@ -74,28 +71,17 @@ mod tests {
     /// Drives the rendered extension under Node with a fake `pi` and returns the reports that
     /// reached a stand-in Platform API, in order.
     fn run(driver: &str) -> Vec<Value> {
-        run_with_instructions(driver, None)
-    }
-
-    /// As [`run`], with the platform's instructions file holding `instructions`, if any.
-    fn run_with_instructions(driver: &str, instructions: Option<&str>) -> Vec<Value> {
         let directory = tempfile::TempDir::new().expect("temporary directory");
-        let instructions_file = directory.path().join("instructions.md");
-        if let Some(instructions) = instructions {
-            std::fs::write(&instructions_file, instructions).expect("instructions");
-        }
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("listener");
         let port = listener.local_addr().expect("address").port();
         let url_file = directory.path().join("platform-api-url");
         std::fs::write(&url_file, format!("http://127.0.0.1:{port}\n")).expect("URL file");
         // The guest path is not readable here; point the script at a file the test owns.
-        let script = super::script(&instructions_file.to_string_lossy())
-            .expect("script")
-            .replacen(
-                &serde_json::to_string(crate::sandbox::platform::PLATFORM_API_URL_FILE).expect("path"),
-                &serde_json::to_string(&url_file).expect("path"),
-                1,
-            );
+        let script = super::script().expect("script").replacen(
+            &serde_json::to_string(crate::sandbox::platform::PLATFORM_API_URL_FILE).expect("path"),
+            &serde_json::to_string(&url_file).expect("path"),
+            1,
+        );
         std::fs::write(directory.path().join("activity.ts"), script).expect("extension");
         let driver_path = directory.path().join("driver.mjs");
         std::fs::write(
@@ -182,35 +168,6 @@ await handlers.agent_settled({ aborted: false });
             summary(&reports),
             pairs(&[("turnStarted", "user"), ("turnCompleted", "settled")])
         );
-    }
-
-    #[test]
-    fn instructions_join_the_system_prompt_as_a_section_beside_the_agents_own() {
-        // The driver exits non-zero when an assertion fails.
-        let reports = run_with_instructions(
-            r#"
-import assert from "node:assert";
-const options = { sections: { existing: "kept" } };
-await handlers.before_agent_start({ messageType: "user", systemPromptOptions: options });
-assert.deepStrictEqual(options.sections, { existing: "kept", agent_platform: "be brief" });
-const bare = { sections: {} };
-await handlers.before_agent_start({ messageType: "custom", systemPromptOptions: bare });
-assert.deepStrictEqual(bare.sections, { agent_platform: "be brief" });
-"#,
-            Some("be brief\n"),
-        );
-        assert_eq!(summary(&reports), pairs(&[("turnStarted", "user")]));
-    }
-
-    #[test]
-    fn without_instructions_the_system_prompt_is_left_alone() {
-        let reports = run(r#"
-import assert from "node:assert";
-const options = { sections: { existing: "kept" } };
-await handlers.before_agent_start({ messageType: "user", systemPromptOptions: options });
-assert.deepStrictEqual(options.sections, { existing: "kept" });
-"#);
-        assert_eq!(summary(&reports), pairs(&[("turnStarted", "user")]));
     }
 
     #[test]

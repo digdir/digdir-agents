@@ -3,7 +3,7 @@
 //! The adapter knows nothing about providers, gateways or models: an Agent configures those
 //! itself, through Pi's own files under `~/.pi/agent/` (its home overlay or image), environment
 //! variables and `spec.secrets`. The platform contributes only what every Pi user needs: the
-//! activity extension, its instructions, skills and the launch.
+//! activity extension, the manifest's instructions in `~/.pi/agent/AGENTS.md`, skills and the launch.
 
 use std::fmt::Write as _;
 
@@ -18,7 +18,7 @@ pub(super) mod transcript;
 
 /// Where bootstrap installs what the platform adds to Pi, away from `~/.pi/agent/`, which
 /// belongs to the Agent: nothing there is written, and Pi does not discover anything here on
-/// its own. The launch loads the extension, which reads the instructions.
+/// its own. The launch loads the extension.
 fn platform_directory(home: &str) -> String {
     format!("{home}/.local/share/agent-platform/pi")
 }
@@ -34,10 +34,10 @@ fn extension_path(home: &str) -> String {
     format!("{}/activity.ts", platform_directory(home))
 }
 
-/// The platform's instructions, which the activity extension adds to Pi's system prompt as a
-/// section of its own, beside the Agent's context and prompt files.
+/// The manifest's instructions, in Pi's global context file, as `~/.codex/AGENTS.md` holds them
+/// for Codex.
 fn instructions_path(home: &str) -> String {
-    format!("{}/instructions.md", platform_directory(home))
+    format!("{home}/.pi/agent/AGENTS.md")
 }
 
 pub(super) async fn bootstrap_linux(
@@ -230,25 +230,21 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_writes_nothing_under_the_agents_pi_configuration() {
+    fn bootstrap_writes_only_the_instructions_among_the_agents_pi_files() {
         let home = "/home/agent";
+        assert_eq!(super::instructions_path(home), "/home/agent/.pi/agent/AGENTS.md");
         for path in [
             super::platform_directory(home),
             super::extension_path(home),
-            super::instructions_path(home),
             super::skills_directory(home),
         ] {
             assert!(!path.contains("/.pi"), "{path}");
         }
-        // Every path bootstrap writes comes from the functions above.
-        let bootstrap = include_str!("bootstrap/linux.rs");
-        assert!(!bootstrap.contains(".pi"), "bootstrap names Pi's own directory");
     }
 
     #[test]
     fn the_launch_leaves_the_system_prompt_to_pi_and_the_agent() {
-        // `--append-system-prompt` would make Pi skip the Agent's own `APPEND_SYSTEM.md`; the
-        // activity extension adds the platform's instructions instead.
+        // `--append-system-prompt` would make Pi skip the Agent's own `APPEND_SYSTEM.md`.
         let arguments = launched(&home(), &test_launch_request(None, None));
         assert!(
             arguments.iter().all(|argument| !argument.contains("system-prompt")),

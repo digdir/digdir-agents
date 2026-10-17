@@ -26,13 +26,6 @@ export default function (pi: any): void {
   });
 
   pi.on("before_agent_start", async (event: any) => {
-    // The platform's instructions join the system prompt as a section of their own. Unlike
-    // `--append-system-prompt`, which makes Pi skip the Agent's own `APPEND_SYSTEM.md`, a section
-    // composes with every file the Agent configures. Absent instructions add nothing.
-    try {
-      const instructions = readFileSync(__INSTRUCTIONS_FILE__, "utf8").trim();
-      if (instructions !== "") event.systemPromptOptions.sections.agent_platform = instructions;
-    } catch {}
     // Runs started by extension messages are not operator turns.
     if (event.messageType !== "user") return;
     running = true;

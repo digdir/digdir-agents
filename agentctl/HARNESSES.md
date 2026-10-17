@@ -10,7 +10,7 @@ Adapter changes that accompany a bump must therefore also work with the previous
 Implementation: [adapters](src/harness), [terminal runtime](src/sessions/runtime/tmux.rs),
 [Session service](src/sessions/service.rs). Harness pins: [self-dev](../agents/self-dev/Dockerfile),
 [minimal](examples/minimal/Dockerfile) (Claude Code only) and [worktree](../sandbox/core/examples/worktree/Dockerfile);
-update them together. Only the self-dev image installs Pi.
+update them together.
 
 ## Upgrade test plan
 
@@ -74,8 +74,8 @@ with these differences:
   completion is reported and STATE stays `Working`.
 - Resume opens the reported transcript only when it is non-empty; otherwise the Session starts fresh.
 - An initial prompt starting with `@` gets a leading space, since Pi reads `@name` as a file.
-- The Agent's `~/.pi/agent/` files are unchanged after re-convergence, and its `AGENTS.md`, `APPEND_SYSTEM.md` and the
-  platform instructions all reach the model.
+- `spec.instructions` reach the model from `~/.pi/agent/AGENTS.md`, and the Agent's other `~/.pi/agent/` files are
+  unchanged after re-convergence.
 
 Completion waits poll local database activity every 250 ms and require identical completed, waiting activity
 in two consecutive polls.
