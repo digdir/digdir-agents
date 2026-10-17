@@ -16,7 +16,8 @@ ENV PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:
 # Podman's netavark backend invokes nft for rootful bridge networking and aardvark-dns for
 # container-name resolution. bc, bison, flex, libelf-dev and python3-pyelftools check libkrunfw's
 # kernel configuration; sqlite3, socat and tcpdump inspect agentd's database, sockets and Sandbox
-# traffic; hyperfine measures performance changes.
+# traffic; hyperfine measures performance changes. fd-find provides `fdfind`, which Pi
+# searches files with.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         aardvark-dns \
@@ -27,6 +28,7 @@ RUN apt-get update \
         ca-certificates \
         clang \
         curl \
+        fd-find \
         flex \
         fonts-jetbrains-mono \
         fonts-liberation \
@@ -59,6 +61,7 @@ RUN apt-get update \
         tcpdump \
         tmux \
     && rm -rf /var/lib/apt/lists/* \
+    && fdfind --version \
     && nvim --version \
     && shellcheck --version \
     && btop --version \
@@ -183,14 +186,18 @@ RUN git config --system credential.https://github.com.helper '!/usr/local/bin/gh
 
 ARG CODEX_VERSION=0.163.0
 ARG CLAUDE_CODE_VERSION=2.1.302
+ARG PI_VERSION=1.3.0
 
 # Node ignores the system trust store, and Buildah drops default environment from build stages,
 # so a build inside an Agent needs the system store selected per step for npm to trust mediation.
 RUN NODE_OPTIONS=--use-openssl-ca npm install --global "@openai/codex@${CODEX_VERSION}" \
     && NODE_OPTIONS=--use-openssl-ca npm install --global --allow-scripts=@anthropic-ai/claude-code \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && NODE_OPTIONS=--use-openssl-ca npm install --global --ignore-scripts \
+        "@earendil-works/pi-coding-agent@${PI_VERSION}" \
     && claude --version \
-    && codex --version
+    && codex --version \
+    && pi --version
 
 # A nested Microsandbox runtime needs /dev/kvm; tmpfiles.conf hands the device to the kvm group.
 # OpenSSH rejects even public-key authentication for a locked account when PAM is disabled.

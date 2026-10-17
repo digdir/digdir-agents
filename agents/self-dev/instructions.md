@@ -28,14 +28,15 @@ nested Agent with a browser and a desktop. An Agent's source directory cannot ch
 ```sh
 printf '%s\n' "$AGENT_CLAUDE_ACCESS_TOKEN" | agentctl claude login --from-stdin
 agentctl codex login --from-stdin < ~/.codex/auth.json
-printf 'GITHUB_TOKEN=%s\nGIT_USER_NAME=%s\nGIT_USER_EMAIL=%s\n' \
-  "$GITHUB_TOKEN" "$GIT_USER_NAME" "$GIT_USER_EMAIL" > ~/nested.env
+printf 'GITHUB_TOKEN=%s\nAIVAR_API_KEY=%s\nGIT_USER_NAME=%s\nGIT_USER_EMAIL=%s\n' \
+  "$GITHUB_TOKEN" "$AIVAR_API_KEY" "$GIT_USER_NAME" "$GIT_USER_EMAIL" > ~/nested.env
 cd /home/agent/code/.worktrees/<task>/agents/self-dev/minimal
 agentctl apply --variant nested --env-file ~/nested.env
 ```
 
 Real secrets are host-mediated: never search for, print, copy or persist their values. The credential placeholder
-above is inert. Git identity is explicitly selected non-secret data and enters both Sandboxes in plaintext.
+above is inert, and `AIVAR_API_KEY`, which Pi uses, chains through the same way. Git identity is explicitly selected
+non-secret data and enters both Sandboxes in plaintext.
 
 Build steps inside Podman trust the mediated CA through the system store and `/run/agent/tls/ca-bundle.pem`. Buildah
 drops default environment from build stages, so a `RUN` that downloads through Node exports

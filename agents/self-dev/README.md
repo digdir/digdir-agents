@@ -51,6 +51,37 @@ The GitHub token stays on the host. The Agent sees a placeholder, which is subst
 `GITHUB_TOKEN` is a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with
 `Contents` and `Pull requests` read and write.
 
+`AIVAR_API_KEY` is optional. It is the key for the company AI gateway at `api.aivar.no`, which Pi uses, and is likewise
+substituted only in requests to that host. Without it Pi starts but its models cannot answer.
+
+## Pi
+
+Pi is configured entirely by this Agent, not by `agentctl`. The `pi` installation in `agent.yaml` declares `auth: none`
+and `defaults.model: aivar/sigma2:Qwen3.8-27B`. The home overlay supplies `~/.pi/agent/models.json`, which defines the
+`aivar` provider (`https://api.aivar.no/v1`, key from `$AIVAR_API_KEY`), and `~/.pi/agent/settings.json`, which keeps
+the startup quiet and the transport on server-sent events. The overlay is applied again on every pass, so edit it here
+rather than in the Sandbox. The Dockerfile pins the Pi version and installs `fd-find`, whose `fdfind` binary Pi searches files with.
+
+An Agent's harness types cannot change after it is created, so an existing self-dev Agent needs `agentctl delete` and a
+new `apply` to gain Pi.
+
+JSON has no comments, so the findings behind `models.json` are here. Checked live through Pi 1.3.0 on 2026-10-17 with
+the prompt "run `cat note.txt` with bash and give the word", at every thinking level unless noted. The gateway is
+LiteLLM and `GET /v1/models` lists only ids, so the context windows of the models below other than Qwen are
+conservative guesses.
+
+| Model | Offered | Notes |
+| --- | --- | --- |
+| `sigma2:Qwen3.8-27B` | Yes | Responses API. The gateway accepts only the efforts `low`, `medium` and `xhigh`, so `thinkingLevelMap` maps `minimal` to `low` and `high` and `max` to `xhigh`; without it `high` is rejected. |
+| `azure:DeepSeek-V4.1-Flash` | Yes | Chat Completions only (`api: openai-completions`): the `azure:` route rejects the Responses input Pi sends, whose role items have no `type`. Tool calls work at off, medium and high. |
+| `sigma2:Borealis2-preview` | Yes | Works over both APIs. |
+| `aivar:borealis` | Yes | Works over both APIs. |
+| `azure:gpt-6.1-sol` | No | Fails with tools on both APIs. Responses fails like DeepSeek; Chat Completions rejects function tools with any reasoning effort, and rejects `none`. |
+| `sigma2:Borealis-27B` | No | Answers but never calls a tool. |
+| Embedding models | No | Not chat models. |
+
+Re-check these when the gateway or Pi changes.
+
 ## Inside the Agent
 
 `instructions.md` tells the harness how to build, test and run the platform nested; the `full` Agent adds
