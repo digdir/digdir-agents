@@ -10,8 +10,7 @@ Adapter changes that accompany a bump must therefore also work with the previous
 Implementation: [adapters](src/harness), [terminal runtime](src/sessions/runtime/tmux.rs),
 [Session service](src/sessions/service.rs). Harness pins: [self-dev](../agents/self-dev/Dockerfile),
 [minimal](examples/minimal/Dockerfile) (Claude Code only) and [worktree](../sandbox/core/examples/worktree/Dockerfile);
-update them together. Pi is installed only by the self-dev image: the minimal example and the
-worktree image deliberately stay without it.
+update them together. Only the self-dev image installs Pi.
 
 ## Upgrade test plan
 
@@ -65,24 +64,18 @@ on an Agent built with the previous pin.
 
 ## Pi
 
-Agents configure Pi themselves ([README](README.md#pi)), so test it on one that does, such as
-[self-dev](../agents/self-dev/README.md#pi), with `--model <provider>/<id>` and an `--effort` among Pi's thinking
-levels that its models support. The table's "Both" rows cover Claude Code and Codex; for Pi they apply as follows.
+Test Pi on an Agent that configures it, such as [self-dev](../agents/self-dev/README.md#pi). The checks above apply,
+with these differences:
 
-| Check                                  | Applies to Pi | Notes                                                                                                                                                                              |
-| -------------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Create, prompt, multiline input, turns | Yes           | Input arrives by bracketed paste and Enter, which needs tmux `extended-keys`. The Session's tmux also sets `extended-keys-format csi-u` with `-q`: tmux before 3.5 lacks the option, and an unquiet failure would abort Session creation for every harness. An initial prompt that starts with `@` gets a leading space, because Pi reads `@name` arguments as files. |
-| Tool success and failure               | Yes           | `turns` marks a failed `bash` call from the `toolResult` `isError`.                                                                                                                |
-| Interruption                           | Yes           | Escape settles the run with `aborted`, reported as a completed turn; `turns` marks the aborted call failed and shows no error. Pi moves a queued prompt back into the editor, so the next prompt appends to it. |
-| Prompt during an active tool call      | Yes           | The prompt is steered into the running turn; one turn completes.                                                                                                                   |
-| Permission prompts                     | No            | Pi asks for no approvals. Only an extension dialog reports `WaitingForInput`.                                                                                                      |
-| Model error                            | Yes           | Create with an unknown `--model`. Pi stores the failed request as an assistant entry with `stopReason: "error"`; `turns` shows it as `Error: <message>`. Known gap: when Pi fails in run setup after `before_agent_start` and no `agent_settled` fires, STATE stays `Working` and a wait times out. |
-| Idle-stop, archive, resume             | Yes           | Resume uses `--session <path>` with the reported `harnessTranscriptPath` only when that file is non-empty, wherever the Agent's configuration (`sessionDir`, `PI_CODING_AGENT_SESSION_DIR`) keeps sessions; otherwise the Session starts fresh.                                               |
-| Transcript location                    | Yes           | `harnessTranscriptPath` is Pi's session file.                                                                                                                                      |
-| Authentication and configuration       | Yes           | The Agent's files under `~/.pi/agent/` are byte-identical after bootstrap and re-convergence; the platform writes only below `~/.local/share/agent-platform/pi/` and `~/.agents/skills`. Platform instructions, the Agent's `AGENTS.md` and its `APPEND_SYSTEM.md` all reach the model: the extension adds the instructions as a prompt section, and the launch passes no `--append-system-prompt`, which would make Pi skip `APPEND_SYSTEM.md`. |
-| Launch environment                     | Yes           | `NODE_EXTRA_CA_CERTS`, `PI_TELEMETRY` and `PI_SKIP_VERSION_CHECK` take the platform default only when `spec.environment` leaves them unset; `PI_OFFLINE` is not set, so Pi keeps its model-catalog refresh. |
-| Adding Pi to an Agent, and downgrading | Yes           | `harnesses[].type` is immutable, so delete and re-apply the Agent. An `agentd` built before Pi (for example `main`, when `make user-install` runs from different worktrees) cannot decode a stored `type: pi` Agent and the Agent list fails as a whole: delete Pi Agents before installing such a build. |
-| Nested Agent                           | Yes           | The Agent's credentials chain through the nested manifest's secrets.                                                         |
+- Pi asks for no permissions; only an extension dialog reports `WaitingForInput`.
+- Escape completes the turn, and `turns` marks the aborted call failed. A queued prompt returns to the editor, so the
+  next prompt appends to it.
+- A model error shows in `turns` as `Error: …`. Known gap: if Pi fails in run setup after `before_agent_start`, no
+  completion is reported and STATE stays `Working`.
+- Resume opens the reported transcript only when it is non-empty; otherwise the Session starts fresh.
+- An initial prompt starting with `@` gets a leading space, since Pi reads `@name` as a file.
+- The Agent's `~/.pi/agent/` files are unchanged after re-convergence, and its `AGENTS.md`, `APPEND_SYSTEM.md` and the
+  platform instructions all reach the model.
 
 Completion waits poll local database activity every 250 ms and require identical completed, waiting activity
 in two consecutive polls.

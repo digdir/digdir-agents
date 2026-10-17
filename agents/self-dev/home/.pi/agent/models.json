@@ -12,7 +12,7 @@
           "name": "Qwen3.8 27B (Sigma2)",
           "reasoning": true,
           "input": ["text"],
-          "contextWindow": 131072,
+          "contextWindow": 262144,
           "maxTokens": 32768,
           "thinkingLevelMap": { "minimal": "low", "high": "xhigh", "max": "xhigh" }
         },
@@ -22,21 +22,21 @@
           "api": "openai-completions",
           "reasoning": true,
           "input": ["text"],
-          "contextWindow": 65536,
-          "maxTokens": 8192
+          "contextWindow": 1048576,
+          "maxTokens": 32768
         },
         {
           "id": "sigma2:Borealis2-preview",
           "name": "Borealis 2 preview (Sigma2)",
           "input": ["text"],
-          "contextWindow": 65536,
-          "maxTokens": 8192
+          "contextWindow": 131072,
+          "maxTokens": 32768
         },
         {
           "id": "aivar:borealis",
           "name": "Borealis (Aivar)",
           "input": ["text"],
-          "contextWindow": 65536,
+          "contextWindow": 32768,
           "maxTokens": 8192
         }
       ]

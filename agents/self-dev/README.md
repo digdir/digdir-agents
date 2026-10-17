@@ -62,20 +62,17 @@ The overlay is applied again on every pass, so edit it here rather than in the S
 needs `agentctl delete` and a new `apply`: its harness types and home overlay, which moved to `home/`, are fixed
 when it is created.
 
-JSON has no comments, so the findings behind `models.json` are here. Checked live through Pi 1.3.0 on 2026-10-17 with
-the prompt "run `cat note.txt` with bash and give the word", at every thinking level unless noted. The gateway is
-LiteLLM and `GET /v1/models` lists only ids, so the context windows of the models below other than Qwen are
-conservative guesses.
+The findings behind `models.json`, checked through Pi 1.3.0 on 2026-10-17 with a bash tool call at every thinking
+level. The limits are the gateway's own, from its error to an oversized `max_tokens` request.
 
 | Model | Offered | Notes |
 | --- | --- | --- |
-| `sigma2:Qwen3.8-27B` | Yes | Responses API. The gateway accepts only the efforts `low`, `medium` and `xhigh`, so `thinkingLevelMap` maps `minimal` to `low` and `high` and `max` to `xhigh`; without it `high` is rejected. |
-| `azure:DeepSeek-V4.1-Flash` | Yes | Chat Completions only (`api: openai-completions`): the `azure:` route rejects the Responses input Pi sends, whose role items have no `type`. Tool calls work at off, medium and high. |
-| `sigma2:Borealis2-preview` | Yes | Works over both APIs. |
-| `aivar:borealis` | Yes | Works over both APIs. |
-| `azure:gpt-6.1-sol` | No | Fails with tools on both APIs. Responses fails like DeepSeek; Chat Completions rejects function tools with any reasoning effort, and rejects `none`. |
-| `sigma2:Borealis-27B` | No | Answers but never calls a tool. |
-| Embedding models | No | Not chat models. |
+| `sigma2:Qwen3.8-27B` | Yes | Accepts only the efforts `low`, `medium` and `xhigh`, so `thinkingLevelMap` maps the others onto them. |
+| `azure:DeepSeek-V4.1-Flash` | Yes | Chat Completions only: the `azure:` route rejects Pi's Responses input. |
+| `sigma2:Borealis2-preview` | Yes | |
+| `aivar:borealis` | Yes | 32k tokens in total. |
+| `azure:gpt-6.1-sol` | No | Rejects tool calls on both APIs. |
+| `sigma2:Borealis-27B` | No | Never calls a tool. |
 
 Re-check these when the gateway or Pi changes.
 
