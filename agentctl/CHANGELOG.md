@@ -14,7 +14,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Security
 
-- `agentctl` and `agentd` use rustls 0.23.46, which fixes TLS weaknesses that could expose session secrets in debug output or let an attacker downgrade connections ([RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346), [-0347](https://rustsec.org/advisories/RUSTSEC-2026-0347), [-0348](https://rustsec.org/advisories/RUSTSEC-2026-0348), [-0349](https://rustsec.org/advisories/RUSTSEC-2026-0349), [#177](https://github.com/digdir/digdir-agents/pull/177)).
+- `agentctl` and `agentd` use rustls 0.23.46. They were not affected by the advisories it fixes, so a scanner that flags rustls 0.23.45 in 0.1.0-preview.11 needs no urgent upgrade ([RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346), [-0347](https://rustsec.org/advisories/RUSTSEC-2026-0347), [-0348](https://rustsec.org/advisories/RUSTSEC-2026-0348), [-0349](https://rustsec.org/advisories/RUSTSEC-2026-0349), [#177](https://github.com/digdir/digdir-agents/pull/177)).
 
 ## [0.1.0-preview.11] - 2026-10-12
 
