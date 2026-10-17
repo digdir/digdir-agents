@@ -51,6 +51,31 @@ The GitHub token stays on the host. The Agent sees a placeholder, which is subst
 `GITHUB_TOKEN` is a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with
 `Contents` and `Pull requests` read and write.
 
+`AIVAR_API_KEY` is optional. It is the key for the company AI gateway at `api.aivar.no`, which Pi uses, and is likewise
+substituted only in requests to that host. Without it Pi starts but its models cannot answer.
+
+## Pi
+
+The `pi` installation in `agent.yaml` defaults to `aivar/sigma2:Qwen3.8-27B`, and the shared home overlay in `home/`
+supplies `~/.pi/agent/models.json` with the `aivar` provider (`https://api.aivar.no/v1`, key from `$AIVAR_API_KEY`).
+The overlay is applied again on every pass, so edit it here rather than in the Sandbox. An existing self-dev Agent
+needs `agentctl delete` and a new `apply`: its harness types and home overlay, which moved to `home/`, are fixed
+when it is created.
+
+The findings behind `models.json`, checked through Pi 1.3.0 on 2026-10-17 with a bash tool call at every thinking
+level. The limits are the gateway's own, from its error to an oversized `max_tokens` request.
+
+| Model | Offered | Notes |
+| --- | --- | --- |
+| `sigma2:Qwen3.8-27B` | Yes | Accepts only the efforts `low`, `medium` and `xhigh`, so `thinkingLevelMap` maps the others onto them. |
+| `azure:DeepSeek-V4.1-Flash` | Yes | Chat Completions only: the `azure:` route rejects Pi's Responses input. |
+| `sigma2:Borealis2-preview` | Yes | |
+| `aivar:borealis` | Yes | 32k tokens in total, and text only; the others also read images. |
+| `azure:gpt-6.1-sol` | No | Rejects tool calls on both APIs. |
+| `sigma2:Borealis-27B` | No | Never calls a tool. |
+
+Re-check these when the gateway or Pi changes.
+
 ## Inside the Agent
 
 `instructions.md` tells the harness how to build, test and run the platform nested; the `full` Agent adds

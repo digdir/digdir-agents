@@ -511,6 +511,22 @@ impl Spec {
                     "spec.harnesses[{index}].version must not be empty"
                 )));
             }
+            // The mode follows from the harness; an omitted one already took it, so only a
+            // contradicting spelling fails.
+            let required = harness.kind.auth_mode();
+            if harness.auth != required {
+                return Err(Error::Invalid(format!(
+                    "spec.harnesses[{index}].auth must be {:?} for harness {:?}",
+                    required.as_str(),
+                    harness.kind.as_str()
+                )));
+            }
+            if harness.optional && harness.auth == harness::HarnessAuthMode::None {
+                return Err(Error::Invalid(format!(
+                    "spec.harnesses[{index}].optional needs a harness with a platform login to wait for; \
+                     declare the credentials as optional spec.secrets instead"
+                )));
+            }
             if !harness_kinds.insert(harness.kind) {
                 duplicate_harness = Some(harness.kind);
             }

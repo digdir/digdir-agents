@@ -154,17 +154,46 @@ A declared `version` is verified against the image at setup; omit it when the im
 Set `optional: true` when an absent host login should omit that installation instead of blocking Agent creation, so a
 manifest can offer a harness that not everyone has signed in to. The check runs on every convergence, so signing in on
 the host installs the harness on the next pass; until then a Session on it is refused, naming the login. The default
-installation cannot usefully be optional, since it is what a Session selecting no harness gets.
+installation cannot usefully be optional, since it is what a Session selecting no harness gets. `auth` may be omitted: it
+follows from the harness, `mediated` for Claude Code and Codex and `none` for Pi, which has no platform login and so
+cannot be optional.
 Each installation may declare `defaults` with a `model` and an `effort` level for its new Sessions, in the harness's
 own vocabulary. The published manifests select `model: fable` for Claude Code because a mediated token cannot list
 Fable in the `/model` picker.
 `spec.instructions` names one harness-neutral Agent instruction file. Every declared Harness Adapter installs that source
-at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code and `~/.codex/AGENTS.md` for Codex.
+at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md` for Codex and
+`~/.pi/agent/AGENTS.md` for Pi.
 Repository-local instruction files continue to be discovered by the harness itself.
 
 Harness Adapters own authentication, version verification, managed configuration, hooks, native conversation IDs and
-launch arguments. The current adapters support Claude Code and Codex CLI. Harness-owned mutable state is seeded by the
+launch arguments. The current adapters support Claude Code, Codex CLI and Pi. Harness-owned mutable state is seeded by the
 image or the user and is not used as a trusted bootstrap marker.
+
+### Pi
+
+Pi (`@earendil-works/pi-coding-agent`, `type: pi`) is configured by the Agent; `agentctl` knows no provider, gateway or
+model. The Agent's Dockerfile installs a pinned Pi and `fd-find`, its manifest declares the harness and the provider key
+as a secret, and its home overlay or image provides Pi's own files under `~/.pi/agent/`, such as a `models.json` that
+reads the key as `"apiKey": "$MY_GATEWAY_KEY"`. Under `~/.pi/agent/`, `agentctl` writes only `AGENTS.md`, from
+`spec.instructions`.
+
+```yaml
+  harnesses:
+    - type: pi
+      defaults:
+        model: gateway/some-model
+  secrets:
+    - environment: MY_GATEWAY_KEY
+      allowedHosts: [gateway.example.com]
+```
+
+`--model`, `--effort` and `defaults` pass to `pi --model` and `pi --thinking` unchanged, and skills install in
+`~/.agents/skills`. Pi starts with `--approve`, trusting the working directory's `.pi` resources. The launch sets
+`NODE_EXTRA_CA_CERTS` to the mediation CA bundle, `PI_TELEMETRY=0` and `PI_SKIP_VERSION_CHECK=1` unless
+`spec.environment` sets them. See the [self-dev Agent](../agents/self-dev/README.md#pi) for a worked example.
+
+Harness types are fixed when an Agent is created, so adding Pi means deleting and re-applying the Agent. An `agentd`
+built before Pi support cannot list Agents once one has `type: pi`; delete those before moving to an older build.
 
 ## SSH access
 

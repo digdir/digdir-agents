@@ -502,6 +502,65 @@ fn decodes_each_part_of_a_manifest_and_serializes_only_what_it_sets() {
 }
 
 #[test]
+fn decodes_a_pi_installation_without_a_platform_login_and_a_provider_qualified_model() {
+    let bytes = manifest_with(&[(
+        CLAUDE_CODE,
+        "    - type: claudeCode\n      auth: mediated\n      default: true\n    \
+         - type: pi\n      defaults:\n        \
+         model: provider/some-model:1\n        effort: high\n",
+    )]);
+    let agent = manifest::decode(&bytes).expect("manifest");
+    let pi = agent.spec.harness(Harness::Pi).expect("Pi");
+    assert_eq!(pi.auth, agent::HarnessAuthMode::None);
+    assert!(!pi.optional);
+    assert_eq!(
+        (pi.defaults.model_str(), pi.defaults.effort_str()),
+        (Some("provider/some-model:1"), Some("high"))
+    );
+    let value = serde_json::to_value(&agent).expect("Agent JSON");
+    assert_eq!(value["spec"]["harnesses"][1]["type"], "pi");
+    assert_eq!(value["spec"]["harnesses"][1]["auth"], "none");
+}
+
+#[test]
+fn an_omitted_authentication_mode_is_the_harness_own_and_is_stored() {
+    let bytes = manifest_with(&[(
+        CLAUDE_CODE,
+        "    - type: claudeCode\n      default: true\n    - type: codex\n      optional: true\n    - type: pi\n",
+    )]);
+    let agent = manifest::decode(&bytes).expect("manifest");
+    for (harness, auth) in [
+        (Harness::ClaudeCode, "mediated"),
+        (Harness::Codex, "mediated"),
+        (Harness::Pi, "none"),
+    ] {
+        let installation = agent.spec.harness(harness).expect("installation");
+        assert_eq!(installation.auth.as_str(), auth, "{harness:?}");
+    }
+    let value = serde_json::to_value(&agent).expect("Agent JSON");
+    assert_eq!(value["spec"]["harnesses"][2]["auth"], "none");
+}
+
+#[test]
+fn each_harness_accepts_only_its_own_authentication_mode_and_login_free_ones_are_never_optional() {
+    for (harnesses, why) in [
+        ("    - type: pi\n      auth: mediated\n", "Pi has no platform login"),
+        (
+            "    - type: claudeCode\n      auth: none\n",
+            "Claude Code mediates its login",
+        ),
+        ("    - type: codex\n      auth: none\n", "Codex mediates its login"),
+        (
+            "    - type: pi\n      auth: none\n      optional: true\n",
+            "optional waits for a login",
+        ),
+    ] {
+        let bytes = manifest_with(&[(CLAUDE_CODE, harnesses)]);
+        assert!(manifest::decode(&bytes).is_err(), "{why}: {harnesses}");
+    }
+}
+
+#[test]
 fn rejects_unknown_duplicate_and_configured_access_capabilities() {
     assert!(matches!(
         manifest::decode(&manifest_with_access("  access:\n    - type: ssh\n    - type: ssh\n")),
