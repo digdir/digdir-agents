@@ -19,23 +19,83 @@ pub(super) struct HookScript<'a> {
     pub(super) waiting_notifications: &'a [&'a str],
 }
 
-const TEMPLATE: &str = r#"import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-
-// agentd's port changes when it restarts, so the endpoint is read on every report.
+/// The report half shared by hook scripts and in-process harness extensions: the
+/// Platform API endpoint, the Session identity and the retrying POST.
+const REPORTER: &str = r#"// agentd's port changes when it restarts, so the endpoint is read on every report.
 function platformUrl() {
   try {
     const base = readFileSync(__PLATFORM_API_URL_FILE__, "utf8").trim();
-    return base === "" ? null : base + __SESSION_HOOKS_PATH__;
+    return base === "" ? "" : base + __SESSION_HOOKS_PATH__;
   } catch {
-    return null;
+    return "";
   }
 }
 
-const url = platformUrl();
 const token = process.env.AGENT_SESSION_TOKEN;
 const sessionId = process.env.AGENT_SESSION_ID;
 
+// `node:http` rather than `fetch`: a harness that installs a proxy-aware global dispatcher, as Pi
+// does for HTTP(S)_PROXY, would otherwise send the Platform API report through the proxy.
+function post(url, body, timeout) {
+  return new Promise((resolve) => {
+    try {
+      const target = new URL(url);
+      const request = (target.protocol === "https:" ? https : http).request(
+        target,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "content-length": Buffer.byteLength(body),
+            authorization: `Bearer ${token}`,
+          },
+          timeout,
+        },
+        (response) => {
+          response.resume();
+          response.on("end", () => resolve(response.statusCode >= 200 && response.statusCode < 300));
+          response.on("error", () => resolve(false));
+        },
+      );
+      request.on("timeout", () => request.destroy());
+      request.on("error", () => resolve(false));
+      request.end(body);
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+// Sends one activity report. Start and terminal reports unblock callers, so they retry within a
+// strict budget; the payload keeps the same event ID across retries, including a lost response.
+// Other activity uses one short best-effort attempt.
+async function report(event, fields) {
+  const url = platformUrl();
+  if (!url || !token || !sessionId) return;
+  const payload = JSON.stringify({ sessionId, eventId: randomUUID(), event, ...fields });
+  const retryable = ["sessionStart", "turnCompleted", "waitingForInput"].includes(event);
+  const attempts = retryable ? 3 : 1;
+  const budget = retryable ? 1500 : 300;
+  const perAttempt = retryable ? 450 : 250;
+  const deadline = Date.now() + budget;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    if (await post(url, payload, Math.min(perAttempt, remaining))) break;
+    if (attempt < attempts - 1) {
+      const pause = Math.min(75, deadline - Date.now());
+      if (pause > 0) await new Promise((resolve) => setTimeout(resolve, pause));
+    }
+  }
+}
+"#;
+
+const TEMPLATE: &str = r#"import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import http from "node:http";
+import https from "node:https";
+
+__REPORTER__
 // Harness hook event -> platform activity signal. Rendered from the adapter's
 // table; events not listed carry no signal and are ignored.
 const EVENTS = __EVENTS__;
@@ -78,7 +138,7 @@ function read(stream) {
 }
 
 const input = await read(process.stdin);
-if (!url || !token || !sessionId || input === null) process.exit(0);
+if (!platformUrl() || !token || !sessionId || input === null) process.exit(0);
 const event = EVENTS[input.hook_event_name];
 if (!event) process.exit(0);
 // A nested Agent's own reports carry an agent_id; never forward those.
@@ -92,43 +152,35 @@ if (
   process.exit(0);
 }
 
-const body = { sessionId, eventId: randomUUID(), event, source: typeof input.source === "string" ? input.source : "" };
+const fields = { source: typeof input.source === "string" ? input.source : "" };
 if (event === "sessionStart") {
   if (typeof input.session_id !== "string" || input.session_id === "") process.exit(0);
-  body.nativeSessionId = input.session_id;
+  fields.nativeSessionId = input.session_id;
   if (typeof input.transcript_path === "string" && input.transcript_path !== "") {
-    body.transcriptPath = input.transcript_path;
+    fields.transcriptPath = input.transcript_path;
   }
 }
-const payload = JSON.stringify(body);
-
-// Start and terminal reports unblock callers, so they retry within a strict budget.
-// The payload keeps the same event ID across retries, including a lost response.
-// Other activity uses one short best-effort attempt.
-const retryable = ["sessionStart", "turnCompleted", "waitingForInput"].includes(event);
-const attempts = retryable ? 3 : 1;
-const budget = retryable ? 1500 : 300;
-const perAttempt = retryable ? 450 : 250;
-const deadline = Date.now() + budget;
-for (let attempt = 0; attempt < attempts; attempt += 1) {
-  const remaining = deadline - Date.now();
-  if (remaining <= 0) break;
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: payload,
-      signal: AbortSignal.timeout(Math.min(perAttempt, remaining)),
-    });
-    if (response.ok) break;
-  } catch {}
-  if (attempt < attempts - 1) {
-    const pause = Math.min(75, deadline - Date.now());
-    if (pause > 0) await new Promise((resolve) => setTimeout(resolve, pause));
-  }
-}
+await report(event, fields);
 process.exit(0);
 "#;
+
+/// Renders the report code, which needs `randomUUID` from `node:crypto`, `readFileSync` from
+/// `node:fs` and the default exports of `node:http` and `node:https` in scope.
+///
+/// # Errors
+///
+/// Returns an error when the endpoint locations cannot be encoded as JSON.
+pub(super) fn reporter() -> Result<String, serde_json::Error> {
+    Ok(REPORTER
+        .replace(
+            "__PLATFORM_API_URL_FILE__",
+            &serde_json::to_string(crate::sandbox::platform::PLATFORM_API_URL_FILE)?,
+        )
+        .replace(
+            "__SESSION_HOOKS_PATH__",
+            &serde_json::to_string(crate::platform_api::SESSION_HOOKS_PATH)?,
+        ))
+}
 
 impl HookScript<'_> {
     /// Renders the hook script with the adapter's tables embedded.
@@ -145,14 +197,7 @@ impl HookScript<'_> {
         let events = serde_json::to_string(&serde_json::Value::Object(events))?;
         let waiting = serde_json::to_string(self.waiting_notifications)?;
         Ok(TEMPLATE
-            .replace(
-                "__PLATFORM_API_URL_FILE__",
-                &serde_json::to_string(crate::sandbox::platform::PLATFORM_API_URL_FILE)?,
-            )
-            .replace(
-                "__SESSION_HOOKS_PATH__",
-                &serde_json::to_string(crate::platform_api::SESSION_HOOKS_PATH)?,
-            )
+            .replace("__REPORTER__", &reporter()?)
             .replace("__EVENTS__", &events)
             .replace("__WAITING_NOTIFICATIONS__", &waiting))
     }
