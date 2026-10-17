@@ -511,8 +511,8 @@ impl Spec {
                     "spec.harnesses[{index}].version must not be empty"
                 )));
             }
-            // The mode follows from the harness. Spelling it keeps the manifest honest about who
-            // owns the credentials: the platform mediates a host login, or the Agent supplies them.
+            // The mode follows from the harness; an omitted one already took it, so only a
+            // contradicting spelling fails.
             let required = harness.kind.auth_mode();
             if harness.auth != required {
                 return Err(Error::Invalid(format!(

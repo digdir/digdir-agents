@@ -243,7 +243,7 @@ fn validate_selection(label: &str, value: &str) -> Result<(), Error> {
 
 /// One harness installation declared for an Agent.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(from = "DeclaredHarnessSpec", rename_all = "camelCase")]
 pub struct HarnessSpec {
     /// Closed harness family identifier.
     #[serde(rename = "type")]
@@ -251,7 +251,8 @@ pub struct HarnessSpec {
     /// Exact version installed by the Agent image; omitted when the image owns the version, so image bumps need no manifest change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Authentication delivery mode.
+    /// Authentication delivery mode. A manifest may omit it, because each harness accepts exactly
+    /// one ([`Harness::auth_mode`]); it is always stored.
     pub auth: HarnessAuthMode,
     /// Whether a host login this harness cannot find omits the installation instead of blocking
     /// Agent provisioning. Re-evaluated on every pass, so a later host login installs it.
@@ -264,6 +265,37 @@ pub struct HarnessSpec {
     /// select their own. Omitted, the harness picks its own defaults.
     #[serde(default, skip_serializing_if = "ModelSelection::is_empty")]
     pub defaults: ModelSelection,
+}
+
+/// A harness installation as a manifest spells it, where `auth` may be omitted.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct DeclaredHarnessSpec {
+    #[serde(rename = "type")]
+    kind: Harness,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    auth: Option<HarnessAuthMode>,
+    #[serde(default)]
+    optional: bool,
+    #[serde(default)]
+    default: bool,
+    #[serde(default)]
+    defaults: ModelSelection,
+}
+
+impl From<DeclaredHarnessSpec> for HarnessSpec {
+    fn from(declared: DeclaredHarnessSpec) -> Self {
+        Self {
+            auth: declared.auth.unwrap_or_else(|| declared.kind.auth_mode()),
+            kind: declared.kind,
+            version: declared.version,
+            optional: declared.optional,
+            default: declared.default,
+            defaults: declared.defaults,
+        }
+    }
 }
 
 /// Non-secret result of importing a host harness login.

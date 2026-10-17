@@ -43,7 +43,6 @@ spec:
     # Pi has no platform login: its providers and models come from ~/.pi/agent/models.json in `home`, and the
     # gateway key from the optional AIVAR_API_KEY secret below. Without the key Pi starts but cannot answer.
     - type: pi
-      auth: none
       defaults:
         model: aivar/sigma2:Qwen3.8-27B
   environment:

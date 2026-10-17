@@ -506,7 +506,7 @@ fn decodes_a_pi_installation_without_a_platform_login_and_a_provider_qualified_m
     let bytes = manifest_with(&[(
         CLAUDE_CODE,
         "    - type: claudeCode\n      auth: mediated\n      default: true\n    \
-         - type: pi\n      auth: none\n      defaults:\n        \
+         - type: pi\n      defaults:\n        \
          model: provider/some-model:1\n        effort: high\n",
     )]);
     let agent = manifest::decode(&bytes).expect("manifest");
@@ -520,6 +520,25 @@ fn decodes_a_pi_installation_without_a_platform_login_and_a_provider_qualified_m
     let value = serde_json::to_value(&agent).expect("Agent JSON");
     assert_eq!(value["spec"]["harnesses"][1]["type"], "pi");
     assert_eq!(value["spec"]["harnesses"][1]["auth"], "none");
+}
+
+#[test]
+fn an_omitted_authentication_mode_is_the_harness_own_and_is_stored() {
+    let bytes = manifest_with(&[(
+        CLAUDE_CODE,
+        "    - type: claudeCode\n      default: true\n    - type: codex\n      optional: true\n    - type: pi\n",
+    )]);
+    let agent = manifest::decode(&bytes).expect("manifest");
+    for (harness, auth) in [
+        (Harness::ClaudeCode, "mediated"),
+        (Harness::Codex, "mediated"),
+        (Harness::Pi, "none"),
+    ] {
+        let installation = agent.spec.harness(harness).expect("installation");
+        assert_eq!(installation.auth.as_str(), auth, "{harness:?}");
+    }
+    let value = serde_json::to_value(&agent).expect("Agent JSON");
+    assert_eq!(value["spec"]["harnesses"][2]["auth"], "none");
 }
 
 #[test]
