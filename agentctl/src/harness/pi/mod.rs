@@ -143,7 +143,9 @@ pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
     }
 }
 
+/// Launches run under `sh` with a stub `pi`, in a temporary home standing in for the guest's.
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use std::{collections::BTreeMap, process::Command};
 
@@ -182,7 +184,6 @@ mod tests {
         let directory = TempDir::new().expect("temporary directory");
         let stub = directory.path().join("pi");
         std::fs::write(&stub, "#!/bin/sh\nenv\n").expect("stub");
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("permissions");

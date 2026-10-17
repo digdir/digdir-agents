@@ -1,7 +1,0 @@
-{
-  "$schema": "https://pi.dev/schemas/settings.schema.json",
-  "quietStartup": true,
-  "collapseChangelog": true,
-  "enableInstallTelemetry": false,
-  "transport": "sse"
-}
