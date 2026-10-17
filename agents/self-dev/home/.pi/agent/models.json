@@ -11,7 +11,7 @@
           "id": "sigma2:Qwen3.8-27B",
           "name": "Qwen3.8 27B (Sigma2)",
           "reasoning": true,
-          "input": ["text"],
+          "input": ["text", "image"],
           "contextWindow": 262144,
           "maxTokens": 32768,
           "thinkingLevelMap": { "minimal": "low", "high": "xhigh", "max": "xhigh" }
@@ -21,14 +21,14 @@
           "name": "DeepSeek V4.1 Flash (Azure)",
           "api": "openai-completions",
           "reasoning": true,
-          "input": ["text"],
+          "input": ["text", "image"],
           "contextWindow": 1048576,
           "maxTokens": 32768
         },
         {
           "id": "sigma2:Borealis2-preview",
           "name": "Borealis 2 preview (Sigma2)",
-          "input": ["text"],
+          "input": ["text", "image"],
           "contextWindow": 131072,
           "maxTokens": 32768
         },

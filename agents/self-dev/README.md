@@ -70,7 +70,7 @@ level. The limits are the gateway's own, from its error to an oversized `max_tok
 | `sigma2:Qwen3.8-27B` | Yes | Accepts only the efforts `low`, `medium` and `xhigh`, so `thinkingLevelMap` maps the others onto them. |
 | `azure:DeepSeek-V4.1-Flash` | Yes | Chat Completions only: the `azure:` route rejects Pi's Responses input. |
 | `sigma2:Borealis2-preview` | Yes | |
-| `aivar:borealis` | Yes | 32k tokens in total. |
+| `aivar:borealis` | Yes | 32k tokens in total, and text only; the others also read images. |
 | `azure:gpt-6.1-sol` | No | Rejects tool calls on both APIs. |
 | `sigma2:Borealis-27B` | No | Never calls a tool. |
 
