@@ -172,18 +172,14 @@ image or the user and is not used as a trusted bootstrap marker.
 
 ### Pi
 
-Pi (`@earendil-works/pi-coding-agent`, `type: pi`) is configured entirely by the Agent: `agentctl` knows no provider,
-gateway or model. An Agent enables it with four pieces of its own definition:
+Pi (`@earendil-works/pi-coding-agent`, `type: pi`) is configured by the Agent: `agentctl` knows no provider, gateway or
+model. An Agent enables it with its own definition:
 
 - the Dockerfile installs a pinned Pi, for example `npm install --global --ignore-scripts
-  @earendil-works/pi-coding-agent@1.3.0`, and `fd-find`, whose `fdfind` binary Pi searches files with;
-- the manifest declares `- type: pi` with `auth: none`. Pi has no platform-managed login, so the Agent supplies
-  credentials; `optional` does not apply to it and is rejected. `defaults.model` and `defaults.effort` are optional;
-- the home overlay or the image provides Pi's own configuration under `~/.pi/agent/`: `models.json` for providers and
-  models, `settings.json`, skills and extensions. `agentctl` never writes there;
-- credentials are ordinary `spec.secrets`, optionally with `optional: true`, such as `MY_GATEWAY_KEY` with
-  `allowedHosts: [gateway.example.com]`. Pi reads provider keys from the environment, and `models.json` can reference
-  them as `"apiKey": "$MY_GATEWAY_KEY"`. The Sandbox holds only the placeholder.
+  @earendil-works/pi-coding-agent@1.3.0`, and `fd-find`, whose `fdfind` Pi searches files with;
+- the manifest declares `type: pi` with `auth: none`, and the provider key as an ordinary secret;
+- the home overlay or the image provides Pi's own files under `~/.pi/agent/`, such as `models.json`, which can use the
+  secret as `"apiKey": "$MY_GATEWAY_KEY"`. `agentctl` never writes under `~/.pi/agent/`.
 
 ```yaml
   harnesses:
@@ -191,28 +187,22 @@ gateway or model. An Agent enables it with four pieces of its own definition:
       auth: none
       defaults:
         model: gateway/some-model
-        effort: high
   secrets:
     - environment: MY_GATEWAY_KEY
       allowedHosts: [gateway.example.com]
 ```
 
-`--model` and `--effort` (and the manifest `defaults`) reach `pi --model` and `pi --thinking` as opaque strings, so a
-Session selects a model as `<provider>/<id>` and an effort among Pi's thinking levels (`off` to `max`) as the Agent's
-`models.json` defines them. The platform adds only what every Pi Agent needs, outside `~/.pi/agent/`: an activity
-extension and the platform instructions under `~/.local/share/agent-platform/pi/`, loaded explicitly at launch with
-`-e`; the extension adds the instructions to Pi's system prompt as a section, so the Agent's own `AGENTS.md` and
-`APPEND_SYSTEM.md` still apply. Resume opens the session file Pi reported, wherever the Agent's configuration keeps its
-sessions. Skills install in `~/.agents/skills`, shared
-with Codex. Pi starts with `--approve`, so it trusts the working directory's `.pi` resources without a dialog, and
-`--tui-mode regular`, which leaves the conversation in tmux's scrollback. The launch sets `NODE_EXTRA_CA_CERTS`
-(mediation CA), `PI_TELEMETRY=0` and `PI_SKIP_VERSION_CHECK=1` only when the Agent's `spec.environment` leaves those
-names unset. The self-dev Agent is the [worked example](../agents/self-dev/README.md#pi).
+`--model`, `--effort` and the manifest `defaults` reach `pi --model` and `pi --thinking` unchanged, so a model is
+`<provider>/<id>` and an effort one of Pi's thinking levels, as the Agent's `models.json` defines them. The platform's
+instructions join Pi's system prompt as a section of their own, so the Agent's `AGENTS.md` and `APPEND_SYSTEM.md` still
+apply, and skills install in `~/.agents/skills`. Pi starts with `--approve`, trusting the working directory's `.pi`
+resources without a dialog. The launch sets `NODE_EXTRA_CA_CERTS` to the mediation CA bundle, `PI_TELEMETRY=0` and
+`PI_SKIP_VERSION_CHECK=1` unless `spec.environment` sets them. The self-dev Agent is a
+[worked example](../agents/self-dev/README.md#pi).
 
-The set of harness types is fixed when an Agent is created. To add Pi to an Agent that exists, delete the Agent and apply
-the new definition; `agentctl apply` rejects the change with `spec.harnesses.type is immutable`. An `agentd` built before
-Pi was supported cannot read a stored Agent with `type: pi`, and its Agent list fails as a whole, so delete such Agents
-before moving to an older build.
+Harness types are fixed when an Agent is created, so adding Pi to an existing Agent means deleting and re-applying it.
+An `agentd` built before Pi support cannot read an Agent with `type: pi`, and its whole Agent list fails, so delete
+such Agents before moving to an older build.
 
 ## SSH access
 

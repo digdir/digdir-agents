@@ -56,14 +56,11 @@ substituted only in requests to that host. Without it Pi starts but its models c
 
 ## Pi
 
-Pi is configured entirely by this Agent, not by `agentctl`. The `pi` installation in `agent.yaml` declares `auth: none`
-and `defaults.model: aivar/sigma2:Qwen3.8-27B`. The home overlay supplies `~/.pi/agent/models.json`, which defines the
-`aivar` provider (`https://api.aivar.no/v1`, key from `$AIVAR_API_KEY`), and `~/.pi/agent/settings.json`, which keeps
-the startup quiet and the transport on server-sent events. The overlay is applied again on every pass, so edit it here
-rather than in the Sandbox. The Dockerfile pins the Pi version and installs `fd-find`, whose `fdfind` binary Pi searches files with.
-
-An Agent's harness types cannot change after it is created, so an existing self-dev Agent needs `agentctl delete` and a
-new `apply` to gain Pi.
+The `pi` installation in `agent.yaml` defaults to `aivar/sigma2:Qwen3.8-27B`, and the shared home overlay in `home/`
+supplies `~/.pi/agent/models.json` with the `aivar` provider (`https://api.aivar.no/v1`, key from `$AIVAR_API_KEY`).
+The overlay is applied again on every pass, so edit it here rather than in the Sandbox. An existing self-dev Agent
+needs `agentctl delete` and a new `apply`: its harness types and home overlay, which moved to `home/`, are fixed
+when it is created.
 
 JSON has no comments, so the findings behind `models.json` are here. Checked live through Pi 1.3.0 on 2026-10-17 with
 the prompt "run `cat note.txt` with bash and give the word", at every thinking level unless noted. The gateway is

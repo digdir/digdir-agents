@@ -23,7 +23,7 @@ spec:
         target: /tmp
         capacity: "2Gi"
   home:
-    source: home
+    source: ../home
   instructions:
     - source: ../instructions.md
   skills:

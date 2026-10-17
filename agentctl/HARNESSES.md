@@ -65,13 +65,9 @@ on an Agent built with the previous pin.
 
 ## Pi
 
-Pi is not part of every Agent, and `agentctl` knows no provider, gateway or model: an Agent installs Pi in its
-Dockerfile, declares `type: pi` with `auth: none`, supplies `~/.pi/agent/models.json` and `settings.json` through its
-home overlay or image, and declares credentials as `spec.secrets` (see [Pi in the README](README.md#pi)). Test it on
-an Agent that does so, such as [self-dev](../agents/self-dev/README.md#pi), with `--model <provider>/<id>` and
-`--effort` among Pi's thinking levels (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) as that Agent's
-models support. Which models work, and why, is Agent knowledge and belongs in the Agent's own documentation. The
-table's "Both" rows cover Claude Code and Codex; for Pi they apply as follows.
+Agents configure Pi themselves ([README](README.md#pi)), so test it on one that does, such as
+[self-dev](../agents/self-dev/README.md#pi), with `--model <provider>/<id>` and an `--effort` among Pi's thinking
+levels that its models support. The table's "Both" rows cover Claude Code and Codex; for Pi they apply as follows.
 
 | Check                                  | Applies to Pi | Notes                                                                                                                                                                              |
 | -------------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -83,7 +79,7 @@ table's "Both" rows cover Claude Code and Codex; for Pi they apply as follows.
 | Model error                            | Yes           | Create with an unknown `--model`. Pi stores the failed request as an assistant entry with `stopReason: "error"`; `turns` shows it as `Error: <message>`. Known gap: when Pi fails in run setup after `before_agent_start` and no `agent_settled` fires, STATE stays `Working` and a wait times out. |
 | Idle-stop, archive, resume             | Yes           | Resume uses `--session <path>` with the reported `harnessTranscriptPath` only when that file is non-empty, wherever the Agent's configuration (`sessionDir`, `PI_CODING_AGENT_SESSION_DIR`) keeps sessions; otherwise the Session starts fresh.                                               |
 | Transcript location                    | Yes           | `harnessTranscriptPath` is Pi's session file.                                                                                                                                      |
-| Authentication and configuration       | Yes           | The Agent's `AGENTS.md`, `models.json` and `settings.json` under `~/.pi/agent/` are byte-identical after bootstrap and re-convergence; the platform writes only below `~/.local/share/agent-platform/pi/` and `~/.agents/skills`. Platform instructions, the Agent's `AGENTS.md` and its `APPEND_SYSTEM.md` all reach the model: the extension adds the instructions as a prompt section, and the launch passes no `--append-system-prompt`, which would make Pi skip `APPEND_SYSTEM.md`. |
+| Authentication and configuration       | Yes           | The Agent's files under `~/.pi/agent/` are byte-identical after bootstrap and re-convergence; the platform writes only below `~/.local/share/agent-platform/pi/` and `~/.agents/skills`. Platform instructions, the Agent's `AGENTS.md` and its `APPEND_SYSTEM.md` all reach the model: the extension adds the instructions as a prompt section, and the launch passes no `--append-system-prompt`, which would make Pi skip `APPEND_SYSTEM.md`. |
 | Launch environment                     | Yes           | `NODE_EXTRA_CA_CERTS`, `PI_TELEMETRY` and `PI_SKIP_VERSION_CHECK` take the platform default only when `spec.environment` leaves them unset; `PI_OFFLINE` is not set, so Pi keeps its model-catalog refresh. |
 | Adding Pi to an Agent, and downgrading | Yes           | `harnesses[].type` is immutable, so delete and re-apply the Agent. An `agentd` built before Pi (for example `main`, when `make user-install` runs from different worktrees) cannot decode a stored `type: pi` Agent and the Agent list fails as a whole: delete Pi Agents before installing such a build. |
 | Nested Agent                           | Yes           | The Agent's credentials chain through the nested manifest's secrets.                                                         |
