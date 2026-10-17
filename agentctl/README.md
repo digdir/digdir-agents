@@ -154,17 +154,65 @@ A declared `version` is verified against the image at setup; omit it when the im
 Set `optional: true` when an absent host login should omit that installation instead of blocking Agent creation, so a
 manifest can offer a harness that not everyone has signed in to. The check runs on every convergence, so signing in on
 the host installs the harness on the next pass; until then a Session on it is refused, naming the login. The default
-installation cannot usefully be optional, since it is what a Session selecting no harness gets.
+installation cannot usefully be optional, since it is what a Session selecting no harness gets. Each harness accepts one
+`auth` mode: `mediated` for Claude Code and Codex, whose host login the platform mediates, and `none` for Pi, which has no
+platform login and so is never optional.
 Each installation may declare `defaults` with a `model` and an `effort` level for its new Sessions, in the harness's
 own vocabulary. The published manifests select `model: fable` for Claude Code because a mediated token cannot list
 Fable in the `/model` picker.
 `spec.instructions` names one harness-neutral Agent instruction file. Every declared Harness Adapter installs that source
-at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code and `~/.codex/AGENTS.md` for Codex.
+at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code and `~/.codex/AGENTS.md` for Codex. Pi has
+none the platform may write, so its activity extension adds them to the system prompt as a section of their own, beside
+the Agent's `AGENTS.md` and `APPEND_SYSTEM.md`.
 Repository-local instruction files continue to be discovered by the harness itself.
 
 Harness Adapters own authentication, version verification, managed configuration, hooks, native conversation IDs and
-launch arguments. The current adapters support Claude Code and Codex CLI. Harness-owned mutable state is seeded by the
+launch arguments. The current adapters support Claude Code, Codex CLI and Pi. Harness-owned mutable state is seeded by the
 image or the user and is not used as a trusted bootstrap marker.
+
+### Pi
+
+Pi (`@earendil-works/pi-coding-agent`, `type: pi`) is configured entirely by the Agent: `agentctl` knows no provider,
+gateway or model. An Agent enables it with four pieces of its own definition:
+
+- the Dockerfile installs a pinned Pi, for example `npm install --global --ignore-scripts
+  @earendil-works/pi-coding-agent@1.3.0`, and `fd-find`, whose `fdfind` binary Pi searches files with;
+- the manifest declares `- type: pi` with `auth: none`. Pi has no platform-managed login, so the Agent supplies
+  credentials; `optional` does not apply to it and is rejected. `defaults.model` and `defaults.effort` are optional;
+- the home overlay or the image provides Pi's own configuration under `~/.pi/agent/`: `models.json` for providers and
+  models, `settings.json`, skills and extensions. `agentctl` never writes there;
+- credentials are ordinary `spec.secrets`, optionally with `optional: true`, such as `MY_GATEWAY_KEY` with
+  `allowedHosts: [gateway.example.com]`. Pi reads provider keys from the environment, and `models.json` can reference
+  them as `"apiKey": "$MY_GATEWAY_KEY"`. The Sandbox holds only the placeholder.
+
+```yaml
+  harnesses:
+    - type: pi
+      auth: none
+      defaults:
+        model: gateway/some-model
+        effort: high
+  secrets:
+    - environment: MY_GATEWAY_KEY
+      allowedHosts: [gateway.example.com]
+```
+
+`--model` and `--effort` (and the manifest `defaults`) reach `pi --model` and `pi --thinking` as opaque strings, so a
+Session selects a model as `<provider>/<id>` and an effort among Pi's thinking levels (`off` to `max`) as the Agent's
+`models.json` defines them. The platform adds only what every Pi Agent needs, outside `~/.pi/agent/`: an activity
+extension and the platform instructions under `~/.local/share/agent-platform/pi/`, loaded explicitly at launch with
+`-e`; the extension adds the instructions to Pi's system prompt as a section, so the Agent's own `AGENTS.md` and
+`APPEND_SYSTEM.md` still apply. Resume opens the session file Pi reported, wherever the Agent's configuration keeps its
+sessions. Skills install in `~/.agents/skills`, shared
+with Codex. Pi starts with `--approve`, so it trusts the working directory's `.pi` resources without a dialog, and
+`--tui-mode regular`, which leaves the conversation in tmux's scrollback. The launch sets `NODE_EXTRA_CA_CERTS`
+(mediation CA), `PI_TELEMETRY=0` and `PI_SKIP_VERSION_CHECK=1` only when the Agent's `spec.environment` leaves those
+names unset. The self-dev Agent is the [worked example](../agents/self-dev/README.md#pi).
+
+The set of harness types is fixed when an Agent is created. To add Pi to an Agent that exists, delete the Agent and apply
+the new definition; `agentctl apply` rejects the change with `spec.harnesses.type is immutable`. An `agentd` built before
+Pi was supported cannot read a stored Agent with `type: pi`, and its Agent list fails as a whole, so delete such Agents
+before moving to an older build.
 
 ## SSH access
 

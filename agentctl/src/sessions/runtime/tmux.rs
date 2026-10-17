@@ -60,6 +60,14 @@ fn terminal_options() -> Vec<String> {
         "extended-keys",
         "on",
         ";",
+        // CSI u keeps modified keys distinct, so Shift+Enter inserts a newline in harnesses that
+        // read it; the default format works too. `-q` because tmux before 3.5 lacks the option and
+        // would otherwise abort this whole command sequence, creating or attaching nothing.
+        "set-option",
+        "-sq",
+        "extended-keys-format",
+        "csi-u",
+        ";",
         "set-option",
         "-s",
         "terminal-features[99]",
@@ -231,6 +239,7 @@ fn launch_arguments(
         &harness::LaunchRequest {
             home: crate::sandbox::platform::HOME,
             resume,
+            resume_transcript: session.status.reported.harness_transcript_path.as_deref(),
             initial_prompt: initial_message,
             model_selection: &session.model_selection,
         },
@@ -636,6 +645,18 @@ mod tests {
     };
 
     use super::{Observation, input_ready_in, parse_transcript_suffix};
+
+    #[test]
+    fn the_extended_keys_format_is_set_quietly_so_older_tmux_still_runs_the_sequence() {
+        let options = super::terminal_options();
+        let position = options
+            .iter()
+            .position(|argument| argument == "extended-keys-format")
+            .expect("format option");
+        assert_eq!(options[position - 1], "-sq", "{options:?}");
+        // No other option may use the quiet form: an unknown one elsewhere should still fail loudly.
+        assert_eq!(options.iter().filter(|argument| *argument == "-sq").count(), 1);
+    }
 
     #[test]
     fn a_truncated_suffix_starts_at_the_first_complete_turn() {

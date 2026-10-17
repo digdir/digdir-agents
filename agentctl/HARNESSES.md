@@ -10,14 +10,15 @@ Adapter changes that accompany a bump must therefore also work with the previous
 Implementation: [adapters](src/harness), [terminal runtime](src/sessions/runtime/tmux.rs),
 [Session service](src/sessions/service.rs). Harness pins: [self-dev](../agents/self-dev/Dockerfile),
 [minimal](examples/minimal/Dockerfile) (Claude Code only) and [worktree](../sandbox/core/examples/worktree/Dockerfile);
-update them together.
+update them together. Pi is installed only by the self-dev image: the minimal example and the
+worktree image deliberately stay without it.
 
 ## Upgrade test plan
 
 Install the current platform with `make user-install` from the repository root; it replaces and restarts `agentd`, and
 refuses while any Session reports `Working` (#149, #150), so archive or delete earlier test Sessions first. Test the
 self-dev image built from the branch: from `agents/self-dev/minimal` in the branch's checkout,
-`agentctl apply --variant nested --env-file <file> --wait` builds it with both harnesses and fits inside another
+`agentctl apply --variant nested --env-file <file> --wait` builds it with all three harnesses and fits inside another
 Agent. Keep the env file outside the checkout. Use fresh Session names and confirm `claude --version` and
 `codex --version` in the Sandbox; testing an existing Sandbox does not prove the rebuilt image works.
 
@@ -61,6 +62,31 @@ on an Agent built with the previous pin.
 | Authentication and configuration                                     | Both        | Mediated login/inference works without unexpected onboarding or authentication dialogs; startup shows no new warnings; the status line renders; configured instructions and skills are available.                       |
 | Nested Agent                                                         | Both        | Inside a Session, `agentctl claude login --from-stdin` with `$AGENT_CLAUDE_ACCESS_TOKEN` and `agentctl codex login --from-stdin < ~/.codex/auth.json` let a nested Agent run both harnesses.                            |
 | New `agentd` with the previous pin                                   | Both        | When the change touches adapter code, an Agent on the previous image still creates, prompts, reads turns and resumes.                                                                                                   |
+
+## Pi
+
+Pi is not part of every Agent, and `agentctl` knows no provider, gateway or model: an Agent installs Pi in its
+Dockerfile, declares `type: pi` with `auth: none`, supplies `~/.pi/agent/models.json` and `settings.json` through its
+home overlay or image, and declares credentials as `spec.secrets` (see [Pi in the README](README.md#pi)). Test it on
+an Agent that does so, such as [self-dev](../agents/self-dev/README.md#pi), with `--model <provider>/<id>` and
+`--effort` among Pi's thinking levels (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) as that Agent's
+models support. Which models work, and why, is Agent knowledge and belongs in the Agent's own documentation. The
+table's "Both" rows cover Claude Code and Codex; for Pi they apply as follows.
+
+| Check                                  | Applies to Pi | Notes                                                                                                                                                                              |
+| -------------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Create, prompt, multiline input, turns | Yes           | Input arrives by bracketed paste and Enter, which needs tmux `extended-keys`. The Session's tmux also sets `extended-keys-format csi-u` with `-q`: tmux before 3.5 lacks the option, and an unquiet failure would abort Session creation for every harness. An initial prompt that starts with `@` gets a leading space, because Pi reads `@name` arguments as files. |
+| Tool success and failure               | Yes           | `turns` marks a failed `bash` call from the `toolResult` `isError`.                                                                                                                |
+| Interruption                           | Yes           | Escape settles the run with `aborted`, reported as a completed turn; `turns` marks the aborted call failed and shows no error. Pi moves a queued prompt back into the editor, so the next prompt appends to it. |
+| Prompt during an active tool call      | Yes           | The prompt is steered into the running turn; one turn completes.                                                                                                                   |
+| Permission prompts                     | No            | Pi asks for no approvals. Only an extension dialog reports `WaitingForInput`.                                                                                                      |
+| Model error                            | Yes           | Create with an unknown `--model`. Pi stores the failed request as an assistant entry with `stopReason: "error"`; `turns` shows it as `Error: <message>`. Known gap: when Pi fails in run setup after `before_agent_start` and no `agent_settled` fires, STATE stays `Working` and a wait times out. |
+| Idle-stop, archive, resume             | Yes           | Resume uses `--session <path>` with the reported `harnessTranscriptPath` only when that file is non-empty, wherever the Agent's configuration (`sessionDir`, `PI_CODING_AGENT_SESSION_DIR`) keeps sessions; otherwise the Session starts fresh.                                               |
+| Transcript location                    | Yes           | `harnessTranscriptPath` is Pi's session file.                                                                                                                                      |
+| Authentication and configuration       | Yes           | The Agent's `AGENTS.md`, `models.json` and `settings.json` under `~/.pi/agent/` are byte-identical after bootstrap and re-convergence; the platform writes only below `~/.local/share/agent-platform/pi/` and `~/.agents/skills`. Platform instructions, the Agent's `AGENTS.md` and its `APPEND_SYSTEM.md` all reach the model: the extension adds the instructions as a prompt section, and the launch passes no `--append-system-prompt`, which would make Pi skip `APPEND_SYSTEM.md`. |
+| Launch environment                     | Yes           | `NODE_EXTRA_CA_CERTS`, `PI_TELEMETRY` and `PI_SKIP_VERSION_CHECK` take the platform default only when `spec.environment` leaves them unset; `PI_OFFLINE` is not set, so Pi keeps its model-catalog refresh. |
+| Adding Pi to an Agent, and downgrading | Yes           | `harnesses[].type` is immutable, so delete and re-apply the Agent. An `agentd` built before Pi (for example `main`, when `make user-install` runs from different worktrees) cannot decode a stored `type: pi` Agent and the Agent list fails as a whole: delete Pi Agents before installing such a build. |
+| Nested Agent                           | Yes           | The Agent's credentials chain through the nested manifest's secrets.                                                         |
 
 Completion waits poll local database activity every 250 ms and require identical completed, waiting activity
 in two consecutive polls.

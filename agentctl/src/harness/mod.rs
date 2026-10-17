@@ -8,6 +8,7 @@ use crate::{Error, persistence};
 mod claude_code;
 mod codex;
 mod hook_script;
+mod pi;
 mod skills;
 
 const VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -24,15 +25,27 @@ pub enum Harness {
     ClaudeCode,
     /// `OpenAI` Codex CLI.
     Codex,
+    /// Pi, configured entirely by the Agent: its providers, models and credentials.
+    Pi,
 }
 
 impl Harness {
+    /// The only authentication mode the harness accepts in a manifest.
+    #[must_use]
+    pub const fn auth_mode(self) -> HarnessAuthMode {
+        match self {
+            Self::ClaudeCode | Self::Codex => HarnessAuthMode::Mediated,
+            Self::Pi => HarnessAuthMode::None,
+        }
+    }
+
     /// Returns the manifest and CLI spelling of this harness family.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claudeCode",
             Self::Codex => "codex",
+            Self::Pi => "pi",
         }
     }
 }
@@ -50,6 +63,7 @@ impl std::str::FromStr for Harness {
         match value {
             "claudeCode" => Ok(Self::ClaudeCode),
             "codex" => Ok(Self::Codex),
+            "pi" => Ok(Self::Pi),
             _ => Err(Error::Invalid(format!("unsupported harness {value:?}"))),
         }
     }
@@ -61,6 +75,20 @@ impl std::str::FromStr for Harness {
 pub enum HarnessAuthMode {
     /// Credentials remain on the host and are injected into authorized requests.
     Mediated,
+    /// The harness has no platform-managed login; the Agent supplies its credentials, for
+    /// example through `spec.secrets` and the harness's own configuration files.
+    None,
+}
+
+impl HarnessAuthMode {
+    /// Returns the manifest spelling of this mode.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mediated => "mediated",
+            Self::None => "none",
+        }
+    }
 }
 
 /// Declares a validated, provider-owned launch selection carried as an opaque string.
@@ -283,6 +311,9 @@ impl AuthenticationManager {
         match harness {
             Harness::ClaudeCode => self.claude_code.login(credential).await,
             Harness::Codex => self.codex.login(credential, imported).await,
+            Harness::Pi => Err(Error::Invalid(
+                "Pi has no platform login; the Agent supplies its credentials".into(),
+            )),
         }
     }
 }
@@ -325,6 +356,9 @@ pub fn acquire_host_credential(
     match harness {
         Harness::ClaudeCode => claude_code::acquire_host_token(),
         Harness::Codex => codex::acquire_host_credential(control_plane_home),
+        Harness::Pi => Err(Error::Invalid(
+            "Pi has no platform login; the Agent supplies its credentials".into(),
+        )),
     }
 }
 
@@ -336,6 +370,8 @@ pub(crate) async fn authentication_ready(harness: Harness, database: &persistenc
     match harness {
         Harness::ClaudeCode => claude_code::authentication_ready(database).await,
         Harness::Codex => codex::authentication_ready(database).await,
+        // No login to wait for: the Agent supplies Pi's credentials itself.
+        Harness::Pi => Ok(true),
     }
 }
 
@@ -343,6 +379,7 @@ pub(crate) async fn prepare(harness: Harness, database: &persistence::Database) 
     match harness {
         Harness::ClaudeCode => claude_code::prepare(database).await,
         Harness::Codex => codex::prepare(database).await,
+        Harness::Pi => Ok(Vec::new()),
     }
 }
 
@@ -357,6 +394,7 @@ pub(crate) fn conflicts_with_managed_secret(harness: Harness, name: &str, placeh
     match harness {
         Harness::ClaudeCode => claude_code::conflicts_with_managed_secret(name, placeholder),
         Harness::Codex => codex::conflicts_with_managed_secret(name, placeholder),
+        Harness::Pi => false,
     }
 }
 
@@ -364,6 +402,7 @@ pub(crate) fn manages_environment(harness: Harness, name: &str) -> bool {
     match harness {
         Harness::ClaudeCode => claude_code::manages_environment(name),
         Harness::Codex => codex::manages_environment(name),
+        Harness::Pi => false,
     }
 }
 
@@ -377,6 +416,7 @@ pub(crate) async fn bootstrap_linux(
     match harness {
         Harness::ClaudeCode => claude_code::bootstrap_linux(sandbox, home, instructions, skills).await,
         Harness::Codex => codex::bootstrap_linux(sandbox, home, instructions, skills).await,
+        Harness::Pi => pi::bootstrap_linux(sandbox, home, instructions, skills).await,
     }
 }
 
@@ -389,6 +429,7 @@ pub(crate) async fn verify_linux(
     match harness {
         Harness::ClaudeCode => claude_code::verify_linux(sandbox, expected_version).await,
         Harness::Codex => codex::verify_linux(sandbox, expected_version).await,
+        Harness::Pi => pi::verify_linux(sandbox, expected_version).await,
     }
 }
 
@@ -432,6 +473,10 @@ pub struct LaunchRequest<'a> {
     pub home: &'a str,
     /// Harness-native conversation to continue instead of starting a fresh one.
     pub resume: Option<&'a str>,
+    /// Transcript file the harness reported for the conversation `resume` names, when it did.
+    /// A harness whose conversation files live where its own configuration decides finds them
+    /// by this path rather than by guessing the location.
+    pub resume_transcript: Option<&'a str>,
     /// First prompt of a fresh conversation, passed as the harness's positional
     /// prompt argument so it starts working immediately; ignored when resuming.
     pub initial_prompt: Option<&'a str>,
@@ -448,6 +493,7 @@ pub fn launch_linux(harness: Harness, request: &LaunchRequest<'_>) -> ProcessLau
     match harness {
         Harness::ClaudeCode => claude_code::launch_linux(request),
         Harness::Codex => codex::launch_linux(request),
+        Harness::Pi => pi::launch_linux(request),
     }
 }
 
@@ -457,7 +503,7 @@ pub fn launch_linux(harness: Harness, request: &LaunchRequest<'_>) -> ProcessLau
 pub(crate) const fn model_launched_before_selection(harness: Harness) -> Option<&'static str> {
     match harness {
         Harness::ClaudeCode => Some(claude_code::MODEL_LAUNCHED_BEFORE_SELECTION),
-        Harness::Codex => None,
+        Harness::Codex | Harness::Pi => None,
     }
 }
 
@@ -488,7 +534,7 @@ pub(crate) fn validate_initial_prompt(prompt: &str) -> Result<(), Error> {
 /// The runtime supplies the visible cursor line and pane title.
 pub(crate) fn input_ready_without_report(harness: Harness, cursor_line: &str, title: &str) -> bool {
     match harness {
-        Harness::ClaudeCode => false,
+        Harness::ClaudeCode | Harness::Pi => false,
         Harness::Codex => codex::input_ready_without_report(cursor_line, title),
     }
 }
@@ -502,6 +548,7 @@ pub(crate) fn parse_transcript(harness: Harness, bytes: &[u8]) -> Result<Vec<cra
     match harness {
         Harness::ClaudeCode => claude_code::transcript::parse(bytes),
         Harness::Codex => codex::transcript::parse(bytes),
+        Harness::Pi => pi::transcript::parse(bytes),
     }
 }
 
@@ -510,6 +557,7 @@ pub(crate) fn trim_partial_transcript(harness: Harness, bytes: &[u8]) -> &[u8] {
     match harness {
         Harness::ClaudeCode => claude_code::transcript::trim_partial(bytes),
         Harness::Codex => codex::transcript::trim_partial(bytes),
+        Harness::Pi => pi::transcript::trim_partial(bytes),
     }
 }
 
@@ -532,6 +580,7 @@ pub(crate) const fn test_launch_request<'a>(
     LaunchRequest {
         home: "/home/agent",
         resume,
+        resume_transcript: None,
         initial_prompt,
         model_selection: &UNSELECTED,
     }
