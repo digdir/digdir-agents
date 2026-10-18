@@ -561,6 +561,71 @@ fn each_harness_accepts_only_its_own_authentication_mode_and_login_free_ones_are
 }
 
 #[test]
+fn decodes_an_opencode_installation_whose_effort_is_a_variant_of_its_model() {
+    let bytes = manifest_with(&[(
+        CLAUDE_CODE,
+        "    - type: claudeCode\n      default: true\n    \
+         - type: opencode\n      version: 2.0.32\n      defaults:\n        \
+         model: provider/some-model:1\n        effort: high\n",
+    )]);
+    let agent = manifest::decode(&bytes).expect("manifest");
+    let opencode = agent.spec.harness(Harness::OpenCode).expect("OpenCode");
+    assert_eq!(opencode.auth, agent::HarnessAuthMode::None);
+    assert_eq!(opencode.version.as_deref(), Some("2.0.32"));
+    assert_eq!(
+        (opencode.defaults.model_str(), opencode.defaults.effort_str()),
+        (Some("provider/some-model:1"), Some("high"))
+    );
+    let value = serde_json::to_value(&agent).expect("Agent JSON");
+    assert_eq!(value["spec"]["harnesses"][1]["type"], "opencode");
+    assert_eq!(value["spec"]["harnesses"][1]["auth"], "none");
+    assert_eq!("opencode".parse::<Harness>().expect("CLI spelling"), Harness::OpenCode);
+}
+
+#[test]
+fn an_opencode_effort_without_a_model_is_refused() {
+    let bytes = manifest_with(&[(
+        CLAUDE_CODE,
+        "    - type: opencode\n      defaults:\n        effort: high\n",
+    )]);
+    assert!(matches!(
+        manifest::decode(&bytes),
+        Err(agent::Error::Invalid(message)) if message.contains("needs a model") && message.contains("defaults.model")
+    ));
+    // Other harnesses take an effort alone.
+    let bytes = manifest_with(&[(CLAUDE_CODE, "    - type: pi\n      defaults:\n        effort: high\n")]);
+    manifest::decode(&bytes).expect("Pi effort alone");
+}
+
+#[test]
+fn the_opencode_configuration_layer_belongs_to_the_launch() {
+    let environment = manifest_with(&[(
+        CLAUDE_CODE,
+        "    - type: opencode\n  environment:\n    - name: OPENCODE_CONFIG_CONTENT\n",
+    )]);
+    assert!(matches!(
+        manifest::decode(&environment),
+        Err(agent::Error::Invalid(message))
+            if message == "spec.environment[0] sets \"OPENCODE_CONFIG_CONTENT\", which the \"opencode\" harness manages"
+    ));
+    let secret = manifest_with(&[(
+        CLAUDE_CODE,
+        "    - type: opencode\n  secrets:\n    - environment: OPENCODE_CONFIG_CONTENT\n      \
+         allowedHosts: [example.com]\n",
+    )]);
+    assert!(matches!(
+        manifest::decode(&secret),
+        Err(agent::Error::Invalid(message)) if message.contains("spec.secrets[0]")
+    ));
+    // The name is free when OpenCode is not declared.
+    let unrelated = manifest_with(&[(
+        CLAUDE_CODE,
+        "    - type: pi\n  environment:\n    - name: OPENCODE_CONFIG_CONTENT\n",
+    )]);
+    manifest::decode(&unrelated).expect("no OpenCode installation");
+}
+
+#[test]
 fn rejects_unknown_duplicate_and_configured_access_capabilities() {
     assert!(matches!(
         manifest::decode(&manifest_with_access("  access:\n    - type: ssh\n    - type: ssh\n")),

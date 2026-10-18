@@ -155,19 +155,19 @@ Set `optional: true` when an absent host login should omit that installation ins
 manifest can offer a harness that not everyone has signed in to. The check runs on every convergence, so signing in on
 the host installs the harness on the next pass; until then a Session on it is refused, naming the login. The default
 installation cannot usefully be optional, since it is what a Session selecting no harness gets. `auth` may be omitted: it
-follows from the harness, `mediated` for Claude Code and Codex and `none` for Pi, which has no platform login and so
-cannot be optional.
+follows from the harness, `mediated` for Claude Code and Codex and `none` for Pi and OpenCode, which have no platform
+login and so cannot be optional.
 Each installation may declare `defaults` with a `model` and an `effort` level for its new Sessions, in the harness's
 own vocabulary. The published manifests select `model: fable` for Claude Code because a mediated token cannot list
 Fable in the `/model` picker.
 `spec.instructions` names one harness-neutral Agent instruction file. Every declared Harness Adapter installs that source
-at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md` for Codex and
-`~/.pi/agent/AGENTS.md` for Pi.
+at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md` for Codex,
+`~/.pi/agent/AGENTS.md` for Pi and `~/.config/opencode/AGENTS.md` for OpenCode.
 Repository-local instruction files continue to be discovered by the harness itself.
 
 Harness Adapters own authentication, version verification, managed configuration, hooks, native conversation IDs and
-launch arguments. The current adapters support Claude Code, Codex CLI and Pi. Harness-owned mutable state is seeded by the
-image or the user and is not used as a trusted bootstrap marker.
+launch arguments. The current adapters support Claude Code, Codex CLI, Pi and OpenCode. Harness-owned mutable state is
+seeded by the image or the user and is not used as a trusted bootstrap marker.
 
 ### Pi
 
@@ -194,6 +194,41 @@ reads the key as `"apiKey": "$MY_GATEWAY_KEY"`. Under `~/.pi/agent/`, `agentctl`
 
 Harness types are fixed when an Agent is created, so adding Pi means deleting and re-applying the Agent. An `agentd`
 built before Pi support cannot list Agents once one has `type: pi`; delete those before moving to an older build.
+
+### OpenCode
+
+OpenCode 2 (`@opencode/cli`, `type: opencode`) is configured by the Agent the same way. The Agent's Dockerfile installs
+a pinned OpenCode and ripgrep, its manifest declares the harness and the provider key as a secret, and its home overlay
+or image provides `~/.config/opencode/opencode.json`, whose provider reads the key as
+`"apiKey": "{env:MY_GATEWAY_KEY}"`. Under `~/.config/opencode/`, `agentctl` writes only `AGENTS.md`, from
+`spec.instructions`.
+List only the Agent's providers in `enabled_providers`, or OpenCode may fall back to its hosted free models.
+
+```yaml
+  harnesses:
+    - type: opencode
+      defaults:
+        model: gateway/some-model
+        effort: high
+```
+
+`--model` and `defaults.model` select the model as `<provider>/<model>`, and `--effort` one of its variants, as
+`<provider>/<model>#<effort>`; an effort therefore needs a model. A model or variant the Agent's configuration does not
+define fails the request, and the terminal shows why, instead of OpenCode quietly using another. The selection is also
+the model of each agent the operator can pick, such as `build` and `plan`, unless the configuration gives it one, so a
+conversation never starts on another model. Skills install in
+`~/.agents/skills`; OpenCode also reads `~/.claude/skills` and a project's `.claude/skills`, and loads a skill found
+in several of them once. OpenCode starts with `--standalone`, so each Session runs its own OpenCode server with its own
+environment, and with `--auto`, approving what the configuration does not deny. The launch sets
+`OPENCODE_DISABLE_AUTOUPDATE=1` and `NODE_EXTRA_CA_CERTS` to the mediation CA bundle unless `spec.environment` sets
+them, and owns `OPENCODE_CONFIG_CONTENT`, which loads its activity plugin. See the
+[self-dev Agent](../agents/self-dev/README.md#opencode) for a worked example.
+
+Each OpenCode Session runs a TUI and its own server, about 500 MB of memory together, so size the Agent for the Sessions
+it keeps running at once.
+
+Adding OpenCode to an existing Agent means deleting and re-applying it, and an `agentd` built before OpenCode support
+cannot list Agents once one has `type: opencode`.
 
 ## SSH access
 

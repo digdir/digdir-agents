@@ -379,6 +379,7 @@ impl Service {
                 initial_prompt: request.initial_prompt,
                 ..NewSession::resolved(installation.kind, request.model_selection, &installation.defaults)
             };
+            crate::harness::validate_model_selection(installation.kind, &new.model_selection)?;
             self.store.ensure_session(agent, name, new).await?
         };
         if session.agent_id != owner.id {

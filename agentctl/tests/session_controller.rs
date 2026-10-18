@@ -2170,6 +2170,64 @@ async fn session_ensure_resolves_model_and_effort_with_manifest_defaults() {
     fixture.session_task.abort();
 }
 
+/// `OpenCode` spells an effort as a variant of a model, so a Session needs a model for it, whether
+/// requested or from the manifest defaults; one without is refused before its name is claimed.
+#[tokio::test(flavor = "local")]
+async fn an_opencode_effort_needs_a_model_before_the_session_is_recorded() {
+    let directory = TempDir::new().expect("temporary directory");
+    let fixture = selection_fixture(&directory).await;
+    let mut with_opencode = fixture.record.clone();
+    with_opencode.agent.spec.harnesses.push(agent::HarnessSpec {
+        kind: agent::Harness::OpenCode,
+        version: None,
+        auth: agent::HarnessAuthMode::None,
+        optional: false,
+        default: false,
+        defaults: agent::ModelSelection::default(),
+    });
+    observe_all_harnesses(&mut with_opencode);
+    fixture
+        .database
+        .put(with_opencode.clone(), 1)
+        .await
+        .expect("Agent with OpenCode");
+    let opencode = |model, effort| SessionRequest {
+        harness: Some(agent::Harness::OpenCode),
+        ..selection(model, effort)
+    };
+
+    let error = fixture
+        .ensure("effort-alone", opencode(None, Some("high")))
+        .await
+        .expect_err("an effort without a model");
+    assert!(error.to_string().contains("needs a model"), "{error}");
+    let name = SessionName::new("effort-alone").expect("name");
+    assert!(matches!(
+        fixture.database.get_agent_session("worker", &name).await,
+        Err(Error::NotFound)
+    ));
+    let selected = fixture
+        .ensure("selected", opencode(Some("provider/model"), Some("high")))
+        .await
+        .expect("a model and its variant");
+    assert_eq!(recorded(&selected), (Some("provider/model"), Some("high")));
+
+    // A manifest default model takes the requested effort.
+    with_opencode.agent.spec.harnesses[2].defaults.model = Some(agent::Model::new("provider/default").expect("model"));
+    fixture
+        .database
+        .put(with_opencode, 1)
+        .await
+        .expect("OpenCode default model");
+    let defaulted = fixture
+        .ensure("defaulted", opencode(None, Some("high")))
+        .await
+        .expect("an effort for the default model");
+    assert_eq!(recorded(&defaulted), (Some("provider/default"), Some("high")));
+    fixture.agent_task.abort();
+    fixture.session_task.abort();
+}
+
 #[tokio::test(flavor = "local")]
 #[allow(clippy::too_many_lines)]
 async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() {

@@ -15,6 +15,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 ### Added
 
 - Agents can offer Pi (`type: pi`) as a third harness, configured entirely by the Agent: its providers, models and keys come from its own `~/.pi/agent/` files and `spec.secrets`. Adding Pi to an existing Agent means deleting and re-applying it. ([agentctl/README.md](https://github.com/digdir/digdir-agents/tree/main/agentctl#pi), [#182](https://github.com/digdir/digdir-agents/pull/182))
+- Agents can offer OpenCode (`type: opencode`), configured entirely by the Agent as Pi is: its providers, models and keys come from its own `~/.config/opencode/` files and `spec.secrets`. Adding OpenCode to an existing Agent means deleting and re-applying it. ([agentctl/README.md](https://github.com/digdir/digdir-agents/tree/main/agentctl#opencode), [#184](https://github.com/digdir/digdir-agents/pull/184))
 
 ### Changed
 

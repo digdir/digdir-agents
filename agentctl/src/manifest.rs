@@ -527,6 +527,7 @@ impl Spec {
                      declare the credentials as optional spec.secrets instead"
                 )));
             }
+            harness::validate_model_selection(harness.kind, &harness.defaults)?;
             if !harness_kinds.insert(harness.kind) {
                 duplicate_harness = Some(harness.kind);
             }
@@ -609,19 +610,26 @@ impl Spec {
     fn validate_environment(&self) -> Result<(), Error> {
         let mut names = std::collections::BTreeSet::new();
         for (index, variable) in self.environment.iter().enumerate() {
+            if let Some(installation) = self
+                .harnesses
+                .iter()
+                .find(|installation| harness::manages_environment(installation.kind, &variable.name))
+            {
+                return Err(Error::Invalid(format!(
+                    "spec.environment[{index}] sets {:?}, which the {:?} harness manages",
+                    variable.name,
+                    installation.kind.as_str()
+                )));
+            }
             if !valid_environment_variable(&variable.name)
                 || variable
                     .source
                     .as_deref()
                     .is_some_and(|source| !valid_environment_variable(source))
-                || self
-                    .harnesses
-                    .iter()
-                    .any(|installation| harness::manages_environment(installation.kind, &variable.name))
                 || !names.insert(variable.name.as_str())
             {
                 return Err(Error::Invalid(format!(
-                    "spec.environment[{index}] is invalid, duplicated, or managed by a declared harness"
+                    "spec.environment[{index}] is invalid or duplicated"
                 )));
             }
         }

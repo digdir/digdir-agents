@@ -8,16 +8,16 @@ An existing Agent keeps the image it was created with, but `agentctl self update
 Adapter changes that accompany a bump must therefore also work with the previous pin.
 
 Implementation: [adapters](src/harness), [terminal runtime](src/sessions/runtime/tmux.rs),
-[Session service](src/sessions/service.rs). Harness pins: [self-dev](../agents/self-dev/Dockerfile),
-[minimal](examples/minimal/Dockerfile) (Claude Code only) and [worktree](../sandbox/core/examples/worktree/Dockerfile);
-update them together.
+[Session service](src/sessions/service.rs). Harness pins: [self-dev](../agents/self-dev/Dockerfile) (the only Pi and
+OpenCode pins), [minimal](examples/minimal/Dockerfile) (Claude Code only) and
+[worktree](../sandbox/core/examples/worktree/Dockerfile); update them together.
 
 ## Upgrade test plan
 
 Install the current platform with `make user-install` from the repository root; it replaces and restarts `agentd`, and
 refuses while any Session reports `Working` (#149, #150), so archive or delete earlier test Sessions first. Test the
 self-dev image built from the branch: from `agents/self-dev/minimal` in the branch's checkout,
-`agentctl apply --variant nested --env-file <file> --wait` builds it with all three harnesses and fits inside another
+`agentctl apply --variant nested --env-file <file> --wait` builds it with all four harnesses and fits inside another
 Agent. Keep the env file outside the checkout. Use fresh Session names and confirm `claude --version` and
 `codex --version` in the Sandbox; testing an existing Sandbox does not prove the rebuilt image works.
 
@@ -76,6 +76,28 @@ with these differences:
 - An initial prompt starting with `@` gets a leading space, since Pi reads `@name` as a file.
 - `spec.instructions` reach the model from `~/.pi/agent/AGENTS.md`, and the Agent's other `~/.pi/agent/` files are
   unchanged after re-convergence.
+
+## OpenCode
+
+Test OpenCode on an Agent that configures it, such as [self-dev](../agents/self-dev/README.md#opencode). The checks
+above apply, with these differences:
+
+- Escape twice interrupts, as OpenCode's own hint says; the completion reports `interrupted`, and `turns` marks the
+  aborted call failed.
+- The question tool and permission prompts report `WaitingForInput`, also from a subagent; answering resumes the turn.
+  `--auto` approves every permission the configuration does not deny.
+- An unknown `--model` or `--effort` variant fails the request through the activity plugin, with the reason in the
+  terminal and in `turns` as `Error: …`. Without the plugin OpenCode would silently use another model.
+- A variant the operator picks in the TUI is kept in OpenCode's state and overrides the Session's effort in later
+  launches; a resumed conversation keeps its own model.
+- Check the model and effort of the first request, not only the footer, for example with a plugin `http.request` hook:
+  the TUI picks a new conversation's model before it has read the configuration unless an agent carries one, which the
+  activity plugin sees to.
+- The transcript is OpenCode's database: `harnessTranscriptPath` names `opencode.db`, and `turns` reads the Session's
+  rows from it through the OpenCode binary.
+- The plugin reports nothing before the first prompt, so STATE stays `Starting` and input readiness comes from the pane:
+  the prompt box's `┃` under the cursor and the title `OpenCode`, or `OC | <title>` when resumed.
+- The TUI uses the alternate screen, so tmux keeps no scrollback of the conversation.
 
 Completion waits poll local database activity every 250 ms and require identical completed, waiting activity
 in two consecutive polls.

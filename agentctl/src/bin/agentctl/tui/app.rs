@@ -2688,6 +2688,7 @@ pub(crate) const fn harness_label(harness: Harness) -> &'static str {
         Harness::ClaudeCode => "Claude Code",
         Harness::Codex => "Codex",
         Harness::Pi => "Pi",
+        Harness::OpenCode => "OpenCode",
     }
 }
 

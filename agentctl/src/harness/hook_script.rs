@@ -252,10 +252,17 @@ pub(super) mod test_support {
         }
     }
 
+    /// The outcome of one driver run.
+    pub(in crate::harness) struct Run {
+        /// The reports that reached the stand-in Platform API, in order.
+        pub(in crate::harness) reports: Vec<Value>,
+        /// What the driver printed.
+        pub(in crate::harness) stdout: String,
+    }
+
     /// Writes `script` as `name` in a temporary directory, pointed at a stand-in Platform API, and
-    /// runs `driver` beside it under Node, with `environment` added to a Session's. Returns the
-    /// reports that reached the stand-in, in order.
-    pub(in crate::harness) fn run(name: &str, script: &str, driver: &str, environment: &[(&str, &str)]) -> Vec<Value> {
+    /// runs `driver` beside it under Node, with `environment` added to a Session's.
+    pub(in crate::harness) fn run(name: &str, script: &str, driver: &str, environment: &[(&str, &str)]) -> Run {
         let directory = tempfile::TempDir::new().expect("temporary directory");
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("listener");
         let port = listener.local_addr().expect("address").port();
@@ -298,7 +305,10 @@ pub(super) mod test_support {
         let mut stop = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
         stop.write_all(b"POST / HTTP/1.1\r\ncontent-length: 4\r\n\r\nstop")
             .expect("stop");
-        reports.join().expect("reports")
+        Run {
+            reports: reports.join().expect("reports"),
+            stdout: String::from_utf8(output.stdout).expect("UTF-8 output"),
+        }
     }
 
     /// Each report's event and source, in order.

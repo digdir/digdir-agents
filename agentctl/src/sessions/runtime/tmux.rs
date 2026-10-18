@@ -468,15 +468,13 @@ impl super::SessionRuntime for Tmux {
 /// must not be inferred from a prompt retained elsewhere in terminal history.
 fn ready_input(screen: &str) -> Option<(&str, &str)> {
     let mut lines = screen.lines();
-    let mut cursor = lines.next()?.split_whitespace();
-    if cursor.next()? != "1" {
+    // The title is the rest of the line, and may hold spaces.
+    let (flag, rest) = lines.next()?.split_once(' ')?;
+    if flag != "1" {
         return None;
     }
-    let row = cursor.next()?.parse::<usize>().ok()?;
-    let title = cursor.next()?;
-    if cursor.next().is_some() {
-        return None;
-    }
+    let (row, title) = rest.split_once(' ').unwrap_or((rest, ""));
+    let row = row.parse::<usize>().ok()?;
     lines.nth(row).map(|line| (line, title))
 }
 
@@ -727,6 +725,11 @@ mod tests {
         );
         assert_eq!(super::ready_input("0 1 title\nold prompt\ncurrent input\n"), None);
         assert_eq!(super::ready_input("1 8 title\nold prompt\n"), None);
+        assert_eq!(
+            super::ready_input("1 0 OC | a resumed conversation\n  ┃  \n"),
+            Some(("  ┃  ", "OC | a resumed conversation"))
+        );
+        assert_eq!(super::ready_input("1 0 \ninput\n"), Some(("input", "")));
         assert_eq!(super::ready_input("invalid\nold prompt\n"), None);
     }
 

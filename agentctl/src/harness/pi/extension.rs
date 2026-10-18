@@ -43,7 +43,7 @@ const ctx = {{ sessionManager: {{ getSessionId: () => "native-1", getSessionFile
 "#
         );
         let script = super::script().expect("script");
-        crate::harness::hook_script::test_support::run("activity.ts", &script, &driver, &[])
+        crate::harness::hook_script::test_support::run("activity.ts", &script, &driver, &[]).reports
     }
 
     #[test]

@@ -8,6 +8,7 @@ use crate::{Error, persistence};
 mod claude_code;
 mod codex;
 mod hook_script;
+mod opencode;
 mod pi;
 mod skills;
 
@@ -27,6 +28,9 @@ pub enum Harness {
     Codex,
     /// Pi, configured entirely by the Agent: its providers, models and credentials.
     Pi,
+    /// `OpenCode`, configured entirely by the Agent: its providers, models and credentials.
+    #[serde(rename = "opencode")]
+    OpenCode,
 }
 
 impl Harness {
@@ -35,7 +39,7 @@ impl Harness {
     pub const fn auth_mode(self) -> HarnessAuthMode {
         match self {
             Self::ClaudeCode | Self::Codex => HarnessAuthMode::Mediated,
-            Self::Pi => HarnessAuthMode::None,
+            Self::Pi | Self::OpenCode => HarnessAuthMode::None,
         }
     }
 
@@ -46,6 +50,7 @@ impl Harness {
             Self::ClaudeCode => "claudeCode",
             Self::Codex => "codex",
             Self::Pi => "pi",
+            Self::OpenCode => "opencode",
         }
     }
 }
@@ -64,6 +69,7 @@ impl std::str::FromStr for Harness {
             "claudeCode" => Ok(Self::ClaudeCode),
             "codex" => Ok(Self::Codex),
             "pi" => Ok(Self::Pi),
+            "opencode" => Ok(Self::OpenCode),
             _ => Err(Error::Invalid(format!("unsupported harness {value:?}"))),
         }
     }
@@ -346,6 +352,9 @@ impl AuthenticationManager {
             Harness::Pi => Err(Error::Invalid(
                 "Pi has no platform login; the Agent supplies its credentials".into(),
             )),
+            Harness::OpenCode => Err(Error::Invalid(
+                "OpenCode has no platform login; the Agent supplies its credentials".into(),
+            )),
         }
     }
 }
@@ -391,6 +400,9 @@ pub fn acquire_host_credential(
         Harness::Pi => Err(Error::Invalid(
             "Pi has no platform login; the Agent supplies its credentials".into(),
         )),
+        Harness::OpenCode => Err(Error::Invalid(
+            "OpenCode has no platform login; the Agent supplies its credentials".into(),
+        )),
     }
 }
 
@@ -402,8 +414,8 @@ pub(crate) async fn authentication_ready(harness: Harness, database: &persistenc
     match harness {
         Harness::ClaudeCode => claude_code::authentication_ready(database).await,
         Harness::Codex => codex::authentication_ready(database).await,
-        // No login to wait for: the Agent supplies Pi's credentials itself.
-        Harness::Pi => Ok(true),
+        // No login to wait for: the Agent supplies Pi's and OpenCode's credentials itself.
+        Harness::Pi | Harness::OpenCode => Ok(true),
     }
 }
 
@@ -411,7 +423,7 @@ pub(crate) async fn prepare(harness: Harness, database: &persistence::Database) 
     match harness {
         Harness::ClaudeCode => claude_code::prepare(database).await,
         Harness::Codex => codex::prepare(database).await,
-        Harness::Pi => Ok(Vec::new()),
+        Harness::Pi | Harness::OpenCode => Ok(Vec::new()),
     }
 }
 
@@ -427,6 +439,8 @@ pub(crate) fn conflicts_with_managed_secret(harness: Harness, name: &str, placeh
         Harness::ClaudeCode => claude_code::conflicts_with_managed_secret(name, placeholder),
         Harness::Codex => codex::conflicts_with_managed_secret(name, placeholder),
         Harness::Pi => false,
+        // A secret by the launch's own name would be overwritten by it.
+        Harness::OpenCode => opencode::manages_environment(name),
     }
 }
 
@@ -435,6 +449,7 @@ pub(crate) fn manages_environment(harness: Harness, name: &str) -> bool {
         Harness::ClaudeCode => claude_code::manages_environment(name),
         Harness::Codex => codex::manages_environment(name),
         Harness::Pi => false,
+        Harness::OpenCode => opencode::manages_environment(name),
     }
 }
 
@@ -449,6 +464,7 @@ pub(crate) async fn bootstrap_linux(
         Harness::ClaudeCode => claude_code::bootstrap_linux(sandbox, home, instructions, skills).await,
         Harness::Codex => codex::bootstrap_linux(sandbox, home, instructions, skills).await,
         Harness::Pi => pi::bootstrap_linux(sandbox, home, instructions, skills).await,
+        Harness::OpenCode => opencode::bootstrap_linux(sandbox, home, instructions, skills).await,
     }
 }
 
@@ -462,6 +478,7 @@ pub(crate) async fn verify_linux(
         Harness::ClaudeCode => claude_code::verify_linux(sandbox, expected_version).await,
         Harness::Codex => codex::verify_linux(sandbox, expected_version).await,
         Harness::Pi => pi::verify_linux(sandbox, expected_version).await,
+        Harness::OpenCode => opencode::verify_linux(sandbox, expected_version).await,
     }
 }
 
@@ -526,6 +543,19 @@ pub fn launch_linux(harness: Harness, request: &LaunchRequest<'_>) -> ProcessLau
         Harness::ClaudeCode => claude_code::launch_linux(request),
         Harness::Codex => codex::launch_linux(request),
         Harness::Pi => pi::launch_linux(request),
+        Harness::OpenCode => opencode::launch_linux(request),
+    }
+}
+
+/// Rejects a model selection the harness cannot express, before a manifest or a Session records it.
+///
+/// # Errors
+///
+/// Returns an error naming what the selection lacks.
+pub(crate) fn validate_model_selection(harness: Harness, selection: &ModelSelection) -> Result<(), Error> {
+    match harness {
+        Harness::ClaudeCode | Harness::Codex | Harness::Pi => Ok(()),
+        Harness::OpenCode => opencode::validate_model_selection(selection),
     }
 }
 
@@ -535,7 +565,7 @@ pub fn launch_linux(harness: Harness, request: &LaunchRequest<'_>) -> ProcessLau
 pub(crate) const fn model_launched_before_selection(harness: Harness) -> Option<&'static str> {
     match harness {
         Harness::ClaudeCode => Some(claude_code::MODEL_LAUNCHED_BEFORE_SELECTION),
-        Harness::Codex | Harness::Pi => None,
+        Harness::Codex | Harness::Pi | Harness::OpenCode => None,
     }
 }
 
@@ -568,6 +598,7 @@ pub(crate) fn input_ready_without_report(harness: Harness, cursor_line: &str, ti
     match harness {
         Harness::ClaudeCode | Harness::Pi => false,
         Harness::Codex => codex::input_ready_without_report(cursor_line, title),
+        Harness::OpenCode => opencode::input_ready_without_report(cursor_line, title),
     }
 }
 
@@ -580,6 +611,7 @@ pub(crate) fn input_ready_without_report(harness: Harness, cursor_line: &str, ti
 pub(crate) const fn transcript_read_script(harness: Harness) -> &'static str {
     match harness {
         Harness::ClaudeCode | Harness::Codex | Harness::Pi => TRANSCRIPT_FILE_TAIL,
+        Harness::OpenCode => opencode::transcript::READ_SCRIPT,
     }
 }
 
@@ -596,6 +628,7 @@ pub(crate) fn parse_transcript(harness: Harness, bytes: &[u8]) -> Result<Vec<cra
         Harness::ClaudeCode => claude_code::transcript::parse(bytes),
         Harness::Codex => codex::transcript::parse(bytes),
         Harness::Pi => pi::transcript::parse(bytes),
+        Harness::OpenCode => opencode::transcript::parse(bytes),
     }
 }
 
@@ -605,6 +638,7 @@ pub(crate) fn trim_partial_transcript(harness: Harness, bytes: &[u8]) -> &[u8] {
         Harness::ClaudeCode => claude_code::transcript::trim_partial(bytes),
         Harness::Codex => codex::transcript::trim_partial(bytes),
         Harness::Pi => pi::transcript::trim_partial(bytes),
+        Harness::OpenCode => opencode::transcript::trim_partial(bytes),
     }
 }
 
