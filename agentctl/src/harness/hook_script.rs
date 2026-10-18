@@ -208,6 +208,117 @@ impl HookScript<'_> {
     }
 }
 
+/// A stand-in Platform API for tests of in-process harness extensions, which run under Node.
+#[cfg(test)]
+pub(super) mod test_support {
+    use std::{
+        io::{Read as _, Write as _},
+        net::TcpListener,
+        process::Command,
+    };
+
+    use serde_json::Value;
+
+    /// Reads one request and answers it, returning its body.
+    fn serve_one(stream: &mut std::net::TcpStream) -> Option<String> {
+        let mut received = Vec::new();
+        let mut buffer = [0; 4096];
+        loop {
+            let read = stream.read(&mut buffer).ok()?;
+            if read == 0 {
+                return None;
+            }
+            received.extend_from_slice(&buffer[..read]);
+            let text = String::from_utf8_lossy(&received).into_owned();
+            let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let length = head
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse::<usize>())
+                })
+                .and_then(Result::ok)
+                .unwrap_or(0);
+            if body.len() < length {
+                continue;
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                .ok()?;
+            return Some(body.to_owned());
+        }
+    }
+
+    /// Writes `script` as `name` in a temporary directory, pointed at a stand-in Platform API, and
+    /// runs `driver` beside it under Node, with `environment` added to a Session's. Returns the
+    /// reports that reached the stand-in, in order.
+    pub(in crate::harness) fn run(name: &str, script: &str, driver: &str, environment: &[(&str, &str)]) -> Vec<Value> {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("listener");
+        let port = listener.local_addr().expect("address").port();
+        let url_file = directory.path().join("platform-api-url");
+        std::fs::write(&url_file, format!("http://127.0.0.1:{port}\n")).expect("URL file");
+        // The guest path is not readable here; point the script at a file the test owns.
+        let script = script.replacen(
+            &serde_json::to_string(crate::sandbox::platform::PLATFORM_API_URL_FILE).expect("path"),
+            &serde_json::to_string(&url_file).expect("path"),
+            1,
+        );
+        std::fs::write(directory.path().join(name), script).expect("script");
+        let driver_path = directory.path().join("driver.mjs");
+        std::fs::write(&driver_path, driver).expect("driver");
+        let reports = std::thread::spawn(move || {
+            let mut bodies = Vec::new();
+            // The driver exits after its last report; the listener then sees no more connections.
+            listener.set_nonblocking(false).expect("blocking");
+            while let Ok((mut stream, _)) = listener.accept() {
+                let Some(body) = serve_one(&mut stream) else {
+                    break;
+                };
+                if body == "stop" {
+                    break;
+                }
+                bodies.push(serde_json::from_str::<Value>(&body).expect("JSON report"));
+            }
+            bodies
+        });
+        let output = Command::new("node")
+            .arg("--experimental-strip-types")
+            .arg(&driver_path)
+            .env("AGENT_SESSION_TOKEN", "token")
+            .env("AGENT_SESSION_ID", "session-1")
+            .envs(environment.iter().copied())
+            .output()
+            .expect("Node.js runs the extension, as it does in every Sandbox and CI host");
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        // Unblock the accept loop.
+        let mut stop = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        stop.write_all(b"POST / HTTP/1.1\r\ncontent-length: 4\r\n\r\nstop")
+            .expect("stop");
+        reports.join().expect("reports")
+    }
+
+    /// Each report's event and source, in order.
+    pub(in crate::harness) fn summary(reports: &[Value]) -> Vec<(String, String)> {
+        reports
+            .iter()
+            .map(|report| {
+                (
+                    report["event"].as_str().expect("event").to_owned(),
+                    report["source"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    pub(in crate::harness) fn pairs(values: &[(&str, &str)]) -> Vec<(String, String)> {
+        values.iter().map(|(a, b)| ((*a).to_owned(), (*b).to_owned())).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::HookScript;
