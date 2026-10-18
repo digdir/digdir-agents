@@ -41,7 +41,7 @@ spec:
       auth: mediated
       optional: true
     # Pi has no platform login: its providers and models come from ~/.pi/agent/models.json in `home`, and the
-    # gateway key from the optional AIVAR_API_KEY secret below. Without the key Pi starts but cannot answer.
+    # gateway key from the optional AIVAR_API_KEY secret below. Without the key Pi starts, but a prompt's wait times out.
     - type: pi
       defaults:
         model: aivar/sigma2:Qwen3.8-27B

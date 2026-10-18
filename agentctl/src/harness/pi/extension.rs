@@ -35,8 +35,8 @@ mod tests {
         assert!(script.contains("/v1/session/hooks"));
     }
 
-    /// Reads one request and answers it, returning its body.
-    fn serve_one(stream: &mut std::net::TcpStream) -> Option<String> {
+    /// Reads one request and answers it with `status`, returning its body.
+    fn serve_one(stream: &mut std::net::TcpStream, status: &str) -> Option<String> {
         let mut received = Vec::new();
         let mut buffer = [0; 4096];
         loop {
@@ -62,7 +62,7 @@ mod tests {
                 continue;
             }
             stream
-                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                .write_all(format!("HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").as_bytes())
                 .ok()?;
             return Some(body.to_owned());
         }
@@ -71,6 +71,12 @@ mod tests {
     /// Drives the rendered extension under Node with a fake `pi` and returns the reports that
     /// reached a stand-in Platform API, in order.
     fn run(driver: &str) -> Vec<Value> {
+        run_rejecting(driver, None)
+    }
+
+    /// As [`run`]; the stand-in rejects the report at index `rejected`, if any, which is then not
+    /// counted as reached.
+    fn run_rejecting(driver: &str, rejected: Option<usize>) -> Vec<Value> {
         let directory = tempfile::TempDir::new().expect("temporary directory");
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("listener");
         let port = listener.local_addr().expect("address").port();
@@ -100,12 +106,19 @@ const ctx = {{ sessionManager: {{ getSessionId: () => "native-1", getSessionFile
             let mut bodies = Vec::new();
             // The driver exits after its last report; the listener then sees no more connections.
             listener.set_nonblocking(false).expect("blocking");
+            let mut index = 0;
             while let Ok((mut stream, _)) = listener.accept() {
-                let Some(body) = serve_one(&mut stream) else {
+                let reject = rejected == Some(index);
+                index += 1;
+                let status = if reject { "503 Service Unavailable" } else { "200 OK" };
+                let Some(body) = serve_one(&mut stream, status) else {
                     break;
                 };
                 if body == "stop" {
                     break;
+                }
+                if reject {
+                    continue;
                 }
                 bodies.push(serde_json::from_str::<Value>(&body).expect("JSON report"));
             }
@@ -146,12 +159,54 @@ const ctx = {{ sessionManager: {{ getSessionId: () => "native-1", getSessionFile
     fn session_start_reports_the_native_conversation_and_its_transcript() {
         let reports = run(r#"await handlers.session_start({ reason: "resume" }, ctx);"#);
 
-        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert_eq!(reports.len(), 2, "{reports:?}");
         assert_eq!(reports[0]["event"], "sessionStart");
         assert_eq!(reports[0]["source"], "resume");
         assert_eq!(reports[0]["nativeSessionId"], "native-1");
         assert_eq!(reports[0]["transcriptPath"], "/sessions/native-1.jsonl");
         assert_eq!(reports[0]["sessionId"], "session-1");
+        // Pi waits for input until a prompt starts a run, so a Session nobody prompts is not Working.
+        assert_eq!(summary(&reports[1..]), pairs(&[("waitingForInput", "idle")]));
+    }
+
+    #[test]
+    fn a_first_prompt_runs_after_the_session_reads_as_idle() {
+        let reports = run(r#"
+await handlers.session_start({ reason: "startup" }, ctx);
+await handlers.before_agent_start({ messageType: "user" });
+"#);
+
+        assert_eq!(
+            summary(&reports),
+            pairs(&[
+                ("sessionStart", "startup"),
+                ("waitingForInput", "idle"),
+                ("turnStarted", "user")
+            ])
+        );
+    }
+
+    #[test]
+    fn reports_reach_the_platform_in_order_even_when_one_is_retried() {
+        // Pi does not wait for dialog handlers; the dialog's report is rejected once and retried.
+        let reports = run_rejecting(
+            r#"
+await handlers.before_agent_start({ messageType: "user" });
+const blocked = handlers.ui_prompt_start({});
+const answered = handlers.ui_prompt_end({});
+await Promise.all([blocked, answered]);
+"#,
+            Some(1),
+        );
+
+        assert_eq!(
+            summary(&reports),
+            pairs(&[
+                ("turnStarted", "user"),
+                ("waitingForInput", "ui_prompt"),
+                ("turnStarted", "ui_prompt"),
+            ])
+        );
     }
 
     #[test]

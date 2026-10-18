@@ -41,7 +41,10 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Vec<Turn>, Error> {
         let Ok(entry) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        // The header has no ID and is not part of the tree.
+        // The header carries the session's ID but is not part of the tree.
+        if entry.get("type").and_then(Value::as_str) == Some("session") {
+            continue;
+        }
         let Some(id) = entry.get("id").and_then(Value::as_str).map(str::to_owned) else {
             continue;
         };
@@ -62,8 +65,22 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Vec<Turn>, Error> {
             break;
         }
     }
+    // A context edit without a replacement drops its target from the conversation: Pi records
+    // one for each attempt it retried, such as a rejected request or an overflowing response.
+    let omitted = path
+        .iter()
+        .filter(|entry| {
+            entry.get("type").and_then(Value::as_str) == Some("context_edit")
+                && entry.get("replacement").is_some_and(Value::is_null)
+        })
+        .filter_map(|entry| entry.get("targetId").and_then(Value::as_str))
+        .collect::<std::collections::HashSet<_>>();
     let mut builder = Builder::default();
     for entry in path.into_iter().rev() {
+        let id = entry.get("id").and_then(Value::as_str);
+        if id.is_some_and(|id| omitted.contains(id)) && matches!(role(entry), Some("assistant" | "toolResult")) {
+            continue;
+        }
         builder.push(entry);
     }
     Ok(builder.turns)
@@ -87,6 +104,20 @@ fn role(entry: &Value) -> Option<&str> {
         return None;
     }
     entry.pointer("/message/role").and_then(Value::as_str)
+}
+
+/// Pi stores `/skill:name args` with the skill's whole file in place of the command; `turns` shows
+/// what the operator typed.
+fn skill_command(text: &str) -> Option<String> {
+    let rest = text.strip_prefix("<skill name=\"")?;
+    let (name, rest) = rest.split_once('"')?;
+    let (_, arguments) = rest.split_once("\n</skill>")?;
+    let arguments = arguments.trim();
+    Some(if arguments.is_empty() {
+        format!("/skill:{name}")
+    } else {
+        format!("/skill:{name} {arguments}")
+    })
 }
 
 #[derive(Default)]
@@ -129,16 +160,18 @@ impl Builder {
         if text.is_empty() {
             return;
         }
+        let text = skill_command(&text).unwrap_or(text);
         let user = Message {
             role: Role::User,
             parts: vec![Part::Text { text }],
         };
+        // Steering joins the running turn, however many messages are steered in.
         if self.mid_run && !self.turns.is_empty() {
             self.current_turn().messages.push(user);
         } else {
             self.turns.push(Turn { messages: vec![user] });
+            self.mid_run = false;
         }
-        self.mid_run = false;
     }
 
     fn push_assistant(&mut self, message: &Value) {
@@ -415,6 +448,86 @@ mod tests {
         assert_eq!(
             text(&turns[1].messages[1].parts[0]).chars().count(),
             "Error: ".len() + MAX_ERROR_CHARACTERS
+        );
+    }
+
+    /// The parts of every message in `turn`, as text, with tool calls by name.
+    fn rendered(turn: &Turn) -> Vec<String> {
+        turn.messages
+            .iter()
+            .flat_map(|message| &message.parts)
+            .map(|part| match part {
+                Part::Text { text } => text.clone(),
+                Part::ToolCall { name, .. } => format!("-> {name}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_attempt_pi_retried_is_not_conversation() {
+        let lines = [
+            serde_json::json!({"type": "session", "version": 3, "id": "header", "cwd": "/w"}).to_string(),
+            user("a", None, "hello"),
+            entry(
+                "b",
+                Some("a"),
+                &serde_json::json!({"role": "assistant", "content": [], "stopReason": "error", "errorMessage": "429 rate limited"}),
+            ),
+            serde_json::json!({"type": "context_edit", "id": "c", "parentId": "b", "targetId": "b", "replacement": null}).to_string(),
+            entry(
+                "d",
+                Some("c"),
+                &serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "hi"}], "stopReason": "stop"}),
+            ),
+        ];
+        let turns = parse(lines.join("\n").as_bytes()).expect("parse");
+        assert_eq!(turns.len(), 1);
+        assert_eq!(rendered(&turns[0]), ["hello", "hi"]);
+    }
+
+    #[test]
+    fn a_skill_command_shows_as_typed() {
+        let expanded = "<skill name=\"pr-evidence\" location=\"/s/SKILL.md\">\nReferences are relative to /s.\n\nRecord it.\n</skill>";
+        let lines = [
+            user("a", None, &format!("{expanded}\n\nrecord the TUI")),
+            user("b", Some("a"), expanded),
+        ];
+        let turns = parse(lines.join("\n").as_bytes()).expect("parse");
+        let prompts = turns
+            .iter()
+            .map(|turn| text(&turn.messages[0].parts[0]))
+            .collect::<Vec<_>>();
+        assert_eq!(prompts, ["/skill:pr-evidence record the TUI", "/skill:pr-evidence"]);
+    }
+
+    #[test]
+    fn every_message_steered_into_a_running_turn_joins_it() {
+        let lines = [
+            user("a", None, "start"),
+            entry(
+                "b",
+                Some("a"),
+                &serde_json::json!({"role": "assistant", "content": [{"type": "toolCall", "id": "t", "name": "bash", "arguments": {}}], "stopReason": "toolUse"}),
+            ),
+            entry(
+                "c",
+                Some("b"),
+                &serde_json::json!({"role": "toolResult", "toolCallId": "t", "content": [], "isError": false}),
+            ),
+            user("d", Some("c"), "first steer"),
+            user("e", Some("d"), "second steer"),
+            entry(
+                "f",
+                Some("e"),
+                &serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "done"}], "stopReason": "stop"}),
+            ),
+            user("g", Some("f"), "next"),
+        ];
+        let turns = parse(lines.join("\n").as_bytes()).expect("parse");
+        assert_eq!(turns.len(), 2);
+        assert_eq!(
+            rendered(&turns[0]),
+            ["start", "-> bash", "first steer", "second steer", "done"]
         );
     }
 

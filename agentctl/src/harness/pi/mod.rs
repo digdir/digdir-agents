@@ -98,7 +98,7 @@ pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
     // `--tui-mode regular` keeps the conversation in tmux's scrollback instead of an
     // alternate screen.
     let mut base = format!(
-        "pi --approve --tui-mode regular -e {} \"$@\"",
+        "pi --approve --tui-mode regular -e {}",
         shell_single_quoted(&extension_path(request.home))
     );
     // Both are opaque here: Pi takes `<provider>/<id>` and its own thinking levels, which the

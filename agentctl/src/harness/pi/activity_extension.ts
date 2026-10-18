@@ -4,11 +4,12 @@ import http from "node:http";
 import https from "node:https";
 
 __REPORTER__
-// Reports are best effort: a failure must never disturb the conversation.
-async function send(event: string, fields: Record<string, string>): Promise<void> {
-  try {
-    await report(event, fields);
-  } catch {}
+// Pi does not wait for every handler, so reports queue to reach the platform in the order they
+// were made, retries included. They are best effort: a failure must never disturb the conversation.
+let reports: Promise<void> = Promise.resolve();
+function send(event: string, fields: Record<string, string>): Promise<void> {
+  reports = reports.then(() => report(event, fields)).catch(() => {});
+  return reports;
 }
 
 export default function (pi: any): void {
@@ -22,11 +23,14 @@ export default function (pi: any): void {
     const fields: Record<string, string> = { source: String(event.reason ?? ""), nativeSessionId };
     const transcriptPath = ctx.sessionManager.getSessionFile();
     if (typeof transcriptPath === "string" && transcriptPath !== "") fields.transcriptPath = transcriptPath;
-    await send("sessionStart", fields);
+    const started = send("sessionStart", fields);
+    // Pi now waits for input unless a first prompt starts a run, which reports after this.
+    const idle = running ? started : send("waitingForInput", { source: "idle" });
+    await idle;
   });
 
   pi.on("before_agent_start", async (event: any) => {
-    // Runs started by extension messages are not operator turns.
+    // Runs that custom extension messages start are not operator turns.
     if (event.messageType !== "user") return;
     running = true;
     await send("turnStarted", { source: "user" });

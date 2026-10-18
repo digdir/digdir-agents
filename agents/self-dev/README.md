@@ -52,7 +52,7 @@ The GitHub token stays on the host. The Agent sees a placeholder, which is subst
 `Contents` and `Pull requests` read and write.
 
 `AIVAR_API_KEY` is optional. It is the key for the company AI gateway at `api.aivar.no`, which Pi uses, and is likewise
-substituted only in requests to that host. Without it Pi starts but its models cannot answer.
+substituted only in requests to that host. Without it Pi starts, but rejects every prompt and a wait for one times out.
 
 ## Pi
 

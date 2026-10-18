@@ -18,12 +18,12 @@ Install the current platform with `make user-install` from the repository root; 
 refuses while any Session reports `Working` (#149, #150), so archive or delete earlier test Sessions first. Test the
 self-dev image built from the branch: from `agents/self-dev/minimal` in the branch's checkout,
 `agentctl apply --variant nested --env-file <file> --wait` builds it with all three harnesses and fits inside another
-Agent. Keep the env file outside the checkout. Use fresh Session names and confirm `claude --version` and
-`codex --version` in the Sandbox; testing an existing Sandbox does not prove the rebuilt image works.
+Agent. Keep the env file outside the checkout. Use fresh Session names and confirm `claude --version`,
+`codex --version` and `pi --version` in the Sandbox; testing an existing Sandbox does not prove the rebuilt image works.
 
-Run each check against both harnesses unless the table names one. A low-cost model is enough, but Sessions on each
-installation's manifest `defaults` must work at least once. Before attributing a failure to the bump, repeat the check
-on an Agent built with the previous pin.
+Run each check against Claude Code and Codex ("Both") unless the table names one, and against Pi as [below](#pi). A
+low-cost model is enough, but Sessions on each installation's manifest `defaults` must work at least once. Before
+attributing a failure to the bump, repeat the check on an Agent built with the previous pin.
 
 `agentctl` has no command for some of the steps:
 
@@ -70,8 +70,10 @@ with these differences:
 - Pi asks for no permissions; only an extension dialog reports `WaitingForInput`.
 - Escape completes the turn, and `turns` marks the aborted call failed. A queued prompt returns to the editor, so the
   next prompt appends to it.
-- A model error shows in `turns` as `Error: …`. Known gap: if Pi fails in run setup after `before_agent_start`, no
-  completion is reported and STATE stays `Working`.
+- A model error shows in `turns` as `Error: …`; an attempt Pi retried successfully does not. Known gaps: a prompt Pi
+  rejects before starting a run, for a missing API key or model, and a failure in run setup after `before_agent_start`
+  report no completion, so STATE stays `Working` and a wait times out. A `--model` whose provider Pi does not know makes
+  Pi exit at startup.
 - Resume opens the reported transcript only when it is non-empty; otherwise the Session starts fresh.
 - An initial prompt starting with `@` gets a leading space, since Pi reads `@name` as a file.
 - `spec.instructions` reach the model from `~/.pi/agent/AGENTS.md`, and the Agent's other `~/.pi/agent/` files are
