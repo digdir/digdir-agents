@@ -1,0 +1,193 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 870" width="1600" height="870">
+<!-- @shared -->
+<rect class="canvas" width="1600" height="870"/>
+
+<text class="kicker" x="40" y="48">AGENT PLATFORM · NETWORK AND SECRETS</text>
+<text class="title" x="40" y="82">Secrets never enter the Sandbox</text>
+<text class="subtitle" x="40" y="106">Every flow ends in the msb network engine on the host. It asks agentd before it acts, and it puts a real secret into a request only on its way to an allowed host.</text>
+
+<!-- Sandbox -->
+<rect class="zone zone-sandbox" x="40" y="130" width="360" height="680" rx="16"/>
+<text class="zone-label zone-sandbox-label" x="62" y="155">SANDBOX · UNTRUSTED</text>
+
+<rect class="box box-sandbox" x="62" y="175" width="316" height="128" rx="10"/>
+<text class="h" x="80" y="202">gh · git · curl · npm</text>
+<text class="s" x="80" y="222">any process in the guest</text>
+<rect class="tag tag-gray" x="78" y="236" width="284" height="52" rx="7"/>
+<text class="code-sm" x="90" y="257" style="fill:#4a5b70">GITHUB_TOKEN=</text>
+<text class="code-sm" x="90" y="276">github_pat_AGENT_MEDIATED_…</text>
+
+<rect class="box box-sandbox" x="62" y="328" width="316" height="100" rx="10"/>
+<text class="h" x="80" y="355">TLS client</text>
+<text class="s" x="80" y="375">trusts the Sandbox CA, which guest</text>
+<text class="s" x="80" y="392">agentd adds to the system store and</text>
+<text class="code-sm" x="80" y="411">SSL_CERT_FILE · NODE_EXTRA_CA_CERTS</text>
+
+<rect class="box box-sandbox" x="62" y="453" width="316" height="70" rx="10"/>
+<text class="h" x="80" y="480">Guest kernel TCP/IP</text>
+<text class="s" x="80" y="500">its own stack and its own address</text>
+
+<rect class="box box-sandbox" x="62" y="548" width="316" height="70" rx="10"/>
+<text class="h" x="80" y="575">virtio-net</text>
+<text class="s" x="80" y="595">the only network device</text>
+
+<path class="edge" d="M220,303 V324" marker-end="url(#arrow)"/>
+<path class="edge" d="M220,428 V449" marker-end="url(#arrow)"/>
+<path class="edge" d="M220,523 V544" marker-end="url(#arrow)"/>
+
+<rect class="box" x="62" y="648" width="316" height="140" rx="10" style="fill:#fffdf6;stroke:#e3c06a"/>
+<text class="h-sm" x="80" y="673">Never in the Sandbox</text>
+<g class="s">
+  <text x="80" y="697">· real secret values</text>
+  <text x="80" y="717">· the CA's private key</text>
+  <text x="80" y="737">· a route to the host network, except</text>
+  <text x="92" y="757">the Platform API through</text>
+  <text class="code-sm" x="92" y="776">host.microsandbox.internal</text>
+</g>
+
+<!-- msb network engine -->
+<rect class="zone zone-host" x="440" y="130" width="440" height="680" rx="16"/>
+<text class="zone-label zone-host-label" x="462" y="155">MSB NETWORK ENGINE · HOST</text>
+
+<g>
+  <rect class="box box-host" x="465" y="175" width="390" height="82" rx="10"/>
+  <text class="h" x="483" y="202">Userspace TCP/IP</text>
+  <text class="s" x="483" y="222">smoltcp; every flow ends here</text>
+  <text class="s" x="483" y="239">no TAP device, bridge or NAT on the host</text>
+  <text class="code-sm" x="839" y="202" text-anchor="end">network.connect</text>
+
+  <rect class="box box-host" x="465" y="277" width="390" height="82" rx="10"/>
+  <text class="h" x="483" y="304">DNS forwarder</text>
+  <text class="s" x="483" y="324">every query authorized, then sent</text>
+  <text class="s" x="483" y="341">to the host's own resolver</text>
+  <text class="code-sm" x="839" y="304" text-anchor="end">dns.query</text>
+
+  <rect class="box box-host" x="465" y="379" width="390" height="82" rx="10"/>
+  <text class="h" x="483" y="406">TLS termination</text>
+  <text class="s" x="483" y="426">a certificate for each host, minted</text>
+  <text class="s" x="483" y="443">on demand by the Sandbox CA</text>
+
+  <rect class="box box-host" x="465" y="481" width="390" height="82" rx="10"/>
+  <text class="h" x="483" y="508">HTTP request</text>
+  <text class="s" x="483" y="528">method, host and path are visible</text>
+  <text class="s" x="483" y="545">to the policy</text>
+  <text class="code-sm" x="839" y="508" text-anchor="end">http.request</text>
+
+  <rect class="box box-secret" x="465" y="583" width="390" height="82" rx="10"/>
+  <text class="h" x="483" y="610">Secret substitution</text>
+  <text class="s" x="483" y="630">placeholder found in a header, the</text>
+  <text class="s" x="483" y="647">query string or basic auth</text>
+  <text class="code-sm" x="839" y="610" text-anchor="end" style="fill:#b3262b">secret.use</text>
+
+  <rect class="box box-session" x="465" y="685" width="390" height="82" rx="10"/>
+  <text class="h" x="483" y="712">New TLS connection</text>
+  <text class="s" x="483" y="732">to the real server, verified as usual,</text>
+  <text class="s" x="483" y="749">carrying the real value</text>
+</g>
+<path class="edge" d="M660,257 V273" marker-end="url(#arrow)"/>
+<path class="edge" d="M660,359 V375" marker-end="url(#arrow)"/>
+<path class="edge" d="M660,461 V477" marker-end="url(#arrow)"/>
+<path class="edge" d="M660,563 V579" marker-end="url(#arrow)"/>
+<path class="edge" d="M660,665 V681" marker-end="url(#arrow)"/>
+
+<path class="edge-blue" d="M378,583 H420 V216 H461" marker-end="url(#arrow-blue)"/>
+
+<!-- agentd -->
+<rect class="zone zone-host" x="940" y="130" width="300" height="515" rx="16"/>
+<text class="zone-label zone-host-label" x="962" y="155">AGENTD · HOST</text>
+
+<rect class="box box-host" x="962" y="175" width="256" height="100" rx="10"/>
+<text class="h" x="980" y="202">Network Backend</text>
+<text class="s" x="980" y="222">host side of the control</text>
+<text class="s" x="980" y="239">channel; may revoke live flows</text>
+<text class="code-sm" x="980" y="260">MicrosandboxNetworkBackend</text>
+
+<rect class="box box-secret" x="962" y="305" width="256" height="150" rx="10"/>
+<text class="h" x="980" y="332">Policy engine</text>
+<text class="code-sm" x="980" y="351" style="fill:#b3262b">AgentPolicyEngine</text>
+<g class="s">
+  <text x="980" y="374">· allow all, minus <tspan class="code-sm">network.deny</tspan></text>
+  <text x="980" y="394">· a secret only to its <tspan class="code-sm">allowedHosts</tspan></text>
+  <text x="980" y="414">· the host only for the Platform API</text>
+  <text x="980" y="434">· fails closed</text>
+</g>
+
+<rect class="box store" x="962" y="485" width="256" height="148" rx="10"/>
+<g transform="translate(980 497)">
+  <path d="M0,4 C0,-1 18,-1 18,4 L18,18 C18,23 0,23 0,18 Z" fill="#e3effb" stroke="#0062ba" stroke-width="1.2"/>
+  <path d="M0,4 C0,9 18,9 18,4" fill="none" stroke="#0062ba" stroke-width="1.2"/>
+</g>
+<text class="h" x="1006" y="512">SecretStore</text>
+<text class="s" x="980" y="538">real values in agent.db, owner-only,</text>
+<text class="s" x="980" y="555">with SQLite secure_delete</text>
+<text class="s" x="980" y="580">Claude and GitHub tokens as given;</text>
+<text class="s" x="980" y="597">Codex tokens refreshed by agentd</text>
+<text class="s" x="980" y="614">when they are resolved</text>
+
+<path class="edge" d="M1090,275 V301" marker-end="url(#arrow)"/>
+<path class="edge" d="M1218,240 H1229 V560 H1222" marker-end="url(#arrow)"/>
+<rect class="label-bg" x="1222" y="378" width="14" height="88" style="fill:#f1f7fd"/>
+<text class="code-sm" style="fill:#4a5b70" transform="translate(1233 422) rotate(-90)" text-anchor="middle">resolve if allowed</text>
+
+<!-- Control channel -->
+<path class="edge-coral" d="M855,202 H900"/>
+<path class="edge-coral" d="M855,304 H900"/>
+<path class="edge-coral" d="M855,508 H900"/>
+<path class="edge-coral" d="M855,610 H900 V202"/>
+<path class="edge-coral" d="M900,225 H958" marker-start="url(#arrow-coral)" marker-end="url(#arrow-coral)"/>
+<rect class="label-bg" x="891" y="352" width="28" height="136" rx="4"/>
+<text class="code-sm" style="fill:#b3262b" transform="translate(905 420) rotate(-90)" text-anchor="middle">network-control.v3</text>
+
+<!-- Internet -->
+<rect class="zone zone-ext" x="1280" y="570" width="280" height="240" rx="16"/>
+<text class="zone-label zone-ext-label" x="1302" y="596">INTERNET</text>
+
+<rect class="box" x="1280" y="130" width="280" height="300" rx="16" style="fill:#f8fafc"/>
+<text class="kicker" x="1306" y="162">BEFOREHAND</text>
+<text class="h-sm" x="1320" y="200">How a secret gets there</text>
+<g class="s">
+  <circle class="badge" cx="1329" cy="226" r="9"/><text class="step" x="1329" y="230" text-anchor="middle">1</text>
+  <text x="1346" y="231">The real value sits in the</text>
+  <text x="1346" y="248">manifest's <tspan class="code-sm">.env</tspan> on the host.</text>
+  <circle class="badge" cx="1329" cy="276" r="9"/><text class="step" x="1329" y="280" text-anchor="middle">2</text>
+  <text x="1346" y="281"><tspan class="code-sm">agentctl apply</tspan> stores it</text>
+  <text x="1346" y="298">in agent.db, never the VM.</text>
+  <circle class="badge" cx="1329" cy="326" r="9"/><text class="step" x="1329" y="330" text-anchor="middle">3</text>
+  <text x="1346" y="331">The guest variable gets an</text>
+  <text x="1346" y="348">inert placeholder instead.</text>
+  <circle class="badge" cx="1329" cy="376" r="9"/><text class="step" x="1329" y="380" text-anchor="middle">4</text>
+  <text x="1346" y="381">To rotate, change <tspan class="code-sm">.env</tspan></text>
+  <text x="1346" y="398">and apply again; nothing</text>
+  <text x="1346" y="415">is copied into the Sandbox.</text>
+</g>
+
+<rect class="box box-ext" x="1302" y="612" width="236" height="74" rx="10"/>
+<text class="h" x="1320" y="639">evil.example</text>
+<text class="s" x="1320" y="659">not in the secret's</text>
+<text class="code-sm" x="1320" y="676">allowedHosts</text>
+
+<rect class="box box-ext" x="1302" y="705" width="236" height="74" rx="10"/>
+<text class="h" x="1320" y="732">api.github.com</text>
+<text class="s" x="1320" y="752">in <tspan class="code-sm">allowedHosts</tspan>, receives</text>
+<text class="s" x="1320" y="769">the real token</text>
+
+<path class="blocked" d="M855,652 H1296" marker-end="url(#stop)"/>
+<rect class="label-bg" x="958" y="662" width="232" height="20" rx="4"/>
+<text class="s-sm" x="964" y="676" style="fill:#b3262b">other host: secret.use denied, request blocked</text>
+
+<path class="edge-green" d="M855,742 H1298" marker-end="url(#arrow-green)"/>
+<rect class="label-bg" x="958" y="752" width="262" height="20" rx="4"/>
+<text class="s-sm" x="964" y="766" style="fill:#1f7a52">allowed host: the real value, over a fresh TLS session</text>
+
+<!-- Legend -->
+<g transform="translate(40 848)">
+  <path class="edge-blue" d="M0,-4 H32" marker-end="url(#arrow-blue)"/>
+  <text class="legend" x="42" y="0">guest traffic</text>
+  <path class="edge-coral" d="M150,-4 H182" marker-end="url(#arrow-coral)"/>
+  <text class="legend" x="192" y="0">ask agentd, wait for the decision</text>
+  <path class="edge-green" d="M410,-4 H442" marker-end="url(#arrow-green)"/>
+  <text class="legend" x="452" y="0">mediated egress</text>
+  <path class="blocked" d="M570,-4 H602" marker-end="url(#stop)"/>
+  <text class="legend" x="616" y="0">blocked</text>
+</g>
+</svg>

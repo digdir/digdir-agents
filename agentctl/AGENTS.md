@@ -45,6 +45,9 @@ This area contains the agent platform described in `README.md`: the `agent` crat
 - Agent-stack secrets remain on the trusted host and use mediated access. The independent Sandbox SDK may expose
   caller-selected bind mounts for other products and trusted local workflows; it does not impose Agent policy.
 
+The diagrams in [docs/architecture](docs/architecture/) show these boundaries. When a change moves one, update the
+diagram's source in the same pull request, run `make diagrams` and show the rendered result in the description.
+
 Use crate boundaries for architectural separation and modules for internal organization. Add another crate
 only when a component needs an independent dependency, versioning or distribution boundary. Do not add
 `sandboxd` or `sandboxctl` unless the generic Sandbox SDK gains an independent process boundary.

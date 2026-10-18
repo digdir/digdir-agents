@@ -57,6 +57,11 @@ Host
             └── Session  durable tmux-backed harness process
 ```
 
+![What runs where: agentctl, agentd, one msb process per Sandbox and the mediated network](docs/architecture/runtime.svg)
+
+[docs/architecture](docs/architecture/) has diagrams of the crates, the network and secret mediation, and the path from
+`agentctl apply` to an attached Session.
+
 The implementation has two deliberately separate layers.
 
 ### Sandbox layer
