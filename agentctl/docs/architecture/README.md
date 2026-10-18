@@ -20,30 +20,21 @@ the same architecture in prose.
 
 ## Editing
 
-The diagrams are hand-written SVG. Edit the source in [`src/`](src/), then build from the repository root:
+Each diagram is one self-contained, hand-written SVG file, with no build step: edit it and commit it. Every file
+carries the same `<style>` block and arrowhead definitions; use its classes rather than inline colours so the diagrams
+stay consistent, and change the block in every file when you change it in one. `zone-host` marks the trusted host,
+`zone-sandbox` the untrusted guest, `zone-proc` a process boundary and `zone-ext` the Internet.
+
+Text uses Arial and its metric twins (Helvetica, Liberation Sans), so it takes the same width wherever the SVG is shown.
+Positions are absolute, so check a changed diagram rendered before you commit it. Reviewers look at the rendered images,
+so a pull request that changes a diagram shows them in its description. To render one at twice its size with Chromium:
 
 ```sh
-make diagrams
+chromium --headless --hide-scrollbars --force-device-scale-factor=2 --window-size=1600,1040 \
+  --screenshot=runtime.png runtime.svg
 ```
 
-The build replaces each source's `<!-- @shared -->` marker with the shared stylesheet
-([`src/shared.css`](src/shared.css)), the shared arrowheads and shadow ([`src/shared-defs.svg`](src/shared-defs.svg))
-and the embedded Inter and JetBrains Mono fonts. It writes the result beside this file, so it renders the same on
-GitHub and in every browser. Commit the source and the built SVG together; `make test` fails when they differ.
+The window size is the width and height in the SVG's `viewBox`.
 
-Reviewers look at the rendered images, so a pull request that changes a diagram shows them in its description. To
-render PNGs at twice the size, for example to attach to a pull request:
-
-```sh
-node agentctl/docs/architecture/build.mjs --png /tmp/diagrams
-```
-
-That needs Chromium on `PATH`, or its path in `CHROMIUM`.
-
-Use the classes in `src/shared.css` rather than inline colours, so the diagrams stay consistent: `zone-host` for the
-trusted host, `zone-sandbox` for the untrusted guest, `zone-proc` for a process boundary and `zone-ext` for the
-Internet. Keep a diagram in line with the code it shows; when a change moves a boundary, update the diagram in the same
-pull request.
-
-The fonts are the Latin subsets of [Inter](https://github.com/rsms/inter) and
-[JetBrains Mono](https://github.com/JetBrains/JetBrainsMono), under the SIL Open Font License in [`fonts/`](fonts/).
+Keep a diagram in line with the code it shows; when a change moves a boundary, update the diagram in the same pull
+request.
