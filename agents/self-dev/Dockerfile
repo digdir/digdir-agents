@@ -5,11 +5,9 @@ FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a
 # owns RUSTUP_HOME, so a checkout pinned ahead of this image installs its toolchain on first use
 # instead of failing.
 ARG RUST_VERSION=1.97.1
-ARG CARGO_MACHETE_VERSION=0.9.2
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV RUSTUP_HOME=/usr/local/rustup
-ENV PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # The toolchain the agent platform's own Rust workspace needs (libcap-ng-dev links the Microsandbox
 # runtime), plus Podman so that a nested agentd can build Agent images through the Docker Engine API.
@@ -26,7 +24,6 @@ RUN apt-get update \
         btop \
         build-essential \
         ca-certificates \
-        clang \
         curl \
         fd-find \
         flex \
@@ -39,7 +36,6 @@ RUN apt-get update \
         libcap-ng-dev \
         libelf-dev \
         libssl-dev \
-        lldb \
         linux-perf \
         neovim \
         nftables \
@@ -72,12 +68,9 @@ RUN apt-get update \
     && python3 -c 'import elftools' \
     && bison --version >/dev/null \
     && flex --version \
-    && CARGO_HOME=/usr/local/cargo rustup set profile minimal \
-    && CARGO_HOME=/usr/local/cargo rustup default "${RUST_VERSION}" \
-    && CARGO_HOME=/usr/local/cargo rustup component add clippy rustfmt \
-    && CARGO_HOME=/usr/local/cargo cargo install cargo-machete --version "${CARGO_MACHETE_VERSION}" --locked \
-    && rm -rf /usr/local/cargo/registry /usr/local/cargo/git \
-    && chmod -R a+rX /usr/local/cargo \
+    && rustup set profile minimal \
+    && rustup default "${RUST_VERSION}" \
+    && rustup component add clippy rustfmt \
     && chown -R ubuntu:ubuntu /usr/local/rustup
 
 COPY common/nvim-sysinit.vim /etc/xdg/nvim/sysinit.vim
@@ -85,6 +78,20 @@ COPY common/nvim-sysinit.vim /etc/xdg/nvim/sysinit.vim
 RUN nvim --headless \
     "+lua assert(vim.g.colors_name == 'habamax'); assert(vim.o.number); assert(vim.o.cursorline); assert(vim.o.termguicolors)" \
     +quit
+
+# A nested Microsandbox runtime needs /dev/kvm; tmpfiles.conf hands the device to the kvm group.
+# OpenSSH rejects even public-key authentication for a locked account when PAM is disabled.
+# Password and keyboard authentication remain disabled by the platform-owned SSH policy.
+RUN { getent group kvm >/dev/null || groupadd --system kvm; } \
+    && usermod --login agent --home /home/agent --move-home ubuntu \
+    && passwd --delete agent \
+    && groupmod --new-name agent ubuntu \
+    && usermod --append --groups kvm agent \
+    && printf 'agent ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/agent \
+    && chmod 0440 /etc/sudoers.d/agent \
+    && install -d -m 0755 -o agent -g agent /home/agent/code \
+    && rm -f /etc/machine-id /var/lib/dbus/machine-id \
+    && touch /etc/machine-id
 
 ARG TARGETARCH
 ARG GH_VERSION=2.100.0
@@ -96,6 +103,7 @@ ARG ACTIONLINT_VERSION=1.7.12
 ARG YQ_VERSION=4.54.1
 ARG CARGO_DENY_VERSION=0.20.2
 ARG CARGO_ABOUT_VERSION=0.9.2
+ARG CARGO_MACHETE_VERSION=0.9.2
 
 RUN case "${TARGETARCH}" in \
         amd64) NODE_ARCH=x64; RUST_ARCH=x86_64; \
@@ -106,7 +114,9 @@ RUN case "${TARGETARCH}" in \
             ACTIONLINT_SHA256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8; \
             YQ_SHA256=8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f; \
             CARGO_DENY_SHA256=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f; \
-            CARGO_ABOUT_SHA256=9099a59e820c38a68b9d65f300662a567d56562f9a10f6aa4c7e86c17c2566af ;; \
+            CARGO_ABOUT_SHA256=9099a59e820c38a68b9d65f300662a567d56562f9a10f6aa4c7e86c17c2566af; \
+            CARGO_MACHETE_TARGET=x86_64-unknown-linux-musl; \
+            CARGO_MACHETE_SHA256=48200087f54c55aabcd4db4af1e25742b49846c02a1b1bfa134711945b35b2e9 ;; \
         arm64) NODE_ARCH=arm64; RUST_ARCH=aarch64; \
             GH_SHA256=ea4e7a581a32ccad6cc7923cb1576ac5859ba4b9a16ab22eb8f8a96e78e2e961; \
             GH_STACK_SHA256=2da13f8c46f2770237c744b341ab6be9f07508585a6762634c4a88aa355460bc; \
@@ -115,7 +125,9 @@ RUN case "${TARGETARCH}" in \
             ACTIONLINT_SHA256=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6; \
             YQ_SHA256=189088da0c6429ec5178dfaab1a114805f6cab0b61b165ab236efedf1d57a71b; \
             CARGO_DENY_SHA256=995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d; \
-            CARGO_ABOUT_SHA256=af5169282fb6f84e13471493f405437e43ac517744c9ae12fbe2cdf0a6f0e5a8 ;; \
+            CARGO_ABOUT_SHA256=af5169282fb6f84e13471493f405437e43ac517744c9ae12fbe2cdf0a6f0e5a8; \
+            CARGO_MACHETE_TARGET=aarch64-unknown-linux-gnu; \
+            CARGO_MACHETE_SHA256=6f96c3e6026a5bdd241b6ae600c6fb86c9197c6e189a894f91371baa01fd10f5 ;; \
         *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
     && NODE_ARCHIVE="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
@@ -124,16 +136,29 @@ RUN case "${TARGETARCH}" in \
     && test -n "${NODE_SHA256}" \
     && curl -fsSL "https://nodejs.org/download/release/v${NODE_VERSION}/${NODE_ARCHIVE}" -o /tmp/node.tar.xz \
     && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
-    && tar -xJf /tmp/node.tar.xz --strip-components=1 -C /usr/local \
+    && tar -xJf /tmp/node.tar.xz --strip-components=1 --no-same-owner -C /usr/local \
+        --exclude="node-v${NODE_VERSION}-linux-${NODE_ARCH}/include" \
     && GH_ARCHIVE="gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
     && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${GH_ARCHIVE}" -o /tmp/gh.tar.gz \
     && echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/gh.tar.gz -C /tmp \
     && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/bin/gh \
+    && GH_STACK_DIR=/home/agent/.local/share/gh/extensions/gh-stack \
+    && install -d "${GH_STACK_DIR}" \
     && curl -fsSL \
         "https://github.com/github/gh-stack/releases/download/v${GH_STACK_VERSION}/linux-${TARGETARCH}" \
-        -o /tmp/gh-stack \
-    && echo "${GH_STACK_SHA256}  /tmp/gh-stack" | sha256sum -c - \
+        -o "${GH_STACK_DIR}/gh-stack" \
+    && echo "${GH_STACK_SHA256}  ${GH_STACK_DIR}/gh-stack" | sha256sum -c - \
+    && chmod 0755 "${GH_STACK_DIR}/gh-stack" \
+    && printf '%s\n' \
+        'owner: github' \
+        'name: gh-stack' \
+        'host: github.com' \
+        "tag: v${GH_STACK_VERSION}" \
+        'ispinned: true' \
+        "path: ${GH_STACK_DIR}/gh-stack" \
+        >"${GH_STACK_DIR}/manifest.yml" \
+    && chown -R agent:agent /home/agent/.local \
     && curl -fsSL \
         "https://github.com/asciinema/asciinema/releases/download/v${ASCIINEMA_VERSION}/asciinema-${RUST_ARCH}-unknown-linux-gnu" \
         -o /tmp/asciinema \
@@ -168,9 +193,16 @@ RUN case "${TARGETARCH}" in \
     && echo "${CARGO_ABOUT_SHA256}  /tmp/cargo-about.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/cargo-about.tar.gz -C /tmp "${CARGO_ABOUT_DIR}/cargo-about" \
     && install -m 0755 "/tmp/${CARGO_ABOUT_DIR}/cargo-about" /usr/local/bin/cargo-about \
+    && CARGO_MACHETE_DIR="cargo-machete-v${CARGO_MACHETE_VERSION}-${CARGO_MACHETE_TARGET}" \
+    && curl -fsSL \
+        "https://github.com/bnjbvr/cargo-machete/releases/download/v${CARGO_MACHETE_VERSION}/${CARGO_MACHETE_DIR}.tar.gz" \
+        -o /tmp/cargo-machete.tar.gz \
+    && echo "${CARGO_MACHETE_SHA256}  /tmp/cargo-machete.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/cargo-machete.tar.gz -C /tmp "${CARGO_MACHETE_DIR}/cargo-machete" \
+    && install -m 0755 "/tmp/${CARGO_MACHETE_DIR}/cargo-machete" /usr/local/bin/cargo-machete \
     && rm -rf /tmp/node.tar.xz /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}" /tmp/asciinema /tmp/agg \
         /tmp/actionlint.tar.gz /tmp/yq /tmp/cargo-deny.tar.gz "/tmp/${CARGO_DENY_DIR}" /tmp/cargo-about.tar.gz \
-        "/tmp/${CARGO_ABOUT_DIR}" \
+        "/tmp/${CARGO_ABOUT_DIR}" /tmp/cargo-machete.tar.gz "/tmp/${CARGO_MACHETE_DIR}" \
     && node --version \
     && gh --version \
     && asciinema --version \
@@ -178,7 +210,8 @@ RUN case "${TARGETARCH}" in \
     && actionlint --version \
     && yq --version \
     && cargo-deny --version \
-    && cargo-about --version
+    && cargo-about --version \
+    && cargo-machete --version
 
 # Route GitHub credentials through the gh CLI so plain git commands authenticate with the
 # host-mediated token.
@@ -197,34 +230,8 @@ RUN NODE_OPTIONS=--use-openssl-ca npm install --global "@openai/codex@${CODEX_VE
         "@earendil-works/pi-coding-agent@${PI_VERSION}" \
     && claude --version \
     && codex --version \
-    && pi --version
-
-# A nested Microsandbox runtime needs /dev/kvm; tmpfiles.conf hands the device to the kvm group.
-# OpenSSH rejects even public-key authentication for a locked account when PAM is disabled.
-# Password and keyboard authentication remain disabled by the platform-owned SSH policy.
-RUN { getent group kvm >/dev/null || groupadd --system kvm; } \
-    && usermod --login agent --home /home/agent --move-home ubuntu \
-    && passwd --delete agent \
-    && groupmod --new-name agent ubuntu \
-    && usermod --append --groups kvm agent \
-    && printf 'agent ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/agent \
-    && chmod 0440 /etc/sudoers.d/agent \
-    && install -d -m 0755 -o agent -g agent \
-        /home/agent/.local/share/gh/extensions/gh-stack /home/agent/code \
-    && install -m 0755 -o agent -g agent \
-        /tmp/gh-stack /home/agent/.local/share/gh/extensions/gh-stack/gh-stack \
-    && printf '%s\n' \
-        'owner: github' \
-        'name: gh-stack' \
-        'host: github.com' \
-        "tag: v${GH_STACK_VERSION}" \
-        'ispinned: true' \
-        'path: /home/agent/.local/share/gh/extensions/gh-stack/gh-stack' \
-        >/home/agent/.local/share/gh/extensions/gh-stack/manifest.yml \
-    && chown -R agent:agent /home/agent/.local \
-    && rm -f /tmp/gh-stack \
-    && rm -f /etc/machine-id /var/lib/dbus/machine-id \
-    && touch /etc/machine-id
+    && pi --version \
+    && rm -rf /root/.npm /tmp/node-compile-cache
 
 COPY common/tmpfiles.conf /usr/lib/tmpfiles.d/agent-dev.conf
 COPY common/workspace-init.service /etc/systemd/system/agent-workspace-init.service
