@@ -571,6 +571,21 @@ pub(crate) fn input_ready_without_report(harness: Harness, cursor_line: &str, ti
     }
 }
 
+/// The `sh -c` script that prints the transcript the harness reported, or its last bytes.
+///
+/// The runtime passes the same positional arguments to every harness's script: `$1` the reported
+/// transcript path, `$2` the byte budget and `$3` the reported native session ID, empty when there
+/// is none. The script prints at most the budget's last bytes, which [`trim_partial_transcript`]
+/// and [`parse_transcript`] read, and nothing for a transcript that does not exist yet.
+pub(crate) const fn transcript_read_script(harness: Harness) -> &'static str {
+    match harness {
+        Harness::ClaudeCode | Harness::Codex | Harness::Pi => TRANSCRIPT_FILE_TAIL,
+    }
+}
+
+/// Reads a transcript that is one file the harness appends to.
+const TRANSCRIPT_FILE_TAIL: &str = "[ -f \"$1\" ] || exit 0; exec /usr/bin/tail -c \"$2\" -- \"$1\"";
+
 /// Parses harness transcript bytes into ordered, runtime-neutral turns.
 ///
 /// # Errors
@@ -747,6 +762,50 @@ mod tests {
             recorded.conflict_with(&effort_only).as_deref(),
             Some("leaves the effort to the harness default, not \"max\"")
         );
+    }
+
+    /// Runs `harness`'s transcript read script as the runtime does, with `PATH` led by `path`.
+    #[cfg(unix)]
+    pub(crate) fn read_transcript(harness: Harness, path: Option<&std::path::Path>, arguments: [&str; 3]) -> Vec<u8> {
+        let mut search = std::env::var("PATH").unwrap_or_default();
+        if let Some(path) = path {
+            search = format!("{}:{search}", path.display());
+        }
+        let run = || {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(transcript_read_script(harness))
+                .arg("agent-session-transcript")
+                .args(arguments)
+                .env("PATH", &search)
+                .output()
+                .expect("sh")
+        };
+        // A stub the caller just wrote can be briefly busy, as in `run_launch`.
+        let mut output = run();
+        for _ in 0..100 {
+            if output.status.code() != Some(126) || !String::from_utf8_lossy(&output.stderr).contains("busy") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            output = run();
+        }
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        output.stdout
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_transcript_file_is_read_from_its_end() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("transcript.jsonl");
+        std::fs::write(&path, "first\nsecond\n").expect("transcript");
+        let path = path.to_str().expect("UTF-8 path");
+        for harness in [Harness::ClaudeCode, Harness::Codex, Harness::Pi] {
+            assert_eq!(read_transcript(harness, None, [path, "7", "native"]), b"second\n");
+            assert_eq!(read_transcript(harness, None, [path, "100", ""]), b"first\nsecond\n");
+            assert!(read_transcript(harness, None, ["/nonexistent/transcript", "100", "native"]).is_empty());
+        }
     }
 
     #[test]

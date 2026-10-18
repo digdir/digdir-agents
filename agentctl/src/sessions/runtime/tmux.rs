@@ -562,12 +562,12 @@ fn input_ready_in(activity: &Activity, now: time::OffsetDateTime) -> Option<std:
 
 /// Reads the harness transcript the Session reported and parses it into turns.
 ///
-/// The path travels as a positional argument, never interpolated into shell
-/// text. A harness that has not reported a transcript yet, or has reported one
-/// it has not created yet, has an empty conversation.
+/// The harness adapter supplies the read script; the path and native ID travel
+/// as positional arguments, never interpolated into shell text. A harness that
+/// has not reported a transcript yet, or has reported one it has not created
+/// yet, has an empty conversation.
 async fn turns(session: &Session, sandbox: &SandboxHandle, last: Option<usize>) -> Result<Vec<Turn>, Error> {
     const MAX_TRANSCRIPT_BYTES: usize = 2 * 1024 * 1024;
-    const SCRIPT: &str = "[ -f \"$1\" ] || exit 0; exec /usr/bin/tail -c \"$2\" -- \"$1\"";
     let Some(path) = session.status.reported.harness_transcript_path.as_deref() else {
         return Ok(Vec::new());
     };
@@ -580,10 +580,11 @@ async fn turns(session: &Session, sandbox: &SandboxHandle, last: Option<usize>) 
             SandboxPath::new("/bin/sh"),
             [
                 "-c".into(),
-                SCRIPT.into(),
+                harness::transcript_read_script(session.harness).into(),
                 "agent-session-transcript".into(),
                 path.into(),
                 (MAX_TRANSCRIPT_BYTES + 1).to_string(),
+                session.status.reported.harness_session_id.clone().unwrap_or_default(),
             ],
         ),
         "reading the Session conversation",
