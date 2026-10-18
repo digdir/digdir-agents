@@ -45,6 +45,11 @@ spec:
     - type: pi
       defaults:
         model: aivar/sigma2:Qwen3.8-27B
+    # OpenCode has no platform login either: its providers and models come from ~/.config/opencode/opencode.json in
+    # `home`, and the gateway key from the same AIVAR_API_KEY secret. Without the key OpenCode starts but cannot answer.
+    - type: opencode
+      defaults:
+        model: aivar/sigma2:Qwen3.8-27B
   environment:
     - name: GIT_USER_NAME
     - name: GIT_USER_EMAIL

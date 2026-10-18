@@ -35,8 +35,8 @@ agentctl apply --variant nested --env-file ~/nested.env
 ```
 
 Real secrets are host-mediated: never search for, print, copy or persist their values. The credential placeholder
-above is inert, and `AIVAR_API_KEY`, which Pi uses, chains through the same way. Git identity is explicitly selected
-non-secret data and enters both Sandboxes in plaintext.
+above is inert, and `AIVAR_API_KEY`, which Pi and OpenCode use, chains through the same way. Git identity is explicitly
+selected non-secret data and enters both Sandboxes in plaintext.
 
 Build steps inside Podman trust the mediated CA through the system store and `/run/agent/tls/ca-bundle.pem`. Buildah
 drops default environment from build stages, so a `RUN` that downloads through Node exports

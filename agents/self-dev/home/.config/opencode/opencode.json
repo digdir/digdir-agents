@@ -1,0 +1,74 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "enabled_providers": ["aivar"],
+  "providers": {
+    "aivar": {
+      "name": "aivar",
+      "package": "aisdk:@ai-sdk/openai-compatible",
+      "settings": {
+        "baseURL": "https://api.aivar.no/v1",
+        "apiKey": "{env:AIVAR_API_KEY}"
+      },
+      "models": {
+        "sigma2:Qwen3.8-27B": {
+          "name": "Qwen3.8 27B (Sigma2)",
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image"],
+            "reasoning": {
+              "supported": true,
+              "effort": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+            }
+          },
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "azure:DeepSeek-V4.1-Flash": {
+          "name": "DeepSeek V4.1 Flash (Azure)",
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image"],
+            "reasoning": {
+              "supported": true,
+              "effort": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 32768
+          }
+        },
+        "sigma2:Borealis2-preview": {
+          "name": "Borealis 2 preview (Sigma2)",
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image"],
+            "reasoning": {
+              "supported": false
+            }
+          },
+          "limit": {
+            "context": 131072,
+            "output": 32768
+          }
+        },
+        "aivar:borealis": {
+          "name": "Borealis (Aivar)",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "reasoning": {
+              "supported": false
+            }
+          },
+          "limit": {
+            "context": 32768,
+            "output": 8192
+          }
+        }
+      }
+    }
+  }
+}

@@ -17,7 +17,7 @@ ENV PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:
 # container-name resolution. bc, bison, flex, libelf-dev and python3-pyelftools check libkrunfw's
 # kernel configuration; sqlite3, socat and tcpdump inspect agentd's database, sockets and Sandbox
 # traffic; hyperfine measures performance changes. fd-find provides `fdfind`, which Pi
-# searches files with.
+# searches files with; OpenCode uses ripgrep from here instead of downloading its own.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         aardvark-dns \
@@ -187,6 +187,7 @@ RUN git config --system credential.https://github.com.helper '!/usr/local/bin/gh
 ARG CODEX_VERSION=0.163.0
 ARG CLAUDE_CODE_VERSION=2.1.302
 ARG PI_VERSION=1.3.0
+ARG OPENCODE_VERSION=2.0.32
 
 # Node ignores the system trust store, and Buildah drops default environment from build stages,
 # so a build inside an Agent needs the system store selected per step for npm to trust mediation.
@@ -195,9 +196,12 @@ RUN NODE_OPTIONS=--use-openssl-ca npm install --global "@openai/codex@${CODEX_VE
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && NODE_OPTIONS=--use-openssl-ca npm install --global --ignore-scripts \
         "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+    && NODE_OPTIONS=--use-openssl-ca npm install --global --allow-scripts=@opencode/cli \
+        "@opencode/cli@${OPENCODE_VERSION}" \
     && claude --version \
     && codex --version \
-    && pi --version
+    && pi --version \
+    && opencode --version
 
 # A nested Microsandbox runtime needs /dev/kvm; tmpfiles.conf hands the device to the kvm group.
 # OpenSSH rejects even public-key authentication for a locked account when PAM is disabled.

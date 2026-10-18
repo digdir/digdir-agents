@@ -51,8 +51,8 @@ The GitHub token stays on the host. The Agent sees a placeholder, which is subst
 `GITHUB_TOKEN` is a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with
 `Contents` and `Pull requests` read and write.
 
-`AIVAR_API_KEY` is optional. It is the key for the company AI gateway at `api.aivar.no`, which Pi uses, and is likewise
-substituted only in requests to that host. Without it Pi starts but its models cannot answer.
+`AIVAR_API_KEY` is optional. It is the key for the company AI gateway at `api.aivar.no`, which Pi and OpenCode use, and
+is likewise substituted only in requests to that host. Without it Pi and OpenCode start but their models cannot answer.
 
 ## Pi
 
@@ -75,6 +75,18 @@ level. The limits are the gateway's own, from its error to an oversized `max_tok
 | `sigma2:Borealis-27B` | No | Never calls a tool. |
 
 Re-check these when the gateway or Pi changes.
+
+## OpenCode
+
+The `opencode` installation in `agent.yaml` also defaults to `aivar/sigma2:Qwen3.8-27B`, and the shared home overlay
+supplies `~/.config/opencode/opencode.json` with the same `aivar` provider, through `@ai-sdk/openai-compatible` (key
+from `{env:AIVAR_API_KEY}`). `enabled_providers` lists only `aivar`, so OpenCode can never pick its hosted free models,
+which send prompts to opencode.ai. The overlay is applied again on every pass, as Pi's is.
+
+Checked through OpenCode 2.0.32 on 2026-10-18: all four models above call the shell tool over Chat Completions, so the
+Responses problem does not arise. Qwen and DeepSeek answered with a tool call at every effort OpenCode offers, `none`,
+`minimal`, `low`, `medium`, `high`, `xhigh` and `max`, each sent as `reasoning_effort`; Pi's narrower Qwen list comes
+from the Responses API. The Borealis models declare no reasoning, so they have no effort.
 
 ## Inside the Agent
 
