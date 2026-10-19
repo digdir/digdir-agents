@@ -78,8 +78,8 @@ grep -qxF "ListenStream=127.0.0.1:${vnc_port}" /etc/systemd/system/agent-vnc.soc
 grep -qxF "Environment=AGENT_NOVNC_PORT=${web_port}" /etc/systemd/system/agent-vnc-web.service \
     || { echo "agent-vnc-web.service does not serve the descriptor's web-port ${web_port}" >&2; exit 1; }
 
-Xtigervnc -version 2>&1 | head -1
-openbox --version | head -1
+Xtigervnc -version >/dev/null 2>&1
+openbox --version >/dev/null
 tint2 --version
 xdotool --version
 command -v sakura >/dev/null

@@ -19,8 +19,15 @@ usage() {
 
 # Appends FEATURE to $ordered after the features it requires, once.
 ordered=
+adding=
 add() {
     case " $ordered " in *" $1 "*) return ;; esac
+    case " $adding " in *" $1 "*)
+        echo "agent-feature: $1 requires itself through:$adding" >&2
+        exit 1
+        ;;
+    esac
+    adding="$adding $1"
     if [ ! -x "$features/$1/install" ]; then
         echo "agent-feature: no feature named $1; \`agent-feature list\` shows them" >&2
         exit 64
@@ -48,6 +55,7 @@ case $command in
     list)
         [ "$#" -eq 0 ] || usage
         for directory in "$features"/*/; do
+            [ -d "$directory" ] || continue
             feature=$(basename "$directory")
             state=available
             [ -e "$installed/$feature" ] && state=installed
@@ -72,9 +80,9 @@ case $command in
                 continue
             fi
             echo "agent-feature: installing $feature"
-            # A scratch HOME keeps package managers' caches out of /home/agent, which the Agent must own.
+            # A scratch HOME and TMPDIR keep caches out of the image, and out of /home/agent, which the Agent must own.
             scratch=$(mktemp -d)
-            HOME=$scratch "$features/$feature/install"
+            HOME=$scratch TMPDIR=$scratch "$features/$feature/install"
             rm -rf "$scratch"
             install -d "$installed"
             touch "$installed/$feature"

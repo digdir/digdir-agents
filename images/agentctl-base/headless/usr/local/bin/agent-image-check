@@ -101,7 +101,7 @@ if [ -e "$descriptor" ]; then
 fi
 
 # Features installed with agent-feature need the environment their env files list, which only the image's ENV
-# instructions can set.
+# instructions can set. A colon-separated list, such as NODE_PATH, may hold more entries than the one listed.
 for marker in /var/lib/agentctl-base/features/*; do
     [ -e "$marker" ] || continue
     feature=${marker##*/}
@@ -110,8 +110,11 @@ for marker in /var/lib/agentctl-base/features/*; do
     while IFS= read -r line; do
         case $line in '' | '#'*) continue ;; esac
         name=${line%%=*}
-        [ "$(printenv "$name" || true)" = "${line#*=}" ] \
-            || fail "the $feature feature needs ENV $line; \`agent-feature env $feature\` prints all it needs"
+        expected=${line#*=}
+        case ":$(printenv "$name" || true):" in
+            *":$expected:"*) ;;
+            *) fail "the $feature feature needs ENV $line; \`agent-feature env $feature\` prints all it needs" ;;
+        esac
     done <"$env_file"
 done
 
