@@ -135,10 +135,11 @@ RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm install --global "@openai/codex@${CODEX_VERSION}" \
     && npm install --global --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \
-    && claude --version \
-    && codex --version \
-    && pi --version \
-    && rm -rf /root/.npm /root/.cache /tmp/node-compile-cache
+    && scratch="$(mktemp -d)" \
+    && HOME="${scratch}" TMPDIR="${scratch}" claude --version \
+    && HOME="${scratch}" TMPDIR="${scratch}" codex --version \
+    && HOME="${scratch}" TMPDIR="${scratch}" pi --version \
+    && rm -rf "${scratch}" /root/.npm /root/.cache /tmp/node-compile-cache
 
 COPY headless/ /
 # Claude Code's onboarding and workspace trust, which agentd does not write. Seeded here rather than through an
@@ -156,6 +157,7 @@ RUN systemctl mask ssh.service ssh.socket serial-getty@hvc0.service systemd-modu
     && nvim --headless \
         "+lua assert(vim.g.colors_name == 'habamax'); assert(vim.o.number); assert(vim.o.cursorline); assert(vim.o.termguicolors)" \
         +quit \
+    && rm -rf /tmp/nvim.root /root/.local \
     && agent-image-check
 
 ENV DISABLE_AUTOUPDATER=1

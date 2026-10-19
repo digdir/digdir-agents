@@ -49,6 +49,8 @@ USER agent
 - `agent-workspace-init.service` clones the repositories `/etc/agent-workspace.d/*.list` names into `/home/agent/code`
   at boot with `gh repo clone`, authenticated by the Agent's `GITHUB_TOKEN`, and leaves a destination that already has
   `.git` alone. Without a list it does not start.
+- The base images' OCI labels, such as `org.opencontainers.image.source` and `title`, are inherited. Set your own when
+  you publish an image, so that the registry links it to its own repository.
 - Skills an image ships go in `~/.claude/skills` for Claude Code and `~/.agents/skills` for Codex and Pi; `agentd`
   leaves skills it does not manage alone. The desktop image ships `playwright-cli` and `computer-use` there.
 - The desktop image provides `/etc/agent-access.d/vnc.conf`, so an Agent on it can declare `access: [{type: vnc}]`.

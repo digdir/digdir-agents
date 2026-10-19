@@ -40,16 +40,18 @@ foreign="$(find /home/agent ! -user agent -print 2>/dev/null | head -5)"
 [ -z "$foreign" ] || fail "files under /home/agent not owned by agent, such as: $(echo "$foreign" | tr '\n' ' ')"
 
 # What agentd executes in the guest by absolute path, and the harnesses and hook runtime it finds on PATH.
-for path in /usr/bin/env /usr/bin/sudo /usr/bin/tmux /usr/bin/tar /usr/bin/install /usr/bin/find /usr/bin/grep \
-    /usr/bin/stat /usr/bin/date /usr/bin/tail /bin/sh /bin/sleep /bin/rm; do
+for path in /usr/bin/env /usr/bin/sudo /usr/bin/tmux /usr/bin/tar /usr/bin/install /usr/bin/mkdir /usr/bin/chown \
+    /usr/bin/chmod /usr/bin/test /usr/bin/find /usr/bin/grep /usr/bin/stat /usr/bin/date /usr/bin/tail /bin/sh \
+    /bin/sleep /bin/rm /bin/cat /bin/chmod /bin/chown; do
     [ -x "$path" ] || fail "$path is missing"
 done
 [ -f /etc/ssl/certs/ca-certificates.crt ] || fail "/etc/ssl/certs/ca-certificates.crt is missing; install ca-certificates"
+# The probes write caches under HOME and TMPDIR, so both point at a scratch directory removed afterwards.
 scratch="$(mktemp -d)"
 for command in node claude codex pi; do
     if ! command -v "$command" >/dev/null 2>&1; then
         fail "$command is not on PATH"
-    elif ! HOME="$scratch" timeout 30 "$command" --version >/dev/null 2>&1; then
+    elif ! HOME="$scratch" TMPDIR="$scratch" timeout 30 "$command" --version >/dev/null 2>&1; then
         fail "$command --version failed"
     fi
 done
@@ -70,12 +72,16 @@ fi
 
 # VNC access: the descriptor names the units agentd enables and the ports it expects.
 descriptor=/etc/agent-access.d/vnc.conf
+# The first value of KEY in the descriptor, with the whitespace around key and value trimmed, as agentd reads it.
+descriptor_value() {
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$descriptor" | head -n 1 | sed 's/[[:space:]]*$//'
+}
 if [ -e "$descriptor" ]; then
-    [ "$(sed -n 's/^port=//p' "$descriptor")" = 5900 ] || fail "$descriptor must set port=5900"
-    web_port="$(sed -n 's/^web-port=//p' "$descriptor")"
+    [ "$(descriptor_value port)" = 5900 ] || fail "$descriptor must set port=5900"
+    web_port="$(descriptor_value web-port)"
     [ -z "$web_port" ] || [ "$web_port" = 6080 ] || fail "$descriptor must set web-port=6080 or leave it out"
     [ -x /usr/bin/ss ] || fail "/usr/bin/ss is missing; install iproute2"
-    units="$(sed -n 's/^units=//p' "$descriptor")"
+    units="$(descriptor_value units)"
     for unit in $units; do
         state="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
         case "$state" in

@@ -2,8 +2,8 @@
 
 What `agentd` expects of the image an Agent runs. The [agentctl base images](../images/agentctl-base/README.md) meet
 it, and an image built on them keeps meeting it as long as `agent-image-check` passes at the end of its build. `agentd`
-reads no image labels: every requirement below is probed inside the running Sandbox, and an unmet one fails Agent setup
-with the step that needs it.
+reads no image labels. It probes most requirements below inside the running Sandbox and fails Agent setup with the
+step that needs them; others, such as the home directory's ownership, only show as failures later.
 
 ## Always
 
@@ -11,8 +11,9 @@ with the step that needs it.
   `agent`, home `/home/agent` and passwordless `sudo`: setup runs its privileged steps through `/usr/bin/sudo`, some
   with `-n`. `agentd` creates `/home/agent/code`, the working directory, if it is missing. Keep everything under
   `/home/agent` owned by `agent`: a root-owned cache there locks the Agent out of it.
-- **Executables at fixed paths.** `/usr/bin/env`, `sudo`, `tmux`, `tar`, `install`, `mkdir`, `chown`, `chmod`, `find`,
-  `grep`, `stat`, `date` and `tail` under `/usr/bin`, and `/bin/sh`, `/bin/sleep` and `/bin/rm`. Sessions run in tmux.
+- **Executables at fixed paths.** `env`, `sudo`, `tmux`, `tar`, `install`, `mkdir`, `chown`, `chmod`, `test`, `find`,
+  `grep`, `stat`, `date` and `tail` under `/usr/bin`, and `sh`, `sleep`, `rm`, `cat`, `chmod` and `chown` under `/bin`,
+  as a merged `/usr` provides them. Sessions run in tmux.
 - **Locale and terminal.** Every process runs with `LANG=C.UTF-8` and `TERM=xterm-256color`; glibc's built-in `C.UTF-8`
   and ncurses-base's terminfo provide them.
 - **Trust.** `/etc/ssl/certs/ca-certificates.crt` must exist, from the `ca-certificates` package; the Sandbox adds the
@@ -28,9 +29,10 @@ with the step that needs it.
 
 - **git.** With `git` on `PATH`, `agentd` sets the global `user.name` and `user.email` from `GIT_USER_NAME` and
   `GIT_USER_EMAIL`. Without it, the step is skipped.
-- **Podman.** With `/usr/bin/podman`, `agentd` waits for systemd, configures Podman to trust the mediated CA, enables
-  `podman.socket` for the `agent` group and gives Sessions `CONTAINER_HOST=unix:///run/podman/podman.sock`. An image
-  with Podman therefore needs systemd running, and the `podman.socket` unit.
+- **Podman.** With `/usr/bin/podman`, `agentd` waits for systemd, configures Podman to trust the mediated CA and
+  enables `podman.socket` for the `agent` group, which every Execution reaches through
+  `CONTAINER_HOST=unix:///run/podman/podman.sock`. An image with Podman therefore needs systemd running, and the
+  `podman.socket` unit.
 
 ## Access
 
@@ -39,8 +41,8 @@ with the step that needs it.
   own server, so mask `ssh.service` and `ssh.socket` and remove the package's host keys. The `agent` account must not
   be locked (`passwd --delete agent`), since `sshd` rejects a locked account even for key authentication when PAM is
   disabled.
-- **`vnc`** needs `/etc/agent-access.d/vnc.conf`, a `key=value` file naming the units that grant access and the ports
-  they serve:
+- **`vnc`** needs systemd as the entrypoint, as `ssh` does, and `/etc/agent-access.d/vnc.conf`, a `key=value` file
+  naming the units that grant access and the ports they serve:
 
   ```ini
   units=agent-vnc.socket agent-vnc-web.service

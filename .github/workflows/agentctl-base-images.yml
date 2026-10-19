@@ -10,12 +10,12 @@ on:
       - images/agentctl-base/**
       - docker-bake.hcl
       - .github/workflows/agentctl-base-images.yml
+  # Not on docker-bake.hcl changes alone: every build of the base has a new digest, which derived images then follow.
   push:
     branches:
       - main
     paths:
       - images/agentctl-base/**
-      - docker-bake.hcl
       - .github/workflows/agentctl-base-images.yml
   workflow_dispatch:
 
@@ -25,7 +25,8 @@ permissions:
 
 concurrency:
   group: agentctl-base-images-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A cancelled publish could leave the two tags pointing at different commits.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REPOSITORY: ghcr.io/digdir/agentctl-base
