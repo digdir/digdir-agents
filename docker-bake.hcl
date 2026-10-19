@@ -56,10 +56,18 @@ target "self-dev-minimal" {
     ("${BASE_REPOSITORY}:${BASE_DISTRIBUTION}") = "target:base-headless"
   }
   tags = ["ghcr.io/digdir/digdir-agents/agentctl-self-dev-minimal:latest"]
+  labels = {
+    "org.opencontainers.image.title"       = "agentctl-self-dev-minimal"
+    "org.opencontainers.image.description" = "The agentctl self-development Agent's image"
+  }
 }
 
 target "self-dev-full" {
   inherits = ["self-dev-minimal"]
   target   = "full"
   tags     = ["ghcr.io/digdir/digdir-agents/agentctl-self-dev-full:latest"]
+  labels = {
+    "org.opencontainers.image.title"       = "agentctl-self-dev-full"
+    "org.opencontainers.image.description" = "The agentctl self-development Agent's image, with a browser and a desktop"
+  }
 }

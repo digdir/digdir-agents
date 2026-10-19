@@ -1,7 +1,7 @@
 # The self-development Agent's images, built on the agentctl base images in images/agentctl-base. FROM names the base
 # tag without a digest, so that these images follow the platform they develop: CI builds them on the base built from
-# the same commit (docker-bake.hcl), and a nested Agent builds on the published base, or on one built locally under its
-# name.
+# the same commit (docker-bake.hcl), and a nested Agent builds on the base Podman has under that name, pulled or built
+# locally. renovate.json keeps Renovate from pinning it.
 FROM ghcr.io/digdir/agentctl-base:ubuntu-26.04 AS minimal
 
 # The base ends as the unprivileged Agent user; installing packages needs root again.
@@ -134,7 +134,7 @@ ENV CARGO_TARGET_DIR=/home/agent/.cache/cargo-target
 # The Sandbox Image Backend speaks the Docker Engine API; point it at the Podman socket the
 # platform enables and grants to the agent user.
 ENV DOCKER_HOST=unix:///run/podman/podman.sock
-ENV PATH=/home/agent/.cargo/bin:${PATH}
+ENV PATH=/home/agent/.local/bin:/home/agent/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN agent-image-check
 

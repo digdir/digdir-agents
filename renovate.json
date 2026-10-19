@@ -2,5 +2,17 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "local>digdir/renovate-config"
+  ],
+  "packageRules": [
+    {
+      "description": "The self-dev images build on the agentctl base image from the same commit, so their FROM names the tag alone.",
+      "matchFileNames": [
+        "agents/self-dev/Dockerfile"
+      ],
+      "matchPackageNames": [
+        "ghcr.io/digdir/agentctl-base"
+      ],
+      "enabled": false
+    }
   ]
 }

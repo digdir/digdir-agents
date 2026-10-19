@@ -27,7 +27,8 @@ permissions:
 
 concurrency:
   group: agentctl-self-dev-images-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A cancelled publish could leave the two images' tags pointing at different commits.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   BASE_REPOSITORY: ghcr.io/digdir/agentctl-base

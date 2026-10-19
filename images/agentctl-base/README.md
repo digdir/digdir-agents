@@ -9,7 +9,8 @@ versions its adapters are tested with, so an Agent's Dockerfile only adds the to
 | `ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop` | The headless image plus the [`desktop` feature](#features): Chromium with `playwright-cli`, ffmpeg, and an X11 desktop with VNC access and the `computer-use` skill |
 
 Both are published for `linux/amd64` and `linux/arm64` from `main` whenever this directory changes, and also tagged
-`<tag>-sha-<commit>`. Pin a digest, which Renovate keeps current:
+`<tag>-sha-<commit>`. Pin a digest, which Renovate keeps current. The self-dev images are the exception: they build on
+the base from the same commit, so their `FROM` names the tag alone.
 
 ```dockerfile
 FROM ghcr.io/digdir/agentctl-base:ubuntu-26.04@sha256:…
