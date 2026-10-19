@@ -1,0 +1,93 @@
+#!/bin/sh
+# Checks an Agent image against what agentd expects of it (agentctl/IMAGE.md in digdir/digdir-agents).
+# Run it as root at the end of an image's last build stage, after every step that writes files:
+#
+#   RUN agent-image-check
+#
+# It reports every failed check and exits non-zero if there was one. It writes nothing under /home/agent.
+set -u
+
+failures=0
+fail() {
+    echo "agent-image-check: $*" >&2
+    failures=$((failures + 1))
+}
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "agent-image-check: run as root, before the final USER agent" >&2
+    exit 2
+fi
+
+# The user every Execution runs as. The runtime directory and the desktop's session bus put the UID
+# in their paths.
+if ! id agent >/dev/null 2>&1; then
+    fail "there is no agent user"
+else
+    [ "$(id -u agent)" = 1000 ] || fail "the agent user has UID $(id -u agent), not 1000"
+    [ "$(id -gn agent)" = agent ] || fail "the agent user's primary group is $(id -gn agent), not agent"
+    [ "$(getent passwd agent | cut -d: -f6)" = /home/agent ] || fail "the agent user's home is not /home/agent"
+    # agentd runs its setup steps through sudo, some of them with -n.
+    sudo -n -u agent sudo -n true 2>/dev/null || fail "the agent user cannot run sudo without a password"
+    # OpenSSH rejects even public-key authentication for a locked account when PAM is disabled.
+    case "$(passwd --status agent 2>/dev/null | cut -d' ' -f2)" in
+        L) fail "the agent account is locked, so SSH access would reject it" ;;
+    esac
+fi
+
+# A root-owned file under the home directory locks the Agent out of its own caches and configuration.
+[ -d /home/agent/code ] || fail "/home/agent/code is missing"
+foreign="$(find /home/agent ! -user agent -print 2>/dev/null | head -5)"
+[ -z "$foreign" ] || fail "files under /home/agent not owned by agent, such as: $(echo "$foreign" | tr '\n' ' ')"
+
+# What agentd executes in the guest by absolute path, and the harnesses and hook runtime it finds on PATH.
+for path in /usr/bin/env /usr/bin/sudo /usr/bin/tmux /usr/bin/tar /usr/bin/install /usr/bin/find /usr/bin/grep \
+    /usr/bin/stat /usr/bin/date /usr/bin/tail /bin/sh /bin/sleep /bin/rm; do
+    [ -x "$path" ] || fail "$path is missing"
+done
+[ -f /etc/ssl/certs/ca-certificates.crt ] || fail "/etc/ssl/certs/ca-certificates.crt is missing; install ca-certificates"
+scratch="$(mktemp -d)"
+for command in node claude codex pi; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+        fail "$command is not on PATH"
+    elif ! HOME="$scratch" timeout 30 "$command" --version >/dev/null 2>&1; then
+        fail "$command --version failed"
+    fi
+done
+rm -rf "$scratch"
+
+# SSH access: agentd owns the server's policy, keys and unit, and needs systemd to run it.
+[ -x /usr/sbin/sshd ] || fail "/usr/sbin/sshd is missing; install openssh-server"
+[ -x /usr/bin/systemctl ] || fail "/usr/bin/systemctl is missing"
+for unit in ssh.service ssh.socket; do
+    state="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+    case "$state" in masked | not-found | '') ;; *) fail "$unit is $state; it must be masked" ;; esac
+done
+if ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
+    fail "the image ships SSH host keys in /etc/ssh"
+fi
+# Every Agent boots with its own machine ID.
+[ ! -s /etc/machine-id ] || fail "/etc/machine-id is not empty"
+
+# VNC access: the descriptor names the units agentd enables and the ports it expects.
+descriptor=/etc/agent-access.d/vnc.conf
+if [ -e "$descriptor" ]; then
+    [ "$(sed -n 's/^port=//p' "$descriptor")" = 5900 ] || fail "$descriptor must set port=5900"
+    web_port="$(sed -n 's/^web-port=//p' "$descriptor")"
+    [ -z "$web_port" ] || [ "$web_port" = 6080 ] || fail "$descriptor must set web-port=6080 or leave it out"
+    [ -x /usr/bin/ss ] || fail "/usr/bin/ss is missing; install iproute2"
+    units="$(sed -n 's/^units=//p' "$descriptor")"
+    for unit in $units; do
+        state="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+        case "$state" in
+            disabled | static) ;;
+            '' | not-found) fail "$descriptor names $unit, which does not exist" ;;
+            *) fail "$unit is $state; it must ship disabled" ;;
+        esac
+    done
+fi
+
+if [ "$failures" -gt 0 ]; then
+    echo "agent-image-check: $failures check(s) failed" >&2
+    exit 1
+fi
+echo "agent-image-check: ok"

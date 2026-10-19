@@ -1,0 +1,46 @@
+#!/bin/sh
+set -eu
+
+# Clones the GitHub repositories listed in /etc/agent-workspace.d/*.list into the workspace. Each
+# line names one repository as OWNER/NAME, optionally followed by a destination below
+# /home/agent/code, which defaults to NAME; `#` starts a comment. A destination that already has
+# `.git`, such as a bind-mounted host checkout, is left alone.
+lists=${AGENT_WORKSPACE_LISTS:-/etc/agent-workspace.d}
+workspace=/home/agent/code
+
+missing=
+for list in "$lists"/*.list; do
+    [ -f "$list" ] || continue
+    while read -r repository destination _; do
+        case $repository in '' | '#'*) continue ;; esac
+        destination=${destination:-${repository#*/}}
+        if [ ! -e "$workspace/$destination/.git" ]; then
+            missing="$missing $repository=$destination"
+        fi
+    done <"$list"
+done
+if [ -z "$missing" ]; then
+    exit 0
+fi
+mkdir -p "$workspace"
+
+# Guest boot can race the host-mediated network handshake. Wait for DNS,
+# while leaving each repository operation itself as one best-effort attempt.
+remaining=30
+while ! /usr/bin/getent ahosts github.com >/dev/null 2>&1; do
+    if [ "$remaining" -eq 0 ]; then
+        echo "github.com did not become resolvable within 30 seconds" >&2
+        exit 1
+    fi
+    remaining=$((remaining - 1))
+    /usr/bin/sleep 1
+done
+
+# gh adds an `upstream` remote when it clones a fork.
+status=0
+for entry in $missing; do
+    destination="$workspace/${entry#*=}"
+    mkdir -p "${destination%/*}"
+    /usr/local/bin/gh repo clone "${entry%%=*}" "$destination" || status=1
+done
+exit "$status"

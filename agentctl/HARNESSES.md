@@ -8,9 +8,9 @@ An existing Agent keeps the image it was created with, but `agentctl self update
 Adapter changes that accompany a bump must therefore also work with the previous pin.
 
 Implementation: [adapters](src/harness), [terminal runtime](src/sessions/runtime/tmux.rs),
-[Session service](src/sessions/service.rs). Harness pins: [self-dev](../agents/self-dev/Dockerfile),
-[minimal](examples/minimal/Dockerfile) (Claude Code only) and [worktree](../sandbox/core/examples/worktree/Dockerfile);
-update them together.
+[Session service](src/sessions/service.rs). Harness pins: the [base images](../images/agentctl-base/Dockerfile),
+[self-dev](../agents/self-dev/Dockerfile), [minimal](examples/minimal/Dockerfile) (Claude Code only) and
+[worktree](../sandbox/core/examples/worktree/Dockerfile); update them together.
 
 ## Upgrade test plan
 

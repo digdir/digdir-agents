@@ -1,0 +1,9 @@
+*
+!Dockerfile
+!claude-state.json
+!headless/
+!headless/**
+!desktop/
+!desktop/**
+!skills/
+!skills/**
