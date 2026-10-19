@@ -13,8 +13,10 @@ Agent clones `digdir/digdir-agents`, `digdir/microsandbox` and `digdir/libkrunfw
 Both Agents are named `agentctl-dev`, and their nested variants `agentctl-dev-nested`, since you typically use one or
 the other. Pass `--name` to run both at once.
 
-The images are built from this directory's `Dockerfile` and published to `ghcr.io/digdir/digdir-agents` whenever they
-change on `main`. Use a `nested` variant to try changes to the image itself.
+The images are built from this directory's `Dockerfile` on the [agentctl base images](../../images/agentctl-base/README.md),
+and published to `ghcr.io/digdir/digdir-agents` whenever they or the base images change on `main`. `full` is `minimal`
+plus the base images' `desktop` feature. Use a `nested` variant to try changes to the image itself; it builds on the
+published base image, or on one built locally under the published name.
 
 ## Getting started
 
@@ -80,5 +82,5 @@ Re-check these when the gateway or Pi changes.
 
 `instructions.md` tells the harness how to build, test and run the platform nested; the `full` Agent adds
 `full/desktop.md`. The `pr-evidence` skill describes how to record `agentctl` demonstrations and attach them to pull
-requests, and the `changelog` skill how to write changelog entries. The `full` Agent also has the `computer-use` skill
-for driving its desktop.
+requests, and the `changelog` skill how to write changelog entries. The `full` image also ships the `computer-use`
+skill for driving its desktop.

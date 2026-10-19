@@ -1,5 +1,6 @@
-# Builds the self-development Agent's images from agents/self-dev. Pull requests only build them; main,
-# including a manual run on main, also publishes them to GHCR as `latest` and `sha-<commit>`.
+# Builds the self-development Agent's images from agents/self-dev, on the agentctl base images built from the same
+# commit. Pull requests only build them; main, including a manual run on main, also publishes them to GHCR as `latest`
+# and `sha-<commit>`.
 name: agentctl self-dev images
 
 on:
@@ -7,12 +8,16 @@ on:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed]
     paths:
       - agents/self-dev/**
+      - images/agentctl-base/**
+      - docker-bake.hcl
       - .github/workflows/agentctl-self-dev-images.yml
   push:
     branches:
       - main
     paths:
       - agents/self-dev/**
+      - images/agentctl-base/**
+      - docker-bake.hcl
       - .github/workflows/agentctl-self-dev-images.yml
   workflow_dispatch:
 
@@ -25,7 +30,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CONTEXT: agents/self-dev
+  BASE_REPOSITORY: ghcr.io/digdir/agentctl-base
   REGISTRY: ghcr.io/digdir/digdir-agents
 
 jobs:
@@ -50,8 +55,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Cone mode also checks out the root's files, docker-bake.hcl among them.
           sparse-checkout: |
             agents/self-dev
+            images/agentctl-base
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -62,9 +69,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
 
-      # Both images are built in one job, minimal first: full is minimal plus its own stage, so its build reuses the
-      # minimal layers just built and publishes them with the same digests, and a host that has minimal only pulls the
-      # full layers.
+      # Both images are built in one bake, on the base image bake builds from this commit: full is minimal plus the
+      # desktop, so it publishes the minimal layers with the same digests, and a host that has minimal only pulls the
+      # full layers. The base's own cache serves the base layers.
       - name: Build images
         env:
           ARCH: ${{ matrix.arch }}
@@ -72,37 +79,33 @@ jobs:
         run: |
           set -eu
 
-          mkdir -p "${RUNNER_TEMP}/digests"
+          metadata="${RUNNER_TEMP}/metadata.json"
+          set -- --set "*.platform=linux/${ARCH}" \
+            --set "base-headless.cache-from=type=registry,ref=${BASE_REPOSITORY}:buildcache-headless-${ARCH}" \
+            --set "self-dev-full.cache-from=type=registry,ref=${REGISTRY}/agentctl-self-dev-minimal:buildcache-${ARCH}"
           for target in minimal full; do
             repository="${REGISTRY}/agentctl-self-dev-${target}"
-            metadata="${RUNNER_TEMP}/metadata-${target}.json"
-            set --
+            set -- "$@" --set "self-dev-${target}.cache-from=type=registry,ref=${repository}:buildcache-${ARCH}"
             if [ "${PUBLISH}" = "true" ]; then
-              set -- \
-                --output "type=image,name=${repository},push-by-digest=true,name-canonical=true,push=true" \
-                --metadata-file "${metadata}" \
-                --cache-to "type=registry,ref=${repository}:buildcache-${ARCH},mode=max,image-manifest=true"
-            fi
-
-            docker buildx build \
-              --provenance=false \
-              --sbom=false \
-              --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-              --cache-from "type=registry,ref=${REGISTRY}/agentctl-self-dev-minimal:buildcache-${ARCH}" \
-              --cache-from "type=registry,ref=${repository}:buildcache-${ARCH}" \
-              --platform "linux/${ARCH}" \
-              --target "${target}" \
-              "$@" \
-              "${CONTEXT}"
-
-            if [ "${PUBLISH}" = "true" ]; then
-              digest="$(jq -r '."containerimage.digest"' "${metadata}")"
-              case "${digest}" in
-                sha256:*) printf '%s\n' "${digest}" > "${RUNNER_TEMP}/digests/${target}" ;;
-                *) echo "::error::no image digest for ${target} in ${metadata}"; exit 1 ;;
-              esac
+              set -- "$@" \
+                --set "self-dev-${target}.output=type=image,name=${repository},push-by-digest=true,name-canonical=true,push=true" \
+                --set "self-dev-${target}.cache-to=type=registry,ref=${repository}:buildcache-${ARCH},mode=max,image-manifest=true"
             fi
           done
+
+          docker buildx bake --file docker-bake.hcl --provenance=false --sbom=false --metadata-file "${metadata}" \
+            "$@" self-dev
+
+          if [ "${PUBLISH}" = "true" ]; then
+            mkdir -p "${RUNNER_TEMP}/digests"
+            for target in minimal full; do
+              digest="$(jq -r --arg target "self-dev-${target}" '.[$target]."containerimage.digest"' "${metadata}")"
+              case "${digest}" in
+                sha256:*) printf '%s\n' "${digest}" > "${RUNNER_TEMP}/digests/${target}" ;;
+                *) echo "::error::no image digest for self-dev-${target} in ${metadata}"; exit 1 ;;
+              esac
+            done
+          fi
 
       - name: Upload image digests
         if: github.ref == 'refs/heads/main'

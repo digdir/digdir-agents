@@ -1,0 +1,4 @@
+# The agent platform and the Microsandbox and libkrunfw forks it builds on, cloned beside each other.
+digdir/digdir-agents
+digdir/microsandbox
+digdir/libkrunfw

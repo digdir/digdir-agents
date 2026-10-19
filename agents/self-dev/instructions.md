@@ -21,8 +21,9 @@ Do not add `Co-Authored-By` or similar AI-attribution trailers to commit message
 
 To run a nested Agent, log the nested `agentd` in with the placeholders this Sandbox already holds, then apply the
 `nested` variant from the task's worktree: it builds its image from the checkout it is applied from, so applying it
-from the primary checkout tests `main` instead of your change. Use `agents/self-dev/full` instead of `minimal` for a
-nested Agent with a browser and a desktop. An Agent's source directory cannot change, so delete an earlier
+from the primary checkout tests `main` instead of your change. It builds on the published agentctl base image unless
+one is built locally under that name; to test a change to `images/agentctl-base`, build it first as its README
+describes. Use `agents/self-dev/full` instead of `minimal` for a nested Agent with a browser and a desktop. An Agent's source directory cannot change, so delete an earlier
 `agentctl-dev-nested` applied from another worktree first, and delete it before removing the worktree it reads from.
 
 ```sh

@@ -8,17 +8,18 @@ An existing Agent keeps the image it was created with, but `agentctl self update
 Adapter changes that accompany a bump must therefore also work with the previous pin.
 
 Implementation: [adapters](src/harness), [terminal runtime](src/sessions/runtime/tmux.rs),
-[Session service](src/sessions/service.rs). Harness pins: the [base images](../images/agentctl-base/Dockerfile),
-[self-dev](../agents/self-dev/Dockerfile), [minimal](examples/minimal/Dockerfile) (Claude Code only) and
+[Session service](src/sessions/service.rs). Harness pins: the [base images](../images/agentctl-base/Dockerfile), which
+the self-dev Agent builds on, [minimal](examples/minimal/Dockerfile) (Claude Code only) and
 [worktree](../sandbox/core/examples/worktree/Dockerfile); update them together.
 
 ## Upgrade test plan
 
 Install the current platform with `make user-install` from the repository root; it replaces and restarts `agentd`, and
 refuses while any Session reports `Working` (#149, #150), so archive or delete earlier test Sessions first. Test the
-self-dev image built from the branch: from `agents/self-dev/minimal` in the branch's checkout,
-`agentctl apply --variant nested --env-file <file> --wait` builds it with all three harnesses and fits inside another
-Agent. Keep the env file outside the checkout. Use fresh Session names and confirm `claude --version`,
+self-dev image built from the branch: build the base images locally under their published names, as
+[their README](../images/agentctl-base/README.md#changing-them) describes, then from `agents/self-dev/minimal` in the
+branch's checkout, `agentctl apply --variant nested --env-file <file> --wait` builds it on them with all three
+harnesses and fits inside another Agent. Keep the env file outside the checkout. Use fresh Session names and confirm `claude --version`,
 `codex --version` and `pi --version` in the Sandbox; testing an existing Sandbox does not prove the rebuilt image works.
 
 Run each check against Claude Code and Codex ("Both") unless the table names one, and against Pi as [below](#pi). A

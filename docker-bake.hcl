@@ -41,3 +41,25 @@ target "base-desktop" {
     "org.opencontainers.image.description" = "Desktop base image for agentctl Agents: the headless image plus Chromium and a VNC desktop"
   }
 }
+
+group "self-dev" {
+  targets = ["self-dev-minimal", "self-dev-full"]
+}
+
+# The self-dev images build on the base image from this file rather than the published one, so that CI tests a change
+# to the base together with the image that develops the platform.
+target "self-dev-minimal" {
+  inherits = ["_source"]
+  context  = "agents/self-dev"
+  target   = "minimal"
+  contexts = {
+    ("${BASE_REPOSITORY}:${BASE_DISTRIBUTION}") = "target:base-headless"
+  }
+  tags = ["ghcr.io/digdir/digdir-agents/agentctl-self-dev-minimal:latest"]
+}
+
+target "self-dev-full" {
+  inherits = ["self-dev-minimal"]
+  target   = "full"
+  tags     = ["ghcr.io/digdir/digdir-agents/agentctl-self-dev-full:latest"]
+}

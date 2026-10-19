@@ -81,7 +81,8 @@ USER agent
 | `browser` | Chromium with `playwright-cli` and its skill, ffmpeg, and the `video-to-gif` and `media-preview` helpers. Chromium trusts the Agent's mediated CA once `$XDG_RUNTIME_DIR/chromium-ca-ready` exists, shortly after boot. |
 | `desktop` | `browser`, plus an X11 desktop on display `:1` with VNC access, the `desktop`, `desktop-terminal` and `chromium` commands, and the `computer-use` skill. Provides `/etc/agent-access.d/vnc.conf`, so an Agent on it can declare `access: [{type: vnc}]`. |
 
-`agent-feature list` shows what an image has. The instructions about the desktop belong to the Agent; see the self-dev
+`agent-feature list` shows what an image has. The [self-dev images](../../agents/self-dev/Dockerfile) are built this
+way. The instructions about the desktop belong to the Agent; see the self-dev
 Agent's [desktop.md](../../agents/self-dev/full/desktop.md). The desktop image is the headless one after
 `agent-feature install desktop`.
 
