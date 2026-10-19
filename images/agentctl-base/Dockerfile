@@ -143,6 +143,8 @@ RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
     && rm -rf "${scratch}" /root/.npm /root/.cache /tmp/node-compile-cache
 
 COPY headless/ /
+# The optional parts `agent-feature install` adds to an image built on this one.
+COPY features/ /usr/local/share/agentctl-base/features/
 # Claude Code's onboarding and workspace trust, which agentd does not write. Seeded here rather than through an
 # Agent's home overlay, which is applied again on every pass and would undo what Claude Code records in the file.
 # The directory exists already: BuildKit would give a parent directory COPY creates the file's mode, 0600.
@@ -178,146 +180,24 @@ WORKDIR /home/agent/code
 ENTRYPOINT ["/usr/lib/systemd/systemd"]
 
 # The headless image plus Chromium and a graphical desktop with VNC access, for work that needs a real screen:
-# browser captures for pull request evidence, and people watching or taking over.
+# browser captures for pull request evidence, and people watching or taking over. It adds the desktop with
+# agent-feature, exactly as an image built on the headless one would.
 FROM headless AS desktop
 
 # The headless stage ends as the unprivileged Agent user; installing packages needs root again.
 USER root
 
-ARG PLAYWRIGHT_CLI_VERSION=0.1.20
+RUN agent-feature install desktop
 
-# Standalone scripts resolve the globally installed `playwright` package from any directory.
+# What `agent-feature env desktop` prints; features/*/env explain each variable.
 ENV NODE_PATH=/usr/local/lib/node_modules
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-
-# ffmpeg converts and inspects browser captures and libnss3-tools imports the Agent CA into Chromium.
-# xdg-utils lets `xdg-open`, and agentctl's open actions, open links on the desktop as on any other.
-# The rest is a minimal X11 desktop: one process that is both X and VNC server, a window manager, a
-# panel, the input and window tools the `desktop` helper uses, AT-SPI for `desktop tree`, and sakura
-# as the terminal, whose text AT-SPI exposes too. wmctrl is left out because its build here segfaults
-# on an empty window list; the helper reads the same properties with xprop and xdotool.
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends \
-        at-spi2-core \
-        dbus-x11 \
-        ffmpeg \
-        fonts-noto-color-emoji \
-        fonts-noto-core \
-        libnss3-tools \
-        openbox \
-        python3-pyatspi \
-        sakura \
-        tigervnc-standalone-server \
-        tint2 \
-        x11-utils \
-        x11-xserver-utils \
-        xdg-utils \
-        xdotool \
-    && rm -rf /var/lib/apt/lists/*
-
-# Playwright ties every package version to one Chromium build. The browser CLI owns the version:
-# the `playwright` package is installed at exactly the version the CLI depends on, so the CLI,
-# standalone scripts and the single browser under PLAYWRIGHT_BROWSERS_PATH cannot drift apart.
-# The bundled skill is installed user-wide where Claude Code, Codex and Pi look for skills;
-# `playwright-cli install --skills` would otherwise write it per working directory. Root-owned
-# build caches under the agent home would deny the agent user its own cache directories later.
-# Agent Sandboxes mount their CA bundle here; this step's Node downloads trust it.
-RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
-      export NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem; \
-    fi; \
-    npm install --global "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}" \
-    && PLAYWRIGHT_VERSION="$(node -p "require('${NODE_PATH}/@playwright/cli/package.json').dependencies.playwright")" \
-    && test -n "${PLAYWRIGHT_VERSION}" \
-    && npm install --global "playwright@${PLAYWRIGHT_VERSION}" \
-    && test "$(node -p "require('playwright/package.json').version")" = "${PLAYWRIGHT_VERSION}" \
-    && playwright install --with-deps chromium \
-    && chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}" \
-    && playwright --version \
-    && playwright-cli --version \
-    && for skills in /home/agent/.claude/skills /home/agent/.agents/skills; do \
-        mkdir -p "${skills}" \
-        && cp -R "${NODE_PATH}/@playwright/cli/skills/playwright-cli" "${skills}/playwright-cli"; \
-    done \
-    && chown -R agent:agent /home/agent/.claude /home/agent/.agents \
-    && rm -rf /var/lib/apt/lists/* /home/agent/.npm /home/agent/.cache
-
-ARG NOVNC_VERSION=1.7.0
-ARG NOVNC_SHA256=b1003a11b6e6e8d8f7f5e5586daae7f8ca651d8aee0aa155ff9ac841c48f52c6
-ARG WS_VERSION=8.21.3
-
-# The browser viewer: noVNC, pinned by digest and trimmed to the files it serves, and `ws` for its
-# WebSocket bridge. Neither is packaged for Ubuntu. Agent Sandboxes mount their CA bundle at the
-# path below, so this step's Node downloads trust it.
-RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
-      export NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem; \
-    fi; \
-    curl -fsSL "https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSION}.tar.gz" -o /tmp/novnc.tar.gz \
-    && echo "${NOVNC_SHA256}  /tmp/novnc.tar.gz" | sha256sum -c - \
-    && install -d -m 0755 /usr/local/share/novnc \
-    && tar -xzf /tmp/novnc.tar.gz -C /usr/local/share/novnc --strip-components=1 \
-        "noVNC-${NOVNC_VERSION}/vnc.html" \
-        "noVNC-${NOVNC_VERSION}/app" \
-        "noVNC-${NOVNC_VERSION}/core" \
-        "noVNC-${NOVNC_VERSION}/vendor" \
-        "noVNC-${NOVNC_VERSION}/po" \
-        "noVNC-${NOVNC_VERSION}/defaults.json" \
-        "noVNC-${NOVNC_VERSION}/mandatory.json" \
-        "noVNC-${NOVNC_VERSION}/package.json" \
-        "noVNC-${NOVNC_VERSION}/LICENSE.txt" \
-    && rm -f /tmp/novnc.tar.gz \
-    && npm install --global "ws@${WS_VERSION}" \
-    && node -e "require('ws')" \
-    && test -f /usr/local/share/novnc/vnc.html \
-    && rm -rf /home/agent/.npm /home/agent/.cache
-
-# The desktop's units and helpers. The VNC access units ship disabled: agentd enables the ones
-# /etc/agent-access.d/vnc.conf names when an Agent declares `access: [{type: vnc}]`.
-COPY desktop/ /
-COPY --chown=agent:agent skills/computer-use /home/agent/.claude/skills/computer-use
-COPY --chown=agent:agent skills/computer-use /home/agent/.agents/skills/computer-use
-
-# xdotool refuses multi-byte characters such as æ, ø and å under the POSIX locale; the headless
-# stage already selects C.UTF-8. Every Session uses the Agent's own display. The desktop units read
-# the same value from /etc/agent-desktop.conf, and the build below fails if the two disagree.
 ENV DISPLAY=:1
-# AT-SPI needs a session bus shared by Sessions and desktop programs. A Session is a tmux process
-# rather than a login, so agent-desktop-dbus.service provides one at this fixed address.
 ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
-# Chromium joins the accessibility bus only with ACCESSIBILITY_ENABLED, and fills in its tree only
-# with --force-renderer-accessibility (about 20 MiB and 90 ms at startup). The `chromium` launcher
-# passes the switch; playwright-cli starts headed browsers through it and headless ones as before.
 ENV ACCESSIBILITY_ENABLED=1
 ENV PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/local/libexec/agent-playwright-chromium
 
-# These checks run with a scratch HOME: openbox writes under $HOME/.cache when invoked, and a
-# root-owned file there would lock the Agent out of its own cache. agent-image-check catches a
-# future check that writes there anyway.
-RUN systemctl enable agent-browser-ca-init.service \
-        agent-desktop-display.service agent-desktop-session.service agent-desktop-dbus.service \
-    && HOME=/tmp/image-checks sh -c ' \
-        Xtigervnc -version 2>&1 | head -1 \
-        && openbox --version | head -1 \
-        && tint2 --version \
-        && xdotool --version \
-        && command -v sakura >/dev/null \
-        && ffmpeg -version | head -1 \
-        && AGENT_BROWSER_CA_READY_FILE=/dev/null chromium --version \
-        && /usr/local/libexec/agent-playwright-chromium --headless --version \
-        && desktop help >/dev/null \
-        && test "$(xdg-mime query default x-scheme-handler/https)" = chromium.desktop' \
-    && rm -rf /tmp/image-checks \
-    && python3 -c 'import pyatspi' \
-    && test -f /usr/share/dbus-1/services/org.a11y.Bus.service \
-    && test "${DBUS_SESSION_BUS_ADDRESS}" = "unix:path=${XDG_RUNTIME_DIR}/bus" \
-    && . /etc/agent-desktop.conf \
-    && test "${DISPLAY}" = "${AGENT_DESKTOP_DISPLAY}" \
-    && vnc_port="$(sed -n 's/^port=//p' /etc/agent-access.d/vnc.conf)" \
-    && web_port="$(sed -n 's/^web-port=//p' /etc/agent-access.d/vnc.conf)" \
-    && { grep -qxF "ListenStream=127.0.0.1:${vnc_port}" /etc/systemd/system/agent-vnc.socket \
-        || { echo "agent-vnc.socket does not listen on the descriptor's port ${vnc_port}" >&2; exit 1; }; } \
-    && { grep -qxF "Environment=AGENT_NOVNC_PORT=${web_port}" /etc/systemd/system/agent-vnc-web.service \
-        || { echo "agent-vnc-web.service does not serve the descriptor's web-port ${web_port}" >&2; exit 1; }; } \
-    && agent-image-check
+RUN agent-image-check
 
 USER agent
 WORKDIR /home/agent/code

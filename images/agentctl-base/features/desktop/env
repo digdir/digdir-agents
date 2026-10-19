@@ -1,0 +1,10 @@
+# Every Session uses the Agent's own display, the one /etc/agent-desktop.conf configures.
+DISPLAY=:1
+# AT-SPI needs a session bus shared by Sessions and desktop programs. A Session is a tmux process
+# rather than a login, so agent-desktop-dbus.service provides one at this fixed address.
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+# Chromium joins the accessibility bus only with ACCESSIBILITY_ENABLED, and fills in its tree only
+# with --force-renderer-accessibility (about 20 MiB and 90 ms at startup). The `chromium` launcher
+# passes the switch; playwright-cli starts headed browsers through it and headless ones as before.
+ACCESSIBILITY_ENABLED=1
+PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/local/libexec/agent-playwright-chromium

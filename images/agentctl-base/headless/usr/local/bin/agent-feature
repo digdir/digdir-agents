@@ -1,0 +1,86 @@
+#!/bin/sh
+# Installs optional parts of the agentctl base images into an image built on them, at the versions the base pins.
+#
+#   agent-feature list                 the features, and whether this image has them
+#   agent-feature install FEATURE...   install features and those they require; run as root in a build step
+#   agent-feature env FEATURE...       the ENV instructions an image with these features needs
+#
+# A script cannot set an image's environment, so follow `install` with the ENV instructions `env` prints;
+# agent-image-check fails an image that lacks them.
+set -eu
+
+features=${AGENT_FEATURES_DIR:-/usr/local/share/agentctl-base/features}
+installed=${AGENT_FEATURES_INSTALLED_DIR:-/var/lib/agentctl-base/features}
+
+usage() {
+    sed -n '4,6p' "$0" >&2
+    exit 64
+}
+
+# Appends FEATURE to $ordered after the features it requires, once.
+ordered=
+add() {
+    case " $ordered " in *" $1 "*) return ;; esac
+    if [ ! -x "$features/$1/install" ]; then
+        echo "agent-feature: no feature named $1; \`agent-feature list\` shows them" >&2
+        exit 64
+    fi
+    if [ -f "$features/$1/requires" ]; then
+        requirements=$(cat "$features/$1/requires")
+        for requirement in $requirements; do
+            add "$requirement"
+        done
+    fi
+    ordered="$ordered $1"
+}
+
+print_env() {
+    for feature in $ordered; do
+        [ -f "$features/$feature/env" ] || continue
+        grep -v -e '^#' -e '^$' "$features/$feature/env" | sed 's/^/ENV /'
+    done
+}
+
+[ "$#" -gt 0 ] || usage
+command=$1
+shift
+case $command in
+    list)
+        [ "$#" -eq 0 ] || usage
+        for directory in "$features"/*/; do
+            feature=$(basename "$directory")
+            state=available
+            [ -e "$installed/$feature" ] && state=installed
+            printf '%-10s %-10s %s\n' "$feature" "$state" "$(sed -n '2s/^# //p' "$directory/install")"
+        done
+        ;;
+    env)
+        [ "$#" -gt 0 ] || usage
+        for feature in "$@"; do add "$feature"; done
+        print_env
+        ;;
+    install)
+        [ "$#" -gt 0 ] || usage
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "agent-feature: install runs as root, in a build step after USER root" >&2
+            exit 1
+        fi
+        for feature in "$@"; do add "$feature"; done
+        for feature in $ordered; do
+            if [ -e "$installed/$feature" ]; then
+                echo "agent-feature: $feature is already installed"
+                continue
+            fi
+            echo "agent-feature: installing $feature"
+            # A scratch HOME keeps package managers' caches out of /home/agent, which the Agent must own.
+            scratch=$(mktemp -d)
+            HOME=$scratch "$features/$feature/install"
+            rm -rf "$scratch"
+            install -d "$installed"
+            touch "$installed/$feature"
+        done
+        echo "agent-feature: set this environment in the image, after this step:"
+        print_env
+        ;;
+    *) usage ;;
+esac

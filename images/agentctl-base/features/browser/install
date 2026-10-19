@@ -1,0 +1,50 @@
+#!/bin/sh
+# Chromium with playwright-cli and its skill, ffmpeg and the media helpers, for browser captures in pull request evidence.
+#
+# Run by `agent-feature install browser` as root, with a scratch HOME.
+set -eu
+
+feature=$(dirname "$0")
+PLAYWRIGHT_CLI_VERSION=${PLAYWRIGHT_CLI_VERSION:-0.1.20}
+
+export NODE_PATH=/usr/local/lib/node_modules
+export PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+# Agent Sandboxes mount their CA bundle here; this step's Node downloads trust it.
+if [ -r /run/agent/tls/ca-bundle.pem ]; then
+    export NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem
+fi
+
+# ffmpeg converts and inspects browser captures and libnss3-tools imports the Agent CA into Chromium.
+apt-get update
+apt-get install --yes --no-install-recommends ffmpeg libnss3-tools
+
+# Playwright ties every package version to one Chromium build. The browser CLI owns the version:
+# the `playwright` package is installed at exactly the version the CLI depends on, so the CLI,
+# standalone scripts and the single browser under PLAYWRIGHT_BROWSERS_PATH cannot drift apart.
+npm install --global "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}"
+playwright_version="$(node -p "require('${NODE_PATH}/@playwright/cli/package.json').dependencies.playwright")"
+test -n "${playwright_version}"
+npm install --global "playwright@${playwright_version}"
+test "$(node -p "require('playwright/package.json').version")" = "${playwright_version}"
+playwright install --with-deps chromium
+chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"
+rm -rf /var/lib/apt/lists/*
+
+# This feature's files, copied after the packages so that dpkg installs over none of them.
+cp -R "${feature}/rootfs/." /
+
+# The bundled skill is installed user-wide where Claude Code, Codex and Pi look for skills;
+# `playwright-cli install --skills` would otherwise write it per working directory.
+for skills in /home/agent/.claude/skills /home/agent/.agents/skills; do
+    install -d -o agent -g agent "${skills%/skills}" "${skills}"
+    rm -rf "${skills}/playwright-cli"
+    cp -R "${NODE_PATH}/@playwright/cli/skills/playwright-cli" "${skills}/playwright-cli"
+    chown -R agent:agent "${skills}/playwright-cli"
+done
+
+systemctl enable agent-browser-ca-init.service
+
+playwright --version
+playwright-cli --version
+ffmpeg -version | head -1
+test -x /usr/local/bin/video-to-gif && test -x /usr/local/bin/media-preview

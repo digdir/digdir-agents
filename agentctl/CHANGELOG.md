@@ -14,7 +14,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Added
 
-- Agent images can build on `ghcr.io/digdir/agentctl-base:ubuntu-26.04`, or `ubuntu-26.04-desktop` for Chromium and a VNC desktop, which ship Claude Code, Codex and Pi at the tested versions. `agent-image-check` reports what an image still lacks. ([base images](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base), [image contract](https://github.com/digdir/digdir-agents/blob/main/agentctl/IMAGE.md), [#187](https://github.com/digdir/digdir-agents/pull/187))
+- Agent images can build on `ghcr.io/digdir/agentctl-base:ubuntu-26.04`, or `ubuntu-26.04-desktop` for Chromium and a VNC desktop, which ship Claude Code, Codex and Pi at the tested versions. `agent-feature install browser` or `desktop` adds those parts to an image's own stage, and `agent-image-check` reports what an image still lacks. ([base images](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base), [image contract](https://github.com/digdir/digdir-agents/blob/main/agentctl/IMAGE.md), [#187](https://github.com/digdir/digdir-agents/pull/187))
 - Agents can offer Pi (`type: pi`) as a third harness, configured entirely by the Agent: its providers, models and keys come from its own `~/.pi/agent/` files and `spec.secrets`. Adding Pi to an existing Agent means deleting and re-applying it. ([agentctl/README.md](https://github.com/digdir/digdir-agents/tree/main/agentctl#pi), [#182](https://github.com/digdir/digdir-agents/pull/182))
 
 ### Changed

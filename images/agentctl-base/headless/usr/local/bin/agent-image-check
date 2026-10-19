@@ -100,6 +100,21 @@ if [ -e "$descriptor" ]; then
     done
 fi
 
+# Features installed with agent-feature need the environment their env files list, which only the image's ENV
+# instructions can set.
+for marker in /var/lib/agentctl-base/features/*; do
+    [ -e "$marker" ] || continue
+    feature=${marker##*/}
+    env_file=/usr/local/share/agentctl-base/features/$feature/env
+    [ -f "$env_file" ] || continue
+    while IFS= read -r line; do
+        case $line in '' | '#'*) continue ;; esac
+        name=${line%%=*}
+        [ "$(printenv "$name" || true)" = "${line#*=}" ] \
+            || fail "the $feature feature needs ENV $line; \`agent-feature env $feature\` prints all it needs"
+    done <"$env_file"
+done
+
 if [ "$failures" -gt 0 ]; then
     echo "agent-image-check: $failures check(s) failed" >&2
     exit 1
