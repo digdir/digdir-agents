@@ -8,3 +8,9 @@ DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 # passes the switch; playwright-cli starts headed browsers through it and headless ones as before.
 ACCESSIBILITY_ENABLED=1
 PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/local/libexec/agent-playwright-chromium
+# Chromium and Electron choose their password store by desktop, and for one they do not know, such
+# as openbox, use their basic store rather than the desktop's Secret Service. XFCE is one they keep
+# secrets in libsecret for and otherwise treat as an unknown desktop, reading proxy settings from
+# the environment for example. xdg-open compares the whole value, which it does not recognize, and
+# opens links as before. /etc/agent-desktop.conf sets the same for programs the desktop starts.
+XDG_CURRENT_DESKTOP=X-Openbox:XFCE

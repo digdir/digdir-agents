@@ -1,0 +1,26 @@
+[Unit]
+Description=Secret Service for the Agent desktop
+Documentation=https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base
+# It serves on the session bus agent-desktop-dbus.service provides.
+After=agent-desktop-dbus.service
+Requires=agent-desktop-dbus.service
+
+[Service]
+# libsecret, and through it Chromium's and Electron's password stores, needs an unlocked Secret
+# Service. A Sandbox has no login to unlock a keyring with, so the login keyring is created and
+# unlocked at start with the password given on standard input: a single newline, since gnome-keyring
+# takes no input as no password. Anyone who can read the keyring file can therefore decrypt it, and
+# what it holds is protected by the Sandbox boundary alone.
+Type=exec
+User=agent
+Group=agent
+Environment=HOME=/home/agent
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+ExecStart=/bin/sh -c 'printf "\\n" | exec /usr/bin/gnome-keyring-daemon --replace --foreground --unlock --components=secrets --control-directory=/run/user/1000/keyring'
+# The daemon exits successfully when it loses the session bus, and a restarted bus needs it back.
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

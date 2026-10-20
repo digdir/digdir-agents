@@ -79,6 +79,7 @@ ENV DISPLAY=:1
 ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 ENV ACCESSIBILITY_ENABLED=1
 ENV PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/local/libexec/agent-playwright-chromium
+ENV XDG_CURRENT_DESKTOP=X-Openbox:XFCE
 RUN agent-image-check
 USER agent
 ```
@@ -86,12 +87,20 @@ USER agent
 | Feature | Adds |
 | --- | --- |
 | `browser` | Chromium with `playwright-cli` and its skill, ffmpeg, and the `video-to-gif` and `media-preview` helpers. Chromium trusts the Agent's mediated CA once `$XDG_RUNTIME_DIR/chromium-ca-ready` exists, shortly after boot. |
-| `desktop` | `browser`, plus an X11 desktop on display `:1` with VNC access, the `desktop`, `desktop-terminal` and `chromium` commands, and the `computer-use` skill. Provides `/etc/agent-access.d/vnc.conf`, so an Agent on it can declare `access: [{type: vnc}]`. |
+| `desktop` | `browser`, plus an X11 desktop on display `:1` with VNC access and a [Secret Service](#the-secret-service), the `desktop`, `desktop-terminal` and `chromium` commands, and the `computer-use` skill. Provides `/etc/agent-access.d/vnc.conf`, so an Agent on it can declare `access: [{type: vnc}]`. |
 
 `agent-feature list` shows what an image has. The [self-dev images](../../agents/self-dev/Dockerfile) are built this
 way. The instructions about the desktop belong to the Agent; see the self-dev
 Agent's [desktop.md](../../agents/self-dev/full/desktop.md). The desktop image is the headless one after
 `agent-feature install desktop`.
+
+### The Secret Service
+
+The `desktop` feature runs gnome-keyring as the Secret Service, unlocked at boot, for what uses libsecret: `secret-tool`,
+Chromium's password store and Electron's `safeStorage`, as in VS Code. `XDG_CURRENT_DESKTOP=X-Openbox:XFCE` makes
+Chromium and Electron choose it; they do not recognize openbox. A Sandbox has no login to unlock a keyring with, so the
+keyring's password is a fixed newline: `~/.local/share/keyrings` is unencrypted at rest, in effect, and protected only
+by the Sandbox boundary. It persists with the home directory across Stop and Start.
 
 ## Changing them
 

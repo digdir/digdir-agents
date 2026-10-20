@@ -18,14 +18,18 @@ fi
 # A minimal X11 desktop: one process that is both X and VNC server, a window manager, a panel, the
 # input and window tools the `desktop` helper uses, AT-SPI for `desktop tree`, and sakura as the
 # terminal, whose text AT-SPI exposes too. xdg-utils lets `xdg-open`, and agentctl's open actions,
-# open links in Chromium on the desktop. wmctrl is left out because its build here segfaults on an
-# empty window list; the helper reads the same properties with xprop and xdotool.
+# open links in Chromium on the desktop. gnome-keyring is the Secret Service libsecret stores
+# secrets in, Chromium's and Electron's password stores among them, and libsecret-tools provides
+# `secret-tool`. wmctrl is left out because its build here segfaults on an empty window list; the
+# helper reads the same properties with xprop and xdotool.
 apt-get update
 apt-get install --yes --no-install-recommends \
     at-spi2-core \
     dbus-x11 \
     fonts-noto-color-emoji \
     fonts-noto-core \
+    gnome-keyring \
+    libsecret-tools \
     openbox \
     python3-pyatspi \
     sakura \
@@ -36,6 +40,16 @@ apt-get install --yes --no-install-recommends \
     xdg-utils \
     xdotool
 rm -rf /var/lib/apt/lists/*
+
+# agent-desktop-keyring.service is the only Secret Service. gnome-keyring's D-Bus activation would
+# start another daemon whenever a client asks while the unit is restarting, with its keyring
+# locked, and that daemon would then hold the name the unit needs. A diverted file no longer ends
+# in .service, so the bus ignores it, and package upgrades keep it that way.
+for service in org.freedesktop.secrets org.gnome.keyring org.freedesktop.impl.portal.Secret; do
+    dpkg-divert --local --rename --add \
+        --divert "/usr/share/dbus-1/services/${service}.service.agent-disabled" \
+        "/usr/share/dbus-1/services/${service}.service"
+done
 
 # The browser viewer: noVNC, pinned by digest and trimmed to the files it serves, and `ws` for its
 # WebSocket bridge. Neither is packaged for Ubuntu.
@@ -64,13 +78,16 @@ for skills in /home/agent/.claude/skills /home/agent/.agents/skills; do
     chown -R agent:agent "${skills}/computer-use"
 done
 
-systemctl enable agent-desktop-display.service agent-desktop-session.service agent-desktop-dbus.service
+systemctl enable agent-desktop-display.service agent-desktop-session.service agent-desktop-dbus.service \
+    agent-desktop-keyring.service
 
 # The desktop's configuration, its units and the environment the image sets must agree.
 # shellcheck source=/dev/null
 . /etc/agent-desktop.conf
 grep -qxF "DISPLAY=${AGENT_DESKTOP_DISPLAY}" "${feature}/env" \
     || { echo "${feature}/env does not set DISPLAY=${AGENT_DESKTOP_DISPLAY}" >&2; exit 1; }
+grep -qxF "XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP}" "${feature}/env" \
+    || { echo "${feature}/env does not set XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP}" >&2; exit 1; }
 vnc_port="$(sed -n 's/^port=//p' /etc/agent-access.d/vnc.conf)"
 web_port="$(sed -n 's/^web-port=//p' /etc/agent-access.d/vnc.conf)"
 grep -qxF "ListenStream=127.0.0.1:${vnc_port}" /etc/systemd/system/agent-vnc.socket \
@@ -87,6 +104,12 @@ node -e "require('/usr/local/lib/node_modules/ws')"
 test -f /usr/local/share/novnc/vnc.html
 python3 -c 'import pyatspi'
 test -f /usr/share/dbus-1/services/org.a11y.Bus.service
+gnome-keyring-daemon --version
+command -v secret-tool >/dev/null
+if grep -lsx 'Exec=.*gnome-keyring-daemon.*' /usr/share/dbus-1/services/*.service; then
+    echo "the session bus can still activate gnome-keyring without agent-desktop-keyring.service" >&2
+    exit 1
+fi
 AGENT_BROWSER_CA_READY_FILE=/dev/null chromium --version
 /usr/local/libexec/agent-playwright-chromium --headless --version
 desktop help >/dev/null

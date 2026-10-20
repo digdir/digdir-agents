@@ -12,6 +12,14 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
 
+### Added
+
+- The desktop image has a Secret Service, so `secret-tool`, Chromium and Electron apps such as VS Code keep secrets across Stop and Start. Its keyring is unencrypted at rest, protected only by the Sandbox. ([Secret Service](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#the-secret-service), [#198](https://github.com/digdir/digdir-agents/pull/198))
+
+### Changed
+
+- Breaking: images that run `agent-feature install desktop` need `ENV XDG_CURRENT_DESKTOP=X-Openbox:XFCE`, which `agent-feature env desktop` prints; `agent-image-check` fails until it is added. ([features](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#features), [#198](https://github.com/digdir/digdir-agents/pull/198))
+
 ### Fixed
 
 - A process the kernel kills for running out of memory, such as a build in a Session or over SSH, no longer takes the rest of the Agent with it: Agents on the base images keep responding, and other SSH connections stay open. ([#198](https://github.com/digdir/digdir-agents/pull/198))
