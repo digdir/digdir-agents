@@ -35,8 +35,10 @@ cp -R "${feature}/rootfs/." /
 
 # The bundled skill is installed user-wide where Claude Code, Codex and Pi look for skills;
 # `playwright-cli install --skills` would otherwise write it per working directory.
+# install -d sets the mode of a directory that exists, so the harness directories keep the base's 0700.
 for skills in /home/agent/.claude/skills /home/agent/.agents/skills; do
-    install -d -o agent -g agent "${skills%/skills}" "${skills}"
+    install -d -m 0700 -o agent -g agent "${skills%/skills}"
+    install -d -o agent -g agent "${skills}"
     rm -rf "${skills}/playwright-cli"
     cp -R "${NODE_PATH}/@playwright/cli/skills/playwright-cli" "${skills}/playwright-cli"
     chown -R agent:agent "${skills}/playwright-cli"
