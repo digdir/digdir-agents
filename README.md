@@ -158,11 +158,10 @@ kun rører trygge stier kan agentene merge selv — de kjører en
 reviewer-subagent, poster reviewen som PR-kommentar, og setter labelen
 `auto-merge`; en GitHub Action merger med den efemere `GITHUB_TOKEN` når
 required checks er grønne (agent-tokenene har fortsatt ingen kode-tilgang).
-Sensitive stier — agent-instrukser (`agents/*/CLAUDE.md`), skills,
-Docker-filer, `integrations/src/`, `scripts/` og `.github/` — har menneskelig
-eier i [`.github/CODEOWNERS`](.github/CODEOWNERS), og branch protection
-(«Require review from Code Owners») blokkerer merge til code owner har
-godkjent, uansett label. Husk at merge til deploy-branchen er auto-deploy
+[`.github/CODEOWNERS`](.github/CODEOWNERS) er sensitiv som standard: alt har
+menneskelig eier unntatt eksplisitt trygge stier (i dag kun dokumentasjon),
+og branch protection («Require review from Code Owners») blokkerer merge
+til code owner har godkjent, uansett label. Husk at merge til deploy-branchen er auto-deploy
 via self-update-watcheren — derfor er lista konservativ. Hele prosessen,
 inkludert branch protection-oppsettet for repo-admin, er beskrevet i
 [`doc/pr-prosess.md`](doc/pr-prosess.md).

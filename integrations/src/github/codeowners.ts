@@ -6,9 +6,13 @@
  * #115): a PR with the `auto-merge` label that still touches such a path is
  * one branch protection will block on Code Owners regardless of the label
  * (see doc/pr-prosess.md), so it still needs a human notified.
+ *
+ * Like GitHub, the last matching rule decides, and a rule without owners
+ * removes ownership — so a default "*" rule with ownerless exceptions works.
  */
 export interface CodeownersRule {
   regex: RegExp;
+  owners: string[];
 }
 
 export function parseCodeowners(content: string): CodeownersRule[] {
@@ -16,16 +20,17 @@ export function parseCodeowners(content: string): CodeownersRule[] {
   for (const rawLine of content.split("\n")) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
-    const pattern = line.split(/\s+/)[0];
+    const [pattern, ...owners] = line.split(/\s+/);
     if (!pattern) continue;
-    rules.push({ regex: patternToRegex(pattern) });
+    rules.push({ regex: patternToRegex(pattern), owners });
   }
   return rules;
 }
 
 export function isOwned(rules: CodeownersRule[], filePath: string): boolean {
   const normalized = filePath.replace(/^\/+/, "");
-  return rules.some((r) => r.regex.test(normalized));
+  const last = rules.findLast((r) => r.regex.test(normalized));
+  return last !== undefined && last.owners.length > 0;
 }
 
 function patternToRegex(pattern: string): RegExp {
