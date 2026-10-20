@@ -39,6 +39,10 @@ pub(crate) const SERVER: &str = "/usr/sbin/sshd";
 pub(crate) const UNIT: &str = "agent-ssh.service";
 /// Where the platform installs the unit.
 pub(crate) const UNIT_FILE: &str = "/etc/systemd/system/agent-ssh.service";
+/// The unit's drop-in directory, for settings a running server takes on without a restart.
+const UNIT_DROP_INS: &str = "/etc/systemd/system/agent-ssh.service.d";
+/// Keeps an OOM kill inside one SSH session from stopping the server and every other session.
+const OOM_DROP_IN: &str = "/etc/systemd/system/agent-ssh.service.d/50-agent-oom.conf";
 const ENVIRONMENT_PROGRAM: &str = "/usr/bin/env";
 const MAX_ENVIRONMENT_ENTRIES: usize = 1000;
 
@@ -81,56 +85,7 @@ pub(crate) async fn verify_server(sandbox: &SandboxHandle) -> Result<(), Error> 
 /// Returns an error when a file cannot be written or a setup command fails.
 pub(crate) async fn install_server_state(sandbox: &SandboxHandle, material: &GuestMaterial) -> Result<(), Error> {
     wait_for_systemd(sandbox).await?;
-    run_checked(
-        sandbox,
-        "/usr/bin/sudo",
-        [
-            "-n",
-            "/usr/bin/install",
-            "-d",
-            "-m",
-            "0755",
-            "-o",
-            "root",
-            "-g",
-            "root",
-            STATE_DIRECTORY,
-            // systemd normally creates this for the service, but `sshd -T`
-            // needs it before the service can be validated or started.
-            SERVER_RUNTIME_DIRECTORY,
-        ],
-    )
-    .await?;
-    let host_key_changed = write_if_changed(sandbox, HOST_KEY, &material.host_private_key).await?;
-    write_if_changed(
-        sandbox,
-        HOST_KEY_PUBLIC,
-        format!("{}\n", material.host_public_key).as_bytes(),
-    )
-    .await?;
-    let config_changed = write_if_changed(sandbox, SERVER_CONFIG, render_server_config().as_bytes()).await?;
-    let unit_changed = write_if_changed(sandbox, UNIT_FILE, render_unit().as_bytes()).await?;
-    run_checked(
-        sandbox,
-        "/usr/bin/sudo",
-        [
-            "-n",
-            "/bin/chown",
-            "root:root",
-            HOST_KEY,
-            HOST_KEY_PUBLIC,
-            SERVER_CONFIG,
-            UNIT_FILE,
-        ],
-    )
-    .await?;
-    run_checked(sandbox, "/usr/bin/sudo", ["-n", "/bin/chmod", "0600", HOST_KEY]).await?;
-    run_checked(
-        sandbox,
-        "/usr/bin/sudo",
-        ["-n", "/bin/chmod", "0644", HOST_KEY_PUBLIC, SERVER_CONFIG, UNIT_FILE],
-    )
-    .await?;
+    let restart = install_server_files(sandbox, material).await?;
     verify_effective_policy(sandbox).await?;
 
     let environment = capture_login_environment(sandbox).await?;
@@ -171,12 +126,77 @@ pub(crate) async fn install_server_state(sandbox: &SandboxHandle, material: &Gue
     // it, so convergence cannot depend only on whether this pass changed it.
     run_checked(sandbox, "/usr/bin/sudo", ["-n", SYSTEMCTL, "daemon-reload"]).await?;
     run_checked(sandbox, "/usr/bin/sudo", ["-n", SYSTEMCTL, "enable", UNIT]).await?;
-    let action = if host_key_changed || config_changed || unit_changed {
-        "restart"
-    } else {
-        "start"
-    };
+    let action = if restart { "restart" } else { "start" };
     run_checked(sandbox, "/usr/bin/sudo", ["-n", SYSTEMCTL, action, UNIT]).await
+}
+
+/// Writes the server's host key, policy, unit and drop-in, owned by root. Returns whether a running
+/// server must restart to apply them: the host key, policy or unit changed.
+async fn install_server_files(sandbox: &SandboxHandle, material: &GuestMaterial) -> Result<bool, Error> {
+    run_checked(
+        sandbox,
+        "/usr/bin/sudo",
+        [
+            "-n",
+            "/usr/bin/install",
+            "-d",
+            "-m",
+            "0755",
+            "-o",
+            "root",
+            "-g",
+            "root",
+            STATE_DIRECTORY,
+            // systemd normally creates this for the service, but `sshd -T`
+            // needs it before the service can be validated or started.
+            SERVER_RUNTIME_DIRECTORY,
+            UNIT_DROP_INS,
+        ],
+    )
+    .await?;
+    let host_key_changed = write_if_changed(sandbox, HOST_KEY, &material.host_private_key).await?;
+    write_if_changed(
+        sandbox,
+        HOST_KEY_PUBLIC,
+        format!("{}\n", material.host_public_key).as_bytes(),
+    )
+    .await?;
+    let config_changed = write_if_changed(sandbox, SERVER_CONFIG, render_server_config().as_bytes()).await?;
+    let unit_changed = write_if_changed(sandbox, UNIT_FILE, render_unit().as_bytes()).await?;
+    // Not a reason to restart: the daemon-reload every pass ends with applies it to a running
+    // server, whose connections, such as an editor's remote session, then survive an agentd upgrade.
+    write_if_changed(sandbox, OOM_DROP_IN, render_oom_drop_in().as_bytes()).await?;
+    run_checked(
+        sandbox,
+        "/usr/bin/sudo",
+        [
+            "-n",
+            "/bin/chown",
+            "root:root",
+            HOST_KEY,
+            HOST_KEY_PUBLIC,
+            SERVER_CONFIG,
+            UNIT_FILE,
+            OOM_DROP_IN,
+        ],
+    )
+    .await?;
+    run_checked(sandbox, "/usr/bin/sudo", ["-n", "/bin/chmod", "0600", HOST_KEY]).await?;
+    run_checked(
+        sandbox,
+        "/usr/bin/sudo",
+        [
+            "-n",
+            "/bin/chmod",
+            "0644",
+            HOST_KEY_PUBLIC,
+            SERVER_CONFIG,
+            UNIT_FILE,
+            OOM_DROP_IN,
+        ],
+    )
+    .await?;
+    Ok(host_key_changed || config_changed || unit_changed)
 }
 
 fn render_server_config() -> String {
@@ -235,6 +255,13 @@ fn render_unit() -> String {
          [Install]\n\
          WantedBy=multi-user.target\n"
     )
+}
+
+/// Every SSH session runs in the server's cgroup. Under systemd's default `OOMPolicy=stop`, one
+/// kernel OOM kill there, of a build started over SSH for example, would stop the server and end
+/// every other session with it; with `continue` the killed process is the only casualty.
+fn render_oom_drop_in() -> String {
+    "[Service]\nOOMPolicy=continue\n".to_owned()
 }
 
 /// Asks OpenSSH for the policy it will apply to the Agent's loopback connection.
@@ -323,7 +350,12 @@ pub(crate) async fn remove_server_state(sandbox: &SandboxHandle) -> Result<(), E
         }
     }
     if state_exists {
-        run_checked(sandbox, "/usr/bin/sudo", ["-n", "/bin/rm", "-f", UNIT_FILE]).await?;
+        run_checked(
+            sandbox,
+            "/usr/bin/sudo",
+            ["-n", "/bin/rm", "-rf", UNIT_FILE, UNIT_DROP_INS],
+        )
+        .await?;
         run_checked(sandbox, "/usr/bin/sudo", ["-n", "/bin/rm", "-rf", STATE_DIRECTORY]).await?;
         if systemd_available(sandbox).await? {
             run_checked(sandbox, "/usr/bin/sudo", ["-n", SYSTEMCTL, "daemon-reload"]).await?;

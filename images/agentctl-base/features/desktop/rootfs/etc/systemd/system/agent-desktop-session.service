@@ -11,6 +11,10 @@ Group=agent
 Environment=HOME=/home/agent
 EnvironmentFile=/etc/agent-desktop.conf
 ExecStart=/usr/local/libexec/agent-desktop-session
+# What a person starts from the desktop, such as a terminal from the panel and the build in it, runs
+# in this unit. Under systemd's default OOMPolicy=stop, one OOM kill among them would stop the
+# window manager and close every window; with `continue` the killed process is the only casualty.
+OOMPolicy=continue
 Restart=on-failure
 RestartSec=2
 
