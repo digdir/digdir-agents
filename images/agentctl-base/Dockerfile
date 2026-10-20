@@ -42,6 +42,7 @@ RUN usermod --login agent --home /home/agent --move-home ubuntu \
     && printf 'agent ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent \
     && install -d -m 0755 -o agent -g agent /home/agent/code \
+    && install -d -m 0700 -o agent -g agent /home/agent/.claude \
     && install -d -m 0700 -o agent -g agent /run/user/1000 \
     && install -d -m 0755 /etc/agent-workspace.d \
     && rm -f /etc/machine-id /var/lib/dbus/machine-id \
@@ -144,6 +145,7 @@ RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
 COPY headless/ /
 # Claude Code's onboarding and workspace trust, which agentd does not write. Seeded here rather than through an
 # Agent's home overlay, which is applied again on every pass and would undo what Claude Code records in the file.
+# The directory exists already: BuildKit would give a parent directory COPY creates the file's mode, 0600.
 COPY --chown=agent:agent --chmod=0600 claude-state.json /home/agent/.claude/.claude.json
 
 # agentd owns the loopback SSH server policy, unit and per-Agent state. The distribution's own ssh.service and socket

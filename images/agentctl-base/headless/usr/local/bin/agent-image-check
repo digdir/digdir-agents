@@ -42,6 +42,10 @@ fi
 [ -d /home/agent/code ] || fail "/home/agent/code is missing"
 foreign="$(find /home/agent ! -user agent -print 2>/dev/null | head -5)"
 [ -z "$foreign" ] || fail "files under /home/agent not owned by agent, such as: $(echo "$foreign" | tr '\n' ' ')"
+# A directory the agent user cannot read, write and enter fails agentd's setup as surely, such as one BuildKit created
+# with the mode a COPY --chmod gave its file.
+closed="$(find /home/agent -type d ! -perm -u=rwx -print 2>/dev/null | head -5)"
+[ -z "$closed" ] || fail "directories under /home/agent the agent user cannot enter, such as: $(echo "$closed" | tr '\n' ' ')"
 
 # What agentd executes in the guest by absolute path, and the harnesses and hook runtime it finds on PATH.
 for path in /usr/bin/env /usr/bin/sudo /usr/bin/tmux /usr/bin/tar /usr/bin/install /usr/bin/mkdir /usr/bin/chown \
