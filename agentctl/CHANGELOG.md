@@ -15,6 +15,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 ### Fixed
 
 - A process the kernel kills for running out of memory, such as a build in a Session or over SSH, no longer takes the rest of the Agent with it: Agents on the base images keep responding, and other SSH connections stay open. ([#198](https://github.com/digdir/digdir-agents/pull/198))
+- On the desktop image, `desktop` clicks no longer land somewhere other than the screenshot showed when the display changed size: VNC viewers scale the desktop instead of resizing it, and after another resize `desktop` asks for a new screenshot or tree. ([#198](https://github.com/digdir/digdir-agents/pull/198))
 
 ## [0.1.0-preview.12] - 2026-10-20
 
