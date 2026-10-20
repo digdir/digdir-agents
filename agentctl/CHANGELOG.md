@@ -12,6 +12,8 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
 
+## [0.1.0-preview.12] - 2026-10-20
+
 ### Added
 
 - Agent images can build on `ghcr.io/digdir/agentctl-base:ubuntu-26.04`, or `ubuntu-26.04-desktop` for Chromium and a VNC desktop, which ship Claude Code, Codex and Pi at the tested versions. `agent-feature install browser` or `desktop` adds those parts to an image's own stage, and `agent-image-check` reports what an image still lacks. ([base images](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base), [image contract](https://github.com/digdir/digdir-agents/blob/main/agentctl/IMAGE.md), [#187](https://github.com/digdir/digdir-agents/pull/187))
