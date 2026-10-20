@@ -19,6 +19,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 ### Changed
 
 - Breaking: images that run `agent-feature install desktop` need `ENV XDG_CURRENT_DESKTOP=X-Openbox:XFCE`, which `agent-feature env desktop` prints; `agent-image-check` fails until it is added. ([features](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#features), [#198](https://github.com/digdir/digdir-agents/pull/198))
+- The base images ship Node.js 24.22.0 instead of 22.23.2, so images built on them, and the harnesses and tools in them, run on Node.js 24 LTS. ([#198](https://github.com/digdir/digdir-agents/pull/198))
 
 ### Fixed
 
