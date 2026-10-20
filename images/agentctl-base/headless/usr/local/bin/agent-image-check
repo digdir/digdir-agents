@@ -26,8 +26,12 @@ else
     [ "$(id -u agent)" = 1000 ] || fail "the agent user has UID $(id -u agent), not 1000"
     [ "$(id -gn agent)" = agent ] || fail "the agent user's primary group is $(id -gn agent), not agent"
     [ "$(getent passwd agent | cut -d: -f6)" = /home/agent ] || fail "the agent user's home is not /home/agent"
-    # agentd runs its setup steps through sudo, some of them with -n.
+    # agentd runs its setup steps through sudo, some of them with -n. Ubuntu's sudo marks the first use in the user's
+    # home, which this check must not leave behind.
+    sudo_marker=/home/agent/.sudo_as_admin_successful
+    [ -e "$sudo_marker" ] && sudo_marked=1 || sudo_marked=
     sudo -n -u agent sudo -n true 2>/dev/null || fail "the agent user cannot run sudo without a password"
+    [ -n "$sudo_marked" ] || rm -f "$sudo_marker"
     # OpenSSH rejects even public-key authentication for a locked account when PAM is disabled.
     case "$(passwd --status agent 2>/dev/null | cut -d' ' -f2)" in
         L) fail "the agent account is locked, so SSH access would reject it" ;;
