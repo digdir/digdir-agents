@@ -83,7 +83,9 @@ jobs:
             cache="${REPOSITORY}:buildcache-${variant}-${ARCH}"
             set -- "$@" --set "base-${variant}.cache-from=type=registry,ref=${cache}"
             if [ "${PUBLISH}" = "true" ]; then
+              # Without clearing the bake file's tags, buildx refuses to push by digest; the publish job tags.
               set -- "$@" \
+                --set "base-${variant}.tags=" \
                 --set "base-${variant}.output=type=image,name=${REPOSITORY},push-by-digest=true,name-canonical=true,push=true" \
                 --set "base-${variant}.cache-to=type=registry,ref=${cache},mode=max,image-manifest=true"
             fi
