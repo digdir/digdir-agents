@@ -16,6 +16,9 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 - A process the kernel kills for running out of memory, such as a build in a Session or over SSH, no longer takes the rest of the Agent with it: Agents on the base images keep responding, and other SSH connections stay open. ([#198](https://github.com/digdir/digdir-agents/pull/198))
 - On the desktop image, `desktop` clicks no longer land somewhere other than the screenshot showed when the display changed size: VNC viewers scale the desktop instead of resizing it, and after another resize `desktop` asks for a new screenshot or tree. ([#198](https://github.com/digdir/digdir-agents/pull/198))
+- Repositories the base images clone at boot from `/etc/agent-workspace.d`: ([base images](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#building-on-them), [#198](https://github.com/digdir/digdir-agents/pull/198))
+  - an interrupted clone is made again at the next boot, instead of staying broken
+  - in a fork, `gh pr create` and `gh issue` target the fork rather than its parent
 
 ## [0.1.0-preview.12] - 2026-10-20
 
