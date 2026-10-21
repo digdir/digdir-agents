@@ -243,6 +243,7 @@ pub(crate) const HELP: [&[HelpSection]; 2] = [
                 ("j / k", "move"),
                 ("enter", "fold, or attach a Session"),
                 ("z", "fold or unfold all"),
+                ("X", "stop every Agent at once"),
                 ("A", "show or hide archived Sessions"),
                 ("/", "filter by name or state"),
                 ("c", "create an Agent"),
@@ -447,6 +448,10 @@ pub(crate) enum Modal {
     },
     ConfirmStop {
         agent: String,
+    },
+    /// The emergency stop: every running agent, ended at once.
+    ConfirmStopAll {
+        agents: Vec<String>,
     },
     ConfirmDeleteSession {
         agent: String,
@@ -1094,6 +1099,10 @@ impl ForwardField {
 pub(crate) enum Action {
     None,
     Quit,
+    /// Ends every listed agent's VM at once, keeping its disk.
+    StopAll {
+        agents: Vec<String>,
+    },
     Attach {
         agent: String,
         session: SessionName,
@@ -1630,6 +1639,19 @@ impl App {
             }
             KeyCode::Char('F') => self.view = View::Forwards,
             KeyCode::Char('c') => return Action::OpenCreate,
+            KeyCode::Char('X') => {
+                let agents: Vec<String> = self
+                    .agents
+                    .iter()
+                    .filter(|agent| !agent.spec.is_stopped() && agent.metadata.deletion_timestamp.is_none())
+                    .map(|agent| agent.metadata.name.clone())
+                    .collect();
+                if agents.is_empty() {
+                    self.notice = Some(("no agent is running".to_owned(), Instant::now()));
+                } else {
+                    self.modal = Some(Modal::ConfirmStopAll { agents });
+                }
+            }
             _ => {
                 return match self.selected_row() {
                     Some(Row::Agent(group)) => self.agent_key(key, group),
@@ -1821,6 +1843,17 @@ impl App {
         }
     }
 
+    fn confirm_stop_all(&mut self, key: KeyEvent, agents: Vec<String>) -> Action {
+        match key.code {
+            KeyCode::Char('y') => Action::StopAll { agents },
+            KeyCode::Esc | KeyCode::Char('n' | 'q') => Action::None,
+            _ => {
+                self.modal = Some(Modal::ConfirmStopAll { agents });
+                Action::None
+            }
+        }
+    }
+
     fn modal_key(&mut self, key: KeyEvent) -> Action {
         match self.modal.take() {
             Some(Modal::Help) => {
@@ -1848,6 +1881,7 @@ impl App {
                     Action::None
                 }
             },
+            Some(Modal::ConfirmStopAll { agents }) => self.confirm_stop_all(key, agents),
             Some(Modal::ConfirmDeleteSession { agent, session }) => match key.code {
                 KeyCode::Char('y') => Action::DeleteSession { agent, session },
                 KeyCode::Esc | KeyCode::Char('n' | 'q') => Action::None,
@@ -2498,6 +2532,7 @@ impl App {
             return match modal {
                 Modal::ConfirmDelete { .. }
                 | Modal::ConfirmStop { .. }
+                | Modal::ConfirmStopAll { .. }
                 | Modal::ConfirmDeleteSession { .. }
                 | Modal::ConfirmQuit => &CONFIRM_HINTS,
                 Modal::NewSession(_) => &NEW_SESSION_HINTS,
@@ -4182,6 +4217,44 @@ mod tests {
                 ("d-starting".into(), "Starting", Tone::Cyan),
             ]
         );
+    }
+
+    #[test]
+    fn shift_x_stops_every_running_agent_at_once_once_confirmed() {
+        let mut app = App::new();
+        app.apply_snapshot(
+            vec![
+                not_ready_agent("idle", RunState::Stopped, agent::Condition::REASON_STOPPED),
+                ready_agent("reviewer"),
+                ready_agent("worker"),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(app.on_key(key(KeyCode::Char('X'))), Action::None);
+        assert_eq!(app.hints(), &CONFIRM_HINTS);
+        assert_eq!(app.on_key(key(KeyCode::Char('n'))), Action::None, "declined");
+        assert!(app.modal.is_none());
+        app.on_key(key(KeyCode::Char('X')));
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('y'))),
+            Action::StopAll {
+                agents: vec!["reviewer".into(), "worker".into()]
+            },
+            "the stopped agent is left alone"
+        );
+
+        let mut idle = App::new();
+        idle.apply_snapshot(
+            vec![not_ready_agent(
+                "idle",
+                RunState::Stopped,
+                agent::Condition::REASON_STOPPED,
+            )],
+            Vec::new(),
+        );
+        idle.on_key(key(KeyCode::Char('X')));
+        assert!(idle.modal.is_none());
+        assert!(idle.notice.is_some(), "says that nothing runs");
     }
 
     #[test]

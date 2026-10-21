@@ -20,6 +20,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 mod format;
 mod launch;
 mod progress;
+mod prompt;
 mod self_update;
 mod tui;
 
@@ -153,12 +154,13 @@ enum Command {
         #[arg(long, value_parser = parse_variant_name, conflicts_with = "agent")]
         variant: Option<AgentVariantName>,
     },
-    /// Stop an Agent's Sandbox VM, keeping its disk, so attaching to a Session after a start resumes it.
+    /// Stop an Agent, or every Agent, keeping their disks, so attaching to a Session after a start resumes it.
     ///
     /// Running harnesses are stopped with the VM. Applying the manifest again keeps the Agent stopped.
+    /// Without an Agent, asks whether to stop every running Agent; `--all --now` does so at once.
     Stop {
         #[command(flatten)]
-        target: RunStateTarget,
+        target: StopTarget,
     },
     /// Start a stopped Agent's Sandbox VM on its kept disk and wait until the Agent is Ready.
     Start {
@@ -334,6 +336,26 @@ struct RunStateTarget {
     resource: String,
     /// Optional Agent name when it is not part of `resource`.
     name: Option<String>,
+    /// Maximum wait, written as seconds, minutes, or hours (for example `2m`).
+    #[arg(long, default_value = "10m", value_parser = parse_duration)]
+    timeout: Duration,
+}
+
+/// The agents `stop` acts on: one, every running one, or, unnamed, every running one after asking.
+#[derive(clap::Args)]
+struct StopTarget {
+    /// Agent resource, optionally combined with its name (for example `agent/worker`).
+    #[arg(conflicts_with = "all")]
+    resource: Option<String>,
+    /// Optional agent name when it is not part of `resource`.
+    name: Option<String>,
+    /// Stop every running agent, without asking.
+    #[arg(long)]
+    all: bool,
+    /// End the VMs at once instead of letting them shut down, as an emergency stop. Whatever an
+    /// agent wrote in its last seconds may be lost.
+    #[arg(long)]
+    now: bool,
     /// Maximum wait, written as seconds, minutes, or hours (for example `2m`).
     #[arg(long, default_value = "10m", value_parser = parse_duration)]
     timeout: Duration,
@@ -578,7 +600,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 println!("session/{agent}/{name} deleted");
             }
         }
-        Command::Stop { target } => set_run_state(client, target, RunState::Stopped).await?,
+        Command::Stop { target } => stop(client, target).await?,
         Command::Start { target } => set_run_state(client, target, RunState::Running).await?,
         Command::Archive { target } => set_archived(client, target, true).await?,
         Command::Unarchive { target } => set_archived(client, target, false).await?,
@@ -1435,6 +1457,90 @@ async fn wait_until_converged(client: &Client, name: &str, timeout: Duration) ->
         }));
     };
     converged.map_err(CommandError::from)
+}
+
+/// Stops one agent, or every running one, and waits until they are stopped.
+async fn stop(client: &Client, target: StopTarget) -> CommandResult<()> {
+    let names = if let Some(resource) = &target.resource {
+        vec![agent_reference(resource, target.name.clone())?]
+    } else {
+        let Some(running) = running_agents_to_stop(client, &target).await? else {
+            return Ok(());
+        };
+        running
+    };
+    // Every stop is recorded before any is waited for, so agentd stops them side by side.
+    for name in &names {
+        if target.now {
+            client.stop_now(name).await?;
+        } else {
+            client.set_run_state(name, RunState::Stopped).await?;
+        }
+    }
+    if let [name] = names.as_slice() {
+        wait_until_converged(client, name, target.timeout).await?;
+        println!("agent/{name} stopped");
+        return Ok(());
+    }
+    let mut failed = 0;
+    for name in &names {
+        match tokio::time::timeout(target.timeout, client.converge(name)).await {
+            Ok(Ok(_)) => println!("agent/{name} stopped"),
+            Ok(Err(error)) => {
+                failed += 1;
+                eprintln!("agent/{name} did not stop: {error}");
+            }
+            Err(_) => {
+                failed += 1;
+                eprintln!("agent/{name} did not stop in time; agentd keeps stopping it");
+            }
+        }
+    }
+    if failed > 0 {
+        return Err(CommandError::Message(format!(
+            "{failed} of {} agents did not stop; `agentctl get agents` shows them",
+            names.len()
+        )));
+    }
+    println!("Every agent is stopped. `agentctl start agent/NAME` starts one again.");
+    Ok(())
+}
+
+/// Every running agent, after asking at a terminal unless `--all` was passed; `None` when there is
+/// none or the person declined.
+async fn running_agents_to_stop(client: &Client, target: &StopTarget) -> CommandResult<Option<Vec<String>>> {
+    let running: Vec<String> = client
+        .list_agents()
+        .await?
+        .into_iter()
+        .filter(|agent| !agent.spec.is_stopped() && agent.metadata.deletion_timestamp.is_none())
+        .map(|agent| agent.metadata.name)
+        .collect();
+    if running.is_empty() {
+        println!("No agent is running.");
+        return Ok(None);
+    }
+    if target.all {
+        return Ok(Some(running));
+    }
+    if !prompt::interactive() {
+        return Err(CommandError::Message(
+            "name the agent to stop, or pass --all to stop every agent".into(),
+        ));
+    }
+    let (running_line, question) = match running.len() {
+        1 => (format!("1 agent is running: {}.", running.join(", ")), "Stop it"),
+        count => (
+            format!("{count} agents are running: {}.", running.join(", ")),
+            "Stop them all",
+        ),
+    };
+    let question = if target.now {
+        format!("{question} at once, without letting them shut down?")
+    } else {
+        format!("{question}?")
+    };
+    Ok(prompt::confirm_lines(&[&running_line, &question])?.then_some(running))
 }
 
 /// Stops or starts an Agent and waits until it is stopped or Ready.
