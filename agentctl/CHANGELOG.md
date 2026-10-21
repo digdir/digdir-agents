@@ -29,6 +29,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 - Repositories the base images clone at boot from `/etc/agent-workspace.d`: ([base images](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#building-on-them), [#198](https://github.com/digdir/digdir-agents/pull/198))
   - an interrupted clone is made again at the next boot, instead of staying broken
   - when a listed repository is a fork, `gh pr create` and `gh issue` target it rather than its parent
+- `agentctl turns` and the recent turns panel in `agentctl tui` no longer fail with "the last 3 complete turns do not fit within the 2 MiB transcript read limit" when the latest turns hold large tool output, such as screenshots. Turns are now read from the last 64 MiB of a Session's conversation.
 
 ## [0.1.0-preview.12] - 2026-10-20
 

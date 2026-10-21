@@ -566,7 +566,7 @@ fn input_ready_in(activity: &Activity, now: time::OffsetDateTime) -> Option<std:
 /// text. A harness that has not reported a transcript yet, or has reported one
 /// it has not created yet, has an empty conversation.
 async fn turns(session: &Session, sandbox: &SandboxHandle, last: Option<usize>) -> Result<Vec<Turn>, Error> {
-    const MAX_TRANSCRIPT_BYTES: usize = 2 * 1024 * 1024;
+    const MAX_TRANSCRIPT_BYTES: usize = 64 * 1024 * 1024;
     const SCRIPT: &str = "[ -f \"$1\" ] || exit 0; exec /usr/bin/tail -c \"$2\" -- \"$1\"";
     let Some(path) = session.status.reported.harness_transcript_path.as_deref() else {
         return Ok(Vec::new());
