@@ -940,6 +940,24 @@ impl SandboxService {
         self.release(name, RetentionPolicy::Retain).await
     }
 
+    /// Like [`Self::stop`], but ends the Sandbox at once instead of letting its guest shut down.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a lifecycle component fails.
+    pub async fn kill(&self, name: &SandboxName) -> Result<(), Error> {
+        match self.backend().find(name).await {
+            Ok(sandbox) => self
+                .backend()
+                .kill(&sandbox.id)
+                .await
+                .map_err(|error| Error::component("kill Sandbox", error))?,
+            Err(error) if error.is_not_found() => return Ok(()),
+            Err(error) => return Err(Error::component("find Sandbox", error)),
+        }
+        self.stop(name).await
+    }
+
     /// Stops a Sandbox and retains or deletes its materialized resources.
     ///
     /// # Errors

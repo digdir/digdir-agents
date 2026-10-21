@@ -721,6 +721,18 @@ impl SandboxBackend for MicrosandboxProvider {
         Box::pin(self.stop_sandbox(id))
     }
 
+    fn kill<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(async move {
+            let record = self.state.sandbox_by_id(id).await?;
+            if let Some(handle) = self.runtime_handle(&record.runtime_name).await?
+                && map_state(handle.status_snapshot()) == SandboxState::Running
+            {
+                handle.kill().await.map_err(error::microsandbox)?;
+            }
+            Ok(())
+        })
+    }
+
     fn delete<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(self.delete_sandbox(id))
     }

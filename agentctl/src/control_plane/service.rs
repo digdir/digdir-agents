@@ -1,4 +1,4 @@
-use std::{path::PathBuf, rc::Rc};
+use std::{cell::RefCell, collections::HashSet, path::PathBuf, rc::Rc};
 
 use ignore::WalkBuilder;
 
@@ -43,6 +43,23 @@ pub struct ControlPlane {
     store: SharedAgentStore,
     notifier: Rc<dyn Notifier>,
     provisioning: ProvisioningState,
+    immediate_stops: ImmediateStops,
+}
+
+/// Agents whose next stop ends their Sandbox at once, without letting the guest shut down:
+/// the Control Plane records the request and the reconciler carries it out.
+#[derive(Clone, Default)]
+pub struct ImmediateStops(Rc<RefCell<HashSet<AgentId>>>);
+
+impl ImmediateStops {
+    fn request(&self, id: AgentId) {
+        self.0.borrow_mut().insert(id);
+    }
+
+    /// Whether the Agent's stop was asked to be immediate, forgetting the request.
+    pub(crate) fn take(&self, id: AgentId) -> bool {
+        self.0.borrow_mut().remove(&id)
+    }
 }
 
 impl ControlPlane {
@@ -53,7 +70,15 @@ impl ControlPlane {
             store,
             notifier,
             provisioning: ProvisioningState::default(),
+            immediate_stops: ImmediateStops::default(),
         }
+    }
+
+    /// Shares requests for immediate stops with the reconciler that carries them out.
+    #[must_use]
+    pub fn with_immediate_stops(mut self, immediate_stops: ImmediateStops) -> Self {
+        self.immediate_stops = immediate_stops;
+        self
     }
 
     /// Projects the reconciler's in-memory provisioning state onto returned Agents.
@@ -393,6 +418,18 @@ impl ControlPlane {
             self.notifier.notify(record.id);
             return Ok(self.resource(record));
         }
+    }
+
+    /// Records an Agent as stopped, as [`Self::set_run_state`] does, and has the reconciler end
+    /// its Sandbox at once instead of letting the guest shut down.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Agent does not exist, is being deleted, or cannot be stored.
+    pub async fn stop_now(&self, name: &str) -> Result<Agent, Error> {
+        let id = self.store.get_by_name(name).await?.id;
+        self.immediate_stops.request(id);
+        self.set_run_state(name, crate::RunState::Stopped).await
     }
 
     /// Marks an Agent for asynchronous release. Repeated deletion is safe.

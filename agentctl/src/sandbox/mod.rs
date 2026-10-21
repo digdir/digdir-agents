@@ -145,6 +145,11 @@ pub trait Provider {
     /// keeping both for a later [`Self::ensure`].
     fn stop<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>>;
 
+    /// Like [`Self::stop`], but ends the Sandbox at once instead of letting its guest shut down.
+    fn kill<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
+        self.stop(record)
+    }
+
     /// Opens the exact already-materialized Sandbox without lifecycle effects.
     fn open<'a>(&'a self, record: &'a AgentRecord, id: &'a SandboxId) -> LocalFuture<'a, Result<SandboxHandle, Error>>;
 
@@ -290,16 +295,22 @@ impl Service {
     }
 
     /// Stops the Agent's Sandbox, keeping its identity and storage for a later
-    /// [`Self::ensure`]. An Agent without an assigned Provider has nothing to stop.
+    /// [`Self::ensure`]; `immediately` ends it without letting its guest shut down. An Agent
+    /// without an assigned Provider has nothing to stop.
     ///
     /// # Errors
     ///
     /// Returns an error when the selected Provider is unavailable or the stop fails.
-    pub async fn stop(&self, record: &AgentRecord) -> Result<(), Error> {
+    pub async fn stop(&self, record: &AgentRecord, immediately: bool) -> Result<(), Error> {
         let Some(assignment) = &record.agent.status.sandbox else {
             return Ok(());
         };
-        self.provider(assignment.provider())?.stop(record).await?;
+        let provider = self.provider(assignment.provider())?;
+        if immediately {
+            provider.kill(record).await?;
+        } else {
+            provider.stop(record).await?;
+        }
         if let Some(id) = assignment.id() {
             self.responsiveness.forget(id);
         }

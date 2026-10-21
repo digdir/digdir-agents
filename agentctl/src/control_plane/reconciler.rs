@@ -24,6 +24,7 @@ pub struct Reconciler {
     ssh: Option<Rc<crate::ssh::Access>>,
     vnc: Option<Rc<crate::vnc::Access>>,
     provisioning: ProvisioningState,
+    immediate_stops: super::ImmediateStops,
 }
 
 impl Reconciler {
@@ -41,7 +42,15 @@ impl Reconciler {
             ssh: None,
             vnc: None,
             provisioning,
+            immediate_stops: super::ImmediateStops::default(),
         }
+    }
+
+    /// Carries out the stops the Control Plane was asked to make immediate.
+    #[must_use]
+    pub fn with_immediate_stops(mut self, immediate_stops: super::ImmediateStops) -> Self {
+        self.immediate_stops = immediate_stops;
+        self
     }
 
     /// Reconciles declared SSH access after the Sandbox is set up.
@@ -331,7 +340,8 @@ impl Reconciler {
             SandboxObserver::new(record.id, self.provisioning.clone())
         };
         let phase = observer.reporter().start_phase(crate::progress::SANDBOX_STOP).await;
-        if let Err(error) = self.sandboxes.stop(record).await {
+        let immediately = self.immediate_stops.take(record.id);
+        if let Err(error) = self.sandboxes.stop(record, immediately).await {
             let failure = ReconcileFailure::classify(&error);
             let stored = self.record_failure(record, Condition::REASON_STOPPING, &failure).await;
             observer.failed(&failure);

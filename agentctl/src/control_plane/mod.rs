@@ -17,7 +17,7 @@ pub use controller::{Controller, ErrorHandler, Wakeup};
 pub use convergence::{Convergence, WaitPolicy};
 pub use reconciler::{Reconciler, SessionNotifier};
 pub use resource::{AgentId, AgentRecord, ENV_FILE};
-pub use service::{ApplyRequest, ControlPlane, Notifier};
+pub use service::{ApplyRequest, ControlPlane, ImmediateStops, Notifier};
 
 /// Separates desired-state writes from reconciler status writes using generation checks.
 pub trait AgentStore {
