@@ -160,7 +160,8 @@ same machine).
   one summary (title, author, link) per PR to the Slack user in
   `SLACK_REVIEW_NOTIFY_USER`.
 - A PR carrying the `auto-merge` label is skipped **unless** it also touches
-  a path listed in the repo's `CODEOWNERS` — such a PR merges on its own once
+  a path owned in the repo's `CODEOWNERS` (last matching rule wins, as on
+  GitHub; a rule without owners makes a path safe) — such a PR merges on its own once
   CI passes (see [`doc/pr-prosess.md`](../doc/pr-prosess.md)), so a DM would
   be noise; a CODEOWNERS-path PR is blocked on human review regardless of the
   label, so it still gets notified.

@@ -1,36 +1,48 @@
 # CODEOWNERS — plattform-håndhevet skille mellom trygge og sensitive stier.
 #
 # Med branch protection «Require review from Code Owners» (og required
-# approvals: 0) betyr en linje her: PR-er som rører stien krever menneskelig
-# godkjenning før merge. PR-er som ikke rører noen av stiene kan merges uten
-# approver — det er grunnlaget for auto-merge-prosessen.
-# Se doc/pr-prosess.md for hele prosessen og hvorfor stiene er valgt
-# (merge til deploy-branchen er auto-deploy via scripts/self-update.ps1).
+# approvals: 0) betyr en eier på en sti: PR-er som rører stien krever
+# menneskelig godkjenning før merge. Bare PR-er der *alle* filer er eierløse
+# kan merges uten approver — det er grunnlaget for auto-merge-prosessen.
+# Se doc/pr-prosess.md for hele prosessen (merge til deploy-branchen er
+# auto-deploy via scripts/self-update.ps1).
+#
+# Sensitivt som standard: alt eies av et menneske, og trygge stier er
+# eksplisitte unntak. En ny sti er dermed sensitiv til noen bevisst har lagt
+# den til i unntakslisten. Siste treff vinner, så rekkefølgen under betyr noe:
+#   1. standard-eier for alt
+#   2. trygge unntak (linjer uten eier fjerner kravet)
+#   3. sensitive filer som ligger inne i de trygge unntakene
+#   4. områder med en annen eier (agentctl/sandbox), som overstyrer alt over
 
-# Agent-instrukser og skills — styrer agentenes oppførsel
-agents/*/CLAUDE.md            @olebhansen
-agents/*/docker/skills/       @olebhansen
-agents/*/docker/entrypoint.sh @olebhansen
+# 1. Standard: alt krever review, også stier som ikke finnes ennå
+*                             @olebhansen
 
-# Sikkerhetsmodell og drift. Hele integrations/src/ er sensitiv i første
-# omgang (CI er kun typecheck); kan snevres til config.ts når testdekning
-# er på plass.
-integrations/src/             @olebhansen
-**/docker-compose.yml         @olebhansen
-**/Dockerfile                 @olebhansen
-scripts/                      @olebhansen
+# 2. Trygge stier: dokumentasjon som verken bygges inn i images, leses som
+#    agent-instruks eller endrer avhengigheter
+/README.md
+/LICENSE
+/doc/
+/docs/
+/agents/*/README.md
+/apps/*/README.md
+/integrations/README.md
 
-# Denne prosessen selv (CODEOWNERS + workflows)
-.github/                      @olebhansen
+# 3. Sensitive filer inne i de trygge stiene: prosessen agentene følger
+#    (lenket fra agentenes CLAUDE.md), og avhengigheter (docs/presentations/
+#    har sin egen package.json)
+/doc/pr-prosess.md            @olebhansen
+package.json                  @olebhansen
+package-lock.json             @olebhansen
 
-# Innflyttet agent-lag fra altinn-studio (ki-lab) — eies av innflytterteamet,
-# review-gaten der er deres, ikke orkestrator-pipelinens
-agentctl/                     @martinothamar
-sandbox/                      @martinothamar
-
-# Rust-arbeidsområdet på rot og workflowene til agentctl/sandbox. Står etter
-# .github/ slik at review av disse ikke krever orkestrator-pipelinens eier, og
-# omvendt.
+# 4. Innflyttet agent-lag fra altinn-studio (ki-lab) — eies av innflytterteamet,
+#    review-gaten der er deres, ikke orkestrator-pipelinens. Står sist slik at
+#    disse stiene ikke krever orkestrator-pipelinens eier, og omvendt.
+/agentctl/                    @martinothamar
+/sandbox/                     @martinothamar
+/images/agentctl-base/        @martinothamar
+/docker-bake.hcl              @martinothamar
+# Rust-arbeidsområdet på rot og workflowene til agentctl/sandbox
 /Cargo.toml                   @martinothamar
 /Cargo.lock                   @martinothamar
 /rust-toolchain.toml          @martinothamar
@@ -41,7 +53,6 @@ sandbox/                      @martinothamar
 /.cargo/                      @martinothamar
 /.editorconfig                @martinothamar
 /.github/workflows/rust.yml   @martinothamar
-/.github/workflows/agentctl-*.yml        @martinothamar
-# agentctl-agenten som utvikler plattformen selv. Står etter **/Dockerfile slik at
-# dens Dockerfile følger agentctl-eierskapet.
+/.github/workflows/agentctl-*.yml @martinothamar
+# agentctl-agenten som utvikler plattformen selv
 /agents/self-dev/             @martinothamar
