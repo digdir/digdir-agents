@@ -2,7 +2,7 @@
 # plattformen forventer av et Agent-image: tmux for sesjoner, `agent`-bruker
 # med passordløs sudo, pre-seedet Claude Code-state, intet systemd/ssh for en
 # headless agent). Ikke bygget/kjørt ennå — F1-E2E gjenstår.
-FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
+FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 
 ENV DEBIAN_FRONTEND=noninteractive
 
