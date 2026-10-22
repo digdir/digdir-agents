@@ -14,20 +14,21 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Added
 
-- The desktop image has a Secret Service, so `secret-tool`, Chromium and Electron apps such as VS Code keep secrets across Stop and Start. Its keyring is unencrypted at rest, protected only by the Sandbox. ([Secret Service](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#the-secret-service), [#198](https://github.com/digdir/digdir-agents/pull/198))
+- On the desktop image, apps that keep secrets in a keyring, such as `secret-tool`, Chromium and VS Code, now have one. It has no password: anything in the Agent can read it. ([Secret Service](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#the-secret-service), [#198](https://github.com/digdir/digdir-agents/pull/198))
 
 ### Changed
 
-- Breaking: images that run `agent-feature install desktop` need `ENV XDG_CURRENT_DESKTOP=X-Openbox:XFCE`, which `agent-feature env desktop` prints; `agent-image-check` fails until it is added. ([features](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#features), [#198](https://github.com/digdir/digdir-agents/pull/198))
-- The base images ship Node.js 24.22.0 instead of 22.23.2, so images built on them, and the harnesses and tools in them, run on Node.js 24 LTS. ([#198](https://github.com/digdir/digdir-agents/pull/198))
+- Breaking: images that run `agent-feature install desktop` need `ENV XDG_CURRENT_DESKTOP=X-Openbox:XFCE`, which `agent-feature env desktop` prints; `agent-image-check` fails until it is added. Images built on the desktop image inherit it. ([features](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#features), [#198](https://github.com/digdir/digdir-agents/pull/198))
+- VNC clients can no longer resize an Agent's desktop to fit their window; set them to scale instead. ([#198](https://github.com/digdir/digdir-agents/pull/198))
+- The base images ship Node.js 24 LTS (24.22.0) instead of 22. ([#198](https://github.com/digdir/digdir-agents/pull/198))
 
 ### Fixed
 
-- A process the kernel kills for running out of memory, such as a build in a Session or over SSH, no longer takes the rest of the Agent with it: Agents on the base images keep responding, and other SSH connections stay open. ([#198](https://github.com/digdir/digdir-agents/pull/198))
-- On the desktop image, `desktop` clicks no longer land somewhere other than the screenshot showed when the display changed size: VNC viewers scale the desktop instead of resizing it, and after another resize `desktop` asks for a new screenshot or tree. ([#198](https://github.com/digdir/digdir-agents/pull/198))
+- On the base images, a build that runs out of memory in a Session, over SSH or in a desktop terminal no longer takes the Agent down: it keeps responding, and other SSH connections and desktop windows stay open. ([#198](https://github.com/digdir/digdir-agents/pull/198))
+- On the desktop image, `desktop` clicks no longer land somewhere other than the last screenshot showed after the display changes size; `desktop` asks for a new screenshot instead. ([#198](https://github.com/digdir/digdir-agents/pull/198))
 - Repositories the base images clone at boot from `/etc/agent-workspace.d`: ([base images](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#building-on-them), [#198](https://github.com/digdir/digdir-agents/pull/198))
   - an interrupted clone is made again at the next boot, instead of staying broken
-  - in a fork, `gh pr create` and `gh issue` target the fork rather than its parent
+  - when a listed repository is a fork, `gh pr create` and `gh issue` target it rather than its parent
 
 ## [0.1.0-preview.12] - 2026-10-20
 
