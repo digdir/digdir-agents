@@ -1495,7 +1495,7 @@ mod tests {
 
         assert!(forwards.push("desk".into(), forward(&second, 3000).await, std::slice::from_ref(&desk)));
         forwards.prune(&[]);
-        assert!(forwards.entries().is_empty(), "the Agent is gone");
+        assert!(forwards.entries().is_empty(), "the agent is gone");
     }
 
     #[tokio::test(flavor = "local")]

@@ -5,7 +5,7 @@ mod support;
 use std::{io::Cursor, path::PathBuf, rc::Rc};
 
 use agent::{
-    AgentId,
+    AgentId, HomeSpec,
     control_plane::AgentRecord,
     sandbox::{PlatformAdapter as _, platform::Linux},
 };
@@ -100,7 +100,7 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
     let agent_id: AgentId = "5c0fd6ac-1d5a-4f8b-9f58-6b0f4de1f6c1".parse().expect("Agent ID");
     let mut resource = support::agent("worker");
     resource.metadata.generation = 1;
-    resource.spec.home.source = home;
+    resource.spec.home = Some(HomeSpec { source: home });
     resource.spec.harnesses[0].default = true;
     resource.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
@@ -163,6 +163,67 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
     );
 }
 
+/// Runs Linux setup for a Claude Code agent whose Claude Code state file holds `existing`, if
+/// any, and returns the state file afterwards and whether setup wrote it.
+/// An Agent without `spec.home` copies nothing into the guest home, but is otherwise set up.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_without_a_home_copies_nothing_into_the_guest_home() {
+    let directory = TempDir::new().expect("temporary directory");
+    std::fs::write(directory.path().join("instructions.md"), "test instructions\n").expect("instruction file");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home = None;
+    let record = AgentRecord {
+        id: "0d9b5f5e-8a8f-4d0e-9a51-5b1f6f0c2a37".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    };
+    let backend = Rc::new(memory::Provider::new());
+    backend.queue_execution_events_matching(
+        is_claude_version,
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
+            ExecutionEvent::Exited(ExitStatus { code: 0 }),
+        ],
+    );
+    backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+
+    Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("setup without a home");
+
+    let writes = backend
+        .file_writes()
+        .into_iter()
+        .map(|path| path.as_str().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        !writes.iter().any(|path| path == "/tmp/agent-home.tar"),
+        "no home archive is written: {writes:?}"
+    );
+    assert!(
+        writes.iter().any(|path| path == "/home/agent/.claude/CLAUDE.md"),
+        "the harness is still configured: {writes:?}"
+    );
+}
+
 #[tokio::test(flavor = "local")]
 #[allow(clippy::too_many_lines)]
 async fn linux_setup_rewrites_configuration_without_owning_workspace_initialization() {
@@ -182,7 +243,7 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     let agent_id: AgentId = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
     let mut resource = support::agent("worker");
     resource.metadata.generation = 1;
-    resource.spec.home.source = home;
+    resource.spec.home = Some(HomeSpec { source: home });
     resource.spec.skills = vec![agent::SkillSpec {
         source: PathBuf::from("skills/evidence"),
         name: None,
@@ -299,7 +360,7 @@ async fn linux_setup_waits_for_systemd_and_restores_managed_podman_configuration
     let agent_id: AgentId = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
     let mut resource = support::agent("worker");
     resource.metadata.generation = 1;
-    resource.spec.home.source = home;
+    resource.spec.home = Some(HomeSpec { source: home });
     let record = AgentRecord {
         id: agent_id,
         source_directory: directory.path().to_path_buf(),
@@ -383,7 +444,7 @@ async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
     let agent_id: AgentId = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
     let mut resource = support::agent("worker");
     resource.metadata.generation = 1;
-    resource.spec.home.source = home;
+    resource.spec.home = Some(HomeSpec { source: home });
     resource.spec.harnesses[0].version = None;
     let record = AgentRecord {
         id: agent_id,
@@ -433,7 +494,7 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
     std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
     let mut resource = support::agent("worker");
     resource.metadata.generation = 1;
-    resource.spec.home.source = home;
+    resource.spec.home = Some(HomeSpec { source: home });
     resource.spec.harnesses[0].version = None;
     let record = AgentRecord {
         id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
@@ -498,7 +559,7 @@ async fn linux_setup_rejects_partial_git_identity() {
     std::fs::create_dir_all(&home).expect("home directory");
     let mut resource = support::agent("worker");
     resource.metadata.generation = 1;
-    resource.spec.home.source = home;
+    resource.spec.home = Some(HomeSpec { source: home });
     resource.spec.instructions.clear();
     let record = AgentRecord {
         id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
@@ -547,7 +608,7 @@ async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injectio
     let agent_id: AgentId = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
     let mut resource = support::agent("worker");
     resource.metadata.generation = 1;
-    resource.spec.home.source = home;
+    resource.spec.home = Some(HomeSpec { source: home });
     let record = AgentRecord {
         id: agent_id,
         source_directory: PathBuf::from(directory.path()),
@@ -616,7 +677,7 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
     assert!(status.success());
     let mut resource = support::agent("worker");
     resource.metadata.generation = 1;
-    resource.spec.home.source = home;
+    resource.spec.home = Some(HomeSpec { source: home });
     resource.spec.instructions.clear();
     resource.spec.skills = vec![agent::SkillSpec {
         source: PathBuf::from("skills/evidence"),
