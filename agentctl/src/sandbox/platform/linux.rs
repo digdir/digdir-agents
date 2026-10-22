@@ -13,7 +13,7 @@ use super::{super::PlatformAdapter, files::write_if_changed};
 pub(crate) const USER: &str = "agent";
 pub(crate) const HOME: &str = "/home/agent";
 /// Where Sessions and Executions start, and where repository checkouts live.
-pub(crate) const WORKING_DIRECTORY: &str = "/home/agent/code";
+pub const WORKING_DIRECTORY: &str = "/home/agent/code";
 pub(crate) const CONTAINER_HOST: &str = "unix:///run/podman/podman.sock";
 /// Holds the Platform API base URL reachable from the Sandbox, read by harness hooks on every
 /// report. `agentd` binds a new host port on every start; Agent setup rewrites the file first

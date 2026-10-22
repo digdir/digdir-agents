@@ -75,6 +75,42 @@ pub(crate) struct Toolchains {
 }
 
 impl Tools {
+    /// The tools a new agent starts with: what the repository's files ask for, and what the
+    /// person chose the agent to do.
+    pub(crate) fn from_detected(detected: &[Toolchain], containers: bool, browser: bool, desktop: bool) -> Self {
+        let mut toolchains = Toolchains::default();
+        for toolchain in detected {
+            match toolchain {
+                Toolchain::Node { version, corepack } => {
+                    toolchains.node.clone_from(version);
+                    toolchains.corepack = *corepack;
+                }
+                Toolchain::Dotnet { sdk } => {
+                    toolchains.dotnet = Some(sdk.clone().unwrap_or_else(|| "lts".to_owned()));
+                }
+                Toolchain::Go { version } => {
+                    toolchains.go = Some(version.clone().unwrap_or_else(|| "latest".to_owned()));
+                }
+                Toolchain::Rust { channel } => {
+                    toolchains.rust = Some(channel.clone().unwrap_or_else(|| "stable".to_owned()));
+                }
+                Toolchain::Python => toolchains.python = true,
+                Toolchain::Java { maven } => {
+                    toolchains.java = true;
+                    toolchains.maven = *maven;
+                }
+            }
+        }
+        Self {
+            containers,
+            browser,
+            desktop,
+            toolchains,
+            packages: Vec::new(),
+            npm: Vec::new(),
+        }
+    }
+
     /// The toolchains as the Dockerfile blocks know them, in a fixed order.
     fn toolchains(&self) -> Vec<Toolchain> {
         let chains = &self.toolchains;
@@ -145,6 +181,77 @@ impl Tools {
             )));
         }
         Ok(())
+    }
+
+    /// `tools.yaml` as agentctl writes it, explaining each setting.
+    pub(crate) fn render(&self) -> String {
+        let chains = &self.toolchains;
+        let mut toolchains = String::new();
+        for (key, value) in [
+            ("node", chains.node.clone()),
+            ("corepack", chains.corepack.then(|| "true".to_owned())),
+            ("dotnet", chains.dotnet.clone()),
+            ("go", chains.go.clone()),
+            ("rust", chains.rust.clone()),
+            ("python", chains.python.then(|| "true".to_owned())),
+            ("java", chains.java.then(|| "true".to_owned())),
+            ("maven", chains.maven.then(|| "true".to_owned())),
+        ] {
+            if let Some(value) = value {
+                let quoted = if value == "true" { value } else { format!("\"{value}\"") };
+                toolchains.push_str("  ");
+                toolchains.push_str(key);
+                toolchains.push_str(": ");
+                toolchains.push_str(&quoted);
+                toolchains.push('\n');
+            }
+        }
+        let toolchains = if toolchains.is_empty() {
+            "toolchains: {}\n".to_owned()
+        } else {
+            format!("toolchains:\n{toolchains}")
+        };
+        let list = |items: &[String]| {
+            if items.is_empty() {
+                " []\n".to_owned()
+            } else {
+                // An entry such as `@angular/cli` cannot start a plain YAML value.
+                items
+                    .iter()
+                    .map(|item| {
+                        if item.starts_with('@') {
+                            format!("\n  - \"{item}\"")
+                        } else {
+                            format!("\n  - {item}")
+                        }
+                    })
+                    .collect::<String>()
+                    + "\n"
+            }
+        };
+        format!(
+            "# The tools this agent's image installs. agentctl writes them into the Dockerfile's generated
+# block before each create. An agent keeps the image it was created with, so a change here takes
+# effect when the agent is created again.
+
+# Podman, with `docker` and `docker compose`.
+containers: {containers}
+# Chromium with playwright-cli, for testing web apps.
+browser: {browser}
+# A desktop you can watch and take over over VNC; it brings the browser, and agent.yaml's access
+# needs `- type: vnc` to open it.
+desktop: {desktop}
+# Language toolchains: node (a version), corepack, dotnet (\"lts\" or an SDK version), go (\"latest\"
+# or a version), rust (\"stable\" or a channel), python, java and maven.
+{toolchains}# Ubuntu packages, such as postgresql-client.
+packages:{packages}# Global npm packages, such as pnpm.
+npm:{npm}",
+            containers = self.containers,
+            browser = self.browser,
+            desktop = self.desktop,
+            packages = list(&self.packages),
+            npm = list(&self.npm),
+        )
     }
 
     /// The Dockerfile's generated block, markers included.
@@ -274,6 +381,17 @@ mod tests {
             },
             ..Tools::default()
         }
+    }
+
+    #[test]
+    fn the_written_file_reads_back_as_the_same_tools() {
+        let mut tools = sample();
+        tools.packages = vec!["jq".into(), "postgresql-client".into()];
+        tools.npm = vec!["@angular/cli".into()];
+        let read: Tools = serde_yaml_ng::from_str(&tools.render()).expect("tools.yaml");
+        assert_eq!(read, tools);
+        let empty: Tools = serde_yaml_ng::from_str(&Tools::default().render()).expect("tools.yaml");
+        assert_eq!(empty, Tools::default());
     }
 
     #[test]

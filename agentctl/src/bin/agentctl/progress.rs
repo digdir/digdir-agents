@@ -61,6 +61,16 @@ impl Wait {
         }
     }
 
+    /// Like [`Self::start`], for people new to agents: on a terminal, one line per finished
+    /// phase in plain words, and the details only on the updating line.
+    pub(crate) fn simple() -> Self {
+        let mut renderer = Renderer::stderr();
+        renderer.view = View::Simple;
+        Self {
+            renderer: RefCell::new(renderer),
+        }
+    }
+
     /// Runs `call` to completion while rendering `agent`'s progress, then
     /// renders the final state and settles the terminal.
     pub(crate) async fn until<T>(&self, client: &Client, agent: &str, call: impl Future<Output = T>) -> T {
@@ -126,6 +136,16 @@ pub(crate) struct Renderer<W: Write = io::Stderr> {
     /// Ready condition already considered, so a standing failure is shown once.
     seen_condition: Option<String>,
     started: bool,
+    view: View,
+}
+
+/// How much a terminal shows of the work.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum View {
+    /// Phases and noticeable steps under the names agentd gives them.
+    Detailed,
+    /// Phases in plain words and no step lines; see [`Wait::simple`].
+    Simple,
 }
 
 impl Renderer {
@@ -159,6 +179,27 @@ impl<W: Write> Renderer<W> {
             recent_output: VecDeque::new(),
             seen_condition: None,
             started: false,
+            view: View::Detailed,
+        }
+    }
+
+    /// A phase's label, in plain words for the simple view.
+    fn label<'a>(&self, id: &str, label: &'a str) -> &'a str {
+        if self.view == View::Detailed || !self.interactive() {
+            return label;
+        }
+        match id {
+            "imageResolve" => "Build the agent's image",
+            "imagePrepare" => "Prepare the agent's image",
+            "sandboxCreate" => "Create the agent's VM",
+            "networkStart" => "Start the agent's network",
+            "sandboxStart" => "Start the agent's VM",
+            "agentSetup" => "Set up the agent",
+            "sshAccess" => "Set up SSH access",
+            "vncAccess" => "Set up desktop access",
+            "sandboxStop" => "Stop the agent's VM",
+            "validate" | "lookup" | "featureDiscovery" | "sandboxUpdate" | "inspect" => "Check the agent",
+            _ => label,
         }
     }
 
@@ -227,7 +268,8 @@ impl<W: Write> Renderer<W> {
                     }
                 }
                 Update::PhaseFinished(phase) if phase.outcome != Outcome::Failed => {
-                    self.phase_completed(&phase.phase.label, phase.outcome, phase.elapsed_ms)?;
+                    let label = self.label(&phase.phase.id, &phase.phase.label);
+                    self.phase_completed(label, phase.outcome, phase.elapsed_ms)?;
                 }
                 // A failed phase is reported with its pass's failure below.
                 Update::PhaseFinished(_) => {}
@@ -241,7 +283,7 @@ impl<W: Write> Renderer<W> {
                     .iter()
                     .rfind(|phase| phase.outcome == Outcome::Failed)
                     .map_or(("Provision Sandbox", 0), |phase| {
-                        (phase.phase.label.as_ref(), phase.elapsed_ms)
+                        (self.label(&phase.phase.id, &phase.phase.label), phase.elapsed_ms)
                     });
                 // A stalled guest ends the wait like an invalid Agent does; the
                 // command reports both itself.
@@ -253,7 +295,7 @@ impl<W: Write> Renderer<W> {
                 let Some(current) = pass.current() else {
                     return Ok(());
                 };
-                let mut line = format!("→ {}", current.phase.label);
+                let mut line = format!("→ {}", self.label(&current.phase.id, &current.phase.label));
                 let Some(step) = pass.current_step() else {
                     return self.show_line(&line);
                 };
@@ -315,7 +357,7 @@ impl<W: Write> Renderer<W> {
 
     fn step_completed(&mut self, name: &str, elapsed_ms: u64) -> io::Result<()> {
         self.clear_active_line()?;
-        if !self.interactive() || elapsed_ms >= NOTABLE_STEP_MS {
+        if !self.interactive() || (self.view == View::Detailed && elapsed_ms >= NOTABLE_STEP_MS) {
             self.printed_step = true;
             writeln!(self.output, "  ✓ {name} ({})", duration(elapsed_ms))?;
         }
@@ -683,6 +725,39 @@ mod tests {
                 "✗ Start Sandbox failed 1× (last 0ms); waiting for the next retry",
                 "✗ Start Sandbox failed 2× (last 0ms); waiting for the next retry",
             ]
+        );
+    }
+
+    #[test]
+    fn the_simple_view_shows_phases_in_plain_words_without_step_lines() {
+        let mut renderer = renderer(true);
+        renderer.view = View::Simple;
+        let mut daemon = Daemon::new();
+        daemon
+            .phase(SandboxPhase::ImageResolve)
+            .step("Build Docker image")
+            .end_step("Build Docker image", 74_000)
+            .end_phase(SandboxPhase::ImageResolve, Outcome::Completed, 87_000)
+            .phase(SandboxPhase::SandboxStart)
+            .step("Start Microsandbox VM");
+        renderer.render(&daemon.snapshot());
+        daemon.fail("VMDK missing");
+        renderer.render(&daemon.snapshot());
+        renderer.finish();
+
+        let lines = lines(renderer);
+        let permanent: Vec<_> = lines.iter().filter(|line| !line.starts_with('→')).collect();
+        assert_eq!(
+            permanent[..3],
+            [
+                "✓ Build the agent's image (1m 27s)",
+                "✗ Start the agent's VM (0ms)",
+                "error: VMDK missing"
+            ]
+        );
+        assert!(
+            lines.contains(&"→ Start the agent's VM: Start Microsandbox VM".to_owned()),
+            "the updating line keeps the detail: {lines:?}"
         );
     }
 
