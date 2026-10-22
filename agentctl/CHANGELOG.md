@@ -24,7 +24,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Fixed
 
-- `agentctl apply` no longer fails with `Socket not found: /var/run/docker.sock` for Dockerfile-backed Agents using Docker Desktop or Colima's selected local context. Background retries recover after starting Docker or switching local contexts without restarting `agentd`. ([PR](PR_LINK))
+- `agentctl apply` no longer fails with `Socket not found: /var/run/docker.sock` for Dockerfile-backed Agents using Docker Desktop or Colima's selected local context. Background retries recover after starting Docker or switching local contexts without restarting `agentd`. ([#220](https://github.com/digdir/digdir-agents/pull/220))
 - On the base images, a build that runs out of memory in a Session, over SSH or in a desktop terminal no longer takes the Agent down: it keeps responding, and other SSH connections and desktop windows stay open. ([#198](https://github.com/digdir/digdir-agents/pull/198))
 - On the desktop image, `desktop` clicks no longer land somewhere other than the last screenshot showed after the display changes size; `desktop` asks for a new screenshot instead. ([#198](https://github.com/digdir/digdir-agents/pull/198))
 - Repositories the base images clone at boot from `/etc/agent-workspace.d`: ([base images](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#building-on-them), [#198](https://github.com/digdir/digdir-agents/pull/198))
