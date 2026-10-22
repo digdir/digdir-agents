@@ -1,0 +1,223 @@
+# Builds an unlisted, experimental agentctl from a pull request when someone with write access comments
+# `/agentctl-experimental` on it. The archives are uploaded as the run's artifacts, not as a GitHub release, so the installers and
+# `agentctl self update` never see them; the run replies on the pull request with how to install. Each request builds
+# the pull request's current head as `<latest release>.experimental.pr<number>.<n>`, n counting its experimental
+# builds, and closing the pull request deletes the artifacts of all of them. Pull requests from forks are refused.
+#
+# The comment only starts the build: an issue_comment run has the default branch's cache scope, so the pull
+# request's code is built by a workflow_dispatch run on its own branch, which can do no more than a push to it can.
+# That run uses the branch's copy of this workflow, so a branch older than it must merge main first.
+name: agentctl experimental build
+run-name: >-
+  ${{ (github.event_name == 'pull_request' && format('Delete agentctl experimental builds for #{0}', github.event.pull_request.number))
+  || (github.event_name == 'workflow_dispatch' && format('agentctl experimental build for #{0}', inputs.pull_request))
+  || (startsWith(github.event.comment.body, '/agentctl-experimental') && format('Request agentctl experimental build for #{0}', github.event.issue.number))
+  || format('Ignore comment on #{0}', github.event.issue.number) }}
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: Pull request to build; run on its branch
+        type: number
+        required: true
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+# One build or cleanup at a time per pull request, so a cleanup waits for a build that is still uploading and the
+# build count is never raced. Comments only dispatch, so each gets a group of its own.
+concurrency:
+  group: >-
+    agentctl-experimental-${{ github.event_name != 'issue_comment'
+    && (github.event.pull_request.number || inputs.pull_request) || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  request:
+    name: Start experimental build
+    if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/agentctl-experimental') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Dispatch the build on the pull request's branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          set -euo pipefail
+
+          react() {
+            gh api --silent -X POST "repos/${REPOSITORY}/issues/comments/${COMMENT_ID}/reactions" -f content="$1"
+          }
+          refuse() {
+            echo "::error::$1"
+            react confused
+            exit 1
+          }
+
+          permission="$(gh api "repos/${REPOSITORY}/collaborators/${COMMENTER}/permission" --jq .permission)"
+          case "${permission}" in
+            admin | maintain | write) ;;
+            *) refuse "${COMMENTER} has ${permission} access; experimental builds need write access" ;;
+          esac
+
+          pull_request="$(gh api "repos/${REPOSITORY}/pulls/${NUMBER}")"
+          [ "$(jq -r .state <<< "${pull_request}")" = open ] || refuse "#${NUMBER} is not open"
+          [ "$(jq -r .head.repo.full_name <<< "${pull_request}")" = "${REPOSITORY}" ] \
+            || refuse "#${NUMBER} comes from a fork; experimental builds use only branches in ${REPOSITORY}"
+          branch="$(jq -r .head.ref <<< "${pull_request}")"
+
+          if ! gh workflow run agentctl-experimental.yml --repo "${REPOSITORY}" --ref "${branch}" -f "pull_request=${NUMBER}"; then
+            gh pr comment "${NUMBER}" --repo "${REPOSITORY}" --body \
+              'Could not start an experimental agentctl build of this branch. If it does not have `.github/workflows/agentctl-experimental.yml` yet, merge main into it and comment again.'
+            refuse "could not dispatch the build on ${branch}"
+          fi
+          react eyes
+
+  resolve:
+    name: Resolve version
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Resolve version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ inputs.pull_request }}
+        run: |
+          set -euo pipefail
+
+          pull_request="$(gh api "repos/${REPOSITORY}/pulls/${NUMBER}")"
+          if [ "$(jq -r .state <<< "${pull_request}")" != open ] \
+            || [ "$(jq -r .head.repo.full_name <<< "${pull_request}")" != "${REPOSITORY}" ] \
+            || [ "$(jq -r .head.ref <<< "${pull_request}")" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::${GITHUB_REF_NAME} is not the branch of open pull request #${NUMBER} in ${REPOSITORY}"
+            exit 1
+          fi
+          created="$(jq -r .created_at <<< "${pull_request}")"
+
+          # The concurrency group runs one build per pull request at a time, so this run is the newest counted.
+          n="$(gh api --paginate \
+            "repos/${REPOSITORY}/actions/workflows/agentctl-experimental.yml/runs?event=workflow_dispatch&created=%3E%3D${created}&per_page=100" \
+            | jq -s --arg title "agentctl experimental build for #${NUMBER}" --argjson run "${GITHUB_RUN_ID}" \
+              '[.[].workflow_runs[] | select(.display_title == $title and .id <= $run)] | length')"
+
+          # The latest release as the installers resolve it: the newest agentctl/ tag.
+          latest="$(gh api "repos/${REPOSITORY}/releases?per_page=100" \
+            --jq '[.[] | select(.tag_name | startswith("agentctl/v"))][0].tag_name')"
+          base="${latest#agentctl/}"
+          case "${base}" in
+            *-*) version="${base}.experimental.pr${NUMBER}.${n}" ;;
+            *) version="${base}-experimental.pr${NUMBER}.${n}" ;;
+          esac
+
+          echo "Building ${version} from ${GITHUB_SHA}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build
+    needs: resolve
+    uses: ./.github/workflows/agentctl-build.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+
+  report:
+    name: Report on the pull request
+    needs: [resolve, build]
+    if: ${{ always() && needs.resolve.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment with the result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ inputs.pull_request }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          RESULT: ${{ needs.build.result }}
+        run: |
+          set -euo pipefail
+
+          run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          if [ "${RESULT}" != success ]; then
+            printf 'Experimental agentctl `%s` from %s did not build: %s\n' "${VERSION}" "${GITHUB_SHA}" "${run_url}" > comment.md
+          else
+            cat > comment.md <<EOF
+          Experimental agentctl \`${VERSION}\` is built from ${GITHUB_SHA}. Its archives are the artifacts of [this run](${run_url}), deleted when this pull request closes.
+
+          Install it on macOS or Linux, with \`platform\` one of \`macos-aarch64\`, \`linux-x86_64\` or \`linux-aarch64\`:
+
+          \`\`\`sh
+          platform=macos-aarch64
+          gh run download ${GITHUB_RUN_ID} --repo ${REPOSITORY} --name "agent-\${platform}" --dir agentctl-experimental
+          curl -fsSL https://raw.githubusercontent.com/${REPOSITORY}/${GITHUB_SHA}/agentctl/install.sh \\
+            | AGENT_VERSION=${VERSION} AGENT_LOCAL_ARCHIVE="\${PWD}/agentctl-experimental/agent-\${platform}.tar.gz" sh
+          \`\`\`
+
+          On Windows, with \`\$Platform\` one of \`windows-x86_64\` or \`windows-aarch64\`:
+
+          \`\`\`powershell
+          \$Platform = 'windows-x86_64'
+          gh run download ${GITHUB_RUN_ID} --repo ${REPOSITORY} --name "agent-\$Platform" --dir agentctl-experimental
+          \$env:AGENT_VERSION = '${VERSION}'
+          \$env:AGENT_LOCAL_ARCHIVE = "\$PWD\\agentctl-experimental\\agent-\$Platform.tar.gz"
+          irm https://raw.githubusercontent.com/${REPOSITORY}/${GITHUB_SHA}/agentctl/install.ps1 | iex
+          Remove-Item Env:AGENT_VERSION, Env:AGENT_LOCAL_ARCHIVE
+          \`\`\`
+
+          Without the GitHub CLI, download \`agent-<platform>\` from the run page instead, unzip it into \`agentctl-experimental\` and skip the \`gh run download\` line.
+
+          \`agentctl self update\` returns to the latest release.
+          EOF
+          fi
+          gh pr comment "${NUMBER}" --repo "${REPOSITORY}" --body-file comment.md
+
+  cleanup:
+    name: Delete experimental builds
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    steps:
+      - name: Delete the artifacts of this pull request's experimental builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          CREATED: ${{ github.event.pull_request.created_at }}
+        run: |
+          set -euo pipefail
+
+          gh api --paginate \
+            "repos/${REPOSITORY}/actions/workflows/agentctl-experimental.yml/runs?event=workflow_dispatch&created=%3E%3D${CREATED}&per_page=100" \
+            | jq -r --arg title "agentctl experimental build for #${NUMBER}" '.workflow_runs[] | select(.display_title == $title) | .id' \
+            | while read -r run; do
+                gh api --paginate "repos/${REPOSITORY}/actions/runs/${run}/artifacts?per_page=100" --jq '.artifacts[].id' \
+                  | while read -r artifact; do
+                      gh api --silent -X DELETE "repos/${REPOSITORY}/actions/artifacts/${artifact}"
+                      echo "Deleted artifact ${artifact} of run ${run}"
+                    done
+              done
