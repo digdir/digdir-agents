@@ -502,6 +502,8 @@ enum ClaudeCommand {
         #[arg(long)]
         from_stdin: bool,
     },
+    /// Say whether agents can use Claude Code; exits with 1 when no login is stored.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -520,6 +522,8 @@ enum CodexCommand {
         #[arg(long)]
         from_stdin: bool,
     },
+    /// Say whether agents can use Codex; exits with 1 when no login is stored.
+    Status,
 }
 
 fn main() -> ExitCode {
@@ -579,6 +583,12 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         Command::Codex {
             command: CodexCommand::Login { from_stdin },
         } => harness_login(home, client, agent::Harness::Codex, from_stdin).await?,
+        Command::Claude {
+            command: ClaudeCommand::Status,
+        } => return harness_status(client, agent::Harness::ClaudeCode).await,
+        Command::Codex {
+            command: CodexCommand::Status,
+        } => return harness_status(client, agent::Harness::Codex).await,
         Command::Apply {
             filename,
             variant,
@@ -1887,6 +1897,26 @@ fn read_apply_request_in(
         create_only: false,
         agent,
     })
+}
+
+/// Says whether a harness login is stored, with exit code 1 when it is not.
+async fn harness_status(client: &Client, harness: agent::Harness) -> CommandResult<ExitCode> {
+    let status = client.auth_status().await?;
+    let (signed_in, label, command) = match harness {
+        agent::Harness::ClaudeCode => (status.claude_code, "Claude Code", "claude"),
+        agent::Harness::Codex => (status.codex, "Codex", "codex"),
+        agent::Harness::Pi => {
+            println!("Pi: configured by each agent; agentctl stores no login for it");
+            return Ok(ExitCode::SUCCESS);
+        }
+    };
+    if signed_in {
+        println!("{label}: signed in; agents can use it");
+        Ok(ExitCode::SUCCESS)
+    } else {
+        println!("{label}: not signed in; run `agentctl {command} login`");
+        Ok(ExitCode::FAILURE)
+    }
 }
 
 /// Signs in to a harness on the host, or stores a credential read from standard input.

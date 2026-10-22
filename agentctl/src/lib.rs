@@ -8,6 +8,7 @@ pub mod control_api;
 pub mod control_plane;
 mod controller;
 mod environment;
+pub mod github;
 pub mod harness;
 pub mod local;
 pub mod manifest;
@@ -25,8 +26,8 @@ pub use control_plane::AgentId;
 pub use controller::{FailureKind, ReconcileFailure};
 pub use harness::{Effort, Harness, HarnessAuthMode, HarnessSpec, Model, ModelSelection};
 pub use manifest::{
-    API_VERSION, AccessSpec, Agent, AgentVariant, AgentVariantName, Condition, ConditionStatus, EnvironmentSpec,
-    HomeSpec, InstructionsSpec, KIND, Metadata, MountSpec, NetworkAllow, NetworkMode, NetworkSpec,
+    API_VERSION, AccessSpec, AccountSpec, Agent, AgentVariant, AgentVariantName, Condition, ConditionStatus,
+    EnvironmentSpec, HomeSpec, InstructionsSpec, KIND, Metadata, MountSpec, NetworkAllow, NetworkMode, NetworkSpec,
     PlatformManifestSpec, Provenance, ResolvedManifest, RunState, SandboxManifestSpec, SecretSpec, SkillSpec, Spec,
     Status, VARIANT_KIND,
 };

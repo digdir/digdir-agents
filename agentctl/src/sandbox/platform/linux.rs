@@ -219,7 +219,7 @@ impl Linux {
             let archive = archive_home(record.source_directory.clone(), home.source.clone()).await?;
             sync_home(sandbox, archive).await?;
         }
-        configure_git_identity(sandbox).await?;
+        configure_git(sandbox, record.agent.spec.github_account()).await?;
         step.complete().await;
         let instructions = read_instructions(record).await?;
         let skills = read_skills(record).await?;
@@ -237,22 +237,24 @@ impl Linux {
     }
 }
 
-async fn configure_git_identity(sandbox: &SandboxHandle) -> Result<(), Error> {
+/// Configures Git for the Agent's user when the image has it: the commit identity from
+/// `GIT_USER_NAME` and `GIT_USER_EMAIL`, and for an Agent with the GitHub account, HTTPS access to
+/// GitHub through the mediated `GITHUB_TOKEN`.
+async fn configure_git(sandbox: &SandboxHandle, github_account: bool) -> Result<(), Error> {
     let environment = &sandbox.snapshot().environment;
-    let (Some(name), Some(email)) = (environment.get("GIT_USER_NAME"), environment.get("GIT_USER_EMAIL")) else {
-        if environment.contains_key("GIT_USER_NAME") || environment.contains_key("GIT_USER_EMAIL") {
+    let identity = match (environment.get("GIT_USER_NAME"), environment.get("GIT_USER_EMAIL")) {
+        (Some(name), Some(email)) => Some((name.clone(), email.clone())),
+        (None, None) => None,
+        _ => {
             return Err(Error::Invalid(
                 "GIT_USER_NAME and GIT_USER_EMAIL must both be configured".into(),
             ));
         }
-        return Ok(());
     };
-    let present = sandbox
-        .run_execution(ExecutionSpec::command(
-            SandboxPath::new("/usr/bin/env"),
-            ["git".into(), "--version".into()],
-        ))
-        .await?;
+    if identity.is_none() && !github_account {
+        return Ok(());
+    }
+    let present = run_git(sandbox, &["--version"]).await?;
     match present.status.code {
         127 => return Ok(()),
         0 => {}
@@ -262,8 +264,73 @@ async fn configure_git_identity(sandbox: &SandboxHandle) -> Result<(), Error> {
             )));
         }
     }
-    run_git_config(sandbox, "user.name", name).await?;
-    run_git_config(sandbox, "user.email", email).await
+    if let Some((name, email)) = identity {
+        run_git_config(sandbox, "user.name", &name).await?;
+        run_git_config(sandbox, "user.email", &email).await?;
+    }
+    if github_account {
+        configure_github_https(sandbox).await?;
+    }
+    Ok(())
+}
+
+/// Gives Git the mediated `GITHUB_TOKEN` for GitHub over HTTPS, and sends GitHub's SSH URLs over
+/// HTTPS, since the Sandbox has no SSH key and mediation covers HTTPS only. An image that already
+/// configured either keeps its own.
+async fn configure_github_https(sandbox: &SandboxHandle) -> Result<(), Error> {
+    let helper = git_lookup(
+        sandbox,
+        &["config", "--get-urlmatch", "credential.helper", "https://github.com"],
+    )
+    .await?;
+    if helper.is_none() {
+        run_git_config(sandbox, GITHUB_CREDENTIAL_KEY, GITHUB_CREDENTIAL_HELPER).await?;
+    }
+    let rewrites = git_lookup(sandbox, &["config", "--get-regexp", r"^url\..*\.insteadof$"])
+        .await?
+        .unwrap_or_default();
+    for ssh in GITHUB_SSH_URLS {
+        if !rewrites.lines().any(|line| line.split_whitespace().nth(1) == Some(ssh)) {
+            let args = ["git", "config", "--global", "--add", GITHUB_HTTPS_REWRITE, ssh];
+            let output = run_git(sandbox, &args[1..]).await?;
+            checked_output("/usr/bin/env", &args, &output)?;
+        }
+    }
+    Ok(())
+}
+
+/// Hands Git the placeholder as the password; the mediator replaces it in the Basic credentials.
+const GITHUB_CREDENTIAL_KEY: &str = "credential.https://github.com.helper";
+const GITHUB_CREDENTIAL_HELPER: &str =
+    "!f() { test \"$1\" = get || exit 0; echo username=x-access-token; echo \"password=$GITHUB_TOKEN\"; }; f";
+const GITHUB_HTTPS_REWRITE: &str = "url.https://github.com/.insteadOf";
+const GITHUB_SSH_URLS: [&str; 2] = ["git@github.com:", "ssh://git@github.com/"];
+
+/// Runs `git config` that reads a value: its output when set, `None` when Git reports it unset.
+async fn git_lookup(sandbox: &SandboxHandle, args: &[&str]) -> Result<Option<String>, Error> {
+    let output = run_git(sandbox, args).await?;
+    match output.status.code {
+        0 => {
+            let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            Ok((!value.is_empty()).then_some(value))
+        }
+        1 => Ok(None),
+        _ => {
+            let mut full = vec!["git"];
+            full.extend_from_slice(args);
+            checked_output("/usr/bin/env", &full, &output).map(|()| None)
+        }
+    }
+}
+
+async fn run_git(sandbox: &SandboxHandle, args: &[&str]) -> Result<::sandbox::execution::ExecutionOutput, Error> {
+    let args = std::iter::once("git").chain(args.iter().copied()).map(str::to_owned);
+    Ok(sandbox
+        .run_execution(
+            ExecutionSpec::command(SandboxPath::new("/usr/bin/env"), args)
+                .with_environment([("HOME".into(), HOME.into())]),
+        )
+        .await?)
 }
 
 async fn run_git_config(sandbox: &SandboxHandle, key: &str, value: &str) -> Result<(), Error> {

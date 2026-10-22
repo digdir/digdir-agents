@@ -308,11 +308,33 @@ pub struct ImportedAuthentication {
     pub ready: bool,
 }
 
-/// Dispatches host-side authentication to the selected harness adapter.
+/// Which host logins Agents can use, without any credential.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthenticationStatus {
+    /// Whether `agentctl claude login` has stored a Claude Code credential.
+    pub claude_code: bool,
+    /// Whether `agentctl codex login` has stored a Codex credential.
+    pub codex: bool,
+    /// The GitHub tokens `agentctl github login` stored, without the tokens.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub github: Vec<crate::github::GithubToken>,
+}
+
+impl AuthenticationStatus {
+    /// Whether at least one harness can run Sessions.
+    #[must_use]
+    pub const fn any_harness(&self) -> bool {
+        self.claude_code || self.codex
+    }
+}
+
+/// Dispatches host-side authentication to the selected harness adapter or the GitHub account.
 pub struct AuthenticationManager {
     database: persistence::Database,
     claude_code: claude_code::authentication::Authentication,
     codex: codex::authentication::Authentication,
+    github: crate::github::Authentication,
 }
 
 impl AuthenticationManager {
@@ -322,8 +344,60 @@ impl AuthenticationManager {
         Self {
             database: database.clone(),
             claude_code: claude_code::authentication::Authentication::new(database.clone()),
-            codex: codex::authentication::Authentication::new(database),
+            codex: codex::authentication::Authentication::new(database.clone()),
+            github: crate::github::Authentication::new(database),
         }
+    }
+
+    /// Reports which host logins are stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database cannot be read.
+    pub async fn status(&self) -> Result<AuthenticationStatus, Error> {
+        Ok(AuthenticationStatus {
+            claude_code: authentication_ready(Harness::ClaudeCode, &self.database).await?,
+            codex: authentication_ready(Harness::Codex, &self.database).await?,
+            github: crate::github::tokens(&self.database).await?,
+        })
+    }
+
+    /// Stores a GitHub token for Agents of `owner`, or for every owner without one of its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when GitHub rejects the token or cannot be reached, or it cannot be persisted.
+    pub async fn github_login(
+        &self,
+        token: Zeroizing<String>,
+        owner: Option<&str>,
+    ) -> Result<crate::github::GithubToken, Error> {
+        self.github.login(token, owner).await
+    }
+
+    /// Forgets the stored GitHub tokens `logout` names, returning them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database cannot be read or written.
+    pub async fn github_logout(
+        &self,
+        logout: &crate::github::Logout,
+    ) -> Result<Vec<crate::github::GithubToken>, Error> {
+        crate::github::forget(&self.database, logout).await
+    }
+
+    /// Asks GitHub about the stored token an Agent of `owner` would use.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no stored token applies, or GitHub rejects it or cannot be reached.
+    pub async fn github_check(
+        &self,
+        owner: Option<&str>,
+        repository: Option<&crate::github::Repository>,
+    ) -> Result<crate::github::GithubCheck, Error> {
+        self.github.check(owner, repository).await
     }
 
     /// Stores a credential for the selected harness.
@@ -412,6 +486,21 @@ pub(crate) async fn prepare(harness: Harness, database: &persistence::Database) 
         Harness::ClaudeCode => claude_code::prepare(database).await,
         Harness::Codex => codex::prepare(database).await,
         Harness::Pi => Ok(Vec::new()),
+    }
+}
+
+/// A harness installation whose host login is stored in `database`, so code outside the
+/// adapters can test with a harness without naming one.
+#[cfg(test)]
+pub(crate) async fn signed_in_installation(database: &persistence::Database) -> HarnessSpec {
+    claude_code::store_test_login(database).await;
+    HarnessSpec {
+        kind: Harness::ClaudeCode,
+        version: None,
+        auth: HarnessAuthMode::Mediated,
+        optional: false,
+        default: false,
+        defaults: ModelSelection::default(),
     }
 }
 

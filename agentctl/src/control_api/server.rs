@@ -13,14 +13,15 @@ use crate::{
 
 use super::protocol::{
     CODE_IMMUTABLE, CODE_INTERNAL, CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND,
-    CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams,
-    METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET,
-    METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH,
-    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, PROTOCOL_VERSION, ProgressParams,
-    ReadMessage, Request, ResourcesWatchParams, Response, SessionEnsureParams, SessionListParams, SessionParams,
-    SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
+    CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, GithubCheckParams, GithubLoginParams,
+    JSON_RPC_VERSION, LoginParams, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_STATUS, METHOD_CONVERGE, METHOD_DELETE,
+    METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_GITHUB_CHECK, METHOD_GITHUB_LOGIN, METHOD_GITHUB_LOGOUT, METHOD_HEALTH,
+    METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_SESSION_ARCHIVE,
+    METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT,
+    METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP,
+    METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, PROTOCOL_VERSION, ProgressParams, ReadMessage, Request,
+    ResourcesWatchParams, Response, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
+    SessionTurnsParams, ShutdownParams, error_response, read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -122,6 +123,29 @@ pub trait AuthenticationApi {
         credential: &'a str,
         imported: bool,
     ) -> LocalFuture<'a, Result<harness::ImportedAuthentication, Error>>;
+
+    /// Stores a GitHub token for Agents of `owner`, or for every owner without one of its own.
+    fn github_login<'a>(
+        &'a self,
+        token: &'a str,
+        owner: Option<&'a str>,
+    ) -> LocalFuture<'a, Result<crate::github::GithubToken, Error>>;
+
+    /// Forgets the stored GitHub tokens `logout` names, returning them.
+    fn github_logout<'a>(
+        &'a self,
+        logout: &'a crate::github::Logout,
+    ) -> LocalFuture<'a, Result<Vec<crate::github::GithubToken>, Error>>;
+
+    /// Asks GitHub about the stored token an Agent of `owner` would use.
+    fn github_check<'a>(
+        &'a self,
+        owner: Option<&'a str>,
+        repository: Option<&'a crate::github::Repository>,
+    ) -> LocalFuture<'a, Result<crate::github::GithubCheck, Error>>;
+
+    /// Reports which host logins are stored.
+    fn status(&self) -> LocalFuture<'_, Result<harness::AuthenticationStatus, Error>>;
 }
 
 impl AuthenticationApi for harness::AuthenticationManager {
@@ -135,6 +159,36 @@ impl AuthenticationApi for harness::AuthenticationManager {
             self.login(harness, zeroize::Zeroizing::new(credential.to_owned()), imported)
                 .await
         })
+    }
+
+    fn github_login<'a>(
+        &'a self,
+        token: &'a str,
+        owner: Option<&'a str>,
+    ) -> LocalFuture<'a, Result<crate::github::GithubToken, Error>> {
+        Box::pin(async move {
+            self.github_login(zeroize::Zeroizing::new(token.to_owned()), owner)
+                .await
+        })
+    }
+
+    fn github_check<'a>(
+        &'a self,
+        owner: Option<&'a str>,
+        repository: Option<&'a crate::github::Repository>,
+    ) -> LocalFuture<'a, Result<crate::github::GithubCheck, Error>> {
+        Box::pin(self.github_check(owner, repository))
+    }
+
+    fn github_logout<'a>(
+        &'a self,
+        logout: &'a crate::github::Logout,
+    ) -> LocalFuture<'a, Result<Vec<crate::github::GithubToken>, Error>> {
+        Box::pin(self.github_logout(logout))
+    }
+
+    fn status(&self) -> LocalFuture<'_, Result<harness::AuthenticationStatus, Error>> {
+        Box::pin(self.status())
     }
 }
 
@@ -552,6 +606,17 @@ impl Server {
             METHOD_SSH_ACCESS => self.handle_ssh_access(request.id, request.params).await,
             METHOD_VNC_ACCESS => self.handle_vnc_access(request.id, request.params).await,
             METHOD_AUTH_LOGIN => self.handle_auth_login(request.id, request.params).await,
+            METHOD_GITHUB_LOGIN => self.handle_github_login(request.id, request.params).await,
+            METHOD_GITHUB_CHECK => self.handle_github_check(request.id, request.params).await,
+            METHOD_GITHUB_LOGOUT => match serde_json::from_value::<crate::github::Logout>(request.params) {
+                Ok(logout) => result_response(request.id, self.authentication.github_logout(&logout).await),
+                Err(_) => error_response(
+                    request.id,
+                    CODE_INVALID_PARAMS,
+                    "an owner, anyOther or everywhere is required",
+                ),
+            },
+            METHOD_AUTH_STATUS => result_response(request.id, self.authentication.status().await),
             METHOD_SESSION_ENSURE => self.handle_session_ensure(request.id, request.params).await,
             METHOD_SESSION_GET => self.handle_session_get(request.id, request.params).await,
             METHOD_SESSION_LIST => self.handle_session_list(request.id, request.params).await,
@@ -773,6 +838,30 @@ impl Server {
         )
     }
 
+    async fn handle_github_login(&self, id: u64, value: Value) -> Response {
+        let Ok(params) = serde_json::from_value::<GithubLoginParams>(value) else {
+            return error_response(id, CODE_INVALID_PARAMS, "token is required");
+        };
+        result_response(
+            id,
+            self.authentication
+                .github_login(&params.token, params.owner.as_deref())
+                .await,
+        )
+    }
+
+    async fn handle_github_check(&self, id: u64, value: Value) -> Response {
+        let Ok(params) = serde_json::from_value::<GithubCheckParams>(value) else {
+            return error_response(id, CODE_INVALID_PARAMS, "owner and repository are optional");
+        };
+        result_response(
+            id,
+            self.authentication
+                .github_check(params.owner.as_deref(), params.repository.as_ref())
+                .await,
+        )
+    }
+
     async fn handle_session_ensure(&self, id: u64, value: Value) -> Response {
         let params = match serde_json::from_value::<SessionEnsureParams>(value) {
             Ok(params) => params,
@@ -901,6 +990,8 @@ fn is_mutating(method: &str) -> bool {
             | METHOD_START
             | METHOD_EXECUTION_ENSURE
             | METHOD_AUTH_LOGIN
+            | METHOD_GITHUB_LOGIN
+            | METHOD_GITHUB_LOGOUT
             | METHOD_SESSION_ENSURE
             | METHOD_SESSION_PROMPT
             | METHOD_SESSION_DELETE
