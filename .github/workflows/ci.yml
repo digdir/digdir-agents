@@ -1,6 +1,5 @@
 # CI for the whole monorepo. `ci-gate` is the only required status check in
-# branch protection, so green CI is enforced by the platform before auto-merge
-# (see doc/pr-prosess.md).
+# branch protection, so green CI is enforced by the platform before merge.
 #
 # Each area is a reusable workflow that runs only when its paths change.
 # `ci-gate` fails when a job that ran failed or was cancelled, and passes when

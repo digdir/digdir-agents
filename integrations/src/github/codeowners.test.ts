@@ -82,9 +82,9 @@ test("siste treff vinner, og en linje uten eier fjerner eierskapet", () => {
   assert.equal(isOwned(rules, "agentctl/src/lib.rs"), true);
 });
 
-// Repoets egen CODEOWNERS: låser hvilke stier som er trygge for auto-merge.
+// Repoets egen CODEOWNERS: låser hvilke stier som kan merges uten review.
 // Feiler denne, har en endring gjort en sensitiv sti trygg (eller omvendt) —
-// oppdater listene her bevisst, sammen med doc/pr-prosess.md.
+// oppdater listene her bevisst.
 const REPO_CODEOWNERS = parseCodeowners(
   readFileSync(new URL("../../../.github/CODEOWNERS", import.meta.url), "utf-8"),
 );
@@ -93,11 +93,8 @@ test("repoets CODEOWNERS: kun dokumentasjon er trygt", () => {
   for (const path of [
     "README.md",
     "LICENSE",
-    "doc/index.md",
-    "doc/plans/jr-paa-agentctl.md",
     "docs/presentations/agentctl-sandbox-sdk/slides.md",
-    "agents/proxy-agent/README.md",
-    "apps/llm-gateway/README.md",
+    "agents/ny-agent/README.md",
     "integrations/README.md",
   ]) {
     assert.equal(isOwned(REPO_CODEOWNERS, path), false, path);
@@ -107,34 +104,25 @@ test("repoets CODEOWNERS: kun dokumentasjon er trygt", () => {
 test("repoets CODEOWNERS: alt annet krever review", () => {
   for (const path of [
     // agent-instrukser og -definisjoner, uansett filnavn
-    "agents/local-cc-coding-agent/CLAUDE.md",
-    "agents/jr-sandbox/instructions.md",
-    "agents/jr-sandbox/agent.yaml",
-    "agents/jr-sandbox/claude-state.json",
-    "agents/nvt-fat-developer/AGENTS.local.md.tmpl",
-    "agents/proxy-agent/docker/skills/web-research/SKILL.md",
-    "agents/proxy-agent/scripts/trigger.ps1",
+    "agents/ny-agent/agent.yaml",
+    "agents/ny-agent/instructions.md",
     "agents/self-dev/README.md",
-    "doc/pr-prosess.md",
+    "agents/self-dev/Dockerfile",
     // tjenester og avhengighetene deres
-    "apps/llm-gateway/server.mjs",
-    "apps/llm-gateway/package.json",
-    "apps/nvt-bridge/src/bridge.ts",
     "integrations/src/config.ts",
     "integrations/package.json",
     "integrations/package-lock.json",
     "integrations/tsconfig.json",
     "docs/presentations/agentctl-sandbox-sdk/package.json",
     // drift og prosessen selv
-    "docker-compose.yml",
-    "scripts/self-update.ps1",
     "renovate.json",
     ".gitignore",
     ".github/CODEOWNERS",
-    ".github/workflows/auto-merge.yml",
+    ".github/workflows/ci.yml",
     "images/agentctl-base/Dockerfile",
     "agentctl/src/lib.rs",
-    // stier som ikke finnes ennå
+    // stier som ikke finnes (lenger)
+    "doc/index.md",
     "apps/ny-tjeneste/index.ts",
     "ny-mappe/fil.txt",
   ]) {
