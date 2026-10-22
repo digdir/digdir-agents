@@ -33,6 +33,20 @@ pub enum Observation {
     },
 }
 
+/// Where a launch belongs: where the harness reports activity, and what it can tell people about
+/// where it runs.
+#[derive(Clone, Copy, Debug)]
+pub struct LaunchContext<'a> {
+    /// The Platform API base URL reachable from the Sandbox, where the harness reports activity.
+    pub platform_api_url: &'a str,
+    /// The agent's name.
+    pub agent: &'a str,
+    /// The directory on the host the agent was applied from.
+    pub source_directory: &'a std::path::Path,
+    /// The host machine's name.
+    pub host: &'a str,
+}
+
 /// One harness Session carried inside a Sandbox.
 ///
 /// Every method takes the materialized [`SandboxHandle`]; the runtime holds no
@@ -50,13 +64,12 @@ pub trait SessionRuntime {
     /// `resume` continues that harness-native conversation. `initial_prompt`
     /// is the first operator prompt of a fresh conversation, handed to the
     /// harness at launch so it starts working immediately; it is never
-    /// combined with `resume`. `platform_api_url` is the Platform API base
-    /// URL reachable from the Sandbox, where the harness reports activity.
+    /// combined with `resume`. `context` says where the launch belongs.
     fn start<'a>(
         &'a self,
         session: &'a Session,
         sandbox: &'a SandboxHandle,
-        platform_api_url: &'a str,
+        context: LaunchContext<'a>,
         token: &'a LaunchToken,
         resume: Option<&'a str>,
         initial_prompt: Option<&'a str>,
