@@ -173,6 +173,14 @@ repositories they can access, and image init may make a simple best-effort check
 `spec.sandbox.mounts` can instead attach caller-owned host directories or temporary memory filesystems when the selected
 Sandbox Provider supports them; these attachments are immutable for the Agent incarnation.
 
+An agent folder's `tools.yaml` lists the tools its image installs: containers (Podman with `docker` and
+`docker compose`), the base image's browser or desktop feature, toolchains at the versions it names (Node.js and
+Corepack, .NET, Go, Rust, Python, Java and Maven), Ubuntu packages and global npm packages. Before an Agent is created
+from the folder, `agentctl apply` and the TUI write them into the generated block of the folder's `Dockerfile`, between
+its `# --- Generated from tools.yaml` and `# --- End of the generated block` lines, and leave the rest of the file as it
+is. Every manifest in the folder builds the same image, and an Agent keeps the image it was created with. A folder
+without `tools.yaml` keeps its Dockerfile by hand.
+
 `spec.home`, when given, is a continuously applied overlay onto `/home/agent`. It converges files supplied by the builder but does
 not delete guest files that disappear from the source. Builders may use it to own harness configuration explicitly,
 with the consequence that those files are reapplied on every Agent pass.

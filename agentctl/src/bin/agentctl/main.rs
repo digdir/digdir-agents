@@ -20,10 +20,12 @@ use clap::{Parser, Subcommand, ValueEnum};
 mod format;
 mod github;
 mod host;
+mod init;
 mod launch;
 mod progress;
 mod prompt;
 mod self_update;
+mod tools;
 mod tui;
 
 use format::{condition_status, format_age, format_harnesses, session_state};
@@ -732,6 +734,13 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             timeout,
         } => {
             let filename = apply_manifest_path(filename, variant)?;
+            let folder = std::path::absolute(&filename)
+                .map_err(Error::from)?
+                .parent()
+                .map(Path::to_path_buf);
+            if let Some(folder) = &folder {
+                tools::sync(folder)?;
+            }
             let mut request = read_apply_request(filename, env_file)?;
             if let Some(name) = name {
                 request.agent.metadata.name = name;
