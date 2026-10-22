@@ -556,7 +556,7 @@ pub(crate) async fn run_checked<S: AsRef<str>>(
 ///
 /// Returns an error when the Execution cannot start or `test` fails for any
 /// reason other than the path being absent.
-pub(super) async fn path_exists(sandbox: &SandboxHandle, test: &str, path: &str) -> Result<bool, Error> {
+pub(crate) async fn path_exists(sandbox: &SandboxHandle, test: &str, path: &str) -> Result<bool, Error> {
     let output = sandbox
         .run_execution(ExecutionSpec::command(
             SandboxPath::new("/usr/bin/test"),

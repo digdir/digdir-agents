@@ -663,3 +663,95 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
         "unexpected error: {error:?}"
     );
 }
+
+fn answers(stdout: &str, code: i32) -> Vec<ExecutionEvent> {
+    vec![
+        ExecutionEvent::Started { process_id: None },
+        ExecutionEvent::Stdout(stdout.to_owned().into()),
+        ExecutionEvent::Exited(ExitStatus { code }),
+    ]
+}
+
+/// Runs Linux setup for a Claude Code agent whose Claude Code state file holds `existing`, if
+/// any, and returns the state file afterwards and whether setup wrote it.
+async fn claude_state_after_setup(existing: Option<&str>) -> (Option<serde_json::Value>, bool) {
+    const STATE: &str = "/home/agent/.claude/.claude.json";
+    let directory = TempDir::new().expect("temporary directory");
+    std::fs::write(directory.path().join("instructions.md"), "test instructions\n").expect("instruction file");
+    std::fs::create_dir(directory.path().join("home")).expect("home");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    let record = AgentRecord {
+        id: "8c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e5f".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    };
+    let backend = Rc::new(memory::Provider::new());
+    backend.queue_execution_events_matching(is_claude_version, answers("2.1.266 (Claude Code)\n", 0));
+    backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    let present = existing.is_some();
+    backend.queue_execution_events_matching(
+        |spec| {
+            matches!(spec.program(), Program::Command { executable, args }
+                if executable.as_str() == "/usr/bin/test" && args == &["-e", STATE])
+        },
+        completed(i32::from(!present)),
+    );
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+    if let Some(existing) = existing {
+        sandbox
+            .write_file(
+                &SandboxPath::new(STATE),
+                Box::pin(Cursor::new(existing.as_bytes().to_vec())),
+            )
+            .await
+            .expect("existing state");
+    }
+    let before = backend.file_writes().len();
+
+    Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("setup");
+
+    let written = backend.file_writes()[before..]
+        .iter()
+        .any(|path| path.as_str() == STATE);
+    let state = serde_json::from_slice(&read_file(&sandbox, STATE).await).ok();
+    (state, written)
+}
+
+/// A session starts at Claude Code's prompt: a sandbox without Claude Code state yet gets one
+/// with the first-run questions answered, whatever image and manifest the agent has.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_answers_claude_codes_first_run_questions_for_a_new_sandbox() {
+    let (state, written) = claude_state_after_setup(None).await;
+    let state = state.expect("a new state file");
+    assert!(written);
+    assert_eq!(state["hasCompletedOnboarding"], true);
+    assert_eq!(state["bypassPermissionsModeAccepted"], true);
+    assert_eq!(state["projects"]["/home/agent/code"]["hasTrustDialogAccepted"], true);
+}
+
+/// Claude Code's existing state is the image's or the user's, and is never rewritten.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_never_rewrites_existing_claude_state() {
+    for existing in [r#"{"numStartups":3,"theme":"dark"}"#, "not JSON"] {
+        let (_, written) = claude_state_after_setup(Some(existing)).await;
+        assert!(!written, "{existing}");
+    }
+}

@@ -4,7 +4,7 @@ use sandbox::SandboxHandle;
 
 use crate::{
     Error,
-    sandbox::platform::{files::write_if_changed, run_checked},
+    sandbox::platform::{WORKING_DIRECTORY, files::write_if_changed, path_exists, run_checked},
 };
 
 use super::super::ACCESS_PLACEHOLDER;
@@ -89,5 +89,38 @@ pub(super) async fn configure(
         .await?;
         run_checked(sandbox, "/usr/bin/chmod", ["644", instructions_path.as_str()]).await?;
     }
+    answer_first_run_questions(sandbox, &config).await?;
     crate::harness::skills::install_linux(sandbox, &skills_path, skills).await
+}
+
+/// Gives a Sandbox without Claude Code state yet a state file with its first-run questions
+/// answered: onboarding completed, bypass-permissions mode accepted and the working directory
+/// trusted. A Session then starts at its prompt instead of at screens nobody is attached to answer.
+///
+/// Harness-owned state is otherwise the image's or the user's: an existing file, such as one a
+/// manifest's `home` supplies or one Claude Code wrote, is never rewritten.
+async fn answer_first_run_questions(sandbox: &SandboxHandle, config: &str) -> Result<(), Error> {
+    let path = format!("{config}/.claude.json");
+    if path_exists(sandbox, "-e", &path).await? {
+        return Ok(());
+    }
+    write_if_changed(sandbox, &path, &first_run_state(WORKING_DIRECTORY)).await?;
+    run_checked(
+        sandbox,
+        "/usr/bin/sudo",
+        ["/usr/bin/chown", "agent:agent", path.as_str()],
+    )
+    .await?;
+    run_checked(sandbox, "/usr/bin/chmod", ["600", path.as_str()]).await
+}
+
+fn first_run_state(working_directory: &str) -> Vec<u8> {
+    let state = serde_json::json!({
+        "hasCompletedOnboarding": true,
+        "bypassPermissionsModeAccepted": true,
+        "projects": { working_directory: { "hasTrustDialogAccepted": true } }
+    });
+    let mut text = serde_json::to_vec_pretty(&state).unwrap_or_default();
+    text.push(b'\n');
+    text
 }
