@@ -357,7 +357,7 @@ struct StopTarget {
     resource: Option<String>,
     /// Optional agent name when it is not part of `resource`.
     name: Option<String>,
-    /// Stop every running agent, without asking.
+    /// Stop every agent not stopped yet, including one still stopping, without asking.
     #[arg(long)]
     all: bool,
     /// End the VMs at once instead of letting them shut down, as an emergency stop. Whatever an
@@ -377,7 +377,7 @@ struct KillTarget {
     resource: Option<String>,
     /// Optional agent name when it is not part of `resource`.
     name: Option<String>,
-    /// Stop every running agent, without asking.
+    /// Stop every agent not stopped yet, including one still stopping, without asking.
     #[arg(long)]
     all: bool,
     /// Maximum wait, written as seconds, minutes, or hours (for example `2m`).
@@ -1496,79 +1496,110 @@ async fn wait_until_converged(client: &Client, name: &str, timeout: Duration) ->
     converged.map_err(CommandError::from)
 }
 
-/// Stops one agent, or every running one, and waits until they are stopped.
+/// Stops one agent, or every one not stopped yet, and waits until they are stopped.
 async fn stop(client: &Client, target: StopTarget) -> CommandResult<()> {
     let names = if let Some(resource) = &target.resource {
         vec![agent_reference(resource, target.name.clone())?]
     } else {
-        let Some(running) = running_agents_to_stop(client, &target).await? else {
+        let Some(running) = agents_to_stop(client, &target).await? else {
             return Ok(());
         };
         running
     };
-    // Every stop is recorded before any is waited for, so agentd stops them side by side.
-    for name in &names {
-        if target.now {
-            client.stop_now(name).await?;
-        } else {
-            client.set_run_state(name, RunState::Stopped).await?;
-        }
-    }
-    if let [name] = names.as_slice() {
-        wait_until_converged(client, name, target.timeout).await?;
-        println!("agent/{name} stopped");
-        return Ok(());
-    }
+    // Every stop is recorded before any is waited for, so agentd stops them side by side, and
+    // one that cannot be recorded leaves the others to stop.
     let mut failed = 0;
-    for name in &names {
-        match tokio::time::timeout(target.timeout, client.converge(name)).await {
-            Ok(Ok(_)) => println!("agent/{name} stopped"),
-            Ok(Err(error)) => {
+    let mut recorded = Vec::new();
+    for name in names {
+        let stopping = if target.now {
+            client.stop_now(&name).await
+        } else {
+            client.set_run_state(&name, RunState::Stopped).await
+        };
+        match stopping {
+            Ok(_) => recorded.push(name),
+            Err(error) => {
                 failed += 1;
-                eprintln!("agent/{name} did not stop: {error}");
-            }
-            Err(_) => {
-                failed += 1;
-                eprintln!("agent/{name} did not stop in time; agentd keeps stopping it");
+                eprintln!("agent/{name} could not be stopped: {error}");
             }
         }
     }
+    if failed == 0
+        && let [name] = recorded.as_slice()
+    {
+        let converged = wait_until_converged(client, name, target.timeout).await?;
+        return stopped_or_restarted(name, &converged).map_err(CommandError::Message);
+    }
+    let deadline = tokio::time::Instant::now() + target.timeout;
+    for name in &recorded {
+        let outcome = match tokio::time::timeout_at(deadline, client.converge(name)).await {
+            Ok(Ok(converged)) => stopped_or_restarted(name, &converged),
+            Ok(Err(error)) => Err(format!("agent/{name} did not stop: {error}")),
+            Err(_) => Err(format!("agent/{name} did not stop in time; agentd keeps stopping it")),
+        };
+        if let Err(message) = outcome {
+            failed += 1;
+            eprintln!("{message}");
+        }
+    }
+    let total = recorded.len() + failed;
     if failed > 0 {
         return Err(CommandError::Message(format!(
-            "{failed} of {} agents did not stop; `agentctl get agents` shows them",
-            names.len()
+            "{failed} of {total} agents did not stop; `agentctl get agents` shows them"
         )));
     }
     println!("Every agent is stopped. `agentctl start agent/NAME` starts one again.");
     Ok(())
 }
 
-/// Every running agent, after asking at a terminal unless `--all` was passed; `None` when there is
+/// Says that `name` stopped, or fails when it was started again before its stop finished.
+fn stopped_or_restarted(name: &str, converged: &Agent) -> Result<(), String> {
+    if converged.spec.is_stopped() {
+        println!("agent/{name} stopped");
+        return Ok(());
+    }
+    Err(format!("agent/{name} was started again before it stopped"))
+}
+
+/// Every agent not stopped yet, including one still stopping, so a kill can follow a graceful
+/// stop under way; after asking at a terminal unless `--all` was passed. `None` when there is
 /// none or the person declined.
-async fn running_agents_to_stop(client: &Client, target: &StopTarget) -> CommandResult<Option<Vec<String>>> {
-    let running: Vec<String> = client
+async fn agents_to_stop(client: &Client, target: &StopTarget) -> CommandResult<Option<Vec<String>>> {
+    let agents: Vec<Agent> = client
         .list_agents()
         .await?
         .into_iter()
-        .filter(|agent| !agent.spec.is_stopped() && agent.metadata.deletion_timestamp.is_none())
-        .map(|agent| agent.metadata.name)
+        .filter(|agent| {
+            agent.metadata.deletion_timestamp.is_none() && !(agent.spec.is_stopped() && agent.status.is_stopped())
+        })
         .collect();
-    if running.is_empty() {
+    if agents.is_empty() {
         println!("No agent is running.");
         return Ok(None);
     }
+    let names: Vec<String> = agents.iter().map(|agent| agent.metadata.name.clone()).collect();
     if target.all {
-        return Ok(Some(running));
+        return Ok(Some(names));
     }
     if !prompt::interactive() {
         return Err(CommandError::Message(
             "name the agent to stop, or pass --all to stop every agent".into(),
         ));
     }
-    let (running_line, question) = match running.len() {
-        1 => (format!("1 agent is running: {}.", running.join(", ")), "Stop it"),
+    let listed: Vec<String> = agents
+        .iter()
+        .map(|agent| {
+            if agent.spec.is_stopped() {
+                format!("{} (stopping)", agent.metadata.name)
+            } else {
+                agent.metadata.name.clone()
+            }
+        })
+        .collect();
+    let (running_line, question) = match agents.len() {
+        1 => (format!("1 agent is not stopped: {}.", listed.join(", ")), "Stop it"),
         count => (
-            format!("{count} agents are running: {}.", running.join(", ")),
+            format!("{count} agents are not stopped: {}.", listed.join(", ")),
             "Stop them all",
         ),
     };
@@ -1577,7 +1608,7 @@ async fn running_agents_to_stop(client: &Client, target: &StopTarget) -> Command
     } else {
         format!("{question}?")
     };
-    Ok(prompt::confirm_lines(&[&running_line, &question])?.then_some(running))
+    Ok(prompt::confirm_lines(&[&running_line, &question])?.then_some(names))
 }
 
 /// Stops or starts an Agent and waits until it is stopped or Ready.

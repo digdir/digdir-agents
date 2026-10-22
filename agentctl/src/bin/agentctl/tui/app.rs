@@ -1643,7 +1643,11 @@ impl App {
                 let agents: Vec<String> = self
                     .agents
                     .iter()
-                    .filter(|agent| !agent.spec.is_stopped() && agent.metadata.deletion_timestamp.is_none())
+                    // One still stopping counts, so this can cut short a graceful stop.
+                    .filter(|agent| {
+                        agent.metadata.deletion_timestamp.is_none()
+                            && !(agent.spec.is_stopped() && agent.status.is_stopped())
+                    })
                     .map(|agent| agent.metadata.name.clone())
                     .collect();
                 if agents.is_empty() {
@@ -4225,6 +4229,7 @@ mod tests {
         app.apply_snapshot(
             vec![
                 not_ready_agent("idle", RunState::Stopped, agent::Condition::REASON_STOPPED),
+                not_ready_agent("leaving", RunState::Stopped, agent::Condition::REASON_STOPPING),
                 ready_agent("reviewer"),
                 ready_agent("worker"),
             ],
@@ -4238,9 +4243,9 @@ mod tests {
         assert_eq!(
             app.on_key(key(KeyCode::Char('y'))),
             Action::StopAll {
-                agents: vec!["reviewer".into(), "worker".into()]
+                agents: vec!["leaving".into(), "reviewer".into(), "worker".into()]
             },
-            "the stopped agent is left alone"
+            "the stopped agent is left alone, and the one still stopping can be cut short"
         );
 
         let mut idle = App::new();

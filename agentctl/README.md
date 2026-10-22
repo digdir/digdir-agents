@@ -41,8 +41,10 @@ agentctl kill --all     # the same as agentctl stop --all --now
 
 Their VMs end at once instead of shutting down, so nothing in them runs or reaches the network any more, and they stay
 stopped until `agentctl start agent/NAME`, even when their manifests are applied again. Disks are kept, but what an
-Agent wrote in its last seconds may be lost. `agentctl stop` without an Agent lists the running ones and asks before
-stopping them all; without `--now`, each gets up to 10 seconds to shut down. `agentctl kill` is `stop --now`, for one
+Agent wrote in its last seconds may be lost. `agentctl stop` without an Agent lists the ones not stopped yet and asks before
+stopping them all; without `--now`, each gets up to 10 seconds to shut down. A kill also cuts short such a graceful
+stop already under way, so `kill --all` from another terminal ends a `stop --all` that waits on a guest. It waits only
+behind a pass that is still setting an Agent up. `agentctl kill` is `stop --now`, for one
 Agent, `--all` of them, or after asking. In `agentctl tui`, `X` does the same as `kill --all` after asking.
 
 ## Development
