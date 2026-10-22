@@ -302,6 +302,94 @@ async fn linux_setup_without_the_github_account_runs_no_git() {
     assert!(git_commands_during_setup(false, None).await.is_empty());
 }
 
+/// Runs Linux setup for an agent with `instructions` as its own instructions file, if any, on a
+/// host whose instructions file holds `host`, if it exists, and returns the `CLAUDE.md` written.
+async fn claude_instructions_after_setup(host: Option<&str>, instructions: Option<&str>) -> Option<String> {
+    let directory = TempDir::new().expect("temporary directory");
+    let host_path = directory.path().join("host-instructions.md");
+    if let Some(host) = host {
+        std::fs::write(&host_path, host).expect("host instructions");
+    }
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home = None;
+    resource.spec.instructions.clear();
+    if let Some(instructions) = instructions {
+        std::fs::write(directory.path().join("instructions.md"), instructions).expect("instructions");
+        resource.spec.instructions.push(agent::InstructionsSpec {
+            source: PathBuf::from("instructions.md"),
+        });
+    }
+    let record = AgentRecord {
+        id: "7b1e2c3d-4f5a-4b6c-8d7e-9f0a1b2c3d4e".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    };
+    let backend = Rc::new(memory::Provider::new());
+    backend.queue_execution_events_matching(is_claude_version, answers("2.1.266 (Claude Code)\n", 0));
+    backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+
+    Linux::new(PLATFORM_API_URL)
+        .with_host_instructions(&host_path)
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("setup");
+
+    let written = backend
+        .file_writes()
+        .iter()
+        .any(|path| path.as_str() == "/home/agent/.claude/CLAUDE.md");
+    if written {
+        Some(String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8"))
+    } else {
+        None
+    }
+}
+
+/// The host's instructions reach every agent, ahead of the agent's own.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_puts_the_host_instructions_ahead_of_the_agents_own() {
+    assert_eq!(
+        claude_instructions_after_setup(Some("Host rules\n"), Some("Repository rules\n")).await,
+        Some("Host rules\n\nRepository rules\n".to_owned())
+    );
+    assert_eq!(
+        claude_instructions_after_setup(Some("Host rules\n"), None).await,
+        Some("Host rules\n".to_owned()),
+        "an agent without instructions of its own still gets the host's"
+    );
+    assert_eq!(
+        claude_instructions_after_setup(None, Some("Repository rules\n")).await,
+        Some("Repository rules\n".to_owned()),
+        "no host file changes nothing"
+    );
+}
+
+/// Emptying the host's file clears what agents were given; without any instructions nothing is written.
+#[tokio::test(flavor = "local")]
+async fn an_empty_host_file_clears_the_instructions_and_none_at_all_writes_nothing() {
+    assert_eq!(
+        claude_instructions_after_setup(Some(""), None).await,
+        Some(String::new())
+    );
+    assert_eq!(claude_instructions_after_setup(None, None).await, None);
+}
+
 /// Runs Linux setup for a Claude Code agent whose Claude Code state file holds `existing`, if
 /// any, and returns the state file afterwards and whether setup wrote it.
 /// An Agent without `spec.home` copies nothing into the guest home, but is otherwise set up.

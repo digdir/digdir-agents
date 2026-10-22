@@ -124,6 +124,7 @@ const PODMAN_SOCKET_DROP_IN_CONTENTS: &[u8] = b"[Socket]\nDirectoryMode=0755\nSo
 /// Agent setup for Linux Sandboxes.
 pub struct Linux {
     platform_api_url: String,
+    host_instructions: Option<std::path::PathBuf>,
 }
 
 impl Linux {
@@ -133,7 +134,15 @@ impl Linux {
     pub fn new(platform_api_url: impl Into<String>) -> Self {
         Self {
             platform_api_url: platform_api_url.into(),
+            host_instructions: None,
         }
+    }
+
+    /// Gives every agent the instructions in `path`, when it exists, ahead of its own.
+    #[must_use]
+    pub fn with_host_instructions(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.host_instructions = Some(path.into());
+        self
     }
 }
 
@@ -221,7 +230,7 @@ impl Linux {
         }
         configure_git(sandbox, record.agent.spec.github_account()).await?;
         step.complete().await;
-        let instructions = read_instructions(record).await?;
+        let instructions = read_instructions(record, self.host_instructions.as_deref()).await?;
         let skills = read_skills(record).await?;
         for installation in &installations {
             let step = steps
@@ -458,8 +467,22 @@ pub(super) async fn wait_for_systemd(sandbox: &SandboxHandle) -> Result<(), Erro
 
 /// Concatenates the instruction files in manifest order, each terminated by a newline and
 /// separated by a blank line, so independent documents read as sections of one file.
-async fn read_instructions(record: &control_plane::AgentRecord) -> Result<Option<Vec<u8>>, Error> {
+/// The host-wide instructions in `host`, when that file exists, followed by the agent's own, or
+/// `None` when there are neither. An existing but empty host file still counts, so emptying it
+/// clears what agents were given.
+async fn read_instructions(record: &control_plane::AgentRecord, host: Option<&Path>) -> Result<Option<Vec<u8>>, Error> {
     let mut combined = Vec::new();
+    let mut any = false;
+    if let Some(host) = host {
+        match tokio::fs::read(host).await {
+            Ok(contents) => {
+                any = true;
+                append_instructions(&mut combined, &contents);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     for (index, spec) in record.agent.spec.instructions.iter().enumerate() {
         let source = if spec.source.is_absolute() {
             spec.source.clone()
@@ -472,14 +495,23 @@ async fn read_instructions(record: &control_plane::AgentRecord) -> Result<Option
                 "spec.instructions[{index}].source must identify a file"
             )));
         }
-        let contents = tokio::fs::read(source).await?;
-        if !combined.is_empty() {
-            combined.push(b'\n');
-        }
-        combined.extend_from_slice(contents.strip_suffix(b"\n").unwrap_or(&contents));
+        any = true;
+        append_instructions(&mut combined, &tokio::fs::read(source).await?);
+    }
+    Ok(any.then_some(combined))
+}
+
+/// Appends one instructions file, separated from what came before by a blank line.
+fn append_instructions(combined: &mut Vec<u8>, contents: &[u8]) {
+    let contents = contents.strip_suffix(b"\n").unwrap_or(contents);
+    if contents.is_empty() {
+        return;
+    }
+    if !combined.is_empty() {
         combined.push(b'\n');
     }
-    Ok((!combined.is_empty()).then_some(combined))
+    combined.extend_from_slice(contents);
+    combined.push(b'\n');
 }
 
 async fn read_skills(record: &control_plane::AgentRecord) -> Result<Vec<harness::Skill>, Error> {

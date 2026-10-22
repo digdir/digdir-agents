@@ -117,8 +117,9 @@ async fn open_sandboxes(
     );
     let platform_api_url = microsandbox.platform_url();
     let provider: Rc<dyn agent::sandbox::Provider> = microsandbox;
-    let platform: Rc<dyn agent::sandbox::PlatformAdapter> =
-        Rc::new(agent::sandbox::platform::Linux::new(platform_api_url.clone()));
+    let platform: Rc<dyn agent::sandbox::PlatformAdapter> = Rc::new(
+        agent::sandbox::platform::Linux::new(platform_api_url.clone()).with_host_instructions(home.instructions_path()),
+    );
     Ok((
         Rc::new(agent::sandbox::Service::new([provider], [platform])?),
         platform_api_url,

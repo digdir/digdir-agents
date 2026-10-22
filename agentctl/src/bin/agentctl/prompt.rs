@@ -75,6 +75,32 @@ fn yes_or_no(answer: &str) -> Option<bool> {
     }
 }
 
+/// Opens `files` in `$VISUAL` or `$EDITOR` and waits for it, or, without one, asks for them to be
+/// edited elsewhere and waits for Enter.
+///
+/// # Errors
+///
+/// Returns an error when standard input cannot be read or ends.
+pub(crate) fn edit_files(files: &[&std::path::Path]) -> Result<(), Error> {
+    let editor = ["VISUAL", "EDITOR"]
+        .into_iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.trim().is_empty()));
+    if let Some(editor) = editor {
+        let mut words = editor.split_whitespace();
+        let program = words.next().unwrap_or_default();
+        let status = std::process::Command::new(program).args(words).args(files).status();
+        if !status.is_ok_and(|status| status.success()) {
+            eprintln!("The editor `{editor}` did not finish cleanly.");
+        }
+        return Ok(());
+    }
+    let names: Vec<String> = files.iter().map(|file| file.display().to_string()).collect();
+    wait_for_enter(&format!(
+        "Edit {} in your editor and save, then press Enter…",
+        names.join(" and ")
+    ))
+}
+
 /// Shows `message` after a blank line and waits for Enter; Ctrl-C ends the command as usual.
 ///
 /// # Errors
