@@ -17,8 +17,6 @@ recording; the `pr-evidence` skill describes how to record and attach it. The `c
 lists the targets; run `make fmt lint build test` before reporting completion. `make test-e2e` and
 `make user-install` work here too: the Sandbox has `/dev/kvm` and Podman.
 
-Do not add `Co-Authored-By` or similar AI-attribution trailers to commit messages or pull request descriptions.
-
 To run a nested Agent, log the nested `agentd` in with the placeholders this Sandbox already holds, then apply the
 `nested` variant from the task's worktree: it builds its image from the checkout it is applied from, so applying it
 from the primary checkout tests `main` instead of your change. It builds on whichever agentctl base image Podman
