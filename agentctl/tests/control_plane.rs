@@ -2485,6 +2485,16 @@ async fn an_immediate_stop_abandons_a_setup_under_way() {
 }
 
 #[tokio::test(flavor = "local")]
+async fn a_delete_after_an_immediate_stop_kills_and_leaves_no_request() {
+    let (control_plane, reconciler, store, _, id, kills, _, _) = immediate_stop_fixture().await;
+    control_plane.stop_now("worker").await.expect("stop now");
+    control_plane.delete("worker").await.expect("delete");
+    reconciler.reconcile(id).await.expect("release");
+    assert_eq!(kills.get(), 1, "the kill asked for first still kills");
+    assert!(matches!(store.get(id).await, Err(Error::NotFound)), "the Agent is gone");
+}
+
+#[tokio::test(flavor = "local")]
 async fn an_immediate_stop_cuts_short_a_graceful_stop_under_way() {
     let (control_plane, reconciler, store, backend, id, kills, hanging, _) = immediate_stop_fixture().await;
     hanging.set(true);

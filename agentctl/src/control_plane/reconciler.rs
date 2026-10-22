@@ -86,6 +86,13 @@ impl Reconciler {
             Err(error) => return Err(error),
         };
         if record.agent.metadata.deletion_timestamp.is_some() {
+            // A kill asked for before the delete still ends the Sandbox at once.
+            if self.immediate_stops.take(id)
+                && let Err(error) = self.sandboxes.stop(&record, true).await
+            {
+                self.immediate_stops.request(id);
+                return Err(error);
+            }
             return self.release(&record).await;
         }
         if record.agent.spec.is_stopped() {
