@@ -31,6 +31,18 @@ irm https://raw.githubusercontent.com/digdir/digdir-agents/main/agentctl/install
 
 Update an installation with `agentctl self update`.
 
+### Building an Agent image
+
+An Agent whose `image` specifies a Dockerfile needs a running Docker Engine on the host. Published OCI image
+references can be pulled without Docker. Dockerfile builds use `agentd`'s `DOCKER_HOST` when set, otherwise
+`DOCKER_CONTEXT` or the context selected with `docker context use`. Local Unix socket and named pipe contexts are
+supported, including Docker Desktop and Colima's per-user sockets. Remote Docker contexts are not supported.
+`DOCKER_CONFIG` selects the Docker configuration directory, which defaults to `~/.docker`.
+
+`agentd` inherits environment variables when it starts; `apply --env-file` supplies the Agent's environment, not
+the host Docker connection. Starting Docker or changing the saved local context lets background retries proceed
+without restarting `agentd`.
+
 ## Development
 
 Run `make help` at the repository root for the supported development commands. `make user-install` builds, packages and
