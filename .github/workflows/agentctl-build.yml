@@ -5,10 +5,6 @@ name: agentctl build
 on:
   workflow_call:
     inputs:
-      ref:
-        description: Commit to build; the caller's commit when empty
-        type: string
-        default: ''
       version:
         description: Version the binaries report, such as v0.1.0-preview.10
         type: string
@@ -50,7 +46,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Validate version
