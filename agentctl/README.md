@@ -36,14 +36,14 @@ Update an installation with `agentctl self update`.
 To stop every Agent at once, as an emergency stop:
 
 ```sh
-agentctl stop --all --now
+agentctl kill --all     # the same as agentctl stop --all --now
 ```
 
 Their VMs end at once instead of shutting down, so nothing in them runs or reaches the network any more, and they stay
 stopped until `agentctl start agent/NAME`, even when their manifests are applied again. Disks are kept, but what an
 Agent wrote in its last seconds may be lost. `agentctl stop` without an Agent lists the running ones and asks before
-stopping them all; without `--now`, each gets up to 10 seconds to shut down. In `agentctl tui`, `X` does the same as
-`stop --all --now` after asking.
+stopping them all; without `--now`, each gets up to 10 seconds to shut down. `agentctl kill` is `stop --now`, for one
+Agent, `--all` of them, or after asking. In `agentctl tui`, `X` does the same as `kill --all` after asking.
 
 ## Development
 

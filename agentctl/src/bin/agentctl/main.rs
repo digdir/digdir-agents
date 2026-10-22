@@ -162,6 +162,14 @@ enum Command {
         #[command(flatten)]
         target: StopTarget,
     },
+    /// Stop an Agent, or every Agent, at once, as `stop --now` does: an emergency stop.
+    ///
+    /// The VMs end without shutting down; disks are kept, but what an Agent wrote in its last
+    /// seconds may be lost. Without an Agent, asks whether to stop every running Agent.
+    Kill {
+        #[command(flatten)]
+        target: KillTarget,
+    },
     /// Start a stopped Agent's Sandbox VM on its kept disk and wait until the Agent is Ready.
     Start {
         #[command(flatten)]
@@ -359,6 +367,34 @@ struct StopTarget {
     /// Maximum wait, written as seconds, minutes, or hours (for example `2m`).
     #[arg(long, default_value = "10m", value_parser = parse_duration)]
     timeout: Duration,
+}
+
+/// The Agents `kill` acts on, as for `stop`; it always stops them at once.
+#[derive(clap::Args)]
+struct KillTarget {
+    /// Agent resource, optionally combined with its name (for example `agent/worker`).
+    #[arg(conflicts_with = "all")]
+    resource: Option<String>,
+    /// Optional agent name when it is not part of `resource`.
+    name: Option<String>,
+    /// Stop every running agent, without asking.
+    #[arg(long)]
+    all: bool,
+    /// Maximum wait, written as seconds, minutes, or hours (for example `2m`).
+    #[arg(long, default_value = "10m", value_parser = parse_duration)]
+    timeout: Duration,
+}
+
+impl From<KillTarget> for StopTarget {
+    fn from(target: KillTarget) -> Self {
+        Self {
+            resource: target.resource,
+            name: target.name,
+            all: target.all,
+            now: true,
+            timeout: target.timeout,
+        }
+    }
 }
 
 /// The Session a verb acts on: `session/NAME` or `session NAME`, plus its owning Agent.
@@ -601,6 +637,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             }
         }
         Command::Stop { target } => stop(client, target).await?,
+        Command::Kill { target } => stop(client, target.into()).await?,
         Command::Start { target } => set_run_state(client, target, RunState::Running).await?,
         Command::Archive { target } => set_archived(client, target, true).await?,
         Command::Unarchive { target } => set_archived(client, target, false).await?,
@@ -1804,6 +1841,44 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn kill_is_stop_now() {
+        let stop = |arguments: &[&str]| {
+            let parsed = Arguments::try_parse_from(arguments).expect("arguments");
+            match parsed.command {
+                Command::Kill { target } => StopTarget::from(target),
+                Command::Stop { target } => target,
+                _ => panic!("expected stop or kill"),
+            }
+        };
+        for (kill, stop_now) in [
+            (&["agentctl", "kill"][..], &["agentctl", "stop", "--now"][..]),
+            (&["agentctl", "kill", "--all"], &["agentctl", "stop", "--all", "--now"]),
+            (
+                &["agentctl", "kill", "agent/worker"],
+                &["agentctl", "stop", "agent/worker", "--now"],
+            ),
+        ] {
+            let (killed, stopped) = (stop(kill), stop(stop_now));
+            assert_eq!(
+                (killed.resource, killed.name, killed.all, killed.now, killed.timeout),
+                (
+                    stopped.resource,
+                    stopped.name,
+                    stopped.all,
+                    stopped.now,
+                    stopped.timeout
+                ),
+                "{kill:?}"
+            );
+        }
+        assert!(
+            Arguments::try_parse_from(["agentctl", "kill", "--now"]).is_err(),
+            "kill is always at once"
+        );
+        assert!(Arguments::try_parse_from(["agentctl", "kill", "agent/worker", "--all"]).is_err());
+    }
 
     struct StalledConnector {
         healthy: bool,
