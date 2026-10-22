@@ -1,0 +1,180 @@
+# Builds an unlisted agentctl preview from a pull request when someone with write access comments `/agentctl-preview`
+# on it. The archives are uploaded as this run's artifacts, not as a GitHub release, so the installers and
+# `agentctl self update` never see them; the run replies on the pull request with how to install. Each comment builds
+# the pull request's current head as `<latest release>.pr.<number>.<n>`, n counting its preview requests, and
+# closing the pull request deletes the artifacts of all its previews. Pull requests from forks are refused.
+name: agentctl preview
+run-name: >-
+  ${{ (github.event_name == 'pull_request' && format('Delete agentctl previews for #{0}', github.event.pull_request.number))
+  || (startsWith(github.event.comment.body, '/agentctl-preview') && format('agentctl preview for #{0}', github.event.issue.number))
+  || format('Ignore comment on #{0}', github.event.issue.number) }}
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+# One preview or cleanup at a time per pull request, so a cleanup waits for a build that is still uploading. Comments
+# that are not a preview request get a group of their own, so they never replace a queued preview.
+concurrency:
+  group: >-
+    agentctl-preview-${{ (github.event_name == 'pull_request' || startsWith(github.event.comment.body, '/agentctl-preview'))
+    && (github.event.pull_request.number || github.event.issue.number) || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve preview
+    if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/agentctl-preview') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Resolve commit and version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          set -euo pipefail
+
+          permission="$(gh api "repos/${REPOSITORY}/collaborators/${COMMENTER}/permission" --jq .permission)"
+          case "${permission}" in
+            admin | maintain | write) ;;
+            *) echo "::error::${COMMENTER} has ${permission} access; previews need write access"; exit 1 ;;
+          esac
+
+          pull_request="$(gh api "repos/${REPOSITORY}/pulls/${NUMBER}")"
+          if [ "$(jq -r .state <<< "${pull_request}")" != open ]; then
+            echo "::error::#${NUMBER} is not open"
+            exit 1
+          fi
+          if [ "$(jq -r .head.repo.full_name <<< "${pull_request}")" != "${REPOSITORY}" ]; then
+            echo "::error::#${NUMBER} comes from a fork; previews build only branches in ${REPOSITORY}"
+            exit 1
+          fi
+          sha="$(jq -r .head.sha <<< "${pull_request}")"
+          created="$(jq -r .created_at <<< "${pull_request}")"
+
+          # The concurrency group runs one request per pull request at a time, so this run is the newest counted.
+          n="$(gh api --paginate \
+            "repos/${REPOSITORY}/actions/workflows/agentctl-preview.yml/runs?event=issue_comment&created=%3E%3D${created}&per_page=100" \
+            | jq -s --arg title "agentctl preview for #${NUMBER}" --argjson run "${GITHUB_RUN_ID}" \
+              '[.[].workflow_runs[] | select(.display_title == $title and .id <= $run)] | length')"
+
+          # The latest release as the installers resolve it: the newest agentctl/ tag.
+          latest="$(gh api "repos/${REPOSITORY}/releases?per_page=100" \
+            --jq '[.[] | select(.tag_name | startswith("agentctl/v"))][0].tag_name')"
+          base="${latest#agentctl/}"
+          case "${base}" in
+            *-*) version="${base}.pr.${NUMBER}.${n}" ;;
+            *) version="${base}-pr.${NUMBER}.${n}" ;;
+          esac
+
+          gh api --silent -X POST "repos/${REPOSITORY}/issues/comments/${COMMENT_ID}/reactions" -f content=eyes
+          echo "Building ${version} from ${sha}"
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build
+    needs: resolve
+    uses: ./.github/workflows/agentctl-build.yml
+    with:
+      ref: ${{ needs.resolve.outputs.sha }}
+      version: ${{ needs.resolve.outputs.version }}
+
+  report:
+    name: Report on the pull request
+    needs: [resolve, build]
+    if: ${{ always() && needs.resolve.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment with the result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          RESULT: ${{ needs.build.result }}
+        run: |
+          set -euo pipefail
+
+          run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          if [ "${RESULT}" != success ]; then
+            printf 'agentctl preview `%s` from %s did not build: %s\n' "${VERSION}" "${SHA}" "${run_url}" > comment.md
+          else
+            cat > comment.md <<EOF
+          agentctl preview \`${VERSION}\` is built from ${SHA}. Its archives are the artifacts of [this run](${run_url}), deleted when this pull request closes.
+
+          Install it on macOS or Linux, with \`platform\` one of \`macos-aarch64\`, \`linux-x86_64\` or \`linux-aarch64\`:
+
+          \`\`\`sh
+          platform=macos-aarch64
+          gh run download ${GITHUB_RUN_ID} --repo ${REPOSITORY} --name "agent-\${platform}" --dir agentctl-preview
+          curl -fsSL https://raw.githubusercontent.com/${REPOSITORY}/${SHA}/agentctl/install.sh \\
+            | AGENT_VERSION=${VERSION} AGENT_LOCAL_ARCHIVE="\${PWD}/agentctl-preview/agent-\${platform}.tar.gz" sh
+          \`\`\`
+
+          On Windows, with \`\$Platform\` one of \`windows-x86_64\` or \`windows-aarch64\`:
+
+          \`\`\`powershell
+          \$Platform = 'windows-x86_64'
+          gh run download ${GITHUB_RUN_ID} --repo ${REPOSITORY} --name "agent-\$Platform" --dir agentctl-preview
+          \$env:AGENT_VERSION = '${VERSION}'
+          \$env:AGENT_LOCAL_ARCHIVE = "\$PWD\\agentctl-preview\\agent-\$Platform.tar.gz"
+          irm https://raw.githubusercontent.com/${REPOSITORY}/${SHA}/agentctl/install.ps1 | iex
+          Remove-Item Env:AGENT_VERSION, Env:AGENT_LOCAL_ARCHIVE
+          \`\`\`
+
+          Without the GitHub CLI, download \`agent-<platform>\` from the run page instead, unzip it into \`agentctl-preview\` and skip the \`gh run download\` line.
+
+          \`agentctl self update\` returns to the latest release.
+          EOF
+          fi
+          gh pr comment "${NUMBER}" --repo "${REPOSITORY}" --body-file comment.md
+
+  cleanup:
+    name: Delete previews
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    steps:
+      - name: Delete the artifacts of this pull request's previews
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          CREATED: ${{ github.event.pull_request.created_at }}
+        run: |
+          set -euo pipefail
+
+          gh api --paginate \
+            "repos/${REPOSITORY}/actions/workflows/agentctl-preview.yml/runs?event=issue_comment&created=%3E%3D${CREATED}&per_page=100" \
+            | jq -r --arg title "agentctl preview for #${NUMBER}" '.workflow_runs[] | select(.display_title == $title) | .id' \
+            | while read -r run; do
+                gh api --paginate "repos/${REPOSITORY}/actions/runs/${run}/artifacts?per_page=100" --jq '.artifacts[].id' \
+                  | while read -r artifact; do
+                      gh api --silent -X DELETE "repos/${REPOSITORY}/actions/artifacts/${artifact}"
+                      echo "Deleted artifact ${artifact} of run ${run}"
+                    done
+              done

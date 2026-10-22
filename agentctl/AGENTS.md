@@ -81,3 +81,8 @@ run builds and smoke-tests every archive and assembles the release without publi
 `agentctl/v<version>`, which can never be moved or reused; the release workflow extracts that section with
 `changelog.sh extract` and publishes it as the GitHub release body, and fails before creating the release when the
 section is missing or has no date.
+
+To let someone try a pull request before it is released, comment `/agentctl-preview` on it. The agentctl preview
+workflow builds the pull request's head as an unlisted preview, kept as workflow artifacts rather than a release so
+neither the installers nor `agentctl self update` pick it up, and replies with how to install it. Comment again to
+build a newer preview; closing the pull request deletes them all.
