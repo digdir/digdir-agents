@@ -28,6 +28,8 @@ const DOCKER_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 pub(crate) enum Start {
     /// Nothing: `agentctl init` was run.
     Ask,
+    /// The person agreed to set up an agent here, so it is not asked again.
+    Confirmed,
     /// Write a new agent directory, whatever is here already.
     New,
     /// Create the agent from this existing manifest.
@@ -41,6 +43,8 @@ pub(crate) enum Start {
 pub(crate) enum Choice {
     /// Go on with `run` from this start.
     Start(Start),
+    /// Show agentctl's help instead.
+    Help,
     /// Do nothing.
     Cancel,
 }
@@ -48,8 +52,9 @@ pub(crate) enum Choice {
 /// How many existing manifests the menu lists one by one before it offers the create form.
 const LISTED_MANIFESTS: usize = 4;
 
-/// Asks whether to create an agent from one of `manifests`, or set up a new one.
-fn choose_from_manifests(manifests: &[PathBuf]) -> Result<Choice, Error> {
+/// Asks whether to create an agent from one of `manifests`, or set up a new one, and with `help`
+/// whether to show agentctl's help instead.
+pub(crate) fn choose_from_manifests(manifests: &[PathBuf], help: bool) -> Result<Choice, Error> {
     let directory = std::env::current_dir().map_err(Error::from)?;
     let root = crate::tui::repository_root(&directory)
         .unwrap_or(&directory)
@@ -67,6 +72,10 @@ fn choose_from_manifests(manifests: &[PathBuf]) -> Result<Choice, Error> {
     }
     options.push("Set up a new agent".to_owned());
     choices.push(Choice::Start(Start::New));
+    if help {
+        options.push("Show agentctl's help".to_owned());
+        choices.push(Choice::Help);
+    }
     let question = if manifests.len() == 1 {
         "An agent is set up here, but none runs. What would you like to do?"
     } else {
@@ -124,16 +133,16 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client, start: Start) 
         }
         start = Start::New;
     }
-    if existing.is_none() && matches!(start, Start::Ask) {
+    if existing.is_none() && matches!(start, Start::Ask | Start::Confirmed) {
         let manifests = crate::tui::working_tree_manifests(&directory);
         if !manifests.is_empty() {
-            start = match choose_from_manifests(&manifests)? {
+            start = match choose_from_manifests(&manifests, false)? {
                 Choice::Start(chosen) => chosen,
-                Choice::Cancel => return Ok(None),
+                Choice::Help | Choice::Cancel => return Ok(None),
             };
         }
     }
-    if matches!(start, Start::Ask | Start::New) {
+    if matches!(start, Start::Ask | Start::Confirmed | Start::New) {
         if matches!(start, Start::Ask) && !prompt::confirm("No agent here. Set one up?")? {
             return Ok(None);
         }
@@ -159,7 +168,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client, start: Start) 
             };
             name
         }
-        Start::Ask | Start::New => {
+        Start::Ask | Start::Confirmed | Start::New => {
             let github = github_account(client, &status).await;
             let Some(manifest) = write_agent_directory(home, &directory, &github, &status)? else {
                 return Ok(None);
