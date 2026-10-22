@@ -330,6 +330,8 @@ pub(crate) struct App {
     /// The outcome of a Session change and when it was shown.
     pub(crate) notice: Option<(String, Instant)>,
     pub(crate) discovering: bool,
+    /// Whether the create form suggests a manifest's own name while it is free.
+    pub(crate) plain_names: bool,
     pub(crate) queued_candidates: Option<Vec<ManifestCandidate>>,
     /// Editors and whether the terminal is remote, which the open menu depends on.
     pub(crate) environment: Environment,
@@ -758,6 +760,8 @@ pub(crate) struct CreateForm {
     pub(crate) name: String,
     pub(crate) env_file: String,
     pub(crate) error: Option<String>,
+    /// Whether the manifest's own name is suggested while no agent has it, rather than a numbered one.
+    pub(crate) plain_name: bool,
 }
 
 impl CreateForm {
@@ -804,6 +808,7 @@ impl CreateForm {
             name: String::new(),
             env_file: String::new(),
             error: None,
+            plain_name: false,
         }
     }
 
@@ -833,7 +838,17 @@ impl CreateForm {
     /// nothing is typed.
     pub(crate) fn placeholder(&self, agents: &[Agent]) -> Option<String> {
         let name = self.candidate()?.name.as_deref().ok()?;
-        Some(numbered_name(name, agents))
+        Some(self.suggested_name(name, agents))
+    }
+
+    /// The name a submission without one uses: the manifest's own when [`Self::plain_name`] and no
+    /// agent has it, else the first free numbered one.
+    fn suggested_name(&self, name: &str, agents: &[Agent]) -> String {
+        if self.plain_name && agents.iter().all(|agent| agent.metadata.name != name) {
+            name.to_owned()
+        } else {
+            numbered_name(name, agents)
+        }
     }
 
     /// Applies one key press; a submitted or cancelled form returns its Action.
@@ -910,7 +925,7 @@ impl CreateForm {
             .ok_or_else(|| "no agent manifests found; apply one with agentctl apply".to_owned())?;
         let manifest_name = candidate.name.as_ref().map_err(Clone::clone)?;
         let name = if self.name.is_empty() {
-            numbered_name(manifest_name, agents)
+            self.suggested_name(manifest_name, agents)
         } else {
             self.name.clone()
         };
@@ -928,7 +943,7 @@ impl CreateForm {
 }
 
 /// Returns `name-N` for the lowest N from 1 that no Agent uses, or `name` itself when no numbered name fits.
-fn numbered_name(name: &str, agents: &[Agent]) -> String {
+pub(crate) fn numbered_name(name: &str, agents: &[Agent]) -> String {
     (1..=u32::MAX)
         .map(|number| format!("{name}-{number}"))
         .take_while(|numbered| numbered.len() <= ::sandbox::MAX_SANDBOX_NAME_BYTES)
@@ -1228,6 +1243,7 @@ impl App {
             notice: None,
             discovering: false,
             queued_candidates: None,
+            plain_names: false,
             environment: Environment::default(),
             ssh_setup: SshSetup::Unknown,
             ssh_check_due: true,
@@ -1974,6 +1990,12 @@ impl App {
         }
     }
 
+    /// Whether the create-Agent form has closed with nothing left to open it again: discovery
+    /// has finished and the form was cancelled or submitted.
+    pub(crate) const fn create_closed(&self) -> bool {
+        self.modal.is_none() && !self.discovering && self.queued_candidates.is_none()
+    }
+
     /// Opens the create-agent modal for candidates queued behind another view once it closes.
     pub(crate) fn open_queued_create(&mut self) {
         if self.idle()
@@ -1992,7 +2014,9 @@ impl App {
                 .map(agent::Provenance::manifest_or_default),
             None => None,
         };
-        self.modal = Some(Modal::CreateAgent(CreateForm::new(candidates, manifest.as_deref())));
+        let mut form = CreateForm::new(candidates, manifest.as_deref());
+        form.plain_name = self.plain_names;
+        self.modal = Some(Modal::CreateAgent(form));
     }
 
     /// Shows an Agent this TUI just created, ahead of the watch reply that will
@@ -3823,6 +3847,36 @@ mod tests {
         app.discovering = true;
         app.manifests_discovered(candidates(&[("/sources/worker", "worker")]));
         assert_eq!(create_form(&app).placeholder(&app.agents).as_deref(), Some("worker-1"));
+    }
+
+    #[test]
+    fn the_create_only_form_suggests_the_manifests_own_name_while_it_is_free() {
+        let mut app = App::new();
+        app.plain_names = true;
+        app.discovering = true;
+        app.manifests_discovered(candidates(&[("/sources/worker", "worker")]));
+        assert_eq!(create_form(&app).placeholder(&app.agents).as_deref(), Some("worker"));
+
+        let mut app = populated();
+        app.plain_names = true;
+        app.discovering = true;
+        app.manifests_discovered(candidates(&[("/sources/worker", "worker")]));
+        assert_eq!(
+            create_form(&app).placeholder(&app.agents).as_deref(),
+            Some("worker-1"),
+            "a taken name is numbered"
+        );
+    }
+
+    #[test]
+    fn the_create_form_counts_as_closed_only_after_discovery_and_cancelling() {
+        let mut app = App::new();
+        app.discovering = true;
+        assert!(!app.create_closed(), "discovery is still running");
+        app.manifests_discovered(candidates(&[("/sources/worker", "worker")]));
+        assert!(!app.create_closed(), "the form is open");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert!(app.create_closed());
     }
 
     #[test]

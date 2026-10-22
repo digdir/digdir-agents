@@ -38,7 +38,7 @@ use tokio::runtime::LocalRuntime;
 #[command(
     name = "agentctl",
     about = "Run coding agents in sandboxes on this machine",
-    after_help = "To stop every agent at once: agentctl kill --all",
+    after_help = "New here? Run `agentctl init` in a repository: it sets up an agent and opens a session.\nTo stop every agent at once: agentctl kill --all",
     version = agent::build_version()
 )]
 struct Arguments {
@@ -51,6 +51,8 @@ struct Arguments {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Set up an agent for this repository, signing in as needed.
+    Init,
     /// Show the logins, agentd and this directory's agent, with what to do next.
     Status,
     /// Open the terminal UI with every agent and session.
@@ -726,6 +728,13 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         Command::Github {
             command: GithubCommand::Reset { yes },
         } => github::reset(client, yes).await?,
+        Command::Init => {
+            if let Some(name) = Box::pin(init::run(home, client, init::Start::Ask)).await?
+                && prompt::confirm(&format!("Open a session on {name} now?"))?
+            {
+                attach_new_session(home, client, &name).await?;
+            }
+        }
         Command::Apply {
             filename,
             variant,
@@ -1644,7 +1653,7 @@ async fn resolve_agent_name(
 fn inference_error(error: Error) -> CommandError {
     match error {
         Error::Rpc(error) if error.is_not_found() => {
-            CommandError::Message("no agent here; `agentctl apply` creates one, or pass --agent NAME".into())
+            CommandError::Message("no agent here; `agentctl init` sets one up, or pass --agent NAME".into())
         }
         Error::Rpc(error) => CommandError::Message(error.message),
         error => error.into(),
@@ -1655,7 +1664,21 @@ fn inference_error(error: Error) -> CommandError {
 /// run state, Ready or stopped, and returns it then; or until a terminal
 /// error, the timeout, or Ctrl-C.
 async fn wait_until_converged(client: &Client, name: &str, timeout: Duration) -> CommandResult<Agent> {
-    let waited = progress::Wait::start()
+    follow_until_converged(progress::Wait::start(), client, name, timeout).await
+}
+
+/// [`wait_until_converged`] for people new to agents, with [`progress::Wait::simple`].
+async fn wait_until_converged_simply(client: &Client, name: &str, timeout: Duration) -> CommandResult<Agent> {
+    follow_until_converged(progress::Wait::simple(), client, name, timeout).await
+}
+
+async fn follow_until_converged(
+    wait: progress::Wait,
+    client: &Client,
+    name: &str,
+    timeout: Duration,
+) -> CommandResult<Agent> {
+    let waited = wait
         .until(client, name, tokio::time::timeout(timeout, client.converge(name)))
         .await;
     let Ok(converged) = waited else {
@@ -2126,8 +2149,11 @@ async fn status(home: &ControlPlaneHome, client: &Client) -> CommandResult<()> {
             ),
         ));
     }
-    // What concerns this directory's agent comes first.
-    here.append(&mut next);
+    // `init` signs in as it goes, so without an agent here it is the one step; otherwise what
+    // concerns this directory's agent comes first.
+    if !here.iter().any(|(command, _)| command == "agentctl init") {
+        here.append(&mut next);
+    }
     next = here;
     for (label, value) in rows {
         println!("{label:<15} {value}");
@@ -2238,12 +2264,14 @@ async fn directory_line(client: &Client, next: &mut Vec<NextStep>) -> CommandRes
         Ok(agent) => agent,
         Err(Error::Rpc(error)) if error.is_not_found() => {
             let directory = std::env::current_dir().map_err(Error::from)?;
-            if directory.join(manifest::MANIFEST_FILE).is_file() {
-                next.push((
-                    "agentctl apply".to_owned(),
-                    "Create the agent from agent.yaml".to_owned(),
-                ));
-            }
+            let what = if directory.join(manifest::MANIFEST_FILE).is_file() {
+                "Create the agent from agent.yaml"
+            } else if tui::working_tree_manifests(&directory).is_empty() {
+                "Set up an agent here; it signs you in as needed"
+            } else {
+                "Create one of the agents set up here, or a new one"
+            };
+            next.push(("agentctl init".to_owned(), what.to_owned()));
             return Ok("no agent".to_owned());
         }
         Err(Error::Rpc(error)) if error.is_invalid_params() => {
@@ -2320,6 +2348,37 @@ async fn harness_login(
     let imported = client.auth_login(harness, credential.to_string(), from_stdin).await?;
     println!("{} authentication stored", imported.provider);
     Ok(())
+}
+
+/// Attaches to a new Session with the first free name, `s1`, `s2` and so on.
+async fn attach_new_session(home: &ControlPlaneHome, client: &Client, agent: &str) -> CommandResult<()> {
+    let name = new_session_name(client, agent).await?;
+    eprintln!("Attaching to session/{name}; detach with Ctrl-b d, and run `agentctl attach session/{name}` to return.");
+    attach(
+        home,
+        client,
+        "session",
+        Some(name),
+        Some(agent.to_owned()),
+        None,
+        SessionSelection::default(),
+    )
+    .await
+}
+
+/// The first free session name of `agent`: `s1`, `s2` and so on.
+async fn new_session_name(client: &Client, agent: &str) -> CommandResult<String> {
+    let taken: Vec<String> = client
+        .list_sessions(Some(agent))
+        .await?
+        .into_iter()
+        .map(|session| session.name.to_string())
+        .collect();
+    // One of the first `taken.len() + 1` names is always free.
+    Ok((1..=taken.len() + 1)
+        .map(|number| format!("s{number}"))
+        .find(|name| !taken.contains(name))
+        .unwrap_or_else(|| "s1".into()))
 }
 
 fn read_token_from_stdin() -> Result<zeroize::Zeroizing<String>, Error> {
@@ -2648,7 +2707,9 @@ mod tests {
     }
 
     #[test]
-    fn github_login_takes_one_token_source() {
+    fn init_is_a_command_and_github_login_takes_one_token_source() {
+        let init = Arguments::try_parse_from(["agentctl", "init"]).expect("init");
+        assert!(matches!(init.command, Command::Init));
         let login = Arguments::try_parse_from(["agentctl", "github", "login", "--owner", "Digdir", "--browser"])
             .expect("github login");
         assert!(matches!(
@@ -2913,7 +2974,7 @@ mod tests {
         }));
         assert_eq!(
             missing.to_string(),
-            "no agent here; `agentctl apply` creates one, or pass --agent NAME"
+            "no agent here; `agentctl init` sets one up, or pass --agent NAME"
         );
     }
 

@@ -1,4 +1,5 @@
 mod app;
+pub(crate) use app::numbered_name;
 mod open;
 mod provisioning;
 mod terminal;
@@ -158,8 +159,30 @@ impl MouseInput {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+/// What the TUI is opened for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Mode {
+    /// Every Agent and Session, until the user quits.
+    Fleet,
+    /// Only the create-Agent form over the working tree's manifests, closing once an Agent is
+    /// created or the form is cancelled.
+    Create,
+}
+
 pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResult<ExitCode> {
+    Box::pin(drive(home, client, Mode::Fleet))
+        .await
+        .map(|_| ExitCode::SUCCESS)
+}
+
+/// Shows only the create-Agent form for the manifests in the working tree, returning the name of
+/// the Agent it created, or `None` when the form was cancelled.
+pub(crate) async fn create_agent_here(home: &ControlPlaneHome, client: &Client) -> CommandResult<Option<String>> {
+    Box::pin(drive(home, client, Mode::Create)).await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn drive(home: &ControlPlaneHome, client: &Client, mode: Mode) -> CommandResult<Option<String>> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(Error::Invalid("tui requires an interactive local terminal".into()).into());
     }
@@ -175,6 +198,12 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
     let mut redraw = tokio::time::interval(REDRAW_INTERVAL);
     redraw.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     spawn_watch(home.socket_path(), inputs.clone());
+    if mode == Mode::Create {
+        // Only this working tree: an Agent created from another directory's manifest would belong there.
+        app.discovering = true;
+        app.plain_names = true;
+        spawn_discovery(inputs.clone(), Vec::new());
+    }
     loop {
         app.open_queued_create();
         app.set_forwards(forwards.entries());
@@ -250,7 +279,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
             }
             Input::Event(None) => {
                 tui.restore()?;
-                return Ok(ExitCode::SUCCESS);
+                return Ok(None);
             }
             Input::Event(Some(Err(error))) => {
                 tui.restore()?;
@@ -260,10 +289,15 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                 mouse.reset();
                 if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     tui.restore()?;
-                    return Ok(ExitCode::SUCCESS);
+                    return Ok(None);
+                }
+                // Until the create form opens, the fleet behind it is not this mode's to act on.
+                if mode == Mode::Create && app.modal.is_none() {
+                    continue;
                 }
                 app.on_key(key)
             }
+            Input::Event(Some(Ok(Event::Mouse(_)))) if mode == Mode::Create && app.modal.is_none() => continue,
             Input::Event(Some(Ok(Event::Mouse(event)))) => mouse.action(event, &hit_map, &mut app, Instant::now()),
             Input::Event(Some(Ok(_))) => {
                 mouse.reset();
@@ -274,7 +308,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
             Action::None => {}
             Action::Quit => {
                 tui.restore()?;
-                return Ok(ExitCode::SUCCESS);
+                return Ok(None);
             }
             Action::Delete { agent } => {
                 if let Err(error) = client.delete(&agent).await {
@@ -313,7 +347,14 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                 name,
                 env_file,
                 form,
-            } => create(&mut app, client, manifest, name, env_file, form).await,
+            } => {
+                if let Some(created) = create(&mut app, client, manifest, name, env_file, form).await
+                    && mode == Mode::Create
+                {
+                    tui.restore()?;
+                    return Ok(Some(created));
+                }
+            }
             Action::CreateForward { agent, spec, replace } => {
                 if let Some(id) = replace {
                     forwards.remove(id);
@@ -393,6 +434,10 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                 suspended(&mut app, &mut tui, home, client, action).await?;
                 events = EventStream::new();
             }
+        }
+        if mode == Mode::Create && app.create_closed() {
+            tui.restore()?;
+            return Ok(None);
         }
     }
 }
@@ -850,7 +895,7 @@ fn manifest_candidates_blocking(current_directory: Option<&Path>, agents: &[Agen
 /// Returns the root of the git repository containing `directory`, if any.
 ///
 /// A linked worktree keeps `.git` as a file, so only presence is checked.
-fn repository_root(directory: &Path) -> Option<&Path> {
+pub(crate) fn repository_root(directory: &Path) -> Option<&Path> {
     directory.ancestors().find(|ancestor| ancestor.join(".git").exists())
 }
 
@@ -859,7 +904,7 @@ fn repository_root(directory: &Path) -> Option<&Path> {
 /// The walk honors ignore files for directories and finds complete `agent.yaml`
 /// manifests. Each Agent directory is then enumerated directly so checkout-local,
 /// ignored `agent.<variant>.yaml` siblings remain discoverable.
-fn working_tree_manifests(directory: &Path) -> Vec<PathBuf> {
+pub(crate) fn working_tree_manifests(directory: &Path) -> Vec<PathBuf> {
     let root = repository_root(directory).unwrap_or(directory);
     let mut found: Vec<PathBuf> = WalkBuilder::new(root)
         .max_depth(Some(DISCOVERY_DEPTH))
@@ -895,7 +940,7 @@ fn working_tree_manifests(directory: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Applies the manifest under the chosen name; a rejection reopens the form with the error.
+/// Applies the manifest under the chosen name, returning it; a rejection reopens the form with the error.
 async fn create(
     app: &mut App,
     client: &Client,
@@ -903,17 +948,22 @@ async fn create(
     name: String,
     env_file: Option<PathBuf>,
     mut form: CreateForm,
-) {
+) -> Option<String> {
     match create_agent(client, manifest, name, env_file).await {
-        Ok(applied) => app.agent_applied(applied),
+        Ok(applied) => {
+            let name = applied.metadata.name.clone();
+            app.agent_applied(applied);
+            Some(name)
+        }
         Err(error) => {
             form.error = Some(error.to_string());
             app.modal = Some(Modal::CreateAgent(form));
+            None
         }
     }
 }
 
-async fn create_agent(
+pub(crate) async fn create_agent(
     client: &Client,
     manifest: PathBuf,
     name: String,

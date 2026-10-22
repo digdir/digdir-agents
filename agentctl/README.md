@@ -31,6 +31,38 @@ irm https://raw.githubusercontent.com/digdir/digdir-agents/main/agentctl/install
 
 Update an installation with `agentctl self update`.
 
+Then, in any repository, run `agentctl init`. It offers the Claude Code or Codex login when neither is stored, and the
+GitHub account login when none is, writes an agent directory when the checkout has no manifest, and creates the Agent.
+Once the Agent is Ready it offers to open a Session. Before creating the agent it offers to open the written files in
+`$VISUAL` or `$EDITOR`, since the image
+(including the Dockerfile's contents) and mounts stay as the agent was created; changing them means deleting it and
+creating it again, which starts its disk over. Resources, access, accounts, environment and secrets change with
+`agentctl apply`.
+
+`init` asks what the agent should be called, such as `dev` or `reviewer`, and writes `agents/<name>/` at the repository
+root, naming the agent `<repository>-<name>` and laying the directory out like the Agents in this repository and in
+altinn-studio:
+
+| File | What it is |
+| --- | --- |
+| `agent.yaml` | The manifest, with every setting a person is likely to change later; those that do not apply yet are commented out |
+| `agent.worktree.yaml` | A variant of a cloning `agent.yaml` that works on this checkout through a read-write mount instead |
+| `tools.yaml` | The tools the image installs: containers (Podman with `docker` and `docker compose`), a browser, toolchains at the versions the repository declares (Node.js and Corepack, .NET, Go, Rust, Python, Java and Maven), Ubuntu packages and global npm packages. Every manifest in the folder builds the same image |
+| `Dockerfile` | Starts from an [`agentctl-base`](../images/agentctl-base) image. Its generated block comes from `tools.yaml`, rewritten whenever an agent is created from the folder; steps after the block are yours. It ends with `agent-image-check`, and Docker on your machine builds it |
+| `instructions.md` | The agent's own instructions, installed for every harness beside the checkout's `CLAUDE.md` or `AGENTS.md` |
+| `home/` | Files copied into `/home/agent`, such as dotfiles |
+| `.env.sample` | Example plain values and secrets for `.env`, which `.gitignore` keeps out of Git with `agent.mine.yaml` |
+
+`init` asks what the agent should be able to do, which picks what its image adds to the `ubuntu-26.04` base image and
+what the manifest gives it: writing code (nothing more), also building and running containers (Podman, the default),
+also testing web apps in a browser (the base image's `browser` feature), or also a desktop that `agentctl vnc` opens
+(its `desktop` feature, with `access: vnc`). A fresh clone is offered for repositories on GitHub, which the base images clone at boot. The
+repository's own skills under `.claude/skills` are listed in the manifest, so every harness gets them. `init` checks
+for Docker before its first question and waits for it to start, and without Git it works on the mounted folder. The proposed size fits this machine:
+up to 4 CPUs, 8 GiB of memory and a disk of at most half the free space on the volume holding `~/.agent`, since an
+agent's disk takes host space as the agent writes, up to its size. An agent keeps the image it was created with, so a
+change to `tools.yaml` takes effect when the agent is created again. Edit the files like any others.
+
 `agentctl status` shows agentd, the stored logins, the current directory's agent and a count of every agent on this
 machine at a glance, with the commands that would change them; `agentctl claude status` and `agentctl codex status`
 exit with 1 when that login is missing.
