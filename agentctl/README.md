@@ -140,9 +140,7 @@ attach resumes it.
 Each launch tells the harness where it runs: `AGENT_NAME`, `AGENT_SESSION_NAME`, `AGENT_HOST` and
 `AGENT_SOURCE_DIRECTORY` (the Agent's directory on the host) are set beside `AGENT_SESSION_ID`, so instructions can ask
 an Agent to name itself, for example in a shared task list. The harness, and so its model provider, sees these values;
-`AGENT_SOURCE_DIRECTORY` is a host path that does not exist inside the Sandbox. Inside the Sandbox, `agent-session` lists the Agent's
-Sessions by name and `agent-session NAME` attaches to one. Interactive login shells, such as `agentctl ssh`, start with
-a short reminder of the tmux keys, and the tmux status bar shows the Session's name and how to detach.
+`AGENT_SOURCE_DIRECTORY` is a host path that does not exist inside the Sandbox. The tmux status bar shows the Session's name and how to detach.
 
 Tmux is the current Session runtime, not a security boundary or a permanent generic driver abstraction. A second
 runtime must establish the common interface before one is introduced.
