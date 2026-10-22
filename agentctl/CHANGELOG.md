@@ -25,6 +25,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 ### Changed
 
 - `attach`, `exec`, `ssh` and the other commands that use the current directory's agent find one defined in a subdirectory, such as `agents/<name>/`, from anywhere in its repository. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#agent-layer))
+- `agentctl` on its own, and `attach`, `exec` or `ssh` in a directory without an Agent, ask whether to open or set up the Agent there, instead of only printing help or an error. They offer to start a stopped agent, and `agentctl attach` without a session opens the agent's only one, starts one, or asks which. Where an agent exists, `agentctl` and `agentctl init` offer to set up another one. ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install))
 - An Agent manifest no longer needs `home` or `network`: without `home` nothing is copied into `/home/agent`, and without `network` all traffic goes through the host's network mediator, as before.
 
 ## [0.1.0-preview.12] - 2026-10-20

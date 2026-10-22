@@ -61,7 +61,12 @@ repository's own skills under `.claude/skills` are listed in the manifest, so ev
 for Docker before its first question and waits for it to start, and without Git it works on the mounted folder. The proposed size fits this machine:
 up to 4 CPUs, 8 GiB of memory and a disk of at most half the free space on the volume holding `~/.agent`, since an
 agent's disk takes host space as the agent writes, up to its size. An agent keeps the image it was created with, so a
-change to `tools.yaml` takes effect when the agent is created again. Edit the files like any others.
+change to `tools.yaml` takes effect when the agent is created again. Edit the files like any others. `agentctl` on its own asks
+whether to open the current directory's Agent in `agentctl tui`, or to set one up when there is none, and prints the
+help when you decline. `attach`, `exec` and `ssh` likewise offer `init` when they would use the current directory's
+Agent and find none, and `agentctl`, `attach` and `exec` offer to start it when it is stopped. `agentctl attach` on its
+own opens the agent's only session, starts one when it has none, and asks which when it has several. All of these ask
+only when a person is at the terminal; scripts get the usual error.
 
 `agentctl status` shows agentd, the stored logins, the current directory's agent and a count of every agent on this
 machine at a glance, with the commands that would change them; `agentctl claude status` and `agentctl codex status`
