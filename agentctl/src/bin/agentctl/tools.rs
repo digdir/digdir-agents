@@ -1,15 +1,25 @@
 //! `tools.yaml`: the tools an agent folder's image installs, which agentctl turns into the
-//! generated block of the folder's Dockerfile.
+//! generated block of the folder's Dockerfile, and `agentctl tools`, which changes them.
 //!
 //! The file belongs to the folder, so every manifest in it (`agent.yaml`, `agent.worktree.yaml`,
-//! a local `agent.mine.yaml`) builds the same image.
+//! a local `agent.mine.yaml`) builds the same image. An agent keeps the image it was created
+//! with, so agentctl records which Dockerfile each agent was created from and offers to recreate
+//! an agent whose tools have changed since.
 
-use std::path::Path;
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
-use agent::Error;
+use agent::{Error, control_api::Client, local::home::ControlPlaneHome};
 use serde::{Deserialize, Serialize};
+use sha2::Digest as _;
 
-use crate::init::{image, template, toolchains::Toolchain};
+use crate::{
+    CommandResult,
+    init::{image, template, toolchains::Toolchain},
+    prompt,
+};
 
 /// The file beside an agent's manifests that lists its tools.
 pub(crate) const TOOLS_FILE: &str = "tools.yaml";
@@ -19,6 +29,8 @@ pub(crate) const DOCKERFILE: &str = "Dockerfile";
 const BEGIN: &str = "# --- Generated from tools.yaml by agentctl. Change tools.yaml, not this block. ---";
 /// The line that ends the generated block.
 const END: &str = "# --- End of the generated block ---";
+/// Where agentctl records the Dockerfile each agent was created from, in its home.
+const STAMPS_FILE: &str = "agent-images.json";
 
 /// The tools an agent folder's image installs.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -183,6 +195,27 @@ impl Tools {
         Ok(())
     }
 
+    /// The tools in a person's words, one per line.
+    pub(crate) fn describe(&self) -> Vec<String> {
+        let yes = |value: bool| if value { "yes" } else { "no" };
+        let toolchains: Vec<String> = self.toolchains().iter().map(Toolchain::describe).collect();
+        let list = |items: &[String]| {
+            if items.is_empty() {
+                "none".to_owned()
+            } else {
+                items.join(", ")
+            }
+        };
+        vec![
+            format!("Containers  {}", yes(self.containers)),
+            format!("Browser     {}", yes(self.browser || self.desktop)),
+            format!("Desktop     {}", yes(self.desktop)),
+            format!("Toolchains  {}", list(&toolchains)),
+            format!("Packages    {}", list(&self.packages)),
+            format!("npm         {}", list(&self.npm)),
+        ]
+    }
+
     /// `tools.yaml` as agentctl writes it, explaining each setting.
     pub(crate) fn render(&self) -> String {
         let chains = &self.toolchains;
@@ -231,8 +264,8 @@ impl Tools {
         };
         format!(
             "# The tools this agent's image installs. agentctl writes them into the Dockerfile's generated
-# block before each create. An agent keeps the image it was created with, so a change here takes
-# effect when the agent is created again.
+# block. Change them with `agentctl tools add` and `agentctl tools remove`, or here; then run
+# `agentctl tools`, which offers to recreate the agent with them.
 
 # Podman, with `docker` and `docker compose`.
 containers: {containers}
@@ -294,6 +327,109 @@ npm:{npm}",
             "{BEGIN}\nFROM {base}\n\nUSER root\nARG TARGETARCH\n{containers}{toolchains}{packages}{npm}{features}{END}\n",
             base = image::BASE_IMAGE
         )
+    }
+
+    /// Adds `tool`, as `agentctl tools add` names it, returning what it added.
+    fn add(&mut self, tool: &str) -> Result<String, Error> {
+        let (name, version) = tool
+            .split_once('@')
+            .map_or((tool, None), |(name, version)| (name, Some(version.to_owned())));
+        let chains = &mut self.toolchains;
+        let added = match name {
+            "containers" | "docker" | "podman" => {
+                self.containers = true;
+                "containers".to_owned()
+            }
+            "browser" | "chromium" | "playwright" => {
+                self.browser = true;
+                "a browser".to_owned()
+            }
+            "desktop" | "vnc" => {
+                self.desktop = true;
+                "a desktop".to_owned()
+            }
+            "node" | "nodejs" => {
+                chains.node = version;
+                "Node.js".to_owned()
+            }
+            "corepack" => {
+                chains.corepack = true;
+                "Corepack".to_owned()
+            }
+            "dotnet" | ".net" => {
+                chains.dotnet = Some(version.unwrap_or_else(|| "lts".to_owned()));
+                ".NET".to_owned()
+            }
+            "go" | "golang" => {
+                chains.go = Some(version.unwrap_or_else(|| "latest".to_owned()));
+                "Go".to_owned()
+            }
+            "rust" | "cargo" => {
+                chains.rust = Some(version.unwrap_or_else(|| "stable".to_owned()));
+                "Rust".to_owned()
+            }
+            "python" | "python3" => {
+                chains.python = true;
+                "Python".to_owned()
+            }
+            "java" | "jdk" => {
+                chains.java = true;
+                "Java".to_owned()
+            }
+            "maven" | "mvn" => {
+                chains.java = true;
+                chains.maven = true;
+                "Maven".to_owned()
+            }
+            _ => {
+                if let Some(package) = tool.strip_prefix("npm:") {
+                    if !self.npm.iter().any(|existing| existing == package) {
+                        self.npm.push(package.to_owned());
+                    }
+                    format!("{package} from npm")
+                } else {
+                    if !self.packages.iter().any(|existing| existing == tool) {
+                        self.packages.push(tool.to_owned());
+                    }
+                    format!("the Ubuntu package {tool}")
+                }
+            }
+        };
+        self.validate()?;
+        Ok(added)
+    }
+
+    /// Removes `tool`, as `agentctl tools remove` names it, returning what it removed, or
+    /// `None` when the tools did not have it.
+    fn remove(&mut self, tool: &str) -> Option<String> {
+        let name = tool.split_once('@').map_or(tool, |(name, _)| name);
+        let chains = &mut self.toolchains;
+        let taken = |flag: &mut bool| std::mem::replace(flag, false);
+        match name {
+            "containers" | "docker" | "podman" => taken(&mut self.containers).then(|| "containers".to_owned()),
+            "browser" | "chromium" | "playwright" => taken(&mut self.browser).then(|| "the browser".to_owned()),
+            "desktop" | "vnc" => taken(&mut self.desktop).then(|| "the desktop".to_owned()),
+            "node" | "nodejs" => chains.node.take().map(|_| "the Node.js version".to_owned()),
+            "corepack" => taken(&mut chains.corepack).then(|| "Corepack".to_owned()),
+            "dotnet" | ".net" => chains.dotnet.take().map(|_| ".NET".to_owned()),
+            "go" | "golang" => chains.go.take().map(|_| "Go".to_owned()),
+            "rust" | "cargo" => chains.rust.take().map(|_| "Rust".to_owned()),
+            "python" | "python3" => taken(&mut chains.python).then(|| "Python".to_owned()),
+            "java" | "jdk" => {
+                chains.maven = false;
+                taken(&mut chains.java).then(|| "Java".to_owned())
+            }
+            "maven" | "mvn" => taken(&mut chains.maven).then(|| "Maven".to_owned()),
+            _ => {
+                let (list, package) = match tool.strip_prefix("npm:") {
+                    Some(package) => (&mut self.npm, package),
+                    None => (&mut self.packages, tool),
+                };
+                let before = list.len();
+                list.retain(|existing| existing != package);
+                (list.len() != before).then(|| package.to_owned())
+            }
+        }
     }
 }
 
@@ -363,6 +499,192 @@ pub(crate) fn sync(directory: &Path) -> Result<bool, Error> {
     }
     std::fs::write(&path, updated)?;
     Ok(true)
+}
+
+/// The Dockerfile `directory`'s agents would be built from now, after syncing `tools.yaml`.
+fn projected(directory: &Path) -> Option<String> {
+    let current = std::fs::read_to_string(directory.join(DOCKERFILE)).ok()?;
+    match read(directory).ok().flatten() {
+        Some(tools) => with_block(&current, &tools).or(Some(current)),
+        None => Some(current),
+    }
+}
+
+fn digest(text: &str) -> String {
+    use std::fmt::Write as _;
+
+    sha2::Sha256::digest(text.as_bytes())
+        .iter()
+        .fold(String::new(), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
+}
+
+fn stamps_path(home: &ControlPlaneHome) -> PathBuf {
+    home.path().join(STAMPS_FILE)
+}
+
+fn stamps(home: &ControlPlaneHome) -> BTreeMap<String, String> {
+    std::fs::read_to_string(stamps_path(home))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Records that `agent` was just created from the Dockerfile in `directory`.
+pub(crate) fn record(home: &ControlPlaneHome, agent: &str, directory: &Path) {
+    let Some(dockerfile) = std::fs::read_to_string(directory.join(DOCKERFILE)).ok() else {
+        return;
+    };
+    let mut stamps = stamps(home);
+    stamps.insert(agent.to_owned(), digest(&dockerfile));
+    if let Ok(text) = serde_json::to_string_pretty(&stamps) {
+        let _ = std::fs::write(stamps_path(home), text);
+    }
+}
+
+/// Whether `agent`, created from `directory`, runs an older image than its Dockerfile and
+/// `tools.yaml` now describe; `None` when agentctl did not record its creation.
+pub(crate) fn outdated(home: &ControlPlaneHome, agent: &str, directory: &Path) -> Option<bool> {
+    let recorded = stamps(home).remove(agent)?;
+    Some(digest(&projected(directory)?) != recorded)
+}
+
+/// The agents among `agents` whose tools changed since they were created.
+pub(crate) fn outdated_agents(home: &ControlPlaneHome, agents: &[agent::Agent]) -> std::collections::HashSet<String> {
+    agents
+        .iter()
+        .filter(|agent| {
+            agent
+                .status
+                .provenance
+                .as_ref()
+                .and_then(|provenance| provenance.manifest_path.as_deref())
+                .and_then(Path::parent)
+                .and_then(|folder| outdated(home, &agent.metadata.name, folder))
+                == Some(true)
+        })
+        .map(|agent| agent.metadata.name.clone())
+        .collect()
+}
+
+/// The folder whose tools `agentctl tools` changes: the current directory's agent's, with that
+/// agent and the manifest it was created from, or else the current directory when it has a
+/// `tools.yaml`.
+async fn target(client: &Client, agent: Option<&str>) -> CommandResult<(PathBuf, Option<(String, PathBuf)>)> {
+    let directory = std::env::current_dir().map_err(Error::from)?;
+    let found = match agent {
+        Some(name) => Some(client.get(name).await?),
+        None => match client.resolve_agent_variant(directory.clone(), None).await {
+            Ok(agent) => Some(agent),
+            Err(Error::Rpc(error)) if error.is_not_found() => None,
+            Err(Error::Rpc(error)) if error.is_invalid_params() => {
+                return Err(Error::Invalid(
+                    "several agents match this directory; run this in one agent's folder, or pass --agent".into(),
+                )
+                .into());
+            }
+            Err(error) => return Err(error.into()),
+        },
+    };
+    if let Some(agent) = found
+        && let Some(manifest) = agent
+            .status
+            .provenance
+            .as_ref()
+            .and_then(|provenance| provenance.manifest_path.clone())
+        && let Some(folder) = manifest.parent().map(Path::to_path_buf)
+    {
+        return Ok((folder, Some((agent.metadata.name, manifest))));
+    }
+    if directory.join(TOOLS_FILE).is_file() {
+        return Ok((directory, None));
+    }
+    if directory.join(agent::manifest::MANIFEST_FILE).is_file() {
+        return Err(kept_by_hand(&directory).into());
+    }
+    Err(Error::Invalid("no agent here; `agentctl init` sets one up, or pass --agent NAME".into()).into())
+}
+
+/// The answer for an agent folder without `tools.yaml`, whose image is not agentctl's to write.
+fn kept_by_hand(folder: &Path) -> Error {
+    Error::Invalid(format!(
+        "{} has no {TOOLS_FILE}: its image is kept by hand in its Dockerfile, so there are no tools for agentctl to change",
+        crate::format::home_relative(folder)
+    ))
+}
+
+/// `agentctl tools`: shows the tools, adds or removes some, and offers to recreate the agent
+/// when its image is older than its tools.
+///
+/// # Errors
+///
+/// Returns an error when the folder has no `tools.yaml`, a tool is not valid, or recreating fails.
+pub(crate) async fn run(
+    home: &ControlPlaneHome,
+    client: &Client,
+    agent: Option<&str>,
+    add: &[String],
+    remove: &[String],
+) -> CommandResult<()> {
+    let (folder, agent) = target(client, agent).await?;
+    let mut tools = read(&folder)?.ok_or_else(|| kept_by_hand(&folder))?;
+    let mut changes = Vec::new();
+    for tool in add {
+        changes.push(format!("Added {}.", tools.add(tool)?));
+    }
+    for tool in remove {
+        match tools.remove(tool) {
+            Some(removed) => changes.push(format!("Removed {removed}.")),
+            None => changes.push(format!("{tool} was not among the tools.")),
+        }
+    }
+    if !add.is_empty() || !remove.is_empty() {
+        std::fs::write(folder.join(TOOLS_FILE), tools.render()).map_err(Error::from)?;
+        sync(&folder)?;
+        for change in &changes {
+            println!("{change}");
+        }
+    }
+    println!();
+    for line in tools.describe() {
+        println!("  {line}");
+    }
+    let Some((name, manifest)) = agent else {
+        return Ok(());
+    };
+    if outdated(home, &name, &folder) != Some(true) {
+        return Ok(());
+    }
+    if !prompt::interactive() {
+        println!("\n{name} runs the image it was created with; recreate it to use these tools.");
+        return Ok(());
+    }
+    if !prompt::confirm_lines(&[
+        &format!("{name} runs the image it was created with, without these changes."),
+        "Recreate it now with them? Its disk starts over.",
+    ])? {
+        return Ok(());
+    }
+    recreate(home, client, &name, &manifest).await
+}
+
+/// Deletes `name` and creates it again from `manifest`, waiting until it is Ready.
+async fn recreate(home: &ControlPlaneHome, client: &Client, name: &str, manifest: &Path) -> CommandResult<()> {
+    client.delete(name).await?;
+    eprintln!("Deleting {name}…");
+    loop {
+        match client.get(name).await {
+            Err(Error::Rpc(error)) if error.is_not_found() => break,
+            Err(error) => return Err(error.into()),
+            Ok(_) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+        }
+    }
+    crate::tui::create_agent(home, client, manifest.to_path_buf(), name.to_owned(), None).await?;
+    crate::wait_until_converged_simply(client, name, std::time::Duration::from_mins(15)).await?;
+    eprintln!("{name} is ready with its new tools.");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -466,5 +788,58 @@ mod tests {
         .expect("tools.yaml");
         let error = sync(directory.path()).expect_err("no Dockerfile beside the manifest");
         assert!(error.to_string().contains("no Dockerfile"), "{error}");
+    }
+
+    #[test]
+    fn tools_are_added_and_removed_by_the_names_people_use() {
+        let mut tools = Tools::default();
+        assert_eq!(tools.add("go@1.25").expect("go"), "Go");
+        assert_eq!(tools.toolchains.go.as_deref(), Some("1.25"));
+        assert_eq!(tools.add("dotnet").expect("dotnet"), ".NET");
+        assert_eq!(tools.toolchains.dotnet.as_deref(), Some("lts"));
+        assert_eq!(tools.add("jq").expect("apt"), "the Ubuntu package jq");
+        assert_eq!(tools.add("npm:pnpm").expect("npm"), "pnpm from npm");
+        assert_eq!(tools.add("docker").expect("containers"), "containers");
+        tools.add("jq").expect("again");
+        assert_eq!(tools.packages, ["jq"], "added once");
+        tools.add("rm -rf /").expect_err("not a package name");
+
+        let mut tools = Tools::default();
+        tools.add("maven").expect("maven");
+        assert!(tools.toolchains.java && tools.toolchains.maven);
+        assert_eq!(tools.remove("java").as_deref(), Some("Java"));
+        assert!(!tools.toolchains.maven, "Maven goes with its JDK");
+        assert_eq!(tools.remove("go"), None);
+    }
+
+    #[test]
+    fn an_agent_is_outdated_once_its_tools_change() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let state = tempfile::TempDir::new().expect("state");
+        let home = ControlPlaneHome::resolve(Some(state.path())).expect("home");
+        let tools = sample();
+        std::fs::write(
+            directory.path().join(TOOLS_FILE),
+            serde_yaml_ng::to_string(&tools).expect("YAML"),
+        )
+        .expect("tools.yaml");
+        std::fs::write(
+            directory.path().join(DOCKERFILE),
+            format!("{}\nRUN mine\n", tools.block()),
+        )
+        .expect("Dockerfile");
+
+        assert_eq!(outdated(&home, "worker", directory.path()), None, "not recorded");
+        record(&home, "worker", directory.path());
+        assert_eq!(outdated(&home, "worker", directory.path()), Some(false));
+
+        let mut changed = tools;
+        changed.packages.push("jq".into());
+        std::fs::write(directory.path().join(TOOLS_FILE), changed.render()).expect("tools.yaml");
+        assert_eq!(
+            outdated(&home, "worker", directory.path()),
+            Some(true),
+            "before syncing too"
+        );
     }
 }

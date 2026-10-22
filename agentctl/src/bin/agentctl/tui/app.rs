@@ -346,6 +346,8 @@ pub(crate) struct App {
     pub(crate) ssh_include: Option<agent::ssh::UserInclude>,
     /// Opens waiting in the background, at most one per Agent and target.
     pub(crate) opening: Vec<(String, OpenTarget)>,
+    /// Agents whose tools changed since they were created, so they run an older image.
+    pub(crate) outdated: HashSet<String>,
 }
 
 /// Display state of one process-owned port forward.
@@ -1250,6 +1252,7 @@ impl App {
             ssh_checking: false,
             ssh_include: None,
             opening: Vec::new(),
+            outdated: HashSet::new(),
         }
     }
 
@@ -2146,6 +2149,9 @@ impl App {
             return Vec::new();
         };
         let mut lines = format::readiness_lines(&agent.status);
+        if self.outdated.contains(name) {
+            lines.push("Tools:      changed since it was created; `agentctl tools` recreates it".to_owned());
+        }
         if let Some(provisioning) = &agent.status.progress {
             let progress = &provisioning.progress;
             lines.extend(format::provisioning_lines(
@@ -2507,7 +2513,12 @@ impl App {
                     } else {
                         format!("ports: {}", forwards.join(" "))
                     };
-                    let detail = [status, count, ports]
+                    let tools = if self.outdated.contains(&agent.metadata.name) {
+                        "tools changed: agentctl tools".to_owned()
+                    } else {
+                        String::new()
+                    };
+                    let detail = [status, count, ports, tools]
                         .into_iter()
                         .filter(|part| !part.is_empty())
                         .collect::<Vec<_>>()
@@ -2847,6 +2858,36 @@ mod tests {
             name,
             "\x20   - type: claudeCode\n\x20     version: \"1.0.0\"\n\x20     auth: mediated\n",
         )
+    }
+
+    #[test]
+    fn an_agent_whose_tools_changed_says_so_in_its_row_and_panel() {
+        let mut app = App::new();
+        app.apply_snapshot(vec![ready_agent("worker"), ready_agent("other")], Vec::new());
+        app.outdated.insert("worker".to_owned());
+        let rows = app.render_rows();
+        let detail = |name: &str| {
+            rows.iter()
+                .find(|row| row.name == name)
+                .map(|row| row.detail.clone())
+                .unwrap_or_default()
+        };
+        assert!(
+            detail("worker").contains("tools changed: agentctl tools"),
+            "{}",
+            detail("worker")
+        );
+        assert!(!detail("other").contains("tools changed"), "{}", detail("other"));
+        assert!(
+            app.agent_panel_lines("worker")
+                .iter()
+                .any(|line| line.starts_with("Tools:") && line.contains("agentctl tools"))
+        );
+        assert!(
+            !app.agent_panel_lines("other")
+                .iter()
+                .any(|line| line.starts_with("Tools:"))
+        );
     }
 
     fn ready_agent(name: &str) -> Agent {

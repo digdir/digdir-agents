@@ -60,8 +60,10 @@ also testing web apps in a browser (the base image's `browser` feature), or also
 repository's own skills under `.claude/skills` are listed in the manifest, so every harness gets them. `init` checks
 for Docker before its first question and waits for it to start, and without Git it works on the mounted folder. The proposed size fits this machine:
 up to 4 CPUs, 8 GiB of memory and a disk of at most half the free space on the volume holding `~/.agent`, since an
-agent's disk takes host space as the agent writes, up to its size. An agent keeps the image it was created with, so a
-change to `tools.yaml` takes effect when the agent is created again. Edit the files like any others. `agentctl` on its own asks
+agent's disk takes host space as the agent writes, up to its size. `agentctl tools` shows the current directory's agent's tools; `agentctl tools add postgresql-client`, `go@1.26` or
+`npm:pnpm` and `agentctl tools remove` change them. An agent keeps the image it was created with, so after a change
+`agentctl tools` offers to recreate the agent, and `agentctl status` says when an agent's tools changed since it was
+created. Edit the files like any others. `agentctl` on its own asks
 whether to open the current directory's Agent in `agentctl tui`, or to set one up when there is none, and prints the
 help when you decline. `attach`, `exec` and `ssh` likewise offer `init` when they would use the current directory's
 Agent and find none, and `agentctl`, `attach` and `exec` offer to start it when it is stopped. `agentctl attach` on its

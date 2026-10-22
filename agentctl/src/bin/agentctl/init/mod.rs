@@ -158,7 +158,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client, start: Start) 
         status = client.auth_status().await?;
     }
     let name = match start {
-        Start::From(manifest) => create_written(client, &manifest).await?,
+        Start::From(manifest) => create_written(home, client, &manifest).await?,
         Start::Form => {
             eprintln!();
             eprintln!("Choose one of the agents set up here, and a name, in the form that opens next.");
@@ -173,7 +173,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client, start: Start) 
             let Some(manifest) = write_agent_directory(home, &directory, &github, &status)? else {
                 return Ok(None);
             };
-            create_written(client, &manifest).await?
+            create_written(home, client, &manifest).await?
         }
     };
     crate::wait_until_converged_simply(client, &name, std::time::Duration::from_mins(10)).await?;
@@ -564,7 +564,7 @@ async fn offer_github_login(client: &Client, reason: Option<&str>) -> Github {
 
 /// Creates the agent from `manifest` under its own name, or the first free
 /// numbered one when an agent already has it.
-async fn create_written(client: &Client, manifest: &Path) -> CommandResult<String> {
+async fn create_written(home: &ControlPlaneHome, client: &Client, manifest: &Path) -> CommandResult<String> {
     let manifest_name = agent::manifest::resolve(manifest)?.agent.metadata.name;
     let agents = client.list_agents().await?;
     let name = if agents.iter().any(|agent| agent.metadata.name == manifest_name) {
@@ -574,7 +574,7 @@ async fn create_written(client: &Client, manifest: &Path) -> CommandResult<Strin
     } else {
         manifest_name
     };
-    crate::tui::create_agent(client, manifest.to_path_buf(), name.clone(), None).await?;
+    crate::tui::create_agent(home, client, manifest.to_path_buf(), name.clone(), None).await?;
     Ok(name)
 }
 

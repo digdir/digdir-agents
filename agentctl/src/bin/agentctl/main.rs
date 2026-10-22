@@ -95,6 +95,17 @@ enum Command {
         #[command(flatten)]
         target: RunStateTarget,
     },
+    /// Show or change the tools an agent's image installs.
+    ///
+    /// The current directory's agent, or the one `--agent` names. After a change, it offers to
+    /// recreate the agent with the new tools.
+    Tools {
+        /// The agent whose tools to show or change.
+        #[arg(long, global = true)]
+        agent: Option<String>,
+        #[command(subcommand)]
+        command: Option<ToolsCommand>,
+    },
     /// Let agents work on GitHub, and manage the accounts they use.
     Github {
         #[command(subcommand)]
@@ -547,6 +558,22 @@ enum CodexCommand {
 }
 
 #[derive(Subcommand)]
+enum ToolsCommand {
+    /// Add tools: an Ubuntu package such as `jq`, a toolchain such as `go@1.26`, `node@20`,
+    /// `dotnet`, `rust`, `python`, `java` or `maven`, an npm package as `npm:pnpm`, or
+    /// `containers` or `browser`.
+    Add {
+        #[arg(required = true)]
+        tools: Vec<String>,
+    },
+    /// Remove tools, named as for `add`.
+    Remove {
+        #[arg(required = true)]
+        tools: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum InstructionsCommand {
     /// Open the host-wide instructions in your editor, creating the file if needed.
     ///
@@ -807,6 +834,14 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         Command::Instructions {
             command: InstructionsCommand::Edit,
         } => edit_instructions(home)?,
+        Command::Tools { agent, command } => {
+            let (add, remove) = match command {
+                Some(ToolsCommand::Add { tools }) => (tools, Vec::new()),
+                Some(ToolsCommand::Remove { tools }) => (Vec::new(), tools),
+                None => (Vec::new(), Vec::new()),
+            };
+            tools::run(home, client, agent.as_deref(), &add, &remove).await?;
+        }
         Command::Github {
             command:
                 GithubCommand::Login {
@@ -878,8 +913,15 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             if let Some(name) = name {
                 request.agent.metadata.name = name;
             }
+            let new = matches!(
+                client.get(&request.agent.metadata.name).await,
+                Err(Error::Rpc(ref error)) if error.is_not_found()
+            );
             let applied = client.apply(request).await?;
             let name = applied.metadata.name;
+            if new && let Some(folder) = &folder {
+                tools::record(home, &name, folder);
+            }
             println!("agent/{name} applied");
             if wait {
                 let converged = wait_until_converged(client, &name, timeout).await?;
@@ -2275,7 +2317,7 @@ async fn status(home: &ControlPlaneHome, client: &Client) -> CommandResult<()> {
         },
     ));
     let mut here = Vec::new();
-    rows.push(("This directory", directory_line(client, &mut here).await?));
+    rows.push(("This directory", directory_line(home, client, &mut here).await?));
     let agents = client.list_agents().await?;
     let sessions = client.list_sessions(None).await?;
     let (line, waiting) = machine_line(&agents, &sessions);
@@ -2397,8 +2439,8 @@ fn github_lines(tokens: &[agent::github::GithubToken], next: &mut Vec<NextStep>)
         .collect()
 }
 
-/// The current directory's agent: its state and sessions.
-async fn directory_line(client: &Client, next: &mut Vec<NextStep>) -> CommandResult<String> {
+/// The current directory's agent: its state, sessions and whether its tools changed.
+async fn directory_line(home: &ControlPlaneHome, client: &Client, next: &mut Vec<NextStep>) -> CommandResult<String> {
     let directory = std::env::current_dir().map_err(Error::from)?;
     let agent = match client.resolve_agent_variant(directory, None).await {
         Ok(agent) => agent,
@@ -2436,9 +2478,24 @@ async fn directory_line(client: &Client, next: &mut Vec<NextStep>) -> CommandRes
         next.push((format!("agentctl start agent/{name}"), format!("Start {name} again")));
     }
     let sessions = client.list_sessions(Some(&name)).await?.len();
+    let outdated = agent
+        .status
+        .provenance
+        .as_ref()
+        .and_then(|provenance| provenance.manifest_path.as_deref())
+        .and_then(Path::parent)
+        .and_then(|folder| tools::outdated(home, &name, folder))
+        == Some(true);
+    if outdated {
+        next.push((
+            "agentctl tools".to_owned(),
+            format!("Recreate {name} with its changed tools"),
+        ));
+    }
     Ok(format!(
-        "{name}: {state}, {sessions} session{}",
-        if sessions == 1 { "" } else { "s" }
+        "{name}: {state}, {sessions} session{}{}",
+        if sessions == 1 { "" } else { "s" },
+        if outdated { ", tools changed" } else { "" }
     ))
 }
 
