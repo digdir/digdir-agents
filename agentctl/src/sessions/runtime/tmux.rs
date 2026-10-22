@@ -322,13 +322,15 @@ fn launch_arguments(
 }
 
 /// Installs `agent-session` and the login-shell reminder, rewriting each only when this
-/// release's script differs.
+/// release's script differs, and making `agent-session` executable whenever it is not, as after
+/// a mode change that failed.
 async fn install_session_helpers(sandbox: &SandboxHandle) -> Result<(), Error> {
-    for (path, contents, mode) in [
-        (SESSION_HELPER, SESSION_HELPER_SCRIPT, "0755"),
-        (WELCOME, WELCOME_SCRIPT, "0644"),
+    for (path, contents, mode, executable) in [
+        (SESSION_HELPER, SESSION_HELPER_SCRIPT, "0755", true),
+        (WELCOME, WELCOME_SCRIPT, "0644", false),
     ] {
-        if !crate::sandbox::platform::files::write_if_changed(sandbox, path, contents.as_bytes()).await? {
+        let written = crate::sandbox::platform::files::write_if_changed(sandbox, path, contents.as_bytes()).await?;
+        if !written && (!executable || is_executable(sandbox, path).await?) {
             continue;
         }
         let changed_mode = run_lifecycle_execution(
@@ -350,6 +352,16 @@ async fn install_session_helpers(sandbox: &SandboxHandle) -> Result<(), Error> {
     Ok(())
 }
 
+async fn is_executable(sandbox: &SandboxHandle, path: &str) -> Result<bool, Error> {
+    let tested = run_lifecycle_execution(
+        sandbox,
+        ExecutionSpec::command(SandboxPath::new("/usr/bin/test"), ["-x", path].map(str::to_owned)),
+        "session helper check",
+    )
+    .await?;
+    Ok(tested.status.success())
+}
+
 /// Creates the named detached tmux session running the harness.
 async fn launch(
     session: &Session,
@@ -359,7 +371,10 @@ async fn launch(
     resume: Option<&str>,
     initial_message: Option<&str>,
 ) -> Result<(), Error> {
-    install_session_helpers(sandbox).await?;
+    // Conveniences for people in the Sandbox, so a failure to install them leaves the harness to start.
+    if let Err(error) = install_session_helpers(sandbox).await {
+        tracing::warn!(%error, session = %session.id, "could not install the session helpers");
+    }
     let arguments = launch_arguments(session, context, token, resume, initial_message);
     let created = run_lifecycle_execution(
         sandbox,
@@ -721,6 +736,83 @@ mod tests {
     };
 
     use super::{Observation, input_ready_in, parse_transcript_suffix};
+
+    /// The `chmod` runs of the session helpers so far, by mode and path.
+    fn mode_changes(backend: &sandbox::memory::Provider) -> Vec<Vec<String>> {
+        backend
+            .execution_specs()
+            .iter()
+            .filter_map(|spec| match spec.program() {
+                sandbox::execution::Program::Command { args, .. }
+                    if args.get(1).map(String::as_str) == Some("/bin/chmod") =>
+                {
+                    Some(args[2..].to_vec())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn session_helpers_are_written_once_and_made_executable_again_when_they_are_not() {
+        let backend = std::rc::Rc::new(sandbox::memory::Provider::new());
+        let service = sandbox::SandboxService::new(backend.clone());
+        let spec = sandbox::SandboxSpec {
+            image: sandbox::image::ImageSource::Build {
+                context: std::path::PathBuf::from("."),
+                dockerfile: std::path::PathBuf::from("Dockerfile"),
+                target: None,
+            },
+            platform: sandbox::Platform::native("linux"),
+            resources: sandbox::SandboxResources::new(
+                "1".parse().expect("CPU"),
+                "512Mi".parse().expect("memory"),
+                sandbox::RootFilesystem::layered("1Gi".parse().expect("root filesystem")),
+            ),
+            init_system: sandbox::init::InitSystem::Backend,
+            retention_policy: sandbox::RetentionPolicy::Retain,
+        };
+        let sandbox = service
+            .ensure(&sandbox::EnsureSandboxRequest::new(
+                sandbox::SandboxName::new("helpers").expect("Sandbox name"),
+                spec,
+            ))
+            .await
+            .expect("Sandbox");
+
+        super::install_session_helpers(&sandbox).await.expect("first install");
+        assert_eq!(
+            mode_changes(&backend),
+            [
+                vec!["0755".to_owned(), super::SESSION_HELPER.to_owned()],
+                vec!["0644".to_owned(), super::WELCOME.to_owned()],
+            ]
+        );
+        let writes = backend.file_writes().len();
+
+        super::install_session_helpers(&sandbox).await.expect("unchanged");
+        assert_eq!(backend.file_writes().len(), writes, "nothing is rewritten");
+        assert_eq!(mode_changes(&backend).len(), 2, "an executable helper is left alone");
+
+        // A mode change that failed earlier left the helper as written, not executable.
+        backend.queue_execution_events_matching(
+            |spec| {
+                matches!(spec.program(), sandbox::execution::Program::Command { executable, args }
+                    if executable.as_str() == "/usr/bin/test" && args.first().map(String::as_str) == Some("-x"))
+            },
+            vec![
+                sandbox::execution::ExecutionEvent::Started { process_id: None },
+                sandbox::execution::ExecutionEvent::Exited(ExitStatus { code: 1 }),
+            ],
+        );
+        super::install_session_helpers(&sandbox).await.expect("repair");
+        assert_eq!(backend.file_writes().len(), writes, "still nothing is rewritten");
+        assert_eq!(
+            mode_changes(&backend).last(),
+            Some(&vec!["0755".to_owned(), super::SESSION_HELPER.to_owned()]),
+            "the helper is made executable again"
+        );
+    }
 
     fn named_session() -> crate::sessions::Session {
         crate::sessions::Session {

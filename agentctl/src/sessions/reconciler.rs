@@ -35,6 +35,8 @@ pub struct Reconciler {
     sandboxes: Rc<AgentSandboxes>,
     runtime: Rc<dyn SessionRuntime>,
     platform_api_url: String,
+    /// This host's name, read once, for harnesses to name where they run.
+    host: String,
 }
 
 impl Reconciler {
@@ -54,6 +56,7 @@ impl Reconciler {
             sandboxes,
             runtime,
             platform_api_url,
+            host: host_name(),
         }
     }
 
@@ -258,7 +261,6 @@ impl Reconciler {
                 .update_session_lifecycle(session.id, Lifecycle::resuming(), session.activation_generation)
                 .await?;
         }
-        let host = host_name().await;
         self.runtime
             .start(
                 session,
@@ -267,7 +269,7 @@ impl Reconciler {
                     platform_api_url: &self.platform_api_url,
                     agent: &agent.agent.metadata.name,
                     source_directory: &agent.source_directory,
-                    host: &host,
+                    host: &self.host,
                 },
                 &token,
                 resume,
@@ -398,25 +400,28 @@ fn backoff_seconds(attempts: u32) -> i64 {
     }
 }
 
+/// This host's name, for a launched harness to name where it runs: `COMPUTERNAME` on Windows,
+/// which needs no process, and what `hostname` prints elsewhere.
+fn host_name() -> String {
+    let name = if cfg!(windows) {
+        std::env::var("COMPUTERNAME").ok()
+    } else {
+        std::process::Command::new("hostname")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    name.filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
 /// Holds a Session short of launching while its Agent cannot run it.
 ///
 /// The image ships every harness binary, so launching one convergence never installed starts a
 /// process that sits at a login prompt nobody can answer and reports the Session as running.
-/// This host's name, as `hostname` prints it, for a launched harness to name where it runs.
-async fn host_name() -> String {
-    let output = tokio::process::Command::new("hostname")
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .await;
-    output
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "unknown".to_owned())
-}
-
 fn launch_blocked(agent: &crate::control_plane::AgentRecord, session: &Session) -> Option<Lifecycle> {
     let installed = agent
         .agent
