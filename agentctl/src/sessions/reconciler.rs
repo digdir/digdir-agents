@@ -400,22 +400,16 @@ fn backoff_seconds(attempts: u32) -> i64 {
     }
 }
 
-/// This host's name, for a launched harness to name where it runs: `COMPUTERNAME` on Windows,
-/// which needs no process, and what `hostname` prints elsewhere.
+/// This host's name, read through native OS APIs, for a launched harness to name where it runs.
 fn host_name() -> String {
-    let name = if cfg!(windows) {
-        std::env::var("COMPUTERNAME").ok()
-    } else {
-        std::process::Command::new("hostname")
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-    };
-    name.filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "unknown".to_owned())
+    match whoami::hostname() {
+        Ok(name) if !name.is_empty() => name,
+        Ok(_) => "unknown".to_owned(),
+        Err(error) => {
+            tracing::warn!(%error, "could not determine host name");
+            "unknown".to_owned()
+        }
+    }
 }
 
 /// Holds a Session short of launching while its Agent cannot run it.
