@@ -113,15 +113,37 @@ impl Client {
         let run_directory = microsandbox_home.join("run");
         // The Client owns this home, so its user configuration lives there
         // rather than in the process user's Microsandbox configuration.
-        let mut builder = LocalBackend::builder()
-            .config_path(microsandbox_home.join("config.json"))
-            .home(&microsandbox_home)
-            .run_dir(run_directory)
-            .disable_metrics_sample(true)
-            .deployment_profile(microsandbox::sandbox::DeploymentProfile::SingleTenant);
-        if let Some(cache_directory) = cache_directory {
-            builder = builder.cache_dir(cache_directory);
-        }
+        let configured_builder = || {
+            let mut builder = LocalBackend::builder()
+                .config_path(microsandbox_home.join("config.json"))
+                .home(&microsandbox_home)
+                .run_dir(&run_directory)
+                .disable_metrics_sample(true)
+                .deployment_profile(microsandbox::sandbox::DeploymentProfile::SingleTenant);
+            if let Some(cache_directory) = &cache_directory {
+                builder = builder.cache_dir(cache_directory);
+            }
+            builder
+        };
+        let builder = configured_builder();
+        #[cfg(unix)]
+        let builder = {
+            // Read the selected storage path without opening or migrating the
+            // database. Existing config.json volume locations must be retained.
+            let volumes = configured_builder()
+                .build_lazy()
+                .map_err(error::microsandbox)?
+                .volumes_dir();
+            tokio::fs::create_dir_all(&volumes)
+                .await
+                .map_err(|source| error::io("create Microsandbox volume directory", source))?;
+            // Resolve storage aliases such as macOS /var -> /private/var
+            // before appending any volume name, retaining volume-root checks.
+            let volumes = tokio::fs::canonicalize(&volumes)
+                .await
+                .map_err(|source| error::io("resolve Microsandbox volume directory", source))?;
+            builder.volumes_dir(volumes)
+        };
         let backend = builder.build().await.map_err(error::microsandbox)?;
         Ok(Self {
             backend: Arc::new(backend),
@@ -373,6 +395,90 @@ mod tests {
         std::fs::set_permissions(&fallback, std::fs::Permissions::from_mode(0o755)).expect("fallback permissions");
         assert!(super::run_directory(&home).is_err());
         std::fs::remove_dir(&fallback).expect("remove fallback directory");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "local")]
+    async fn volume_storage_resolves_aliases_without_changing_runtime_identity() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let physical = root.path().canonicalize().expect("physical temporary root");
+        let home = physical.join("home");
+        std::fs::create_dir(&home).expect("physical home");
+        let alias = physical.join("alias");
+        std::os::unix::fs::symlink(&home, &alias).expect("home alias");
+        let microsandbox_home = alias.join("runtime");
+        let client = Client::open(microsandbox_home.clone(), None, None)
+            .await
+            .expect("Client should open through the alias");
+
+        assert_eq!(client.local().volumes_dir(), home.join("runtime/volumes"));
+        assert_eq!(client.local().config().home(), microsandbox_home);
+        assert_eq!(
+            client.local().run_dir(),
+            super::run_directory(&microsandbox_home).expect("original runtime identity")
+        );
+
+        // Reopening resolves only the storage directory, not individual
+        // volume roots. This does not exercise the runtime's mount checks.
+        let outside = physical.join("outside");
+        std::fs::create_dir(&outside).expect("outside directory");
+        let volume = home.join("runtime/volumes/existing");
+        std::os::unix::fs::symlink(&outside, &volume).expect("volume-root symlink");
+        let reopened = Client::open(microsandbox_home, None, None)
+            .await
+            .expect("Client should reopen through the alias");
+        assert_eq!(reopened.local().volume_path("existing"), volume);
+        assert!(volume.symlink_metadata().expect("volume metadata").is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "local")]
+    async fn configured_volume_storage_keeps_existing_data_when_reopened_through_an_alias() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let physical = root.path().canonicalize().expect("physical temporary root");
+        let home = physical.join("runtime");
+        std::fs::create_dir(&home).expect("runtime home");
+        let storage = physical.join("external-volumes");
+        std::fs::create_dir(&storage).expect("external volume storage");
+        let alias = physical.join("storage-alias");
+        std::os::unix::fs::symlink(&storage, &alias).expect("storage alias");
+
+        for (index, selected) in [&storage, &alias].into_iter().enumerate() {
+            std::fs::write(
+                home.join("config.json"),
+                serde_json::json!({"paths": {"volumes": selected}}).to_string(),
+            )
+            .expect("configured volume storage");
+            let client = Client::open(home.clone(), None, None)
+                .await
+                .expect("Client should open");
+            assert_eq!(client.local().volumes_dir(), storage);
+            let path = if index == 0 {
+                let volume = client
+                    .scope(microsandbox::Volume::builder("retained").directory().create())
+                    .await
+                    .expect("create retained volume");
+                volume.path().expect("local volume path").to_path_buf()
+            } else {
+                let volume = client
+                    .scope(microsandbox::Volume::get("retained"))
+                    .await
+                    .expect("reopen retained volume");
+                volume.local().expect("local volume").path.clone()
+            };
+            assert_eq!(path, storage.join("retained"));
+            if index == 0 {
+                std::fs::write(path.join("kept.txt"), b"retained").expect("write retained data");
+            }
+            assert_eq!(
+                std::fs::read(path.join("kept.txt")).expect("retained data"),
+                b"retained"
+            );
+        }
+        assert!(
+            !home.join("volumes").exists(),
+            "must not create a replacement storage directory"
+        );
     }
 
     #[tokio::test(flavor = "local")]
