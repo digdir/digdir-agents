@@ -98,6 +98,7 @@ struct UpgradeGates {
 }
 
 struct FakeSessions {
+    conversation: Rc<RefCell<Vec<agent::sessions::Turn>>>,
     ensured: Rc<RefCell<Vec<agent::sessions::SessionRequest>>>,
     sent: Rc<RefCell<Vec<SentMessage>>>,
     deleted: Rc<RefCell<Vec<(String, agent::sessions::SessionName)>>>,
@@ -203,7 +204,7 @@ impl SessionApi for FakeSessions {
             if agent != "worker" {
                 return Err(Error::NotFound);
             }
-            let mut turns = vec![answered_turn("one", "1"), answered_turn("two", "2")];
+            let mut turns = self.conversation.borrow().clone();
             if let Some(last) = last {
                 turns.drain(0..turns.len().saturating_sub(last));
             }
@@ -315,12 +316,13 @@ struct InProcessConnector {
 }
 
 struct ScriptedConnector {
-    frames: &'static str,
+    frames: Rc<str>,
 }
 
 struct ApiFixture {
     server: Rc<Server>,
     client: Client,
+    conversation: Rc<RefCell<Vec<agent::sessions::Turn>>>,
     /// Execution ensures still waiting in the server.
     waiting: Rc<Cell<usize>>,
     ensured: Rc<RefCell<Vec<agent::sessions::SessionRequest>>>,
@@ -350,7 +352,7 @@ impl Connector for ScriptedConnector {
     fn connect(&self) -> LocalFuture<'_, Result<Box<dyn Connection>, Error>> {
         Box::pin(async move {
             let (client, server) = tokio::io::duplex(16 * 1024);
-            let frames = self.frames;
+            let frames = self.frames.clone();
             tokio::task::spawn_local(async move {
                 let mut server = BufReader::new(server);
                 let mut request = String::new();
@@ -367,6 +369,7 @@ fn api() -> ApiFixture {
         Rc::new(InMemoryAgentStore::new()),
         Rc::new(IgnoreNotifications),
     ));
+    let conversation = Rc::new(RefCell::new(vec![answered_turn("one", "1"), answered_turn("two", "2")]));
     let ensured = Rc::new(RefCell::new(Vec::new()));
     let sent = Rc::new(RefCell::new(Vec::new()));
     let deleted = Rc::new(RefCell::new(Vec::new()));
@@ -384,6 +387,7 @@ fn api() -> ApiFixture {
         Rc::new(FakeConvergence),
         executions,
         Rc::new(FakeSessions {
+            conversation: conversation.clone(),
             ensured: ensured.clone(),
             sent: sent.clone(),
             deleted: deleted.clone(),
@@ -401,6 +405,7 @@ fn api() -> ApiFixture {
     ApiFixture {
         server,
         client,
+        conversation,
         waiting,
         ensured,
         sent,
@@ -532,6 +537,100 @@ async fn session_operations_carry_their_parameters_across_the_wire() {
         fixture.ensured.borrow().as_slice(),
         &[request, agent::sessions::SessionRequest::default()],
         "model and effort travel as opaque values and stay absent when omitted"
+    );
+}
+
+#[tokio::test(flavor = "local")]
+async fn turns_responses_above_four_mib_reach_the_client() {
+    let fixture = api();
+    let answer = "x".repeat(50 * 1024);
+    let conversation = (0..100)
+        .map(|index| answered_turn(&format!("Question {index}"), &answer))
+        .collect::<Vec<_>>();
+    fixture.conversation.replace(conversation.clone());
+
+    let received = fixture
+        .client
+        .session_turns("worker", agent::sessions::SessionName::new("s1").expect("name"), None)
+        .await
+        .expect("a five MiB conversation fits the response budget");
+    assert_eq!(received, conversation);
+}
+
+#[tokio::test(flavor = "local")]
+async fn oversized_turns_responses_explain_how_to_request_fewer_turns() {
+    let fixture = api();
+    let latest = answered_turn("latest question", "latest answer");
+    // The text fits 64 MiB exactly, but its JSON envelope exceeds the wire budget.
+    fixture.conversation.replace(vec![
+        answered_turn("large answer", &"x".repeat(64 * 1024 * 1024)),
+        latest.clone(),
+    ]);
+    let name = agent::sessions::SessionName::new("s1").expect("name");
+
+    let error = fixture
+        .client
+        .session_turns("worker", name.clone(), None)
+        .await
+        .expect_err("the server returns a bounded error response");
+    assert!(
+        matches!(error, Error::Rpc(ref error) if error.message == "Session turns response exceeds 64 MiB; retry with --last to request fewer turns"),
+        "unexpected error: {error}"
+    );
+    let received = fixture
+        .client
+        .session_turns("worker", name, Some(1))
+        .await
+        .expect("requesting fewer turns succeeds");
+    assert_eq!(received, [latest]);
+    fixture
+        .client
+        .health()
+        .await
+        .expect("the daemon still answers requests");
+}
+
+#[tokio::test(flavor = "local")]
+async fn requests_above_four_mib_are_still_rejected() {
+    let fixture = api();
+    let mut connection = InProcessConnector {
+        server: fixture.server.clone(),
+    }
+    .connect()
+    .await
+    .expect("connection");
+    // Fill the request budget without a newline, then cross it by one byte.
+    connection
+        .write_all(&vec![b' '; 4 * 1024 * 1024])
+        .await
+        .expect("request prefix");
+    connection
+        .write_all(b" \n")
+        .await
+        .expect("last request byte and delimiter");
+    let mut response = String::new();
+    BufReader::new(connection)
+        .read_line(&mut response)
+        .await
+        .expect("error response");
+    let response: serde_json::Value = serde_json::from_str(&response).expect("JSON-RPC error");
+    assert_eq!(response["error"]["message"], "JSON-RPC request exceeds 4 MiB");
+    fixture
+        .client
+        .health()
+        .await
+        .expect("the daemon still answers requests");
+}
+
+#[tokio::test(flavor = "local")]
+async fn client_reports_responses_above_sixty_four_mib_from_a_peer() {
+    let client = Client::new(Rc::new(ScriptedConnector {
+        frames: " ".repeat(64 * 1024 * 1024 + 1).into(),
+    }));
+    let error = client.health().await.expect_err("oversized peer response");
+    assert!(
+        matches!(error, Error::Invalid(ref message) if message == "Agent Control API response exceeds 64 MiB"),
+        "unexpected error: {error}"
     );
 }
 
@@ -945,7 +1044,7 @@ async fn agent_progress_returns_the_status_then_waits_for_the_next_change() {
 #[tokio::test(flavor = "local")]
 async fn a_frame_that_is_not_the_response_fails_the_call() {
     let notification = ScriptedConnector {
-        frames: concat!(r#"{"jsonrpc":"2.0","method":"progress.v1.event","params":{}}"#, "\n"),
+        frames: concat!(r#"{"jsonrpc":"2.0","method":"progress.v1.event","params":{}}"#, "\n").into(),
     };
     let client = Client::new(Rc::new(notification));
     let error = client
