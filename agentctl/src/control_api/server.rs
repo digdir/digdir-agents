@@ -58,10 +58,8 @@ pub trait AgentApi {
     fn set_run_state<'a>(&'a self, name: &'a str, state: crate::RunState) -> LocalFuture<'a, Result<Agent, Error>>;
 
     /// Stops an Agent without letting its guest shut down; see
-    /// [`control_plane::ControlPlane::stop_now`]. Without a faster way, it stops as usual.
-    fn stop_now<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Agent, Error>> {
-        self.set_run_state(name, crate::RunState::Stopped)
-    }
+    /// [`control_plane::ControlPlane::stop_now`].
+    fn stop_now<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Agent, Error>>;
 
     /// Reads an Agent's stored status and its latest pass's progress, with
     /// only the output after `output` when it names the same pass.

@@ -146,9 +146,7 @@ pub trait Provider {
     fn stop<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>>;
 
     /// Like [`Self::stop`], but ends the Sandbox at once instead of letting its guest shut down.
-    fn kill<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
-        self.stop(record)
-    }
+    fn kill<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>>;
 
     /// Opens the exact already-materialized Sandbox without lifecycle effects.
     fn open<'a>(&'a self, record: &'a AgentRecord, id: &'a SandboxId) -> LocalFuture<'a, Result<SandboxHandle, Error>>;

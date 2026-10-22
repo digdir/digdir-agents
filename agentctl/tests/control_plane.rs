@@ -334,6 +334,10 @@ impl Provider for PlannedProvider {
         self.inner.stop(record)
     }
 
+    fn kill<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
+        self.inner.kill(record)
+    }
+
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
         self.inner.release(record)
     }
@@ -375,6 +379,10 @@ impl Provider for UnsupportedProvider {
 
     fn stop<'a>(&'a self, _record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
+    }
+
+    fn kill<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
+        self.stop(record)
     }
 
     fn release<'a>(&'a self, _record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
