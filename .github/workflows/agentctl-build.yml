@@ -1,5 +1,5 @@
 # Builds, packages and smoke-tests the agentctl archive for every host and uploads each as an artifact named after
-# it, such as agent-linux-x86_64. Called by the release and preview workflows.
+# it, such as agent-linux-x86_64. Called by the release and experimental build workflows.
 name: agentctl build
 
 on:
