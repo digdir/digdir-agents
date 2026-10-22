@@ -88,28 +88,20 @@ impl MicrosandboxImageBackend {
         progress: &SandboxProgress,
     ) -> Result<microsandbox_image::CachedImageMetadata, Error> {
         let platform = platform::require_supported(&request.platform)?;
-        let docker = Self::check_docker(progress).await?;
+        let docker = connect_docker(progress).await?;
         let prepared = self
             .prepare_context(context, dockerfile, target, &request.platform, progress)
             .await?;
         let build_id = Uuid::new_v4().simple().to_string();
         let temporary_tag = format!("sandbox-microsandbox-build:{build_id}");
-        Self::build_docker_image(&docker, &prepared, &temporary_tag, &build_id, &platform, progress).await?;
+        build_docker_image(&docker, &prepared, &temporary_tag, &build_id, &platform, progress).await?;
         let resolution = self
             .resolve_built_image(&docker, &temporary_tag, &prepared.cache_tag, progress)
             .await;
-        let cleanup = Self::remove_temporary_image(&docker, &temporary_tag, progress).await;
+        let cleanup = remove_temporary_image(&docker, &temporary_tag, progress).await;
         let metadata = resolution?;
         cleanup?;
         Ok(metadata)
-    }
-
-    async fn check_docker(progress: &SandboxProgress) -> Result<Docker, Error> {
-        let step = progress.start_step(CHECK_DOCKER).await;
-        let docker = docker::connect().await?;
-        docker.ping().await.map_err(error::backend)?;
-        step.complete().await;
-        Ok(docker)
     }
 
     async fn prepare_context(
@@ -144,75 +136,6 @@ impl MicrosandboxImageBackend {
         })
     }
 
-    async fn build_docker_image(
-        docker: &Docker,
-        prepared: &PreparedBuild,
-        temporary_tag: &str,
-        build_id: &str,
-        platform: &sandbox::Platform,
-        progress: &SandboxProgress,
-    ) -> Result<(), Error> {
-        let context_file = tokio::fs::File::open(&prepared.archive)
-            .await
-            .map_err(|source| error::io("open Docker build context archive", source))?;
-        let context_stream = FramedRead::new(context_file, BytesCodec::new())
-            .map(|result| result.map(tokio_util::bytes::BytesMut::freeze));
-        let options = BuildImageOptionsBuilder::default()
-            .dockerfile(&prepared.dockerfile)
-            .t(temporary_tag)
-            .platform(&platform.to_string())
-            .version(BuilderVersion::BuilderBuildKit)
-            .session(build_id)
-            .rm(true)
-            .forcerm(true);
-        let options = if let Some(target) = &prepared.target {
-            options.target(target)
-        } else {
-            options
-        };
-        let options = options.build();
-
-        let step = progress
-            .start_measured_step(BUILD_IMAGE, ProgressUnit::Bytes, None)
-            .await;
-        let mut completed_vertices = HashSet::new();
-        let mut transfers = Transfers::default();
-        let mut responses = docker.build_image(options, None, Some(bollard::body_try_stream(context_stream)));
-        while let Some(response) = responses.next().await {
-            let response = response.map_err(error::backend)?;
-            if let Some(detail) = response.error_detail {
-                return Err(Error::Backend(
-                    detail
-                        .message
-                        .unwrap_or_else(|| "Docker image build failed".to_string()),
-                ));
-            }
-            if let Some(stream) = response.stream {
-                step.output(OutputStream::Stdout, stream).await;
-            }
-            if let Some(status) = response.status {
-                let output = response.id.as_ref().map_or_else(
-                    || format!("{status}\n"),
-                    |identifier| format!("{identifier}: {status}\n"),
-                );
-                step.output(OutputStream::Stdout, output).await;
-            }
-            if let Some(detail) = response.progress_detail
-                && let Some(completed) = detail.current.and_then(|value| u64::try_from(value).ok())
-            {
-                let total = detail.total.and_then(|value| u64::try_from(value).ok());
-                let key = response.id.clone().unwrap_or_default();
-                let (completed, total) = transfers.record(key, completed, total);
-                step.report(completed, total).await;
-            }
-            if let Some(aux) = response.aux {
-                report_buildkit_status(&step, &mut completed_vertices, aux).await?;
-            }
-        }
-        step.complete().await;
-        Ok(())
-    }
-
     async fn resolve_built_image(
         &self,
         docker: &Docker,
@@ -221,10 +144,10 @@ impl MicrosandboxImageBackend {
         progress: &SandboxProgress,
     ) -> Result<microsandbox_image::CachedImageMetadata, Error> {
         let step = progress.start_step(RETAIN_BUILD_CACHE).await;
-        Self::retain_build_cache(docker, temporary_tag, cache_tag).await?;
+        retain_build_cache(docker, temporary_tag, cache_tag).await?;
         step.complete().await;
 
-        let import_reference = Self::import_cache_reference(docker, temporary_tag).await?;
+        let import_reference = import_cache_reference(docker, temporary_tag).await?;
         if let Some(metadata) = self.cached_import(&import_reference, progress).await? {
             return Ok(metadata);
         }
@@ -245,50 +168,6 @@ impl MicrosandboxImageBackend {
         let archive = self.export_image(docker, temporary_tag, &step).await?;
         step.complete().await;
         Ok(archive)
-    }
-
-    async fn remove_temporary_image(
-        docker: &Docker,
-        temporary_tag: &str,
-        progress: &SandboxProgress,
-    ) -> Result<(), Error> {
-        let step = progress.start_step(REMOVE_TEMPORARY_IMAGE).await;
-        docker
-            .remove_image(
-                temporary_tag,
-                None::<bollard::query_parameters::RemoveImageOptions>,
-                None,
-            )
-            .await
-            .map_err(error::backend)?;
-        step.complete().await;
-        Ok(())
-    }
-
-    async fn retain_build_cache(docker: &Docker, image: &str, cache_tag: &str) -> Result<(), Error> {
-        let (repository, tag) = cache_tag
-            .split_once(':')
-            .ok_or(Error::invalid("image.cacheTag", "must contain a repository and tag"))?;
-        docker
-            .tag_image(
-                image,
-                Some(TagImageOptionsBuilder::default().repo(repository).tag(tag).build()),
-            )
-            .await
-            .map_err(error::backend)
-    }
-
-    async fn import_cache_reference(docker: &Docker, image: &str) -> Result<String, Error> {
-        let image_id = docker
-            .inspect_image(image)
-            .await
-            .map_err(error::backend)?
-            .id
-            .ok_or_else(|| Error::Backend("Docker did not report the built image ID".to_string()))?;
-        Ok(format!(
-            "{IMPORT_CACHE_REPOSITORY}:docker-{}",
-            lower_hex(&Sha256::digest(image_id.as_bytes()))
-        ))
     }
 
     /// Returns the metadata of an image imported from the same Docker image before, while the
@@ -546,6 +425,123 @@ impl MicrosandboxImageBackend {
             &prepared,
         ))
     }
+}
+
+async fn connect_docker(progress: &SandboxProgress) -> Result<Docker, Error> {
+    let step = progress.start_step(CHECK_DOCKER).await;
+    let docker = docker::connect().await?;
+    docker.ping().await.map_err(error::backend)?;
+    step.complete().await;
+    Ok(docker)
+}
+
+async fn build_docker_image(
+    docker: &Docker,
+    prepared: &PreparedBuild,
+    temporary_tag: &str,
+    build_id: &str,
+    platform: &sandbox::Platform,
+    progress: &SandboxProgress,
+) -> Result<(), Error> {
+    let context_file = tokio::fs::File::open(&prepared.archive)
+        .await
+        .map_err(|source| error::io("open Docker build context archive", source))?;
+    let context_stream =
+        FramedRead::new(context_file, BytesCodec::new()).map(|result| result.map(tokio_util::bytes::BytesMut::freeze));
+    let options = BuildImageOptionsBuilder::default()
+        .dockerfile(&prepared.dockerfile)
+        .t(temporary_tag)
+        .platform(&platform.to_string())
+        .version(BuilderVersion::BuilderBuildKit)
+        .session(build_id)
+        .rm(true)
+        .forcerm(true);
+    let options = if let Some(target) = &prepared.target {
+        options.target(target)
+    } else {
+        options
+    };
+    let options = options.build();
+
+    let step = progress
+        .start_measured_step(BUILD_IMAGE, ProgressUnit::Bytes, None)
+        .await;
+    let mut completed_vertices = HashSet::new();
+    let mut transfers = Transfers::default();
+    let mut responses = docker.build_image(options, None, Some(bollard::body_try_stream(context_stream)));
+    while let Some(response) = responses.next().await {
+        let response = response.map_err(error::backend)?;
+        if let Some(detail) = response.error_detail {
+            return Err(Error::Backend(
+                detail
+                    .message
+                    .unwrap_or_else(|| "Docker image build failed".to_string()),
+            ));
+        }
+        if let Some(stream) = response.stream {
+            step.output(OutputStream::Stdout, stream).await;
+        }
+        if let Some(status) = response.status {
+            let output = response.id.as_ref().map_or_else(
+                || format!("{status}\n"),
+                |identifier| format!("{identifier}: {status}\n"),
+            );
+            step.output(OutputStream::Stdout, output).await;
+        }
+        if let Some(detail) = response.progress_detail
+            && let Some(completed) = detail.current.and_then(|value| u64::try_from(value).ok())
+        {
+            let total = detail.total.and_then(|value| u64::try_from(value).ok());
+            let key = response.id.clone().unwrap_or_default();
+            let (completed, total) = transfers.record(key, completed, total);
+            step.report(completed, total).await;
+        }
+        if let Some(aux) = response.aux {
+            report_buildkit_status(&step, &mut completed_vertices, aux).await?;
+        }
+    }
+    step.complete().await;
+    Ok(())
+}
+
+async fn remove_temporary_image(docker: &Docker, temporary_tag: &str, progress: &SandboxProgress) -> Result<(), Error> {
+    let step = progress.start_step(REMOVE_TEMPORARY_IMAGE).await;
+    docker
+        .remove_image(
+            temporary_tag,
+            None::<bollard::query_parameters::RemoveImageOptions>,
+            None,
+        )
+        .await
+        .map_err(error::backend)?;
+    step.complete().await;
+    Ok(())
+}
+
+async fn retain_build_cache(docker: &Docker, image: &str, cache_tag: &str) -> Result<(), Error> {
+    let (repository, tag) = cache_tag
+        .split_once(':')
+        .ok_or(Error::invalid("image.cacheTag", "must contain a repository and tag"))?;
+    docker
+        .tag_image(
+            image,
+            Some(TagImageOptionsBuilder::default().repo(repository).tag(tag).build()),
+        )
+        .await
+        .map_err(error::backend)
+}
+
+async fn import_cache_reference(docker: &Docker, image: &str) -> Result<String, Error> {
+    let image_id = docker
+        .inspect_image(image)
+        .await
+        .map_err(error::backend)?
+        .id
+        .ok_or_else(|| Error::Backend("Docker did not report the built image ID".to_string()))?;
+    Ok(format!(
+        "{IMPORT_CACHE_REPOSITORY}:docker-{}",
+        lower_hex(&Sha256::digest(image_id.as_bytes()))
+    ))
 }
 
 fn require_direct_prepared_root(

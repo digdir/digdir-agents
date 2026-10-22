@@ -5,6 +5,7 @@
 
 use std::{
     env,
+    ffi::OsString,
     io::ErrorKind,
     path::{Path, PathBuf},
 };
@@ -22,16 +23,7 @@ const DEFAULT_HOST: &str = "unix:///var/run/docker.sock";
 const DEFAULT_HOST: &str = "npipe:////./pipe/docker_engine";
 
 pub(super) async fn connect() -> Result<Docker, Error> {
-    let config_dir = env::var_os("DOCKER_CONFIG")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| env::home_dir().map(|home| home.join(".docker")));
-    let host = endpoint(
-        config_dir.as_deref(),
-        env::var("DOCKER_HOST").ok().as_deref(),
-        env::var("DOCKER_CONTEXT").ok().as_deref(),
-    )
-    .await?;
+    let host = endpoint(&Selection::from_environment()).await?;
     Docker::connect_with_host(&host).map_err(|failure| {
         Error::Backend(format!(
             "connect to Docker Engine at {host}: {failure}; start Docker and check `docker context ls` or agentd's DOCKER_HOST"
@@ -39,38 +31,84 @@ pub(super) async fn connect() -> Result<Docker, Error> {
     })
 }
 
-async fn endpoint(config_dir: Option<&Path>, host: Option<&str>, context: Option<&str>) -> Result<String, Error> {
+/// The Docker variables that select an engine.
+#[derive(Default)]
+struct Selection {
+    config_dir: Option<PathBuf>,
+    host: Option<String>,
+    context: Option<String>,
+}
+
+impl Selection {
+    fn from_environment() -> Self {
+        Self::from_variables(env::var_os)
+    }
+
+    /// Like Docker, treats a variable set to an empty value as unset.
+    fn from_variables(lookup: impl Fn(&'static str) -> Option<OsString>) -> Self {
+        let variable = |name| lookup(name).filter(|value| !value.is_empty());
+        let text = |name| variable(name).and_then(|value| value.into_string().ok());
+        Self {
+            config_dir: variable("DOCKER_CONFIG")
+                .map(PathBuf::from)
+                .or_else(|| env::home_dir().map(|home| home.join(".docker"))),
+            host: text("DOCKER_HOST"),
+            context: text("DOCKER_CONTEXT"),
+        }
+    }
+}
+
+async fn endpoint(selection: &Selection) -> Result<String, Error> {
     // Match Docker's host override before consulting the saved currentContext.
-    if let Some(host) = host.filter(|value| !value.is_empty()) {
-        return Ok(host.to_owned());
+    if let Some(host) = &selection.host {
+        return Ok(host.clone());
     }
-    let configured_context = match (context.filter(|value| !value.is_empty()), config_dir) {
-        (Some(context), _) => context.to_owned(),
-        (None, Some(config_dir)) => read_json::<Config>(&config_dir.join("config.json"))
-            .await?
-            .map(|config| config.current_context)
-            .unwrap_or_default(),
-        (None, None) => String::new(),
+    let config_dir = selection.config_dir.as_deref();
+    let context = match &selection.context {
+        Some(context) => Some(context.clone()),
+        None => saved_context(config_dir).await?,
     };
-    if configured_context.is_empty() || configured_context == "default" {
+    let Some(context) = context.filter(|name| name != "default") else {
         return Ok(DEFAULT_HOST.to_owned());
+    };
+    local_context_host(config_dir, &context).await
+}
+
+/// The context `docker context use` saved in `config.json`, if any.
+async fn saved_context(config_dir: Option<&Path>) -> Result<Option<String>, Error> {
+    let Some(config_dir) = config_dir else {
+        return Ok(None);
+    };
+    let path = config_dir.join("config.json");
+    let Some(contents) = read(&path, "read Docker configuration").await? else {
+        return Ok(None);
+    };
+    // Docker reads a config.json holding only JSON whitespace as the default configuration.
+    if contents.iter().all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) {
+        return Ok(None);
     }
+    let config: Config = parse(&path, &contents, "Docker configuration")?;
+    Ok(config.current_context.filter(|name| !name.is_empty()))
+}
+
+async fn local_context_host(config_dir: Option<&Path>, context: &str) -> Result<String, Error> {
     let config_dir =
         config_dir.ok_or_else(|| Error::Backend("cannot locate Docker context: set DOCKER_CONFIG".to_owned()))?;
     // Docker CLI's context store keys metadata by the SHA-256 of its name.
-    let context_id = lower_hex(&Sha256::digest(configured_context.as_bytes()));
-    let metadata_path = config_dir.join("contexts/meta").join(context_id).join("meta.json");
-    let metadata = read_json::<Context>(&metadata_path).await?.ok_or_else(|| {
+    let context_id = lower_hex(&Sha256::digest(context.as_bytes()));
+    let path = config_dir.join("contexts/meta").join(context_id).join("meta.json");
+    let contents = read(&path, "read Docker context metadata").await?.ok_or_else(|| {
         Error::Backend(format!(
-            "Docker context {configured_context:?} was not found; check `docker context ls`"
+            "Docker context {context:?} was not found; check `docker context ls`"
         ))
     })?;
+    let metadata: Context = parse(&path, &contents, "Docker context metadata")?;
     let host = metadata.endpoints.docker.host;
     // Remote context transports and TLS material need their own integration.
     // Never silently use a different engine or discard a context's TLS settings.
     if !host.starts_with("unix://") && !host.starts_with("npipe://") {
         return Err(Error::Backend(format!(
-            "Docker context {configured_context:?} must use a local Unix socket or named pipe for Dockerfile builds"
+            "Docker context {context:?} must use a local Unix socket or named pipe for Dockerfile builds"
         )));
     }
     Ok(host)
@@ -79,8 +117,7 @@ async fn endpoint(config_dir: Option<&Path>, host: Option<&str>, context: Option
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Config {
-    #[serde(default)]
-    current_context: String,
+    current_context: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -100,38 +137,54 @@ struct Endpoint {
     host: String,
 }
 
-async fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, Error> {
-    let contents = match tokio::fs::read(path).await {
-        Ok(contents) => contents,
-        Err(failure) if failure.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(failure) => return Err(error::io("read Docker configuration", failure)),
-    };
-    // Docker accepts a blank config.json as default configuration. A selected
-    // context still requires metadata, so returning None cannot change engines.
-    if contents.iter().all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) {
-        return Ok(None);
+async fn read(path: &Path, operation: &'static str) -> Result<Option<Vec<u8>>, Error> {
+    match tokio::fs::read(path).await {
+        Ok(contents) => Ok(Some(contents)),
+        Err(failure) if failure.kind() == ErrorKind::NotFound => Ok(None),
+        Err(failure) => Err(error::io(operation, failure)),
     }
-    serde_json::from_slice(&contents)
-        .map(Some)
-        .map_err(|failure| Error::Backend(format!("parse Docker configuration {}: {failure}", path.display())))
+}
+
+fn parse<T: DeserializeOwned>(path: &Path, contents: &[u8], description: &str) -> Result<T, Error> {
+    serde_json::from_slice(contents)
+        .map_err(|failure| Error::Backend(format!("parse {description} {}: {failure}", path.display())))
 }
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use serde_json::json;
+    use sha2::{Digest as _, Sha256};
+
+    use super::{DEFAULT_HOST, Selection, endpoint};
+
+    /// Selects with `DOCKER_CONFIG` set to `config` and the other Docker variables from `variables`.
+    fn selection(config: &Path, variables: &[(&str, &str)]) -> Selection {
+        Selection::from_variables(|name| {
+            if name == "DOCKER_CONFIG" {
+                return Some(config.into());
+            }
+            variables
+                .iter()
+                .find(|(variable, _)| *variable == name)
+                .map(|(_, value)| value.into())
+        })
+    }
+
+    fn metadata_path(config: &Path, name: &str) -> PathBuf {
+        let id = crate::encoding::lower_hex(&Sha256::digest(name.as_bytes()));
+        config.join("contexts/meta").join(id).join("meta.json")
+    }
 
     async fn write_context(config: &Path, name: &str, host: &str) {
-        use sha2::{Digest as _, Sha256};
-        let id = crate::encoding::lower_hex(&Sha256::digest(name.as_bytes()));
-        let directory = config.join("contexts/meta").join(id);
-        tokio::fs::create_dir_all(&directory)
+        let path = metadata_path(config, name);
+        tokio::fs::create_dir_all(path.parent().expect("context directory"))
             .await
             .expect("create context directory");
         tokio::fs::write(
-            directory.join("meta.json"),
+            path,
             json!({"Name": name, "Endpoints": {"docker": {"Host": host}}}).to_string(),
         )
         .await
@@ -151,9 +204,7 @@ mod tests {
         write_context(config.path(), "desktop-linux", host).await;
         select_context(config.path(), "desktop-linux").await;
         assert_eq!(
-            super::endpoint(Some(config.path()), None, None)
-                .await
-                .expect("resolve context"),
+            endpoint(&selection(config.path(), &[])).await.expect("resolve context"),
             host
         );
     }
@@ -166,9 +217,12 @@ mod tests {
             .expect("write invalid config");
         let host = "unix:///run/podman/podman.sock";
         assert_eq!(
-            super::endpoint(Some(config.path()), Some(host), Some("missing"))
-                .await
-                .expect("host override"),
+            endpoint(&selection(
+                config.path(),
+                &[("DOCKER_HOST", host), ("DOCKER_CONTEXT", "missing")]
+            ))
+            .await
+            .expect("host override"),
             host
         );
     }
@@ -180,34 +234,37 @@ mod tests {
         let host = "unix:///Users/developer/.colima/default/docker.sock";
         write_context(config.path(), "colima", host).await;
         assert_eq!(
-            super::endpoint(Some(config.path()), Some(""), Some("colima"))
-                .await
-                .expect("context override"),
+            endpoint(&selection(
+                config.path(),
+                &[("DOCKER_HOST", ""), ("DOCKER_CONTEXT", "colima")]
+            ))
+            .await
+            .expect("context override"),
             host
         );
         assert_eq!(
-            super::endpoint(Some(config.path()), None, Some("default"))
+            endpoint(&selection(config.path(), &[("DOCKER_CONTEXT", "default")]))
                 .await
                 .expect("default context"),
-            super::DEFAULT_HOST
+            DEFAULT_HOST
         );
     }
 
     #[tokio::test]
     async fn absent_or_empty_selection_uses_platform_default() {
         let config = tempfile::tempdir().expect("temporary Docker config");
-        for directory in [None, Some(config.path())] {
-            assert_eq!(
-                super::endpoint(directory, None, None).await.expect("default endpoint"),
-                super::DEFAULT_HOST
-            );
+        for selection in [Selection::default(), selection(config.path(), &[])] {
+            assert_eq!(endpoint(&selection).await.expect("default endpoint"), DEFAULT_HOST);
         }
         select_context(config.path(), "").await;
         assert_eq!(
-            super::endpoint(Some(config.path()), Some(""), Some(""))
-                .await
-                .expect("empty selection"),
-            super::DEFAULT_HOST
+            endpoint(&selection(
+                config.path(),
+                &[("DOCKER_HOST", ""), ("DOCKER_CONTEXT", "")]
+            ))
+            .await
+            .expect("empty selection"),
+            DEFAULT_HOST
         );
     }
 
@@ -219,10 +276,10 @@ mod tests {
                 .await
                 .expect("write blank Docker config");
             assert_eq!(
-                super::endpoint(Some(config.path()), None, None)
+                endpoint(&selection(config.path(), &[]))
                     .await
                     .expect("blank config selects the default engine"),
-                super::DEFAULT_HOST
+                DEFAULT_HOST
             );
         }
     }
@@ -232,7 +289,7 @@ mod tests {
         let config = tempfile::tempdir().expect("temporary Docker config");
         select_context(config.path(), "missing").await;
         assert!(
-            super::endpoint(Some(config.path()), None, None)
+            endpoint(&selection(config.path(), &[]))
                 .await
                 .expect_err("missing context")
                 .to_string()
@@ -243,16 +300,27 @@ mod tests {
                 .await
                 .expect("write invalid config");
             assert!(
-                super::endpoint(Some(config.path()), None, None)
+                endpoint(&selection(config.path(), &[]))
                     .await
                     .expect_err("invalid config")
                     .to_string()
                     .contains("parse Docker configuration")
             );
         }
+        write_context(config.path(), "blank", "unix:///run/docker.sock").await;
+        tokio::fs::write(metadata_path(config.path(), "blank"), "")
+            .await
+            .expect("blank context metadata");
+        assert!(
+            endpoint(&selection(config.path(), &[("DOCKER_CONTEXT", "blank")]))
+                .await
+                .expect_err("blank context metadata")
+                .to_string()
+                .contains("parse Docker context metadata")
+        );
         write_context(config.path(), "remote", "tcp://remote:2376").await;
         assert!(
-            super::endpoint(Some(config.path()), None, Some("remote"))
+            endpoint(&selection(config.path(), &[("DOCKER_CONTEXT", "remote")]))
                 .await
                 .expect_err("remote context")
                 .to_string()
