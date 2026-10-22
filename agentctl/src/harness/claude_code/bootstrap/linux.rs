@@ -99,19 +99,33 @@ pub(super) async fn configure(
 ///
 /// Harness-owned state is otherwise the image's or the user's: an existing file, such as one a
 /// manifest's `home` supplies or one Claude Code wrote, is never rewritten.
+///
+/// The file is staged beside its place, given to the agent user and linked into place only when
+/// nothing is there yet. A setup that fails half-way leaves only the staged copy, which the next
+/// pass redoes, and never a state file Claude Code cannot write.
 async fn answer_first_run_questions(sandbox: &SandboxHandle, config: &str) -> Result<(), Error> {
     let path = format!("{config}/.claude.json");
     if path_exists(sandbox, "-e", &path).await? {
         return Ok(());
     }
-    write_if_changed(sandbox, &path, &first_run_state(WORKING_DIRECTORY)).await?;
+    let staged = format!("{path}.agentctl-new");
+    write_if_changed(sandbox, &staged, &first_run_state(WORKING_DIRECTORY)).await?;
     run_checked(
         sandbox,
         "/usr/bin/sudo",
-        ["/usr/bin/chown", "agent:agent", path.as_str()],
+        ["/usr/bin/chown", "agent:agent", staged.as_str()],
     )
     .await?;
-    run_checked(sandbox, "/usr/bin/chmod", ["600", path.as_str()]).await
+    run_checked(sandbox, "/usr/bin/chmod", ["600", staged.as_str()]).await?;
+    // `ln` fails rather than replace a file Claude Code wrote since the check, which then stays,
+    // so its exit status is no error.
+    sandbox
+        .run_execution(::sandbox::execution::ExecutionSpec::command(
+            ::sandbox::SandboxPath::new("/usr/bin/ln"),
+            [staged.clone(), path],
+        ))
+        .await?;
+    run_checked(sandbox, "/usr/bin/rm", ["-f", staged.as_str()]).await
 }
 
 fn first_run_state(working_directory: &str) -> Vec<u8> {

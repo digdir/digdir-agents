@@ -171,10 +171,11 @@ at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.c
 Repository-local instruction files continue to be discovered by the harness itself.
 
 Harness Adapters own authentication, version verification, managed configuration, hooks, native conversation IDs and
-launch arguments. The current adapters support Claude Code, Codex CLI and Pi. Harness-owned mutable state is seeded by
-the image or the user and is not used as a trusted bootstrap marker. The one exception: a Sandbox with no Claude Code
-state yet gets a state file with Claude Code's first-run questions answered, so Sessions start at the prompt; an
-existing state file is never rewritten.
+launch arguments. The current adapters support Claude Code, Codex CLI and Pi. Harness-owned mutable state is not used as a trusted bootstrap marker,
+and is seeded by the image or the user with one exception: a Sandbox with no Claude Code state yet gets a state file
+with Claude Code's first-run questions answered, so Sessions start at the prompt. It trusts `/home/agent/code`, and so
+the repositories in it, as the bypass-permissions mode Sessions run in already does; an existing state file is never
+rewritten.
 
 ### Pi
 

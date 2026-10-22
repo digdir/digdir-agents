@@ -674,8 +674,13 @@ fn answers(stdout: &str, code: i32) -> Vec<ExecutionEvent> {
 
 /// Runs Linux setup for a Claude Code agent whose Claude Code state file holds `existing`, if
 /// any, and returns the state file afterwards and whether setup wrote it.
-async fn claude_state_after_setup(existing: Option<&str>) -> (Option<serde_json::Value>, bool) {
-    const STATE: &str = "/home/agent/.claude/.claude.json";
+/// Claude Code's state file and the copy setup stages before linking it into place.
+const STATE: &str = "/home/agent/.claude/.claude.json";
+const STAGED: &str = "/home/agent/.claude/.claude.json.agentctl-new";
+
+/// Runs setup with or without existing Claude Code state, and returns the staged state, whether
+/// it was written, and the commands that handled it, in order.
+async fn claude_state_after_setup(existing: Option<&str>) -> (Option<serde_json::Value>, bool, Vec<Vec<String>>) {
     let directory = TempDir::new().expect("temporary directory");
     std::fs::write(directory.path().join("instructions.md"), "test instructions\n").expect("instruction file");
     std::fs::create_dir(directory.path().join("home")).expect("home");
@@ -722,6 +727,7 @@ async fn claude_state_after_setup(existing: Option<&str>) -> (Option<serde_json:
             .expect("existing state");
     }
     let before = backend.file_writes().len();
+    let commands_before = backend.execution_specs().len();
 
     Linux::new(PLATFORM_API_URL)
         .setup(&record, &sandbox, &declared(&record), &setup_phase())
@@ -730,18 +736,43 @@ async fn claude_state_after_setup(existing: Option<&str>) -> (Option<serde_json:
 
     let written = backend.file_writes()[before..]
         .iter()
-        .any(|path| path.as_str() == STATE);
-    let state = serde_json::from_slice(&read_file(&sandbox, STATE).await).ok();
-    (state, written)
+        .any(|path| path.as_str() == STAGED || path.as_str() == STATE);
+    let handled = backend.execution_specs()[commands_before..]
+        .iter()
+        .filter_map(|spec| match spec.program() {
+            Program::Command { executable, args } if args.iter().any(|arg| arg == STAGED) => Some(
+                std::iter::once(executable.as_str().to_owned())
+                    .chain(args.iter().cloned())
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect();
+    let state = if written {
+        serde_json::from_slice(&read_file(&sandbox, STAGED).await).ok()
+    } else {
+        None
+    };
+    (state, written, handled)
 }
 
 /// A session starts at Claude Code's prompt: a sandbox without Claude Code state yet gets one
 /// with the first-run questions answered, whatever image and manifest the agent has.
 #[tokio::test(flavor = "local")]
 async fn linux_setup_answers_claude_codes_first_run_questions_for_a_new_sandbox() {
-    let (state, written) = claude_state_after_setup(None).await;
+    let (state, written, handled) = claude_state_after_setup(None).await;
     let state = state.expect("a new state file");
     assert!(written);
+    assert_eq!(
+        handled,
+        [
+            vec!["/usr/bin/sudo", "/usr/bin/chown", "agent:agent", STAGED],
+            vec!["/usr/bin/chmod", "600", STAGED],
+            vec!["/usr/bin/ln", STAGED, STATE],
+            vec!["/usr/bin/rm", "-f", STAGED],
+        ],
+        "staged, given to the agent user, then linked only where nothing is yet"
+    );
     assert_eq!(state["hasCompletedOnboarding"], true);
     assert_eq!(state["bypassPermissionsModeAccepted"], true);
     assert_eq!(state["projects"]["/home/agent/code"]["hasTrustDialogAccepted"], true);
@@ -750,8 +781,9 @@ async fn linux_setup_answers_claude_codes_first_run_questions_for_a_new_sandbox(
 /// Claude Code's existing state is the image's or the user's, and is never rewritten.
 #[tokio::test(flavor = "local")]
 async fn linux_setup_never_rewrites_existing_claude_state() {
-    for existing in [r#"{"numStartups":3,"theme":"dark"}"#, "not JSON"] {
-        let (_, written) = claude_state_after_setup(Some(existing)).await;
+    for existing in [r#"{"numStartups":3,"theme":"dark"}"#] {
+        let (_, written, handled) = claude_state_after_setup(Some(existing)).await;
         assert!(!written, "{existing}");
+        assert!(handled.is_empty(), "{existing}: {handled:?}");
     }
 }

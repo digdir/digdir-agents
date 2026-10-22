@@ -14,7 +14,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Fixed
 
-- A new Agent's first Session starts at Claude Code's prompt instead of its theme picker, security notes, folder trust question and bypass-permissions warning, whatever image the Agent uses. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#images-home-and-harnesses))
+- A new Agent's first Session starts at Claude Code's prompt instead of its theme picker, security notes, folder trust question and bypass-permissions warning, for images that bring no Claude Code state. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#images-home-and-harnesses))
 
 ## [0.1.0-preview.12] - 2026-10-20
 
