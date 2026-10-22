@@ -68,6 +68,23 @@ pub(super) async fn prepare(database: &persistence::Database) -> Result<Vec<Medi
     ])
 }
 
+/// Stores a placeholder Claude login, for tests that need a signed-in harness.
+#[cfg(test)]
+pub(super) async fn store_test_login(database: &persistence::Database) {
+    #[allow(clippy::expect_used)]
+    database
+        .put_provider_account(persistence::ProviderAccountWrite {
+            provider: PROVIDER.into(),
+            credentials: vec![persistence::StoredSecret {
+                name: ACCESS_SECRET.into(),
+                value: zeroize::Zeroizing::new(b"real-token".to_vec()),
+            }],
+            metadata_json: r#"{"kind":"setupToken"}"#.into(),
+        })
+        .await
+        .expect("store the Claude login");
+}
+
 pub(super) fn conflicts_with_managed_secret(name: &str, placeholder: Option<&str>) -> bool {
     matches!(name, ACCESS_ENVIRONMENT | NESTED_ENVIRONMENT)
         || matches!(placeholder, Some(ACCESS_PLACEHOLDER | NESTED_PLACEHOLDER))

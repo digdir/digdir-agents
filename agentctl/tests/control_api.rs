@@ -128,7 +128,73 @@ fn answered_turn(prompt: &str, answer: &str) -> agent::sessions::Turn {
     }
 }
 
+fn fake_github_token(token: &str, owner: Option<&str>) -> agent::github::GithubToken {
+    agent::github::GithubToken {
+        owner: owner.map(str::to_owned),
+        account: agent::github::GithubAccount {
+            login: token
+                .trim_start_matches("ghp_")
+                .trim_start_matches("github_pat_")
+                .into(),
+            name: "Bot".into(),
+            email: "bot@example.com".into(),
+        },
+        kind: agent::github::TokenKind::of(token),
+        expires_at: None,
+    }
+}
+
 impl AuthenticationApi for FakeAuthentication {
+    fn status(&self) -> LocalFuture<'_, Result<agent::harness::AuthenticationStatus, Error>> {
+        Box::pin(async {
+            Ok(agent::harness::AuthenticationStatus {
+                claude_code: true,
+                codex: false,
+                github: Vec::new(),
+            })
+        })
+    }
+
+    fn github_login<'a>(
+        &'a self,
+        token: &'a str,
+        owner: Option<&'a str>,
+    ) -> LocalFuture<'a, Result<agent::github::GithubToken, Error>> {
+        Box::pin(async move { Ok(fake_github_token(token, owner)) })
+    }
+
+    fn github_logout<'a>(
+        &'a self,
+        logout: &'a agent::github::Logout,
+    ) -> LocalFuture<'a, Result<Vec<agent::github::GithubToken>, Error>> {
+        Box::pin(async move {
+            Ok(match logout {
+                agent::github::Logout::Owner(owner) => vec![fake_github_token("github_pat_bot", Some(owner))],
+                agent::github::Logout::AnyOther | agent::github::Logout::Everywhere => Vec::new(),
+            })
+        })
+    }
+
+    fn github_check<'a>(
+        &'a self,
+        owner: Option<&'a str>,
+        repository: Option<&'a agent::github::Repository>,
+    ) -> LocalFuture<'a, Result<agent::github::GithubCheck, Error>> {
+        Box::pin(async move {
+            let token = fake_github_token("github_pat_digdir-bot", owner);
+            Ok(agent::github::GithubCheck {
+                inspection: agent::github::Inspection {
+                    account: token.account.clone(),
+                    kind: token.kind,
+                    expires_at: None,
+                    missing_scopes: Vec::new(),
+                    repository: repository.map(|repository| (repository.clone(), true)),
+                },
+                token,
+            })
+        })
+    }
+
     fn login<'a>(
         &'a self,
         _harness: agent::Harness,
@@ -1151,4 +1217,41 @@ async fn unix_socket_transport_is_private_and_usable() {
         .expect("server should stop")
         .expect("server task")
         .expect("server result");
+}
+
+#[tokio::test(flavor = "local")]
+async fn the_github_login_check_and_authentication_status_round_trip() {
+    let fixture = api();
+
+    let token = fixture
+        .client
+        .github_login("github_pat_digdir-bot".into(), Some("digdir".into()))
+        .await
+        .expect("GitHub login");
+    assert_eq!(token.account.login, "digdir-bot");
+    assert_eq!(token.owner.as_deref(), Some("digdir"));
+    assert_eq!(token.kind, agent::github::TokenKind::FineGrained);
+
+    let repository = agent::github::Repository::new("digdir", "agents");
+    let check = fixture
+        .client
+        .github_check(Some("digdir".into()), Some(repository.clone()))
+        .await
+        .expect("GitHub check");
+    assert_eq!(check.token.owner.as_deref(), Some("digdir"));
+    assert_eq!(check.inspection.repository, Some((repository, true)));
+
+    let forgotten = fixture
+        .client
+        .github_logout(agent::github::Logout::Owner("digdir".into()))
+        .await
+        .expect("GitHub logout");
+    assert_eq!(forgotten.len(), 1);
+    assert_eq!(forgotten[0].owner.as_deref(), Some("digdir"));
+
+    let status = fixture.client.auth_status().await.expect("status");
+    assert!(status.claude_code);
+    assert!(!status.codex);
+    assert!(status.any_harness());
+    assert!(status.github.is_empty());
 }

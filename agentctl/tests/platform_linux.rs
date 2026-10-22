@@ -163,6 +163,145 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
     );
 }
 
+/// The arguments of a `git` command run through `/usr/bin/env`, without the leading `git`.
+fn git_args(spec: &sandbox::execution::ExecutionSpec) -> Option<Vec<String>> {
+    match spec.program() {
+        Program::Command { executable, args }
+            if executable.as_str() == "/usr/bin/env" && args.first().map(String::as_str) == Some("git") =>
+        {
+            Some(args[1..].to_vec())
+        }
+        _ => None,
+    }
+}
+
+fn answers(stdout: &str, code: i32) -> Vec<ExecutionEvent> {
+    vec![
+        ExecutionEvent::Started { process_id: None },
+        ExecutionEvent::Stdout(stdout.to_owned().into()),
+        ExecutionEvent::Exited(ExitStatus { code }),
+    ]
+}
+
+/// Runs Linux setup for a Claude Code Agent with or without the GitHub account, with `configured`
+/// answering Git's lookups as the image's own configuration would, and returns every `git`
+/// command it ran.
+async fn git_commands_during_setup(github_account: bool, configured: Option<(&str, &str)>) -> Vec<Vec<String>> {
+    let directory = TempDir::new().expect("temporary directory");
+    std::fs::write(directory.path().join("instructions.md"), "test instructions\n").expect("instruction file");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home = None;
+    if github_account {
+        resource.spec.accounts = vec![agent::AccountSpec::Github { owner: None }];
+    }
+    let record = AgentRecord {
+        id: "2f6c3a1e-7d4b-4c8e-9a0f-1b2c3d4e5f60".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    };
+    let backend = Rc::new(memory::Provider::new());
+    backend.queue_execution_events_matching(is_claude_version, answers("2.1.266 (Claude Code)\n", 0));
+    backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    let (helper, rewrites) = configured.map_or((("", 1), ("", 1)), |(helper, rewrites)| ((helper, 0), (rewrites, 0)));
+    backend.queue_execution_events_matching(
+        |spec| git_args(spec).is_some_and(|args| args.iter().any(|arg| arg == "--get-urlmatch")),
+        answers(helper.0, helper.1),
+    );
+    backend.queue_execution_events_matching(
+        |spec| git_args(spec).is_some_and(|args| args.iter().any(|arg| arg == "--get-regexp")),
+        answers(rewrites.0, rewrites.1),
+    );
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+
+    Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("setup");
+
+    backend.execution_specs().iter().filter_map(git_args).collect()
+}
+
+fn writes(commands: &[Vec<String>]) -> Vec<Vec<String>> {
+    commands
+        .iter()
+        .filter(|args| args.len() > 2 && args[0] == "config" && args[1] == "--global")
+        .cloned()
+        .collect()
+}
+
+/// Git over HTTPS reaches GitHub with the mediated token even when the image configured nothing,
+/// and GitHub's SSH URLs, which the Sandbox has no key for, go over HTTPS instead.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_gives_git_the_github_account_over_https() {
+    let commands = git_commands_during_setup(true, None).await;
+
+    let writes = writes(&commands);
+    assert_eq!(writes.len(), 3, "{writes:?}");
+    assert_eq!(writes[0][2], "credential.https://github.com.helper", "{writes:?}");
+    assert!(writes[0][3].contains("password=$GITHUB_TOKEN"), "{writes:?}");
+    assert!(
+        !writes[0][3].contains("github_pat"),
+        "only the variable, never a value: {writes:?}"
+    );
+    assert_eq!(
+        writes[1..],
+        [
+            [
+                "config",
+                "--global",
+                "--add",
+                "url.https://github.com/.insteadOf",
+                "git@github.com:"
+            ]
+            .map(String::from),
+            [
+                "config",
+                "--global",
+                "--add",
+                "url.https://github.com/.insteadOf",
+                "ssh://git@github.com/"
+            ]
+            .map(String::from),
+        ]
+    );
+}
+
+/// An image that set up GitHub credentials and URL rewrites keeps them.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_keeps_the_images_own_github_configuration() {
+    let commands = git_commands_during_setup(
+        true,
+        Some((
+            "!/usr/local/bin/gh auth git-credential",
+            "url.https://github.com/.insteadof git@github.com:\nurl.https://github.com/.insteadof ssh://git@github.com/",
+        )),
+    )
+    .await;
+
+    assert!(writes(&commands).is_empty(), "{commands:?}");
+}
+
+/// Without the GitHub account or a Git identity, setup leaves Git alone.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_without_the_github_account_runs_no_git() {
+    assert!(git_commands_during_setup(false, None).await.is_empty());
+}
+
 /// Runs Linux setup for a Claude Code agent whose Claude Code state file holds `existing`, if
 /// any, and returns the state file afterwards and whether setup wrote it.
 /// An Agent without `spec.home` copies nothing into the guest home, but is otherwise set up.

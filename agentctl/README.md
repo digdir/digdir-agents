@@ -262,6 +262,22 @@ than bind-mounting it, so package managers can still replace the bundle, and it 
 anchor so a regenerated bundle keeps trusting mediation. Docker and dockerd are not covered by this convenience
 wiring.
 
+## GitHub accounts
+
+agentd keeps GitHub tokens for Agents, one per owner, separate from any `gh` login on the host, so Agents can act as
+their own account, such as a bot, while you keep using yours.
+
+An Agent opts in with `spec.accounts: [{type: github, owner: digdir}]`, and uses its owner's token, else the one for every organization without a token of its own;
+without `owner`, the only stored token. Its Sandbox then sees an inert `GITHUB_TOKEN`, which the network mediator
+replaces only in requests to `github.com`, `api.github.com`, `gist.github.com` and `uploads.github.com`; a manifest
+cannot widen that list. An expired token stops the Agent's reconciliation with an error naming the login to run. The
+token's account name and email, or its noreply address, become the Agent's Git identity unless the manifest selects
+`GIT_USER_NAME` and `GIT_USER_EMAIL` itself. When the image has Git, setup also gives Git the token for GitHub over
+HTTPS and rewrites GitHub's SSH URLs to HTTPS, since the Sandbox has no SSH key, unless the image configured either
+itself. A manifest with the account cannot also bind its own `GITHUB_TOKEN`. Changing the account a token acts as
+changes that identity, which restarts the Agent's running Sandbox on its next pass, as any change to a Sandbox's
+environment does.
+
 SQLite `secure_delete` and owner-only filesystem permissions provide local hygiene. They are not a cryptographic
 erasure guarantee across WAL history, filesystem snapshots or backups.
 
