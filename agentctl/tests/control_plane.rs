@@ -2447,6 +2447,44 @@ async fn immediate_stop_fixture() -> (
 }
 
 #[tokio::test(flavor = "local")]
+async fn an_immediate_stop_abandons_a_setup_under_way() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let immediate_stops = agent::control_plane::ImmediateStops::default();
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()))
+        .with_immediate_stops(immediate_stops.clone());
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let id = store.get_by_name("worker").await.expect("Agent").id;
+    let started = Rc::new(Notify::new());
+    let memory = MemoryProvider::new(Rc::new(sandbox_memory::Provider::new())).with_blocking(Blocking {
+        agent: id,
+        calls: Rc::new(Cell::new(0)),
+        started: started.clone(),
+        release: Rc::new(Notify::new()),
+    });
+    let kills = memory.kills.clone();
+    let provider: Rc<dyn Provider> = Rc::new(memory);
+    let reconciler = Rc::new(reconciler(store.clone(), provider).with_immediate_stops(immediate_stops));
+    let setup = tokio::task::spawn_local({
+        let reconciler = reconciler.clone();
+        async move { reconciler.reconcile(id).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), started.notified())
+        .await
+        .expect("setup starts and never finishes on its own");
+
+    control_plane.stop_now("worker").await.expect("stop now");
+    tokio::time::timeout(Duration::from_secs(5), setup)
+        .await
+        .expect("the kill abandons the setup under way")
+        .expect("task")
+        .expect("the abandoned pass");
+    reconciler.reconcile(id).await.expect("the next pass stops the Agent");
+    assert_eq!(kills.get(), 1, "the next pass kills rather than stops");
+    let status = store.get(id).await.expect("stored Agent").agent.status;
+    assert!(status.is_stopped(), "{status:?}");
+}
+
+#[tokio::test(flavor = "local")]
 async fn an_immediate_stop_cuts_short_a_graceful_stop_under_way() {
     let (control_plane, reconciler, store, backend, id, kills, hanging, _) = immediate_stop_fixture().await;
     hanging.set(true);

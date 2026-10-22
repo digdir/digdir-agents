@@ -127,7 +127,16 @@ impl Reconciler {
         } else {
             SandboxObserver::new(record.id, self.provisioning.clone())
         };
-        let ensured = match self.sandboxes.ensure(&record, observer.reporter()).await {
+        // An immediate stop asked for while the Sandbox is set up abandons the setup: the stop was
+        // stored first, so the controller's next pass finds the Agent stopped and kills it.
+        let ensuring = tokio::select! {
+            ensured = self.sandboxes.ensure(&record, observer.reporter()) => ensured,
+            () = self.immediate_stops.requested(record.id) => {
+                self.immediate_stops.request(record.id);
+                return Ok(());
+            }
+        };
+        let ensured = match ensuring {
             Ok(ensured) => ensured,
             Err(error @ Error::SandboxUnresponsive(_)) => {
                 let assignment = record.agent.status.sandbox.clone();
