@@ -12,6 +12,8 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
 
+## [0.1.0-preview.12] - 2026-10-20
+
 ### Added
 
 - Agent images can build on `ghcr.io/digdir/agentctl-base:ubuntu-26.04`, or `ubuntu-26.04-desktop` for Chromium and a VNC desktop, which ship Claude Code, Codex and Pi at the tested versions. `agent-feature install browser` or `desktop` adds those parts to an image's own stage, and `agent-image-check` reports what an image still lacks. ([base images](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base), [image contract](https://github.com/digdir/digdir-agents/blob/main/agentctl/IMAGE.md), [#187](https://github.com/digdir/digdir-agents/pull/187))
@@ -26,6 +28,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 ### Security
 
 - `agentctl` and `agentd` use rustls 0.23.46. They were not affected by the advisories it fixes, so a scanner that flags rustls 0.23.45 in 0.1.0-preview.11 needs no urgent upgrade ([RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346), [-0347](https://rustsec.org/advisories/RUSTSEC-2026-0347), [-0348](https://rustsec.org/advisories/RUSTSEC-2026-0348), [-0349](https://rustsec.org/advisories/RUSTSEC-2026-0349), [#177](https://github.com/digdir/digdir-agents/pull/177)).
+- `agentctl` and `agentd` reject TLS certificates that chain through the distrusted emSign intermediates, whose private keys are now public; 0.1.0-preview.11 and earlier may accept them ([RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382), [RUSTSEC-2026-0381](https://rustsec.org/advisories/RUSTSEC-2026-0381), [#196](https://github.com/digdir/digdir-agents/pull/196)).
 
 ## [0.1.0-preview.11] - 2026-10-12
 

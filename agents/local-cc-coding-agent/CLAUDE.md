@@ -99,9 +99,11 @@ noe. **Aldri** hemmeligheter eller tokens i læringer. Finnes ikke
 
 ## Auto-merge av trygge PR-er
 
-PR-er som **ikke** rører noen sti i `.github/CODEOWNERS` (agent-instrukser,
-skills, Docker-filer, `integrations/src/`, `scripts/`, `.github/`) kan
-merges uten menneskelig godkjenning — se `doc/pr-prosess.md`. Prosessen er:
+`.github/CODEOWNERS` gjør alt sensitivt som standard; bare PR-er der
+**alle** filer ligger på en eksplisitt trygg sti (i dag kun dokumentasjon:
+`README.md`-er, `doc/`, `docs/` — ikke `doc/pr-prosess.md` eller
+`package.json`) kan merges uten menneskelig godkjenning — se
+`doc/pr-prosess.md`. Prosessen er:
 
 1. Kjør en reviewer-subagent på PR-diffen — ferske øyne, ikke samme
    kontekst som skrev koden.

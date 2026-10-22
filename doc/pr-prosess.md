@@ -25,10 +25,13 @@ sensitive stier er satt med det i mente.
 
 ## Mekanikken — én identitet, fire brikker
 
-1. **[`.github/CODEOWNERS`](../.github/CODEOWNERS)** legger menneskelig eier
-   på sensitive stier: agent-instrukser (`agents/*/CLAUDE.md`), skills,
-   entrypoints, `integrations/src/`, Docker-filer, `scripts/` og `.github/`
-   selv.
+1. **[`.github/CODEOWNERS`](../.github/CODEOWNERS)** er **sensitiv som
+   standard**: `*` gir alt en menneskelig eier, og trygge stier er
+   eksplisitte, eierløse unntak — i dag bare dokumentasjon (`README.md`-er,
+   `doc/`, `docs/`), med `doc/pr-prosess.md` og `package.json`/
+   `package-lock.json` tatt tilbake som sensitive. En ny sti (ny agent, ny
+   app, ny instruksfil med et annet navn) er dermed sensitiv til noen bevisst
+   gjør den trygg. agentctl/sandbox-laget eies av innflytterteamet.
 2. **Branch protection på deploy-branchen** (settes av repo-admin, se under):
    required approvals **0** + **Require review from Code Owners** + required
    status check (CI). Kombinasjonen gir nøyaktig skillet:
@@ -108,10 +111,27 @@ Contents-tilgang til hoved-repoet i det hele tatt. Ikke implementert ennå —
 notert som neste steg for å faktisk lukke det opprinnelige
 akseptansekriteriet.
 
+## Hvorfor sensitiv som standard
+
+Den første versjonen listet sensitive stier og lot resten være trygt. Det
+lakk etter hvert som repoet vokste: `apps/llm-gateway/` og
+`apps/nvt-bridge/src/` (tjenester som deployes), avhengighetene i
+`integrations/` (`package.json`, `package-lock.json`), instruksene til
+`jr-sandbox` (`instructions.md`, `agent.yaml`) og `nvt-fat-developer`
+(`AGENTS.local.md.tmpl`), `docker-bake.hcl` og `images/agentctl-base/` var
+alle auto-merge-bare. Med en tillatelsesliste kan en glemt sti bare gjøre
+noe *for strengt*, aldri for løst.
+
+Listen er låst med en test som leser repoets egen CODEOWNERS
+([`integrations/src/github/codeowners.test.ts`](../integrations/src/github/codeowners.test.ts)):
+flytter en endring en sti mellom trygg og sensitiv, må testen endres
+bevisst i samme PR. Testen kjører i CI når CODEOWNERS eller `integrations/`
+endres. Å utvide de trygge stiene (f.eks. testfiler) er en egen beslutning.
+
 ## Grenser og videre
 
-- `integrations/src/` er sensitiv i sin helhet i første omgang, siden CI kun
-  er typecheck; kan snevres til `config.ts` når testdekning finnes.
+- All kode er sensitiv, også `integrations/src/`; enkeltstier kan gjøres
+  trygge når testdekningen tilsier det.
 - Merges gjort av `GITHUB_TOKEN` trigger ikke andre workflows — irrelevant
   her, siden deploy er polling-basert (self-update-watcheren), ikke en
   Action.

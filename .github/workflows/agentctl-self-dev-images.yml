@@ -88,7 +88,9 @@ jobs:
             repository="${REGISTRY}/agentctl-self-dev-${target}"
             set -- "$@" --set "self-dev-${target}.cache-from=type=registry,ref=${repository}:buildcache-${ARCH}"
             if [ "${PUBLISH}" = "true" ]; then
+              # Without clearing the bake file's tags, buildx refuses to push by digest; the publish job tags.
               set -- "$@" \
+                --set "self-dev-${target}.tags=" \
                 --set "self-dev-${target}.output=type=image,name=${repository},push-by-digest=true,name-canonical=true,push=true" \
                 --set "self-dev-${target}.cache-to=type=registry,ref=${repository}:buildcache-${ARCH},mode=max,image-manifest=true"
             fi
