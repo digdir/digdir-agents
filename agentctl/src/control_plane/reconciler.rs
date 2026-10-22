@@ -139,7 +139,7 @@ impl Reconciler {
         let ensuring = tokio::select! {
             ensured = self.sandboxes.ensure(&record, observer.reporter()) => ensured,
             () = self.immediate_stops.requested(record.id) => {
-                self.immediate_stops.request(record.id);
+                self.abandon_setup(&observer, record.id);
                 return Ok(());
             }
         };
@@ -338,6 +338,16 @@ impl Reconciler {
         observer.failed(&failure);
         stored?;
         Err(error)
+    }
+
+    /// Ends a setup pass that an immediate stop overtook, saying so in its progress, and keeps the
+    /// request for the stop pass that follows.
+    fn abandon_setup(&self, observer: &SandboxObserver, id: crate::AgentId) {
+        observer.failed(&ReconcileFailure {
+            kind: FailureKind::Transient,
+            message: "setup was abandoned for an immediate stop".into(),
+        });
+        self.immediate_stops.request(id);
     }
 
     /// Stops the Sandbox of an Agent whose run state is Stopped and records it
