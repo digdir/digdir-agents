@@ -11,11 +11,11 @@ model. Hosts can run Linux, macOS or Windows.
 ## How it fits together
 
 ```mermaid
-flowchart LR
-  base["images/agentctl-base"] -->|FROM| image["Agent image"]
+flowchart TB
+  manifest["agent.yaml<br/>for example agents/self-dev"]
+  base["images/agentctl-base"]
 
   subgraph host["Host: trusted"]
-    manifest["agent.yaml<br/>for example agents/self-dev"]
     agentctl["agentctl<br/>CLI and TUI"]
     agentd["agentd<br/>desired state, controllers,<br/>network policy and secrets"]
     msb["msb, one per Sandbox<br/>microVM and network engine"]
@@ -30,9 +30,9 @@ flowchart LR
   agentctl -->|local control API| agentd
   agentd -->|starts and stops| msb
   msb -->|runs| sandbox
+  base -->|FROM| image["Agent image"]
   image -->|root filesystem| sandbox
-  sandbox -.->|all network traffic| msb
-  msb -->|"a real secret only toward its allowed hosts"| net["GitHub, model APIs<br/>and other hosts"]
+  sandbox -.->|"all traffic goes through msb, which adds<br/>a real secret only toward its allowed hosts"| net["GitHub, model APIs<br/>and other hosts"]
 ```
 
 - An **Agent** is declared in an `agent.yaml` manifest: its image, resources, instructions, skills, harnesses,
