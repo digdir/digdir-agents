@@ -229,6 +229,7 @@ async fn drive(home: &ControlPlaneHome, client: &Client, mode: Mode) -> CommandR
                 app.connection_error = None;
                 forwards.prune(&resources.agents);
                 app.apply_snapshot(resources.agents, resources.sessions);
+                app.outdated = crate::tools::outdated_agents(home, &app.agents);
                 continue;
             }
             Input::Resources(Err(error)) => {
@@ -348,7 +349,7 @@ async fn drive(home: &ControlPlaneHome, client: &Client, mode: Mode) -> CommandR
                 env_file,
                 form,
             } => {
-                if let Some(created) = create(&mut app, client, manifest, name, env_file, form).await
+                if let Some(created) = create(&mut app, home, client, manifest, name, env_file, form).await
                     && mode == Mode::Create
                 {
                     tui.restore()?;
@@ -943,13 +944,14 @@ pub(crate) fn working_tree_manifests(directory: &Path) -> Vec<PathBuf> {
 /// Applies the manifest under the chosen name, returning it; a rejection reopens the form with the error.
 async fn create(
     app: &mut App,
+    home: &ControlPlaneHome,
     client: &Client,
     manifest: PathBuf,
     name: String,
     env_file: Option<PathBuf>,
     mut form: CreateForm,
 ) -> Option<String> {
-    match create_agent(client, manifest, name, env_file).await {
+    match create_agent(home, client, manifest, name, env_file).await {
         Ok(applied) => {
             let name = applied.metadata.name.clone();
             app.agent_applied(applied);
@@ -964,6 +966,7 @@ async fn create(
 }
 
 pub(crate) async fn create_agent(
+    home: &ControlPlaneHome,
     client: &Client,
     manifest: PathBuf,
     name: String,
@@ -977,7 +980,11 @@ pub(crate) async fn create_agent(
     let mut request = crate::read_apply_request(manifest, env_file)?;
     request.agent.metadata.name = name;
     request.create_only = true;
-    client.apply(request).await
+    let created = client.apply(request).await?;
+    if let Some(folder) = &folder {
+        crate::tools::record(home, &created.metadata.name, folder);
+    }
+    Ok(created)
 }
 
 /// Applies one completed background forward creation to the UI state.

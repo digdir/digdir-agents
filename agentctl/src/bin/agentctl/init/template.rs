@@ -294,11 +294,11 @@ RUN printf '%s\\n' '{repository}' >/etc/agent-workspace.d/workspace.list
     };
     format!(
         "# Created by `agentctl init`: the image this agent runs, built with Docker on the machine that
-# runs agentctl. An agent keeps the image it was created with, so a change takes effect when the
-# agent is created again.
+# runs agentctl. An agent keeps the image it was created with; `agentctl tools` offers to recreate
+# it after a change.
 #
-# The block below is generated from tools.yaml: change the tools there. Steps of your own go after
-# it, and agentctl leaves them as they are.
+# The block below is generated from tools.yaml: change the tools there, or with
+# `agentctl tools add`. Steps of your own go after it, and agentctl leaves them as they are.
 {block}
 {repositories}
 # Steps of your own, for example:
