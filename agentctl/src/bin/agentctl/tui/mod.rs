@@ -919,6 +919,11 @@ async fn create_agent(
     name: String,
     env_file: Option<PathBuf>,
 ) -> Result<Agent, Error> {
+    // The folder's tools.yaml is written into its Dockerfile before agentd builds the image.
+    let folder = manifest.parent().map(Path::to_path_buf);
+    if let Some(folder) = &folder {
+        crate::tools::sync(folder)?;
+    }
     let mut request = crate::read_apply_request(manifest, env_file)?;
     request.agent.metadata.name = name;
     request.create_only = true;
