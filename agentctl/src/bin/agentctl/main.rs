@@ -654,7 +654,8 @@ fn run() -> CommandResult<ExitCode> {
         ) {
             ensure_daemon(&home, &client).await?;
         }
-        execute(command, &home, &client).await
+        // Boxed, as the future of every command's handler together is large on some targets.
+        Box::pin(execute(command, &home, &client)).await
     })
 }
 
