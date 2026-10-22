@@ -229,6 +229,7 @@ impl Reconciler {
         }
         self.launch(
             session,
+            &agent,
             &sandbox,
             LaunchRecord {
                 token: LaunchToken::generate(),
@@ -245,6 +246,7 @@ impl Reconciler {
     async fn launch(
         &self,
         session: &Session,
+        agent: &crate::control_plane::AgentRecord,
         sandbox: &::sandbox::SandboxHandle,
         record: LaunchRecord,
         resume: Option<&str>,
@@ -256,11 +258,17 @@ impl Reconciler {
                 .update_session_lifecycle(session.id, Lifecycle::resuming(), session.activation_generation)
                 .await?;
         }
+        let host = host_name().await;
         self.runtime
             .start(
                 session,
                 sandbox,
-                &self.platform_api_url,
+                super::LaunchContext {
+                    platform_api_url: &self.platform_api_url,
+                    agent: &agent.agent.metadata.name,
+                    source_directory: &agent.source_directory,
+                    host: &host,
+                },
                 &token,
                 resume,
                 initial_prompt.as_deref().filter(|_| resume.is_none()),
@@ -394,6 +402,21 @@ fn backoff_seconds(attempts: u32) -> i64 {
 ///
 /// The image ships every harness binary, so launching one convergence never installed starts a
 /// process that sits at a login prompt nobody can answer and reports the Session as running.
+/// This host's name, as `hostname` prints it, for a launched harness to name where it runs.
+async fn host_name() -> String {
+    let output = tokio::process::Command::new("hostname")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await;
+    output
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
 fn launch_blocked(agent: &crate::control_plane::AgentRecord, session: &Session) -> Option<Lifecycle> {
     let installed = agent
         .agent
