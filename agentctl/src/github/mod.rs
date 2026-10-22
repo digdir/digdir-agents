@@ -7,11 +7,13 @@
 //! `GITHUB_TOKEN` that the network mediator substitutes only in requests to GitHub's own hosts,
 //! and Git commits carry the account's name and email.
 
+mod gh;
 mod inspect;
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+pub use gh::{gh_installed, host_login, token_from_gh, token_from_gh_sign_in};
 pub use inspect::{Inspection, OwnerKind, SCOPES, inspect, owner_kind};
 
 use crate::{Error, harness::MediatedSecret, persistence};

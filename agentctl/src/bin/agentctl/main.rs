@@ -18,6 +18,8 @@ use agent::{
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod format;
+mod github;
+mod host;
 mod launch;
 mod progress;
 mod prompt;
@@ -84,6 +86,11 @@ enum Command {
     Start {
         #[command(flatten)]
         target: RunStateTarget,
+    },
+    /// Let agents work on GitHub, and manage the accounts they use.
+    Github {
+        #[command(subcommand)]
+        command: GithubCommand,
     },
     /// Sign agents in to Claude Code.
     Claude {
@@ -526,6 +533,69 @@ enum CodexCommand {
     Status,
 }
 
+#[derive(Subcommand)]
+enum GithubCommand {
+    /// Store a GitHub token for agents, separate from any `gh` login on this host.
+    ///
+    /// By default it walks you through creating a fine-grained token in GitHub's pre-filled
+    /// form, for the owner of the current directory's repository. The token is checked and
+    /// summarized before anything is stored. Agents whose manifest lists
+    /// `accounts: [{type: github, owner: …}]` use the owner's token: they see an inert
+    /// `GITHUB_TOKEN` that only requests to GitHub receive, and commit as its account.
+    Login {
+        /// The user or organization the token is for; by default the owner of the current
+        /// directory's GitHub repository.
+        #[arg(long, value_parser = parse_github_owner)]
+        owner: Option<String>,
+        /// Read the token from standard input instead of creating one.
+        #[arg(long, group = "source")]
+        from_stdin: bool,
+        /// Use the token of the host's own `gh` login, which is usually your own account and
+        /// reaches every repository it can.
+        #[arg(long, group = "source")]
+        from_gh: bool,
+        /// Sign in through the GitHub CLI in the browser instead. The token reaches every
+        /// repository the account can, so you name the account first.
+        #[arg(long, group = "source")]
+        browser: bool,
+    },
+    /// List the stored tokens: owner, account, kind and expiry.
+    List,
+    /// Forget a stored token, named by its owner or account or chosen from a list, or every one.
+    ///
+    /// Agents lose GitHub access on their next pass. The token stays valid on GitHub until you
+    /// revoke it there.
+    Logout {
+        /// The token to forget, by its owner or the account it acts as, as `agentctl github list`
+        /// shows them.
+        #[arg(conflicts_with_all = ["owner", "everywhere"])]
+        name: Option<String>,
+        /// Forget the token for this user or organization, without asking which.
+        #[arg(long, value_parser = parse_github_owner, conflicts_with = "everywhere")]
+        owner: Option<String>,
+        /// Forget every stored token, without asking which.
+        #[arg(long)]
+        everywhere: bool,
+        /// Do not ask for confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Forget every stored GitHub token, to start over.
+    Reset {
+        /// Do not ask for confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+fn parse_github_owner(value: &str) -> Result<String, String> {
+    if agent::github::valid_owner(value) {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err(format!("{value:?} is not a GitHub user or organization"))
+    }
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
@@ -589,6 +659,50 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         Command::Codex {
             command: CodexCommand::Status,
         } => return harness_status(client, agent::Harness::Codex).await,
+        Command::Github {
+            command:
+                GithubCommand::Login {
+                    owner,
+                    from_stdin,
+                    from_gh,
+                    browser,
+                },
+        } => {
+            let source = if from_stdin {
+                github::Source::Stdin
+            } else if from_gh {
+                github::Source::HostGh
+            } else if browser {
+                github::Source::Browser
+            } else {
+                github::Source::Form
+            };
+            github::login(client, source, owner).await?;
+        }
+        Command::Github {
+            command: GithubCommand::List,
+        } => github::list(client).await?,
+        Command::Github {
+            command:
+                GithubCommand::Logout {
+                    name,
+                    owner,
+                    everywhere,
+                    yes,
+                },
+        } => {
+            let target = if everywhere {
+                Some(github::Target::Every)
+            } else if let Some(owner) = owner {
+                Some(github::Target::Owner(owner))
+            } else {
+                name.map(github::Target::Named)
+            };
+            github::logout(client, target, yes).await?;
+        }
+        Command::Github {
+            command: GithubCommand::Reset { yes },
+        } => github::reset(client, yes).await?,
         Command::Apply {
             filename,
             variant,
@@ -2264,6 +2378,71 @@ mod tests {
         );
         assert!(resource_reference("agent/worker", Some("other".into())).is_err());
         assert!(resource_reference("pods", None).is_err());
+    }
+
+    #[test]
+    fn github_login_takes_one_token_source() {
+        let login = Arguments::try_parse_from(["agentctl", "github", "login", "--owner", "Digdir", "--browser"])
+            .expect("github login");
+        assert!(matches!(
+            login.command,
+            Command::Github {
+                command: GithubCommand::Login {
+                    owner: Some(owner),
+                    from_stdin: false,
+                    from_gh: false,
+                    browser: true,
+                }
+            } if owner == "digdir"
+        ));
+        for sources in [["--from-gh", "--from-stdin"], ["--browser", "--from-gh"]] {
+            let mut arguments = vec!["agentctl", "github", "login"];
+            arguments.extend(sources);
+            Arguments::try_parse_from(arguments).err().expect("one token source");
+        }
+        Arguments::try_parse_from(["agentctl", "github", "login", "--owner", "not/an/owner"])
+            .err()
+            .expect("an invalid owner");
+        assert!(matches!(
+            Arguments::try_parse_from(["agentctl", "github", "list"])
+                .expect("list")
+                .command,
+            Command::Github {
+                command: GithubCommand::List
+            }
+        ));
+        assert!(matches!(
+            Arguments::try_parse_from(["agentctl", "github", "logout"])
+                .expect("logout")
+                .command,
+            Command::Github {
+                command: GithubCommand::Logout {
+                    name: None,
+                    owner: None,
+                    everywhere: false,
+                    yes: false
+                }
+            }
+        ));
+        Arguments::try_parse_from(["agentctl", "github", "logout", "--owner", "digdir", "--everywhere"])
+            .err()
+            .expect("an owner or everywhere");
+        assert!(matches!(
+            Arguments::try_parse_from(["agentctl", "github", "reset", "--yes"])
+                .expect("reset")
+                .command,
+            Command::Github {
+                command: GithubCommand::Reset { yes: true }
+            }
+        ));
+        assert!(matches!(
+            Arguments::try_parse_from(["agentctl", "claude", "status"])
+                .expect("claude status")
+                .command,
+            Command::Claude {
+                command: ClaudeCommand::Status
+            }
+        ));
     }
 
     #[test]

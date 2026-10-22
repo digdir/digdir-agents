@@ -16,7 +16,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 - `agentctl kill --all`, or `agentctl stop --all --now`, is an emergency stop: every Agent's VM ends at once, without shutting down, and stays stopped until started again. `agentctl stop` without an Agent asks before stopping every running one, and `X` in `agentctl tui` stops them all at once. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#stopping-every-agent))
 - `agentctl claude status` and `agentctl codex status` say whether agents can use that harness, and exit with 1 when no login is stored. ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install))
-- Agents can act as a GitHub account that agentd keeps for them, one per organization: a manifest's `accounts: [{type: github}]` gives the Sandbox an inert `GITHUB_TOKEN` that the network mediator replaces only in requests to GitHub, and Git uses it over HTTPS. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#github-accounts))
+- `agentctl github login` walks you through creating a fine-grained GitHub token for Agents, one per organization, separate from your own `gh` login, checks what it can do before storing it, and `agentctl github list`, `logout` and `reset` show and remove them. Agents whose manifest lists `accounts: [{type: github, owner: …}]` use it for `gh`, `git push` and the GitHub API and commit as its account, with no `.env` file. ([GitHub accounts](https://github.com/digdir/digdir-agents/tree/main/agentctl#github-accounts))
 
 ### Changed
 
