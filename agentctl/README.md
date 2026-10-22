@@ -267,6 +267,23 @@ wiring.
 agentd keeps GitHub tokens for Agents, one per owner, separate from any `gh` login on the host, so Agents can act as
 their own account, such as a bot, while you keep using yours.
 
+`agentctl github login` walks through creating a fine-grained token for the owner of the current directory's
+repository, or `--owner`. It opens GitHub's token form with the name, owner, a 90-day lifetime and the permissions
+filled in: contents, issues, pull requests, Actions and workflow files read and write, and commit statuses read. You
+pick the repositories, the one thing the form cannot be given, and paste the token. agentctl then asks GitHub which
+account it acts as, whether it can see the repository and when it expires, and shows that before anything is stored.
+It warns when the account is also your own `gh` login, is not named like an automation account (`…-bot`, `…-agent`),
+cannot see the repository, or expires within a week, and then asks for confirmation. Yes-or-no questions have no
+default: they take `y` or `n`, never a bare Enter.
+
+A fine-grained token is kept for its owner. A classic or OAuth token reaches every owner and is kept for every
+organization without a token of its own: `--from-stdin` reads any token, `--from-gh` imports the host's own `gh`
+login, and `--browser` runs the GitHub CLI's browser sign-in against a throwaway configuration. Because that token
+reaches every repository the account can, `--browser` first asks you to type the account's login and refuses a
+sign-in as any other. `agentctl github list` shows each token's owner, account, kind and expiry. `agentctl github logout` forgets one, chosen from a list
+that ends with "everywhere", and `agentctl github reset` forgets them all after a warning. Agents lose GitHub access on
+their next pass; the token stays valid on GitHub until revoked there.
+
 An Agent opts in with `spec.accounts: [{type: github, owner: digdir}]`, and uses its owner's token, else the one for every organization without a token of its own;
 without `owner`, the only stored token. Its Sandbox then sees an inert `GITHUB_TOKEN`, which the network mediator
 replaces only in requests to `github.com`, `api.github.com`, `gist.github.com` and `uploads.github.com`; a manifest

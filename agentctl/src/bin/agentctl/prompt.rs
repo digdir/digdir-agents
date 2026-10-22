@@ -3,6 +3,8 @@
 use std::io::{IsTerminal as _, Write as _};
 
 use agent::Error;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use zeroize::Zeroizing;
 
 /// Whether a person is at the terminal: questions go to standard error, and the TUI some answers
 /// open draws on standard output, so all three must be a terminal.
@@ -38,9 +40,17 @@ fn read_answer() -> Result<String, Error> {
     Ok(answer.trim().to_owned())
 }
 
-/// Asks a yes-or-no question on standard error, what it is about first and the question last.
-/// There is no default: the answer must be `y`, `yes`, `n` or `no`, so pressing Enter by reflex
-/// accepts nothing.
+/// Asks a yes-or-no question on standard error. There is no default: the answer must be `y`,
+/// `yes`, `n` or `no`, so pressing Enter by reflex accepts nothing.
+///
+/// # Errors
+///
+/// Returns an error when standard input cannot be read or ends.
+pub(crate) fn confirm(question: &str) -> Result<bool, Error> {
+    confirm_lines(&[question])
+}
+
+/// Like [`confirm`], for a question of several lines: what it is about first, the question last.
 ///
 /// # Errors
 ///
@@ -65,9 +75,132 @@ fn yes_or_no(answer: &str) -> Option<bool> {
     }
 }
 
+/// Shows `message` after a blank line and waits for Enter; Ctrl-C ends the command as usual.
+///
+/// # Errors
+///
+/// Returns an error when standard input cannot be read or ends.
+pub(crate) fn wait_for_enter(message: &str) -> Result<(), Error> {
+    eprint!("\n{message}");
+    std::io::stderr().flush().ok();
+    read_answer().map(drop)
+}
+
+/// Asks for one line of text, returned trimmed.
+///
+/// # Errors
+///
+/// Returns an error when standard input cannot be read.
+pub(crate) fn ask(question: &str) -> Result<String, Error> {
+    ask_lines(&[question])
+}
+
+/// Like [`ask`], for a question of several lines: the question first, then what it is about,
+/// and last the label of the answer.
+///
+/// # Errors
+///
+/// Returns an error when standard input cannot be read.
+pub(crate) fn ask_lines(lines: &[&str]) -> Result<String, Error> {
+    pose(lines, ": ");
+    read_answer()
+}
+
+/// Asks `question` with numbered `options`, returning the chosen index. Pressing Enter picks
+/// `default`, or cancels with `None` when there is none.
+///
+/// # Errors
+///
+/// Returns an error when standard input cannot be read.
+pub(crate) fn choose(question: &str, options: &[String], default: Option<usize>) -> Result<Option<usize>, Error> {
+    choose_lines(&[question], options, default)
+}
+
+/// Like [`choose`], for a question of several lines: the question first, then what it is about.
+///
+/// # Errors
+///
+/// Returns an error when standard input cannot be read.
+pub(crate) fn choose_lines(lines: &[&str], options: &[String], default: Option<usize>) -> Result<Option<usize>, Error> {
+    pose(lines, "\n");
+    for (number, option) in options.iter().enumerate() {
+        eprintln!("  {}. {option}", number + 1);
+    }
+    let hint = default.map_or_else(
+        || format!("Choose 1-{}, or press Enter to cancel: ", options.len()),
+        |default| format!("Choose 1-{} [{}]: ", options.len(), default + 1),
+    );
+    loop {
+        eprint!("{hint}");
+        std::io::stderr().flush().ok();
+        let answer = read_answer()?;
+        if answer.is_empty() {
+            return Ok(default);
+        }
+        if let Some(index) = numbered(&answer, options.len()) {
+            return Ok(Some(index));
+        }
+        eprintln!("Type a number from 1 to {}.", options.len());
+    }
+}
+
+/// The option `answer` picks among `count`, numbered from 1.
+fn numbered(answer: &str, count: usize) -> Option<usize> {
+    answer
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|number| (1..=count).contains(number))
+        .map(|number| number - 1)
+}
+
+/// Reads a secret typed or pasted on the terminal without echoing it.
+///
+/// # Errors
+///
+/// Returns an error when the terminal cannot be read, the user presses Ctrl-C, or nothing was entered.
+pub(crate) fn secret(label: &str) -> Result<Zeroizing<String>, Error> {
+    pose(&[label], ": ");
+    crossterm::terminal::enable_raw_mode()?;
+    let read = read_secret();
+    let _ = crossterm::terminal::disable_raw_mode();
+    eprintln!();
+    let value = read?;
+    if value.trim().is_empty() {
+        return Err(Error::Invalid("nothing was entered".into()));
+    }
+    Ok(value)
+}
+
+fn read_secret() -> Result<Zeroizing<String>, Error> {
+    let mut value = Zeroizing::new(String::new());
+    loop {
+        let Event::Key(KeyEvent {
+            code, modifiers, kind, ..
+        }) = crossterm::event::read()?
+        else {
+            continue;
+        };
+        if kind == KeyEventKind::Release {
+            continue;
+        }
+        match code {
+            KeyCode::Enter => return Ok(value),
+            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                return Err(Error::Invalid("cancelled".into()));
+            }
+            KeyCode::Char(character) => value.push(character),
+            KeyCode::Backspace => {
+                value.pop();
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::yes_or_no;
+    use super::{numbered, yes_or_no};
 
     #[test]
     fn yes_and_no_must_be_typed() {
@@ -79,6 +212,15 @@ mod tests {
         }
         for answer in ["", "  ", "yep", "1", "q"] {
             assert_eq!(yes_or_no(answer), None, "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn a_choice_is_a_listed_number() {
+        assert_eq!(numbered("1", 3), Some(0));
+        assert_eq!(numbered(" 3 ", 3), Some(2));
+        for answer in ["0", "4", "digdir", "-1"] {
+            assert_eq!(numbered(answer, 3), None, "{answer:?}");
         }
     }
 }
