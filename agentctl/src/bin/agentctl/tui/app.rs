@@ -4191,6 +4191,34 @@ mod tests {
     }
 
     #[test]
+    fn status_sums_up_every_agent_on_the_machine() {
+        assert_eq!(crate::machine_line(&[], &[]), ("no agents yet".to_owned(), 0));
+        let agents = [
+            ready_agent("worker"),
+            ready_agent("reviewer"),
+            not_ready_agent("idle", RunState::Stopped, agent::Condition::REASON_STOPPED),
+        ];
+        let sessions = [
+            session("worker", "s1", "waitingForInput"),
+            session("worker", "s2", "working"),
+            session("reviewer", "r1", "idle"),
+        ];
+        assert_eq!(
+            crate::machine_line(&agents, &sessions),
+            (
+                "3 agents: 2 running, 1 stopped; 1 session needs you; 1 working".to_owned(),
+                1
+            )
+        );
+        let stopped = [
+            not_ready_agent("a", RunState::Stopped, agent::Condition::REASON_STOPPED),
+            not_ready_agent("b", RunState::Stopped, agent::Condition::REASON_STOPPED),
+        ];
+        assert_eq!(crate::machine_line(&stopped, &[]).0, "2 agents: all stopped");
+        assert_eq!(crate::machine_line(&agents[..1], &[]).0, "1 agent: running");
+    }
+
+    #[test]
     fn a_stopped_agent_reads_stopped_and_one_changing_reads_stopping_or_starting() {
         let mut app = App::new();
         app.apply_snapshot(

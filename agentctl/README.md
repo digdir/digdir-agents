@@ -31,6 +31,10 @@ irm https://raw.githubusercontent.com/digdir/digdir-agents/main/agentctl/install
 
 Update an installation with `agentctl self update`.
 
+`agentctl status` shows agentd, the stored logins, the current directory's agent and a count of every agent on this
+machine at a glance, with the commands that would change them; `agentctl claude status` and `agentctl codex status`
+exit with 1 when that login is missing.
+
 ### Stopping every Agent
 
 To stop every Agent at once, as an emergency stop:
@@ -184,7 +188,9 @@ cannot be optional.
 Each installation may declare `defaults` with a `model` and an `effort` level for its new Sessions, in the harness's
 own vocabulary. The published manifests select `model: fable` for Claude Code because a mediated token cannot list
 Fable in the `/model` picker.
-`spec.instructions` names one harness-neutral Agent instruction file. Every declared Harness Adapter installs that source
+`agentctl instructions edit` opens the host-wide instructions file, `~/.agent/instructions.md`, which every agent on
+the host receives ahead of its own instructions, within one reconciliation pass and without being recreated; emptying
+it gives agents none. `spec.instructions` names one harness-neutral Agent instruction file. Every declared Harness Adapter installs that source
 at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md` for Codex and
 `~/.pi/agent/AGENTS.md` for Pi.
 Repository-local instruction files continue to be discovered by the harness itself.

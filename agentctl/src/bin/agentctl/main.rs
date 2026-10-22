@@ -49,6 +49,8 @@ struct Arguments {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Show the logins, agentd and this directory's agent, with what to do next.
+    Status,
     /// Open the terminal UI with every agent and session.
     Tui,
     /// Create or attach to a named session in an agent.
@@ -101,6 +103,11 @@ enum Command {
     Codex {
         #[command(subcommand)]
         command: CodexCommand,
+    },
+    /// Edit the instructions every agent on this machine gets, ahead of its own.
+    Instructions {
+        #[command(subcommand)]
+        command: InstructionsCommand,
     },
     /// Run a command in an agent.
     Exec {
@@ -534,6 +541,15 @@ enum CodexCommand {
 }
 
 #[derive(Subcommand)]
+enum InstructionsCommand {
+    /// Open the host-wide instructions in your editor, creating the file if needed.
+    ///
+    /// Every agent's harness receives them ahead of the agent's own instructions, within one
+    /// reconciliation pass and without recreating the agent. Empty the file to give agents none.
+    Edit,
+}
+
+#[derive(Subcommand)]
 enum GithubCommand {
     /// Store a GitHub token for agents, separate from any `gh` login on this host.
     ///
@@ -659,6 +675,10 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         Command::Codex {
             command: CodexCommand::Status,
         } => return harness_status(client, agent::Harness::Codex).await,
+        Command::Status => status(home, client).await?,
+        Command::Instructions {
+            command: InstructionsCommand::Edit,
+        } => edit_instructions(home)?,
         Command::Github {
             command:
                 GithubCommand::Login {
@@ -2033,6 +2053,243 @@ async fn harness_status(client: &Client, harness: agent::Harness) -> CommandResu
     }
 }
 
+/// A command that would change what `agentctl status` shows, and what it does.
+type NextStep = (String, String);
+
+/// Shows agentd, the stored logins and the current directory's agent at a glance, followed by
+/// the commands that would change what it shows.
+async fn status(home: &ControlPlaneHome, client: &Client) -> CommandResult<()> {
+    let daemon = client.health().await?;
+    let auth = client.auth_status().await?;
+    let mut rows = vec![(
+        "agentd",
+        format!(
+            "running, version {}",
+            daemon
+                .build_version
+                .as_deref()
+                .unwrap_or("unknown")
+                .trim_start_matches('v')
+        ),
+    )];
+    let mut next: Vec<NextStep> = Vec::new();
+    for (label, signed_in) in [("Claude Code", auth.claude_code), ("Codex", auth.codex)] {
+        rows.push((label, if signed_in { "signed in" } else { "not signed in" }.to_owned()));
+    }
+    // Agents need one harness; the other is a choice, not a step.
+    if !auth.any_harness() {
+        next.push((
+            "agentctl claude login".to_owned(),
+            "Sign in to Claude Code, or to Codex with `agentctl codex login`".to_owned(),
+        ));
+    }
+    for (index, line) in github_lines(&auth.github, &mut next).into_iter().enumerate() {
+        rows.push((if index == 0 { "GitHub" } else { "" }, line));
+    }
+    let instructions = home.instructions_path();
+    rows.push((
+        "Instructions",
+        match std::fs::read_to_string(&instructions) {
+            Ok(text) if !text.trim().is_empty() => {
+                let lines = text.lines().count();
+                format!(
+                    "{lines} line{} in {}",
+                    if lines == 1 { "" } else { "s" },
+                    format::home_relative(&instructions)
+                )
+            }
+            _ => "none".to_owned(),
+        },
+    ));
+    let mut here = Vec::new();
+    rows.push(("This directory", directory_line(client, &mut here).await?));
+    let agents = client.list_agents().await?;
+    let sessions = client.list_sessions(None).await?;
+    let (line, waiting) = machine_line(&agents, &sessions);
+    rows.push(("Globally", line));
+    if waiting > 0 {
+        here.push((
+            "agentctl tui".to_owned(),
+            format!(
+                "Answer the session{} that need you",
+                if waiting == 1 { "" } else { "s" }
+            ),
+        ));
+    }
+    // What concerns this directory's agent comes first.
+    here.append(&mut next);
+    next = here;
+    for (label, value) in rows {
+        println!("{label:<15} {value}");
+    }
+    next.dedup_by(|later, earlier| later.0 == earlier.0);
+    if !next.is_empty() {
+        let width = next.iter().map(|(command, _)| command.len()).max().unwrap_or(0);
+        println!("\nNext steps");
+        for (command, what) in next {
+            println!("  {command:<width$}  {what}");
+        }
+    }
+    Ok(())
+}
+
+/// Every agent agentd runs at a glance: how many run, and how many sessions wait for an
+/// answer, with that count.
+fn machine_line(agents: &[Agent], sessions: &[agent::sessions::Session]) -> (String, usize) {
+    let agents: Vec<&Agent> = agents
+        .iter()
+        .filter(|agent| agent.metadata.deletion_timestamp.is_none())
+        .collect();
+    if agents.is_empty() {
+        return ("no agents yet".to_owned(), 0);
+    }
+    let running = agents
+        .iter()
+        .filter(|agent| !agent.spec.is_stopped() && agent.status.is_ready())
+        .count();
+    let stopped = agents.iter().filter(|agent| agent.spec.is_stopped()).count();
+    let other = agents.len() - running - stopped;
+    let count_of =
+        |state: agent::sessions::State| sessions.iter().filter(|session| session.status.state == state).count();
+    let waiting = count_of(agent::sessions::State::WaitingForInput);
+    let working = count_of(agent::sessions::State::Working);
+    let mut parts = Vec::new();
+    let states = [running, other, stopped];
+    for (count, word) in [
+        (running, "running"),
+        (other, "starting or failing"),
+        (stopped, "stopped"),
+    ] {
+        if count > 0 {
+            parts.push(format!("{count} {word}"));
+        }
+    }
+    // One state for every agent reads as that state, "all" in front when there are several.
+    let summary = match (agents.len(), states.iter().filter(|count| **count > 0).count()) {
+        (1, _) => parts.join(", ").trim_start_matches("1 ").to_owned(),
+        (_, 1) => format!("all {}", parts.join(", ").split_once(' ').map_or("", |(_, word)| word)),
+        _ => parts.join(", "),
+    };
+    let count = agents.len();
+    let mut line = vec![format!("{count} agent{}: {summary}", if count == 1 { "" } else { "s" })];
+    if waiting > 0 {
+        line.push(format!(
+            "{waiting} session{} need{} you",
+            if waiting == 1 { "" } else { "s" },
+            if waiting == 1 { "s" } else { "" }
+        ));
+    }
+    if working > 0 {
+        line.push(format!("{working} working"));
+    }
+    let line = line.join("; ");
+    (line, waiting)
+}
+
+/// Each stored GitHub token as the account, where agents use it and until when.
+fn github_lines(tokens: &[agent::github::GithubToken], next: &mut Vec<NextStep>) -> Vec<String> {
+    if tokens.is_empty() {
+        next.push((
+            "agentctl github login".to_owned(),
+            "Let agents work on GitHub".to_owned(),
+        ));
+        return vec!["no account".to_owned()];
+    }
+    let now = time::OffsetDateTime::now_utc();
+    tokens
+        .iter()
+        .map(|token| {
+            let place = match &token.owner {
+                Some(owner) => format!("in {owner}"),
+                None if tokens.len() == 1 => "in every organization".to_owned(),
+                None => "in every other organization".to_owned(),
+            };
+            let expiry = match token.expires_at {
+                Some(expires_at) if token.expired(now) => {
+                    next.push((
+                        "agentctl github login".to_owned(),
+                        format!("Replace the expired token for {}", token.account.login),
+                    ));
+                    format!("expired {}", expires_at.date())
+                }
+                Some(expires_at) => format!("until {}", expires_at.date()),
+                None if token.kind.single_owner() => "expiry unknown".to_owned(),
+                None => "no expiry".to_owned(),
+            };
+            format!("{} {place}, {expiry}", token.account.login)
+        })
+        .collect()
+}
+
+/// The current directory's agent: its state and sessions.
+async fn directory_line(client: &Client, next: &mut Vec<NextStep>) -> CommandResult<String> {
+    let directory = std::env::current_dir().map_err(Error::from)?;
+    let agent = match client.resolve_agent_variant(directory, None).await {
+        Ok(agent) => agent,
+        Err(Error::Rpc(error)) if error.is_not_found() => {
+            let directory = std::env::current_dir().map_err(Error::from)?;
+            if directory.join(manifest::MANIFEST_FILE).is_file() {
+                next.push((
+                    "agentctl apply".to_owned(),
+                    "Create the agent from agent.yaml".to_owned(),
+                ));
+            }
+            return Ok("no agent".to_owned());
+        }
+        Err(Error::Rpc(error)) if error.is_invalid_params() => {
+            next.push((
+                "agentctl tui".to_owned(),
+                "Choose one of this directory's agents".to_owned(),
+            ));
+            return Ok("several agents".to_owned());
+        }
+        Err(error) => return Err(inference_error(error)),
+    };
+    let name = agent.metadata.name.clone();
+    if let Some(problem) = format::blocking_problem(&agent) {
+        return Ok(format!("{name} cannot start: {problem}"));
+    }
+    let state = match agent.status.ready_condition() {
+        Some(condition) if condition.status == agent::ConditionStatus::True => "running".to_owned(),
+        Some(condition) => lowercase_words(&condition.reason),
+        None => "starting".to_owned(),
+    };
+    if agent.spec.is_stopped() {
+        next.push((format!("agentctl start agent/{name}"), format!("Start {name} again")));
+    }
+    let sessions = client.list_sessions(Some(&name)).await?.len();
+    Ok(format!(
+        "{name}: {state}, {sessions} session{}",
+        if sessions == 1 { "" } else { "s" }
+    ))
+}
+
+/// A condition reason such as `ImageBuildFailed` as words: `image build failed`.
+fn lowercase_words(reason: &str) -> String {
+    let mut words = String::new();
+    for (index, character) in reason.chars().enumerate() {
+        if character.is_uppercase() && index > 0 {
+            words.push(' ');
+        }
+        words.extend(character.to_lowercase());
+    }
+    words
+}
+
+/// Opens the host-wide instructions in an editor, creating the file first when it is missing.
+fn edit_instructions(home: &ControlPlaneHome) -> CommandResult<()> {
+    let path = home.instructions_path();
+    if !path.exists() {
+        std::fs::write(&path, "").map_err(Error::from)?;
+    }
+    prompt::edit_files(&[&path])?;
+    println!(
+        "Agents receive {} ahead of their own instructions on their next pass.",
+        path.display()
+    );
+    Ok(())
+}
+
 /// Signs in to a harness on the host, or stores a credential read from standard input.
 async fn harness_login(
     home: &ControlPlaneHome,
@@ -2436,6 +2693,20 @@ mod tests {
             }
         ));
         assert!(matches!(
+            Arguments::try_parse_from(["agentctl", "status"])
+                .expect("status")
+                .command,
+            Command::Status
+        ));
+        assert!(matches!(
+            Arguments::try_parse_from(["agentctl", "instructions", "edit"])
+                .expect("instructions edit")
+                .command,
+            Command::Instructions {
+                command: InstructionsCommand::Edit
+            }
+        ));
+        assert!(matches!(
             Arguments::try_parse_from(["agentctl", "claude", "status"])
                 .expect("claude status")
                 .command,
@@ -2549,6 +2820,53 @@ mod tests {
         assert_eq!(parse_duration("2h").expect("hours"), Duration::from_hours(2));
         assert!(parse_duration("0s").is_err());
         assert!(parse_duration("forever").is_err());
+    }
+
+    #[test]
+    fn status_shows_github_tokens_as_account_place_and_expiry() {
+        let token = |owner: Option<&str>, login: &str, kind: &str, expires_at| agent::github::GithubToken {
+            owner: owner.map(str::to_owned),
+            account: agent::github::GithubAccount {
+                login: login.into(),
+                name: login.into(),
+                email: format!("{login}@example.com"),
+            },
+            kind: agent::github::TokenKind::of(kind),
+            expires_at,
+        };
+        let mut next = Vec::new();
+        assert_eq!(
+            github_lines(&[token(None, "danielskovli-agent", "gho_x", None)], &mut next),
+            ["danielskovli-agent in every organization, no expiry"]
+        );
+        assert!(next.is_empty());
+        let lines = github_lines(
+            &[
+                token(
+                    Some("digdir"),
+                    "digdir-bot",
+                    "github_pat_x",
+                    Some(time::macros::datetime!(2020-01-02 0:00 UTC)),
+                ),
+                token(None, "danielskovli-agent", "ghp_x", None),
+            ],
+            &mut next,
+        );
+        assert_eq!(
+            lines,
+            [
+                "digdir-bot in digdir, expired 2020-01-02",
+                "danielskovli-agent in every other organization, no expiry"
+            ]
+        );
+        assert_eq!(next.len(), 1, "the expired token is to be replaced: {next:?}");
+        assert_eq!(github_lines(&[], &mut Vec::new()), ["no account"]);
+    }
+
+    #[test]
+    fn condition_reasons_read_as_lowercase_words() {
+        assert_eq!(lowercase_words("Stopped"), "stopped");
+        assert_eq!(lowercase_words("ImageBuildFailed"), "image build failed");
     }
 
     #[test]
