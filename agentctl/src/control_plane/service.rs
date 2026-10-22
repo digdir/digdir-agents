@@ -46,19 +46,40 @@ pub struct ControlPlane {
     immediate_stops: ImmediateStops,
 }
 
-/// Agents whose next stop ends their Sandbox at once, without letting the guest shut down:
-/// the Control Plane records the request and the reconciler carries it out.
+/// Agents whose stop ends their Sandbox at once, without letting the guest shut down.
+///
+/// The Control Plane records the request and the reconciler carries it out, also by cutting
+/// short a graceful stop already under way.
 #[derive(Clone, Default)]
-pub struct ImmediateStops(Rc<RefCell<HashSet<AgentId>>>);
+pub struct ImmediateStops {
+    requested: Rc<RefCell<HashSet<AgentId>>>,
+    changed: Rc<tokio::sync::Notify>,
+}
 
 impl ImmediateStops {
-    fn request(&self, id: AgentId) {
-        self.0.borrow_mut().insert(id);
+    /// Asks for the Agent's stop to be immediate, waking a graceful stop under way.
+    pub(crate) fn request(&self, id: AgentId) {
+        self.requested.borrow_mut().insert(id);
+        self.changed.notify_waiters();
     }
 
     /// Whether the Agent's stop was asked to be immediate, forgetting the request.
     pub(crate) fn take(&self, id: AgentId) -> bool {
-        self.0.borrow_mut().remove(&id)
+        self.requested.borrow_mut().remove(&id)
+    }
+
+    /// Completes, forgetting the request, once the Agent's stop is asked to be immediate.
+    pub(crate) async fn requested(&self, id: AgentId) {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            // Registered before the check, so a request between the two still wakes it.
+            changed.as_mut().enable();
+            if self.take(id) {
+                return;
+            }
+            changed.await;
+        }
     }
 }
 
@@ -429,7 +450,11 @@ impl ControlPlane {
     pub async fn stop_now(&self, name: &str) -> Result<Agent, Error> {
         let id = self.store.get_by_name(name).await?.id;
         self.immediate_stops.request(id);
-        self.set_run_state(name, crate::RunState::Stopped).await
+        let stopping = self.set_run_state(name, crate::RunState::Stopped).await;
+        if stopping.is_err() {
+            self.immediate_stops.take(id);
+        }
+        stopping
     }
 
     /// Marks an Agent for asynchronous release. Repeated deletion is safe.

@@ -91,6 +91,8 @@ impl Reconciler {
         if record.agent.spec.is_stopped() {
             return self.stop(&record).await;
         }
+        // A start overtook an immediate stop that no pass carried out, so a later stop is graceful.
+        self.immediate_stops.take(id);
 
         if record.agent.status.sandbox.is_none() {
             let provider = match self.sandboxes.resolve(&record).await {
@@ -340,8 +342,20 @@ impl Reconciler {
             SandboxObserver::new(record.id, self.provisioning.clone())
         };
         let phase = observer.reporter().start_phase(crate::progress::SANDBOX_STOP).await;
-        let immediately = self.immediate_stops.take(record.id);
-        if let Err(error) = self.sandboxes.stop(record, immediately).await {
+        let (stopped, killed) = if self.immediate_stops.take(record.id) {
+            (self.sandboxes.stop(record, true).await, true)
+        } else {
+            // An immediate stop asked for while the guest shuts down kills it instead.
+            tokio::select! {
+                stopped = self.sandboxes.stop(record, false) => (stopped, false),
+                () = self.immediate_stops.requested(record.id) => (self.sandboxes.stop(record, true).await, true),
+            }
+        };
+        if let Err(error) = stopped {
+            if killed {
+                // The retry kills too, as it was asked.
+                self.immediate_stops.request(record.id);
+            }
             let failure = ReconcileFailure::classify(&error);
             let stored = self.record_failure(record, Condition::REASON_STOPPING, &failure).await;
             observer.failed(&failure);
