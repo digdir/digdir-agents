@@ -40,7 +40,7 @@ pub(crate) fn vnc_access_lines(access: &agent::vnc::AccessInfo) -> Vec<String> {
         format!("Agent ID:    {}", access.agent_id),
         format!("Guest port:  {}", access.guest_port),
         access.web_guest_port.map_or_else(
-            || "Web port:    - (none, or unknown until the Agent is next reconciled)".to_owned(),
+            || "Web port:    - (none, or unknown until the agent is next reconciled)".to_owned(),
             |port| format!("Web port:    {port}  (agentctl vnc --web {})", access.agent),
         ),
         format!("Forward:     {}", access.forward_command),
@@ -213,7 +213,7 @@ fn measurement(measurement: Option<sandbox::progress::Measurement>) -> String {
 
 pub(crate) const fn failure_kind(kind: agent::FailureKind) -> &'static str {
     match kind {
-        agent::FailureKind::Invalid => "Invalid (change the Agent to continue)",
+        agent::FailureKind::Invalid => "Invalid (change the agent to continue)",
         agent::FailureKind::Transient => "Transient (retrying in the background)",
     }
 }

@@ -16,6 +16,11 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 - `agentctl kill --all`, or `agentctl stop --all --now`, is an emergency stop: every Agent's VM ends at once, without shutting down, and stays stopped until started again. `agentctl stop` without an Agent asks before stopping every running one, and `X` in `agentctl tui` stops them all at once. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#stopping-every-agent))
 
+### Changed
+
+- `attach`, `exec`, `ssh` and the other commands that use the current directory's agent find one defined in a subdirectory, such as `agents/<name>/`, from anywhere in its repository. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#agent-layer))
+- An Agent manifest no longer needs `home` or `network`: without `home` nothing is copied into `/home/agent`, and without `network` all traffic goes through the host's network mediator, as before.
+
 ## [0.1.0-preview.12] - 2026-10-20
 
 ### Added

@@ -4,7 +4,9 @@ mod support;
 
 use std::path::PathBuf;
 
-use agent::{API_VERSION, EnvironmentSpec, Harness, KIND, SecretSpec, manifest};
+use agent::{
+    API_VERSION, EnvironmentSpec, Harness, KIND, NetworkAllow, NetworkMode, NetworkSpec, SecretSpec, manifest,
+};
 use sandbox::RootFilesystemMode;
 
 #[test]
@@ -28,6 +30,24 @@ fn decodes_the_minimal_manifest() {
         agent.spec.sandbox.resources.root_filesystem().mode(),
         RootFilesystemMode::Layered
     );
+}
+
+#[test]
+fn home_and_network_are_optional_and_default_to_no_home_and_mediated_egress() {
+    let agent = manifest::decode(include_bytes!("../examples/minimal/agent.yaml")).expect("minimal manifest");
+    assert_eq!(agent.spec.home, None);
+    assert_eq!(agent.spec.network, NetworkSpec::default());
+    assert_eq!(agent.spec.network.mode, NetworkMode::Mediated);
+    assert_eq!(agent.spec.network.allow, NetworkAllow::All);
+    assert!(agent.spec.network.deny.is_empty());
+
+    let encoded = serde_yaml_ng::to_string(&agent).expect("encode");
+    assert!(!encoded.contains("home:"), "{encoded}");
+    let decoded = manifest::decode(encoded.as_bytes()).expect("re-decode");
+    assert_eq!(decoded.spec, agent.spec);
+
+    let empty_home = manifest_with(&[("  home:\n    source: home\n", "  home:\n    source: \"\"\n")]);
+    manifest::decode(&empty_home).expect_err("an empty home source is still rejected");
 }
 
 #[test]

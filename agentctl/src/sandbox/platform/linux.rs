@@ -12,6 +12,7 @@ use super::{super::PlatformAdapter, files::write_if_changed};
 /// The platform-owned Sandbox user every Session, Execution and SSH login runs as.
 pub(crate) const USER: &str = "agent";
 pub(crate) const HOME: &str = "/home/agent";
+/// Where Sessions and Executions start, and where repository checkouts live.
 pub(crate) const WORKING_DIRECTORY: &str = "/home/agent/code";
 pub(crate) const CONTAINER_HOST: &str = "unix:///run/podman/podman.sock";
 /// Holds the Platform API base URL reachable from the Sandbox, read by harness hooks on every
@@ -214,8 +215,10 @@ impl Linux {
         configure_podman(sandbox).await?;
         step.complete().await;
         let step = steps.start_step("Sync home").await;
-        let archive = archive_home(record.source_directory.clone(), record.agent.spec.home.source.clone()).await?;
-        sync_home(sandbox, archive).await?;
+        if let Some(home) = &record.agent.spec.home {
+            let archive = archive_home(record.source_directory.clone(), home.source.clone()).await?;
+            sync_home(sandbox, archive).await?;
+        }
         configure_git_identity(sandbox).await?;
         step.complete().await;
         let instructions = read_instructions(record).await?;
