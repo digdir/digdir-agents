@@ -290,7 +290,9 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                         .filter_map(|(stopped, agent)| stopped.err().map(|error| format!("{agent}: {error}")))
                         .collect();
                 if failed.is_empty() {
-                    app.notice = Some((format!("stopping {} agents at once", agents.len()), Instant::now()));
+                    let count = agents.len();
+                    let noun = if count == 1 { "agent" } else { "agents" };
+                    app.notice = Some((format!("stopping {count} {noun} at once"), Instant::now()));
                 } else {
                     app.error = Some(format!("Some agents did not stop:\n{}", failed.join("\n")));
                 }

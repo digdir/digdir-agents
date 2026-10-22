@@ -1498,9 +1498,18 @@ async fn wait_until_converged(client: &Client, name: &str, timeout: Duration) ->
 
 /// Stops one agent, or every one not stopped yet, and waits until they are stopped.
 async fn stop(client: &Client, target: StopTarget) -> CommandResult<()> {
-    let names = if let Some(resource) = &target.resource {
-        vec![agent_reference(resource, target.name.clone())?]
-    } else {
+    // One named agent fails as any command on it does, with agentd's own error.
+    if let Some(resource) = &target.resource {
+        let name = agent_reference(resource, target.name.clone())?;
+        if target.now {
+            client.stop_now(&name).await?;
+        } else {
+            client.set_run_state(&name, RunState::Stopped).await?;
+        }
+        let converged = wait_until_converged(client, &name, target.timeout).await?;
+        return stopped_or_restarted(&name, &converged).map_err(CommandError::Message);
+    }
+    let names = {
         let Some(running) = agents_to_stop(client, &target).await? else {
             return Ok(());
         };
@@ -1532,10 +1541,10 @@ async fn stop(client: &Client, target: StopTarget) -> CommandResult<()> {
     }
     let deadline = tokio::time::Instant::now() + target.timeout;
     for name in &recorded {
-        let outcome = match tokio::time::timeout_at(deadline, client.converge(name)).await {
-            Ok(Ok(converged)) => stopped_or_restarted(name, &converged),
-            Ok(Err(error)) => Err(format!("agent/{name} did not stop: {error}")),
-            Err(_) => Err(format!("agent/{name} did not stop in time; agentd keeps stopping it")),
+        let outcome = match wait_saying_why(client, name, deadline).await {
+            Some(Ok(converged)) => stopped_or_restarted(name, &converged),
+            Some(Err(error)) => Err(format!("agent/{name} did not stop: {error}")),
+            None => Err(format!("agent/{name} did not stop in time; agentd keeps stopping it")),
         };
         if let Err(message) = outcome {
             failed += 1;
@@ -1550,6 +1559,33 @@ async fn stop(client: &Client, target: StopTarget) -> CommandResult<()> {
     }
     println!("Every agent is stopped. `agentctl start agent/NAME` starts one again.");
     Ok(())
+}
+
+/// How often a wait for several agents says what the one it waits for is doing.
+const STOP_PROGRESS_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Waits until `name` converges or `deadline` passes, saying on standard error every few seconds
+/// what it is doing meanwhile; `None` when the deadline passed.
+async fn wait_saying_why(client: &Client, name: &str, deadline: tokio::time::Instant) -> Option<Result<Agent, Error>> {
+    let converged = tokio::time::timeout_at(deadline, client.converge(name));
+    tokio::pin!(converged);
+    let mut progress = tokio::time::interval_at(
+        tokio::time::Instant::now() + STOP_PROGRESS_INTERVAL,
+        STOP_PROGRESS_INTERVAL,
+    );
+    loop {
+        tokio::select! {
+            outcome = &mut converged => return outcome.ok(),
+            _ = progress.tick() => {
+                let doing = match client.get(name).await {
+                    Ok(agent) if agent.status.ready_condition().is_some_and(|ready| ready.reason == agent::Condition::REASON_STOPPING) => "stopping",
+                    Ok(_) => "waiting for agentd to finish setting it up",
+                    Err(_) => "waiting for agentd",
+                };
+                eprintln!("agent/{name}: {doing}");
+            }
+        }
+    }
 }
 
 /// Says that `name` stopped, or fails when it was started again before its stop finished.
