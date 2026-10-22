@@ -43,11 +43,33 @@ while ! /usr/bin/getent ahosts github.com >/dev/null 2>&1; do
     /usr/bin/sleep 1
 done
 
-# gh adds an `upstream` remote when it clones a fork.
+# Clones one repository beside its destination and moves it into place only once it is complete,
+# so that an interrupted clone never leaves a destination with `.git`, which every later boot
+# would skip. A clone a Session made at the destination in the meantime is kept instead.
+clone() {
+    repository=$1
+    destination=$2
+    partial=$destination.partial
+    rm -rf "$partial"
+    # When the repository is a fork, gh adds its parent as `upstream`, and `gh pr create` and
+    # `gh issue` then target the parent. The listed repository is the one the Agent works in.
+    if ! /usr/local/bin/gh repo clone "$repository" "$partial" \
+        || ! (cd "$partial" && /usr/local/bin/gh repo set-default "$repository"); then
+        rm -rf "$partial"
+        return 1
+    fi
+    mv -T "$partial" "$destination" 2>/dev/null && return 0
+    rm -rf "$partial"
+    if [ ! -e "$destination/.git" ]; then
+        echo "$destination exists and is not a clone; leaving it alone" >&2
+        return 1
+    fi
+}
+
 status=0
 for entry in $missing; do
     destination="$workspace/${entry#*=}"
     mkdir -p "${destination%/*}"
-    /usr/local/bin/gh repo clone "${entry%%=*}" "$destination" || status=1
+    clone "${entry%%=*}" "$destination" || status=1
 done
 exit "$status"

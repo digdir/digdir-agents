@@ -155,6 +155,7 @@ ENV DISPLAY=:1
 ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 ENV ACCESSIBILITY_ENABLED=1
 ENV PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/local/libexec/agent-playwright-chromium
+ENV XDG_CURRENT_DESKTOP=X-Openbox:XFCE
 
 RUN agent-image-check
 

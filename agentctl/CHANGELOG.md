@@ -12,6 +12,24 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
 
+### Added
+
+- On the desktop image, apps that keep secrets in a keyring, such as `secret-tool`, Chromium and VS Code, now have one. It has no password: anything in the Agent can read it. ([Secret Service](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#the-secret-service), [#198](https://github.com/digdir/digdir-agents/pull/198))
+
+### Changed
+
+- Breaking: images that run `agent-feature install desktop` need `ENV XDG_CURRENT_DESKTOP=X-Openbox:XFCE`, which `agent-feature env desktop` prints; `agent-image-check` fails until it is added. Images built on the desktop image inherit it. ([features](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#features), [#198](https://github.com/digdir/digdir-agents/pull/198))
+- VNC clients can no longer resize an Agent's desktop to fit their window; set them to scale instead. ([#198](https://github.com/digdir/digdir-agents/pull/198))
+- The base images ship Node.js 24 LTS (24.22.0) instead of 22. ([#198](https://github.com/digdir/digdir-agents/pull/198))
+
+### Fixed
+
+- On the base images, a build that runs out of memory in a Session, over SSH or in a desktop terminal no longer takes the Agent down: it keeps responding, and other SSH connections and desktop windows stay open. ([#198](https://github.com/digdir/digdir-agents/pull/198))
+- On the desktop image, `desktop` clicks no longer land somewhere other than the last screenshot showed after the display changes size; `desktop` asks for a new screenshot instead. ([#198](https://github.com/digdir/digdir-agents/pull/198))
+- Repositories the base images clone at boot from `/etc/agent-workspace.d`: ([base images](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#building-on-them), [#198](https://github.com/digdir/digdir-agents/pull/198))
+  - an interrupted clone is made again at the next boot, instead of staying broken
+  - when a listed repository is a fork, `gh pr create` and `gh issue` target it rather than its parent
+
 ## [0.1.0-preview.12] - 2026-10-20
 
 ### Added

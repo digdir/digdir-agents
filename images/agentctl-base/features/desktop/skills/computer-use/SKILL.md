@@ -69,6 +69,11 @@ every capture already waits until the screen stops changing.
   window, take the box from `desktop tree` or read it off a screenshot, then act. If more than one
   action has happened since, observe again. Some applications, GTK 4 ones among them, report no
   boxes; use a screenshot for those.
+- **When the helper refuses, observe again.** If the display has changed size since your last
+  screenshot or tree, commands that point or take coordinates fail with "the display changed from
+  WxH to WxH since the last screenshot or tree" rather than land somewhere else. Take a new
+  screenshot or `desktop tree` and measure the target again from it; do not retry the old
+  coordinates. `desktop resize` is the exception: after it, coordinates follow the new size.
 - **Zoom instead of squinting.** `desktop zoom 400 300 500 200` re-captures that region at native
   resolution and is the answer to small or dense controls. Do not resize the display to read
   something.

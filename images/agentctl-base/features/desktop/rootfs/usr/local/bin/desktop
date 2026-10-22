@@ -6,6 +6,9 @@
 #
 # Coordinates are always in the pixels of the screenshot this helper last sent, never in display
 # pixels; when the display is larger than the screenshot budget the helper scales them back itself.
+# `desktop tree` reports its boxes in the same pixels. If the display has changed size since the
+# last screenshot or tree, pointer commands and those that take or report coordinates refuse
+# rather than land somewhere other than what was observed.
 # Captures settle before they are written, so a screenshot never shows a half-drawn frame.
 set -euo pipefail
 # Without this, a failure inside `$(...)` is ignored: a capture whose ffmpeg failed would still be
@@ -29,6 +32,8 @@ jpeg_quality=${DESKTOP_JPEG_QUALITY:-7}
 settle_attempts=${DESKTOP_SETTLE_ATTEMPTS:-8}
 settle_interval=${DESKTOP_SETTLE_INTERVAL:-0.1}
 keep_captures=${DESKTOP_KEEP_CAPTURES:-200}
+# The geometry of the last screenshot or tree, which every coordinate refers to.
+observed_geometry=$captures/.screenshot-geometry
 
 export DISPLAY=$display
 # xdotool decodes the text it types with the locale's character set, and refuses a multi-byte
@@ -119,6 +124,29 @@ geometry() {
     }'
 }
 
+# Records the geometry an observation's pixels are in, for addressed_geometry to hold coordinates
+# to. Written whole, so that a concurrent command never reads half a record.
+record_observed_geometry() {
+    mkdir -p "$captures"
+    printf '%s %s %s %s\n' "$@" >"$observed_geometry.$$"
+    mv -f "$observed_geometry.$$" "$observed_geometry"
+}
+
+# Prints the geometry coordinates refer to, in the form geometry() prints: the last observation's,
+# or the display's when there has been none. Fails when the display has changed size since that
+# observation, because its coordinates would then address somewhere else. Call it as
+# `addressed=$(addressed_geometry)`: a failure inside `< <(...)` would not stop the caller.
+addressed_geometry() {
+    local current width height sent_width sent_height now_width now_height
+    current=$(geometry)
+    [ -r "$observed_geometry" ] || { echo "$current"; return 0; }
+    read -r width height sent_width sent_height <"$observed_geometry"
+    read -r now_width now_height _ <<<"$current"
+    [ "$width" = "$now_width" ] && [ "$height" = "$now_height" ] \
+        || fail "the display changed from ${width}x${height} to ${now_width}x${now_height} since the last screenshot or tree; take a new one"
+    echo "$width $height $sent_width $sent_height"
+}
+
 # Maps a coordinate from sent-screenshot pixels to display pixels.
 to_display() {
     local value=$1 sent=$2 actual=$3
@@ -203,6 +231,7 @@ command_screenshot() {
     else
         frames=$(capture_settled "$out" "${actual_width}x${actual_height}" "0,0")
     fi
+    record_observed_geometry "$actual_width" "$actual_height" "$sent_width" "$sent_height"
     report_capture "$out" "$sent_width" "$sent_height" "$frames" "$note"
 }
 
@@ -216,8 +245,9 @@ command_zoom() {
         esac
     done
     for pair in "x:$x" "y:$y" "w:$w" "h:$h"; do require_integer "${pair#*:}" "zoom ${pair%%:*}"; done
-    local actual_width actual_height sent_width sent_height
-    read -r actual_width actual_height sent_width sent_height < <(geometry)
+    local actual_width actual_height sent_width sent_height addressed
+    addressed=$(addressed_geometry)
+    read -r actual_width actual_height sent_width sent_height <<<"$addressed"
     x=$(to_display "$x" "$sent_width" "$actual_width")
     y=$(to_display "$y" "$sent_height" "$actual_height")
     w=$(to_display "$w" "$sent_width" "$actual_width")
@@ -246,20 +276,23 @@ window_class() {
 }
 
 # The accessibility tree is read through AT-SPI, which has no shell binding; a small Python program
-# walks it. It is given the geometry so that its boxes are in the same pixels as a screenshot.
+# walks it. It is given the geometry so that its boxes are in the same pixels as a screenshot, and
+# the tree is then what coordinates refer to, as a screenshot would be.
 command_tree() {
     local actual_width actual_height sent_width sent_height
     read -r actual_width actual_height sent_width sent_height < <(geometry)
     local arguments=("$actual_width" "$actual_height" "$sent_width" "$sent_height")
     $json && arguments+=(--json)
     "${DESKTOP_TREE:-/usr/local/libexec/agent-desktop-tree}" "${arguments[@]}" "$@"
+    record_observed_geometry "$actual_width" "$actual_height" "$sent_width" "$sent_height"
 }
 
 command_windows() {
     local active id class title
     active=$(xdotool getactivewindow 2>/dev/null || echo 0)
-    local actual_width actual_height sent_width sent_height
-    read -r actual_width actual_height sent_width sent_height < <(geometry)
+    local actual_width actual_height sent_width sent_height addressed
+    addressed=$(addressed_geometry)
+    read -r actual_width actual_height sent_width sent_height <<<"$addressed"
     $json && printf '[\n'
     local first=true
     for id in $(window_ids); do
@@ -292,9 +325,10 @@ command_windows() {
 }
 
 command_cursor() {
-    local x y actual_width actual_height sent_width sent_height
+    local x y actual_width actual_height sent_width sent_height addressed
     eval "$(xdotool getmouselocation --shell)"
-    read -r actual_width actual_height sent_width sent_height < <(geometry)
+    addressed=$(addressed_geometry)
+    read -r actual_width actual_height sent_width sent_height <<<"$addressed"
     x=$(to_display "$X" "$actual_width" "$sent_width")
     y=$(to_display "$Y" "$actual_height" "$sent_height")
     if $json; then printf '{"x":%d,"y":%d}\n' "$x" "$y"; else printf '%d %d\n' "$x" "$y"; fi
@@ -319,8 +353,9 @@ command_display() {
 sync_x() { xdotool getactivewindow >/dev/null 2>&1 || true; }
 
 move_pointer() {
-    local actual_width actual_height sent_width sent_height x y
-    read -r actual_width actual_height sent_width sent_height < <(geometry)
+    local actual_width actual_height sent_width sent_height x y addressed
+    addressed=$(addressed_geometry)
+    read -r actual_width actual_height sent_width sent_height <<<"$addressed"
     require_integer "$1" "x"; require_integer "$2" "y"
     x=$(to_display "$1" "$sent_width" "$actual_width")
     y=$(to_display "$2" "$sent_height" "$actual_height")
@@ -331,7 +366,8 @@ command_click() {
     local button=$1; shift
     local repeat=1
     case $button in triple) button=1; repeat=3 ;; double) button=1; repeat=2 ;; esac
-    if [ $# -eq 2 ]; then move_pointer "$1" "$2"; elif [ $# -ne 0 ]; then fail "click takes X and Y, or nothing"; fi
+    # Without coordinates the click lands where an earlier move put the pointer, on what was there.
+    if [ $# -eq 2 ]; then move_pointer "$1" "$2"; elif [ $# -eq 0 ]; then addressed_geometry >/dev/null; else fail "click takes X and Y, or nothing"; fi
     xdotool click --repeat "$repeat" --delay 60 "$button"
     sync_x
 }
@@ -341,6 +377,8 @@ command_move() { [ $# -eq 2 ] || fail "move takes X and Y"; move_pointer "$1" "$
 command_mouse_button() {
     local action=$1 button=${2:-1}
     require_integer "$button" "button"
+    # A release is never refused, so that a resize cannot leave a button held.
+    [ "$action" = mouseup ] || addressed_geometry >/dev/null
     xdotool "$action" "$button"
     sync_x
 }
@@ -350,8 +388,9 @@ command_drag() {
     move_pointer "$1" "$2"
     xdotool mousedown 1
     # Intermediate motion: applications that track drags ignore a single jump.
-    local actual_width actual_height sent_width sent_height step
-    read -r actual_width actual_height sent_width sent_height < <(geometry)
+    local actual_width actual_height sent_width sent_height step addressed
+    addressed=$(addressed_geometry)
+    read -r actual_width actual_height sent_width sent_height <<<"$addressed"
     for step in 1 2 3; do
         xdotool mousemove -- \
             "$(awk -v a="$1" -v b="$3" -v s="$step" -v sw="$sent_width" -v aw="$actual_width" \
@@ -371,6 +410,8 @@ command_scroll() {
         up) button=4 ;; down) button=5 ;; left) button=6 ;; right) button=7 ;;
         *) fail "scroll direction must be up, down, left or right" ;;
     esac
+    # It scrolls what is under the pointer, which a resize may have moved.
+    addressed_geometry >/dev/null
     xdotool click --repeat "$steps" --delay 40 "$button"
     sync_x
 }
@@ -439,6 +480,9 @@ command_resize() {
     if ! xrandr --output "$output" --mode "$mode" 2>/dev/null; then
         fail "resize: $mode is not a mode of $output; available: $(xrandr | awk '/^ +[0-9]+x[0-9]+/ { printf "%s ", $1 }')"
     fi
+    # A deliberate resize is not a surprise: coordinates follow the new geometry until the next
+    # observation.
+    rm -f "$observed_geometry"
     command_display
 }
 

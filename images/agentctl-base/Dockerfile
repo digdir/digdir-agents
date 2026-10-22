@@ -50,7 +50,7 @@ RUN usermod --login agent --home /home/agent --move-home ubuntu \
 
 ARG TARGETARCH
 # agentd runs the harnesses' activity hooks and Claude Code's status line with `node`.
-ARG NODE_VERSION=22.23.2
+ARG NODE_VERSION=24.22.0
 ARG GH_VERSION=2.100.0
 ARG GH_STACK_VERSION=0.1.1
 # Terminal evidence for pull requests: asciinema records a command, agg renders the cast to a GIF.
@@ -196,6 +196,7 @@ ENV DISPLAY=:1
 ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 ENV ACCESSIBILITY_ENABLED=1
 ENV PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/local/libexec/agent-playwright-chromium
+ENV XDG_CURRENT_DESKTOP=X-Openbox:XFCE
 
 RUN agent-image-check
 
