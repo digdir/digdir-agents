@@ -106,6 +106,11 @@ async fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, Error>
         Err(failure) if failure.kind() == ErrorKind::NotFound => return Ok(None),
         Err(failure) => return Err(error::io("read Docker configuration", failure)),
     };
+    // Docker accepts a blank config.json as default configuration. A selected
+    // context still requires metadata, so returning None cannot change engines.
+    if contents.iter().all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) {
+        return Ok(None);
+    }
     serde_json::from_slice(&contents)
         .map(Some)
         .map_err(|failure| Error::Backend(format!("parse Docker configuration {}: {failure}", path.display())))
@@ -207,6 +212,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn blank_configuration_uses_platform_default() {
+        let config = tempfile::tempdir().expect("temporary Docker config");
+        for contents in ["", " ", "\t\r\n ", "{}"] {
+            tokio::fs::write(config.path().join("config.json"), contents)
+                .await
+                .expect("write blank Docker config");
+            assert_eq!(
+                super::endpoint(Some(config.path()), None, None)
+                    .await
+                    .expect("blank config selects the default engine"),
+                super::DEFAULT_HOST
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn broken_contexts_do_not_fall_back_to_another_engine() {
         let config = tempfile::tempdir().expect("temporary Docker config");
         select_context(config.path(), "missing").await;
@@ -217,16 +238,18 @@ mod tests {
                 .to_string()
                 .contains("missing")
         );
-        tokio::fs::write(config.path().join("config.json"), "invalid JSON")
-            .await
-            .expect("write invalid config");
-        assert!(
-            super::endpoint(Some(config.path()), None, None)
+        for contents in ["invalid JSON", "{", "{\"currentContext\":", "\u{000b}"] {
+            tokio::fs::write(config.path().join("config.json"), contents)
                 .await
-                .expect_err("invalid config")
-                .to_string()
-                .contains("parse Docker configuration")
-        );
+                .expect("write invalid config");
+            assert!(
+                super::endpoint(Some(config.path()), None, None)
+                    .await
+                    .expect_err("invalid config")
+                    .to_string()
+                    .contains("parse Docker configuration")
+            );
+        }
         write_context(config.path(), "remote", "tcp://remote:2376").await;
         assert!(
             super::endpoint(Some(config.path()), None, Some("remote"))
