@@ -83,6 +83,9 @@ fn memory_bytes() -> Option<u64> {
             .ok()?;
         return String::from_utf8_lossy(&output.stdout).trim().parse().ok();
     }
+    if cfg!(windows) {
+        return powershell_number("(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory", None);
+    }
     parse_meminfo(&std::fs::read_to_string("/proc/meminfo").ok()?)
 }
 
@@ -98,9 +101,16 @@ fn parse_meminfo(meminfo: &str) -> Option<u64> {
     kibibytes.checked_mul(1024)
 }
 
-/// Free space on the volume holding `path`, or its closest existing ancestor, from POSIX `df`.
+/// Free space on the volume holding `path`, or its closest existing ancestor, from POSIX `df`,
+/// or on Windows from the drive's own report.
 fn free_bytes(path: &Path) -> Option<u64> {
     let existing = path.ancestors().find(|ancestor| ancestor.exists())?;
+    if cfg!(windows) {
+        return powershell_number(
+            "[System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($env:AGENT_MEASURED_PATH)).AvailableFreeSpace",
+            Some(existing),
+        );
+    }
     let output = std::process::Command::new("df")
         .arg("-Pk")
         .arg(existing)
@@ -111,6 +121,25 @@ fn free_bytes(path: &Path) -> Option<u64> {
         .status
         .success()
         .then(|| parse_df(&String::from_utf8_lossy(&output.stdout)))
+        .flatten()
+}
+
+/// The whole number Windows PowerShell prints for `script`, which reads `path`, when given, as
+/// `$env:AGENT_MEASURED_PATH`, so the path needs no quoting.
+fn powershell_number(script: &str, path: Option<&Path>) -> Option<u64> {
+    let mut command = std::process::Command::new("powershell.exe");
+    command
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Some(path) = path {
+        command.env("AGENT_MEASURED_PATH", path);
+    }
+    let output = command.output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().parse().ok())
         .flatten()
 }
 
