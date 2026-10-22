@@ -729,6 +729,10 @@ impl SandboxBackend for MicrosandboxProvider {
             {
                 handle.kill().await.map_err(error::microsandbox)?;
             }
+            // As after a stop, nothing the Sandbox ran is still running.
+            self.executions
+                .borrow_mut()
+                .retain(|(sandbox_id, _), _| sandbox_id != id);
             Ok(())
         })
     }
