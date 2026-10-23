@@ -500,7 +500,9 @@ mod tests {
             .await
             .expect_err("a configured guest agent should be refused");
 
-        assert!(error.to_string().contains("/opt/other/agentd"), "{error}");
+        // Microsandbox makes configured paths absolute, which on Windows adds the current drive.
+        let configured = std::path::absolute("/opt/other/agentd").expect("path should resolve");
+        assert!(error.to_string().contains(&configured.display().to_string()), "{error}");
     }
 
     #[tokio::test(flavor = "local")]
