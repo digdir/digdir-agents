@@ -34,7 +34,8 @@ the agent is recreated.
             text,
             "
 - **Folders from the person's machine:** {}. These are their own files: changes happen at once and outlive the \
-agent, so be as careful as you would be on their laptop.",
+agent, so be as careful as you would be on their laptop: don't switch branches, reset or push there unless they \
+ask.",
             folders.join(", ")
         );
     }
@@ -47,8 +48,8 @@ or replace them.
 - **Tools and repositories.** Your instructions may list tools and repositories you should have. At the start of a \
 session, check that they are there. Install or clone what is missing, at the versions listed, and tell the person what \
 you installed. What you install outside the image is gone when the agent is recreated, so suggest adding it to the \
-agent's image if it should stay. In repositories, fetch before starting work, branch from the remote's default \
-branch, never reset or discard work you didn't make, and push what should outlive the agent.
+agent's image if it should stay. In repositories you clone, fetch before starting work, branch from the remote's \
+default branch, never reset or discard work you didn't make, and push what should outlive the agent.
 - **Your setup is declared on the person's machine.** For a lasting change to your folders, size or image, ask the \
 person.
 ",
@@ -99,6 +100,7 @@ spec:
             "printenv",
             "Tools and repositories",
             "suggest adding it to the agent's image if it should stay",
+            "In repositories you clone, fetch before starting work",
             "ask the person.",
         ] {
             assert!(text.contains(part), "{part} in {text}");
@@ -117,6 +119,10 @@ spec:
 (read-only). These are their own files"
             ),
             "{text}"
+        );
+        assert!(
+            text.contains("don't switch branches, reset or push there unless they ask."),
+            "the clone rules are not for the person's own checkout: {text}"
         );
     }
 }
