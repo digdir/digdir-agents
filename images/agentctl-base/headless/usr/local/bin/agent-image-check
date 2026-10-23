@@ -105,7 +105,7 @@ desktop_display=
 if [ -f /etc/agent-desktop.conf ]; then
     desktop_display="$(cat /etc/agent-desktop.conf /etc/agent-desktop.conf.d/*.conf 2>/dev/null \
         | sed -n 's/^[[:space:]]*AGENT_DESKTOP_DISPLAY[[:space:]]*=[[:space:]]*//p' | tail -n 1 \
-        | sed 's/[[:space:]]*$//; s/^"\(.*\)"$/\1/')"
+        | sed 's/[[:space:]]*$//; s/^"\(.*\)"$/\1/; s/^'\(.*\)'$/\1/')"
     [ "$(printenv DISPLAY || true)" = "$desktop_display" ] \
         || fail "ENV DISPLAY is '$(printenv DISPLAY || true)', but /etc/agent-desktop.conf and /etc/agent-desktop.conf.d put the desktop on '$desktop_display'"
 fi

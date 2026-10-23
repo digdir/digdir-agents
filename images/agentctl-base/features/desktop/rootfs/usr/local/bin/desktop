@@ -86,7 +86,7 @@ Point
   scroll up|down|left|right [N]  scroll N steps (default 3) at the pointer
 
 Type
-  type TEXT                      type literal text, any Unicode whatever the keyboard layout
+  type TEXT                      type literal text, any Unicode, whatever the keyboard layout
   key KEYSYM [--repeat N]        press an X11 key combination, for example ctrl+s or Page_Down
   hold-key KEYSYM COMMAND...     hold a modifier while running another desktop command
 
@@ -427,37 +427,44 @@ command_scroll() {
 type_bound() {
     local text=$1; shift
     local -a bind=() unbind=()
-    local binding status=0
+    local binding cleanup='' pid status=0
     for binding in "$@"; do
         bind+=(-e "keycode ${binding% *} = ${binding#* } ${binding#* }")
         unbind+=(-e "keycode ${binding% *} =")
     done
+    # An interrupted type must not leave keys bound or xdotool still typing.
     if [ ${#bind[@]} -gt 0 ]; then
-        # An interrupted type must not leave the keys bound.
-        # shellcheck disable=SC2064 # The bindings are fixed now.
-        trap "xmodmap ${unbind[*]@Q} 2>/dev/null" EXIT
+        cleanup="xmodmap ${unbind[*]@Q} 2>/dev/null"
+        # shellcheck disable=SC2064 # Expand the bindings now.
+        trap "$cleanup" EXIT
         xmodmap "${bind[@]}" || fail "cannot bind keys on display $display"
     fi
-    xdotool type --delay 12 -- "$text" || status=$?
-    if [ ${#bind[@]} -gt 0 ]; then
-        xmodmap "${unbind[@]}"
-        trap - EXIT
-    fi
+    xdotool type --delay 12 -- "$text" &
+    pid=$!
+    # shellcheck disable=SC2064 # Expand the pid now.
+    trap "kill $pid 2>/dev/null; $cleanup" EXIT
+    wait "$pid" || status=$?
+    [ ${#bind[@]} -eq 0 ] || xmodmap "${unbind[@]}"
+    trap - EXIT
     return "$status"
 }
 
 command_type() {
     [ $# -ge 1 ] || fail "type takes the text to enter"
-    local text=$* keymap
+    local text=$* keymap type_lock
+    # Concurrent types would pick the same spare keycodes.
+    mkdir -p "$captures"
+    exec {type_lock}>"$captures/.type.lock"
+    flock "$type_lock"
     keymap=$(xmodmap -pk) || fail "cannot read the keyboard map of display $display"
     local -A present=() bound=()
     local keysym
     while read -r keysym; do present[$((keysym))]=1; done < <(grep -o '0x[0-9a-f]*' <<<"$keymap")
-    # Unmapped keycodes, less one for xdotool.
+    # Unmapped keycodes, less one that xdotool binds itself.
     local -a spare
     mapfile -t spare < <(awk '$1 ~ /^[0-9]+$/ && NF == 1 { print $1 }' <<<"$keymap")
     local capacity=$((${#spare[@]} - 1))
-    # Split the text when it lacks more characters than there are spare keycodes.
+    # Type in segments when the layout lacks more characters than there are spare keycodes.
     local -a bindings=()
     local segment='' character code index
     for ((index = 0; index < ${#text}; index++)); do
