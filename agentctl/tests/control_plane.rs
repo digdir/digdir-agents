@@ -89,6 +89,10 @@ struct MemoryProvider {
     report_runtime_restart: Rc<Cell<bool>>,
     /// Stops that fail before stopping anything, as a runtime that cannot be reached does.
     failing_stops: Rc<Cell<usize>>,
+    /// Stops that ended the Sandbox at once.
+    kills: Rc<Cell<usize>>,
+    /// Graceful stops never finish, as for a guest that ignores the shutdown; kills still do.
+    hanging_stops: Rc<Cell<bool>>,
 }
 
 impl MemoryProvider {
@@ -105,7 +109,17 @@ impl MemoryProvider {
             blocking: None,
             report_runtime_restart: Rc::new(Cell::new(false)),
             failing_stops: Rc::new(Cell::new(0)),
+            kills: Rc::new(Cell::new(0)),
+            hanging_stops: Rc::new(Cell::new(false)),
         }
+    }
+
+    async fn stop_sandbox(&self, record: &AgentRecord) -> Result<(), Error> {
+        if let Some(remaining) = self.failing_stops.get().checked_sub(1) {
+            self.failing_stops.set(remaining);
+            return Err(Error::Sandbox(sandbox::Error::Backend("runtime unreachable".into())));
+        }
+        self.service.stop(&record.sandbox_name()?).await.map_err(Error::from)
     }
 
     fn with_blocking(mut self, blocking: Blocking) -> Self {
@@ -190,12 +204,16 @@ impl Provider for MemoryProvider {
 
     fn stop<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async move {
-            if let Some(remaining) = self.failing_stops.get().checked_sub(1) {
-                self.failing_stops.set(remaining);
-                return Err(Error::Sandbox(sandbox::Error::Backend("runtime unreachable".into())));
+            if self.hanging_stops.get() {
+                std::future::pending::<()>().await;
             }
-            self.service.stop(&record.sandbox_name()?).await.map_err(Error::from)
+            self.stop_sandbox(record).await
         })
+    }
+
+    fn kill<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
+        self.kills.set(self.kills.get() + 1);
+        Box::pin(self.stop_sandbox(record))
     }
 
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
@@ -316,6 +334,10 @@ impl Provider for PlannedProvider {
         self.inner.stop(record)
     }
 
+    fn kill<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
+        self.inner.kill(record)
+    }
+
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
         self.inner.release(record)
     }
@@ -357,6 +379,10 @@ impl Provider for UnsupportedProvider {
 
     fn stop<'a>(&'a self, _record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
+    }
+
+    fn kill<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
+        self.stop(record)
     }
 
     fn release<'a>(&'a self, _record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
@@ -2353,6 +2379,348 @@ async fn a_stopped_agent_keeps_its_sandbox_stopped_across_passes_and_reapplies()
     assert_eq!(started.spec.run_state, None, "Running is stored as omitted");
     reconcile(&fixture, "worker").await;
     assert!(stored(&fixture, "worker").await.agent.status.is_ready());
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_immediate_stop_kills_the_sandbox_once_and_later_stops_shut_down() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let backend = Rc::new(sandbox_memory::Provider::new());
+    let memory = MemoryProvider::new(backend.clone());
+    let kills = memory.kills.clone();
+    let provider: Rc<dyn Provider> = Rc::new(memory);
+    let immediate_stops = agent::control_plane::ImmediateStops::default();
+    let reconciler = reconciler(store.clone(), provider).with_immediate_stops(immediate_stops.clone());
+    let control_plane =
+        ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default())).with_immediate_stops(immediate_stops);
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let id = store.get_by_name("worker").await.expect("Agent").id;
+    reconciler.reconcile(id).await.expect("materialize");
+
+    let stopping = control_plane.stop_now("worker").await.expect("stop now");
+    assert!(
+        stopping.spec.is_stopped(),
+        "recorded like any stop, so it stays stopped"
+    );
+    reconciler.reconcile(id).await.expect("stop");
+    assert_eq!(kills.get(), 1);
+    assert_stopped(&store, &backend, id).await;
+
+    control_plane
+        .set_run_state("worker", agent::RunState::Running)
+        .await
+        .expect("start");
+    reconciler.reconcile(id).await.expect("start");
+    control_plane
+        .set_run_state("worker", agent::RunState::Stopped)
+        .await
+        .expect("stop");
+    reconciler.reconcile(id).await.expect("stop");
+    assert_eq!(
+        kills.get(),
+        1,
+        "the request was used up, so this stop shuts the guest down"
+    );
+    assert_stopped(&store, &backend, id).await;
+}
+
+/// A Control Plane and reconciler sharing immediate stops over one materialized Agent `worker`,
+/// with the test provider's kill counter and hanging switch.
+async fn immediate_stop_fixture() -> (
+    ControlPlane,
+    Rc<Reconciler>,
+    Rc<memory::InMemoryAgentStore>,
+    Rc<sandbox_memory::Provider>,
+    AgentId,
+    Rc<Cell<usize>>,
+    Rc<Cell<bool>>,
+    Rc<Cell<usize>>,
+) {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let backend = Rc::new(sandbox_memory::Provider::new());
+    let memory = MemoryProvider::new(backend.clone());
+    let (kills, hanging, failing) = (
+        memory.kills.clone(),
+        memory.hanging_stops.clone(),
+        memory.failing_stops.clone(),
+    );
+    let provider: Rc<dyn Provider> = Rc::new(memory);
+    let immediate_stops = agent::control_plane::ImmediateStops::default();
+    let reconciler = Rc::new(reconciler(store.clone(), provider).with_immediate_stops(immediate_stops.clone()));
+    let control_plane =
+        ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default())).with_immediate_stops(immediate_stops);
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let id = store.get_by_name("worker").await.expect("Agent").id;
+    reconciler.reconcile(id).await.expect("materialize");
+    (control_plane, reconciler, store, backend, id, kills, hanging, failing)
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_immediate_stop_abandons_a_setup_under_way() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let immediate_stops = agent::control_plane::ImmediateStops::default();
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()))
+        .with_immediate_stops(immediate_stops.clone());
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let id = store.get_by_name("worker").await.expect("Agent").id;
+    let started = Rc::new(Notify::new());
+    let memory = MemoryProvider::new(Rc::new(sandbox_memory::Provider::new())).with_blocking(Blocking {
+        agent: id,
+        calls: Rc::new(Cell::new(0)),
+        started: started.clone(),
+        release: Rc::new(Notify::new()),
+    });
+    let kills = memory.kills.clone();
+    let provider: Rc<dyn Provider> = Rc::new(memory);
+    let reconciler = Rc::new(reconciler(store.clone(), provider).with_immediate_stops(immediate_stops));
+    let setup = tokio::task::spawn_local({
+        let reconciler = reconciler.clone();
+        async move { reconciler.reconcile(id).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), started.notified())
+        .await
+        .expect("setup starts and never finishes on its own");
+
+    control_plane.stop_now("worker").await.expect("stop now");
+    tokio::time::timeout(Duration::from_secs(5), setup)
+        .await
+        .expect("the kill abandons the setup under way")
+        .expect("task")
+        .expect("the abandoned pass");
+    reconciler.reconcile(id).await.expect("the next pass stops the Agent");
+    assert_eq!(kills.get(), 1, "the next pass kills rather than stops");
+    let status = store.get(id).await.expect("stored Agent").agent.status;
+    assert!(status.is_stopped(), "{status:?}");
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_delete_after_an_immediate_stop_kills_and_leaves_no_request() {
+    let (control_plane, reconciler, store, _, id, kills, _, _) = immediate_stop_fixture().await;
+    control_plane.stop_now("worker").await.expect("stop now");
+    control_plane.delete("worker").await.expect("delete");
+    reconciler.reconcile(id).await.expect("release");
+    assert_eq!(kills.get(), 1, "the kill asked for first still kills");
+    assert!(matches!(store.get(id).await, Err(Error::NotFound)), "the Agent is gone");
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_immediate_stop_cuts_short_a_graceful_stop_under_way() {
+    let (control_plane, reconciler, store, backend, id, kills, hanging, _) = immediate_stop_fixture().await;
+    hanging.set(true);
+    control_plane
+        .set_run_state("worker", agent::RunState::Stopped)
+        .await
+        .expect("stop");
+    let graceful = tokio::task::spawn_local({
+        let reconciler = reconciler.clone();
+        async move { reconciler.reconcile(id).await }
+    });
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!graceful.is_finished(), "the guest ignores the shutdown");
+    assert_eq!(kills.get(), 0);
+
+    control_plane.stop_now("worker").await.expect("stop now");
+    tokio::time::timeout(std::time::Duration::from_secs(5), graceful)
+        .await
+        .expect("the kill ends the stop under way")
+        .expect("task")
+        .expect("stop");
+    assert_eq!(kills.get(), 1);
+    assert_stopped(&store, &backend, id).await;
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_failed_immediate_stop_is_retried_as_one() {
+    let (control_plane, reconciler, store, backend, id, kills, _, failing) = immediate_stop_fixture().await;
+    failing.set(1);
+    control_plane.stop_now("worker").await.expect("stop now");
+    reconciler
+        .reconcile(id)
+        .await
+        .expect_err("the runtime cannot be reached");
+    assert_eq!(kills.get(), 1);
+    reconciler.reconcile(id).await.expect("retry");
+    assert_eq!(kills.get(), 2, "the retry kills too");
+    assert_stopped(&store, &backend, id).await;
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_start_before_an_immediate_stop_was_carried_out_leaves_later_stops_graceful() {
+    let (control_plane, reconciler, store, backend, id, kills, _, _) = immediate_stop_fixture().await;
+    control_plane.stop_now("worker").await.expect("stop now");
+    control_plane
+        .set_run_state("worker", agent::RunState::Running)
+        .await
+        .expect("start");
+    reconciler.reconcile(id).await.expect("running");
+    control_plane
+        .set_run_state("worker", agent::RunState::Stopped)
+        .await
+        .expect("stop");
+    reconciler.reconcile(id).await.expect("stop");
+    assert_eq!(kills.get(), 0, "the overtaken request is forgotten");
+    assert_stopped(&store, &backend, id).await;
+}
+
+/// An Agent store whose next `get` reads the record and then waits to return it, as a pass does
+/// that read the Agent just before a request changed it.
+struct HeldStore {
+    inner: Rc<memory::InMemoryAgentStore>,
+    hold: Cell<bool>,
+    read: Notify,
+    release: Notify,
+}
+
+impl AgentStore for HeldStore {
+    fn get(&self, id: AgentId) -> LocalFuture<'_, Result<AgentRecord, Error>> {
+        Box::pin(async move {
+            let record = self.inner.get(id).await;
+            if self.hold.replace(false) {
+                self.read.notify_one();
+                self.release.notified().await;
+            }
+            record
+        })
+    }
+
+    fn get_by_name<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<AgentRecord, Error>> {
+        self.inner.get_by_name(name)
+    }
+
+    fn list(&self) -> LocalFuture<'_, Result<Vec<AgentRecord>, Error>> {
+        self.inner.list()
+    }
+
+    fn put(&self, record: AgentRecord, expected_generation: u64) -> LocalFuture<'_, Result<(), Error>> {
+        self.inner.put(record, expected_generation)
+    }
+
+    fn update_status(&self, id: AgentId, generation: u64, status: Status) -> LocalFuture<'_, Result<Status, Error>> {
+        self.inner.update_status(id, generation, status)
+    }
+
+    fn mark_deleting<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<AgentRecord, Error>> {
+        self.inner.mark_deleting(name)
+    }
+
+    fn finalize_deletion(&self, id: AgentId, generation: u64) -> LocalFuture<'_, Result<(), Error>> {
+        self.inner.finalize_deletion(id, generation)
+    }
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_immediate_stop_outlives_a_pass_that_read_the_agent_running_before_it() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let held = Rc::new(HeldStore {
+        inner: store.clone(),
+        hold: Cell::new(false),
+        read: Notify::new(),
+        release: Notify::new(),
+    });
+    let backend = Rc::new(sandbox_memory::Provider::new());
+    let memory = MemoryProvider::new(backend.clone());
+    let kills = memory.kills.clone();
+    let provider: Rc<dyn Provider> = Rc::new(memory);
+    let immediate_stops = agent::control_plane::ImmediateStops::default();
+    let reconciler = Rc::new(reconciler(held.clone(), provider).with_immediate_stops(immediate_stops.clone()));
+    let control_plane =
+        ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default())).with_immediate_stops(immediate_stops);
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let id = store.get_by_name("worker").await.expect("Agent").id;
+    reconciler.reconcile(id).await.expect("materialize");
+
+    held.hold.set(true);
+    let stale = tokio::task::spawn_local({
+        let reconciler = reconciler.clone();
+        async move { reconciler.reconcile(id).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), held.read.notified())
+        .await
+        .expect("the pass reads the Agent running");
+    control_plane.stop_now("worker").await.expect("stop now");
+    held.release.notify_one();
+    // The pass works from a snapshot the stop replaced, so how it ends does not matter.
+    let _ = stale.await.expect("task");
+
+    reconciler.reconcile(id).await.expect("stop");
+    assert_eq!(kills.get(), 1, "the older snapshot leaves the request to the stop");
+    assert_stopped(&store, &backend, id).await;
+}
+
+/// A host key store whose loads never finish, as SSH access setup does that hangs on the guest.
+struct HangingHostKeys {
+    loading: Rc<Notify>,
+}
+
+impl agent::ssh::HostKeyStore for HangingHostKeys {
+    fn load_host_key(&self, _id: AgentId) -> LocalFuture<'_, Result<Option<zeroize::Zeroizing<Vec<u8>>>, Error>> {
+        Box::pin(async move {
+            self.loading.notify_one();
+            std::future::pending().await
+        })
+    }
+
+    fn store_host_key(&self, _id: AgentId, _key: zeroize::Zeroizing<Vec<u8>>) -> LocalFuture<'_, Result<(), Error>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn delete_host_key(&self, _id: AgentId) -> LocalFuture<'_, Result<(), Error>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_immediate_stop_abandons_access_setup_under_way() {
+    let temporary = TempDirectory::new("immediate-stop-access");
+    let home = agent::local::home::ControlPlaneHome::resolve(Some(&temporary.path().join("home"))).expect("home");
+    home.prepare().expect("prepare home");
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let memory = MemoryProvider::new(Rc::new(sandbox_memory::Provider::new()));
+    let kills = memory.kills.clone();
+    let provider: Rc<dyn Provider> = Rc::new(memory);
+    let loading = Rc::new(Notify::new());
+    let ssh = Rc::new(
+        agent::ssh::Access::new(
+            &home,
+            PathBuf::from("/usr/local/bin/agentctl"),
+            Rc::new(HangingHostKeys {
+                loading: loading.clone(),
+            }),
+            store.clone(),
+        )
+        .with_user_home(None),
+    );
+    let immediate_stops = agent::control_plane::ImmediateStops::default();
+    let reconciler = Rc::new(
+        Reconciler::new(store.clone(), sandbox_service(provider), ProvisioningState::default())
+            .with_ssh_access(ssh)
+            .with_immediate_stops(immediate_stops.clone()),
+    );
+    let control_plane =
+        ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default())).with_immediate_stops(immediate_stops);
+    let mut request = apply_request("worker");
+    request.agent.spec.access = vec![agent::AccessSpec::Ssh {}];
+    control_plane.apply(request).await.expect("apply");
+    let id = store.get_by_name("worker").await.expect("Agent").id;
+    let setup = tokio::task::spawn_local({
+        let reconciler = reconciler.clone();
+        async move { reconciler.reconcile(id).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), loading.notified())
+        .await
+        .expect("SSH access setup starts and never finishes on its own");
+
+    control_plane.stop_now("worker").await.expect("stop now");
+    tokio::time::timeout(Duration::from_secs(5), setup)
+        .await
+        .expect("the kill abandons the access setup under way")
+        .expect("task")
+        .expect("the abandoned pass");
+    reconciler.reconcile(id).await.expect("the next pass stops the Agent");
+    assert_eq!(kills.get(), 1, "the next pass kills rather than stops");
+    let status = store.get(id).await.expect("stored Agent").agent.status;
+    assert!(status.is_stopped(), "{status:?}");
 }
 
 #[tokio::test(flavor = "local")]

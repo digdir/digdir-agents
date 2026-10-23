@@ -818,6 +818,17 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal, hit_map
                 ))
                 .render(frame, area, FORM_WIDTH, hit_map);
         }
+        Modal::ConfirmStopAll { agents } => {
+            let question = match agents.as_slice() {
+                [agent] => format!("Stop {agent}, the running agent, at once?"),
+                agents => format!("Stop all {} running agents at once?", agents.len()),
+            };
+            Form::new(" stop every agent ", Color::Red, &CONFIRM_HINTS)
+                .row(Line::from(question))
+                .row(note_line("No shutdown: what they wrote last may be lost."))
+                .row(note_line("Disks are kept. x on an agent starts it again."))
+                .render(frame, area, FORM_WIDTH, hit_map);
+        }
         Modal::ConfirmDeleteSession { agent, session } => {
             Form::new(" delete ", Color::Red, &CONFIRM_HINTS)
                 .row(Line::from(format!("Delete session {agent}/{session}?")))

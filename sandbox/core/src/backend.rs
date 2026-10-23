@@ -219,6 +219,10 @@ pub trait SandboxBackend {
     /// Stops a Sandbox.
     fn stop<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), Error>>;
 
+    /// Ends a running Sandbox at once, without asking the guest to shut down. A backend
+    /// without a faster way stops it as [`Self::stop`] does, and says so.
+    fn kill<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), Error>>;
+
     /// Deletes a Sandbox.
     fn delete<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), Error>>;
 

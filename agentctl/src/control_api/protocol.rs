@@ -16,6 +16,7 @@ pub(crate) const METHOD_RESOLVE_DIRECTORY: &str = "agents.v1.resolveDirectory";
 pub(crate) const METHOD_EXECUTION_ENSURE: &str = "agents.v1.ensureExecution";
 pub(crate) const METHOD_DELETE: &str = "agents.v1.delete";
 pub(crate) const METHOD_STOP: &str = "agents.v1.stop";
+pub(crate) const METHOD_STOP_NOW: &str = "agents.v1.stopNow";
 pub(crate) const METHOD_START: &str = "agents.v1.start";
 pub(crate) const METHOD_CONVERGE: &str = "agents.v1.converge";
 pub(crate) const METHOD_SSH_ACCESS: &str = "agents.v1.sshAccess";

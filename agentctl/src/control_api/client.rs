@@ -12,7 +12,7 @@ use super::protocol::{
     METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH,
     METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
     METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_VNC_ACCESS, NameParams, ProgressParams, ReadMessage, Request,
+    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, ProgressParams, ReadMessage, Request,
     ResourcesWatchParams, Response, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
     SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
 };
@@ -255,6 +255,16 @@ impl Client {
             crate::RunState::Stopped => METHOD_STOP,
         };
         self.call(method, NameParams { name: name.into() }).await
+    }
+
+    /// Records an Agent as stopped and has its Sandbox ended at once, without letting the guest
+    /// shut down; returns the Agent as stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the control-plane operation fails.
+    pub async fn stop_now(&self, name: &str) -> Result<Agent, Error> {
+        self.call(METHOD_STOP_NOW, NameParams { name: name.into() }).await
     }
 
     /// Stores a host-acquired harness credential in the daemon.

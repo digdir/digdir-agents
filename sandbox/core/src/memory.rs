@@ -446,6 +446,11 @@ impl SandboxBackend for Provider {
         })
     }
 
+    /// Memory Sandboxes have no guest to wait for, so a kill ends one as a stop does.
+    fn kill<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), Error>> {
+        self.stop(id)
+    }
+
     fn delete<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             let mut storage = self.state.borrow_mut();

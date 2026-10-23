@@ -17,6 +17,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 - Sessions know where they run: `AGENT_NAME`, `AGENT_SESSION_NAME`, `AGENT_HOST` and `AGENT_SOURCE_DIRECTORY` are set for the harness, so instructions can ask an agent to name itself. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#agent-layer), [#206](https://github.com/digdir/digdir-agents/pull/206))
 - The tmux status bar in a session shows its name and the keys to detach, open a shell beside it and move to the next window. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#agent-layer), [#206](https://github.com/digdir/digdir-agents/pull/206))
 - On the desktop image, apps that keep secrets in a keyring, such as `secret-tool`, Chromium and VS Code, now have one. It has no password: anything in the Agent can read it. ([Secret Service](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#the-secret-service), [#198](https://github.com/digdir/digdir-agents/pull/198))
+- `agentctl kill --all`, or `agentctl stop --all --now`, is an emergency stop: every Agent's VM ends at once, without shutting down, and stays stopped until started again. `agentctl stop` without an Agent asks before stopping every running one, and `X` in `agentctl tui` stops them all at once. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#stopping-every-agent))
 
 ### Changed
 

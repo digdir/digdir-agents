@@ -43,6 +43,22 @@ supported, including Docker Desktop and Colima's per-user sockets. Remote Docker
 the host Docker connection. Starting Docker or changing the saved local context lets background retries proceed
 without restarting `agentd`.
 
+### Stopping every Agent
+
+To stop every Agent at once, as an emergency stop:
+
+```sh
+agentctl kill --all     # the same as agentctl stop --all --now
+```
+
+Their VMs end at once instead of shutting down, so nothing in them runs or reaches the network any more, and they stay
+stopped until `agentctl start agent/NAME`, even when their manifests are applied again. Disks are kept, but what an
+Agent wrote in its last seconds may be lost. `agentctl stop` without an Agent lists the ones not stopped yet and asks before
+stopping them all; without `--now`, each gets up to 10 seconds to shut down. A kill also cuts short such a graceful
+stop already under way, so `kill --all` from another terminal ends a `stop --all` that waits on a guest. It also ends a
+setup under way, such as an image build or a boot, so an Agent applied a moment ago stops at once too.
+`agentctl kill` is `stop --now`, for one Agent, `--all` of them, or after asking. In `agentctl tui`, `X` does the same as `kill --all` after asking.
+
 ## Development
 
 Run `make help` at the repository root for the supported development commands. `make user-install` builds, packages and
@@ -117,7 +133,8 @@ automatically; `agentctl stop` and then `agentctl start` restart it.
 
 An Agent's `spec.runState` is `Running`, the default, or `Stopped`. `agentctl stop` and `agentctl start` set it as a
 new generation; a manifest may set it, and `apply` of one that omits it keeps the current run state. For a stopped Agent
-the reconciler stops the Sandbox VM and its Network, killing a VM that does not stop gracefully, and keeps its root
+the reconciler stops the Sandbox VM and its Network, killing a VM that does not stop gracefully, or at once after
+`agentctl stop --now`, and keeps its root
 filesystem, Volumes, identity and Provider assignment. It reaches nothing in the guest and reports `Ready=False` and
 `SandboxReady=False` with reason `Stopped`. Commands that need the Sandbox fail at once, and its Sessions go Idle, as
 after inactivity. A start is an ordinary pass on the same root filesystem; it launches no harness, and the next attach

@@ -184,6 +184,10 @@ impl Provider for Adapter {
         Box::pin(async move { self.service.stop(&record.sandbox_name()?).await.map_err(Error::from) })
     }
 
+    fn kill<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(async move { self.service.kill(&record.sandbox_name()?).await.map_err(Error::from) })
+    }
+
     fn open<'a>(
         &'a self,
         record: &'a AgentRecord,
