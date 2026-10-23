@@ -1,0 +1,9 @@
+[Unit]
+Description=Include nested Agents' SSH aliases once agentctl is installed
+
+[Path]
+PathExists=/home/agent/.local/bin/agentctl
+PathExists=/usr/local/bin/agentctl
+
+[Install]
+WantedBy=paths.target
