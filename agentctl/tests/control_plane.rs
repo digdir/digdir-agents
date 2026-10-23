@@ -498,6 +498,78 @@ async fn lists_agents_and_resolves_the_nearest_unique_source_directory() {
 }
 
 #[tokio::test(flavor = "local")]
+async fn an_agent_defined_in_a_subdirectory_resolves_from_anywhere_in_its_repository() {
+    let fixture = fixture();
+    let temporary = tempfile::TempDir::new().expect("temporary directory");
+    let root = temporary.path().join("repository");
+    std::fs::create_dir_all(root.join(".git")).expect("repository");
+    std::fs::create_dir_all(root.join("agents/worker")).expect("agent directory");
+    std::fs::create_dir_all(root.join("src/feature")).expect("source directory");
+    let elsewhere = temporary.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("directory outside the repository");
+    fixture
+        .control_plane
+        .apply(apply_request_in("worker", root.join("agents/worker")))
+        .await
+        .expect("apply");
+    for directory in [root.clone(), root.join("src/feature"), root.join("agents/worker")] {
+        let resolved = fixture
+            .control_plane
+            .resolve_directory(&directory)
+            .await
+            .expect("the repository's Agent");
+        assert_eq!(resolved.metadata.name, "worker", "from {}", directory.display());
+    }
+
+    let inner = root.join("agents/worker/inner");
+    std::fs::create_dir_all(&inner).expect("inner directory");
+    fixture
+        .control_plane
+        .apply(apply_request_in("inner", inner.clone()))
+        .await
+        .expect("apply");
+    for (directory, expected) in [(inner.clone(), "inner"), (root.join("agents/worker"), "worker")] {
+        let resolved = fixture
+            .control_plane
+            .resolve_directory(&directory)
+            .await
+            .expect("the closest Agent");
+        assert_eq!(
+            resolved.metadata.name, expected,
+            "a source directory is more specific than the repository"
+        );
+    }
+    let shared = fixture.control_plane.resolve_directory(&root).await;
+    assert!(
+        matches!(&shared, Err(Error::Invalid(message)) if message.contains("multiple Agents")),
+        "two Agents in one repository are ambiguous from its root: {shared:?}"
+    );
+    let outside = fixture.control_plane.resolve_directory(&elsewhere).await;
+    assert!(matches!(outside, Err(Error::NotFound)), "{outside:?}");
+
+    let monorepo = temporary.path().join("monorepo");
+    std::fs::create_dir_all(monorepo.join(".git")).expect("repository");
+    std::fs::create_dir_all(monorepo.join("agents/helper")).expect("agent directory");
+    std::fs::create_dir_all(monorepo.join("src")).expect("source directory");
+    for (name, directory) in [("root", monorepo.clone()), ("helper", monorepo.join("agents/helper"))] {
+        fixture
+            .control_plane
+            .apply(apply_request_in(name, directory))
+            .await
+            .expect("apply");
+    }
+    let resolved = fixture
+        .control_plane
+        .resolve_directory(&monorepo.join("src"))
+        .await
+        .expect("the Agent defined at the repository's root");
+    assert_eq!(
+        resolved.metadata.name, "root",
+        "an Agent's own directory wins over another Agent's repository at the same depth"
+    );
+}
+
+#[tokio::test(flavor = "local")]
 async fn directory_resolution_selects_leaf_variants_and_prefers_the_default_manifest() {
     let fixture = fixture();
     let root = std::env::temp_dir().join("agent-platform-variant-sources");

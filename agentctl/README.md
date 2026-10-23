@@ -109,7 +109,9 @@ The Sandbox crates do not depend on Agent automation.
 
 `agentd` owns the durable desired state and all lifecycle effects. `agentctl` starts the adjacent daemon on demand and
 communicates through the versioned local control API. Its resource-oriented commands follow `verb resource [name]`;
-Session scope is explicit through `--agent` or inferred from the closest unique persisted Agent source directory.
+Session scope is explicit through `--agent` or inferred from the closest unique persisted Agent source directory: the
+manifest's directory, a bind-mounted host directory, or, least specifically, the Git checkout the manifest is in, so an
+Agent defined in `agents/<name>/` is found from anywhere in its repository.
 Transient `exec` commands similarly converge the Agent first, then target its exact materialized Sandbox without
 creating durable Session state or taking Sandbox lifecycle ownership away from `agentd`.
 
@@ -192,9 +194,9 @@ condition says why. Microsandbox gives the Sandbox `/dev/kvm` for them, which ne
 enabled or a Mac with an Apple M3 or newer chip and macOS 15 or newer. Agent setup gives the device to the `agent`
 group, so the image need not grant it. Turning nested Sandboxes on or off restarts a running Agent.
 
-`spec.home` is a continuously applied overlay onto `/home/agent`. It converges files supplied by the builder but does
-not delete guest files that disappear from the source. Builders may use it to own harness configuration explicitly,
-with the consequence that those files are reapplied on every Agent pass.
+`spec.home`, when given, is a continuously applied overlay onto `/home/agent`. It converges files supplied by the
+builder but does not delete guest files that disappear from the source. Builders may use it to own harness configuration
+explicitly, with the consequence that those files are reapplied on every Agent pass.
 
 `spec.harnesses` declares the harness installations available to Sessions and selects the default used for new Sessions.
 A declared `version` is verified against the image at setup; omit it when the image owns the version, so image bumps need no manifest change.
@@ -276,6 +278,8 @@ the current real value only for an authorized request to an allowed host; rotati
 material into the Sandbox. A custom placeholder is optional for clients that validate token shape.
 Set `optional: true` when a missing or empty environment-file value should omit that secret binding instead of
 rejecting the Agent apply. Required secrets remain the default.
+
+`spec.network` may be omitted; it then defaults to `mode: mediated` and `allow: all`.
 
 Policy is evaluated for live Sandbox-originated operations and fails closed when the destination, authorization,
 secret resolution or trusted mediation path is unavailable. Host-destined traffic is restricted to the registered

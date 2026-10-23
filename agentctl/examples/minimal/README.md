@@ -6,11 +6,10 @@ day.
 
 | File | Purpose |
 | --- | --- |
-| [`agent.yaml`](agent.yaml) | The manifest: image, resources, instructions, harness and network |
+| [`agent.yaml`](agent.yaml) | The manifest: image, resources, instructions and harness |
 | [`Dockerfile`](Dockerfile) | The image: Ubuntu with Git, the GitHub CLI, tmux and Claude Code |
 | [`instructions.md`](instructions.md) | What Claude Code is told about this computer, installed as `~/.claude/CLAUDE.md` |
 | [`claude-state.json`](claude-state.json) | Claude Code state baked into the image, so first-run prompts are skipped |
-| [`home/`](home) | Files copied into `/home/agent` on every reconciliation; empty here |
 
 ## Try it
 
@@ -33,4 +32,5 @@ agentctl delete agent/minimal
   [`agents/self-dev`](../../../agents/self-dev).
 - Access to GitHub or another service needs a mediated secret: the token stays on the host, and the network mediator
   substitutes it into requests to the hosts the manifest allows.
+- `spec.home` names a directory whose files are copied into `/home/agent` on every reconciliation.
 - Variants such as `agent.nested.yaml` extend `agent.yaml` and change only what differs.

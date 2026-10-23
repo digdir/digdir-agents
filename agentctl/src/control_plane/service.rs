@@ -361,21 +361,27 @@ impl ControlPlane {
         let directory = canonical_or_original(directory).await;
         let mut matches = Vec::new();
         for record in self.store.list().await? {
-            let mut closest_depth: Option<usize> = None;
-            for source in association_directories(&record) {
+            // How close a match is: its depth, then whether it is one of the Agent's own
+            // directories rather than the repository holding them, which loses a tie.
+            let mut closest: Option<(usize, bool)> = None;
+            let repository = repository_root(&record.source_directory).await;
+            let sources = association_directories(&record)
+                .map(|source| (source, true))
+                .chain(repository.as_deref().map(|source| (source, false)));
+            for (source, own) in sources {
                 let source = canonical_or_original(source).await;
                 if directory.starts_with(&source) {
-                    closest_depth = Some(closest_depth.unwrap_or_default().max(source.components().count()));
+                    closest = closest.max(Some((source.components().count(), own)));
                 }
             }
-            if let Some(depth) = closest_depth {
-                matches.push((record, depth));
+            if let Some(closeness) = closest {
+                matches.push((record, closeness));
             }
         }
-        let Some(depth) = matches.iter().map(|(_, depth)| *depth).max() else {
+        let Some(closest) = matches.iter().map(|(_, closeness)| *closeness).max() else {
             return Err(Error::NotFound);
         };
-        matches.retain(|(_, candidate_depth)| *candidate_depth == depth);
+        matches.retain(|(_, closeness)| *closeness == closest);
         if let Some(variant) = variant {
             let filename = variant.filename();
             matches.retain(|(record, _)| {
@@ -705,6 +711,19 @@ async fn canonical_secret_file(path: &std::path::Path) -> PathBuf {
             _ => return path.to_path_buf(),
         }
     }
+}
+
+/// The Git working tree that holds `directory`, found by its `.git` entry: a directory in a
+/// checkout, a file in a linked worktree. An Agent is also associated with it, as its least
+/// specific directory, so an Agent defined in `agents/<name>/` is found from anywhere in the
+/// checkout.
+async fn repository_root(directory: &std::path::Path) -> Option<std::path::PathBuf> {
+    for ancestor in directory.ancestors() {
+        if tokio::fs::try_exists(ancestor.join(".git")).await.unwrap_or(false) {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    None
 }
 
 fn association_directories(record: &AgentRecord) -> impl Iterator<Item = &std::path::Path> {

@@ -31,7 +31,12 @@ use tokio::io::AsyncWriteExt as _;
 use tokio::runtime::LocalRuntime;
 
 #[derive(Parser)]
-#[command(name = "agentctl", about = "Manage the per-user Agent control plane", version = agent::build_version())]
+#[command(
+    name = "agentctl",
+    about = "Run coding agents in sandboxes on this machine",
+    after_help = "To stop every agent at once: agentctl kill --all",
+    version = agent::build_version()
+)]
 struct Arguments {
     /// Agent control-plane home.
     #[arg(long, global = true)]
@@ -42,55 +47,55 @@ struct Arguments {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Open the interactive terminal UI.
+    /// Open the terminal UI with every agent and session.
     Tui,
-    /// Create or attach to a named Session in an Agent sandbox.
+    /// Create or attach to a named session in an agent.
     Attach {
         /// Session resource, optionally combined with its name (for example `session/s1`).
         resource: String,
-        /// Optional Session name when it is not part of `resource`.
+        /// Optional session name when it is not part of `resource`.
         name: Option<String>,
-        /// Owning Agent; inferred from the current directory when omitted.
+        /// Owning agent; inferred from the current directory when omitted.
         #[arg(long, conflicts_with = "variant")]
         agent: Option<String>,
-        /// Select the closest Agent by its applied leaf variant.
+        /// Select the closest agent by its applied leaf variant.
         #[arg(long, value_parser = parse_variant_name, conflicts_with = "agent")]
         variant: Option<AgentVariantName>,
         #[command(flatten)]
         selection: SessionSelection,
     },
-    /// Stop an Agent, or every Agent, keeping their disks, so attaching to a Session after a start resumes it.
+    /// Stop an agent, or every agent; disks are kept, and sessions resume after a start.
     ///
-    /// Running harnesses are stopped with the VM. Applying the manifest again keeps the Agent stopped.
-    /// Without an Agent, asks whether to stop every running Agent; `--all --now` does so at once.
+    /// Running harnesses are stopped with the VM. Applying the manifest again keeps the agent stopped.
+    /// Without an agent, asks whether to stop every running agent; `--all --now` does so at once.
     Stop {
         #[command(flatten)]
         target: StopTarget,
     },
-    /// Stop an Agent, or every Agent, at once, as `stop --now` does: an emergency stop.
+    /// Stop an agent, or every agent, at once, as `stop --now` does: an emergency stop.
     ///
-    /// The VMs end without shutting down; disks are kept, but what an Agent wrote in its last
-    /// seconds may be lost. Without an Agent, asks whether to stop every running Agent.
+    /// The VMs end without shutting down; disks are kept, but what an agent wrote in its last
+    /// seconds may be lost. Without an agent, asks whether to stop every running agent.
     Kill {
         #[command(flatten)]
         target: KillTarget,
     },
-    /// Start a stopped Agent's Sandbox VM on its kept disk and wait until the Agent is Ready.
+    /// Start a stopped agent on its kept disk and wait until it is ready.
     Start {
         #[command(flatten)]
         target: RunStateTarget,
     },
-    /// Manage Claude Code harness authentication.
+    /// Sign agents in to Claude Code.
     Claude {
         #[command(subcommand)]
         command: ClaudeCommand,
     },
-    /// Manage Codex CLI harness authentication.
+    /// Sign agents in to Codex.
     Codex {
         #[command(subcommand)]
         command: CodexCommand,
     },
-    /// Execute a command in an Agent sandbox.
+    /// Run a command in an agent.
     Exec {
         /// Pass stdin to an allocated terminal.
         #[arg(short = 'i', long, requires = "tty")]
@@ -103,19 +108,19 @@ enum Command {
         /// Agent name, as an alternative to the positional resource.
         #[arg(long, conflicts_with_all = ["resource", "variant"])]
         agent: Option<String>,
-        /// Select the closest Agent by its applied leaf variant.
+        /// Select the closest agent by its applied leaf variant.
         #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["agent", "resource"])]
         variant: Option<AgentVariantName>,
         /// Command and arguments to execute after `--`.
         #[arg(last = true, required = true, num_args = 1..)]
         command: Vec<String>,
     },
-    /// Open an OpenSSH session to an Agent through `agentctl ssh-proxy`.
+    /// Open an SSH session to an agent.
     Ssh {
         /// Agent name, as an alternative to the positional resource.
         #[arg(long, conflicts_with_all = ["resource", "variant"])]
         agent: Option<String>,
-        /// Select the closest Agent by its applied leaf variant.
+        /// Select the closest agent by its applied leaf variant.
         #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["agent", "resource"])]
         variant: Option<AgentVariantName>,
         /// Agent resource or name; inferred from the current directory when omitted.
@@ -124,12 +129,12 @@ enum Command {
         #[arg(last = true)]
         command: Vec<String>,
     },
-    /// Forward an Agent's desktop to a local VNC port until interrupted.
+    /// Forward an agent's desktop to a local VNC port until interrupted.
     Vnc {
         /// Agent name, as an alternative to the positional resource.
         #[arg(long, conflicts_with_all = ["resource", "variant"])]
         agent: Option<String>,
-        /// Select the closest Agent by its applied leaf variant.
+        /// Select the closest agent by its applied leaf variant.
         #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["agent", "resource"])]
         variant: Option<AgentVariantName>,
         /// Agent resource or name; inferred from the current directory when omitted.
@@ -144,22 +149,22 @@ enum Command {
         #[arg(long)]
         open: bool,
     },
-    /// Forward local ports to a running Agent sandbox until interrupted.
+    /// Forward local ports to a running agent sandbox until interrupted.
     PortForward {
-        /// Agent name, as an alternative to a leading Agent argument.
+        /// Agent name, as an alternative to a leading agent argument.
         #[arg(long, conflicts_with = "variant")]
         agent: Option<String>,
-        /// Select the closest Agent by its applied leaf variant.
+        /// Select the closest agent by its applied leaf variant.
         #[arg(long, value_parser = parse_variant_name, conflicts_with = "agent")]
         variant: Option<AgentVariantName>,
-        /// Optional leading Agent resource or name, followed by port mappings
+        /// Optional leading agent resource or name, followed by port mappings
         /// written as GUEST, LOCAL:GUEST, or ADDRESS:LOCAL:GUEST. An empty
-        /// local port (`:GUEST`) selects an ephemeral local port. The Agent is
-        /// inferred from the current directory when no leading Agent is given.
+        /// local port (`:GUEST`) selects an ephemeral local port. The agent is
+        /// inferred from the current directory when no leading agent is given.
         #[arg(required = true, num_args = 1..)]
         arguments: Vec<String>,
     },
-    /// Create a Session and wait until its harness is ready, without attaching.
+    /// Create a session and wait until its harness is ready, without attaching.
     Create {
         #[command(flatten)]
         target: SessionTarget,
@@ -172,7 +177,7 @@ enum Command {
         #[command(flatten)]
         input: PromptInput,
     },
-    /// Deliver a prompt to a running Session's harness.
+    /// Deliver a prompt to a running session's harness.
     Prompt {
         #[command(flatten)]
         target: SessionTarget,
@@ -181,7 +186,7 @@ enum Command {
         #[command(flatten)]
         completion: CompletionOptions,
     },
-    /// Read a Session's conversation as turns.
+    /// Read a session's conversation as turns.
     Turns {
         #[command(flatten)]
         target: SessionTarget,
@@ -195,16 +200,16 @@ enum Command {
         resource: String,
         /// Optional resource name when it is not part of `resource`.
         name: Option<String>,
-        /// Owning Agent for Session resources; inferred from the current directory when omitted.
+        /// Owning agent for session resources; inferred from the current directory when omitted.
         #[arg(long, conflicts_with = "variant")]
         agent: Option<String>,
-        /// Select the closest Agent by its applied leaf variant.
+        /// Select the closest agent by its applied leaf variant.
         #[arg(long, value_parser = parse_variant_name, conflicts_with = "agent")]
         variant: Option<AgentVariantName>,
-        /// List Sessions across every Agent instead of resolving one owner.
+        /// List sessions across every agent instead of resolving one owner.
         #[arg(short = 'A', long, conflicts_with_all = ["agent", "variant"])]
         all_agents: bool,
-        /// Include archived Sessions in a Session listing.
+        /// Include archived sessions in a session listing.
         #[arg(long)]
         archived: bool,
         /// Output format.
@@ -215,28 +220,28 @@ enum Command {
     Describe {
         /// Agent resource, optionally combined with its name (for example `agent/worker`).
         resource: String,
-        /// Optional Agent name when it is not part of `resource`.
+        /// Optional agent name when it is not part of `resource`.
         name: Option<String>,
         /// Output format.
         #[arg(short = 'o', long, default_value = "table", value_enum)]
         output: OutputFormat,
     },
-    /// Create or update an Agent from a manifest.
+    /// Create or update an agent from a manifest.
     Apply {
         /// Agent manifest path; defaults to ./agent.yaml.
         #[arg(short = 'f', long = "filename", conflicts_with = "variant")]
         filename: Option<PathBuf>,
-        /// Variant of the Agent in the current directory.
+        /// Variant of the agent in the current directory.
         #[arg(long, value_parser = parse_variant_name, conflicts_with = "filename")]
         variant: Option<AgentVariantName>,
-        /// Override metadata.name so one manifest can create multiple Agents.
+        /// Override metadata.name so one manifest can create multiple agents.
         #[arg(long)]
         name: Option<String>,
         /// File supplying declared manifest environment and secret values; defaults to `.env`
         /// beside the manifest. Keep files containing secrets outside bind-mounted directories.
         #[arg(long)]
         env_file: Option<PathBuf>,
-        /// Stay attached after applying and show provisioning progress until the Agent is Ready.
+        /// Stay attached after applying and show provisioning progress until the agent is Ready.
         #[arg(long)]
         wait: bool,
         /// Maximum wait with `--wait`, written as seconds, minutes, or hours (for example `10m`).
@@ -249,19 +254,19 @@ enum Command {
         resource: String,
         /// Optional resource name when it is not part of `resource`.
         name: Option<String>,
-        /// Owning Agent for Session resources; inferred from the current directory when omitted.
+        /// Owning agent for session resources; inferred from the current directory when omitted.
         #[arg(long, conflicts_with = "variant")]
         agent: Option<String>,
-        /// Select the closest Agent by its applied leaf variant.
+        /// Select the closest agent by its applied leaf variant.
         #[arg(long, value_parser = parse_variant_name, conflicts_with = "agent")]
         variant: Option<AgentVariantName>,
     },
-    /// Archive a Session: stop its harness and hide it from listings, keeping its name and conversation.
+    /// Archive a session: stop its harness and hide it from listings, keeping its name and conversation.
     Archive {
         #[command(flatten)]
         target: SessionTarget,
     },
-    /// Unarchive a Session; the next attach resumes its conversation.
+    /// Unarchive a session; the next attach resumes its conversation.
     Unarchive {
         #[command(flatten)]
         target: SessionTarget,
@@ -276,55 +281,57 @@ enum Command {
         timeout: Duration,
         /// Agent resource, optionally combined with its name (for example `agent/worker`).
         resource: String,
-        /// Optional Agent name when it is not part of `resource`.
+        /// Optional agent name when it is not part of `resource`.
         name: Option<String>,
     },
-    /// Manage the OpenSSH client configuration for Agents.
+    /// Manage the OpenSSH client configuration for agents.
     SshConfig {
         #[command(subcommand)]
         command: SshConfigCommand,
     },
-    /// Describe how to reach an Agent over SSH.
+    /// Describe how to reach an agent over SSH.
     SshInfo {
         /// Agent resource or name; inferred from the current directory when omitted.
         resource: Option<String>,
         /// Agent name, as an alternative to the positional resource.
         #[arg(long, conflicts_with_all = ["resource", "variant"])]
         agent: Option<String>,
-        /// Select the closest Agent by its applied leaf variant.
+        /// Select the closest agent by its applied leaf variant.
         #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["agent", "resource"])]
         variant: Option<AgentVariantName>,
         /// Output format.
         #[arg(short = 'o', long, default_value = "table", value_enum)]
         output: OutputFormat,
     },
-    /// Describe how to reach an Agent's desktop over VNC.
+    /// Describe how to reach an agent's desktop over VNC.
     VncInfo {
         /// Agent resource or name; inferred from the current directory when omitted.
         resource: Option<String>,
         /// Agent name, as an alternative to the positional resource.
         #[arg(long, conflicts_with_all = ["resource", "variant"])]
         agent: Option<String>,
-        /// Select the closest Agent by its applied leaf variant.
+        /// Select the closest agent by its applied leaf variant.
         #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["agent", "resource"])]
         variant: Option<AgentVariantName>,
         /// Output format.
         #[arg(short = 'o', long, default_value = "table", value_enum)]
         output: OutputFormat,
     },
-    /// Manage the Agent CLI installation.
+    /// Update agentctl and agentd.
     Self_ {
         #[command(subcommand)]
         command: self_update::SelfCommand,
     },
-    /// Relay one connection to an Agent's SSH server over standard input and output.
+    /// Relay one connection to an agent's SSH server over standard input and output.
     ///
     /// The generated OpenSSH client configuration runs this as its `ProxyCommand`.
+    #[command(hide = true)]
     SshProxy {
         /// Agent resource or name.
         resource: String,
     },
-    /// Relay one connection to an Agent's desktop over standard input and output.
+    /// Relay one connection to an agent's desktop over standard input and output.
+    #[command(hide = true)]
     VncProxy {
         /// Agent resource or name.
         resource: String,
@@ -342,7 +349,7 @@ enum Resource {
 struct RunStateTarget {
     /// Agent resource, optionally combined with its name (for example `agent/worker`).
     resource: String,
-    /// Optional Agent name when it is not part of `resource`.
+    /// Optional agent name when it is not part of `resource`.
     name: Option<String>,
     /// Maximum wait, written as seconds, minutes, or hours (for example `2m`).
     #[arg(long, default_value = "10m", value_parser = parse_duration)]
@@ -402,12 +409,12 @@ impl From<KillTarget> for StopTarget {
 struct SessionTarget {
     /// Session resource, optionally combined with its name (for example `session/s1`).
     resource: String,
-    /// Optional Session name when it is not part of `resource`.
+    /// Optional session name when it is not part of `resource`.
     name: Option<String>,
-    /// Owning Agent; inferred from the current directory when omitted.
+    /// Owning agent; inferred from the current directory when omitted.
     #[arg(long, conflicts_with = "variant")]
     agent: Option<String>,
-    /// Select the closest Agent by its applied leaf variant.
+    /// Select the closest agent by its applied leaf variant.
     #[arg(long, value_parser = parse_variant_name, conflicts_with = "agent")]
     variant: Option<AgentVariantName>,
 }
@@ -416,7 +423,7 @@ struct SessionTarget {
 /// its recorded values; naming different ones is an error.
 #[derive(Default, clap::Args)]
 struct SessionSelection {
-    /// Harness installation to bind when creating the Session.
+    /// Harness installation to bind when creating the session.
     #[arg(long, value_parser = parse_harness)]
     harness: Option<agent::Harness>,
     /// Model the harness launches with, in the harness's own spelling (for example
@@ -488,8 +495,8 @@ type CommandResult<T> = Result<T, CommandError>;
 enum ClaudeCommand {
     /// Mint a long-lived Claude token on the host and store it for agents.
     Login {
-        /// Read an existing credential from standard input instead of signing in. Inside an Agent
-        /// this accepts the mediated placeholder the Session holds as `AGENT_CLAUDE_ACCESS_TOKEN`,
+        /// Read an existing credential from standard input instead of signing in. Inside an agent
+        /// this accepts the mediated placeholder the session holds as `AGENT_CLAUDE_ACCESS_TOKEN`,
         /// so a nested `agentd` chains through the outer mediation without ever holding a real
         /// credential.
         #[arg(long)]
@@ -499,16 +506,16 @@ enum ClaudeCommand {
 
 #[derive(Subcommand)]
 enum SshConfigCommand {
-    /// Include the generated Agent configuration from `~/.ssh/config`, once, at the top.
+    /// Include the generated agent configuration from `~/.ssh/config`, once, at the top.
     Install,
 }
 
 #[derive(Subcommand)]
 enum CodexCommand {
-    /// Sign in with `ChatGPT` and store an Agent-only grant.
+    /// Sign in with `ChatGPT` and store an agent-only grant.
     Login {
         /// Read the harness's credential file from standard input instead of signing in. Inside
-        /// an Agent this accepts the file the harness already has, whose placeholders let a nested
+        /// an agent this accepts the file the harness already has, whose placeholders let a nested
         /// `agentd` chain through the outer mediation without ever holding a real credential.
         #[arg(long)]
         from_stdin: bool,
@@ -521,15 +528,27 @@ fn main() -> ExitCode {
     }
     match run() {
         Ok(code) => code,
-        // The daemon rejected the desired state; the message is the whole story.
-        Err(CommandError::Agent(Error::Rpc(error))) if error.is_invalid_params() => {
-            eprintln!("agentctl: {}", error.message);
-            ExitCode::FAILURE
-        }
         Err(error) => {
-            eprintln!("agentctl: {error}");
+            eprintln!("{}", error_text(&error));
             ExitCode::FAILURE
         }
+    }
+}
+
+/// What agentctl prints for a failed command.
+fn error_text(error: &CommandError) -> String {
+    match error {
+        // agentd's message is the whole story, apart from how to change what cannot be changed.
+        CommandError::Agent(Error::Rpc(error)) if error.message.starts_with("immutable Agent field changed") => {
+            format!(
+                "agentctl: {}\nThat changes only by creating the agent again, which starts its disk over: `agentctl delete agent/NAME`, then apply.",
+                error.message
+            )
+        }
+        CommandError::Agent(Error::Rpc(error)) => format!("agentctl: {}", error.message),
+        // Most of agentctl's own refusals are `Invalid`, and few are about an agent.
+        CommandError::Agent(Error::Invalid(message)) => format!("agentctl: {message}"),
+        error => format!("agentctl: {error}"),
     }
 }
 
@@ -752,7 +771,7 @@ async fn get_resources(
             let sessions = if name.is_some() {
                 if all_agents {
                     return Err(Error::Invalid(
-                        "a named Session requires --agent or current-directory inference".into(),
+                        "a named session requires --agent or current-directory inference".into(),
                     )
                     .into());
                 }
@@ -802,7 +821,7 @@ async fn attach(
 ) -> CommandResult<()> {
     let (resource, name) = resource_reference(resource, name)?;
     if resource != Resource::Session {
-        return Err(Error::Invalid("attach requires a Session resource".into()).into());
+        return Err(Error::Invalid("attach requires a session resource".into()).into());
     }
     let session = SessionName::new(require_name(name, "Session")?)?;
     let agent = resolve_agent_name(client, agent, variant).await?;
@@ -887,10 +906,10 @@ async fn port_forward(
 ) -> CommandResult<ExitCode> {
     let (resource, ports) = split_forward_arguments(arguments);
     if agent.is_some() && resource.is_some() {
-        return Err(Error::Invalid("the Agent was supplied both as an argument and with --agent".into()).into());
+        return Err(Error::Invalid("the agent was supplied both as an argument and with --agent".into()).into());
     }
     if variant.is_some() && resource.is_some() {
-        return Err(Error::Invalid("the Agent was supplied both as an argument and with --variant".into()).into());
+        return Err(Error::Invalid("the agent was supplied both as an argument and with --variant".into()).into());
     }
     if ports.is_empty() {
         return Err(Error::Invalid("at least one port mapping is required".into()).into());
@@ -1110,7 +1129,7 @@ async fn vnc(
     let guest_port = if web {
         access.web_guest_port.ok_or_else(|| {
             Error::Invalid(format!(
-                "the image of Agent {agent:?} serves no browser viewer; use `agentctl vnc {agent}` with a VNC client"
+                "the image of agent {agent:?} serves no browser viewer; use `agentctl vnc {agent}` with a VNC client"
             ))
         })?
     } else {
@@ -1207,7 +1226,7 @@ async fn vnc_info(
 async fn session_target(client: &Client, target: SessionTarget) -> CommandResult<(String, SessionName)> {
     let (resource, name) = resource_reference(&target.resource, target.name)?;
     if resource != Resource::Session {
-        return Err(Error::Invalid("this command requires a Session resource".into()).into());
+        return Err(Error::Invalid("this command requires a session resource".into()).into());
     }
     let session = SessionName::new(require_name(name, "Session")?)?;
     let agent = resolve_agent_name(client, target.agent, target.variant).await?;
@@ -1227,7 +1246,7 @@ async fn create_session(
     let deadline = tokio::time::Instant::now() + timeout;
     let timed_out = || {
         CommandError::Message(format!(
-            "timed out creating {resource}; Agent resolution or provisioning did not finish; provisioning may continue"
+            "timed out creating {resource}; agent resolution or provisioning did not finish; provisioning may continue"
         ))
     };
     let (agent, session) = tokio::time::timeout_at(deadline, async {
@@ -1339,7 +1358,7 @@ async fn resolve_execution_agent(
     }
     let (kind, name) = resource_reference(&resource, None)?;
     if kind != Resource::Agent {
-        return Err(Error::Invalid("this command requires an Agent resource".into()).into());
+        return Err(Error::Invalid("this command requires an agent resource".into()).into());
     }
     require_name(name, "Agent").map_err(CommandError::from)
 }
@@ -1380,7 +1399,7 @@ fn exit_code(code: i32) -> ExitCode {
 async fn describe(client: &Client, resource: &str, name: Option<String>, output: OutputFormat) -> CommandResult<()> {
     let (resource, name) = resource_reference(resource, name)?;
     if resource != Resource::Agent {
-        return Err(Error::Invalid("describe currently supports only Agent resources".into()).into());
+        return Err(Error::Invalid("describe currently supports only agent resources".into()).into());
     }
     let agent = client.get(&require_name(name, "Agent")?).await?;
     match output {
@@ -1399,7 +1418,7 @@ async fn wait(
 ) -> CommandResult<()> {
     let (resource, name) = resource_reference(resource, name)?;
     if resource != Resource::Agent {
-        return Err(Error::Invalid("wait currently supports only Agent resources".into()).into());
+        return Err(Error::Invalid("wait currently supports only agent resources".into()).into());
     }
     if condition != "condition=Ready" {
         return Err(Error::Invalid("only --for=condition=Ready is supported".into()).into());
@@ -1419,7 +1438,7 @@ async fn wait(
 fn agent_reference(resource: &str, name: Option<String>) -> Result<String, Error> {
     let (resource, name) = resource_reference(resource, name)?;
     if resource != Resource::Agent {
-        return Err(Error::Invalid("this command requires an Agent resource".into()));
+        return Err(Error::Invalid("this command requires an agent resource".into()));
     }
     require_name(name, "Agent")
 }
@@ -1453,7 +1472,7 @@ fn reject_session_scope(
 ) -> Result<(), Error> {
     if agent.is_some() || variant.is_some() || all_agents {
         Err(Error::Invalid(
-            "--agent, --variant, and --all-agents apply only to Session resources".into(),
+            "--agent, --variant, and --all-agents apply only to session resources".into(),
         ))
     } else {
         Ok(())
@@ -1477,9 +1496,9 @@ async fn resolve_agent_name(
 
 fn inference_error(error: Error) -> CommandError {
     match error {
-        Error::Rpc(error) if error.is_not_found() => CommandError::Message(
-            "no Agent was applied from the current directory; specify --agent or --variant".into(),
-        ),
+        Error::Rpc(error) if error.is_not_found() => {
+            CommandError::Message("no agent here; `agentctl apply` creates one, or pass --agent NAME".into())
+        }
         Error::Rpc(error) => CommandError::Message(error.message),
         error => error.into(),
     }
@@ -1495,7 +1514,7 @@ async fn wait_until_converged(client: &Client, name: &str, timeout: Duration) ->
     let Ok(converged) = waited else {
         return Err(CommandError::Message(match client.get(name).await.ok() {
             Some(agent) if agent.spec.is_stopped() => {
-                format!("timed out waiting for Agent {name:?} to stop; agentd keeps stopping it")
+                format!("timed out waiting for agent {name:?} to stop; agentd keeps stopping it")
             }
             agent => wait_timeout_message(name, agent.as_ref().and_then(|agent| agent.status.ready_condition())),
         }));
@@ -1677,10 +1696,10 @@ async fn set_run_state(client: &Client, target: RunStateTarget, state: RunState)
 
 fn wait_timeout_message(name: &str, ready: Option<&agent::Condition>) -> String {
     let Some(ready) = ready else {
-        return format!("timed out waiting for Agent {name:?} to become Ready; no Ready condition was reported");
+        return format!("timed out waiting for agent {name:?} to become Ready; no Ready condition was reported");
     };
     format!(
-        "timed out waiting for Agent {name:?} to become Ready: {}",
+        "timed out waiting for agent {name:?} to become Ready: {}",
         ready.summary()
     )
 }
@@ -1817,7 +1836,7 @@ fn daemon_startup_diagnostics(home: &ControlPlaneHome) -> String {
     let marker = home.pending_session_relaunch_path();
     if marker.exists() {
         format!(
-            "see {}; pending post-upgrade Session relaunch: {}",
+            "see {}; pending post-upgrade session relaunch: {}",
             log.display(),
             marker.display()
         )
@@ -1919,6 +1938,30 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn help_leads_with_the_purpose_and_the_commands_people_use_first() {
+        let help = <Arguments as clap::CommandFactory>::command().render_help().to_string();
+        assert!(
+            help.starts_with("Run coding agents in sandboxes on this machine"),
+            "{help}"
+        );
+        let commands = help
+            .lines()
+            .skip_while(|line| line.trim() != "Commands:")
+            .skip(1)
+            .take_while(|line| !line.trim().is_empty())
+            .filter_map(|line| line.split_whitespace().next())
+            .collect::<Vec<_>>();
+        assert_eq!(commands[..5], ["tui", "attach", "stop", "kill", "start"], "{help}");
+        for hidden in ["ssh-proxy", "vnc-proxy"] {
+            assert!(!commands.contains(&hidden), "{help}");
+        }
+        assert!(
+            Arguments::try_parse_from(["agentctl", "ssh-proxy", "worker"]).is_ok(),
+            "OpenSSH still runs the hidden command"
+        );
+    }
 
     #[test]
     fn kill_is_stop_now() {
@@ -2075,7 +2118,7 @@ mod tests {
                 ),
             )
             .await
-            .expect("the command's own deadline must include Agent inference");
+            .expect("the command's own deadline must include agent inference");
             assert!(matches!(result, Err(CommandError::Message(message)) if message.contains("timed out")));
         }
     }
@@ -2167,7 +2210,7 @@ mod tests {
             ])
             .expect("model and effort parse");
             let (Command::Create { selection, .. } | Command::Attach { selection, .. }) = arguments.command else {
-                panic!("expected a Session creation command");
+                panic!("expected a session creation command");
             };
             let request = selection.request(None);
             assert_eq!(request.model_selection.model_str(), Some("claude-fable-5"));
@@ -2176,7 +2219,7 @@ mod tests {
 
             let omitted = Arguments::try_parse_from(["agentctl", verb, "session/s1"]).expect("omitted selections");
             let (Command::Create { selection, .. } | Command::Attach { selection, .. }) = omitted.command else {
-                panic!("expected a Session creation command");
+                panic!("expected a session creation command");
             };
             assert_eq!(selection.request(None), SessionRequest::default());
 
@@ -2330,14 +2373,56 @@ mod tests {
     }
 
     #[test]
+    fn errors_are_printed_without_type_prefixes_and_say_how_to_change_an_immutable_field() {
+        let rpc = |code, message: &str| {
+            CommandError::Agent(Error::Rpc(agent::control_api::ResponseError {
+                code,
+                message: message.into(),
+            }))
+        };
+        assert_eq!(
+            error_text(&rpc(-32602, "spec.harnesses must not be empty")),
+            "agentctl: spec.harnesses must not be empty"
+        );
+        assert_eq!(
+            error_text(&rpc(-32603, "Agent Sandbox setup failed: no space left")),
+            "agentctl: Agent Sandbox setup failed: no space left",
+            "an internal error from agentd is shown as agentd wrote it"
+        );
+        assert_eq!(
+            error_text(&CommandError::Agent(Error::Invalid(
+                "at least one port mapping is required".into()
+            ))),
+            "agentctl: at least one port mapping is required"
+        );
+        let immutable = error_text(&rpc(-32009, "immutable Agent field changed: spec.sandbox.image"));
+        assert_eq!(
+            immutable.lines().collect::<Vec<_>>(),
+            [
+                "agentctl: immutable Agent field changed: spec.sandbox.image",
+                "That changes only by creating the agent again, which starts its disk over: `agentctl delete agent/NAME`, then apply.",
+            ]
+        );
+        assert_eq!(
+            error_text(&rpc(-32009, "Agent resource changed concurrently")),
+            "agentctl: Agent resource changed concurrently",
+            "a conflict shares the code but is not about an immutable field"
+        );
+        assert_eq!(
+            error_text(&CommandError::Agent(Error::NotFound)),
+            "agentctl: Agent not found"
+        );
+    }
+
+    #[test]
     fn inference_errors_have_one_actionable_message() {
         let ambiguous = inference_error(Error::Rpc(agent::control_api::ResponseError {
             code: -32602,
-            message: "multiple Agents were applied from this directory; specify --agent or --variant".into(),
+            message: "multiple agents were applied from this directory; specify --agent or --variant".into(),
         }));
         assert_eq!(
             ambiguous.to_string(),
-            "multiple Agents were applied from this directory; specify --agent or --variant"
+            "multiple agents were applied from this directory; specify --agent or --variant"
         );
 
         let missing = inference_error(Error::Rpc(agent::control_api::ResponseError {
@@ -2346,7 +2431,7 @@ mod tests {
         }));
         assert_eq!(
             missing.to_string(),
-            "no Agent was applied from the current directory; specify --agent or --variant"
+            "no agent here; `agentctl apply` creates one, or pass --agent NAME"
         );
     }
 

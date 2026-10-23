@@ -814,7 +814,7 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal, hit_map
                 .row(Line::from(format!("Stop agent {agent}?")))
                 .row(note_line("Running harnesses stop with its VM."))
                 .row(note_line(
-                    "Its disk is kept; attaching after a start resumes a Session.",
+                    "Its disk is kept; attaching after a start resumes a session.",
                 ))
                 .render(frame, area, FORM_WIDTH, hit_map);
         }
@@ -832,7 +832,7 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal, hit_map
         Modal::ConfirmDeleteSession { agent, session } => {
             Form::new(" delete ", Color::Red, &CONFIRM_HINTS)
                 .row(Line::from(format!("Delete session {agent}/{session}?")))
-                .row(note_line("Its harness is stopped and the Session is removed."))
+                .row(note_line("Its harness is stopped and the session is removed."))
                 .render(frame, area, FORM_WIDTH, hit_map);
         }
         Modal::NewSession(form) => render_new_session(frame, area, form, hit_map),
@@ -952,7 +952,7 @@ fn render_confirm_ssh_setup(
         &CONFIRM_SSH_SETUP_HINTS
     };
     let mut form = Form::new(" set up SSH ", Color::Cyan, hints)
-        .row(Line::from("Editors reach Agents through your OpenSSH config."))
+        .row(Line::from("Editors reach agents through your OpenSSH config."))
         .row(Line::from(format!("Add this line at the top of {file}?")))
         .row(Line::default())
         .row(Line::from(Span::styled(
@@ -961,7 +961,7 @@ fn render_confirm_ssh_setup(
         )))
         .row(Line::default())
         .row(note_line("Existing lines are kept. It is added once for every"))
-        .row(note_line("Agent, and new Agents need nothing more."));
+        .row(note_line("agent, and new agents need nothing more."));
     if let Some(target) = then {
         form = form
             .row(Line::default())
@@ -1504,14 +1504,14 @@ mod tests {
         let top = text
             .lines()
             .position(|line| line.contains("create agent"))
-            .expect("create Agent modal top");
-        let border = text.lines().nth(top).expect("create Agent modal border").to_owned();
+            .expect("create agent modal top");
+        let border = text.lines().nth(top).expect("create agent modal border").to_owned();
         let bottom = text
             .lines()
             .enumerate()
             .skip(top + 1)
             .find_map(|(row, line)| line.contains('└').then_some(row))
-            .expect("create Agent modal bottom");
+            .expect("create agent modal bottom");
         (border, top, bottom)
     }
 
@@ -1689,7 +1689,7 @@ mod tests {
         let failed = lines
             .iter()
             .find(|line| line.contains("agent-01") && line.contains("Retrying"))
-            .expect("failed Agent row");
+            .expect("failed agent row");
         assert!(failed.contains("Retrying"), "{failed}");
         assert!(
             failed.contains("…") && failed.contains("(os error 28)"),
@@ -1697,7 +1697,7 @@ mod tests {
         );
         assert!(
             text.contains("agent-01 · status"),
-            "the panel shows the selected Agent:\n{text}"
+            "the panel shows the selected agent:\n{text}"
         );
         assert!(text.contains("Failure:    Transient"), "{text}");
         let panel = lines
@@ -1711,13 +1711,13 @@ mod tests {
 
         let state = text_column(lines[1], "STATE");
         app.select_index(2);
-        app.transcript_request().expect("the selected Session's turns");
+        app.transcript_request().expect("the selected session's turns");
         draw(&mut terminal, &app);
         let text = buffer_text(&terminal);
         assert_eq!(
             text_column(text.lines().nth(1).expect("column header"), "STATE"),
             state,
-            "selecting a Session leaves the columns where they were"
+            "selecting a session leaves the columns where they were"
         );
         assert!(text.contains("review · recent turns"), "{text}");
     }
@@ -1783,8 +1783,8 @@ mod tests {
         for expected in [
             "keys",
             "Fleet",
-            "Selected Agent",
-            "Selected Session",
+            "Selected agent",
+            "Selected session",
             "follow provisioning",
             "esc close",
         ] {
@@ -1986,7 +1986,7 @@ mod tests {
         assert_eq!(
             terminal.backend().buffer()[(10, 5)].bg,
             SELECTION,
-            "the selected Session stays in view below the pinned Agent"
+            "the selected session stays in view below the pinned agent"
         );
     }
 
