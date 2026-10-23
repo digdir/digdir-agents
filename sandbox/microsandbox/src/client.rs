@@ -500,8 +500,8 @@ mod tests {
             .await
             .expect_err("a configured guest agent should be refused");
 
-        // Microsandbox makes configured paths absolute, which on Windows adds the current drive.
-        let configured = std::path::absolute("/opt/other/agentd").expect("path should resolve");
+        // Windows has no drive in this path and adds the configuration directory's.
+        let configured = std::path::Path::new("opt").join("other").join("agentd");
         assert!(error.to_string().contains(&configured.display().to_string()), "{error}");
     }
 

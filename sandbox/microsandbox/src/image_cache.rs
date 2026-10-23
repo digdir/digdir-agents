@@ -18,8 +18,9 @@
 //! Reading the cache leases what it reads, and an [operation](ImageCache::operation) keeps
 //! those leases until it is dropped, which keeps another process's removal from deleting the
 //! files before an entry names them. Writing an entry therefore happens within the operation
-//! that read its image, and every operation ends before an entry is removed: Microsandbox
-//! refuses to remove an entry an operation still holds.
+//! that read its image. Microsandbox refuses to remove an entry an operation still holds, so
+//! this cache ends its own operations before it removes an entry, and a removal pass leaves an
+//! entry another operation holds for a later pass.
 
 use std::{
     collections::HashSet,
@@ -158,7 +159,7 @@ impl ImageCache {
             return;
         }
         match microsandbox::Image::remove_local(self.client.local(), &name, false).await {
-            // Another Sandbox's runtime still uses the image.
+            // Another Sandbox's runtime still uses the image, or an operation holds the entry.
             Ok(())
             | Err(microsandbox::MicrosandboxError::ImageNotFound(_) | microsandbox::MicrosandboxError::ImageInUse(_)) =>
                 {}
@@ -211,7 +212,8 @@ impl ImageCache {
             }
             match microsandbox::Image::remove_local(self.client.local(), image.reference(), false).await {
                 Ok(()) => tracing::info!(reference = image.reference(), "removed unused Microsandbox image entry"),
-                // A runtime still uses the image, or the entry is already gone.
+                // A runtime still uses the image, an operation holds the entry, or the entry is
+                // already gone.
                 Err(
                     microsandbox::MicrosandboxError::ImageInUse(_) | microsandbox::MicrosandboxError::ImageNotFound(_),
                 ) => {}
@@ -235,7 +237,8 @@ impl ImageCache {
     /// Reports whether a runtime records that it uses a held Sandbox image, which is what
     /// protects an image from Microsandbox's prune. Microsandbox refuses to remove an entry of an
     /// image a runtime records using, so a temporary entry that can be removed shows that none
-    /// does. The Sandbox's own entry keeps the image meanwhile.
+    /// does. The Sandbox's own entry keeps the image meanwhile. Microsandbox also refuses while an
+    /// operation holds the entry, which is why this one's ends first; nothing else reads it.
     pub(crate) async fn is_pinned(&self, record: &SandboxRecord) -> Result<bool, Error> {
         let probe = format!("{PROBE_REPOSITORY}:{}", entry_tag(&record.id));
         {
@@ -251,6 +254,17 @@ impl ImageCache {
                 microsandbox::Image::remove_local(self.client.local(), &probe, true)
                     .await
                     .map_err(error::microsandbox)?;
+                // Untagging an image a runtime uses keeps the entry's metadata for snapshot
+                // export, which never reads this one.
+                let metadata = self
+                    .operation()
+                    .await?
+                    .image_metadata_path(&probe.parse().map_err(error::backend)?);
+                match tokio::fs::remove_file(&metadata).await {
+                    Ok(()) => {}
+                    Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(source) => return Err(error::io("remove the image probe's metadata", source)),
+                }
                 Ok(true)
             }
             Err(failure) => Err(error::microsandbox(failure)),
@@ -261,7 +275,8 @@ impl ImageCache {
     /// versions no entry names, which a moved tag left behind, are reachable only through
     /// Microsandbox's prune, which also removes every entry of an image no runtime records
     /// using, so it runs only once every Sandbox's image [is pinned](Self::is_pinned), while the
-    /// Provider opens and before anything else runs.
+    /// Provider opens and before anything else runs. The prune skips what an operation holds,
+    /// so the migration stays pending until a prune skips nothing.
     pub(crate) async fn finish_migration(&self) -> Result<(), Error> {
         let report = microsandbox::Image::prune_local(self.client.local())
             .await
@@ -281,6 +296,13 @@ impl ImageCache {
                     let _ = tokio::fs::remove_file(entry.path()).await;
                 }
             }
+        }
+        if report.skipped_in_use > 0 {
+            tracing::info!(
+                skipped = report.skipped_in_use,
+                "left the Microsandbox image catalog migration pending for images in use"
+            );
+            return Ok(());
         }
         tokio::fs::write(self.state.marker(MIGRATED_MARKER), b"")
             .await
@@ -392,7 +414,7 @@ mod tests {
 
     use sandbox::{ByteQuantity, CpuQuantity, Hostname, Platform, RootFilesystem, SandboxName, SandboxResources};
 
-    use super::{ImageCache, MIGRATED_MARKER, cache_entry, is_expired, sandbox_entry};
+    use super::{ImageCache, MIGRATED_MARKER, PROBE_REPOSITORY, cache_entry, entry_tag, is_expired, sandbox_entry};
     use crate::{
         client::Client,
         state::{SandboxRecord, StateStore},
@@ -643,6 +665,26 @@ mod tests {
         provider(home.path()).await;
         assert!(!previous_files.exists(), "what nothing holds is removed");
         assert!(!legacy_archive.exists());
+        assert!(home.state.marker(MIGRATED_MARKER).exists());
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn migration_stays_pending_while_an_operation_holds_what_it_would_remove() {
+        let home = Home::open().await;
+        let images = home.images();
+        let previous_files = record_moved_tag(&home).await;
+        let operation = images.operation().await.expect("operation should start");
+        let leases = operation
+            .lease_paths(vec![previous_files.clone()])
+            .expect("files should be leased");
+
+        images.finish_migration().await.expect("migration");
+        assert!(previous_files.exists(), "what an operation holds stays");
+        assert!(!home.state.marker(MIGRATED_MARKER).exists());
+
+        drop((leases, operation));
+        images.finish_migration().await.expect("migration");
+        assert!(!previous_files.exists());
         assert!(home.state.marker(MIGRATED_MARKER).exists());
     }
 
@@ -1012,6 +1054,11 @@ mod tests {
             "every Sandbox's image is pinned, so the migration prunes"
         );
         assert!(home.state.marker(MIGRATED_MARKER).exists());
+        let probe = format!("{PROBE_REPOSITORY}:{}", entry_tag(&sandbox.id));
+        let probe_metadata = microsandbox_image::GlobalCache::new(&home.client.local().cache_dir())
+            .expect("image cache should open")
+            .image_metadata_path(&probe.parse().expect("reference"));
+        assert!(!probe_metadata.exists(), "checking the pin leaves nothing behind");
         reopened.stop(&sandbox.id).await.expect("Sandbox should stop");
         reopened
             .start(&sandbox.id)
