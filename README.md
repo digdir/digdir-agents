@@ -1,226 +1,29 @@
 # digdir-agents
 
-Monorepo for en event-drevet agent-pipeline: én **integrations**-app som lytter
-på Slack/GitHub, og et voksende sett **agenter** som utfører arbeidet isolert i
-Docker — uten at agentene noensinne ser Slack-/GitHub-tokens.
+Digdir's Agent platform: `agentctl` runs long-running Agents in isolated Sandboxes, built on a reusable Sandbox SDK.
+Agents get their own computer, with mediated network access and no real secrets inside the Sandbox.
 
-```
-Slack / GitHub
-      │  (Socket Mode / notifications-polling — ingen inngående webhooks)
-┌─────▼─────────┐
-│ integrations/ │  eneste komponent med Slack-/GitHub-tokens
-└─────┬─────────┘
-      │ append                                      ┌──────────────────────┐
-      ├──────────> agents/proxy-agent/triggers/ <───┤ agents/proxy-agent/  │
-      │            inbox.jsonl                      │ (Pi i Docker)        │
-      │ poll                                        └──────────────────────┘
-      └──────────< triggers/results.jsonl + logs/<id>.log
-```
+> This README is a short placeholder while the repository is being cleaned up. A full rewrite with an architecture
+> diagram follows.
 
-## Komponenter
+## Repository layout
 
-| Katalog | Rolle |
-|---|---|
-| [`integrations/`](integrations/) | Lytter på GitHub (notifications-polling) og Slack (Socket Mode), oversetter events til JSON-linjer i en agents `triggers/inbox.jsonl`, og poster svar fra `results.jsonl` tilbake dit de kom fra. |
-| [`agents/proxy-agent/`](agents/proxy-agent/) | Pi-agent isolert i Docker. Poller sin egen `triggers/inbox.jsonl`, kjører agenten per event og skriver svar til `triggers/results.jsonl`. |
-| [`agents/local-cc-coding-agent/`](agents/local-cc-coding-agent/) | Utførende kodeagent (senior): Claude Code kjørt interaktivt fra agent-katalogen (instrukser i `CLAUDE.md`). Mottar delegerte oppgaver via samme filkontrakt og leverer branch + PR. |
-| [`agents/local-cc-jr-developer/`](agents/local-cc-jr-developer/) | Junior-kodeagent: samme runtime og filkontrakt, men mot en lokal modell via LM Studios Anthropic-kompatible API (`scripts/junior-agent.ps1`). Tar godt definerte, avgrensede lav-risiko-oppgaver og melder tilbake i stedet for å gjette. |
+| Path | What it is |
+| --- | --- |
+| [`agentctl/`](agentctl/) | The `agentctl` CLI and the `agentd` Session API backend, independent of model and harness. Start here to install and run an Agent. |
+| [`sandbox/`](sandbox/) | The Sandbox SDK, with an implementation on Digdir's forks of [microsandbox](https://github.com/digdir/microsandbox) and [libkrunfw](https://github.com/digdir/libkrunfw). |
+| [`images/agentctl-base/`](images/agentctl-base/) | Base images that Agent images build on, headless and desktop, with Claude Code, Codex and Pi. |
+| [`agents/self-dev/`](agents/self-dev/) | The Agent that develops this platform. It is also the example to start from when you make a new Agent. |
+| [`integrations/`](integrations/) | Slack and GitHub listener from the earlier orchestrator pipeline. It is kept as a possible entry point to agentctl Agents, but nothing consumes its events right now. |
+| [`docs/presentations/`](docs/presentations/) | Slide decks on agentctl and the Sandbox SDK, including a security view. |
 
-Kontrakten mellom integrations og agent er bevisst minimal: **to jsonl-filer i
-agentens `triggers/`-katalog**. Formatet er beskrevet i
-[`agents/proxy-agent/README.md`](agents/proxy-agent/README.md) (eventformat) og
-[`integrations/README.md`](integrations/README.md) (resultatkontrakt med
-`intent`/`reply`).
+## Getting started
 
-### `agentctl/` og `sandbox/`
+Install `agentctl` and run an Agent as described in [`agentctl/README.md`](agentctl/README.md). To work on the
+platform itself, use the self-dev Agent: see [`agents/self-dev/README.md`](agents/self-dev/README.md).
 
-Agent-laget fra `altinn-studio/src/experimental` har flyttet inn som to
-rotkataloger (ki-lab-beslutning, september 2026), med Rust-arbeidsområdet på
-rot:
+## History
 
-| Katalog | Rolle |
-|---|---|
-| `agentctl/` | CLI + generisk «Session API»-backend (modell-/harness-uavhengig). |
-| `sandbox/` | Sandbox-SDK; implementasjon basert på digdir-forkene [microsandbox](https://github.com/digdir/microsandbox) og [libkrunfw](https://github.com/digdir/libkrunfw). Konsumeres som git-ref-dependency fra altinn-studio inntil videre. |
-| [`images/agentctl-base/`](images/agentctl-base/) | Basis-imagene agentctl-agenter bygger på (`ghcr.io/digdir/agentctl-base`), i en `headless`- og en `desktop`-utgave, med Claude Code, Codex og Pi. |
-| [`agents/self-dev/`](agents/self-dev/) | agentctl-agenten som utvikler agent-plattformen selv, i en `minimal`- og en `full`-utgave (med nettleser og skrivebord). Ikke en del av orkestrator-pipelinen over. |
-
-De eies av innflytterteamet (egne CODEOWNERS-stier) og tar med egne
-CI-jobber for sine stier. Hvert område kjører bare når stiene dets endres,
-og `ci-gate` i `.github/workflows/ci.yml` er repoets eneste required check.
-Orkestrator-pipelinen over og agentctl løser i dag harness-laget på
-hver sin måte — på sikt er planen å prøve én av agentene her på
-agentctl + manifest.
-
-## Kom i gang
-
-Hele pipelinen kjører i Docker via compose-fila på rotnivå (krever Docker
-Compose v2.20+):
-
-```powershell
-# 1. Konfig per komponent
-Copy-Item integrations\.env.example integrations\.env              # Slack-/GitHub-tokens
-Copy-Item agents\proxy-agent\.env.example agents\proxy-agent\.env  # LLM-endepunkt/nøkkel
-
-# 2. Dra opp alt
-docker compose up -d --build
-docker compose logs -f
-```
-
-Rot-compose-fila bare inkluderer komponentenes egne compose-filer, så hver
-komponent kan fortsatt dras opp alene med `docker compose up` i sin katalog.
-Integrations kan også kjøres rett på hosten under utvikling (Node >= 23:
-`cd integrations && npm install && npm start`).
-
-### Utvikling i forgrunnen
-
-Default restart-policy er `unless-stopped`, slik at klyngen overlever omstart
-av Docker/maskinen. Til utvikling — logger rett i konsollen, Ctrl+C stopper
-alt, og ingenting starter igjen av seg selv — kjør:
-
-```powershell
-.\scripts\dev.ps1        # docker compose up --build uten restart-policy
-```
-
-Policyen styres av miljøvariabelen `RESTART_POLICY` i compose-filene
-(default `unless-stopped`; dev-skriptet setter `no`).
-
-## Drift og selvoppgradering
-
-Runtime-oppgradering «i fart» gjøres av
-[`scripts/self-update.ps1`](scripts/self-update.ps1), som kjører **på hosten,
-utenfor det den oppgraderer** — en container kan ikke trygt stoppe og
-gjenoppbygge seg selv, og agentene skal ikke ha Docker-tilgang (tilgang til
-docker-socketen tilsvarer root på hosten). Utløseren er merge til
-deploy-branchen: når agent-pipelinen selv har fått en PR merget, plukker
-skriptet det opp — menneskelig review forblir gaten.
-
-Skriptet følger A/B-prinsippet, men uten parallellkjøring (innboksene er
-single-consumer — to samtidige klynger dobbeltbehandler events):
-
-1. Kjørende images beholdes som `:rollback`-tag.
-2. `git pull --ff-only` (nekter ved skitten arbeidskopi), og nye images
-   **bygges mens den gamle klyngen fortsatt kjører** — byggefeil er den
-   vanligste «brick»-årsaken og gir her null nedetid.
-3. Bytte (`docker compose up -d`) og helsesjekk: containerne må kjøre stabilt
-   uten restarts, og komponentenes klar-meldinger må dukke opp i loggene.
-4. Ved feil rulles kode og images tilbake, og forrige versjon startes igjen.
-
-Restart er billig i denne arkitekturen: kø og state ligger i jsonl-filer og
-navngitte volumer, så events i innboksene overlever byttet.
-
-Skriptet er også drifts-inngangen: er koden allerede oppdatert men klyngen
-nede (første oppstart, etter reboot), startes den — én kommando dekker
-«start alt og hold det oppdatert».
-
-```powershell
-pwsh scripts\self-update.ps1                     # én sjekk/oppgradering nå
-pwsh scripts\self-update.ps1 -WatchSeconds 300   # følg deploy-branchen, poll hvert 5. min
-```
-
-For ubemannet drift kan skriptet registreres som gjentakende oppgave i Task
-Scheduler i stedet for `-WatchSeconds`.
-
-### Dedikert deploy-klone
-
-Watcheren gjør `git pull` i klonen den kjører fra, og guardene (kun
-deploy-branchen, kun ren arbeidskopi) stopper den så snart du utvikler i
-samme klone. Kjør den derfor fra en egen klone som watcheren eier alene:
-
-```powershell
-git clone https://github.com/digdir/digdir-agents.git C:\data\deploy\digdir-ai-agents
-cd C:\data\deploy\digdir-ai-agents
-git checkout main
-Copy-Item <dev-klone>\integrations\.env integrations\           # .env er gitignorert
-Copy-Item <dev-klone>\agents\proxy-agent\.env agents\proxy-agent\
-pwsh scripts\self-update.ps1 -WatchSeconds 300
-```
-
-Merk:
-
-- **Kjør bare én klynge om gangen.** Compose-prosjektnavnet
-  (`digdir-ai-agents`) er felles, så `up` fra én klone tar over containerne
-  fra den andre (mountene peker da på den klonens kataloger). Det hindrer
-  dobbeltkonsumering av innboksene — men vær bevisst på hvilken klone som
-  «eier» klyngen.
-- **Kø-katalogene følger klonen.** Kjører integrations fra deploy-klonen,
-  havner delegerte oppgaver i *deploy-klonens*
-  `agents/local-cc-coding-agent/triggers/` — den interaktive
-  kodeagent-sesjonen må da startes derfra også.
-- Navngitte volumer (`integrations-state`, `pi-home`) deles via
-  prosjektnavnet, så pending replies og results-offsets overlever bytte av
-  klone.
-
-## PR-prosess: auto-merge på trygge stier
-
-Alle endringer leveres som PR, men ikke alle trenger et menneske: PR-er som
-kun rører trygge stier kan agentene merge selv — de kjører en
-reviewer-subagent, poster reviewen som PR-kommentar, og setter labelen
-`auto-merge`; en GitHub Action merger med den efemere `GITHUB_TOKEN` når
-required checks er grønne (agent-tokenene har fortsatt ingen kode-tilgang).
-[`.github/CODEOWNERS`](.github/CODEOWNERS) er sensitiv som standard: alt har
-menneskelig eier unntatt eksplisitt trygge stier (i dag kun dokumentasjon),
-og branch protection («Require review from Code Owners») blokkerer merge
-til code owner har godkjent, uansett label. Husk at merge til deploy-branchen er auto-deploy
-via self-update-watcheren — derfor er lista konservativ. Hele prosessen,
-inkludert branch protection-oppsettet for repo-admin, er beskrevet i
-[`doc/pr-prosess.md`](doc/pr-prosess.md).
-
-## Legge til en ny agent
-
-Pipelinen utvides ved å legge nye agenter under `agents/<navn>/`. En agent er
-hva som helst som oppfyller kø-kontrakten:
-
-1. **Opprett `agents/<navn>/`** med en `triggers/`-katalog. Kopier gjerne
-   `agents/proxy-agent/` som mal (Dockerfile + entrypoint som poller køen), men
-   runtime er valgfri — det eneste kravet er filkontrakten.
-2. **Les events** fra `triggers/inbox.jsonl` (én JSON-linje per event, feltet
-   `prompt` er det viktigste; husk å persistere lest posisjon slik at restart
-   ikke reprosesserer gamle events).
-3. **Skriv resultater** til `triggers/results.jsonl` med samme `id`, og gjerne
-   `intent` (`action` / `feedback` / `ack`) + `reply` slik at integrations vet
-   hvordan svaret skal leveres. Full logg per event legges i
-   `triggers/logs/<id>.log`.
-4. **Pek integrations på agenten** via `AGENT_TRIGGERS_DIR` i
-   `integrations/.env` (f.eks. `../agents/<navn>/triggers`).
-
-Agentene holdes uavhengige av hverandre: hver agent eier sin egen
-`triggers/`-katalog, sitt eget image og sin egen `.env` — de skriver aldri i
-hverandres kataloger.
-
-## Delegering mellom agenter
-
-En agent kan sende en oppgave videre til en annen agent ved å svare med
-`intent: "delegate"` + et `delegate`-objekt i resultatlinja. **Broen gjør
-rutingen**: integrations appender oppgaven som nytt event i målagentens
-innboks (allowlist i `AGENT_ROUTES`), følger alle agenters `results.jsonl`,
-og sørger for at det endelige svaret postes tilbake i den opprinnelige
-Slack-tråden / GitHub-issuet. En hoppgrense (`AGENT_MAX_DELEGATION_HOPS`)
-hindrer at to agenter kaster en oppgave frem og tilbake. Typisk flyt:
-proxy-agenten analyserer og beskriver løsningen, og delegerer utførelsen til
-kodeagenten — som leverer branch + PR med mennesket som review-gate. Se
-[`integrations/README.md`](integrations/README.md) for kontrakten og planen i
-[`doc/plans/agent-delegering.md`](doc/plans/agent-delegering.md).
-
-## Dokumentasjon og kunnskap
-
-Repo-spesifikke læringspunkter og dokumentasjon ligger i [`doc/`](doc/)
-(OKF-konvensjoner: markdown + frontmatter, `index.md` som inngangsport).
-Overordnet kunnskap på tvers av repoer hører hjemme i agentens sentrale
-kunnskapsbase: et privat, instans-spesifikt repo som klones til
-anker-folderen `workspaces_knowledge/` (gitignorert) og mountes inn i
-proxy-agenten som `/knowledge`. Se planen i
-[`doc/plans/kunnskap-og-laering.md`](doc/plans/kunnskap-og-laering.md).
-
-## Sikkerhetsmodell
-
-- Bare `integrations/` har Slack-/GitHub-tokens; agentene ser kun jsonl-filene,
-  sitt eget `workspace/` og sin egen kunnskapsbase. To bevisste, snevre unntak
-  hos proxy-agent: `GH_TOKEN` (kun issues/PR-er, ingen kode-tilgang) for
-  github-skillen, og `KB_GH_TOKEN` (Contents kun på det private
-  kunnskapsrepoet) for kunnskapsbasen — se
-  [`agents/proxy-agent/README.md`](agents/proxy-agent/README.md).
-- Agent-containerne kjører som ikke-root med `cap_drop: ALL` og
-  `no-new-privileges`, og trenger bare nettverk mot LLM-endepunktet.
-- Ingen inngående webhooks: integrations bruker polling (GitHub) og websocket
-  (Slack), så alt kan kjøre fra en laptop bak brannmur.
+Until October 2026 this repository also held an orchestrator pipeline: a set of Agents fed through a file contract
+from `integrations/`, an LLM gateway, host scripts and a knowledge base under `doc/`. It is archived as the tag
+[`v2.0-pre-cleanup`](https://github.com/digdir/digdir-agents/tree/v2.0-pre-cleanup).
