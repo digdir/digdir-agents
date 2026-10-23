@@ -1553,16 +1553,22 @@ async fn resolve_agent_name(
         return Ok(agent);
     }
     let directory = std::env::current_dir().map_err(Error::from)?;
+    let manifest_here = directory.join(agent::manifest::MANIFEST_FILE).is_file();
     match client.resolve_agent_variant(directory, variant).await {
         Ok(agent) => Ok(agent.metadata.name),
-        Err(error) => Err(inference_error(error)),
+        Err(error) => Err(inference_error(error, manifest_here)),
     }
 }
 
-fn inference_error(error: Error) -> CommandError {
+/// Why no agent was found here, and what creates one: applying the manifest in this directory, or
+/// setting one up when there is none.
+fn inference_error(error: Error, manifest_here: bool) -> CommandError {
     match error {
-        Error::Rpc(error) if error.is_not_found() => {
+        Error::Rpc(error) if error.is_not_found() && manifest_here => {
             CommandError::Message("no agent here; `agentctl apply` creates one, or pass --agent NAME".into())
+        }
+        Error::Rpc(error) if error.is_not_found() => {
+            CommandError::Message("no agent here; `agentctl init` sets one up, or pass --agent NAME".into())
         }
         Error::Rpc(error) => CommandError::Message(error.message),
         error => error.into(),
@@ -2582,22 +2588,32 @@ mod tests {
 
     #[test]
     fn inference_errors_have_one_actionable_message() {
-        let ambiguous = inference_error(Error::Rpc(agent::control_api::ResponseError {
-            code: -32602,
-            message: "multiple agents were applied from this directory; specify --agent or --variant".into(),
-        }));
+        let ambiguous = inference_error(
+            Error::Rpc(agent::control_api::ResponseError {
+                code: -32602,
+                message: "multiple agents were applied from this directory; specify --agent or --variant".into(),
+            }),
+            false,
+        );
         assert_eq!(
             ambiguous.to_string(),
             "multiple agents were applied from this directory; specify --agent or --variant"
         );
 
-        let missing = inference_error(Error::Rpc(agent::control_api::ResponseError {
-            code: -32004,
-            message: "Agent not found".into(),
-        }));
+        let missing = || {
+            Error::Rpc(agent::control_api::ResponseError {
+                code: -32004,
+                message: "Agent not found".into(),
+            })
+        };
         assert_eq!(
-            missing.to_string(),
-            "no agent here; `agentctl apply` creates one, or pass --agent NAME"
+            inference_error(missing(), false).to_string(),
+            "no agent here; `agentctl init` sets one up, or pass --agent NAME"
+        );
+        assert_eq!(
+            inference_error(missing(), true).to_string(),
+            "no agent here; `agentctl apply` creates one, or pass --agent NAME",
+            "an agent.yaml here is applied rather than set up"
         );
     }
 
