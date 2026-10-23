@@ -34,7 +34,8 @@ RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then export NODE_EXTRA_CA_CERTS=/run
     && rm -rf /home/agent/.npm
 
 # Optional: Chromium and playwright-cli, for testing web apps headless. `desktop` instead adds a desktop with VNC
-# (and `access: [{type: vnc}]` in the manifest). Each needs the ENV lines that `agent-feature env <feature>` prints.
+# (and `access: [{type: vnc}]` in the manifest). Each needs the ENV lines that `agent-feature env <feature>` prints;
+# see below for how to get them.
 RUN agent-feature install browser
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 
@@ -44,6 +45,12 @@ RUN agent-image-check
 USER agent
 ```
 
+- A feature's ENV lines come from the base image itself, so they match the digest you pinned:
+  `docker run --rm --entrypoint agent-feature ghcr.io/digdir/agentctl-base:ubuntu-26.04@sha256:<digest> env browser`.
+- The base image's Node.js runs the harnesses' hooks: don't remove it. When the repository needs another major
+  version, install it beside it for the agent user, for example with a version manager, or replace it as
+  https://github.com/digdir/digdir-agents/blob/main/images/agentctl-base/README.md#using-another-nodejs describes, and
+  list it in `instructions.md`.
 - `HOME` is `/home/agent` in every step, so a root step that writes a cache there (npm, pip, dotnet, cargo) leaves a
   root-owned directory the agent cannot use. Remove it in the same step, as above; `agent-image-check` reports what
   is left.
@@ -53,7 +60,7 @@ USER agent
   agentd sets up Podman's socket for the agent user. Docker's own engine gets no such setup.
 - Repositories go in `instructions.md`, not in the image. The base images can also clone at boot from
   `/etc/agent-workspace.d/*.list`, one `OWNER/NAME` per line, if the person wants them there before the first
-  session.
+  session. They clone with the agent's `GITHUB_TOKEN`, so private repositories need it.
 - The image is built when the agent is created. A changed Dockerfile takes effect only when the agent is deleted and
   applied again.
 

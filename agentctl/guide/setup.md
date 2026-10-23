@@ -51,15 +51,26 @@ missing, so the list is what keeps it working when the image falls behind.
 Size the agent from the machine: up to half its cores, a quarter of its memory, and a disk that fits its free space.
 Other agents on the machine share them.
 
-Write the non-secret values in `.env` yourself, such as `GIT_USER_NAME` and `GIT_USER_EMAIL` from `git config`.
+Write the non-secret values in `.env` yourself, such as `GIT_USER_NAME` and `GIT_USER_EMAIL` from `git config` in the
+repository; confirm them with the person when they look like a personal identity rather than the one they use here.
 Never ask for a secret in the conversation and never read one: tell the person which line to add to the file, such as
-`GITHUB_TOKEN=`, and make sure Git ignores the file.
+`GITHUB_TOKEN=`, and make sure Git ignores the file. `apply` refuses a secret that is empty, so wait until they have
+filled it in, or mark the secret `optional: true` when the agent can start without it.
 
 ## 4. Start it and check it
 
 Check that the harness the agent uses has a login: in `agentctl status --json`, its `login_stored` is `true`. If
 not, ask the person to run `agentctl claude login` or `agentctl codex login` in their own terminal; it opens a
-browser. Then, from the repository root, adding `--env-file <path>` when `.env` is not beside the manifest:
+browser. Wait for the login and for every secret before you apply.
+
+Build the image once yourself first: a Dockerfile error then shows in a minute, not after `apply` has set the agent
+up. Remove the test image afterwards.
+
+```sh
+docker build --tag agentctl-check agents/<name> && docker image rm agentctl-check
+```
+
+Then, from the repository root, adding `--env-file <path>` when `.env` is not beside the manifest:
 
 ```sh
 agentctl apply -f agents/<name>/agent.yaml --wait --timeout 30m
@@ -68,7 +79,7 @@ agentctl exec agent/<name> -- node --version
 ```
 
 `apply --wait` builds the image, boots the agent and prints its progress until it is ready; the first build can take
-several minutes. It exits non-zero on failure: read the error, fix the files and apply again. `status --json` should
+several minutes. Its first line, `agent/<name> applied`, only means agentd accepted the manifest. It exits non-zero on failure: read the error, fix the files and apply again. `status --json` should
 then show the agent with `state` `ready`; `agentctl describe agent/<name>` has the details when it is not. Use
 `exec` to check that the tools you put in the image are there.
 
