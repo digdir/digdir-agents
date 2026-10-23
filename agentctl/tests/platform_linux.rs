@@ -350,15 +350,20 @@ async fn claude_instructions_after_setup(host: Option<&str>, instructions: Optio
         .await
         .expect("setup");
 
-    let written = backend
-        .file_writes()
-        .iter()
-        .any(|path| path.as_str() == "/home/agent/.claude/CLAUDE.md");
-    if written {
-        Some(String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8"))
-    } else {
-        None
-    }
+    let written = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+    after_the_platforms(&written).map(str::to_owned)
+}
+
+/// The last line of the platform's instructions, which every agent gets first.
+const PLATFORM_END: &str = "or another folder or repository, ask the person to add it.\n";
+
+/// What `instructions` hold after the platform's own, or `None` when they do not start with them.
+fn after_the_platforms(instructions: &str) -> Option<&str> {
+    let rest = instructions
+        .strip_prefix("# About this sandbox\n")?
+        .split_once(PLATFORM_END)?
+        .1;
+    Some(rest.strip_prefix('\n').unwrap_or(rest))
 }
 
 /// The host's instructions reach every agent, ahead of the agent's own.
@@ -380,14 +385,15 @@ async fn linux_setup_puts_the_host_instructions_ahead_of_the_agents_own() {
     );
 }
 
-/// Emptying the host's file clears what agents were given; without any instructions nothing is written.
+/// Emptying the host's file clears what it gave agents, and an agent without any instructions still
+/// gets the platform's.
 #[tokio::test(flavor = "local")]
-async fn an_empty_host_file_clears_the_instructions_and_none_at_all_writes_nothing() {
+async fn an_empty_host_file_clears_its_instructions_and_the_platforms_remain() {
     assert_eq!(
         claude_instructions_after_setup(Some(""), None).await,
         Some(String::new())
     );
-    assert_eq!(claude_instructions_after_setup(None, None).await, None);
+    assert_eq!(claude_instructions_after_setup(None, None).await, Some(String::new()));
 }
 
 /// Runs Linux setup for a Claude Code agent whose Claude Code state file holds `existing`, if
@@ -566,7 +572,10 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     let preserved = read_file(&sandbox, "/home/agent/.claude/.claude.json").await;
     assert_eq!(preserved, mutable_state);
     let instructions = read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await;
-    assert_eq!(instructions, b"test instructions\n\n# Environment\n\nhas a browser\n");
+    assert_eq!(
+        after_the_platforms(std::str::from_utf8(&instructions).expect("UTF-8")),
+        Some("test instructions\n\n# Environment\n\nhas a browser\n")
+    );
     let codex_instructions = read_file(&sandbox, "/home/agent/.codex/AGENTS.md").await;
     assert_eq!(codex_instructions, instructions);
     for root in ["/home/agent/.claude/skills", "/home/agent/.agents/skills"] {
@@ -1041,6 +1050,11 @@ async fn linux_setup_hands_the_folders_repositories_to_the_workspace_unit() {
     assert!(
         commands.iter().any(|args| args == &START_WORKSPACE_UNIT),
         "{commands:?}"
+    );
+    let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+    assert!(
+        instructions.contains("`digdir/microsandbox` in `/home/agent/code/forks/microsandbox`: The fork."),
+        "the agent is told what was cloned for it: {instructions}"
     );
 }
 

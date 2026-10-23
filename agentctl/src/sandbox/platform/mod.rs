@@ -1,5 +1,6 @@
 //! Sandbox operating-system-specific adapters.
 
+mod about;
 pub(crate) mod files;
 mod linux;
 pub(crate) mod linux_ssh;

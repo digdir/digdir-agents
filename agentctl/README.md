@@ -243,9 +243,15 @@ cannot be optional.
 Each installation may declare `defaults` with a `model` and an `effort` level for its new Sessions, in the harness's
 own vocabulary. The published manifests select `model: fable` for Claude Code because a mediated token cannot list
 Fable in the `/model` picker.
+Every agent's instructions start with the platform's own, "About this sandbox": that it runs in a VM whose files last
+until it is recreated, that credentials in its environment are placeholders the host replaces, that settings live in
+environment variables, and that its tools and folders are declared on the host. Only what applies is added: its bind
+mounts, as folders on the person's machine; the repositories its folder's `repositories.yaml` lists, with what each
+is for and how to work with them; and, with a GitHub account, that `gh` and `git` work with GitHub.
+
 `agentctl instructions edit` opens the host-wide instructions file, `~/.agent/instructions.md`, which every agent on
-the host receives ahead of its own instructions, within one reconciliation pass and without being recreated; emptying
-it gives agents none. `spec.instructions` names one harness-neutral Agent instruction file. Every declared Harness Adapter installs that source
+the host receives after the platform's and ahead of its own instructions, within one reconciliation pass and without
+being recreated; emptying it gives agents none. `spec.instructions` names one harness-neutral Agent instruction file. Every declared Harness Adapter installs that source
 at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md` for Codex and
 `~/.pi/agent/AGENTS.md` for Pi.
 Repository-local instruction files continue to be discovered by the harness itself.
