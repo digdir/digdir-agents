@@ -59,6 +59,10 @@ spec:
         - github.com
         - api.github.com
         - uploads.github.com
+  # Skills: folders holding a SKILL.md, copied where each harness reads skills. Edits reach a running agent;
+  # adding or removing one means recreating it.
+  # skills:
+  #   - source: skills/release-notes
   # `agentctl ssh` and editors over SSH. Add `- type: vnc` for an image with the desktop feature, to watch it
   # with `agentctl vnc --web --open`.
   access:
