@@ -149,7 +149,7 @@ USER root
 RUN agent-feature install desktop
 
 # The desktop keeps the Norwegian keyboard its people use, through the base image's override directory.
-COPY full/agent-desktop.conf /etc/agent-desktop.conf.d/self-dev.conf
+COPY common/agent-desktop.conf /etc/agent-desktop.conf.d/self-dev.conf
 
 # What `agent-feature env desktop` prints.
 ENV NODE_PATH=/usr/local/lib/node_modules
