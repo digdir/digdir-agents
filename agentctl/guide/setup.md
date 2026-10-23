@@ -97,7 +97,7 @@ agent, such as one in another checkout of the repository: choose another name in
 
 ## 5. Hand over
 
-Tell the person, in two or three lines, what you set up and how to start working with it: `agentctl attach
-session/main` from anywhere in the repository starts a session named `main` and attaches to it (detach with
-Ctrl-b d), and `agentctl tui` shows every agent and session. Suggest they commit `agents/<name>/`, without `.env`, so
+Tell the person, in two or three lines, what you set up and how to start working with it: `agentctl attach` from
+anywhere in the repository opens the agent's session, starting one if it has none (detach with Ctrl-b d), and
+`agentctl tui` shows every agent and session. Suggest they commit `agents/<name>/`, without `.env`, so
 others in the repository get the same agent.
