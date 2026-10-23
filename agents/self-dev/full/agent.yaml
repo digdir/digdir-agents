@@ -16,6 +16,9 @@ spec:
         capacity: "100Gi"
         mode: direct
     initSystem: image
+    # For the Microsandbox runtime that runs nested Agents and the end-to-end tests. A host that
+    # cannot provide them leaves the Agent without them, as its NestedSandboxes condition says.
+    nestedSandboxes: preferred
     # The Sandbox default sizes /tmp at a quarter of guest memory, capped at 512 MiB, which is
     # too small for a large build's scratch space. A tmpfs holds only what is written to it.
     # Chromium's shared memory lands here too, through --disable-dev-shm-usage.

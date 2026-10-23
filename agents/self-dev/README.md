@@ -13,6 +13,10 @@ Agent clones `digdir/digdir-agents`, `digdir/microsandbox` and `digdir/libkrunfw
 Both Agents are named `agentctl-dev`, and their nested variants `agentctl-dev-nested`, since you typically use one or
 the other. Pass `--name` to run both at once.
 
+Both Agents prefer [nested Sandboxes](../../agentctl/README.md#images-home-and-harnesses), for the `/dev/kvm` their
+Microsandbox runtime uses. That needs a Linux x86_64 host with nested KVM enabled or a Mac with an Apple M3 or newer
+chip and macOS 15 or newer; elsewhere they start without it, and cannot run nested Agents or the end-to-end tests.
+
 The images are built from this directory's `Dockerfile` on the [agentctl base images](../../images/agentctl-base/README.md),
 and published to `ghcr.io/digdir/digdir-agents` whenever they or the base images change on `main`. `full` is `minimal`
 plus the base images' `desktop` feature. Use a `nested` variant to try changes to the image itself. It builds on the
