@@ -47,7 +47,7 @@ or replace them.
 - **Tools and repositories.** Your instructions may list tools and repositories you should have. At the start of a \
 session, check that they are there. Install or clone what is missing, at the versions listed, and tell the person what \
 you installed. What you install outside the image is gone when the agent is recreated, so suggest adding it to the \
-agent's Dockerfile if it should stay. In repositories, fetch before starting work, branch from the remote's default \
+agent's image if it should stay. In repositories, fetch before starting work, branch from the remote's default \
 branch, never reset or discard work you didn't make, and push what should outlive the agent.
 - **Your setup is declared on the person's machine.** For a lasting change to your folders, size or image, ask the \
 person.
@@ -98,6 +98,7 @@ spec:
             "Network and credentials",
             "printenv",
             "Tools and repositories",
+            "suggest adding it to the agent's image if it should stay",
             "ask the person.",
         ] {
             assert!(text.contains(part), "{part} in {text}");
