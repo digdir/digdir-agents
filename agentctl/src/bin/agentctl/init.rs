@@ -22,8 +22,10 @@ pub(crate) fn run() -> CommandResult<ExitCode> {
     let handover = handover_prompt(directory, root.is_some());
     let found = installed(std::env::var_os("PATH").as_deref());
     let Some((harness, program)) = choose(&found, prompt::choose)? else {
-        let names = Harness::ALL.map(Harness::display_name).join(", ");
-        eprintln!("None of {names} is installed here. Paste this into the coding agent you use:\n");
+        eprintln!(
+            "No coding agent found here ({}). Paste this into the one you use:\n",
+            either(&Harness::ALL.map(Harness::display_name))
+        );
         println!("{handover}");
         return Ok(ExitCode::SUCCESS);
     };
@@ -54,8 +56,17 @@ fn handover_prompt(directory: &Path, in_repository: bool) -> String {
     };
     format!(
         "Help me set up an agentctl agent {subject}. agentctl runs coding agents like you in sandboxed Linux VMs on \
-         this machine. Run `agentctl guide setup` and follow it. Start by asking me what I want the agent to do."
+         this machine. Run `agentctl guide setup` and follow it."
     )
+}
+
+/// `names` as alternatives: `A`, `A or B`, `A, B or C`.
+fn either(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [only] => (*only).to_owned(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
 }
 
 /// Every harness whose program is on `path`, in [`Harness::ALL`] order, with where it is.
@@ -97,8 +108,7 @@ mod tests {
         assert_eq!(
             handover_prompt(directory, true),
             "Help me set up an agentctl agent for this repository, /work/app. agentctl runs coding agents like \
-             you in sandboxed Linux VMs on this machine. Run `agentctl guide setup` and follow it. Start by asking \
-             me what I want the agent to do."
+             you in sandboxed Linux VMs on this machine. Run `agentctl guide setup` and follow it."
         );
         let outside = handover_prompt(directory, false);
         assert!(
@@ -106,6 +116,16 @@ mod tests {
             "{outside}"
         );
         assert!(!outside.contains("repository"), "{outside}");
+    }
+
+    #[test]
+    fn the_harnesses_are_listed_as_alternatives() {
+        assert_eq!(
+            either(&Harness::ALL.map(Harness::display_name)),
+            "Claude Code, Codex or Pi"
+        );
+        assert_eq!(either(&["Codex", "Pi"]), "Codex or Pi");
+        assert_eq!(either(&["Pi"]), "Pi");
     }
 
     #[test]
