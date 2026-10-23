@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use microsandbox::sandbox::{PullPolicy, SandboxStatus};
+use microsandbox::sandbox::{PullPolicy, SandboxModificationBuilder, SandboxStatus};
 use sandbox::progress::SandboxProgress;
 use sandbox::{
     Error, LocalFuture, PendingOperation, Platform, ResourceKind, RootFilesystemMode, RootFilesystemModeSet, Sandbox,
@@ -319,25 +319,15 @@ impl MicrosandboxProvider {
                 });
             }
 
-            let mut modification = handle.modify();
-            let mut runtime_change = booted.cpus != desired.cpus;
-            if runtime_change {
-                modification = modification
-                    .cpus(desired.cpus)
-                    .max_cpus(config.spec.resources.max_cpus.max(desired.cpus));
-            }
-            if booted.memory_mib != desired.memory_mib {
-                modification = modification
-                    .memory(desired.memory_mib)
-                    .max_memory(config.spec.resources.max_memory_mib.max(desired.memory_mib));
-                runtime_change = true;
-            }
+            let (mut modification, mut runtime_change) = boot_changes(
+                handle.modify(),
+                &booted,
+                &config.spec.resources,
+                &desired,
+                resources.nested_sandboxes(),
+            );
             if current_root_filesystem_mib < desired.root_filesystem_mib {
                 modification = modification.root_disk_size(desired.root_filesystem_mib);
-                runtime_change = true;
-            }
-            if booted.nested_virt != resources.nested_sandboxes() {
-                modification = modification.nested_virt(resources.nested_sandboxes());
                 runtime_change = true;
             }
             if runtime_change {
@@ -428,6 +418,7 @@ impl MicrosandboxProvider {
         let _running = match self.runtime_handle(&record.runtime_name).await? {
             Some(handle) if map_state(handle.status_snapshot()) == SandboxState::Running => return Ok(()),
             Some(handle) => {
+                converge_next_start(&record, &handle).await?;
                 let step = progress.start_step(START_RUNTIME).await;
                 let running = handle.start_detached().await.map_err(error::microsandbox)?;
                 step.complete().await;
@@ -913,6 +904,58 @@ impl RuntimeMount {
     }
 }
 
+/// Adds to `modification` the boot settings in which `desired` and `nested_sandboxes` differ
+/// from `from`: cpus, memory and nested Sandboxes. `stored` is the runtime's stored
+/// configuration, whose maximums only grow. Returns whether it added any.
+fn boot_changes(
+    mut modification: SandboxModificationBuilder,
+    from: &microsandbox::sandbox::SandboxResources,
+    stored: &microsandbox::sandbox::SandboxResources,
+    desired: &RuntimeResources,
+    nested_sandboxes: bool,
+) -> (SandboxModificationBuilder, bool) {
+    let mut changed = from.cpus != desired.cpus;
+    if changed {
+        modification = modification
+            .cpus(desired.cpus)
+            .max_cpus(stored.max_cpus.max(desired.cpus));
+    }
+    if from.memory_mib != desired.memory_mib {
+        modification = modification
+            .memory(desired.memory_mib)
+            .max_memory(stored.max_memory_mib.max(desired.memory_mib));
+        changed = true;
+    }
+    if from.nested_virt != nested_sandboxes {
+        modification = modification.nested_virt(nested_sandboxes);
+        changed = true;
+    }
+    (modification, changed)
+}
+
+/// Makes a stopped runtime boot what its record says. A resource update interrupted after it
+/// persisted the change for the next start, but before it saved the record, leaves the two
+/// apart, and applying the record's resources again then finds nothing to change.
+async fn converge_next_start(
+    record: &SandboxRecord,
+    handle: &microsandbox::sandbox::SandboxHandle,
+) -> Result<(), Error> {
+    let config = handle.config().map_err(error::microsandbox)?;
+    let stored = &config.spec.resources;
+    let desired = RuntimeResources::try_from(record.resources)?;
+    let (modification, changed) = boot_changes(
+        handle.modify(),
+        stored,
+        stored,
+        &desired,
+        record.resources.nested_sandboxes(),
+    );
+    if changed {
+        modification.apply().await.map_err(error::microsandbox)?;
+    }
+    Ok(())
+}
+
 /// Stops a running VM gracefully within [`STOP_TIMEOUT`], and kills it when
 /// that fails. A guest that stopped responding, a halted guest and a paused VM
 /// cannot take the shutdown request, so the stop still ends with the VM gone.
@@ -1017,12 +1060,15 @@ pub(crate) mod test_records {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{path::PathBuf, rc::Rc};
 
     use microsandbox::sandbox::VolumeMount;
     use sandbox::{
-        Error, SandboxName,
+        ByteQuantity, CpuQuantity, EnsureSandboxRequest, Error, Platform, RetentionPolicy, RootFilesystem, SandboxName,
+        SandboxResources, SandboxService, SandboxSpec,
         backend::SandboxBackend as _,
+        execution::ExecutionSpec,
+        image::ImageSource,
         network::{NetworkControlProtocolId, NetworkEndpointSelection, PacketMedium},
     };
 
@@ -1081,6 +1127,80 @@ mod tests {
                 "starting a Sandbox recorded with {expected:?} should be refused, got {result:?}"
             );
         }
+        drop(provider);
+    }
+
+    // A resource update persists its change for the next start before it stops the VM and saves
+    // the record. Interrupted between the two, as by an emergency stop, it leaves the stored
+    // configuration ahead of the record, and the next start must still boot the record.
+    #[tokio::test(flavor = "local")]
+    #[ignore = "requires a Microsandbox host runtime, nested KVM and registry access"]
+    async fn a_start_boots_the_recorded_resources_after_an_interrupted_update() {
+        let home = tempfile::tempdir().expect("temporary home should be created");
+        let provider = Rc::new(
+            MicrosandboxProvider::open(PathBuf::from(home.path()).join("microsandbox"))
+                .await
+                .expect("Provider should open"),
+        );
+        if crate::nested_sandbox_support().is_err() {
+            return;
+        }
+        let service = SandboxService::new(provider.clone());
+        let request = EnsureSandboxRequest::new(
+            SandboxName::new("interrupted").expect("test Sandbox name should be valid"),
+            SandboxSpec {
+                image: ImageSource::Reference {
+                    reference: "docker.io/library/alpine:3.22".to_string(),
+                },
+                platform: Platform::new(
+                    "linux",
+                    match std::env::consts::ARCH {
+                        "aarch64" => "arm64",
+                        _ => "amd64",
+                    },
+                ),
+                resources: SandboxResources::new(
+                    "1".parse::<CpuQuantity>().expect("test CPU should be valid"),
+                    "512Mi".parse::<ByteQuantity>().expect("test memory should be valid"),
+                    RootFilesystem::layered("1Gi".parse::<ByteQuantity>().expect("test disk should be valid")),
+                )
+                .with_nested_sandboxes(true),
+                init_system: sandbox::init::InitSystem::Backend,
+                retention_policy: RetentionPolicy::Delete,
+            },
+        );
+        let sandbox = service.ensure(&request).await.expect("a nested Sandbox should start");
+        let record = provider
+            .state
+            .sandbox_by_id(&sandbox.snapshot().id)
+            .await
+            .expect("the Sandbox should be recorded");
+        provider
+            .runtime_handle(&record.runtime_name)
+            .await
+            .expect("the runtime should be found")
+            .expect("the runtime should exist")
+            .modify()
+            .nested_virt(false)
+            .next_start()
+            .apply()
+            .await
+            .expect("the change should be persisted for the next start");
+        provider.stop(&record.id).await.expect("the Sandbox should stop");
+
+        let sandbox = service.ensure(&request).await.expect("the Sandbox should start");
+        let output = sandbox
+            .run_execution(ExecutionSpec::command(
+                sandbox::SandboxPath::new("/bin/sh"),
+                ["-c".to_string(), "test -c /dev/kvm".to_string()],
+            ))
+            .await
+            .expect("the check should run");
+        assert!(output.status.success(), "the started guest should have /dev/kvm");
+        provider
+            .delete(&record.id)
+            .await
+            .expect("the Sandbox should be deleted");
         drop(provider);
     }
 
