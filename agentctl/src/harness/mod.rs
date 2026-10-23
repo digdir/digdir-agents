@@ -353,11 +353,12 @@ pub struct HarnessLogin {
     pub stored: Option<bool>,
 }
 
-/// Dispatches host-side authentication to the selected harness adapter.
+/// Dispatches host-side authentication to the selected harness adapter or the GitHub accounts.
 pub struct AuthenticationManager {
     database: persistence::Database,
     claude_code: claude_code::authentication::Authentication,
     codex: codex::authentication::Authentication,
+    github: crate::github::Authentication,
 }
 
 impl AuthenticationManager {
@@ -367,8 +368,42 @@ impl AuthenticationManager {
         Self {
             database: database.clone(),
             claude_code: claude_code::authentication::Authentication::new(database.clone()),
-            codex: codex::authentication::Authentication::new(database),
+            codex: codex::authentication::Authentication::new(database.clone()),
+            github: crate::github::Authentication::new(database),
         }
+    }
+
+    /// Checks a GitHub token with GitHub and keeps it for Agents of `owner`, replacing the
+    /// owner's earlier one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the token or owner is invalid, the token has expired, GitHub rejects
+    /// it or cannot be reached, or it cannot be persisted.
+    pub async fn github_login(
+        &self,
+        token: Zeroizing<String>,
+        owner: &str,
+    ) -> Result<crate::github::GithubLogin, Error> {
+        self.github.login(token, owner).await
+    }
+
+    /// The stored GitHub tokens, by owner, without the tokens.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database cannot be read.
+    pub async fn github_accounts(&self) -> Result<Vec<crate::github::GithubToken>, Error> {
+        self.github.tokens().await
+    }
+
+    /// Forgets the GitHub token kept for `owner`, returning it, or `None` when there was none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database cannot be read or written.
+    pub async fn github_logout(&self, owner: &str) -> Result<Option<crate::github::GithubToken>, Error> {
+        self.github.forget(owner).await
     }
 
     /// Reports, for every harness, whether its host login is stored.
