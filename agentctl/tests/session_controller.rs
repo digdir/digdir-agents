@@ -147,7 +147,8 @@ impl Provider for MemoryProvider {
                 .agent
                 .spec
                 .sandbox
-                .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+                .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+                .expect("Sandbox spec");
             let sandbox = self
                 .service
                 .ensure(&EnsureSandboxRequest::new(record.sandbox_name()?, spec).with_environment(environment))
@@ -515,7 +516,8 @@ async fn running_session(
         .agent
         .spec
         .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
     let sandbox = provider_service
         .ensure(&EnsureSandboxRequest::new(
             record.sandbox_name().expect("Sandbox name"),
@@ -1843,7 +1845,8 @@ async fn a_session_admitted_before_convergence_is_parked_until_its_optional_harn
         .agent
         .spec
         .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
     let sandbox = provider_service
         .ensure(&EnsureSandboxRequest::new(
             record.sandbox_name().expect("Sandbox name"),
@@ -2188,7 +2191,8 @@ async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() 
         .agent
         .spec
         .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
     let sandbox = provider_service
         .ensure(&EnsureSandboxRequest::new(
             record.sandbox_name().expect("Sandbox name"),
