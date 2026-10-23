@@ -70,6 +70,7 @@ impl PlatformAdapter for NoopPlatform {
         _record: &'a AgentRecord,
         _sandbox: &'a SandboxHandle,
         _harnesses: &'a [agent::Harness],
+        _github_account: Option<&'a agent::github::GithubAccount>,
         _steps: &'a sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async { Ok(()) })
@@ -195,6 +196,7 @@ impl Provider for MemoryProvider {
                     .iter()
                     .map(|installation| installation.kind)
                     .collect(),
+                github_account: None,
             })
         })
     }
@@ -2202,6 +2204,7 @@ impl PlatformAdapter for StallingPlatform {
         _record: &'a AgentRecord,
         _sandbox: &'a SandboxHandle,
         _harnesses: &'a [agent::Harness],
+        _github_account: Option<&'a agent::github::GithubAccount>,
         _steps: &'a sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async move {

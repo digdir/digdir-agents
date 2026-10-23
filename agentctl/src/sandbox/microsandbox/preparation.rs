@@ -6,10 +6,6 @@ use crate::{Error, authorization::AgentPolicyEngine, control_plane, environment,
 use ::sandbox::{SandboxHandle, SandboxId, SandboxName, network::NetworkBackend as _};
 use sandbox_microsandbox::{MicrosandboxNetworkBackend, SecretBinding};
 
-/// The plaintext Git identity Linux setup configures, here taken from the GitHub account.
-const GIT_USER_NAME: &str = "GIT_USER_NAME";
-const GIT_USER_EMAIL: &str = "GIT_USER_EMAIL";
-
 /// Connects Agent policy and host-owned secrets to the Microsandbox Network Backend.
 pub(super) struct Preparation {
     database: persistence::Database,
@@ -21,6 +17,8 @@ pub(super) struct PreparedNetwork {
     pub(super) bindings_changed: bool,
     pub(super) environment: BTreeMap<String, String>,
     pub(super) harnesses: Vec<crate::Harness>,
+    /// The account of the Agent's stored GitHub token, for setup's Git identity.
+    pub(super) github_account: Option<crate::github::GithubAccount>,
 }
 
 impl Preparation {
@@ -111,7 +109,7 @@ impl Preparation {
                     managed_secrets.push(secret);
                 }
             }
-            let identity = github_account(&self.database, &record.agent.spec, &mut managed_secrets).await?;
+            let github_account = github_account(&self.database, &record.agent.spec, &mut managed_secrets).await?;
             self.policy.set_agent(
                 &sandbox_name,
                 &record.agent,
@@ -126,19 +124,19 @@ impl Preparation {
                     secret.reference,
                 )?);
             }
-            let mut guest_environment: BTreeMap<String, String> = bindings
+            let guest_environment = bindings
                 .iter()
                 .map(|binding| {
                     let (name, value) = binding.guest_environment();
                     (name.to_owned(), value.to_owned())
                 })
                 .collect();
-            guest_environment.extend(identity);
             let bindings_changed = self.network.set_secret_bindings(sandbox_name.clone(), bindings)?;
             Ok(PreparedNetwork {
                 bindings_changed,
                 environment: guest_environment,
                 harnesses: installed,
+                github_account,
             })
         }
         .await;
@@ -155,27 +153,20 @@ impl Preparation {
 }
 
 /// Adds the GitHub account's mediated token for an Agent that has one, whether or not a token is
-/// stored, returning the account's Git identity for the guest unless the manifest sets its own.
+/// stored, returning the account a stored token acts as.
+///
+/// The account reaches the guest through setup rather than the environment, since changing a
+/// running Sandbox's environment restarts it.
 async fn github_account(
     database: &persistence::Database,
     spec: &crate::Spec,
     managed_secrets: &mut Vec<harness::MediatedSecret>,
-) -> Result<Vec<(String, String)>, Error> {
+) -> Result<Option<crate::github::GithubAccount>, Error> {
     let Some(owner) = spec.github_owner() else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     managed_secrets.push(crate::github::mediated_token(owner)?);
-    // Validation requires GIT_USER_NAME and GIT_USER_EMAIL together, so one stands for both.
-    if spec.environment.iter().any(|variable| variable.name == GIT_USER_NAME) {
-        return Ok(Vec::new());
-    }
-    let Some(account) = crate::github::account(database, owner).await? else {
-        return Ok(Vec::new());
-    };
-    Ok(vec![
-        (GIT_USER_NAME.into(), account.name),
-        (GIT_USER_EMAIL.into(), account.email),
-    ])
+    crate::github::account(database, owner).await
 }
 
 fn secret_value<'a>(
@@ -345,11 +336,11 @@ spec:
 
         assert_eq!(
             prepared.environment,
-            BTreeMap::from([
-                ("GITHUB_TOKEN".into(), "github_pat_AGENT_MEDIATED_GITHUB_TOKEN".into()),
-                ("GIT_USER_NAME".into(), "digdir bot".into()),
-                ("GIT_USER_EMAIL".into(), "1+digdir-bot@users.noreply.github.com".into()),
-            ])
+            BTreeMap::from([("GITHUB_TOKEN".into(), "github_pat_AGENT_MEDIATED_GITHUB_TOKEN".into())])
+        );
+        assert_eq!(
+            prepared.github_account.map(|account| account.email).as_deref(),
+            Some("1+digdir-bot@users.noreply.github.com")
         );
         assert!(
             !prepared.environment.values().any(|value| value.contains("FAKE")),
@@ -370,20 +361,6 @@ spec:
     }
 
     #[tokio::test(flavor = "local")]
-    async fn a_manifest_git_identity_wins_over_the_github_account() {
-        let directory = tempfile::TempDir::new().expect("temporary directory");
-        let (preparation, _policy, _database) = with_tokens(&directory).await;
-        let manifest = format!("{MANIFEST}  environment:\n    - name: GIT_USER_NAME\n    - name: GIT_USER_EMAIL\n");
-
-        let prepared = preparation
-            .prepare(&record(&directory, &manifest))
-            .await
-            .expect("prepare");
-
-        assert_eq!(prepared.environment.keys().collect::<Vec<_>>(), ["GITHUB_TOKEN"]);
-    }
-
-    #[tokio::test(flavor = "local")]
     async fn an_agent_without_accounts_gets_no_github_token_even_when_tokens_are_stored() {
         let directory = tempfile::TempDir::new().expect("temporary directory");
         let (preparation, policy, _database) = with_tokens(&directory).await;
@@ -396,14 +373,14 @@ spec:
     }
 
     /// A logout, or a token never stored, ends only GitHub access: preparation still succeeds, so
-    /// the Agent keeps its policy and every other host, and keeps its binding, so a later login
-    /// works without restarting anything.
+    /// the Agent keeps its policy and every other host, and neither the binding nor the
+    /// environment changes, so nothing restarts when a token comes, goes or changes account.
     #[tokio::test(flavor = "local")]
     async fn logging_out_ends_github_access_and_nothing_else() {
         let directory = tempfile::TempDir::new().expect("temporary directory");
         let (preparation, policy, database) = with_tokens(&directory).await;
         let record = record(&directory, MANIFEST);
-        preparation.prepare(&record).await.expect("prepare");
+        let before = preparation.prepare(&record).await.expect("prepare");
         assert!(may_request(&policy, &record, "models.example").await);
 
         crate::github::Authentication::new(database.clone())
@@ -414,10 +391,8 @@ spec:
         let prepared = preparation.prepare(&record).await.expect("prepare without a token");
 
         assert!(!prepared.bindings_changed, "the binding outlives the token");
-        assert_eq!(
-            prepared.environment.get("GITHUB_TOKEN").map(String::as_str),
-            Some("github_pat_AGENT_MEDIATED_GITHUB_TOKEN")
-        );
+        assert_eq!(prepared.environment, before.environment);
+        assert_eq!(prepared.github_account, None);
         for host in ["models.example", "github.com"] {
             assert!(may_request(&policy, &record, host).await, "{host}");
         }
@@ -427,6 +402,12 @@ spec:
             database.resolve(&binding.reference).await.is_err(),
             "nothing left to substitute"
         );
+
+        store_token(&database, "digdir", None).await;
+        let relogged = preparation.prepare(&record).await.expect("prepare after a login");
+        assert!(!relogged.bindings_changed);
+        assert_eq!(relogged.environment, before.environment);
+        assert!(relogged.github_account.is_some());
     }
 
     /// GitHub enforces a token's expiry itself, so a stored expiry that has passed changes nothing.

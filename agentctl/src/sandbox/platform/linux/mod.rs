@@ -101,9 +101,10 @@ impl PlatformAdapter for Linux {
         record: &'a control_plane::AgentRecord,
         sandbox: &'a SandboxHandle,
         harnesses: &'a [crate::Harness],
+        github_account: Option<&'a crate::github::GithubAccount>,
         steps: &'a ::sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<(), Error>> {
-        Box::pin(self.setup(record, sandbox, harnesses, steps))
+        Box::pin(self.setup(record, sandbox, harnesses, github_account, steps))
     }
 }
 
@@ -115,6 +116,7 @@ impl Linux {
         record: &control_plane::AgentRecord,
         sandbox: &SandboxHandle,
         harnesses: &[crate::Harness],
+        github_account: Option<&crate::github::GithubAccount>,
         steps: &::sandbox::SandboxProgress,
     ) -> Result<(), Error> {
         let installations: Vec<&crate::HarnessSpec> = record
@@ -147,7 +149,7 @@ impl Linux {
             // After the home sync, so a file of the same name in the Agent's home cannot replace it.
             point_podman_at_socket(sandbox).await?;
         }
-        configure_git(sandbox, record.agent.spec.github_owner().is_some()).await?;
+        configure_git(sandbox, record.agent.spec.github_owner().is_some(), github_account).await?;
         step.complete().await;
         let about = super::about::instructions(&record.agent.spec);
         let instructions = read_instructions(record, &about, self.host_instructions.as_deref()).await?;
@@ -167,13 +169,17 @@ impl Linux {
 }
 
 /// Configures Git for the Agent's user when the image has it: the commit identity from
-/// `GIT_USER_NAME` and `GIT_USER_EMAIL`, and for an Agent with a GitHub account, HTTPS access to
-/// GitHub through the mediated `GITHUB_TOKEN`.
-async fn configure_git(sandbox: &SandboxHandle, github_account: bool) -> Result<(), Error> {
+/// `GIT_USER_NAME` and `GIT_USER_EMAIL`, or else from the GitHub `account`, and for an Agent with
+/// a GitHub account, HTTPS access to GitHub through the mediated `GITHUB_TOKEN`.
+async fn configure_git(
+    sandbox: &SandboxHandle,
+    github_account: bool,
+    account: Option<&crate::github::GithubAccount>,
+) -> Result<(), Error> {
     let environment = &sandbox.snapshot().environment;
     let identity = match (environment.get("GIT_USER_NAME"), environment.get("GIT_USER_EMAIL")) {
         (Some(name), Some(email)) => Some((name.clone(), email.clone())),
-        (None, None) => None,
+        (None, None) => account.map(|account| (account.name.clone(), account.email.clone())),
         _ => {
             return Err(Error::Invalid(
                 "GIT_USER_NAME and GIT_USER_EMAIL must both be configured".into(),

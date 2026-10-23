@@ -169,6 +169,7 @@ impl Provider for Adapter {
                 .is_some_and(|id| self.preparation.network_is_running(id));
             let prepared = self.preparation.prepare(record).await?;
             let harnesses = prepared.harnesses;
+            let github_account = prepared.github_account;
             for (name, value) in prepared.environment {
                 if environment.insert(name.clone(), value).is_some() {
                     return Err(Error::Invalid(format!(
@@ -207,6 +208,7 @@ impl Provider for Adapter {
                 runtime_restarted,
                 harnesses,
                 nested_sandboxes,
+                github_account,
             })
         })
     }

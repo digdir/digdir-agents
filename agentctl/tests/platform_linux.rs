@@ -143,7 +143,7 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         .expect("Sandbox");
 
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
+        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], None, &setup_phase())
         .await
         .expect("setup");
 
@@ -203,7 +203,7 @@ async fn linux_setup_without_a_home_copies_nothing_into_the_guest_home() {
         .expect("Sandbox");
 
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), None, &setup_phase())
         .await
         .expect("setup without a home");
 
@@ -256,6 +256,17 @@ struct ImageGit<'a> {
 /// Runs Linux setup for an Agent with or without a GitHub account in an image with `image`'s Git
 /// configuration, and returns every `git` command it ran.
 async fn git_commands_during_setup(github_account: bool, image: ImageGit<'_>) -> Vec<Vec<String>> {
+    git_commands_with_identity(github_account, None, &[], image).await
+}
+
+/// As [`git_commands_during_setup`], with the stored token's `account` and the Sandbox
+/// `environment`.
+async fn git_commands_with_identity(
+    github_account: bool,
+    account: Option<&agent::github::GithubAccount>,
+    environment: &[(&str, &str)],
+    image: ImageGit<'_>,
+) -> Vec<Vec<String>> {
     let directory = TempDir::new().expect("temporary directory");
     std::fs::write(directory.path().join("instructions.md"), "test instructions\n").expect("instruction file");
     let mut resource = support::agent("worker");
@@ -292,15 +303,18 @@ async fn git_commands_during_setup(github_account: bool, image: ImageGit<'_>) ->
         .sandbox
         .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
     let sandbox = service
-        .ensure(&EnsureSandboxRequest::new(
-            record.sandbox_name().expect("Sandbox name"),
-            spec,
-        ))
+        .ensure(
+            &EnsureSandboxRequest::new(record.sandbox_name().expect("Sandbox name"), spec).with_environment(
+                environment
+                    .iter()
+                    .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+            ),
+        )
         .await
         .expect("Sandbox");
 
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), account, &setup_phase())
         .await
         .expect("setup");
 
@@ -391,6 +405,67 @@ async fn linux_setup_adds_the_github_helper_once() {
     assert!(git_config_writes(&commands).is_empty(), "{commands:?}");
 }
 
+/// Commits are made as the stored token's account, set in Git's configuration rather than the
+/// Sandbox's environment, so a login as another account does not restart the Agent.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_commits_as_the_github_account() {
+    let account = agent::github::GithubAccount {
+        login: "digdir-bot".into(),
+        name: "Digdir Bot".into(),
+        email: "1+digdir-bot@users.noreply.github.com".into(),
+    };
+
+    let commands = git_commands_with_identity(true, Some(&account), &[], ImageGit::default()).await;
+
+    let writes = git_config_writes(&commands);
+    assert_eq!(
+        writes[..2],
+        [
+            ["config", "--global", "user.name", "Digdir Bot"].map(String::from),
+            [
+                "config",
+                "--global",
+                "user.email",
+                "1+digdir-bot@users.noreply.github.com"
+            ]
+            .map(String::from),
+        ],
+        "{writes:?}"
+    );
+}
+
+/// A manifest's own `GIT_USER_NAME` and `GIT_USER_EMAIL` win over the GitHub account.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_prefers_the_manifests_git_identity_to_the_github_account() {
+    let account = agent::github::GithubAccount {
+        login: "digdir-bot".into(),
+        name: "Digdir Bot".into(),
+        email: "1+digdir-bot@users.noreply.github.com".into(),
+    };
+
+    let commands = git_commands_with_identity(
+        true,
+        Some(&account),
+        &[("GIT_USER_NAME", "Ada"), ("GIT_USER_EMAIL", "ada@example.com")],
+        ImageGit::default(),
+    )
+    .await;
+
+    let writes = git_config_writes(&commands);
+    assert_eq!(
+        writes[..2],
+        [
+            ["config", "--global", "user.name", "Ada"].map(String::from),
+            ["config", "--global", "user.email", "ada@example.com"].map(String::from),
+        ],
+        "{writes:?}"
+    );
+    assert!(
+        !writes.iter().flatten().any(|arg| arg.contains("Digdir Bot")),
+        "{writes:?}"
+    );
+}
+
 /// Without a GitHub account or a Git identity, setup leaves Git alone.
 #[tokio::test(flavor = "local")]
 async fn linux_setup_without_a_github_account_runs_no_git() {
@@ -465,7 +540,7 @@ async fn linux_setup_layers_the_platforms_the_hosts_and_the_agents_instructions(
         );
         backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
         platform
-            .setup(&record, &sandbox, &declared(&record), &setup_phase())
+            .setup(&record, &sandbox, &declared(&record), None, &setup_phase())
             .await
             .expect("setup");
         let written = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
@@ -553,7 +628,7 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     let platform = Linux::new(PLATFORM_API_URL);
 
     platform
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), None, &setup_phase())
         .await
         .expect("first setup");
     let first_pass_writes = backend.file_writes();
@@ -566,7 +641,7 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
         .await
         .expect("write harness-owned state");
     platform
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), None, &setup_phase())
         .await
         .expect("second setup");
 
@@ -666,7 +741,7 @@ async fn linux_setup_waits_for_systemd_and_restores_managed_podman_configuration
         ],
     );
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), None, &setup_phase())
         .await
         .expect("the first setup waits for systemd to boot");
     let managed = "/etc/containers/containers.conf.d/50-agent-ca.conf";
@@ -676,7 +751,7 @@ async fn linux_setup_waits_for_systemd_and_restores_managed_podman_configuration
         .await
         .expect("replace managed configuration");
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), None, &setup_phase())
         .await
         .expect("second setup");
 
@@ -730,7 +805,7 @@ async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
         .expect("Sandbox");
 
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), None, &setup_phase())
         .await
         .expect("setup without a declared version");
 }
@@ -782,7 +857,7 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
         .expect("Sandbox");
 
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), None, &setup_phase())
         .await
         .expect("first setup");
     assert_eq!(
@@ -793,7 +868,7 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
     );
 
     Linux::new(RESTARTED_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), None, &setup_phase())
         .await
         .expect("setup after a restart");
     assert_eq!(
@@ -845,7 +920,7 @@ async fn linux_setup_rejects_partial_git_identity() {
         .expect("Sandbox");
 
     let error = Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), None, &setup_phase())
         .await
         .expect_err("partial Git identity");
 
@@ -892,7 +967,7 @@ async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injectio
         .expect("Sandbox");
 
     let error = Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), None, &setup_phase())
         .await
         .expect_err("version mismatch");
 
@@ -967,7 +1042,7 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
         .expect("Sandbox");
 
     let error = Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), None, &setup_phase())
         .await
         .expect_err("FIFO must be rejected");
 
