@@ -154,8 +154,8 @@ impl Preparation {
     }
 }
 
-/// Adds the GitHub account's mediated token for an Agent that has one, returning the account's
-/// Git identity for the guest unless the manifest sets its own.
+/// Adds the GitHub account's mediated token for an Agent that has one, whether or not a token is
+/// stored, returning the account's Git identity for the guest unless the manifest sets its own.
 async fn github_account(
     database: &persistence::Database,
     spec: &crate::Spec,
@@ -164,12 +164,14 @@ async fn github_account(
     let Some(owner) = spec.github_owner() else {
         return Ok(Vec::new());
     };
-    let (secret, account) = crate::github::prepare(database, owner, time::OffsetDateTime::now_utc()).await?;
-    managed_secrets.push(secret);
+    managed_secrets.push(crate::github::mediated_token(owner)?);
     // Validation requires GIT_USER_NAME and GIT_USER_EMAIL together, so one stands for both.
     if spec.environment.iter().any(|variable| variable.name == GIT_USER_NAME) {
         return Ok(Vec::new());
     }
+    let Some(account) = crate::github::account(database, owner).await? else {
+        return Ok(Vec::new());
+    };
     Ok(vec![
         (GIT_USER_NAME.into(), account.name),
         (GIT_USER_EMAIL.into(), account.email),
@@ -193,6 +195,7 @@ mod tests {
 
     use super::secret_value;
     use crate::SecretSpec;
+    use ::sandbox::secret_store::SecretStore as _;
     use std::{collections::BTreeMap, rc::Rc};
     use zeroize::Zeroizing;
 
@@ -220,29 +223,72 @@ spec:
 ";
     const ACCOUNTS: &str = "  accounts:\n    - type: github\n      owner: Digdir\n";
 
+    /// Stores a fake GitHub token for `owner`, expiring at `expires_at` (RFC 3339) when given.
+    async fn store_token(database: &crate::persistence::Database, owner: &str, expires_at: Option<&str>) {
+        let expiry = expires_at
+            .map(|at| format!(r#","expiresAt":"{at}""#))
+            .unwrap_or_default();
+        database
+            .put_provider_account(crate::persistence::ProviderAccountWrite {
+                provider: format!("github/{owner}"),
+                credentials: vec![crate::persistence::StoredSecret {
+                    name: format!("github-access-token/{owner}"),
+                    value: Zeroizing::new(format!("github_pat_FAKE_{owner}").into_bytes()),
+                }],
+                metadata_json: format!(
+                    r#"{{"owner":"{owner}","login":"{owner}-bot","name":"{owner} bot","email":"1+{owner}-bot@users.noreply.github.com","kind":"fineGrained"{expiry}}}"#
+                ),
+            })
+            .await
+            .expect("store token");
+    }
+
     /// A Preparation over a database holding GitHub tokens for `digdir` and `altinn`.
     async fn with_tokens(
         directory: &tempfile::TempDir,
-    ) -> (super::Preparation, Rc<crate::authorization::AgentPolicyEngine>) {
+    ) -> (
+        super::Preparation,
+        Rc<crate::authorization::AgentPolicyEngine>,
+        crate::persistence::Database,
+    ) {
         let database = crate::persistence::Database::open(&directory.path().join("agent.db")).expect("database");
         for owner in ["digdir", "altinn"] {
-            database
-                .put_provider_account(crate::persistence::ProviderAccountWrite {
-                    provider: format!("github/{owner}"),
-                    credentials: vec![crate::persistence::StoredSecret {
-                        name: format!("github-access-token/{owner}"),
-                        value: Zeroizing::new(format!("github_pat_FAKE_{owner}").into_bytes()),
-                    }],
-                    metadata_json: format!(
-                        r#"{{"owner":"{owner}","login":"{owner}-bot","name":"{owner} bot","email":"1+{owner}-bot@users.noreply.github.com","kind":"fineGrained"}}"#
-                    ),
-                })
-                .await
-                .expect("store token");
+            store_token(&database, owner, None).await;
         }
         let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
         let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
-        (super::Preparation::new(database, policy.clone(), network), policy)
+        (
+            super::Preparation::new(database.clone(), policy.clone(), network),
+            policy,
+            database,
+        )
+    }
+
+    /// Whether the policy allows the Agent's Sandbox `action` on `resource` in a request to `host`.
+    async fn allows(
+        policy: &crate::authorization::AgentPolicyEngine,
+        record: &crate::control_plane::AgentRecord,
+        (action, resource_kind, resource): (&str, &str, &str),
+        host: &str,
+    ) -> bool {
+        use sandbox_authorization::{
+            Action, AuthorizationContext, AuthorizationDecision, AuthorizationRequest, PolicyEngine as _, Principal,
+            Resource,
+            vocabulary::{context, principal_kind},
+        };
+        let sandbox = record.sandbox_name().expect("Sandbox name");
+        let decision = policy
+            .evaluate(AuthorizationRequest {
+                principal: Principal::new(principal_kind::SANDBOX, "sandbox-id"),
+                action: Action::new(action),
+                resource: Resource::new(resource_kind, resource),
+                context: AuthorizationContext::new()
+                    .with_attribute(context::SANDBOX_NAME, sandbox.as_str())
+                    .with_attribute(context::HTTP_AUTHORITY, host),
+            })
+            .await
+            .expect("policy decision");
+        decision == AuthorizationDecision::Allow
     }
 
     /// Whether the policy lets the Agent's Sandbox use `secret` in a request to `host`.
@@ -252,24 +298,30 @@ spec:
         secret: &str,
         host: &str,
     ) -> bool {
-        use sandbox_authorization::{
-            Action, AuthorizationContext, AuthorizationDecision, AuthorizationRequest, PolicyEngine as _, Principal,
-            Resource,
-            vocabulary::{action, context, principal_kind, resource_kind},
-        };
-        let sandbox = record.sandbox_name().expect("Sandbox name");
-        let decision = policy
-            .evaluate(AuthorizationRequest {
-                principal: Principal::new(principal_kind::SANDBOX, "sandbox-id"),
-                action: Action::new(action::SECRET_USE),
-                resource: Resource::new(resource_kind::SECRET, secret),
-                context: AuthorizationContext::new()
-                    .with_attribute(context::SANDBOX_NAME, sandbox.as_str())
-                    .with_attribute(context::HTTP_AUTHORITY, host),
-            })
-            .await
-            .expect("policy decision");
-        decision == AuthorizationDecision::Allow
+        use sandbox_authorization::vocabulary::{action, resource_kind};
+        allows(
+            policy,
+            record,
+            (action::SECRET_USE, resource_kind::SECRET, secret),
+            host,
+        )
+        .await
+    }
+
+    /// Whether the policy lets the Agent's Sandbox send an HTTP request to `host`.
+    async fn may_request(
+        policy: &crate::authorization::AgentPolicyEngine,
+        record: &crate::control_plane::AgentRecord,
+        host: &str,
+    ) -> bool {
+        use sandbox_authorization::vocabulary::{action, resource_kind};
+        allows(
+            policy,
+            record,
+            (action::HTTP_REQUEST, resource_kind::EXTERNAL_SERVICE, host),
+            host,
+        )
+        .await
     }
 
     fn record(directory: &tempfile::TempDir, manifest: &str) -> crate::control_plane::AgentRecord {
@@ -286,7 +338,7 @@ spec:
     #[tokio::test(flavor = "local")]
     async fn a_github_account_mediates_its_token_for_githubs_hosts_only() {
         let directory = tempfile::TempDir::new().expect("temporary directory");
-        let (preparation, policy) = with_tokens(&directory).await;
+        let (preparation, policy, _database) = with_tokens(&directory).await;
         let record = record(&directory, MANIFEST);
 
         let prepared = preparation.prepare(&record).await.expect("prepare");
@@ -320,7 +372,7 @@ spec:
     #[tokio::test(flavor = "local")]
     async fn a_manifest_git_identity_wins_over_the_github_account() {
         let directory = tempfile::TempDir::new().expect("temporary directory");
-        let (preparation, _policy) = with_tokens(&directory).await;
+        let (preparation, _policy, _database) = with_tokens(&directory).await;
         let manifest = format!("{MANIFEST}  environment:\n    - name: GIT_USER_NAME\n    - name: GIT_USER_EMAIL\n");
 
         let prepared = preparation
@@ -334,7 +386,7 @@ spec:
     #[tokio::test(flavor = "local")]
     async fn an_agent_without_accounts_gets_no_github_token_even_when_tokens_are_stored() {
         let directory = tempfile::TempDir::new().expect("temporary directory");
-        let (preparation, policy) = with_tokens(&directory).await;
+        let (preparation, policy, _database) = with_tokens(&directory).await;
         let record = record(&directory, &MANIFEST.replace(ACCOUNTS, ""));
 
         let prepared = preparation.prepare(&record).await.expect("prepare");
@@ -343,22 +395,59 @@ spec:
         assert!(!may_use(&policy, &record, "GITHUB_TOKEN", "github.com").await);
     }
 
+    /// A logout, or a token never stored, ends only GitHub access: preparation still succeeds, so
+    /// the Agent keeps its policy and every other host, and keeps its binding, so a later login
+    /// works without restarting anything.
     #[tokio::test(flavor = "local")]
-    async fn an_owner_without_a_token_fails_naming_the_login() {
+    async fn logging_out_ends_github_access_and_nothing_else() {
         let directory = tempfile::TempDir::new().expect("temporary directory");
-        let (preparation, policy) = with_tokens(&directory).await;
-        let record = record(&directory, &MANIFEST.replace("owner: Digdir", "owner: elsewhere"));
+        let (preparation, policy, database) = with_tokens(&directory).await;
+        let record = record(&directory, MANIFEST);
+        preparation.prepare(&record).await.expect("prepare");
+        assert!(may_request(&policy, &record, "models.example").await);
 
-        let Err(crate::Error::Invalid(message)) = preparation.prepare(&record).await else {
-            panic!("a permanent failure");
-        };
+        crate::github::Authentication::new(database.clone())
+            .forget("digdir")
+            .await
+            .expect("logout")
+            .expect("a token was stored");
+        let prepared = preparation.prepare(&record).await.expect("prepare without a token");
+
+        assert!(!prepared.bindings_changed, "the binding outlives the token");
+        assert_eq!(
+            prepared.environment.get("GITHUB_TOKEN").map(String::as_str),
+            Some("github_pat_AGENT_MEDIATED_GITHUB_TOKEN")
+        );
+        for host in ["models.example", "github.com"] {
+            assert!(may_request(&policy, &record, host).await, "{host}");
+        }
+        assert!(may_use(&policy, &record, "GITHUB_TOKEN", "github.com").await);
+        let binding = crate::github::mediated_token("digdir").expect("binding");
+        assert!(
+            database.resolve(&binding.reference).await.is_err(),
+            "nothing left to substitute"
+        );
+    }
+
+    /// GitHub enforces a token's expiry itself, so a stored expiry that has passed changes nothing.
+    #[tokio::test(flavor = "local")]
+    async fn an_expired_token_still_binds() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let (preparation, policy, database) = with_tokens(&directory).await;
+        store_token(&database, "digdir", Some("2001-09-09T01:46:40Z")).await;
+        let record = record(&directory, MANIFEST);
+
+        let prepared = preparation.prepare(&record).await.expect("prepare");
 
         assert!(
-            message.contains("`agentctl github login --owner elsewhere`"),
-            "{message}"
+            prepared.environment.contains_key("GITHUB_TOKEN"),
+            "{:?}",
+            prepared.environment
         );
-        assert!(!message.contains("FAKE"), "{message}");
-        assert!(!may_use(&policy, &record, "GITHUB_TOKEN", "github.com").await);
+        assert!(may_use(&policy, &record, "GITHUB_TOKEN", "github.com").await);
+        let binding = crate::github::mediated_token("digdir").expect("binding");
+        let resolved = database.resolve(&binding.reference).await.expect("resolve");
+        assert_eq!(resolved.expose(), b"github_pat_FAKE_digdir");
     }
 
     fn secret(optional: bool) -> SecretSpec {

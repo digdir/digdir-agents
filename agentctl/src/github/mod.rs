@@ -134,45 +134,48 @@ fn names(owner: &str) -> (String, String) {
     (format!("{PROVIDER}/{owner}"), format!("{ACCESS_SECRET}/{owner}"))
 }
 
-/// The mediated `GITHUB_TOKEN` an Agent of `owner` receives, bound to that owner's token only,
-/// and the account the token acts as.
+/// The mediated `GITHUB_TOKEN` an Agent of `owner` receives, bound to that owner's token only.
+///
+/// The binding does not depend on a token being stored: the mediator looks the token up on every
+/// request, so a login or logout takes effect at once, and GitHub itself rejects an expired one.
+/// Requests that carry the placeholder while no token is stored are blocked; nothing else is.
 ///
 /// # Errors
 ///
-/// Returns an error naming `agentctl github login --owner <owner>` when no token is stored for
-/// the owner or it has expired at `now`, and when the database cannot be read.
-pub(crate) async fn prepare(
-    database: &persistence::Database,
-    owner: &str,
-    now: time::OffsetDateTime,
-) -> Result<(MediatedSecret, GithubAccount), Error> {
+/// Returns an error when `owner` is not a GitHub login.
+pub(crate) fn mediated_token(owner: &str) -> Result<MediatedSecret, Error> {
     let owner = owner.to_ascii_lowercase();
     if !valid_owner(&owner) {
         return Err(Error::Invalid(
             "the GitHub account's owner is not a GitHub login".into(),
         ));
     }
-    let login = format!("run `agentctl github login --owner {owner}`");
-    let (provider, secret) = names(&owner);
-    let Some(metadata) = database.provider_account_metadata(&provider).await? else {
-        return Err(Error::Invalid(format!(
-            "no GitHub token is stored for {owner}; {login}"
-        )));
-    };
-    let token: GithubToken = serde_json::from_str(&metadata)?;
-    if let Some(expires_at) = token.expires_at.filter(|_| token.expired(now)) {
-        return Err(Error::Invalid(format!(
-            "the GitHub token for {owner} expired on {}; {login}",
-            expires_at.date()
-        )));
-    }
-    let secret = MediatedSecret {
+    let (_, secret) = names(&owner);
+    Ok(MediatedSecret {
         environment: ACCESS_ENVIRONMENT,
         placeholder: ACCESS_PLACEHOLDER.into(),
         reference: SecretReference::from_opaque(secret),
         allowed_hosts: MEDIATED_HOSTS.iter().map(|host| (*host).to_owned()).collect(),
+    })
+}
+
+/// The account `owner`'s stored token acts as, expired or not; `None` when none is stored or
+/// `owner` is not a GitHub login.
+///
+/// # Errors
+///
+/// Returns an error when the database cannot be read.
+pub(crate) async fn account(database: &persistence::Database, owner: &str) -> Result<Option<GithubAccount>, Error> {
+    let owner = owner.to_ascii_lowercase();
+    if !valid_owner(&owner) {
+        return Ok(None);
+    }
+    let (provider, _) = names(&owner);
+    let Some(metadata) = database.provider_account_metadata(&provider).await? else {
+        return Ok(None);
     };
-    Ok((secret, token.account))
+    let token: GithubToken = serde_json::from_str(&metadata)?;
+    Ok(Some(token.account))
 }
 
 /// Whether a manifest secret would collide with the binding the GitHub account owns. Mediation
@@ -630,16 +633,14 @@ mod tests {
         let github = fixture(BOT).await;
         store(&github.database, "digdir", "github_pat_FAKE_digdir", None).await;
         store(&github.database, "altinn", "github_pat_FAKE_altinn", None).await;
-        let now = time::OffsetDateTime::now_utc();
 
         for (owner, expected) in [
             ("Digdir", "github_pat_FAKE_digdir"),
             ("altinn", "github_pat_FAKE_altinn"),
         ] {
-            let (secret, account) = prepare(&github.database, owner, now).await.expect("prepare");
+            let secret = mediated_token(owner).expect("binding");
             let resolved = github.database.resolve(&secret.reference).await.expect("resolve");
             assert_eq!(resolved.expose(), expected.as_bytes(), "{owner}");
-            assert_eq!(account.login, format!("{}-bot", owner.to_ascii_lowercase()));
             assert_eq!(secret.environment, "GITHUB_TOKEN");
             assert_eq!(secret.placeholder, ACCESS_PLACEHOLDER);
             assert_eq!(
@@ -648,42 +649,22 @@ mod tests {
             );
         }
 
-        let Err(error) = prepare(&github.database, "digdir-other", now).await else {
-            panic!("no token for this owner");
-        };
-        let error = error.to_string();
-        assert!(
-            error.contains(
-                "no GitHub token is stored for digdir-other; run `agentctl github login --owner digdir-other`"
-            ),
-            "{error}"
-        );
-        assert!(!error.contains("FAKE"), "{error}");
+        let unstored = mediated_token("digdir-other").expect("bound without a token");
+        assert!(github.database.resolve(&unstored.reference).await.is_err());
+        assert!(mediated_token("not a login").is_err());
     }
 
     #[tokio::test(flavor = "local")]
-    async fn an_expired_token_fails_naming_the_login_and_never_the_token() {
+    async fn the_account_is_known_while_a_token_is_stored_expired_or_not() {
         let github = fixture(BOT).await;
-        // 2027-01-13 10:00 UTC.
-        let expires_at = time::OffsetDateTime::from_unix_timestamp(1_799_834_400).expect("timestamp");
-        store(&github.database, "digdir", "github_pat_FAKE_canary", Some(expires_at)).await;
+        // 2001-09-09 01:46 UTC, long past.
+        let expired = time::OffsetDateTime::from_unix_timestamp(1_000_000_000).expect("timestamp");
+        store(&github.database, "digdir", "github_pat_FAKE_canary", Some(expired)).await;
 
-        prepare(&github.database, "digdir", expires_at - time::Duration::seconds(1))
-            .await
-            .expect("not yet expired");
-        let Err(error) = prepare(&github.database, "digdir", expires_at).await else {
-            panic!("expired");
-        };
-
-        assert!(matches!(error, Error::Invalid(_)), "a permanent failure: {error:?}");
-        let message = error.to_string();
-        assert!(
-            message.contains(
-                "the GitHub token for digdir expired on 2027-01-13; run `agentctl github login --owner digdir`"
-            ),
-            "{message}"
-        );
-        assert!(!message.contains("FAKE_canary"), "{message}");
+        let known = account(&github.database, "Digdir").await.expect("account");
+        assert_eq!(known.map(|account| account.login).as_deref(), Some("digdir-bot"));
+        assert_eq!(account(&github.database, "altinn").await.expect("account"), None);
+        assert_eq!(account(&github.database, "not a login").await.expect("account"), None);
     }
 
     #[test]
