@@ -227,11 +227,13 @@ impl Client {
         resources: sandbox::SandboxResources,
     ) -> Result<microsandbox::sandbox::SandboxBuilder, Error> {
         let root_filesystem_mode = resources.root_filesystem().mode();
+        let nested_sandboxes = resources.nested_sandboxes();
         let resources = RuntimeResources::try_from(resources)?;
         let builder = microsandbox::sandbox::SandboxBuilder::new(name)
             .image(image.into())
             .cpus(resources.cpus)
-            .memory(resources.memory_mib);
+            .memory(resources.memory_mib)
+            .nested_virt(nested_sandboxes);
         Ok(match root_filesystem_mode {
             sandbox::RootFilesystemMode::Layered => builder.root_disk(resources.root_filesystem_mib),
             sandbox::RootFilesystemMode::Direct => {
@@ -521,6 +523,14 @@ mod tests {
         assert_eq!(config.spec.resources.memory_mib, 768);
         assert_eq!(config.spec.image.oci_managed_root_disk_size_mib(), Some(4 * 1024));
         assert_eq!(config.spec.runtime.workdir, None);
+        assert!(!config.spec.resources.nested_virt);
+
+        let config = Box::pin(super::build_in_client_scope(
+            Client::sandbox_builder("sandbox", "alpine", resources.with_nested_sandboxes(true))
+                .expect("resources should map to Microsandbox"),
+        ))
+        .await;
+        assert!(config.spec.resources.nested_virt);
     }
 
     #[tokio::test(flavor = "local")]

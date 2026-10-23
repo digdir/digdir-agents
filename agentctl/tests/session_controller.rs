@@ -155,6 +155,7 @@ impl Provider for MemoryProvider {
                 .map_err(Error::from)?;
             Ok(ProviderEnsureOutcome {
                 sandbox,
+                nested_sandboxes: None,
                 runtime_restarted: false,
                 harnesses: record
                     .agent

@@ -184,6 +184,7 @@ impl Reconciler {
             1,
             responsive_condition(self.sandboxes.reports_heartbeat(&ensured.sandbox.snapshot().id)),
         );
+        conditions.extend(nested_sandboxes_condition(ensured.nested_sandboxes.as_ref()));
         conditions.push(condition(Condition::READY, ConditionStatus::True, "SandboxReady", ""));
         let status = Status::observed(record.agent.metadata.generation, Some(assignment), conditions);
         // As on failure, readiness is stored before followers see the pass end.
@@ -531,6 +532,22 @@ fn condition(kind: &str, status: ConditionStatus, reason: &str, message: &str) -
         message: message.into(),
         last_transition_time: None,
     }
+}
+
+/// Reports whether the Sandbox got the nested Sandboxes its Agent asks for; nothing when it asks
+/// for none.
+fn nested_sandboxes_condition(outcome: Option<&crate::sandbox::NestedSandboxesOutcome>) -> Option<Condition> {
+    Some(match outcome? {
+        crate::sandbox::NestedSandboxesOutcome::Available => {
+            condition(Condition::NESTED_SANDBOXES, ConditionStatus::True, "Available", "")
+        }
+        crate::sandbox::NestedSandboxesOutcome::Unavailable(reason) => condition(
+            Condition::NESTED_SANDBOXES,
+            ConditionStatus::False,
+            "HostUnsupported",
+            reason,
+        ),
+    })
 }
 
 /// Reports the guest's heartbeat after a pass whose guest work finished. A

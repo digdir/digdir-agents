@@ -267,6 +267,9 @@ pub struct SandboxManifestSpec {
     /// Process responsible for initializing the Sandbox after backend setup.
     #[serde(default)]
     pub init_system: InitSystem,
+    /// Whether the Sandbox runs Sandboxes of its own, such as nested Agents. Absent, it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nested_sandboxes: Option<NestedSandboxes>,
     /// Whether the Agent retains the Sandbox when releasing it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_policy: Option<RetentionPolicy>,
@@ -275,10 +278,28 @@ pub struct SandboxManifestSpec {
     pub mounts: Vec<MountSpec>,
 }
 
+/// How much an Agent needs its Sandbox to run Sandboxes of its own.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NestedSandboxes {
+    /// The Agent cannot do without them: it fails on a host that cannot provide them.
+    Required,
+    /// The Agent uses them where the host provides them, and runs without them elsewhere.
+    Preferred,
+}
+
 impl SandboxManifestSpec {
     fn validate(&self) -> Result<(), sandbox::Error> {
         self.image.validate()?;
-        self.platform.validate()
+        self.platform.validate()?;
+        // The Agent decides it from `nestedSandboxes` and the host.
+        if self.resources.nested_sandboxes() {
+            return Err(sandbox::Error::invalid(
+                "resources.nestedSandboxes",
+                "set nestedSandboxes beside resources instead",
+            ));
+        }
+        Ok(())
     }
 
     /// Resolves manifest-relative sources and an omitted architecture for a concrete Provider request.
@@ -940,6 +961,8 @@ impl Condition {
     /// Condition type for whether the running Sandbox's guest still makes
     /// progress, observed by the host without a round trip to the guest.
     pub const SANDBOX_RESPONSIVE: &'static str = "SandboxResponsive";
+    /// Condition type for whether the Sandbox runs the nested Sandboxes its Agent asks for.
+    pub const NESTED_SANDBOXES: &'static str = "NestedSandboxes";
     /// Condition type for declared SSH access underneath `Ready`.
     pub const SSH_READY: &'static str = "SshReady";
     /// VNC access is reconciled and the bridge to the desktop is listening.

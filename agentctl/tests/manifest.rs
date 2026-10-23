@@ -4,7 +4,7 @@ mod support;
 
 use std::path::PathBuf;
 
-use agent::{API_VERSION, EnvironmentSpec, Harness, KIND, SecretSpec, manifest};
+use agent::{API_VERSION, EnvironmentSpec, Harness, KIND, NestedSandboxes, SecretSpec, manifest};
 use sandbox::RootFilesystemMode;
 
 #[test]
@@ -499,6 +499,41 @@ fn decodes_each_part_of_a_manifest_and_serializes_only_what_it_sets() {
         let value = serde_json::to_value(&agent).expect("Agent JSON");
         check(&agent, &value);
     }
+}
+
+#[test]
+fn nested_sandboxes_are_decoded_and_serialized_only_when_asked_for() {
+    let agent = manifest::decode(&manifest_with(&[])).expect("manifest");
+    assert_eq!(agent.spec.sandbox.nested_sandboxes, None);
+    let value = serde_json::to_value(&agent).expect("Agent JSON");
+    assert!(value["spec"]["sandbox"].get("nestedSandboxes").is_none());
+
+    for (mode, expected) in [
+        ("required", NestedSandboxes::Required),
+        ("preferred", NestedSandboxes::Preferred),
+    ] {
+        let nested = manifest_with(&[(
+            ROOT_FILESYSTEM_MODE,
+            &format!("        mode: layered\n    nestedSandboxes: {mode}\n"),
+        )]);
+        let agent = manifest::decode(&nested).expect("manifest");
+        assert_eq!(agent.spec.sandbox.nested_sandboxes, Some(expected));
+        let value = serde_json::to_value(&agent).expect("Agent JSON");
+        assert_eq!(value["spec"]["sandbox"]["nestedSandboxes"], mode);
+    }
+
+    // The Sandbox resource is decided by the Agent, not set in the manifest.
+    let resource = manifest_with(&[(
+        ROOT_FILESYSTEM_MODE,
+        "        mode: layered\n      nestedSandboxes: true\n",
+    )]);
+    let error = manifest::decode(&resource).expect_err("the resource should be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("set nestedSandboxes beside resources instead"),
+        "{error}"
+    );
 }
 
 #[test]

@@ -9,7 +9,7 @@ use microsandbox::sandbox::{PullPolicy, SandboxStatus};
 use sandbox::progress::SandboxProgress;
 use sandbox::{
     Error, LocalFuture, PendingOperation, Platform, ResourceKind, RootFilesystemMode, RootFilesystemModeSet, Sandbox,
-    SandboxFeature, SandboxId, SandboxName, SandboxResources, SandboxState,
+    SandboxFeature, SandboxFeatureSet, SandboxId, SandboxName, SandboxResources, SandboxState,
     backend::{CreateSandboxRequest, SandboxBackend, SandboxBackendCapabilities},
     execution, file_transfer,
     mount::{Mount, MountKind, MountKindSet},
@@ -294,6 +294,15 @@ impl MicrosandboxProvider {
 
         if let Some(handle) = self.runtime_handle(&record.runtime_name).await? {
             let config = handle.config().map_err(error::microsandbox)?;
+            let running = map_state(handle.status_snapshot()) == SandboxState::Running;
+            // What a running VM booted with: a change persisted for its next start, by a pass
+            // interrupted before the restart, has not reached it. VMs started before Microsandbox
+            // recorded this boot with the stored configuration.
+            let booted = match running.then(|| handle.active_config()).transpose() {
+                Ok(Some(Some(active))) => active.spec.resources,
+                Ok(_) => config.spec.resources.clone(),
+                Err(failure) => return Err(error::microsandbox(failure)),
+            };
             let recorded_root_filesystem_mib = RuntimeResources::try_from(record.resources)?.root_filesystem_mib;
             let current_root_filesystem_mib = config
                 .spec
@@ -311,13 +320,13 @@ impl MicrosandboxProvider {
             }
 
             let mut modification = handle.modify();
-            let mut runtime_change = config.spec.resources.cpus != desired.cpus;
+            let mut runtime_change = booted.cpus != desired.cpus;
             if runtime_change {
                 modification = modification
                     .cpus(desired.cpus)
                     .max_cpus(config.spec.resources.max_cpus.max(desired.cpus));
             }
-            if config.spec.resources.memory_mib != desired.memory_mib {
+            if booted.memory_mib != desired.memory_mib {
                 modification = modification
                     .memory(desired.memory_mib)
                     .max_memory(config.spec.resources.max_memory_mib.max(desired.memory_mib));
@@ -325,6 +334,10 @@ impl MicrosandboxProvider {
             }
             if current_root_filesystem_mib < desired.root_filesystem_mib {
                 modification = modification.root_disk_size(desired.root_filesystem_mib);
+                runtime_change = true;
+            }
+            if booted.nested_virt != resources.nested_sandboxes() {
+                modification = modification.nested_virt(resources.nested_sandboxes());
                 runtime_change = true;
             }
             if runtime_change {
@@ -336,15 +349,23 @@ impl MicrosandboxProvider {
                 // the next start first, so a rejected change leaves the VM
                 // running, and the root disk grows before that start boots.
                 // The runtime is installed first, since a resource change can
-                // come before the first start after an upgrade.
-                let running = map_state(handle.status_snapshot()) == SandboxState::Running;
+                // come before the first start after an upgrade, and
+                // Microsandbox checks nested virtualization against the
+                // installed runtime even for a stopped VM.
+                self.client.ensure_installed().await?;
                 if running {
-                    self.client.ensure_installed().await?;
                     modification = modification.next_start();
                 }
                 modification.apply().await.map_err(error::microsandbox)?;
                 if running {
                     stop_runtime(&handle, &record.runtime_name).await?;
+                }
+                // Recorded once no VM runs without the change, and before the
+                // start, so that a failed start leaves the record matching
+                // what the next start boots.
+                record.resources = resources;
+                self.state.update_sandbox(&record).await?;
+                if running {
                     self.runtime_handle(&record.runtime_name)
                         .await?
                         .ok_or_else(|| Error::not_found(ResourceKind::Sandbox, &record.id))?
@@ -356,8 +377,10 @@ impl MicrosandboxProvider {
             }
         }
 
-        record.resources = resources;
-        self.state.update_sandbox(&record).await?;
+        if record.resources != resources {
+            record.resources = resources;
+            self.state.update_sandbox(&record).await?;
+        }
         self.inspect_record(&record).await
     }
 
@@ -653,17 +676,21 @@ impl SandboxBackend for MicrosandboxProvider {
     ) -> LocalFuture<'a, Result<SandboxBackendCapabilities, Error>> {
         Box::pin(async move {
             platform::require_supported(platform)?;
+            let mut features = SandboxFeatureSet::from([
+                SandboxFeature::Execution,
+                SandboxFeature::TerminalExecution,
+                SandboxFeature::TerminalAttach,
+                SandboxFeature::FileTransfer,
+                SandboxFeature::PersistentVolumes,
+                SandboxFeature::NestedContainers,
+                SandboxFeature::ImageInit,
+            ]);
+            match crate::nested_sandbox_support() {
+                Ok(()) => features.insert(SandboxFeature::NestedSandboxes),
+                Err(reason) => tracing::debug!(%reason, "nested virtualization is unavailable on this host"),
+            }
             Ok(SandboxBackendCapabilities::new(
-                [
-                    SandboxFeature::Execution,
-                    SandboxFeature::TerminalExecution,
-                    SandboxFeature::TerminalAttach,
-                    SandboxFeature::FileTransfer,
-                    SandboxFeature::PersistentVolumes,
-                    SandboxFeature::NestedContainers,
-                    SandboxFeature::ImageInit,
-                ]
-                .into(),
+                features,
                 MountKindSet::from([MountKind::Volume, MountKind::Bind, MountKind::Tmpfs]),
                 RootFilesystemModeSet::from([RootFilesystemMode::Layered, RootFilesystemMode::Direct]),
                 network::NetworkEndpointCapabilities::new().with_control_protocol(

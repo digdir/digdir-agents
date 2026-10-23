@@ -96,6 +96,8 @@ pub struct SandboxResources {
     cpu: CpuQuantity,
     memory: ByteQuantity,
     root_filesystem: RootFilesystem,
+    #[serde(default, skip_serializing_if = "is_false")]
+    nested_sandboxes: bool,
 }
 
 impl SandboxResources {
@@ -106,7 +108,16 @@ impl SandboxResources {
             cpu,
             memory,
             root_filesystem,
+            nested_sandboxes: false,
         }
+    }
+
+    /// Lets the Sandbox run Sandboxes of its own, or not. Requires
+    /// [`SandboxFeature::NestedSandboxes`](crate::SandboxFeature) when enabled.
+    #[must_use]
+    pub const fn with_nested_sandboxes(mut self, enabled: bool) -> Self {
+        self.nested_sandboxes = enabled;
+        self
     }
 
     /// Returns the desired CPU quantity.
@@ -126,6 +137,17 @@ impl SandboxResources {
     pub const fn root_filesystem(self) -> RootFilesystem {
         self.root_filesystem
     }
+
+    /// Reports whether the Sandbox can run Sandboxes of its own.
+    #[must_use]
+    pub const fn nested_sandboxes(self) -> bool {
+        self.nested_sandboxes
+    }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde passes the field by reference")]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Materialized inputs passed to a sandbox backend.

@@ -162,6 +162,39 @@ pub struct ProviderEnsureOutcome {
     pub runtime_restarted: bool,
     /// Harness installations this pass prepared.
     pub harnesses: Vec<crate::Harness>,
+    /// Whether the Sandbox got the nested Sandboxes the Agent asks for, when it asks for them.
+    pub nested_sandboxes: Option<NestedSandboxesOutcome>,
+}
+
+/// Whether a Sandbox runs Sandboxes of its own as its Agent asks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NestedSandboxesOutcome {
+    /// The Sandbox can run Sandboxes of its own.
+    Available,
+    /// The Agent prefers them, but the host cannot provide them, for the reason given.
+    Unavailable(String),
+}
+
+/// Decides whether an Agent's Sandbox runs Sandboxes of its own.
+///
+/// It follows what the manifest asks for and whether the Provider offers them on this host, or
+/// why not. A requirement that cannot be met fails the Agent; a preference falls back to none.
+///
+/// # Errors
+///
+/// Returns [`Error::Invalid`] for a requirement the Provider cannot meet.
+pub fn resolve_nested_sandboxes(
+    requested: Option<crate::NestedSandboxes>,
+    offered: Result<(), String>,
+) -> Result<Option<NestedSandboxesOutcome>, Error> {
+    match (requested, offered) {
+        (None, _) => Ok(None),
+        (Some(_), Ok(())) => Ok(Some(NestedSandboxesOutcome::Available)),
+        (Some(crate::NestedSandboxes::Preferred), Err(reason)) => Ok(Some(NestedSandboxesOutcome::Unavailable(reason))),
+        (Some(crate::NestedSandboxes::Required), Err(reason)) => Err(Error::Invalid(format!(
+            "spec.sandbox.nestedSandboxes is required, but {reason}"
+        ))),
+    }
 }
 
 /// Materialized Sandbox and relevant lifecycle transition.
@@ -172,6 +205,8 @@ pub struct EnsureOutcome {
     pub sandbox: SandboxHandle,
     /// Harness installations this pass prepared.
     pub harnesses: Vec<crate::Harness>,
+    /// Whether the Sandbox got the nested Sandboxes the Agent asks for, when it asks for them.
+    pub nested_sandboxes: Option<NestedSandboxesOutcome>,
 }
 
 /// Runtime-selectable setup for an operating system reported by a materialized Sandbox.
@@ -289,6 +324,7 @@ impl Service {
             runtime_restarted: outcome.runtime_restarted,
             sandbox,
             harnesses: outcome.harnesses,
+            nested_sandboxes: outcome.nested_sandboxes,
         })
     }
 
@@ -464,5 +500,35 @@ pub async fn attach_terminal(
         provider => Err(Error::Invalid(format!(
             "terminal attachment is not supported through Sandbox Provider {provider:?}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NestedSandboxesOutcome, resolve_nested_sandboxes};
+    use crate::{Error, NestedSandboxes};
+
+    #[test]
+    fn nested_sandboxes_follow_the_request_and_the_host() {
+        let unsupported = || Err("no nesting here".to_string());
+        assert_eq!(
+            resolve_nested_sandboxes(None, unsupported()).expect("not requested"),
+            None
+        );
+        for requested in [NestedSandboxes::Required, NestedSandboxes::Preferred] {
+            assert_eq!(
+                resolve_nested_sandboxes(Some(requested), Ok(())).expect("supported"),
+                Some(NestedSandboxesOutcome::Available)
+            );
+        }
+        assert_eq!(
+            resolve_nested_sandboxes(Some(NestedSandboxes::Preferred), unsupported()).expect("preferred"),
+            Some(NestedSandboxesOutcome::Unavailable("no nesting here".into()))
+        );
+        let Err(Error::Invalid(message)) = resolve_nested_sandboxes(Some(NestedSandboxes::Required), unsupported())
+        else {
+            panic!("an unmet requirement should fail the Agent");
+        };
+        assert!(message.ends_with("no nesting here"), "{message}");
     }
 }
