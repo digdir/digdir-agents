@@ -242,10 +242,20 @@ fn answers(stdout: &str, code: i32) -> Vec<ExecutionEvent> {
     ]
 }
 
-/// Runs Linux setup for an Agent with or without a GitHub account, with `configured` answering
-/// Git's lookups of a credential helper and URL rewrites as the image's own configuration would,
-/// and returns every `git` command it ran.
-async fn git_commands_during_setup(github_account: bool, configured: Option<(&str, &str)>) -> Vec<Vec<String>> {
+/// Git configuration an image ships, as Git's lookups during setup would report it.
+#[derive(Clone, Copy, Default)]
+struct ImageGit<'a> {
+    /// What `--get-urlmatch credential.helper https://github.com` finds, generic helpers included.
+    any_helper: Option<&'a str>,
+    /// The user's `credential.https://github.com.helper` values.
+    github_helpers: Option<&'a str>,
+    /// The user's `url.*.insteadof` settings.
+    rewrites: Option<&'a str>,
+}
+
+/// Runs Linux setup for an Agent with or without a GitHub account in an image with `image`'s Git
+/// configuration, and returns every `git` command it ran.
+async fn git_commands_during_setup(github_account: bool, image: ImageGit<'_>) -> Vec<Vec<String>> {
     let directory = TempDir::new().expect("temporary directory");
     std::fs::write(directory.path().join("instructions.md"), "test instructions\n").expect("instruction file");
     let mut resource = support::agent("worker");
@@ -264,16 +274,17 @@ async fn git_commands_during_setup(github_account: bool, configured: Option<(&st
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(is_claude_version, answers("2.1.266 (Claude Code)\n", 0));
     backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
-    let ((helper, helper_code), (rewrites, rewrites_code)) =
-        configured.map_or((("", 1), ("", 1)), |(helper, rewrites)| ((helper, 0), (rewrites, 0)));
-    backend.queue_execution_events_matching(
-        |spec| git_args(spec).is_some_and(|args| args.iter().any(|arg| arg == "--get-urlmatch")),
-        answers(helper, helper_code),
-    );
-    backend.queue_execution_events_matching(
-        |spec| git_args(spec).is_some_and(|args| args.iter().any(|arg| arg == "--get-regexp")),
-        answers(rewrites, rewrites_code),
-    );
+    let lookup = |value: Option<&str>| value.map_or_else(|| answers("", 1), |value| answers(value, 0));
+    for (flag, value) in [
+        ("--get-urlmatch", image.any_helper),
+        ("--get-all", image.github_helpers),
+        ("--get-regexp", image.rewrites),
+    ] {
+        backend.queue_execution_events_matching(
+            move |spec| git_args(spec).is_some_and(|args| args.iter().any(|arg| arg == flag)),
+            lookup(value),
+        );
+    }
     let service = SandboxService::new(backend.clone());
     let spec = record
         .agent
@@ -299,24 +310,30 @@ async fn git_commands_during_setup(github_account: bool, configured: Option<(&st
 fn git_config_writes(commands: &[Vec<String>]) -> Vec<Vec<String>> {
     commands
         .iter()
-        .filter(|args| args.len() > 2 && args[0] == "config" && args[1] == "--global")
+        .filter(|args| args.len() > 2 && args[0] == "config" && args[1] == "--global" && !args[2].starts_with("--get"))
         .cloned()
         .collect()
 }
+
+const GITHUB_HELPER_KEY: &str = "credential.https://github.com.helper";
 
 /// Git over HTTPS reaches GitHub with the mediated placeholder even when the image configured
 /// nothing, the helper answers only for `https://github.com`, and GitHub's SSH URLs, which the
 /// Sandbox has no key for, go over HTTPS instead.
 #[tokio::test(flavor = "local")]
 async fn linux_setup_gives_git_the_github_account_over_https() {
-    let commands = git_commands_during_setup(true, None).await;
+    let commands = git_commands_during_setup(true, ImageGit::default()).await;
 
     let writes = git_config_writes(&commands);
     assert_eq!(writes.len(), 3, "{writes:?}");
-    assert_eq!(writes[0][2], "credential.https://github.com.helper", "{writes:?}");
-    assert!(writes[0][3].contains("echo \"password=$GITHUB_TOKEN\""), "{writes:?}");
+    assert_eq!(
+        writes[0][..4],
+        ["config", "--global", "--add", GITHUB_HELPER_KEY],
+        "{writes:?}"
+    );
+    assert!(writes[0][4].contains("echo \"password=$GITHUB_TOKEN\""), "{writes:?}");
     assert!(
-        !writes[0][3].contains("github_pat"),
+        !writes[0][4].contains("github_pat"),
         "only the variable, never a value: {writes:?}"
     );
     let rewrite =
@@ -327,31 +344,60 @@ async fn linux_setup_gives_git_the_github_account_over_https() {
     );
 }
 
-/// An image that set up GitHub credentials and URL rewrites keeps them.
+/// An image's own helpers, generic or for GitHub, stay and are asked first; the mediated helper is
+/// added after them, so `git push` works when theirs has nothing, as a generic `cache` never does.
+/// The image's own rewrites are kept.
 #[tokio::test(flavor = "local")]
-async fn linux_setup_keeps_the_images_own_github_configuration() {
+async fn linux_setup_adds_the_github_helper_after_the_images_own() {
     let commands = git_commands_during_setup(
         true,
-        Some((
-            "!/usr/local/bin/gh auth git-credential",
-            "url.https://github.com/.insteadof git@github.com:\nurl.https://github.com/.insteadof ssh://git@github.com/",
-        )),
+        ImageGit {
+            any_helper: Some("cache"),
+            github_helpers: Some("!/usr/local/bin/gh auth git-credential"),
+            rewrites: Some(
+                "url.https://github.com/.insteadof git@github.com:\nurl.https://github.com/.insteadof ssh://git@github.com/",
+            ),
+        },
+    )
+    .await;
+
+    let writes = git_config_writes(&commands);
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    assert_eq!(
+        writes[0][..4],
+        ["config", "--global", "--add", GITHUB_HELPER_KEY],
+        "{writes:?}"
+    );
+}
+
+/// A later setup pass finds the helper it added and adds nothing.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_adds_the_github_helper_once() {
+    let first = git_config_writes(&git_commands_during_setup(true, ImageGit::default()).await);
+    let helper = first[0][4].clone();
+    let rewrites =
+        "url.https://github.com/.insteadof git@github.com:\nurl.https://github.com/.insteadof ssh://git@github.com/";
+
+    let commands = git_commands_during_setup(
+        true,
+        ImageGit {
+            any_helper: Some(&helper),
+            github_helpers: Some(&format!("!gh auth git-credential\n{helper}")),
+            rewrites: Some(rewrites),
+        },
     )
     .await;
 
     assert!(git_config_writes(&commands).is_empty(), "{commands:?}");
-    for lookup in ["--get-urlmatch", "--get-regexp"] {
-        assert!(
-            commands.iter().any(|args| args.iter().any(|arg| arg == lookup)),
-            "{commands:?}"
-        );
-    }
 }
 
 /// Without a GitHub account or a Git identity, setup leaves Git alone.
 #[tokio::test(flavor = "local")]
 async fn linux_setup_without_a_github_account_runs_no_git() {
-    assert!(git_commands_during_setup(false, None).await.is_empty());
+    assert_eq!(
+        git_commands_during_setup(false, ImageGit::default()).await,
+        Vec::<Vec<String>>::new()
+    );
 }
 
 /// The last line of the platform's instructions, which every agent gets first.

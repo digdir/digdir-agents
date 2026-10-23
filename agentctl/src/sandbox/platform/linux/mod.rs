@@ -211,28 +211,34 @@ const GITHUB_HTTPS_REWRITE: &str = "url.https://github.com/.insteadOf";
 const GITHUB_SSH_URLS: [&str; 2] = ["git@github.com:", "ssh://git@github.com/"];
 
 /// Gives Git the mediated `GITHUB_TOKEN` for GitHub over HTTPS, and sends GitHub's SSH URLs over
-/// HTTPS, since the Sandbox has no SSH key and mediation covers HTTPS only. An image that already
-/// configured either keeps its own.
+/// HTTPS, since the Sandbox has no SSH key and mediation covers HTTPS only.
+///
+/// The helper is added after any the image configured, which Git asks first, so an image's own
+/// helper still wins when it answers and ours answers when it does not, such as a generic `cache`
+/// or `store`. An image's own rewrite of an SSH URL is kept.
 async fn configure_github_https(sandbox: &SandboxHandle) -> Result<(), Error> {
-    let helper = git_lookup(
-        sandbox,
-        &["config", "--get-urlmatch", "credential.helper", "https://github.com"],
-    )
-    .await?;
-    if helper.is_none() {
-        run_git_config(sandbox, GITHUB_CREDENTIAL_KEY, GITHUB_CREDENTIAL_HELPER).await?;
+    let helpers = git_lookup(sandbox, &["config", "--global", "--get-all", GITHUB_CREDENTIAL_KEY])
+        .await?
+        .unwrap_or_default();
+    if !helpers.lines().any(|helper| helper == GITHUB_CREDENTIAL_HELPER) {
+        add_git_config(sandbox, GITHUB_CREDENTIAL_KEY, GITHUB_CREDENTIAL_HELPER).await?;
     }
     let rewrites = git_lookup(sandbox, &["config", "--get-regexp", r"^url\..*\.insteadof$"])
         .await?
         .unwrap_or_default();
     for ssh in GITHUB_SSH_URLS {
         if !rewrites.lines().any(|line| line.split_whitespace().nth(1) == Some(ssh)) {
-            let args = ["git", "config", "--global", "--add", GITHUB_HTTPS_REWRITE, ssh];
-            let output = run_git(sandbox, &args[1..]).await?;
-            checked_output("/usr/bin/env", &args, &output)?;
+            add_git_config(sandbox, GITHUB_HTTPS_REWRITE, ssh).await?;
         }
     }
     Ok(())
+}
+
+/// Adds `value` to the user's multi-valued Git setting `key`.
+async fn add_git_config(sandbox: &SandboxHandle, key: &str, value: &str) -> Result<(), Error> {
+    let args = ["git", "config", "--global", "--add", key, value];
+    let output = run_git(sandbox, &args[1..]).await?;
+    checked_output("/usr/bin/env", &args, &output)
 }
 
 /// Runs a `git config` lookup: its output when set, `None` when Git reports it unset.
