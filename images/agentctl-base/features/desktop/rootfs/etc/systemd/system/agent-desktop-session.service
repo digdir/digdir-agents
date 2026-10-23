@@ -10,6 +10,7 @@ User=agent
 Group=agent
 Environment=HOME=/home/agent
 EnvironmentFile=/etc/agent-desktop.conf
+EnvironmentFile=-/etc/agent-desktop.conf.d/*.conf
 ExecStart=/usr/local/libexec/agent-desktop-session
 # What a person starts from the desktop, such as a terminal from the panel and the build in it, runs
 # in this unit. Under systemd's default OOMPolicy=stop, one OOM kill among them would stop the

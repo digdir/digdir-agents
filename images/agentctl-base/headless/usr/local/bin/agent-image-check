@@ -100,6 +100,17 @@ if [ -e "$descriptor" ]; then
     done
 fi
 
+# The desktop's display as its units read it: /etc/agent-desktop.conf, then /etc/agent-desktop.conf.d/*.conf in name
+# order, where the last assignment wins. Sessions find that display only through the image's ENV DISPLAY.
+desktop_display=
+if [ -f /etc/agent-desktop.conf ]; then
+    desktop_display="$(cat /etc/agent-desktop.conf /etc/agent-desktop.conf.d/*.conf 2>/dev/null \
+        | sed -n 's/^[[:space:]]*AGENT_DESKTOP_DISPLAY[[:space:]]*=[[:space:]]*//p' | tail -n 1 \
+        | sed 's/[[:space:]]*$//; s/^"\(.*\)"$/\1/')"
+    [ "$(printenv DISPLAY || true)" = "$desktop_display" ] \
+        || fail "ENV DISPLAY is '$(printenv DISPLAY || true)', but /etc/agent-desktop.conf and /etc/agent-desktop.conf.d put the desktop on '$desktop_display'"
+fi
+
 # Features installed with agent-feature need the environment their env files list, which only the image's ENV
 # instructions can set. A colon-separated list, such as NODE_PATH, may hold more entries than the one listed.
 for marker in /var/lib/agentctl-base/features/*; do
@@ -111,6 +122,8 @@ for marker in /var/lib/agentctl-base/features/*; do
         case $line in '' | '#'*) continue ;; esac
         name=${line%%=*}
         expected=${line#*=}
+        # An image may move the desktop to another display; the check above holds DISPLAY to it.
+        [ "$feature/$name" = desktop/DISPLAY ] && [ -n "$desktop_display" ] && continue
         case ":$(printenv "$name" || true):" in
             *":$expected:"*) ;;
             *) fail "the $feature feature needs ENV $line; \`agent-feature env $feature\` prints all it needs" ;;
