@@ -521,9 +521,10 @@ impl MicrosandboxProvider {
         let reference = reference
             .parse::<microsandbox_image::Reference>()
             .map_err(error::backend)?;
-        let cache = microsandbox_image::GlobalCache::new(&self.client.local().cache_dir()).map_err(error::backend)?;
+        let cache = self.images.operation().await?;
         let metadata = cache
-            .read_image_metadata(&reference)
+            .read_image_metadata_async(&reference)
+            .await
             .map_err(error::backend)?
             .ok_or_else(|| Error::Backend(format!("Microsandbox image metadata is missing for {reference}")))?;
         let manifest_digest = metadata.manifest_digest.parse().map_err(error::backend)?;

@@ -14,10 +14,15 @@
 //! Microsandbox applies each removal atomically, so removing an entry never needs to know what
 //! else holds its image. Only removal passes remove the last entry of a version, and so delete
 //! files; they run exclusively of image fetches, which may reuse those files.
+//!
+//! Reading the cache leases what it reads, and an [operation](ImageCache::operation) keeps
+//! those leases until it is dropped, which keeps another process's removal from deleting the
+//! files before an entry names them. Writing an entry therefore happens within the operation
+//! that read its image, and every operation ends before an entry is removed: Microsandbox
+//! refuses to remove an entry an operation still holds.
 
 use std::{
     collections::HashSet,
-    future::Future,
     path::PathBuf,
     rc::Rc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -76,17 +81,19 @@ impl ImageCache {
         }
     }
 
-    /// Fetches an image and records it in its cache entry, which marks it used, and returns the
-    /// entry's name. Removal passes wait for the fetch, which may reuse cached layers that no
-    /// entry attributes to the new version yet.
+    /// Fetches an image through an operation and records it in its cache entry, which marks it
+    /// used, and returns the entry's name. Removal passes wait for the fetch, which may reuse
+    /// cached layers that no entry attributes to the new version yet, and the operation keeps
+    /// what the fetch read until the entry names it.
     pub(crate) async fn record<T>(
         &self,
-        fetch: impl Future<Output = Result<(CachedImageMetadata, T), Error>>,
+        fetch: impl AsyncFnOnce(&GlobalCache) -> Result<(CachedImageMetadata, T), Error>,
     ) -> Result<(String, T), Error> {
         let _recording = self.catalog.read().await;
-        let (metadata, fetched) = fetch.await?;
+        let cache = self.operation().await?;
+        let (metadata, fetched) = fetch(&cache).await?;
         let name = cache_entry(&metadata.manifest_digest);
-        self.write_entry(&name, metadata).await?;
+        self.write_entry(&cache, &name, metadata).await?;
         Ok((name, fetched))
     }
 
@@ -98,6 +105,7 @@ impl ImageCache {
         let name = sandbox_entry(&record.id);
         let manifest_digest = record.image.manifest_digest.as_str();
         let _recording = self.catalog.read().await;
+        let cache = self.operation().await?;
         let mut cached = None;
         for entry in microsandbox::Image::list_local(self.client.local())
             .await
@@ -111,7 +119,7 @@ impl ImageCache {
             }
             // A tag recorded before images were recorded by digest may have moved on.
             if cached.is_none()
-                && let Some(metadata) = self.metadata(entry.reference())?
+                && let Some(metadata) = read_metadata(&cache, entry.reference()).await?
                 && metadata.manifest_digest == manifest_digest
             {
                 cached = Some((entry.reference().to_string(), metadata));
@@ -123,7 +131,7 @@ impl ImageCache {
         if self.retention.is_none() {
             return Ok(Some(cached_name));
         }
-        self.write_entry(&name, metadata).await?;
+        self.write_entry(&cache, &name, metadata).await?;
         Ok(Some(name))
     }
 
@@ -135,16 +143,16 @@ impl ImageCache {
             return;
         }
         let name = sandbox_entry(&record.id);
-        let taken_over = {
+        let taken_over = async {
             let _recording = self.catalog.read().await;
-            match self.metadata(&name) {
-                Ok(Some(metadata)) => {
-                    self.write_entry(&cache_entry(&record.image.manifest_digest), metadata)
-                        .await
-                }
-                other => other.map(drop),
+            let cache = self.operation().await?;
+            if let Some(metadata) = read_metadata(&cache, &name).await? {
+                self.write_entry(&cache, &cache_entry(&record.image.manifest_digest), metadata)
+                    .await?;
             }
-        };
+            Ok::<_, Error>(())
+        }
+        .await;
         if let Err(error) = taken_over {
             tracing::warn!(sandbox = %record.id, %error, "failed to keep a deleted Sandbox's image");
             return;
@@ -229,11 +237,14 @@ impl ImageCache {
     /// image a runtime records using, so a temporary entry that can be removed shows that none
     /// does. The Sandbox's own entry keeps the image meanwhile.
     pub(crate) async fn is_pinned(&self, record: &SandboxRecord) -> Result<bool, Error> {
-        let Some(metadata) = self.metadata(&sandbox_entry(&record.id))? else {
-            return Ok(false);
-        };
         let probe = format!("{PROBE_REPOSITORY}:{}", entry_tag(&record.id));
-        self.write_entry(&probe, metadata).await?;
+        {
+            let cache = self.operation().await?;
+            let Some(metadata) = read_metadata(&cache, &sandbox_entry(&record.id)).await? else {
+                return Ok(false);
+            };
+            self.write_entry(&cache, &probe, metadata).await?;
+        }
         match microsandbox::Image::remove_local(self.client.local(), &probe, false).await {
             Ok(()) => Ok(false),
             Err(microsandbox::MicrosandboxError::ImageInUse(_)) => {
@@ -276,17 +287,10 @@ impl ImageCache {
             .map_err(|source| error::io("record the Microsandbox image catalog migration", source))
     }
 
-    /// Returns the metadata cached for a catalog entry.
-    fn metadata(&self, name: &str) -> Result<Option<CachedImageMetadata>, Error> {
+    /// Writes a catalog entry within the operation that read its image.
+    async fn write_entry(&self, cache: &GlobalCache, name: &str, metadata: CachedImageMetadata) -> Result<(), Error> {
         let reference = name.parse::<Reference>().map_err(error::backend)?;
-        self.global_cache()?
-            .read_image_metadata(&reference)
-            .map_err(error::backend)
-    }
-
-    async fn write_entry(&self, name: &str, metadata: CachedImageMetadata) -> Result<(), Error> {
-        let reference = name.parse::<Reference>().map_err(error::backend)?;
-        self.global_cache()?
+        cache
             .write_image_metadata_async(&reference, &metadata)
             .await
             .map_err(error::backend)?;
@@ -296,8 +300,12 @@ impl ImageCache {
         Ok(())
     }
 
-    fn global_cache(&self) -> Result<GlobalCache, Error> {
-        GlobalCache::new(&self.client.local().cache_dir()).map_err(error::backend)
+    /// Starts an operation on the cache, which keeps what it reads until it is dropped.
+    pub(crate) async fn operation(&self) -> Result<GlobalCache, Error> {
+        Ok(GlobalCache::new_async(&self.client.local().cache_dir())
+            .await
+            .map_err(error::backend)?
+            .operation())
     }
 
     /// Removes archives an interrupted image build left in this crate's scratch directory.
@@ -328,6 +336,15 @@ impl ImageCache {
     pub(crate) fn scratch_directory(&self) -> PathBuf {
         self.client.local().cache_dir().join(SCRATCH_DIRECTORY)
     }
+}
+
+/// Returns the metadata cached for a catalog entry.
+async fn read_metadata(cache: &GlobalCache, name: &str) -> Result<Option<CachedImageMetadata>, Error> {
+    let reference = name.parse::<Reference>().map_err(error::backend)?;
+    cache
+        .read_image_metadata_async(&reference)
+        .await
+        .map_err(error::backend)
 }
 
 fn entry_tag(id: &SandboxId) -> String {
@@ -416,7 +433,7 @@ mod tests {
         /// Records an image the way resolving it does.
         async fn resolve(&self, images: &ImageCache, manifest_digest: &str) {
             images
-                .record(async { Ok((metadata(manifest_digest), ())) })
+                .record(async |_| Ok((metadata(manifest_digest), ())))
                 .await
                 .expect("image should be recorded");
         }
@@ -575,6 +592,35 @@ mod tests {
         let images = home.images();
         let record = home.sandbox_needing(&digest('a')).await;
         assert_eq!(images.hold(&record).await.expect("hold"), None);
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn a_fetched_image_cannot_be_removed_before_its_entry_is_recorded() {
+        let home = Home::open().await;
+        let images = home.images();
+        let image = digest('a');
+        let tag = "example.com/app:latest";
+        home.record_legacy(tag, &image).await;
+        images
+            .record(async |cache| {
+                let metadata = super::read_metadata(cache, tag)
+                    .await?
+                    .expect("the image should be cached");
+                // As another process removing the image's only entry meanwhile would.
+                let removal = microsandbox::Image::remove_local(home.client.local(), tag, false).await;
+                assert!(
+                    matches!(removal, Err(microsandbox::MicrosandboxError::ImageInUse(_))),
+                    "the fetch should keep its image: {removal:?}"
+                );
+                Ok((metadata, ()))
+            })
+            .await
+            .expect("image should be recorded");
+
+        microsandbox::Image::remove_local(home.client.local(), tag, false)
+            .await
+            .expect("the tag should be removable once the image is recorded");
+        assert_eq!(home.references().await, [cache_entry(&image)]);
     }
 
     /// Records a tag the way releases before Sandbox entries did, moved from a previous version
@@ -843,7 +889,8 @@ mod tests {
             .expect("Sandbox should be created")
     }
 
-    /// Lists the cached artifacts in a directory, ignoring lock files.
+    /// Lists the cached artifacts in a directory, ignoring lock files and Microsandbox's
+    /// storage leases.
     fn cached_files(directory: &std::path::Path) -> Vec<PathBuf> {
         std::fs::read_dir(directory).map_or_else(
             |_| Vec::new(),
@@ -851,6 +898,7 @@ mod tests {
                 entries
                     .map(|entry| entry.expect("cache entry should be readable").path())
                     .filter(|path| path.extension().is_none_or(|extension| extension != "lock"))
+                    .filter(|path| path.file_name().is_none_or(|name| name != ".msb-leases"))
                     .collect()
             },
         )

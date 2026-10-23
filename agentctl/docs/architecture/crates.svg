@@ -221,7 +221,7 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
 <text class="h" x="370" y="867">Microsandbox fork crates</text>
 <text class="code-sm" x="370" y="888">microsandbox · -image · -network</text>
 <text class="s" x="370" y="908">digdir/microsandbox, git rev</text>
-<text class="s" x="370" y="925">tagged v0.7.4-digdir.3</text>
+<text class="s" x="370" y="925">tagged v0.7.8-digdir.2</text>
 
 <rect class="box box-ext" x="680" y="840" width="190" height="105" rx="10"/>
 <text class="h" x="700" y="867">bollard</text>

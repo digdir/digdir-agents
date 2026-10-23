@@ -547,7 +547,7 @@ fn run() -> CommandResult<ExitCode> {
         ) {
             ensure_daemon(&home, &client).await?;
         }
-        execute(arguments.command, &home, &client).await
+        Box::pin(execute(arguments.command, &home, &client)).await
     })
 }
 
