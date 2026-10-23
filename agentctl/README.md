@@ -35,6 +35,10 @@ Update an installation with `agentctl self update`.
 count of every agent, with the commands to run next. `agentctl status --json` prints the same as a JSON object whose
 keys stay stable, for agents and scripts that check their own setup.
 
+`agentctl guide` prints, from the installed version, what a coding agent needs to set up an agent with you: how to
+go about it (`agentctl guide setup`), an annotated manifest, the image, instructions and the `status --json` object.
+To set one up, ask the coding agent you use to run `agentctl guide setup` and follow it.
+
 ### Building an Agent image
 
 An Agent whose `image` specifies a Dockerfile needs a running Docker Engine on the host. Published OCI image

@@ -17,24 +17,8 @@ use crate::{
     tui::{AgentPhase, agent_state},
 };
 
-/// What `agentctl status --json` prints, for agents that set up and check agentctl.
-///
-/// The object is a contract. Keys are `snake_case`, enumerations lowercase strings, and anything
-/// absent is `null`, never left out. Later releases add keys without changing the ones here; a
-/// change to an existing key raises `version`.
-///
-/// - `agentd`, which answered: its build `version` and its `home` directory.
-/// - `harnesses`: every harness, with its `auth` mode (`mediated` or `none`) and whether its
-///   login is stored, `login_stored`, which is `null` when the harness has no platform login.
-/// - `directory`: the current `path`, the `agent` it resolves to as `attach` would, or `null`,
-///   and a `problem` when it cannot resolve to one, such as several agents applied from it.
-///   The agent has its `name`, `state` as `agentctl tui` shows it (`ready`, `pending`,
-///   `starting`, `provisioning`, `retrying`, `failed`, `unresponsive`, `stopping`, `stopped` or
-///   `terminating`), the `reason` when it is failing, and its unarchived `sessions` and how many
-///   of those are `sessions_waiting` for the person.
-/// - `agents`: the `total` not being deleted, how many are `running`, `starting`, `failing` and
-///   `stopped`, and how many sessions are `sessions_waiting` for the person.
-/// - `next`: the commands that would change what status shows, each with its `purpose`.
+/// What `agentctl status --json` prints, for agents that set up and check agentctl. The object is a
+/// contract, described key by key in `agentctl/guide/status.md` (`agentctl guide status`).
 #[derive(Debug, Serialize)]
 pub(crate) struct Status {
     version: u32,
@@ -489,6 +473,44 @@ mod tests {
         let nothing = serde_json::to_value(status(&[], &Ok(None), &[], &[])).expect("json");
         assert_eq!(nothing["directory"]["agent"], serde_json::Value::Null);
         assert_eq!(nothing["directory"]["problem"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn the_guide_shows_the_object_with_every_key() {
+        // Every key, recursively, with each array's elements merged into one shape.
+        fn keys(value: &serde_json::Value, path: &str, into: &mut std::collections::BTreeSet<String>) {
+            match value {
+                serde_json::Value::Object(object) => {
+                    for (key, value) in object {
+                        let path = format!("{path}.{key}");
+                        keys(value, &path, into);
+                        into.insert(path);
+                    }
+                }
+                serde_json::Value::Array(items) => items.iter().for_each(|item| keys(item, &format!("{path}[]"), into)),
+                _ => {}
+            }
+        }
+        let guide = include_str!("../../../guide/status.md");
+        let example = guide
+            .split_once("```json\n")
+            .and_then(|(_, rest)| rest.split_once("```\n"))
+            .map(|(example, _)| example)
+            .expect("an example object");
+        let example: serde_json::Value = serde_json::from_str(example).expect("the example is JSON");
+        let worker = failed("worker", "the image does not exist");
+        let actual = serde_json::to_value(status(&[], &Ok(Some(worker.clone())), &[worker], &[])).expect("json");
+        let (mut documented, mut produced) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
+        keys(&example, "", &mut documented);
+        keys(&actual, "", &mut produced);
+        assert_eq!(documented, produced);
+        for key in &produced {
+            let name = key.rsplit('.').next().expect("a key name");
+            assert!(
+                guide.contains(&format!("`{name}`")),
+                "agentctl guide status describes {key}"
+            );
+        }
     }
 
     #[test]

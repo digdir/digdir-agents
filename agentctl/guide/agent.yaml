@@ -1,0 +1,70 @@
+# agents/dev/agent.yaml
+apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  # Unique on this machine: lowercase letters, digits and hyphens. `apply --name` overrides it.
+  name: dev
+spec:
+  sandbox:
+    # Built from the Dockerfile beside this manifest when the agent is created (`agentctl guide image`).
+    # A published image works too: `type: reference` with `reference: ghcr.io/owner/image@sha256:...`.
+    image:
+      type: build
+      context: .
+      dockerfile: Dockerfile
+    platform:
+      os: linux
+    # The base images boot systemd, which runs their services (desktop, Podman, clones at boot).
+    initSystem: image
+    resources:
+      cpu: "4"
+      memory: "8Gi"
+      rootFilesystem:
+        # The agent's disk. A layered one stores only what the agent writes on top of the image.
+        capacity: "64Gi"
+        mode: layered
+    # The person's checkout, two levels up from agents/dev/, as ~/code/<repository> in the agent. Its edits change
+    # their files directly. Leave mounts out to have the agent clone its own copy instead.
+    mounts:
+      - type: bind
+        source: ../..
+        target: /home/agent/code/my-repository
+        readOnly: false
+  # Installed where each harness reads its instructions, after the platform's and the host-wide ones.
+  instructions:
+    - source: instructions.md
+  # The coding agents a session can run. Each needs its login on the host (`agentctl claude login`,
+  # `agentctl codex login`) and its binary in the image; the base images have all three.
+  harnesses:
+    - type: claudeCode
+      default: true
+      # Model and effort for new sessions, in the harness's own words. The mediated login cannot list Fable in
+      # the /model picker, so it is selected here.
+      defaults:
+        model: fable
+    # Optional: without a Codex login on the host the agent is created without it, and gets it once there is one.
+    - type: codex
+      optional: true
+  # Plain values copied from .env into the agent's environment. git uses these two for commits.
+  environment:
+    - name: GIT_USER_NAME
+    - name: GIT_USER_EMAIL
+  # Values the agent never sees: it gets a placeholder, and the host substitutes the real value in requests to
+  # these hosts only. A fine-grained GitHub token lets gh and git push, open pull requests and clone private
+  # repositories; the placeholder's prefix makes gh accept it.
+  secrets:
+    - environment: GITHUB_TOKEN
+      placeholder: github_pat_AGENT_MEDIATED_GITHUB_TOKEN
+      allowedHosts:
+        - github.com
+        - api.github.com
+        - uploads.github.com
+  # `agentctl ssh` and editors over SSH. Add `- type: vnc` for an image with the desktop feature, to watch it
+  # with `agentctl vnc --web --open`.
+  access:
+    - type: ssh
+  # Network: everything is allowed through the host's mediator unless denied, for example:
+  # network:
+  #   mode: mediated
+  #   allow: all
+  #   deny: [metadata.google.internal]
