@@ -5,7 +5,7 @@
 set -eu
 
 feature=$(dirname "$0")
-PLAYWRIGHT_CLI_VERSION=${PLAYWRIGHT_CLI_VERSION:-0.1.20}
+PLAYWRIGHT_CLI_VERSION=${PLAYWRIGHT_CLI_VERSION:-0.1.22}
 
 export NODE_PATH=/usr/local/lib/node_modules
 export PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright

@@ -14,13 +14,13 @@ use crate::{
 use super::protocol::{
     CODE_IMMUTABLE, CODE_INTERNAL, CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND,
     CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams,
-    METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET,
-    METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH,
-    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, PROTOCOL_VERSION, ProgressParams,
-    ReadMessage, Request, ResourcesWatchParams, Response, SessionEnsureParams, SessionListParams, SessionParams,
-    SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
+    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_CONVERGE, METHOD_DELETE,
+    METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
+    METHOD_RESOURCES_WATCH, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET,
+    METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN,
+    METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, PROTOCOL_VERSION,
+    ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, SessionEnsureParams, SessionListParams,
+    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -455,7 +455,7 @@ impl Server {
                 return Ok(());
             }
             let message = tokio::select! {
-                message = read_message(&mut stream) => message?,
+                message = read_message(&mut stream, MAX_REQUEST_BYTES) => message?,
                 () = self.shutdown_requested() => return Ok(()),
             };
             let line = match message {
@@ -465,6 +465,7 @@ impl Server {
                     write_response(
                         stream.get_mut(),
                         &error_response(0, CODE_PARSE_ERROR, "JSON-RPC request exceeds 4 MiB"),
+                        None,
                     )
                     .await?;
                     return Err(Error::Invalid("Agent Control API request exceeds 4 MiB".into()));
@@ -477,11 +478,13 @@ impl Server {
                     write_response(
                         stream.get_mut(),
                         &error_response(0, CODE_PARSE_ERROR, "invalid JSON-RPC request"),
+                        None,
                     )
                     .await?;
                     return Err(Error::Json(error));
                 }
             };
+            let method = request.method.clone();
             let response = if ends_with_its_client(&request.method) {
                 // A reply that is ready wins over a client that has half-closed.
                 tokio::select! {
@@ -492,7 +495,7 @@ impl Server {
             } else {
                 self.handle(request).await
             };
-            write_response(stream.get_mut(), &response).await?;
+            write_response(stream.get_mut(), &response, Some(&method)).await?;
         }
     }
 
@@ -941,8 +944,21 @@ fn result_response<T: Serialize>(id: u64, result: Result<T, Error>) -> Response 
     }
 }
 
-async fn write_response<W: AsyncWrite + Unpin>(writer: &mut W, response: &Response) -> Result<(), Error> {
+async fn write_response<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    response: &Response,
+    method: Option<&str>,
+) -> Result<(), Error> {
     let mut bytes = serde_json::to_vec(response)?;
+    // Include the newline in the same budget the client's reader enforces.
+    if bytes.len() >= MAX_RESPONSE_BYTES {
+        let message = if method == Some(METHOD_SESSION_TURNS) {
+            "Session turns response exceeds 64 MiB; retry with --last to request fewer turns"
+        } else {
+            "Agent Control API response exceeds 64 MiB"
+        };
+        bytes = serde_json::to_vec(&error_response(response.id, CODE_INTERNAL, message))?;
+    }
     bytes.push(b'\n');
     writer.write_all(&bytes).await?;
     writer.flush().await?;

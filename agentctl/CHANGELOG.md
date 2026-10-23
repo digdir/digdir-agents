@@ -14,7 +14,28 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Added
 
+- Sessions know where they run: `AGENT_NAME`, `AGENT_SESSION_NAME`, `AGENT_HOST` and `AGENT_SOURCE_DIRECTORY` are set for the harness, so instructions can ask an agent to name itself. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#agent-layer), [#206](https://github.com/digdir/digdir-agents/pull/206))
+- The tmux status bar in a session shows its name and the keys to detach, open a shell beside it and move to the next window. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#agent-layer), [#206](https://github.com/digdir/digdir-agents/pull/206))
+- On the desktop image, apps that keep secrets in a keyring, such as `secret-tool`, Chromium and VS Code, now have one. It has no password: anything in the Agent can read it. ([Secret Service](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#the-secret-service), [#198](https://github.com/digdir/digdir-agents/pull/198))
 - `agentctl kill --all`, or `agentctl stop --all --now`, is an emergency stop: every Agent's VM ends at once, without shutting down, and stays stopped until started again. `agentctl stop` without an Agent asks before stopping every running one, and `X` in `agentctl tui` stops them all at once. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#stopping-every-agent))
+
+### Changed
+
+- Breaking: images that run `agent-feature install desktop` need `ENV XDG_CURRENT_DESKTOP=X-Openbox:XFCE`, which `agent-feature env desktop` prints; `agent-image-check` fails until it is added. Images built on the desktop image inherit it. ([features](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#features), [#198](https://github.com/digdir/digdir-agents/pull/198))
+- VNC clients can no longer resize an Agent's desktop to fit their window; set them to scale instead. ([#198](https://github.com/digdir/digdir-agents/pull/198))
+- Newly created Agents using the shared images ship Node.js 24 LTS (24.22.1) and updated tools, including GitHub CLI 2.103.0, Claude Code 2.1.309 and Codex CLI 0.164.0. ([#198](https://github.com/digdir/digdir-agents/pull/198), [#229](https://github.com/digdir/digdir-agents/pull/229))
+
+### Fixed
+
+- Claude Sessions no longer hang on the startup bypass-permissions warning when starting or resuming in Agents with custom user settings in `spec.home`. ([#230](https://github.com/digdir/digdir-agents/pull/230))
+- `agentctl apply` no longer fails with `Socket not found: /var/run/docker.sock` for Dockerfile-backed Agents using Docker Desktop or Colima's selected local context. Background retries recover after starting Docker or switching local contexts without restarting `agentd`. ([#220](https://github.com/digdir/digdir-agents/pull/220))
+- On macOS and Linux, named Sandbox volumes can mount when the Agent data directory is reached through a symbolic link, including custom `AGENT_HOME` locations. ([#221](https://github.com/digdir/digdir-agents/pull/221))
+- On the base images, a build that runs out of memory in a Session, over SSH or in a desktop terminal no longer takes the Agent down: it keeps responding, and other SSH connections and desktop windows stay open. ([#198](https://github.com/digdir/digdir-agents/pull/198))
+- On the desktop image, `desktop` clicks no longer land somewhere other than the last screenshot showed after the display changes size; `desktop` asks for a new screenshot instead. ([#198](https://github.com/digdir/digdir-agents/pull/198))
+- Repositories the base images clone at boot from `/etc/agent-workspace.d`: ([base images](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#building-on-them), [#198](https://github.com/digdir/digdir-agents/pull/198))
+  - an interrupted clone is made again at the next boot, instead of staying broken
+  - when a listed repository is a fork, `gh pr create` and `gh issue` target it rather than its parent
+- `agentctl turns` and the recent turns panel in `agentctl tui` no longer fail with "the last 3 complete turns do not fit within the 2 MiB transcript read limit" when the latest turns hold large tool output, such as screenshots. Turns are now read from the last 64 MiB of a Session's conversation. ([#199](https://github.com/digdir/digdir-agents/pull/199))
 
 ## [0.1.0-preview.12] - 2026-10-20
 

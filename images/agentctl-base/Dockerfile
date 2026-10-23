@@ -1,7 +1,7 @@
 # The agentctl base images, published as ghcr.io/digdir/agentctl-base:ubuntu-26.04 (the headless stage) and
 # :ubuntu-26.04-desktop. They meet agentd's image contract (agentctl/IMAGE.md) and carry the harness pins agentd's
 # adapters are tested with, so an Agent image only adds its own tools. README.md beside this file describes them.
-FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7 AS headless
+FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS headless
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -50,9 +50,9 @@ RUN usermod --login agent --home /home/agent --move-home ubuntu \
 
 ARG TARGETARCH
 # agentd runs the harnesses' activity hooks and Claude Code's status line with `node`.
-ARG NODE_VERSION=22.23.2
-ARG GH_VERSION=2.100.0
-ARG GH_STACK_VERSION=0.1.1
+ARG NODE_VERSION=24.22.1
+ARG GH_VERSION=2.103.0
+ARG GH_STACK_VERSION=0.2.1
 # Terminal evidence for pull requests: asciinema records a command, agg renders the cast to a GIF.
 ARG ASCIINEMA_VERSION=3.2.1
 ARG AGG_VERSION=1.9.0
@@ -61,13 +61,13 @@ ARG AGG_VERSION=1.9.0
 # the version.
 RUN case "${TARGETARCH}" in \
         amd64) NODE_ARCH=x64; RUST_ARCH=x86_64; \
-            GH_SHA256=e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be; \
-            GH_STACK_SHA256=9ed103934fab0f90d3341fdfc4a342785396d39f5621fc7313a62602ce2b5462; \
+            GH_SHA256=fdd768eb70f6409f80fcfa9f3a1c0adf0fc98d827ab3ce0bed2ac22762c5d786; \
+            GH_STACK_SHA256=ffe9d48b6342faffc3b0cb420202ff1df32e24faf32693debd7423274bbdf859; \
             ASCIINEMA_SHA256=1b405bbda565b33c3c4718de67fedc3535580603c0694b1ff3fb04f363430a20; \
             AGG_SHA256=f111e315cd71056b116302342553dd765b7297579ed511f111d0cedb442aeda6 ;; \
         arm64) NODE_ARCH=arm64; RUST_ARCH=aarch64; \
-            GH_SHA256=ea4e7a581a32ccad6cc7923cb1576ac5859ba4b9a16ab22eb8f8a96e78e2e961; \
-            GH_STACK_SHA256=2da13f8c46f2770237c744b341ab6be9f07508585a6762634c4a88aa355460bc; \
+            GH_SHA256=7f322df34e624d14f5ec0c4acb121fd6dfa14392fdbbd1066aa8e0a05ac3721e; \
+            GH_STACK_SHA256=25ec261a391261a1462d38f85c230b0e0b14ae3547926130996541f62f25f78b; \
             ASCIINEMA_SHA256=b516a6d896844c0ffbc96e0a55afe4cbcc79216abde0fc64fdda4e39bee421ea; \
             AGG_SHA256=2b4be407b97e00e1c313a41d154ced8fa3d02c560c8f47a0db4950a2576444c9 ;; \
         *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
@@ -124,9 +124,9 @@ RUN git config --system credential.https://github.com.helper '!/usr/local/bin/gh
 
 # The harness pins agentd's adapters are tested with (agentctl/HARNESSES.md). agentd verifies and configures the
 # harnesses an Agent declares, but never installs one.
-ARG CLAUDE_CODE_VERSION=2.1.302
-ARG CODEX_VERSION=0.163.0
-ARG PI_VERSION=1.3.0
+ARG CLAUDE_CODE_VERSION=2.1.309
+ARG CODEX_VERSION=0.164.0
+ARG PI_VERSION=1.4.0
 
 # Agent Sandboxes mount their CA bundle here; this step's Node downloads trust it.
 RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
@@ -196,6 +196,7 @@ ENV DISPLAY=:1
 ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 ENV ACCESSIBILITY_ENABLED=1
 ENV PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/local/libexec/agent-playwright-chromium
+ENV XDG_CURRENT_DESKTOP=X-Openbox:XFCE
 
 RUN agent-image-check
 

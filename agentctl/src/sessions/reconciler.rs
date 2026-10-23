@@ -35,6 +35,8 @@ pub struct Reconciler {
     sandboxes: Rc<AgentSandboxes>,
     runtime: Rc<dyn SessionRuntime>,
     platform_api_url: String,
+    /// This host's name, read once, for harnesses to name where they run.
+    host: String,
 }
 
 impl Reconciler {
@@ -54,6 +56,7 @@ impl Reconciler {
             sandboxes,
             runtime,
             platform_api_url,
+            host: host_name(),
         }
     }
 
@@ -229,6 +232,7 @@ impl Reconciler {
         }
         self.launch(
             session,
+            &agent,
             &sandbox,
             LaunchRecord {
                 token: LaunchToken::generate(),
@@ -245,6 +249,7 @@ impl Reconciler {
     async fn launch(
         &self,
         session: &Session,
+        agent: &crate::control_plane::AgentRecord,
         sandbox: &::sandbox::SandboxHandle,
         record: LaunchRecord,
         resume: Option<&str>,
@@ -260,7 +265,12 @@ impl Reconciler {
             .start(
                 session,
                 sandbox,
-                &self.platform_api_url,
+                super::LaunchContext {
+                    platform_api_url: &self.platform_api_url,
+                    agent: &agent.agent.metadata.name,
+                    source_directory: &agent.source_directory,
+                    host: &self.host,
+                },
                 &token,
                 resume,
                 initial_prompt.as_deref().filter(|_| resume.is_none()),
@@ -387,6 +397,18 @@ fn backoff_seconds(attempts: u32) -> i64 {
         MAX_BACKOFF_SECONDS
     } else {
         wait
+    }
+}
+
+/// This host's name, read through native OS APIs, for a launched harness to name where it runs.
+fn host_name() -> String {
+    match whoami::hostname() {
+        Ok(name) if !name.is_empty() => name,
+        Ok(_) => "unknown".to_owned(),
+        Err(error) => {
+            tracing::warn!(%error, "could not determine host name");
+            "unknown".to_owned()
+        }
     }
 }
 

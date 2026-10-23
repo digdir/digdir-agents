@@ -49,6 +49,9 @@ pub(super) async fn configure(
     // still authorizes inference independently. Both are required — the type alone unblocks Max
     // models but not Fable. Remove when github.com/anthropics/claude-code#79360 ships.
     let settings = serde_json::to_vec(&serde_json::json!({
+        // The platform launches every Session in bypass mode. Keep its acknowledgement in
+        // these launch settings: an Agent's home overlay can replace Claude's user settings.
+        "skipDangerousModePermissionPrompt": true,
         "env": {
             "CLAUDE_CODE_SUBSCRIPTION_TYPE": "max",
             "CLAUDE_CODE_RATE_LIMIT_TIER": "default_claude_max_5x"

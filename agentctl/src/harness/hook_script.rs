@@ -215,7 +215,7 @@ mod tests {
 
     #[tokio::test]
     async fn hook_exits_after_complete_json_even_when_stdin_remains_open() {
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::io::AsyncWriteExt as _;
 
         let script = HookScript {
             events: &[("SessionStart", ActivityEvent::SessionStart)],
@@ -223,32 +223,7 @@ mod tests {
         }
         .render()
         .expect("script");
-        let script = script.replacen(
-            "const input = await read(process.stdin);",
-            "process.stdout.write('ready\\n');\nconst input = await read(process.stdin);",
-            1,
-        );
-        let mut child = tokio::process::Command::new("node")
-            .arg("--input-type=module")
-            .arg("-e")
-            .arg(script)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .env_remove("AGENT_SESSION_TOKEN")
-            .env_remove("AGENT_SESSION_ID")
-            .kill_on_drop(true)
-            .spawn()
-            .expect("Node.js runs the hook script, as it does in every Sandbox and CI host");
-        let mut ready = [0; 6];
-        tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            child.stdout.as_mut().expect("stdout").read_exact(&mut ready),
-        )
-        .await
-        .expect("Node started")
-        .expect("Node reported readiness");
-        assert_eq!(&ready, b"ready\n");
+        let mut child = start_hook(&script, None).await;
         child
             .stdin
             .as_mut()
@@ -299,6 +274,47 @@ mod tests {
         }
     }
 
+    /// Waits for Node startup separately from the hook behavior under test. Hosted Windows
+    /// ARM64 runners can take more than ten seconds to start Node under parallel test load.
+    async fn start_hook(script: &str, identity: Option<(&str, &str)>) -> tokio::process::Child {
+        use tokio::io::AsyncReadExt as _;
+
+        let script = script.replacen(
+            "const input = await read(process.stdin);",
+            "process.stdout.write('ready\\n');\nconst input = await read(process.stdin);",
+            1,
+        );
+        let mut command = tokio::process::Command::new("node");
+        command
+            .arg("--input-type=module")
+            .arg("-e")
+            .arg(script)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .env_remove("AGENT_SESSION_TOKEN")
+            .env_remove("AGENT_SESSION_ID")
+            .kill_on_drop(true);
+        if let Some((token, session)) = identity {
+            command
+                .env("AGENT_SESSION_TOKEN", token)
+                .env("AGENT_SESSION_ID", session);
+        }
+        let mut child = command
+            .spawn()
+            .expect("Node.js runs the hook script, as it does in every Sandbox and CI host");
+        let mut ready = [0; 6];
+        tokio::time::timeout(
+            std::time::Duration::from_mins(1),
+            child.stdout.as_mut().expect("stdout").read_exact(&mut ready),
+        )
+        .await
+        .expect("Node started")
+        .expect("Node reported readiness");
+        assert_eq!(&ready, b"ready\n");
+        child
+    }
+
     /// Runs the hook for one `SessionStart` and returns the request line it sends to `listener`.
     ///
     /// An attempt that times out after its connection is accepted but before it sends a request
@@ -307,18 +323,7 @@ mod tests {
     async fn report_request_line(script: &str, listener: &tokio::net::TcpListener) -> String {
         use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
-        let mut child = tokio::process::Command::new("node")
-            .arg("--input-type=module")
-            .arg("-e")
-            .arg(script)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .env("AGENT_SESSION_TOKEN", "token")
-            .env("AGENT_SESSION_ID", "session")
-            .kill_on_drop(true)
-            .spawn()
-            .expect("Node.js runs the hook script, as it does in every Sandbox and CI host");
+        let mut child = start_hook(script, Some(("token", "session"))).await;
         let mut stdin = child.stdin.take().expect("stdin");
         stdin
             .write_all(br#"{"hook_event_name":"SessionStart","session_id":"native"}"#)

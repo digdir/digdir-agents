@@ -31,6 +31,18 @@ irm https://raw.githubusercontent.com/digdir/digdir-agents/main/agentctl/install
 
 Update an installation with `agentctl self update`.
 
+### Building an Agent image
+
+An Agent whose `image` specifies a Dockerfile needs a running Docker Engine on the host. Published OCI image
+references can be pulled without Docker. Dockerfile builds use `agentd`'s `DOCKER_HOST` when set, otherwise
+`DOCKER_CONTEXT` or the context selected with `docker context use`. Local Unix socket and named pipe contexts are
+supported, including Docker Desktop and Colima's per-user sockets. Remote Docker contexts are not supported.
+`DOCKER_CONFIG` selects the Docker configuration directory, which defaults to `~/.docker`.
+
+`agentd` inherits environment variables when it starts; `apply --env-file` supplies the Agent's environment, not
+the host Docker connection. Starting Docker or changing the saved local context lets background retries proceed
+without restarting `agentd`.
+
 ### Stopping every Agent
 
 To stop every Agent at once, as an emergency stop:
@@ -153,6 +165,11 @@ harness before removing it, so an unreachable Sandbox delays the deletion rather
 Archiving a Session stops its harness once any turn in progress ends, but not for a turn waiting for approval or quiet
 for a minute, and keeps it stopped until the Session is unarchived; it keeps its name and conversation, and the next
 attach resumes it.
+
+Each launch tells the harness where it runs: `AGENT_NAME`, `AGENT_SESSION_NAME`, `AGENT_HOST` and
+`AGENT_SOURCE_DIRECTORY` (the Agent's directory on the host) are set beside `AGENT_SESSION_ID`, so instructions can ask
+an Agent to name itself, for example in a shared task list. The harness, and so its model provider, sees these values;
+`AGENT_SOURCE_DIRECTORY` is a host path that does not exist inside the Sandbox. The tmux status bar shows the Session's name and how to detach.
 
 Tmux is the current Session runtime, not a security boundary or a permanent generic driver abstraction. A second
 runtime must establish the common interface before one is introduced.

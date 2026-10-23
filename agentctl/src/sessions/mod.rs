@@ -18,7 +18,7 @@ pub use crate::controller::Reconcile;
 pub use activity::{Activity, ActivityEvent, Phase};
 pub use controller::{AgentNotifier, Controller, ErrorHandler, Wakeup};
 pub use reconciler::Reconciler;
-pub use runtime::{Observation, SessionRuntime, Tmux};
+pub use runtime::{LaunchContext, Observation, SessionRuntime, Tmux};
 pub use sandboxes::AgentSandboxes;
 pub use service::{Service, UpgradeReadiness};
 pub use transcript::{Message, Part, Role, Turn};

@@ -1,48 +1,42 @@
-# CODEOWNERS — plattform-håndhevet skille mellom trygge og sensitive stier.
+# CODEOWNERS: platform-enforced split between safe and sensitive paths.
 #
-# Med branch protection «Require review from Code Owners» (og required
-# approvals: 0) betyr en eier på en sti: PR-er som rører stien krever
-# menneskelig godkjenning før merge. Bare PR-er der *alle* filer er eierløse
-# kan merges uten approver — det er grunnlaget for auto-merge-prosessen.
-# Se doc/pr-prosess.md for hele prosessen (merge til deploy-branchen er
-# auto-deploy via scripts/self-update.ps1).
+# With branch protection's "Require review from Code Owners" (and required
+# approvals: 0), an owner on a path means that pull requests touching it need
+# a human approval before merge. Only pull requests where *every* file is
+# ownerless can merge without an approver.
 #
-# Sensitivt som standard: alt eies av et menneske, og trygge stier er
-# eksplisitte unntak. En ny sti er dermed sensitiv til noen bevisst har lagt
-# den til i unntakslisten. Siste treff vinner, så rekkefølgen under betyr noe:
-#   1. standard-eier for alt
-#   2. trygge unntak (linjer uten eier fjerner kravet)
-#   3. sensitive filer som ligger inne i de trygge unntakene
-#   4. områder med en annen eier (agentctl/sandbox), som overstyrer alt over
+# Sensitive by default: everything has a human owner, and safe paths are
+# explicit exceptions. A new path is therefore sensitive until someone
+# deliberately adds it to the exceptions. The last match wins, so the order
+# below matters:
+#   1. the default owner for everything
+#   2. safe exceptions (lines without an owner remove the requirement)
+#   3. sensitive files inside the safe exceptions
+#   4. areas with another owner (agentctl/sandbox), which override all of the above
 
-# 1. Standard: alt krever review, også stier som ikke finnes ennå
+# 1. Default: everything needs review, including paths that do not exist yet
 *                             @olebhansen
 
-# 2. Trygge stier: dokumentasjon som verken bygges inn i images, leses som
-#    agent-instruks eller endrer avhengigheter
+# 2. Safe paths: documentation that is neither built into images, read as
+#    Agent instructions nor changes dependencies
 /README.md
 /LICENSE
-/doc/
 /docs/
 /agents/*/README.md
-/apps/*/README.md
 /integrations/README.md
 
-# 3. Sensitive filer inne i de trygge stiene: prosessen agentene følger
-#    (lenket fra agentenes CLAUDE.md), og avhengigheter (docs/presentations/
-#    har sin egen package.json)
-/doc/pr-prosess.md            @olebhansen
+# 3. Sensitive files inside the safe paths: dependencies
+#    (docs/presentations/ has its own package.json files)
 package.json                  @olebhansen
 package-lock.json             @olebhansen
 
-# 4. Innflyttet agent-lag fra altinn-studio (ki-lab) — eies av innflytterteamet,
-#    review-gaten der er deres, ikke orkestrator-pipelinens. Står sist slik at
-#    disse stiene ikke krever orkestrator-pipelinens eier, og omvendt.
+# 4. The Agent layer moved in from altinn-studio (ki-lab) is owned by its team.
+#    Listed last so these paths do not need the default owner, and vice versa.
 /agentctl/                    @martinothamar
 /sandbox/                     @martinothamar
 /images/agentctl-base/        @martinothamar
 /docker-bake.hcl              @martinothamar
-# Rust-arbeidsområdet på rot og workflowene til agentctl/sandbox
+# The Rust workspace at the root and the agentctl/sandbox workflows
 /Cargo.toml                   @martinothamar
 /Cargo.lock                   @martinothamar
 /rust-toolchain.toml          @martinothamar
@@ -54,5 +48,5 @@ package-lock.json             @olebhansen
 /.editorconfig                @martinothamar
 /.github/workflows/rust.yml   @martinothamar
 /.github/workflows/agentctl-*.yml @martinothamar
-# agentctl-agenten som utvikler plattformen selv
+# The agentctl Agent that develops the platform itself
 /agents/self-dev/             @martinothamar

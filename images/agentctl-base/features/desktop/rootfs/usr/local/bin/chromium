@@ -3,6 +3,10 @@
 # --use-gl=swiftshader are left out because they measured no faster here. --disable-dev-shm-usage
 # keeps shared memory in the /tmp the Agent sizes. --force-renderer-accessibility fills in the
 # tree `desktop tree` reads; without it Chromium exposes only its window frames.
+# --password-store=gnome-libsecret keeps the profile's passwords and cookies under a key in the
+# desktop's Secret Service: Chromium does not recognize openbox as a desktop, and would otherwise
+# use its basic store, whose key is the same in every Chromium. Playwright passes
+# --password-store=basic after these, so the browsers it starts keep the basic store.
 set -eu
 
 # Chromium's trust in the Agent CA is imported in the background after boot. Wait a little for it,
@@ -22,7 +26,7 @@ for candidate in /opt/ms-playwright/chromium-*/chrome-linux*/chrome; do
     [ -x "$candidate" ] && exec "$candidate" \
         --no-first-run \
         --no-default-browser-check \
-        --password-store=basic \
+        --password-store=gnome-libsecret \
         --disable-infobars \
         --disable-dev-shm-usage \
         --force-renderer-accessibility \

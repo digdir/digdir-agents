@@ -39,7 +39,9 @@ pub(crate) const CODE_INTERNAL: i32 = -32603;
 pub(crate) const CODE_NOT_FOUND: i32 = -32004;
 pub(crate) const CODE_IMMUTABLE: i32 = -32009;
 pub(crate) const CODE_UPDATING: i32 = -32010;
-pub(crate) const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+// Turns can contain most of the text in a 64 MiB transcript read.
+pub(crate) const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 pub(crate) enum ReadMessage {
     EndOfStream,
@@ -258,7 +260,10 @@ pub(crate) fn error_response(id: u64, code: i32, message: impl Into<String>) -> 
     }
 }
 
-pub(crate) async fn read_message<R: AsyncBufRead + Unpin>(reader: &mut R) -> std::io::Result<ReadMessage> {
+pub(crate) async fn read_message<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> std::io::Result<ReadMessage> {
     let mut message = Vec::new();
     loop {
         let available = reader.fill_buf().await?;
@@ -273,7 +278,7 @@ pub(crate) async fn read_message<R: AsyncBufRead + Unpin>(reader: &mut R) -> std
             .iter()
             .position(|byte| *byte == b'\n')
             .map_or(available.len(), |position| position + 1);
-        if message.len().saturating_add(end) > MAX_MESSAGE_BYTES {
+        if message.len().saturating_add(end) > max_bytes {
             return Ok(ReadMessage::TooLarge);
         }
         let complete = available.get(end - 1) == Some(&b'\n');

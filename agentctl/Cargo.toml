@@ -36,6 +36,7 @@ tracing-subscriber.workspace = true
 tempfile.workspace = true
 zeroize.workspace = true
 uuid.workspace = true
+whoami.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

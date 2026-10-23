@@ -48,8 +48,14 @@ USER agent
   `if [ -r /run/agent/tls/ca-bundle.pem ]; then export NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem; fi`. Do not
   persist that with `ENV`.
 - `agent-workspace-init.service` clones the repositories `/etc/agent-workspace.d/*.list` names into `/home/agent/code`
-  at boot with `gh repo clone`, authenticated by the Agent's `GITHUB_TOKEN`, and leaves a destination that already has
-  `.git` alone. Without a list it does not start.
+  at boot with `gh repo clone`, authenticated by the Agent's `GITHUB_TOKEN`. Each line names one repository as
+  `OWNER/NAME`, optionally followed by a destination below `/home/agent/code`, which defaults to `NAME`; `#` starts a
+  comment. Without a list the service does not start.
+  - A clone is made in `<destination>.partial` and moved into place once it is complete, so an interrupted one is
+    made again at the next boot. A destination that already has `.git`, such as a bind-mounted checkout or a clone a
+    Session made first, is left alone.
+  - The listed repository becomes the clone's default for `gh`. When it is a fork, `gh` adds the parent as `upstream`,
+    and `gh pr create` and `gh issue` would otherwise target the parent.
 - The base images' OCI labels, such as `org.opencontainers.image.source` and `title`, are inherited. Set your own when
   you publish an image, so that the registry links it to its own repository.
 - Skills an image ships go in `~/.claude/skills` for Claude Code and `~/.agents/skills` for Codex and Pi; `agentd`
@@ -73,6 +79,7 @@ ENV DISPLAY=:1
 ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 ENV ACCESSIBILITY_ENABLED=1
 ENV PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/local/libexec/agent-playwright-chromium
+ENV XDG_CURRENT_DESKTOP=X-Openbox:XFCE
 RUN agent-image-check
 USER agent
 ```
@@ -80,12 +87,20 @@ USER agent
 | Feature | Adds |
 | --- | --- |
 | `browser` | Chromium with `playwright-cli` and its skill, ffmpeg, and the `video-to-gif` and `media-preview` helpers. Chromium trusts the Agent's mediated CA once `$XDG_RUNTIME_DIR/chromium-ca-ready` exists, shortly after boot. |
-| `desktop` | `browser`, plus an X11 desktop on display `:1` with VNC access, the `desktop`, `desktop-terminal` and `chromium` commands, and the `computer-use` skill. Provides `/etc/agent-access.d/vnc.conf`, so an Agent on it can declare `access: [{type: vnc}]`. |
+| `desktop` | `browser`, plus an X11 desktop on display `:1` with VNC access and a [Secret Service](#the-secret-service), the `desktop`, `desktop-terminal` and `chromium` commands, and the `computer-use` skill. Provides `/etc/agent-access.d/vnc.conf`, so an Agent on it can declare `access: [{type: vnc}]`. |
 
 `agent-feature list` shows what an image has. The [self-dev images](../../agents/self-dev/Dockerfile) are built this
 way. The instructions about the desktop belong to the Agent; see the self-dev
 Agent's [desktop.md](../../agents/self-dev/full/desktop.md). The desktop image is the headless one after
 `agent-feature install desktop`.
+
+### The Secret Service
+
+The `desktop` feature runs gnome-keyring as the Secret Service, unlocked at boot, for what uses libsecret: `secret-tool`,
+Chromium's password store and Electron's `safeStorage`, as in VS Code. `XDG_CURRENT_DESKTOP=X-Openbox:XFCE` makes
+Chromium and Electron choose it; they do not recognize openbox. A Sandbox has no login to unlock a keyring with, so the
+keyring's password is a fixed newline: `~/.local/share/keyrings` is unencrypted at rest, in effect, and protected only
+by the Sandbox boundary. It persists with the home directory across Stop and Start.
 
 ## Changing them
 

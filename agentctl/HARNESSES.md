@@ -60,6 +60,7 @@ attributing a failure to the bump, repeat the check on an Agent built with the p
 | Create with `--model`/`--effort`, and with only manifest `defaults`  | Both        | `get sessions` shows the resolved selection and the harness reports the same model and effort, also after idle-stop and resume; an unknown value fails visibly in the terminal.                                         |
 | Transcript location                                                  | Both        | `get sessions -o json` reports a `harnessTranscriptPath` that exists and grows with each turn, also after resume.                                                                                                       |
 | Authentication and configuration                                     | Both        | Mediated login/inference works without unexpected onboarding or authentication dialogs; startup shows no new warnings; the status line renders; configured instructions and skills are available.                       |
+| Home overlay replaces Claude's user settings                         | Claude Code | With no legacy bypass acknowledgement in the image and no acknowledgement in the overlay, create, prompt, re-apply, archive and resume repeatedly. The platform's `agent-settings.json` keeps the acknowledgement; the overlay's settings remain unchanged. |
 | Nested Agent                                                         | Both        | Inside a Session, `agentctl claude login --from-stdin` with `$AGENT_CLAUDE_ACCESS_TOKEN` and `agentctl codex login --from-stdin < ~/.codex/auth.json` let a nested Agent run both harnesses.                            |
 | New `agentd` with the previous pin                                   | Both        | When the change touches adapter code, an Agent on the previous image still creates, prompts, reads turns and resumes.                                                                                                   |
 
@@ -73,8 +74,9 @@ with these differences:
   next prompt appends to it.
 - A model error shows in `turns` as `Error: …`; an attempt Pi retried successfully does not. Known gaps: a prompt Pi
   rejects before starting a run, for a missing API key or model, and a failure in run setup after `before_agent_start`
-  report no completion, so STATE stays `Working` and a wait times out. A `--model` whose provider Pi does not know makes
-  Pi exit at startup.
+  report no completion, so a wait times out. A missing-key rejection can leave STATE at `WaitingForInput`; a setup
+  failure after `before_agent_start` leaves it at `Working`. A `--model` whose provider Pi does not know makes Pi exit
+  at startup.
 - Resume opens the reported transcript only when it is non-empty; otherwise the Session starts fresh.
 - An initial prompt starting with `@` gets a leading space, since Pi reads `@name` as a file.
 - `spec.instructions` reach the model from `~/.pi/agent/AGENTS.md`, and the Agent's other `~/.pi/agent/` files are
