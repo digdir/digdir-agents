@@ -19,9 +19,7 @@ shopt -s inherit_errexit
 # screen or a test harness.
 display=${DESKTOP_DISPLAY:-${DISPLAY:-:1}}
 captures=${DESKTOP_CAPTURES:-/tmp/desktop}
-# The screenshot budget, a pixel count and a longest edge, is the largest image the Session's
-# harness sends without resizing it again, which would break coordinates. Pixel counts sit a little
-# under the vendors' patch limits, which round up per edge.
+# The largest screenshot each harness sends without resizing it, which would break coordinates.
 budget_harness=${AGENT_HARNESS:-}
 case $budget_harness in
     # Anthropic's standard tier: https://platform.claude.com/docs/en/build-with-claude/vision
@@ -43,8 +41,9 @@ jpeg_quality=${DESKTOP_JPEG_QUALITY:-7}
 settle_attempts=${DESKTOP_SETTLE_ATTEMPTS:-8}
 settle_interval=${DESKTOP_SETTLE_INTERVAL:-0.1}
 keep_captures=${DESKTOP_KEEP_CAPTURES:-200}
-# The geometry of the last screenshot or tree, which every coordinate refers to.
-observed_geometry=$captures/.screenshot-geometry
+# The geometry of the last screenshot or tree, which every coordinate refers to. One per Session,
+# since Sessions with different harnesses get screenshots at different sizes.
+observed_geometry=$captures/.screenshot-geometry${AGENT_SESSION_ID:+.$AGENT_SESSION_ID}
 
 export DISPLAY=$display
 # xdotool decodes the text it types with the locale's character set, and refuses a multi-byte
@@ -120,14 +119,14 @@ display_geometry() {
     xdpyinfo | awk '/dimensions:/ { print $2; exit }'
 }
 
-# Environment settings beat the table. DESKTOP_MAX_WIDTH and DESKTOP_MAX_HEIGHT keep their old
-# meaning, a box that replaces the table's budget.
+# Environment settings override the table. DESKTOP_MAX_WIDTH and DESKTOP_MAX_HEIGHT set a box
+# instead of the table's budget.
 budget() {
     budget_overrides=()
     local name
     for name in DESKTOP_SCREENSHOT_PIXELS DESKTOP_SCREENSHOT_MAX_EDGE DESKTOP_MAX_WIDTH DESKTOP_MAX_HEIGHT; do
         [ -z "${!name:-}" ] && continue
-        case ${!name} in *[!0-9]* | 0*) fail "$name must be a positive integer, got '${!name}'" ;; esac
+        case ${!name} in *[!0-9]* | 0*) fail "$name must be a positive integer without leading zeros, got '${!name}'" ;; esac
         budget_overrides+=("$name")
     done
     if [ -n "${DESKTOP_MAX_WIDTH:-}${DESKTOP_MAX_HEIGHT:-}" ]; then

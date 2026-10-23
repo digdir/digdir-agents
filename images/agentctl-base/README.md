@@ -110,7 +110,7 @@ AGENT_DESKTOP_KEYBOARD=no
 
 - `AGENT_DESKTOP_KEYBOARD` takes `setxkbmap` arguments, quoted if more than one, and defaults to `us`.
 - `AGENT_DESKTOP_DISPLAY` must match the image's `ENV DISPLAY`; `agent-image-check` checks it.
-- `AGENT_DESKTOP_GEOMETRY` is the display size, `1600x900` by default. It doesn't affect screenshot cost.
+- `AGENT_DESKTOP_GEOMETRY` is the display size, `1600x900` by default.
 
 ### The screenshot budget
 
