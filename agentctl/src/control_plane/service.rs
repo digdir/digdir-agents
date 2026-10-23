@@ -150,7 +150,7 @@ impl ControlPlane {
                         return Err(Error::Conflict);
                     }
                     if current.source_directory != request.source_directory {
-                        return Err(Error::Immutable("sourceDirectory"));
+                        return Err(name_clash(&desired.metadata.name, &current.source_directory));
                     }
                     validate_immutable_fields(&current, &desired)?;
                     desired.spec.set_run_state(applied_run_state(run_state, Some(&current)));
@@ -620,6 +620,14 @@ fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) -> Result<(
         return Err(Error::Immutable("spec.harnesses.auth"));
     }
     Ok(())
+}
+
+/// Another directory's agent has the name: nothing about this agent changed, so it is not an immutable field.
+fn name_clash(name: &str, other_directory: &std::path::Path) -> Error {
+    Error::Invalid(format!(
+        "an agent named {name:?} was already applied from {}; choose another name in metadata.name or pass `--name`",
+        other_directory.display()
+    ))
 }
 
 async fn resolve_mount_sources(agent: &mut Agent, source_directory: &std::path::Path) -> Result<(), Error> {

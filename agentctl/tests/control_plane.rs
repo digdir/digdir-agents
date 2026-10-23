@@ -793,7 +793,7 @@ async fn applies_keep_the_recorded_manifest_path_unless_a_new_one_is_reported() 
 }
 
 #[tokio::test(flavor = "local")]
-async fn changing_the_source_directory_is_rejected_by_name() {
+async fn a_name_applied_from_another_directory_is_refused_as_a_name_clash() {
     let fixture = fixture();
     fixture
         .control_plane
@@ -809,7 +809,17 @@ async fn changing_the_source_directory_is_rejected_by_name() {
         .apply(moved)
         .await
         .expect_err("directory change must fail");
-    assert!(matches!(error, Error::Immutable("sourceDirectory")));
+    let Error::Invalid(message) = error else {
+        panic!("a name taken by another directory is not an immutable field: {error:?}");
+    };
+    let source = apply_request("worker").source_directory;
+    assert_eq!(
+        message,
+        format!(
+            "an agent named \"worker\" was already applied from {}; choose another name in metadata.name or pass `--name`",
+            source.display()
+        )
+    );
 }
 
 #[tokio::test(flavor = "local")]

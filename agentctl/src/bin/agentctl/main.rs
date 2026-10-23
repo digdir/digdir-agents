@@ -538,17 +538,29 @@ fn main() -> ExitCode {
 /// What agentctl prints for a failed command.
 fn error_text(error: &CommandError) -> String {
     match error {
-        // agentd's message is the whole story, apart from how to change what cannot be changed.
-        CommandError::Agent(Error::Rpc(error)) if error.message.starts_with("immutable Agent field changed") => {
-            format!(
-                "agentctl: {}\nThat changes only by creating the agent again, which starts its disk over: `agentctl delete agent/NAME`, then apply.",
-                error.message
-            )
-        }
+        // agentd's message is the whole story.
         CommandError::Agent(Error::Rpc(error)) => format!("agentctl: {}", error.message),
         // Most of agentctl's own refusals are `Invalid`, and few are about an agent.
         CommandError::Agent(Error::Invalid(message)) => format!("agentctl: {message}"),
         error => format!("agentctl: {error}"),
+    }
+}
+
+/// A refused apply, with how to change an immutable field of the agent it names.
+///
+/// A name taken by another directory's agent is not such a field: deleting would remove that agent.
+fn apply_error(error: Error, name: &str) -> CommandError {
+    match error {
+        Error::Rpc(error)
+            if error.message.starts_with("immutable Agent field changed")
+                && !error.message.ends_with("sourceDirectory") =>
+        {
+            CommandError::Message(format!(
+                "{}\nThat changes only by creating the agent again, which starts its disk over: `agentctl delete agent/{name}`, then apply.",
+                error.message
+            ))
+        }
+        error => error.into(),
     }
 }
 
@@ -616,7 +628,8 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             if let Some(name) = name {
                 request.agent.metadata.name = name;
             }
-            let applied = client.apply(request).await?;
+            let name = request.agent.metadata.name.clone();
+            let applied = client.apply(request).await.map_err(|error| apply_error(error, &name))?;
             let name = applied.metadata.name;
             println!("agent/{name} applied");
             if wait {
@@ -2373,7 +2386,7 @@ mod tests {
     }
 
     #[test]
-    fn errors_are_printed_without_type_prefixes_and_say_how_to_change_an_immutable_field() {
+    fn errors_are_printed_without_type_prefixes() {
         let rpc = |code, message: &str| {
             CommandError::Agent(Error::Rpc(agent::control_api::ResponseError {
                 code,
@@ -2395,14 +2408,6 @@ mod tests {
             ))),
             "agentctl: at least one port mapping is required"
         );
-        let immutable = error_text(&rpc(-32009, "immutable Agent field changed: spec.sandbox.image"));
-        assert_eq!(
-            immutable.lines().collect::<Vec<_>>(),
-            [
-                "agentctl: immutable Agent field changed: spec.sandbox.image",
-                "That changes only by creating the agent again, which starts its disk over: `agentctl delete agent/NAME`, then apply.",
-            ]
-        );
         assert_eq!(
             error_text(&rpc(-32009, "Agent resource changed concurrently")),
             "agentctl: Agent resource changed concurrently",
@@ -2411,6 +2416,51 @@ mod tests {
         assert_eq!(
             error_text(&CommandError::Agent(Error::NotFound)),
             "agentctl: Agent not found"
+        );
+    }
+
+    #[test]
+    fn a_refused_apply_says_how_to_change_an_immutable_field_of_the_named_agent() {
+        let rpc = |message: &str| {
+            Error::Rpc(agent::control_api::ResponseError {
+                code: -32009,
+                message: message.into(),
+            })
+        };
+        let immutable = error_text(&apply_error(
+            rpc("immutable Agent field changed: spec.sandbox.image"),
+            "dev",
+        ));
+        assert_eq!(
+            immutable.lines().collect::<Vec<_>>(),
+            [
+                "agentctl: immutable Agent field changed: spec.sandbox.image",
+                "That changes only by creating the agent again, which starts its disk over: `agentctl delete agent/dev`, then apply.",
+            ]
+        );
+        assert_eq!(
+            error_text(&apply_error(
+                rpc("immutable Agent field changed: sourceDirectory"),
+                "dev"
+            )),
+            "agentctl: immutable Agent field changed: sourceDirectory",
+            "a name taken by another directory's agent, as an older agentd reports it, never suggests deleting it"
+        );
+        let clash = "an agent named \"dev\" was already applied from /work/other; choose another name in metadata.name or pass `--name`";
+        assert_eq!(
+            error_text(&apply_error(
+                Error::Rpc(agent::control_api::ResponseError {
+                    code: -32602,
+                    message: clash.into(),
+                }),
+                "dev"
+            )),
+            format!("agentctl: {clash}")
+        );
+        assert_eq!(
+            error_text(&apply_error(rpc("Agent resource changed concurrently"), "dev")),
+            "agentctl: Agent resource changed concurrently",
+            "a conflict shares the code but is not about an immutable field"
         );
     }
 

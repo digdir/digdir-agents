@@ -35,7 +35,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 - The desktop image's display is now 1600x900, and `desktop screenshot` sizes screenshots for the Session's harness: Claude Code gets 1600x900 at 1445x812, Codex at full size. To keep 1456x819, set `AGENT_DESKTOP_GEOMETRY` in `/etc/agent-desktop.conf.d/`. ([screenshot budget](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#the-screenshot-budget), [#263](https://github.com/digdir/digdir-agents/pull/263))
 - `attach`, `exec`, `ssh` and the other commands that use the current directory's agent find one defined in a subdirectory, such as `agents/<name>/`, from anywhere in its repository. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#agent-layer))
 - An Agent manifest no longer needs `home` or `network`: without `home` nothing is copied into `/home/agent`, and without `network` all traffic goes through the host's network mediator, as before.
-- agentctl's help starts with what it is for and lists the commands people use first, its errors no longer begin with `invalid Agent:` or `Agent Control API error:`, and changing what only a new agent can change says how to do it.
+- agentctl's help starts with what it is for and lists the commands people use first, its errors no longer begin with `invalid Agent:` or `Agent Control API error:`, and changing what only a new agent can change says how to do it. Applying a name that an agent from another directory already has asks for another name instead of reporting a changed `sourceDirectory`.
 
 ### Fixed
 
