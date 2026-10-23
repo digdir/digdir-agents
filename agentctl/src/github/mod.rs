@@ -28,6 +28,9 @@ const ACCESS_PLACEHOLDER: &str = "github_pat_AGENT_MEDIATED_GITHUB_TOKEN";
 const MEDIATED_HOSTS: [&str; 4] = ["github.com", "api.github.com", "gist.github.com", "uploads.github.com"];
 /// The longest login GitHub allows.
 const OWNER_MAX_LENGTH: usize = 39;
+/// What an owner must be, said without repeating the value, which may be a misplaced token.
+pub const OWNER_RULE: &str =
+    "the owner must be a GitHub user or organization name: letters, digits and inner hyphens, at most 39 characters";
 
 /// The GitHub account a token acts as.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -68,6 +71,27 @@ impl TokenKind {
             Self::Oauth
         } else {
             Self::Other
+        }
+    }
+
+    /// The kind in words, such as `fine-grained`.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::FineGrained => "fine-grained",
+            Self::Classic => "classic",
+            Self::Oauth => "OAuth",
+            Self::Other => "other",
+        }
+    }
+
+    /// The GitHub settings page where a token of this kind is revoked, signed in as its account.
+    #[must_use]
+    pub const fn revoke_page(self) -> &'static str {
+        match self {
+            Self::FineGrained => "https://github.com/settings/personal-access-tokens",
+            Self::Classic => "https://github.com/settings/tokens",
+            Self::Oauth | Self::Other => "https://github.com/settings/applications",
         }
     }
 
@@ -118,11 +142,11 @@ impl GithubToken {
     }
 }
 
-/// A token just stored, and the recommended [`SCOPES`] it lacks.
+/// A token as GitHub described it at login, and the recommended [`SCOPES`] it lacks.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubLogin {
-    /// The stored token.
+    /// The token, as it is or would be stored.
     pub token: GithubToken,
     /// Recommended [`SCOPES`] a classic or OAuth token lacks; fine-grained tokens report none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -184,6 +208,42 @@ pub(crate) fn conflicts_with_managed_secret(name: &str, placeholder: &str) -> bo
     name == ACCESS_ENVIRONMENT || placeholder.contains(ACCESS_PLACEHOLDER) || ACCESS_PLACEHOLDER.contains(placeholder)
 }
 
+/// Asks GitHub what `token` would be for `owner`, as a login would, without storing anything, so
+/// a person can see it before agentd keeps it.
+///
+/// # Errors
+///
+/// Returns an error when the token is empty, the owner is not a GitHub login, GitHub rejects the
+/// token or cannot be reached, or the token has expired. No error contains the token.
+pub async fn check(token: &str, owner: &str) -> Result<GithubLogin, Error> {
+    check_at(inspect::API, token, owner).await
+}
+
+async fn check_at(api: &str, token: &str, owner: &str) -> Result<GithubLogin, Error> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(Error::Invalid("no GitHub token was provided".into()));
+    }
+    // The owner is not repeated: a token pasted in its place must not end up in the error.
+    if !valid_owner(owner) {
+        return Err(Error::Invalid(OWNER_RULE.into()));
+    }
+    let inspection = inspect::inspect_at(api, token).await?;
+    let checked = GithubToken {
+        owner: owner.to_ascii_lowercase(),
+        account: inspection.account,
+        kind: TokenKind::of(token),
+        expires_at: inspection.expires_at,
+    };
+    if checked.expired(time::OffsetDateTime::now_utc()) {
+        return Err(Error::Invalid("the GitHub token has already expired".into()));
+    }
+    Ok(GithubLogin {
+        token: checked,
+        missing_scopes: inspection.missing_scopes,
+    })
+}
+
 /// Checks GitHub tokens with GitHub and keeps them per owner.
 pub(crate) struct Authentication {
     database: persistence::Database,
@@ -202,34 +262,12 @@ impl Authentication {
     ///
     /// # Errors
     ///
-    /// Returns an error when the token is empty, the owner is not a GitHub login, GitHub rejects
-    /// the token or cannot be reached, the token has expired, or it cannot be persisted. Nothing
-    /// is stored then, and no error contains the token.
+    /// Returns an error as [`check`] does, or when the token cannot be persisted. Nothing is
+    /// stored then, and no error contains the token.
     pub(crate) async fn login(&self, token: Zeroizing<String>, owner: &str) -> Result<GithubLogin, Error> {
         let token = Zeroizing::new(token.trim().to_owned());
-        if token.is_empty() {
-            return Err(Error::Invalid("no GitHub token was provided".into()));
-        }
-        // The owner is not repeated: a token pasted in its place must not end up in the error.
-        if !valid_owner(owner) {
-            return Err(Error::Invalid(
-                "the owner must be a GitHub user or organization name: letters, digits and inner hyphens, \
-                 at most 39 characters"
-                    .into(),
-            ));
-        }
-        let owner = owner.to_ascii_lowercase();
-        let inspection = inspect::inspect_at(&self.api, &token).await?;
-        let stored = GithubToken {
-            owner,
-            account: inspection.account,
-            kind: TokenKind::of(&token),
-            expires_at: inspection.expires_at,
-        };
-        if stored.expired(time::OffsetDateTime::now_utc()) {
-            return Err(Error::Invalid("the GitHub token has already expired".into()));
-        }
-        let (provider, secret) = names(&stored.owner);
+        let checked = check_at(&self.api, &token, owner).await?;
+        let (provider, secret) = names(&checked.token.owner);
         self.database
             .put_provider_account(persistence::ProviderAccountWrite {
                 provider,
@@ -237,13 +275,10 @@ impl Authentication {
                     name: secret,
                     value: Zeroizing::new(token.as_bytes().to_vec()),
                 }],
-                metadata_json: serde_json::to_string(&stored)?,
+                metadata_json: serde_json::to_string(&checked.token)?,
             })
             .await?;
-        Ok(GithubLogin {
-            token: stored,
-            missing_scopes: inspection.missing_scopes,
-        })
+        Ok(checked)
     }
 
     /// Every stored GitHub token, by owner.

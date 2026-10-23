@@ -3,6 +3,8 @@
 use std::io::{IsTerminal as _, Write as _};
 
 use agent::Error;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use zeroize::Zeroizing;
 
 /// Whether a person is at the terminal: questions go to standard error, and the TUI some answers
 /// open draws on standard output, so all three must be a terminal.
@@ -53,6 +55,44 @@ pub(crate) fn confirm_lines(lines: &[&str]) -> Result<bool, Error> {
         }
         eprint!("Type y or n: ");
         std::io::stderr().flush().ok();
+    }
+}
+
+/// Reads a secret typed or pasted at the terminal, without echoing it, until Enter.
+///
+/// # Errors
+///
+/// Returns an error when the terminal cannot be read, or Ctrl-C cancels.
+pub(crate) fn secret(label: &str) -> Result<Zeroizing<String>, Error> {
+    pose(&[label], ": ");
+    crossterm::terminal::enable_raw_mode()?;
+    let read = read_secret();
+    let _ = crossterm::terminal::disable_raw_mode();
+    eprintln!();
+    read
+}
+
+fn read_secret() -> Result<Zeroizing<String>, Error> {
+    let mut value = Zeroizing::new(String::new());
+    loop {
+        let Event::Key(KeyEvent {
+            code, modifiers, kind, ..
+        }) = crossterm::event::read()?
+        else {
+            continue;
+        };
+        match code {
+            _ if kind == KeyEventKind::Release => {}
+            KeyCode::Enter => return Ok(value),
+            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                return Err(Error::Invalid("cancelled; nothing was stored".into()));
+            }
+            KeyCode::Char(character) => value.push(character),
+            KeyCode::Backspace => {
+                value.pop();
+            }
+            _ => {}
+        }
     }
 }
 
