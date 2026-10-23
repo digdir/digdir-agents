@@ -15,6 +15,7 @@ pub mod manifest;
 pub mod persistence;
 pub mod platform_api;
 pub mod progress;
+pub mod repositories;
 pub mod resources;
 pub mod sandbox;
 pub mod sessions;

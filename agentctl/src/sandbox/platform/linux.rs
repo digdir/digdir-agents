@@ -28,6 +28,12 @@ pub(crate) const UTF8_LOCALE: &str = "C.UTF-8";
 /// not necessarily installed in the Sandbox image; this baseline is.
 pub(crate) const PORTABLE_TERMINAL: &str = "xterm-256color";
 const PODMAN: &str = "/usr/bin/podman";
+/// The base image's directory of repository lists, its unit that clones them, and the script it runs.
+const WORKSPACE_LISTS: &str = "/etc/agent-workspace.d";
+const WORKSPACE_UNIT: &str = "agent-workspace-init.service";
+const WORKSPACE_INIT: &str = "/usr/local/libexec/agent-workspace-init";
+/// The list agentd writes from the agent folder's `repositories.yaml`.
+const REPOSITORIES_LIST: &str = "/etc/agent-workspace.d/agentctl.list";
 const SETUP_STDERR_LINES: usize = 3;
 const SYSTEMD_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 const SYSTEMD_READY_POLL: std::time::Duration = std::time::Duration::from_secs(1);
@@ -230,6 +236,10 @@ impl Linux {
         }
         configure_git(sandbox, record.agent.spec.github_account()).await?;
         step.complete().await;
+        let repositories = crate::repositories::read(&record.source_directory)?;
+        let step = steps.start_step("Clone repositories").await;
+        clone_repositories(sandbox, &repositories).await?;
+        step.complete().await;
         let instructions = read_instructions(record, self.host_instructions.as_deref()).await?;
         let skills = read_skills(record).await?;
         for installation in &installations {
@@ -244,6 +254,47 @@ impl Linux {
         }
         Ok(())
     }
+}
+
+/// Hands `repositories` to the base image's workspace unit and starts it, which clones each one
+/// not there yet without the pass waiting for it. An unchanged list starts the unit again, so a
+/// clone that failed earlier, such as before the repository was shared with the agent, is retried.
+async fn clone_repositories(
+    sandbox: &SandboxHandle,
+    repositories: &[crate::repositories::Repository],
+) -> Result<(), Error> {
+    if repositories.is_empty() {
+        if path_exists(sandbox, "-e", REPOSITORIES_LIST).await? {
+            run_checked(sandbox, "/usr/bin/sudo", ["-n", "/bin/rm", "-f", REPOSITORIES_LIST]).await?;
+        }
+        return Ok(());
+    }
+    if !systemd_available(sandbox).await? || !path_exists(sandbox, "-x", WORKSPACE_INIT).await? {
+        return Err(Error::SandboxSetup(format!(
+            "{} lists repositories, but the image cannot clone them; build it on agentctl-base, whose workspace unit does",
+            crate::repositories::REPOSITORIES_FILE
+        )));
+    }
+    wait_for_systemd(sandbox).await?;
+    run_checked(
+        sandbox,
+        "/usr/bin/sudo",
+        ["-n", "/usr/bin/install", "-d", "-m", "0755", WORKSPACE_LISTS],
+    )
+    .await?;
+    write_if_changed(
+        sandbox,
+        REPOSITORIES_LIST,
+        crate::repositories::workspace_list(repositories).as_bytes(),
+    )
+    .await?;
+    // An already running clone keeps going; starting an active unit does nothing.
+    run_checked(
+        sandbox,
+        "/usr/bin/sudo",
+        ["-n", SYSTEMCTL, "start", "--no-block", WORKSPACE_UNIT],
+    )
+    .await
 }
 
 /// Configures Git for the Agent's user when the image has it: the commit identity from

@@ -233,10 +233,17 @@ fn write_agent_directory(
         tier.has_desktop(),
     );
     written.push((folder.join(crate::tools::TOOLS_FILE), tools.render()));
-    written.push((
-        folder.join(crate::tools::DOCKERFILE),
-        template::dockerfile(&tools, &choices.checkout),
-    ));
+    written.push((folder.join(crate::tools::DOCKERFILE), template::dockerfile(&tools)));
+    let cloned = match &choices.checkout {
+        Checkout::Clone(repository) => vec![agent::repositories::Repository {
+            repo: repository.clone(),
+            path: None,
+            about: None,
+        }],
+        Checkout::Mount => Vec::new(),
+    };
+    let repositories = folder.join(agent::repositories::REPOSITORIES_FILE);
+    written.push((repositories.clone(), agent::repositories::render(&cloned)));
     written.push((folder.join(".dockerignore"), template::DOCKERIGNORE.to_owned()));
     let instructions = folder.join("instructions.md");
     written.extend([
@@ -258,10 +265,15 @@ fn write_agent_directory(
         manifest.clone()
     };
     let tools_file = folder.join(crate::tools::TOOLS_FILE);
-    let editable = [manifest.as_path(), tools_file.as_path(), instructions.as_path()];
+    let editable = [
+        manifest.as_path(),
+        tools_file.as_path(),
+        repositories.as_path(),
+        instructions.as_path(),
+    ];
     if prompt::confirm_lines(&[
         "Changing the image or mounts later means creating the agent again, which starts its disk over.",
-        "Edit agent.yaml, tools.yaml and instructions.md before creating the agent?",
+        "Edit agent.yaml, tools.yaml, repositories.yaml and instructions.md before creating the agent?",
     ])? && !edit_manifest(&chosen, &editable)?
     {
         return Ok(None);

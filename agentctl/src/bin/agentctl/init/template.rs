@@ -275,23 +275,10 @@ pub(super) const DOCKERIGNORE: &str =
 !Dockerfile
 ";
 
-/// The agent's Dockerfile: the block generated from `tools`, the clone of `checkout` at boot, a
-/// place for the person's own steps, and the base image's check of the result.
-pub(super) fn dockerfile(tools: &crate::tools::Tools, checkout: &Checkout) -> String {
+/// The agent's Dockerfile: the block generated from `tools`, a place for the person's own steps,
+/// and the base image's check of the result.
+pub(super) fn dockerfile(tools: &crate::tools::Tools) -> String {
     let code = agent::sandbox::platform::WORKING_DIRECTORY;
-    let repositories = match checkout {
-        Checkout::Clone(repository) => format!(
-            "# Repositories the agent clones into {code} at first boot, one OWNER/NAME [DESTINATION] per line.
-RUN printf '%s\\n' '{repository}' >/etc/agent-workspace.d/workspace.list
-"
-        ),
-        Checkout::Mount => format!(
-            "# The agent works on the checkout mounted at {code}. To clone GitHub repositories at first boot
-# instead, list them one OWNER/NAME [DESTINATION] per line:
-# RUN printf '%s\\n' 'owner/name' >/etc/agent-workspace.d/workspace.list
-"
-        ),
-    };
     format!(
         "# Created by `agentctl init`: the image this agent runs, built with Docker on the machine that
 # runs agentctl. An agent keeps the image it was created with; `agentctl tools` offers to recreate
@@ -300,7 +287,6 @@ RUN printf '%s\\n' '{repository}' >/etc/agent-workspace.d/workspace.list
 # The block below is generated from tools.yaml: change the tools there, or with
 # `agentctl tools add`. Steps of your own go after it, and agentctl leaves them as they are.
 {block}
-{repositories}
 # Steps of your own, for example:
 # RUN apt-get update \\
 #     && apt-get install --yes --no-install-recommends postgresql-client \\
@@ -741,15 +727,11 @@ mod tests {
             Toolchain::Python,
             Toolchain::Java { maven: true },
         ];
-        let written = dockerfile(
-            &crate::tools::Tools::from_detected(&detected, true, false, false),
-            &Checkout::Clone("digdir/worker".into()),
-        );
+        let written = dockerfile(&crate::tools::Tools::from_detected(&detected, true, false, false));
         for expected in [
             "\nFROM ghcr.io/digdir/agentctl-base:ubuntu-26.04@sha256:" as &str,
             "podman-docker",
             "\nRUN agent-image-check\n",
-            "RUN printf '%s\\n' 'digdir/worker' >/etc/agent-workspace.d/workspace.list\n",
             "ARG NODE_RELEASE=release/latest-v20.x\n",
             "corepack enable",
             "--version 10.0.302",
@@ -767,19 +749,16 @@ mod tests {
             "{written}"
         );
 
-        let mounted = dockerfile(
-            &crate::tools::Tools::from_detected(&[], false, false, false),
-            &Checkout::Mount,
+        let mounted = dockerfile(&crate::tools::Tools::from_detected(&[], false, false, false));
+        assert!(
+            !mounted.contains("workspace.list"),
+            "repositories.yaml lists the clones: {mounted}"
         );
-        assert!(mounted.contains("# RUN printf"), "nothing is cloned: {mounted}");
         assert!(
             !mounted.contains("podman"),
             "no containers for a basic agent: {mounted}"
         );
-        let desktop = dockerfile(
-            &crate::tools::Tools::from_detected(&[], true, true, true),
-            &Checkout::Mount,
-        );
+        let desktop = dockerfile(&crate::tools::Tools::from_detected(&[], true, true, true));
         assert!(desktop.contains("RUN agent-feature install desktop\n"), "{desktop}");
         assert!(!mounted.contains("NODE_RELEASE"), "{mounted}");
     }
@@ -801,10 +780,7 @@ mod tests {
             Toolchain::Python,
             Toolchain::Java { maven: false },
         ];
-        let written = dockerfile(
-            &crate::tools::Tools::from_detected(&all, true, true, true),
-            &Checkout::Clone("digdir/worker".into()),
-        );
+        let written = dockerfile(&crate::tools::Tools::from_detected(&all, true, true, true));
         let mut continued = false;
         for line in written.lines() {
             let trimmed = line.trim_start();
