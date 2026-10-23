@@ -253,7 +253,8 @@ async fn run_lifecycle_execution(
 /// sibling Sessions; the token only rejects stale or accidental reports. The
 /// Session's recorded model selection is part of every launch, resumed or not.
 /// The harness also learns its agent, session name, host and source directory,
-/// so it can say where it runs.
+/// so it can say where it runs, and which harness it is, so tools it runs, such
+/// as the desktop helper's screenshot budget, can suit its model.
 fn launch_arguments(
     session: &Session,
     context: LaunchContext<'_>,
@@ -276,6 +277,7 @@ fn launch_arguments(
     let session_environment = launch.environment.iter().cloned().chain([
         ("CONTAINER_HOST".into(), crate::sandbox::platform::CONTAINER_HOST.into()),
         ("AGENT_SESSION_ID".into(), session.id.to_string()),
+        ("AGENT_HARNESS".into(), session.harness.as_str().to_owned()),
         ("AGENT_NAME".into(), context.agent.to_owned()),
         ("AGENT_SESSION_NAME".into(), session.name.to_string()),
         ("AGENT_HOST".into(), context.host.to_owned()),
@@ -729,12 +731,14 @@ mod tests {
             .filter(|pair| pair[0] == "-e")
             .map(|pair| pair[1].as_str())
             .collect();
+        let harness = format!("AGENT_HARNESS={}", session.harness);
         for expected in [
             "AGENT_NAME=worker",
             "AGENT_SESSION_NAME=review",
             "AGENT_HOST=laptop",
             "AGENT_SOURCE_DIRECTORY=/Users/someone/code/app",
             "AGENT_SESSION_ID=dd4cdbaf-9ea0-477e-96dd-bbd6b1e4f7dc",
+            harness.as_str(),
         ] {
             assert!(environment.contains(&expected), "{expected} in {environment:?}");
         }
