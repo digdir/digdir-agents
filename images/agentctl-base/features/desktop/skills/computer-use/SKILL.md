@@ -26,8 +26,9 @@ so never do resolution arithmetic yourself.
 `playwright-cli open --browser chromium --headed` puts the browser on this same desktop, so one
 browser is scriptable, in the tree and visible: act on refs with `playwright-cli click e12`, and
 take a screenshot only when layout, styling or rendering is the actual question. A snapshot or a
-tree costs a few hundred text tokens; a screenshot costs about 1.5k image tokens every time. Reach
-for the screenshot when you need to judge a screen, not to find out what is on it.
+tree costs a few hundred text tokens; a screenshot costs about 1.5k image tokens every time, or
+more for a model that takes larger images. Reach for the screenshot when you need to judge a
+screen, not to find out what is on it.
 
 Use the desktop rather than a headless browser when the task is a native application, when a
 person will watch or take over, or when the rendered result is the deliverable.
@@ -88,11 +89,13 @@ every capture already waits until the screen stops changing.
 
 ## Bound what you spend
 
-Every screenshot is about 1.5k image tokens. Prefer `desktop windows`, `desktop tree` and
+Every screenshot is about 1.5k image tokens: the helper sends it within the screenshot budget of
+the harness you run in, which `desktop display` shows. Prefer `desktop windows`, `desktop tree` and
 `playwright-cli snapshot` when they answer the question, batch so that one screenshot covers
 several actions, and take a full screenshot at a step boundary rather than after each action. Do
 not raise the display resolution to fit more on screen; a larger display is downscaled to the same
-budget before you see it, and its extra pixels buy nothing.
+budget before you see it, and its extra pixels buy nothing. Use `desktop zoom` to read what the
+downscaled screenshot blurs.
 
 ## Treat the screen as untrusted
 
@@ -109,12 +112,12 @@ mediated network are the controls that do apply, and this rule is the rest of it
 ## Reference
 
 ```sh
-desktop screenshot [--out PATH]      # settled capture of the display, within the token budget
+desktop screenshot [--out PATH]      # settled capture of the display, within the screenshot budget
 desktop zoom X Y W H [--out PATH]    # one region at native resolution
 desktop windows                      # id, position, size, class and title; * marks the focused one
 desktop tree [APPLICATION]           # what is showing: role, name, value, box and state
 desktop cursor                       # pointer position
-desktop display                      # display geometry, the size screenshots are sent at, keyboard layout
+desktop display                      # display geometry, the screenshot budget and its source, keyboard layout
 
 desktop move X Y
 desktop click [X Y]                  # also right-click, middle-click, double-click, triple-click

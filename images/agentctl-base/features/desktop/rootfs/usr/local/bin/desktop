@@ -19,11 +19,41 @@ shopt -s inherit_errexit
 # screen or a test harness.
 display=${DESKTOP_DISPLAY:-${DISPLAY:-:1}}
 captures=${DESKTOP_CAPTURES:-/tmp/desktop}
-# Anthropic's 1568-tile image budget at 28 px tiles, inside OpenAI's recommended 1440-1600 band.
-# A screenshot at this size costs about 1.5k image tokens; a larger one is downscaled to fit, and
-# a model that clicks on a server-resized image misses its target.
-budget_width=${DESKTOP_MAX_WIDTH:-1456}
-budget_height=${DESKTOP_MAX_HEIGHT:-819}
+# The screenshot budget: how many pixels a screenshot may hold and how long its longest edge may be.
+# A larger display is downscaled to fit, so the model reads its image exactly as sent: a harness or
+# API that resized it again would put every click the model reads off it somewhere else. The
+# budget belongs to the model reading the screenshot, not to the display, and agentd tells each
+# Session which harness it runs in AGENT_HARNESS. See budget() below for how settings combine.
+budget_harness=${AGENT_HARNESS:-}
+# Each vendor's documented resize threshold, below which its harness and API send an image as it
+# is. Both count square patches, rounded up on each edge, so each pixel count sits below
+# patch area x patch budget by enough that every display from 64x64 to 8000x8000 scaled to it fits.
+case $budget_harness in
+    claudeCode)
+        # Claude Code resizes images itself to the model's limits before sending them, as the
+        # API would: 1568 px on the long edge and 1568 patches of 28x28 px on the standard tier,
+        # 2576 px and 4784 patches on Claude 4.7 and later. Claude Code can run models on either
+        # tier, so this is the standard tier's. 1600x900 is sent at 1445x812, 1508 patches.
+        # https://platform.claude.com/docs/en/build-with-claude/vision#resolution-and-token-cost
+        # https://platform.claude.com/docs/en/build-with-claude/vision-coordinates
+        budget_source=harness table_pixels=1175000 table_edge=1568 ;;
+    codex)
+        # Codex's view_image resizes to OpenAI's `high` detail, its default, which every model it
+        # offers takes as it is: 2048 px on the long edge and 2500 patches of 32x32 px. A model may
+        # ask for `original` detail, larger still. 1920x1080 is sent as it is, 2040 patches.
+        # https://developers.openai.com/api/docs/guides/images-vision
+        # https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/utils/image/src/lib.rs
+        budget_source=harness table_pixels=2457600 table_edge=2048 ;;
+    pi)
+        # Pi sends images to whichever provider it is configured for, so it gets the default.
+        budget_source=harness table_pixels='' table_edge='' ;;
+    '') budget_source=default table_pixels='' table_edge='' ;;
+    *) budget_source=unknown table_pixels='' table_edge='' ;;
+esac
+# Without a harness, for a person, an SSH shell or another tool, and for one not in the table: the
+# smallest budget of any harness above, so the screenshot fits every model that may read it.
+table_pixels=${table_pixels:-1175000}
+table_edge=${table_edge:-1568}
 # ffmpeg's mjpeg scale: -q:v 7 encodes at JPEG quality 75, the quality Anthropic's reference
 # implementation sends. Lower numbers are better quality and larger files.
 jpeg_quality=${DESKTOP_JPEG_QUALITY:-7}
@@ -71,7 +101,7 @@ Observe
   windows                        list mapped windows with geometry, class and title
   tree [APPLICATION]             what is showing, as an accessibility tree with click boxes
   cursor                         print the pointer position
-  display                        print display geometry, the screenshot budget and the keyboard layout
+  display                        print display geometry, the screenshot budget and its source, the keyboard layout
 
 Point
   move X Y                       move the pointer
@@ -109,18 +139,52 @@ display_geometry() {
     xdpyinfo | awk '/dimensions:/ { print $2; exit }'
 }
 
+# Settles the budget into budget_pixels, budget_edge, budget_width and budget_height, where empty
+# means no limit, and budget_overrides, the settings that replaced the harness's budget. Explicit
+# settings always win over the table: DESKTOP_SCREENSHOT_PIXELS and DESKTOP_SCREENSHOT_MAX_EDGE
+# each replace their half of it. DESKTOP_MAX_WIDTH and DESKTOP_MAX_HEIGHT, the box this helper
+# fitted screenshots into before it had a pixel budget, keep that meaning: either one replaces the
+# whole budget with a box, whose other side is still 1456 or 819, and only the DESKTOP_SCREENSHOT_*
+# settings given beside them still apply as well.
+budget() {
+    budget_overrides=()
+    local name
+    for name in DESKTOP_SCREENSHOT_PIXELS DESKTOP_SCREENSHOT_MAX_EDGE DESKTOP_MAX_WIDTH DESKTOP_MAX_HEIGHT; do
+        [ -z "${!name:-}" ] && continue
+        case ${!name} in *[!0-9]* | 0*) fail "$name must be a positive integer, got '${!name}'" ;; esac
+        budget_overrides+=("$name")
+    done
+    if [ -n "${DESKTOP_MAX_WIDTH:-}${DESKTOP_MAX_HEIGHT:-}" ]; then
+        budget_width=${DESKTOP_MAX_WIDTH:-1456}
+        budget_height=${DESKTOP_MAX_HEIGHT:-819}
+        budget_pixels=${DESKTOP_SCREENSHOT_PIXELS:-}
+        budget_edge=${DESKTOP_SCREENSHOT_MAX_EDGE:-}
+    else
+        budget_width='' budget_height=''
+        budget_pixels=${DESKTOP_SCREENSHOT_PIXELS:-$table_pixels}
+        budget_edge=${DESKTOP_SCREENSHOT_MAX_EDGE:-$table_edge}
+    fi
+}
+
 # Prints "display_width display_height sent_width sent_height". The sent size is the display size
 # reduced to fit the budget; the model addresses the sent size and never does this arithmetic.
+# scale = min(1, sqrt(pixels / (w * h)), edge / max(w, h)), and the box's sides when one is set.
+# Sizes round down, so the budget holds; the epsilon keeps a side the box sets exactly from
+# losing a pixel to floating point.
 geometry() {
     local geometry width height
     geometry=$(display_geometry) || fail "cannot read display $display"
     width=${geometry%x*}
     height=${geometry#*x}
-    awk -v w="$width" -v h="$height" -v bw="$budget_width" -v bh="$budget_height" 'BEGIN {
+    awk -v w="$width" -v h="$height" -v p="$budget_pixels" -v e="$budget_edge" \
+        -v bw="$budget_width" -v bh="$budget_height" 'BEGIN {
         scale = 1
-        if (w > bw) scale = bw / w
-        if (h > bh && bh / h < scale) scale = bh / h
-        printf "%d %d %d %d\n", w, h, int(w * scale + 0.5), int(h * scale + 0.5)
+        if (p != "" && w * h > p) scale = sqrt(p / (w * h))
+        if (e != "" && e / (w > h ? w : h) < scale) scale = e / (w > h ? w : h)
+        if (bw != "" && bw / w < scale) scale = bw / w
+        if (bh != "" && bh / h < scale) scale = bh / h
+        sw = int(w * scale + 1e-9); sh = int(h * scale + 1e-9)
+        printf "%d %d %d %d\n", w, h, (sw < 1 ? 1 : sw), (sh < 1 ? 1 : sh)
     }'
 }
 
@@ -341,15 +405,50 @@ command_display() {
     layout=$(sed -n 's/^layout: *//p' <<<"$query")
     variant=$(sed -n 's/^variant: *//p' <<<"$query")
     options=$(sed -n 's/^options: *//p' <<<"$query")
+    local scale source
+    scale=$(awk -v s="$sent_width" -v a="$actual_width" 'BEGIN { printf "%.2f", s / a }')
+    # Where the budget came from: the settings that replaced it, or else the harness table.
+    if [ ${#budget_overrides[@]} -gt 0 ]; then
+        source=override
+    else
+        source=$budget_source
+    fi
     if $json; then
-        printf '{"display":"%s","width":%d,"height":%d,"sentWidth":%d,"sentHeight":%d,' \
-            "$display" "$actual_width" "$actual_height" "$sent_width" "$sent_height"
+        local overrides='' name
+        for name in "${budget_overrides[@]}"; do overrides+=",\"$name\""; done
+        printf '{"display":"%s","width":%d,"height":%d,"sentWidth":%d,"sentHeight":%d,"scale":%s,' \
+            "$display" "$actual_width" "$actual_height" "$sent_width" "$sent_height" "$scale"
+        printf '"budget":{"pixels":%s,"maxEdge":%s,"maxWidth":%s,"maxHeight":%s,"source":"%s","harness":%s,"overrides":[%s]},' \
+            "${budget_pixels:-null}" "${budget_edge:-null}" "${budget_width:-null}" "${budget_height:-null}" \
+            "$source" "$(json_string_or_null "$budget_harness")" "${overrides#,}"
         printf '"keyboard":{"layout":"%s","variant":"%s","options":"%s"}}\n' "$layout" "$variant" "$options"
     else
-        printf 'display %s is %dx%d; screenshots are sent at %dx%d\n' \
-            "$display" "$actual_width" "$actual_height" "$sent_width" "$sent_height"
+        printf 'display %s is %dx%d; screenshots are sent at %dx%d (%sx)\n' \
+            "$display" "$actual_width" "$actual_height" "$sent_width" "$sent_height" "$scale"
+        local limits='' from
+        [ -z "$budget_pixels" ] || limits+=", $budget_pixels pixels"
+        [ -z "$budget_edge" ] || limits+=", a $budget_edge px longest edge"
+        [ -z "$budget_width" ] || limits+=", a ${budget_width}x${budget_height} box"
+        case $budget_source in
+            harness) from="for harness $budget_harness" ;;
+            unknown) from="the default, for unknown harness '$budget_harness'" ;;
+            *) from="the default, without AGENT_HARNESS" ;;
+        esac
+        if [ -n "$budget_width" ]; then
+            from="set by ${budget_overrides[*]}"
+        elif [ "$source" = override ]; then
+            from="set by ${budget_overrides[*]}, otherwise $from"
+        fi
+        printf 'screenshot budget %s: %s\n' "${limits#, }" "$from"
         printf 'keyboard layout %s%s%s\n' "$layout" "${variant:+, variant $variant}" "${options:+, options $options}"
     fi
+}
+
+# A JSON string, or null for an empty value. AGENT_HARNESS comes from the environment, which
+# anything may set, so it is escaped.
+json_string_or_null() {
+    [ -n "$1" ] || { echo null; return 0; }
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/[[:cntrl:]]//g; s/^/"/; s/$/"/'
 }
 
 # --- input ------------------------------------------------------------------------------------
@@ -640,4 +739,5 @@ dispatch() {
 # --json is a global option and is only recognized before the command, so that `type --json` and a
 # batch line carrying the same text stay literal.
 if [ "${1:-}" = --json ]; then json=true; shift; fi
+budget
 dispatch "$@"
