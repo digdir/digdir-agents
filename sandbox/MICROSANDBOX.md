@@ -53,4 +53,4 @@ source from one Digdir version with runtime artifacts from another.
 
 A rollback only helps homes the newer pin has not opened. Microsandbox migrates a home's database when it opens it,
 and an earlier version refuses a database with migrations it does not know, so once a release with an update that adds
-migrations has opened a home, earlier releases cannot. Say so in the changelog entry of such an update.
+migrations has opened a home, earlier releases cannot.
