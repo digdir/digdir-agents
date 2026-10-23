@@ -63,7 +63,7 @@ USER agent
 
 ## Features
 
-The headless image carries optional parts, among them the ones the desktop image adds, so an image built on it can add
+The headless image carries optional features, including those the desktop image adds, so an image built on it can add
 them after its own tools, at the versions the base pins. An image with a `minimal` and a desktop variant can then build
 the desktop variant on its `minimal` one and share those layers, instead of installing its tools twice on two base
 images:
@@ -87,9 +87,9 @@ USER agent
 | Feature | Adds |
 | --- | --- |
 | `browser` | Chromium with `playwright-cli` and its skill, ffmpeg, and the `video-to-gif` and `media-preview` helpers. Chromium trusts the Agent's mediated CA once `$XDG_RUNTIME_DIR/chromium-ca-ready` exists, shortly after boot. |
-| `containers` | Podman, with bridge networks and container name resolution, and the `docker` command. `podman.socket` belongs to the `agent` group from boot, and `DOCKER_HOST` points Docker API clients at it. |
-| `nested-agents` | `containers`, plus `agentctl ssh-config install` as the agent user at every boot, so the `agentctl-<name>` SSH aliases of nested Agents work. It runs when `agentctl` is in `~/.local/bin`, where `make user-install` puts it, or `/usr/local/bin`. |
+| `containers` | Podman, with bridge networks and container name resolution. `podman.socket` belongs to the `agent` group from boot, and `DOCKER_HOST` points Docker API clients at it. The `docker` command runs Podman; it comes from podman-docker, which conflicts with Docker's own CLI packages. |
 | `desktop` | `browser`, plus an X11 desktop on display `:1` with VNC access and a [Secret Service](#the-secret-service), the `desktop`, `desktop-terminal` and `chromium` commands, and the `computer-use` skill. Provides `/etc/agent-access.d/vnc.conf`, so an Agent on it can declare `access: [{type: vnc}]`. |
+| `nested-agents` | `containers`, plus `agentctl ssh-config install` as the agent user at boot and once `agentctl` is installed, so the `agentctl-<name>` SSH aliases of nested Agents work. It looks for `agentctl` in `~/.local/bin`, where its installer puts it, and `/usr/local/bin`. |
 
 `agent-feature list` shows what an image has. The [self-dev images](../../agents/self-dev/Dockerfile) are built this
 way. The instructions about the desktop belong to the Agent; see the self-dev
