@@ -1517,6 +1517,7 @@ async fn stop(client: &Client, target: StopTarget) -> CommandResult<()> {
     };
     // Every stop is recorded before any is waited for, so agentd stops them side by side, and
     // one that cannot be recorded leaves the others to stop.
+    let total = names.len();
     let mut failed = 0;
     let mut recorded = Vec::new();
     for name in names {
@@ -1551,7 +1552,6 @@ async fn stop(client: &Client, target: StopTarget) -> CommandResult<()> {
             eprintln!("{message}");
         }
     }
-    let total = recorded.len() + failed;
     if failed > 0 {
         return Err(CommandError::Message(format!(
             "{failed} of {total} agents did not stop; `agentctl get agents` shows them"
@@ -1577,7 +1577,11 @@ async fn wait_saying_why(client: &Client, name: &str, deadline: tokio::time::Ins
         tokio::select! {
             outcome = &mut converged => return outcome.ok(),
             _ = progress.tick() => {
-                let doing = match client.get(name).await {
+                // Bounded by the deadline too, so a query agentd does not answer cannot outlast it.
+                let Ok(current) = tokio::time::timeout_at(deadline, client.get(name)).await else {
+                    return None;
+                };
+                let doing = match current {
                     Ok(agent) if agent.status.ready_condition().is_some_and(|ready| ready.reason == agent::Condition::REASON_STOPPING) => "stopping",
                     Ok(_) => "waiting for agentd to finish setting it up",
                     Err(_) => "waiting for agentd",
