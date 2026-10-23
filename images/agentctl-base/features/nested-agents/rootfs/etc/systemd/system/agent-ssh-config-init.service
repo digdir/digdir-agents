@@ -1,0 +1,15 @@
+[Unit]
+Description=Include nested Agents' SSH aliases in the agent user's SSH configuration
+# `make user-install` installs agentctl in ~/.local/bin, and a standalone install may use /usr/local/bin.
+ConditionFileIsExecutable=|/home/agent/.local/bin/agentctl
+ConditionFileIsExecutable=|/usr/local/bin/agentctl
+
+[Service]
+Type=oneshot
+User=agent
+Group=agent
+Environment=PATH=/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/sh -c 'exec agentctl ssh-config install'
+
+[Install]
+WantedBy=multi-user.target

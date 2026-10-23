@@ -1,0 +1,21 @@
+#!/bin/sh
+# Podman, with its socket and the `docker` command available to the agent user.
+#
+# Run by `agent-feature install containers` as root, with a scratch HOME.
+set -eu
+
+feature=$(dirname "$0")
+
+# netavark runs nft for bridge networks, and aardvark-dns resolves container names on them. podman-docker adds the
+# `docker` command and /run/docker.sock for tools that only know Docker; /etc/containers/nodocker quiets its notice.
+apt-get update
+apt-get install --yes --no-install-recommends aardvark-dns nftables podman podman-docker
+rm -rf /var/lib/apt/lists/*
+
+cp -R "${feature}/rootfs/." /
+
+systemctl enable podman.socket
+
+podman --version
+nft --version
+test -x /usr/lib/podman/aardvark-dns

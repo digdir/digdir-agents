@@ -1,0 +1,11 @@
+#!/bin/sh
+# The `agentctl-<name>` SSH aliases for nested Agents, added at boot when agentctl is installed; requires containers.
+#
+# Run by `agent-feature install nested-agents` as root, with a scratch HOME.
+set -eu
+
+feature=$(dirname "$0")
+
+cp -R "${feature}/rootfs/." /
+
+systemctl enable agent-ssh-config-init.service

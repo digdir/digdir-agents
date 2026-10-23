@@ -59,7 +59,7 @@ case $command in
             feature=$(basename "$directory")
             state=available
             [ -e "$installed/$feature" ] && state=installed
-            printf '%-10s %-10s %s\n' "$feature" "$state" "$(sed -n '2s/^# //p' "$directory/install")"
+            printf '%-14s %-10s %s\n' "$feature" "$state" "$(sed -n '2s/^# //p' "$directory/install")"
         done
         ;;
     env)

@@ -1,0 +1,2 @@
+# Docker API clients use the Podman socket. Unset, podman-docker's /etc/profile.d points login shells at a rootless one.
+DOCKER_HOST=unix:///run/podman/podman.sock
