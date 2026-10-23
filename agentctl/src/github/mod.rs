@@ -362,15 +362,19 @@ mod tests {
         let listed = github.github.tokens().await.expect("tokens");
 
         let metadata = github.database.provider_accounts(PROVIDER).await.expect("accounts");
-        for shown in [
+        for (index, shown) in [
             format!("{metadata:?}"),
             format!("{login:?}"),
             serde_json::to_string(&login).expect("serialized"),
             format!("{listed:?}"),
             serde_json::to_string(&listed).expect("serialized"),
-        ] {
-            assert!(!shown.contains("FAKE_canary"), "{shown}");
-            assert!(shown.contains("digdir-bot"), "{shown}");
+        ]
+        .iter()
+        .enumerate()
+        {
+            // The messages name only the form, never its text: a failure must not print what leaked.
+            assert!(!shown.contains("FAKE_canary"), "form {index} holds the token");
+            assert!(shown.contains("digdir-bot"), "form {index} lacks the account");
         }
     }
 
