@@ -12,7 +12,10 @@ use agent::{
 };
 use serde::Serialize;
 
-use crate::{CommandResult, print_json, tui::agent_state};
+use crate::{
+    CommandResult, print_json,
+    tui::{AgentPhase, agent_state},
+};
 
 /// What `agentctl status --json` prints, for agents that set up and check agentctl.
 ///
@@ -20,7 +23,7 @@ use crate::{CommandResult, print_json, tui::agent_state};
 /// absent is `null`, never left out. Later releases add keys without changing the ones here; a
 /// change to an existing key raises `version`.
 ///
-/// - `agentd`: `answering`, its build `version` and its `home` directory.
+/// - `agentd`, which answered: its build `version` and its `home` directory.
 /// - `harnesses`: every harness, with its `auth` mode (`mediated` or `none`) and whether its
 ///   login is stored, `login_stored`, which is `null` when the harness has no platform login.
 /// - `directory`: the current `path`, the `agent` it resolves to as `attach` would, or `null`,
@@ -44,7 +47,6 @@ pub(crate) struct Status {
 
 #[derive(Debug, Serialize)]
 struct Agentd {
-    answering: bool,
     version: Option<String>,
     home: PathBuf,
 }
@@ -66,7 +68,7 @@ struct Directory {
 #[derive(Debug, Serialize)]
 struct DirectoryAgent {
     name: String,
-    state: String,
+    state: AgentPhase,
     reason: Option<String>,
     sessions: usize,
     sessions_waiting: usize,
@@ -104,7 +106,6 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client, json: bool) ->
     };
     let manifest_here = path.join(agent::manifest::MANIFEST_FILE).is_file();
     let daemon = Agentd {
-        answering: true,
         version: daemon.build_version,
         home: home.path().to_path_buf(),
     };
@@ -142,12 +143,12 @@ impl Status {
             ..Agents::default()
         };
         for agent in agents {
-            match agent_state(agent).label {
-                "Terminating" => continue,
-                "Ready" => summary.running += 1,
-                "Stopped" | "Stopping" => summary.stopped += 1,
-                "Failed" | "Retrying" | "Unresponsive" => summary.failing += 1,
-                _ => summary.starting += 1,
+            match agent_state(agent).phase {
+                AgentPhase::Terminating => continue,
+                AgentPhase::Ready => summary.running += 1,
+                AgentPhase::Stopped | AgentPhase::Stopping => summary.stopped += 1,
+                AgentPhase::Failed | AgentPhase::Retrying | AgentPhase::Unresponsive => summary.failing += 1,
+                AgentPhase::Pending | AgentPhase::Starting | AgentPhase::Provisioning => summary.starting += 1,
             }
             summary.total += 1;
         }
@@ -166,7 +167,7 @@ impl Status {
                     // agentd records an invalid agent's reason as the error it was, prefix and all.
                     reason: Some(state.detail.trim_start_matches("invalid Agent: ").to_owned())
                         .filter(|reason| state.failure && !reason.is_empty()),
-                    state: state.label.to_lowercase(),
+                    state: state.phase,
                     name,
                 }
             }),
@@ -201,15 +202,15 @@ impl Status {
             .harnesses
             .iter()
             .map(|login| match login.login_stored {
-                Some(true) => format!("{} signed in", login.harness),
-                Some(false) => format!("{} not signed in", login.harness),
-                None => format!("{} set up by each agent", login.harness),
+                Some(true) => format!("{} signed in", login.harness.display_name()),
+                Some(false) => format!("{} not signed in", login.harness.display_name()),
+                None => format!("{} set up by each agent", login.harness.display_name()),
             })
             .collect::<Vec<_>>()
             .join(", ");
         let here = match (&self.directory.agent, &self.directory.problem) {
             (Some(agent), _) => {
-                let mut line = format!("{}: {}", agent.name, agent.state);
+                let mut line = format!("{}: {}", agent.name, agent.state.label().to_lowercase());
                 if let Some(reason) = &agent.reason {
                     let _ = write!(line, ": {reason}");
                 } else {
@@ -315,11 +316,13 @@ fn next_steps(
             let alternatives = missing
                 .iter()
                 .filter(|other| anywhere && **other != harness)
-                .filter_map(|other| login_command(*other).map(|command| format!(", or {other} with `{command}`")))
+                .filter_map(|other| {
+                    login_command(*other).map(|command| format!(", or {} with `{command}`", other.display_name()))
+                })
                 .collect::<String>();
             next.push(step(
                 command.to_owned(),
-                format!("Let agents use {harness}{alternatives}"),
+                format!("Let agents use {}{alternatives}", harness.display_name()),
             ));
         }
     }
@@ -428,7 +431,6 @@ mod tests {
 
     fn status(stored: &[Harness], resolution: &Resolution, agents: &[Agent], sessions: &[Session]) -> Status {
         let daemon = Agentd {
-            answering: true,
             version: Some("1.2.3".into()),
             home: PathBuf::from("/home/person/.agent"),
         };
@@ -461,7 +463,7 @@ mod tests {
             value,
             serde_json::json!({
                 "version": 1,
-                "agentd": {"answering": true, "version": "1.2.3", "home": "/home/person/.agent"},
+                "agentd": {"version": "1.2.3", "home": "/home/person/.agent"},
                 "harnesses": [
                     {"harness": "claudeCode", "auth": "mediated", "login_stored": true},
                     {"harness": "codex", "auth": "mediated", "login_stored": false},
@@ -490,6 +492,37 @@ mod tests {
     }
 
     #[test]
+    fn every_agent_phase_has_a_stable_json_name() {
+        // Exhaustive, so a new phase cannot reach the JSON without a name chosen here.
+        let name = |phase| match phase {
+            AgentPhase::Ready => "ready",
+            AgentPhase::Pending => "pending",
+            AgentPhase::Starting => "starting",
+            AgentPhase::Provisioning => "provisioning",
+            AgentPhase::Retrying => "retrying",
+            AgentPhase::Failed => "failed",
+            AgentPhase::Unresponsive => "unresponsive",
+            AgentPhase::Stopping => "stopping",
+            AgentPhase::Stopped => "stopped",
+            AgentPhase::Terminating => "terminating",
+        };
+        for phase in [
+            AgentPhase::Ready,
+            AgentPhase::Pending,
+            AgentPhase::Starting,
+            AgentPhase::Provisioning,
+            AgentPhase::Retrying,
+            AgentPhase::Failed,
+            AgentPhase::Unresponsive,
+            AgentPhase::Stopping,
+            AgentPhase::Stopped,
+            AgentPhase::Terminating,
+        ] {
+            assert_eq!(serde_json::to_value(phase).expect("json"), name(phase));
+        }
+    }
+
+    #[test]
     fn next_steps_lead_with_a_missing_login_then_this_directory() {
         assert_eq!(
             commands(&status(&[], &Ok(None), &[], &[])),
@@ -497,7 +530,7 @@ mod tests {
         );
         assert_eq!(
             status(&[], &Ok(None), &[], &[]).next[0].purpose,
-            "Let agents use claudeCode, or codex with `agentctl codex login`"
+            "Let agents use Claude Code, or Codex with `agentctl codex login`"
         );
         assert_eq!(
             commands(&status(&[Harness::Codex], &Ok(None), &[], &[])),
@@ -574,7 +607,7 @@ mod tests {
             status(&[Harness::ClaudeCode], &Ok(Some(worker)), &agents, &sessions).text(),
             "\
 agentd          answering, version 1.2.3, home /home/person/.agent
-Logins          claudeCode signed in, codex not signed in, pi set up by each agent
+Logins          Claude Code signed in, Codex not signed in, Pi set up by each agent
 This directory  worker: ready, 2 sessions, 1 waiting for you
 All agents      3 agents: 1 running, 1 failing, 1 stopped; 1 session waiting for you
 
@@ -584,13 +617,13 @@ Next
         );
         let broken = failed("broken", "no such image");
         let text = status(&[Harness::ClaudeCode], &Ok(Some(broken.clone())), &[broken], &[]).text();
-        let unsigned = failed("unsigned", "invalid Agent: claudeCode is not signed in");
+        let unsigned = failed("unsigned", "invalid Agent: Claude Code is not signed in");
         let without_login = status(&[], &Ok(Some(unsigned.clone())), &[unsigned], &[]);
         assert_eq!(commands(&without_login), ["agentctl claude login"]);
         assert!(
             without_login
                 .text()
-                .contains("This directory  unsigned: failed: claudeCode is not signed in\n"),
+                .contains("This directory  unsigned: failed: Claude Code is not signed in\n"),
             "{}",
             without_login.text()
         );

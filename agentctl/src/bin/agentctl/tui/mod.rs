@@ -4,7 +4,7 @@ mod provisioning;
 mod terminal;
 mod view;
 
-pub(crate) use app::agent_state;
+pub(crate) use app::{AgentPhase, agent_state};
 
 use std::{
     collections::HashMap,

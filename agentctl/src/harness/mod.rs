@@ -42,6 +42,16 @@ impl Harness {
         }
     }
 
+    /// Returns the name people know this harness by, such as `Claude Code`.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
+            Self::Pi => "Pi",
+        }
+    }
+
     /// Returns the manifest and CLI spelling of this harness family.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
