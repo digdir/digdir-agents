@@ -16,12 +16,8 @@ pub(super) async fn read_instructions(
 ) -> Result<Vec<u8>, Error> {
     let mut combined = Vec::new();
     append_instructions(&mut combined, about.as_bytes());
-    if let Some(host) = host {
-        match tokio::fs::read(host).await {
-            Ok(contents) => append_instructions(&mut combined, &contents),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
+    if let Some(contents) = read_host_instructions(host).await? {
+        append_instructions(&mut combined, &contents);
     }
     for (index, spec) in record.agent.spec.instructions.iter().enumerate() {
         let source = if spec.source.is_absolute() {
@@ -38,6 +34,26 @@ pub(super) async fn read_instructions(
         append_instructions(&mut combined, &tokio::fs::read(source).await?);
     }
     Ok(combined)
+}
+
+/// The host-wide instructions file's contents; a missing file, or a directory or anything else
+/// that is not a file at that path, adds nothing. Setup fails naming the file it cannot read.
+async fn read_host_instructions(host: Option<&Path>) -> Result<Option<Vec<u8>>, Error> {
+    let Some(host) = host else {
+        return Ok(None);
+    };
+    let unreadable = |error: std::io::Error| {
+        Error::SandboxSetup(format!(
+            "cannot read host-wide instructions {}: {error}",
+            host.display()
+        ))
+    };
+    match tokio::fs::metadata(host).await {
+        Ok(metadata) if metadata.is_file() => tokio::fs::read(host).await.map(Some).map_err(unreadable),
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(unreadable(error)),
+    }
 }
 
 /// Appends one instructions document, separated from what came before by a blank line; an empty
@@ -157,4 +173,45 @@ pub(super) fn resolve_source(
         return Err(Error::Invalid(format!("{field} must identify a directory")));
     }
     Ok(source)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn host_instructions_that_are_missing_or_not_a_file_add_nothing() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let host = directory.path().join("instructions.md");
+        assert!(read_host_instructions(None).await.expect("no file").is_none());
+        assert!(read_host_instructions(Some(&host)).await.expect("missing").is_none());
+        std::fs::create_dir(&host).expect("directory at the path");
+        assert!(read_host_instructions(Some(&host)).await.expect("directory").is_none());
+        std::fs::remove_dir(&host).expect("remove directory");
+        std::fs::write(&host, "Host rules\n").expect("host instructions");
+        assert_eq!(
+            read_host_instructions(Some(&host)).await.expect("file"),
+            Some(b"Host rules\n".to_vec())
+        );
+    }
+
+    /// A path through a file fails to read for any user, root included, unlike a permission.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn host_instructions_that_cannot_be_read_fail_naming_the_file() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        std::fs::write(directory.path().join("home"), "").expect("a file where a directory belongs");
+        let host = directory.path().join("home").join("instructions.md");
+        let error = read_host_instructions(Some(&host)).await.expect_err("unreadable");
+        let text = error.to_string();
+        assert!(
+            text.starts_with(&format!(
+                "Agent Sandbox setup failed: cannot read host-wide instructions {}: ",
+                host.display()
+            )),
+            "{text}"
+        );
+    }
 }
