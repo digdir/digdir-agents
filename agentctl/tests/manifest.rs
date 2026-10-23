@@ -661,3 +661,91 @@ fn rejects_unknown_duplicate_and_configured_access_capabilities() {
     )]);
     assert!(matches!(manifest::decode(&nested), Err(agent::Error::Yaml(_))));
 }
+
+#[test]
+fn a_github_account_names_its_owner_and_round_trips() {
+    let agent = manifest::decode(&manifest_with_access(
+        "  accounts:\n    - type: github\n      owner: Digdir-Team\n",
+    ))
+    .expect("a GitHub account");
+    assert_eq!(agent.spec.github_owner(), Some("Digdir-Team"));
+    let encoded = serde_yaml_ng::to_string(&agent).expect("encode");
+    assert!(
+        encoded.contains("accounts:\n  - type: github\n    owner: Digdir-Team\n"),
+        "{encoded}"
+    );
+    assert_eq!(
+        manifest::decode(&manifest_with(&[]))
+            .expect("no accounts")
+            .spec
+            .github_owner(),
+        None
+    );
+
+    for owner in ["not/an/owner", "-digdir", "\"\""] {
+        assert!(
+            matches!(
+                manifest::decode(&manifest_with_access(&format!("  accounts:\n    - type: github\n      owner: {owner}\n"))),
+                Err(agent::Error::Invalid(message)) if message.contains("spec.accounts[0].owner")
+            ),
+            "{owner}"
+        );
+    }
+    assert!(matches!(
+        manifest::decode(&manifest_with_access(
+            "  accounts:\n    - type: github\n      owner: digdir\n    - type: github\n      owner: altinn\n"
+        )),
+        Err(agent::Error::Invalid(message)) if message.contains("spec.accounts[1]")
+    ));
+}
+
+#[test]
+fn a_github_account_takes_only_an_owner() {
+    for account in [
+        "    - type: github\n",
+        "    - type: github\n      owner: digdir\n      allowedHosts: [example.com]\n",
+        "    - type: github\n      owner: digdir\n      user: bot\n",
+        "    - type: gitlab\n      owner: digdir\n",
+    ] {
+        assert!(
+            matches!(
+                manifest::decode(&manifest_with_access(&format!("  accounts:\n{account}"))),
+                Err(agent::Error::Yaml(_))
+            ),
+            "{account}"
+        );
+    }
+}
+
+#[test]
+fn a_github_account_owns_github_token() {
+    const ACCOUNT: &str = "  accounts:\n    - type: github\n      owner: digdir\n";
+    let own_secret = "  secrets:\n    - environment: GITHUB_TOKEN\n      allowedHosts: [github.com]\n";
+    manifest::decode(&manifest_with_access(own_secret)).expect("without an account, a manifest may bind its own");
+    for secrets in [
+        own_secret,
+        // The account's placeholder, contained in it, and containing it.
+        "  secrets:\n    - environment: GH_TOKEN\n      placeholder: github_pat_AGENT_MEDIATED_GITHUB_TOKEN\n      allowedHosts: [github.com]\n",
+        "  secrets:\n    - environment: GH_TOKEN\n      placeholder: github_pat_AGENT_MEDIATED\n      allowedHosts: [github.com]\n",
+        "  secrets:\n    - environment: GH_TOKEN\n      placeholder: x-github_pat_AGENT_MEDIATED_GITHUB_TOKEN-x\n      allowedHosts: [github.com]\n",
+    ] {
+        assert!(
+            matches!(
+                manifest::decode(&manifest_with_access(&format!("{ACCOUNT}{secrets}"))),
+                Err(agent::Error::Invalid(message)) if message.contains("spec.secrets[0]")
+            ),
+            "{secrets}"
+        );
+    }
+    let other = "  secrets:\n    - environment: GH_TOKEN\n      placeholder: gh-placeholder\n      allowedHosts: [github.com]\n";
+    manifest::decode(&manifest_with_access(&format!("{ACCOUNT}{other}"))).expect("an unrelated secret");
+
+    assert!(matches!(
+        manifest::decode(&manifest_with_access(&format!("{ACCOUNT}  environment:\n    - name: GITHUB_TOKEN\n"))),
+        Err(agent::Error::Invalid(message)) if message.contains("spec.environment[0]")
+    ));
+    manifest::decode(&manifest_with_access(&format!(
+        "{ACCOUNT}  environment:\n    - name: GIT_USER_NAME\n    - name: GIT_USER_EMAIL\n"
+    )))
+    .expect("the manifest may set its own Git identity");
+}

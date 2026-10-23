@@ -44,7 +44,17 @@ ask.",
 - **Network and credentials.** Your traffic goes through the person's machine. Credentials in your environment are \
 placeholders the host swaps for the real values on the way out, so authentication works; don't report them as broken \
 or replace them.
-- **Settings live in environment variables.** Check `printenv` before asking for a value.
+",
+    );
+    if let Some(owner) = spec.github_owner() {
+        let _ = writeln!(
+            text,
+            "- **GitHub.** `gh` and `git` over HTTPS already work with GitHub for `{owner}`'s repositories; SSH remotes \
+on github.com go over HTTPS. Don't run `gh auth login` or replace `GITHUB_TOKEN`."
+        );
+    }
+    text.push_str(
+        "- **Settings live in environment variables.** Check `printenv` before asking for a value.
 - **Tools and repositories.** Your instructions may list tools and repositories you should have. At the start of a \
 session, check that they are there. Install or clone what is missing, at the versions listed, and tell the person what \
 you installed. What you install outside the image is gone when the agent is recreated, so suggest adding it to the \
@@ -64,6 +74,10 @@ mod tests {
     use super::*;
 
     fn spec(mounts: &str) -> crate::Spec {
+        spec_with(mounts, "")
+    }
+
+    fn spec_with(mounts: &str, extra: &str) -> crate::Spec {
         let manifest = format!(
             "apiVersion: agents.platform/v1alpha1
 kind: Agent
@@ -84,7 +98,7 @@ spec:
         mode: layered
     mounts: {mounts}
   harnesses: [{{type: pi}}]
-"
+{extra}"
         );
         crate::manifest::decode(manifest.as_bytes()).expect("manifest").spec
     }
@@ -94,6 +108,7 @@ spec:
         let text = instructions(&spec("[{type: tmpfs, target: /scratch, capacity: 1Gi}]"));
         assert!(!text.contains("Folders"), "{text}");
         assert!(!text.contains("/scratch"), "{text}");
+        assert!(!text.contains("GitHub"), "{text}");
         assert!(text.starts_with("# About this sandbox\n\n"), "{text}");
         for part in [
             "Network and credentials",
@@ -123,6 +138,18 @@ spec:
         assert!(
             text.contains("don't switch branches, reset or push there unless they ask."),
             "the clone rules are not for the person's own checkout: {text}"
+        );
+    }
+
+    #[test]
+    fn an_agent_with_a_github_account_hears_how_to_use_it() {
+        let text = instructions(&spec_with("[]", "  accounts: [{type: github, owner: Digdir}]\n"));
+        assert!(
+            text.contains(
+                "\n- **GitHub.** `gh` and `git` over HTTPS already work with GitHub for `Digdir`'s repositories; SSH \
+remotes on github.com go over HTTPS. Don't run `gh auth login` or replace `GITHUB_TOKEN`.\n- **Settings live"
+            ),
+            "{text}"
         );
     }
 }
