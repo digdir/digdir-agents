@@ -159,7 +159,7 @@ RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then export NODE_EXTRA_CA_CERTS=/run
     && npm install --prefix /opt/playwright-1.63 playwright@1.63.0 \
     && PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright /opt/playwright-1.63/node_modules/.bin/playwright \
         install --with-deps chromium \
-    && chmod -R a+rX /opt/ms-playwright \
+    && find /opt/ms-playwright ! -perm -a+r -exec chmod a+rX {} + \
     && rm -rf /home/agent/.npm /var/lib/apt/lists/*
 ```
 
@@ -207,12 +207,14 @@ Pi needs Node.js 22.19.0 or later, and Codex needs Node.js 16 or later; Claude C
 
 The harness versions here are the platform's pins: update them as [HARNESSES.md](../../agentctl/HARNESSES.md)
 describes, in the same pull request as any adapter change they need. To try a change locally, build the images under
-their published names; a build whose `FROM` names the tag without a digest, including a nested Agent's, then uses
-them:
+`localhost/` tags and point your image's `FROM` at one for the test:
 
 ```sh
-podman build --target headless --tag ghcr.io/digdir/agentctl-base:ubuntu-26.04 images/agentctl-base
-podman build --target desktop --tag ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop images/agentctl-base
+podman build --target headless --tag localhost/agentctl-base:ubuntu-26.04 images/agentctl-base
+podman build --target desktop --tag localhost/agentctl-base:ubuntu-26.04-desktop images/agentctl-base
 ```
+
+Do not tag them with the published names: agentd builds an Agent's image for a platform, and Podman then pulls the
+published image over a local one with the same name.
 
 CI builds both from [docker-bake.hcl](../../docker-bake.hcl).

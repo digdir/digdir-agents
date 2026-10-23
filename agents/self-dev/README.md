@@ -16,8 +16,8 @@ the other. Pass `--name` to run both at once.
 The images are built from this directory's `Dockerfile` on the [agentctl base images](../../images/agentctl-base/README.md),
 and published to `ghcr.io/digdir/digdir-agents` whenever they or the base images change on `main`. `full` is `minimal`
 plus the base images' `desktop` feature. Use a `nested` variant to try changes to the image itself. It builds on the
-base image Podman already has under the published name, so `podman pull ghcr.io/digdir/agentctl-base:ubuntu-26.04`
-first, or build the base locally to try a change to it.
+published base image; to try a change to the base, build it under a `localhost/` tag and point the `Dockerfile`'s `FROM`
+at it while you test.
 
 ## Getting started
 

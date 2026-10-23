@@ -16,9 +16,9 @@ the self-dev Agent builds on, [minimal](examples/minimal/Dockerfile) (Claude Cod
 
 Install the current platform with `make user-install` from the repository root; it replaces and restarts `agentd`, and
 refuses while any Session reports `Working` (#149, #150), so archive or delete earlier test Sessions first. Test the
-self-dev image built from the branch: build the base images from the branch under their published names, as
-[their README](../images/agentctl-base/README.md#changing-them) describes, since a nested build otherwise uses whichever
-base image Podman already has. Then from `agents/self-dev/minimal` in the branch's checkout, `agentctl apply --variant nested --env-file <file> --wait` builds it on them with all three
+self-dev image built from the branch: build the base images from the branch under `localhost/` tags, as
+[their README](../images/agentctl-base/README.md#changing-them) describes, and point `agents/self-dev/Dockerfile`'s
+`FROM` at them, since a nested build otherwise pulls the published base. Then from `agents/self-dev/minimal` in the branch's checkout, `agentctl apply --variant nested --env-file <file> --wait` builds it on them with all three
 harnesses and fits inside another Agent. Keep the env file outside the checkout. Use fresh Session names and confirm `claude --version`,
 `codex --version` and `pi --version` in the Sandbox; testing an existing Sandbox does not prove the rebuilt image works.
 
