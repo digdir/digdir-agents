@@ -26,6 +26,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Fixed
 
+- Claude Code Sessions in Agents no longer pause for Bash approval, including deletion safety prompts. Other tool permission prompts and user questions remain interactive, and deny rules remain enforced.
 - Claude Sessions no longer hang on the startup bypass-permissions warning when starting or resuming in Agents with custom user settings in `spec.home`. ([#230](https://github.com/digdir/digdir-agents/pull/230))
 - `agentctl apply` no longer fails with `Socket not found: /var/run/docker.sock` for Dockerfile-backed Agents using Docker Desktop or Colima's selected local context. Background retries recover after starting Docker or switching local contexts without restarting `agentd`. ([#220](https://github.com/digdir/digdir-agents/pull/220))
 - On macOS and Linux, named Sandbox volumes can mount when the Agent data directory is reached through a symbolic link, including custom `AGENT_HOME` locations. ([#221](https://github.com/digdir/digdir-agents/pull/221))

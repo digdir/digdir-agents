@@ -188,7 +188,9 @@ at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.c
 Repository-local instruction files continue to be discovered by the harness itself.
 
 Harness Adapters own authentication, version verification, managed configuration, hooks, native conversation IDs and
-launch arguments. The current adapters support Claude Code, Codex CLI and Pi. Harness-owned mutable state is seeded by
+launch arguments. Claude Code Bash permission requests, including deletion safety prompts, are automatically approved
+inside the Agent's Sandbox. Other tool permission prompts and user questions remain interactive.
+The current adapters support Claude Code, Codex CLI and Pi. Harness-owned mutable state is seeded by
 the image or the user and is not used as a trusted bootstrap marker.
 
 ### Pi
