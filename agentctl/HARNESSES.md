@@ -74,8 +74,9 @@ with these differences:
   next prompt appends to it.
 - A model error shows in `turns` as `Error: …`; an attempt Pi retried successfully does not. Known gaps: a prompt Pi
   rejects before starting a run, for a missing API key or model, and a failure in run setup after `before_agent_start`
-  report no completion, so STATE stays `Working` and a wait times out. A `--model` whose provider Pi does not know makes
-  Pi exit at startup.
+  report no completion, so a wait times out. A missing-key rejection can leave STATE at `WaitingForInput`; a setup
+  failure after `before_agent_start` leaves it at `Working`. A `--model` whose provider Pi does not know makes Pi exit
+  at startup.
 - Resume opens the reported transcript only when it is non-empty; otherwise the Session starts fresh.
 - An initial prompt starting with `@` gets a leading space, since Pi reads `@name` as a file.
 - `spec.instructions` reach the model from `~/.pi/agent/AGENTS.md`, and the Agent's other `~/.pi/agent/` files are

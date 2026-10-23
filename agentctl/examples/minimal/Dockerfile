@@ -15,14 +15,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 ARG TARGETARCH
-ARG GH_VERSION=2.98.0
-ARG GH_STACK_VERSION=0.1.1
+ARG GH_VERSION=2.103.0
+ARG GH_STACK_VERSION=0.2.1
 
 RUN case "${TARGETARCH}" in \
-        amd64) GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de; \
-            GH_STACK_SHA256=9ed103934fab0f90d3341fdfc4a342785396d39f5621fc7313a62602ce2b5462 ;; \
-        arm64) GH_SHA256=cf689084f3a3618f7eae4a2420d335d74626d65f5e594b9828d125d69f800d86; \
-            GH_STACK_SHA256=2da13f8c46f2770237c744b341ab6be9f07508585a6762634c4a88aa355460bc ;; \
+        amd64) GH_SHA256=fdd768eb70f6409f80fcfa9f3a1c0adf0fc98d827ab3ce0bed2ac22762c5d786; \
+            GH_STACK_SHA256=ffe9d48b6342faffc3b0cb420202ff1df32e24faf32693debd7423274bbdf859 ;; \
+        arm64) GH_SHA256=7f322df34e624d14f5ec0c4acb121fd6dfa14392fdbbd1066aa8e0a05ac3721e; \
+            GH_STACK_SHA256=25ec261a391261a1462d38f85c230b0e0b14ae3547926130996541f62f25f78b ;; \
         *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
     && GH_ARCHIVE="gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
@@ -37,7 +37,7 @@ RUN case "${TARGETARCH}" in \
     && rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}" \
     && gh --version
 
-ARG CLAUDE_CODE_VERSION=2.1.302
+ARG CLAUDE_CODE_VERSION=2.1.309
 
 # Agent Sandboxes mount their CA bundle here; this step's Node downloads trust it.
 RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \

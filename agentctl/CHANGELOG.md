@@ -22,7 +22,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 - Breaking: images that run `agent-feature install desktop` need `ENV XDG_CURRENT_DESKTOP=X-Openbox:XFCE`, which `agent-feature env desktop` prints; `agent-image-check` fails until it is added. Images built on the desktop image inherit it. ([features](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#features), [#198](https://github.com/digdir/digdir-agents/pull/198))
 - VNC clients can no longer resize an Agent's desktop to fit their window; set them to scale instead. ([#198](https://github.com/digdir/digdir-agents/pull/198))
-- The base images ship Node.js 24 LTS (24.22.0) instead of 22. ([#198](https://github.com/digdir/digdir-agents/pull/198))
+- Newly created Agents using the shared images ship Node.js 24 LTS (24.22.1) and updated tools, including GitHub CLI 2.103.0, Claude Code 2.1.309 and Codex CLI 0.164.0. ([#198](https://github.com/digdir/digdir-agents/pull/198), [#229](https://github.com/digdir/digdir-agents/pull/229))
 
 ### Fixed
 
