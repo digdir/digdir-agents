@@ -34,6 +34,9 @@ step that needs them; others, such as the home directory's ownership, only show 
   `podman` the agent user runs use that socket. An image with Podman therefore needs systemd running and the
   `podman.socket` unit, and leaves the socket's configuration to `agentd`. The base images' `containers` feature
   installs Podman this way.
+- **`/dev/kvm`.** The Sandbox has it when the Agent has [nested Sandboxes](README.md#images-home-and-harnesses) and
+  the Provider provides them through KVM, as Microsandbox does. `agentd` makes it `root:agent` with mode `0660` on
+  every pass, as the device is created anew at every boot, so the image does not grant it.
 
 ## Access
 
