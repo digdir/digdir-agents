@@ -100,8 +100,7 @@ if [ -e "$descriptor" ]; then
     done
 fi
 
-# The desktop's display as its units read it: /etc/agent-desktop.conf, then /etc/agent-desktop.conf.d/*.conf in name
-# order, where the last assignment wins. Sessions find that display only through the image's ENV DISPLAY.
+# ENV DISPLAY must match the desktop's display after overrides.
 desktop_display=
 if [ -f /etc/agent-desktop.conf ]; then
     desktop_display="$(cat /etc/agent-desktop.conf /etc/agent-desktop.conf.d/*.conf 2>/dev/null \
@@ -122,7 +121,7 @@ for marker in /var/lib/agentctl-base/features/*; do
         case $line in '' | '#'*) continue ;; esac
         name=${line%%=*}
         expected=${line#*=}
-        # An image may move the desktop to another display; the check above holds DISPLAY to it.
+        # Checked above, with overrides.
         [ "$feature/$name" = desktop/DISPLAY ] && [ -n "$desktop_display" ] && continue
         case ":$(printenv "$name" || true):" in
             *":$expected:"*) ;;

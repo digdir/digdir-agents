@@ -15,9 +15,7 @@ for _ in $(seq 1 100); do
 done
 xdpyinfo >/dev/null 2>&1 || { echo "desktop session: $DISPLAY never came up" >&2; exit 1; }
 
-# The layout is what a person typing over VNC gets. `desktop type` binds what the layout lacks
-# itself, so it does not depend on this. A layout setxkbmap rejects leaves the keyboard as it was,
-# US on a fresh display, rather than a desktop that never starts.
+# An invalid layout keeps the current one instead of failing the session.
 # shellcheck disable=SC2086 # AGENT_DESKTOP_KEYBOARD holds setxkbmap arguments, such as `us -variant intl`.
 setxkbmap $AGENT_DESKTOP_KEYBOARD \
     || echo "desktop session: setxkbmap $AGENT_DESKTOP_KEYBOARD failed; the keyboard layout is unchanged" >&2

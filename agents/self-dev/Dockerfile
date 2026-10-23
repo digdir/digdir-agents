@@ -148,7 +148,7 @@ USER root
 
 RUN agent-feature install desktop
 
-# The desktop keeps the Norwegian keyboard its people use, through the base image's override directory.
+# Keep the Norwegian keyboard layout.
 COPY common/agent-desktop.conf /etc/agent-desktop.conf.d/self-dev.conf
 
 # What `agent-feature env desktop` prints.
