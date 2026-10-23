@@ -913,7 +913,7 @@ const fn map_state(status: SandboxStatus) -> SandboxState {
 /// How a runtime's network is wired, decided once from the Sandbox's immutable
 /// Network attachment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RuntimeNetwork {
+pub(crate) enum RuntimeNetwork {
     /// No Network Backend is attached; the runtime keeps Microsandbox's own network.
     Unattached,
     /// The attached Network Backend authorizes traffic through the control
@@ -926,7 +926,7 @@ impl RuntimeNetwork {
     /// offers its own control protocol, so any other recorded endpoint, such as
     /// a control protocol from a different version, would otherwise start
     /// without host network control.
-    fn for_attachment(attachment: Option<&network::NetworkAttachment>) -> Result<Self, Error> {
+    pub(crate) fn for_attachment(attachment: Option<&network::NetworkAttachment>) -> Result<Self, Error> {
         match attachment.map(|attachment| &attachment.endpoint) {
             None => Ok(Self::Unattached),
             Some(network::NetworkEndpointSelection::Control(protocol))
@@ -941,24 +941,20 @@ impl RuntimeNetwork {
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
-mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+pub(crate) mod test_records {
+    use std::collections::BTreeMap;
 
-    use microsandbox::sandbox::VolumeMount;
     use sandbox::{
-        ByteQuantity, CpuQuantity, Error, Hostname, Platform, RootFilesystem, SandboxId, SandboxName, SandboxResources,
-        backend::{CreateSandboxRequest, SandboxBackend as _},
+        ByteQuantity, CpuQuantity, Hostname, Platform, RootFilesystem, SandboxId, SandboxName, SandboxResources,
+        backend::CreateSandboxRequest,
         image,
         init::InitSystem,
-        network::{
-            NetworkAttachment, NetworkBackendId, NetworkControlProtocolId, NetworkEndpointSelection, PacketMedium,
-        },
+        network::{NetworkAttachment, NetworkBackendId, NetworkEndpointSelection},
     };
 
-    use super::{MicrosandboxProvider, RuntimeMount, RuntimeNetwork};
     use crate::state::SandboxRecord;
 
-    fn record_with_network(id: &str, endpoint: NetworkEndpointSelection) -> SandboxRecord {
+    pub(crate) fn record_with_network(id: &str, endpoint: NetworkEndpointSelection) -> SandboxRecord {
         SandboxRecord::new(CreateSandboxRequest {
             id: id.parse::<SandboxId>().expect("test Sandbox ID should be a UUID"),
             name: SandboxName::new("worker").expect("test Sandbox name should be valid"),
@@ -988,6 +984,21 @@ mod tests {
             }),
         })
     }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use std::path::PathBuf;
+
+    use microsandbox::sandbox::VolumeMount;
+    use sandbox::{
+        Error, SandboxName,
+        backend::SandboxBackend as _,
+        network::{NetworkControlProtocolId, NetworkEndpointSelection, PacketMedium},
+    };
+
+    use super::{MicrosandboxProvider, RuntimeMount, RuntimeNetwork, test_records::record_with_network};
 
     #[test]
     fn only_an_absent_attachment_or_this_builds_control_protocol_is_accepted() {

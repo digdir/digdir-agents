@@ -115,6 +115,7 @@ async fn controlled_network_authorizes_dns_tcp_and_http_and_fails_closed() {
             assert_http_request(&requests[requests_before_restart..], "example.net", "https");
         }
 
+        assert_node_trusts_interception(&sandbox).await;
         assert_mediated_secret_enforcement(&sandbox, policy.as_ref()).await;
 
         let requests_before_denial = policy.requests.borrow().len();
@@ -205,6 +206,21 @@ async fn resource_restart_after_reopening_the_provider_keeps_network_control() {
     if let Err(payload) = test_result {
         std::panic::resume_unwind(payload);
     }
+}
+
+// Microsandbox's own copy on the runtime share has the host user's ownership and mode, which a
+// guest user other than root may not be able to read.
+async fn assert_node_trusts_interception(sandbox: &SandboxHandle) {
+    let node_trust = sandbox
+        .run_execution(shell(
+            r#"test "$NODE_EXTRA_CA_CERTS" = /usr/local/share/ca-certificates/microsandbox-ca.pem && su -p -s /bin/sh nobody -c 'cat "$NODE_EXTRA_CA_CERTS"' | cmp - /.msb/tls/ca.pem"#,
+        ))
+        .await
+        .expect("Node.js trust check should execute");
+    assert!(
+        node_trust.status.success(),
+        "NODE_EXTRA_CA_CERTS must name the interception CA readable by any guest user: {node_trust:?}"
+    );
 }
 
 async fn assert_mediated_secret_enforcement(sandbox: &SandboxHandle, policy: &RecordingPolicy) {
