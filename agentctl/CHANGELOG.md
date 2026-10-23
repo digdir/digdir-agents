@@ -26,7 +26,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Fixed
 
-- Claude Sessions no longer hang on the startup bypass-permissions warning when starting or resuming in Agents with custom user settings in `spec.home`.
+- Claude Sessions no longer hang on the startup bypass-permissions warning when starting or resuming in Agents with custom user settings in `spec.home`. ([#230](https://github.com/digdir/digdir-agents/pull/230))
 - `agentctl apply` no longer fails with `Socket not found: /var/run/docker.sock` for Dockerfile-backed Agents using Docker Desktop or Colima's selected local context. Background retries recover after starting Docker or switching local contexts without restarting `agentd`. ([#220](https://github.com/digdir/digdir-agents/pull/220))
 - On macOS and Linux, named Sandbox volumes can mount when the Agent data directory is reached through a symbolic link, including custom `AGENT_HOME` locations. ([#221](https://github.com/digdir/digdir-agents/pull/221))
 - On the base images, a build that runs out of memory in a Session, over SSH or in a desktop terminal no longer takes the Agent down: it keeps responding, and other SSH connections and desktop windows stay open. ([#198](https://github.com/digdir/digdir-agents/pull/198))
