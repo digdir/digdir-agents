@@ -13,9 +13,10 @@ use crate::{
 
 use super::protocol::{
     CODE_IMMUTABLE, CODE_INTERNAL, CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND,
-    CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams,
-    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_CONVERGE,
-    METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS,
+    CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, GithubLoginParams, GithubLogoutResult,
+    GithubOwnerParams, JSON_RPC_VERSION, LoginParams, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_APPLY,
+    METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET,
+    METHOD_GITHUB_ACCOUNTS, METHOD_GITHUB_LOGIN, METHOD_GITHUB_LOGOUT, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS,
     METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
     METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
     METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
@@ -126,6 +127,22 @@ pub trait AuthenticationApi {
 
     /// Reports, for every harness, whether its host login is stored.
     fn logins(&self) -> LocalFuture<'_, Result<Vec<harness::HarnessLogin>, Error>>;
+
+    /// Checks a GitHub token with GitHub and keeps it for Agents of `owner`.
+    fn github_login<'a>(
+        &'a self,
+        token: &'a str,
+        owner: &'a str,
+    ) -> LocalFuture<'a, Result<crate::github::GithubLogin, Error>>;
+
+    /// Forgets the GitHub token kept for `owner`, returning it, or `None` when there was none.
+    fn github_logout<'a>(
+        &'a self,
+        owner: &'a str,
+    ) -> LocalFuture<'a, Result<Option<crate::github::GithubToken>, Error>>;
+
+    /// The stored GitHub tokens, by owner, without the tokens.
+    fn github_accounts(&self) -> LocalFuture<'_, Result<Vec<crate::github::GithubToken>, Error>>;
 }
 
 impl AuthenticationApi for harness::AuthenticationManager {
@@ -143,6 +160,25 @@ impl AuthenticationApi for harness::AuthenticationManager {
 
     fn logins(&self) -> LocalFuture<'_, Result<Vec<harness::HarnessLogin>, Error>> {
         Box::pin(self.logins())
+    }
+
+    fn github_login<'a>(
+        &'a self,
+        token: &'a str,
+        owner: &'a str,
+    ) -> LocalFuture<'a, Result<crate::github::GithubLogin, Error>> {
+        Box::pin(self.github_login(zeroize::Zeroizing::new(token.to_owned()), owner))
+    }
+
+    fn github_logout<'a>(
+        &'a self,
+        owner: &'a str,
+    ) -> LocalFuture<'a, Result<Option<crate::github::GithubToken>, Error>> {
+        Box::pin(self.github_logout(owner))
+    }
+
+    fn github_accounts(&self) -> LocalFuture<'_, Result<Vec<crate::github::GithubToken>, Error>> {
+        Box::pin(self.github_accounts())
     }
 }
 
@@ -267,11 +303,19 @@ pub trait ConvergenceApi {
     /// Waits until an Agent has its desired run state; see
     /// [`control_plane::Convergence::converge`].
     fn converge<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>>;
+
+    /// Asks for a reconciliation pass of an Agent without waiting for it; see
+    /// [`control_plane::Convergence::wake`].
+    fn wake<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>>;
 }
 
 impl ConvergenceApi for control_plane::Convergence {
     fn converge<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async move { self.converge(name, WaitPolicy::UntilConverged).await.map(drop) })
+    }
+
+    fn wake<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(self.wake(name))
     }
 }
 
@@ -564,6 +608,9 @@ impl Server {
             METHOD_VNC_ACCESS => self.handle_vnc_access(request.id, request.params).await,
             METHOD_AUTH_LOGIN => self.handle_auth_login(request.id, request.params).await,
             METHOD_AUTH_LOGINS => result_response(request.id, self.authentication.logins().await),
+            METHOD_GITHUB_LOGIN => Box::pin(self.handle_github_login(request.id, request.params)).await,
+            METHOD_GITHUB_LOGOUT => Box::pin(self.handle_github_logout(request.id, request.params)).await,
+            METHOD_GITHUB_ACCOUNTS => result_response(request.id, self.authentication.github_accounts().await),
             METHOD_SESSION_ENSURE => self.handle_session_ensure(request.id, request.params).await,
             METHOD_SESSION_GET => self.handle_session_get(request.id, request.params).await,
             METHOD_SESSION_LIST => self.handle_session_list(request.id, request.params).await,
@@ -785,6 +832,47 @@ impl Server {
         )
     }
 
+    async fn handle_github_login(&self, id: u64, value: Value) -> Response {
+        let Ok(params) = serde_json::from_value::<GithubLoginParams>(value) else {
+            return error_response(id, CODE_INVALID_PARAMS, "token and owner are required");
+        };
+        let login = self.authentication.github_login(&params.token, &params.owner).await;
+        if let Ok(login) = &login {
+            self.wake_github_owner(&login.token.owner).await;
+        }
+        result_response(id, login)
+    }
+
+    async fn handle_github_logout(&self, id: u64, value: Value) -> Response {
+        let Ok(params) = serde_json::from_value::<GithubOwnerParams>(value) else {
+            return error_response(id, CODE_INVALID_PARAMS, "owner is required");
+        };
+        let forgotten = self.authentication.github_logout(&params.owner).await;
+        if let Ok(Some(token)) = &forgotten {
+            self.wake_github_owner(&token.owner).await;
+        }
+        result_response(id, forgotten.map(|forgotten| GithubLogoutResult { forgotten }))
+    }
+
+    /// Re-converges the Agents that declare `owner`'s GitHub account, so one that failed for
+    /// want of a token recovers at once instead of on the controller's next periodic pass.
+    async fn wake_github_owner(&self, owner: &str) {
+        let agents = match self.agents.list().await {
+            Ok(agents) => agents,
+            Err(error) => return self.report(&error),
+        };
+        for agent in agents {
+            if agent
+                .spec
+                .github_owner()
+                .is_some_and(|declared| declared.eq_ignore_ascii_case(owner))
+                && let Err(error) = self.convergence.wake(&agent.metadata.name).await
+            {
+                self.report(&error);
+            }
+        }
+    }
+
     async fn handle_session_ensure(&self, id: u64, value: Value) -> Response {
         let params = match serde_json::from_value::<SessionEnsureParams>(value) {
             Ok(params) => params,
@@ -913,6 +1001,8 @@ fn is_mutating(method: &str) -> bool {
             | METHOD_START
             | METHOD_EXECUTION_ENSURE
             | METHOD_AUTH_LOGIN
+            | METHOD_GITHUB_LOGIN
+            | METHOD_GITHUB_LOGOUT
             | METHOD_SESSION_ENSURE
             | METHOD_SESSION_PROMPT
             | METHOD_SESSION_DELETE
