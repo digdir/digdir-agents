@@ -146,8 +146,7 @@ RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
 RUN { getent group docker >/dev/null || groupadd --system docker; } \
-    && { getent group kvm >/dev/null || groupadd --system kvm; } \
-    && useradd --create-home --shell /usr/bin/bash --uid 1000 --groups docker,kvm agent \
+    && useradd --create-home --shell /usr/bin/bash --uid 1000 --groups docker agent \
     && printf 'agent ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent \
     && install -d /etc/systemd/system/init.scope.d \
