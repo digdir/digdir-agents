@@ -60,7 +60,7 @@ USER agent
   agentd sets up Podman's socket for the agent user. Docker's own engine gets no such setup.
 - Repositories go in `instructions.md`, not in the image. The base images can also clone at boot from
   `/etc/agent-workspace.d/*.list`, one `OWNER/NAME` per line, if the person wants them there before the first
-  session. They clone with the agent's `GITHUB_TOKEN`, so private repositories need it.
+  session. They clone with the agent's GitHub account, so private repositories need one (`agentctl guide accounts`).
 - The image is built when the agent is created. A changed Dockerfile takes effect only when the agent is deleted and
   applied again.
 

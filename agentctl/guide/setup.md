@@ -24,7 +24,8 @@ Ask only what the person decides and you cannot find out. Usually:
 - What should the agent work on, and which other repositories does that touch?
 - Should it work on its own clone (safer: their checkout is untouched) or on their checkout mounted from this
   machine (its edits change their files directly)?
-- Does it need to push to GitHub or clone private repositories? Then it needs a GitHub token.
+- Does it need to push to GitHub, open pull requests or clone private repositories? Then it needs a GitHub account
+  for the repositories' owner (`agentctl guide accounts`).
 - Which coding agent should it run? Propose the one you are (`claudeCode`, `codex` or `pi` in the manifest).
 - Does it need to run containers, test web apps in a browser, or use a desktop they can watch?
 - Anything it must not do, or anything they always want it to do?
@@ -38,11 +39,11 @@ not already used by another agent on the machine):
 
 | File | What goes in it | Details |
 | --- | --- | --- |
-| `agent.yaml` | The manifest: image, size, harnesses, mounts, secrets | `agentctl guide manifest` |
+| `agent.yaml` | The manifest: image, size, harnesses, mounts, GitHub account | `agentctl guide manifest` |
 | `Dockerfile` | `FROM` the agentctl base image, plus what the work always needs | `agentctl guide image` |
 | `instructions.md` | What the agent is for, and the tools and repositories it should have | `agentctl guide instructions` |
 | `.dockerignore` | `*` unless the Dockerfile copies files from the folder | |
-| `.env` | Values the manifest's `environment` and `secrets` name; never committed, and outside the repository when the agent mounts it | `agentctl guide manifest` |
+| `.env` | Only when the manifest's `environment` or `secrets` name values; never committed, and outside the repository when the agent mounts it | `agentctl guide manifest` |
 
 Bake into the image what is large or always needed (a language toolchain, a database client). List every tool and
 repository in `instructions.md` either way: the agent inside checks that list and installs or clones what is
@@ -51,19 +52,21 @@ missing, so the list is what keeps it working when the image falls behind.
 Size the agent from the machine: up to half its cores, a quarter of its memory, and a disk that fits its free space.
 Other agents on the machine share them.
 
-Write the non-secret values in `.env` yourself, such as `GIT_USER_NAME` and `GIT_USER_EMAIL` from `git config` in the
-repository; confirm them with the person when they look like a personal identity rather than the one they use here.
-Never ask for a secret in the conversation and never read one: tell the person which line to add to the file, such as
-`GITHUB_TOKEN=`, and make sure Git ignores the file. A required secret that is missing or empty fails the agent's setup,
-so `apply --wait` exits with an error naming it: wait until they have filled it in, or mark the secret `optional: true`
-when the agent can start without it.
+GitHub needs no `.env`: the account gives the agent its access and its commit identity. Write other non-secret values
+in `.env` yourself. Never ask for a secret in the conversation and never read one: when the agent needs another,
+tell the person which line to add to the file, and make sure Git ignores the file. A required secret that is missing
+or empty fails the agent's setup, so `apply --wait` exits with an error naming it: wait until they have filled it in,
+or mark the secret `optional: true` when the agent can start without it.
 
 ## 4. Start it and check it
 
 Check that the harness the agent uses has a login: in `agentctl status --json`, its `login_stored` is `true`. If
 not, ask the person to run `agentctl claude login` or `agentctl codex login` in their own terminal; it opens a
 browser. Pi has no login (`login_stored` is `null`): its provider and API key are configured as `agentctl guide
-manifest` describes. Wait for the login and for every secret before you apply.
+manifest` describes. With a GitHub account in the manifest, check that `github` lists its owner with `expired`
+`false`. If not, ask the person to run `agentctl github login` in their own terminal, in the repository so it offers
+the owner; it opens a browser and takes a token you must never see (`agentctl guide accounts`). Wait for the logins
+and for every secret before you apply.
 
 Build the image once yourself first: a Dockerfile error then shows in a minute, not after `apply` has set the agent
 up. Remove the test image afterwards.
