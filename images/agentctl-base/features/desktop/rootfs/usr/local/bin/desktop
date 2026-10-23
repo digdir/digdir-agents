@@ -19,39 +19,20 @@ shopt -s inherit_errexit
 # screen or a test harness.
 display=${DESKTOP_DISPLAY:-${DISPLAY:-:1}}
 captures=${DESKTOP_CAPTURES:-/tmp/desktop}
-# The screenshot budget: how many pixels a screenshot may hold and how long its longest edge may be.
-# A larger display is downscaled to fit, so the model reads its image exactly as sent: a harness or
-# API that resized it again would put every click the model reads off it somewhere else. The
-# budget belongs to the model reading the screenshot, not to the display, and agentd tells each
-# Session which harness it runs in AGENT_HARNESS. See budget() below for how settings combine.
+# The screenshot budget, a pixel count and a longest edge, is the largest image the Session's
+# harness sends without resizing it again, which would break coordinates. Pixel counts sit a little
+# under the vendors' patch limits, which round up per edge.
 budget_harness=${AGENT_HARNESS:-}
-# Each vendor's documented resize threshold, below which its harness and API send an image as it
-# is. Both count square patches, rounded up on each edge, so each pixel count sits below
-# patch area x patch budget by enough that every display from 64x64 to 8000x8000 scaled to it fits.
 case $budget_harness in
-    claudeCode)
-        # Claude Code resizes images itself to the model's limits before sending them, as the
-        # API would: 1568 px on the long edge and 1568 patches of 28x28 px on the standard tier,
-        # 2576 px and 4784 patches on Claude 4.7 and later. Claude Code can run models on either
-        # tier, so this is the standard tier's. 1600x900 is sent at 1445x812, 1508 patches.
-        # https://platform.claude.com/docs/en/build-with-claude/vision#resolution-and-token-cost
-        # https://platform.claude.com/docs/en/build-with-claude/vision-coordinates
-        budget_source=harness table_pixels=1175000 table_edge=1568 ;;
-    codex)
-        # Codex's view_image resizes to OpenAI's `high` detail, its default, which every model it
-        # offers takes as it is: 2048 px on the long edge and 2500 patches of 32x32 px. A model may
-        # ask for `original` detail, larger still. 1920x1080 is sent as it is, 2040 patches.
-        # https://developers.openai.com/api/docs/guides/images-vision
-        # https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/utils/image/src/lib.rs
-        budget_source=harness table_pixels=2457600 table_edge=2048 ;;
-    pi)
-        # Pi sends images to whichever provider it is configured for, so it gets the default.
-        budget_source=harness table_pixels='' table_edge='' ;;
+    # Anthropic's standard tier: https://platform.claude.com/docs/en/build-with-claude/vision
+    claudeCode) budget_source=harness table_pixels=1175000 table_edge=1568 ;;
+    # OpenAI's `high` detail, Codex's default: https://developers.openai.com/api/docs/guides/images-vision
+    codex) budget_source=harness table_pixels=2457600 table_edge=2048 ;;
+    pi) budget_source=harness table_pixels='' table_edge='' ;;
     '') budget_source=default table_pixels='' table_edge='' ;;
     *) budget_source=unknown table_pixels='' table_edge='' ;;
 esac
-# Without a harness, for a person, an SSH shell or another tool, and for one not in the table: the
-# smallest budget of any harness above, so the screenshot fits every model that may read it.
+# The default is the smallest budget above.
 table_pixels=${table_pixels:-1175000}
 table_edge=${table_edge:-1568}
 # ffmpeg's mjpeg scale: -q:v 7 encodes at JPEG quality 75, the quality Anthropic's reference
@@ -139,13 +120,8 @@ display_geometry() {
     xdpyinfo | awk '/dimensions:/ { print $2; exit }'
 }
 
-# Settles the budget into budget_pixels, budget_edge, budget_width and budget_height, where empty
-# means no limit, and budget_overrides, the settings that replaced the harness's budget. Explicit
-# settings always win over the table: DESKTOP_SCREENSHOT_PIXELS and DESKTOP_SCREENSHOT_MAX_EDGE
-# each replace their half of it. DESKTOP_MAX_WIDTH and DESKTOP_MAX_HEIGHT, the box this helper
-# fitted screenshots into before it had a pixel budget, keep that meaning: either one replaces the
-# whole budget with a box, whose other side is still 1456 or 819, and only the DESKTOP_SCREENSHOT_*
-# settings given beside them still apply as well.
+# Environment settings beat the table. DESKTOP_MAX_WIDTH and DESKTOP_MAX_HEIGHT keep their old
+# meaning, a box that replaces the table's budget.
 budget() {
     budget_overrides=()
     local name
@@ -168,9 +144,7 @@ budget() {
 
 # Prints "display_width display_height sent_width sent_height". The sent size is the display size
 # reduced to fit the budget; the model addresses the sent size and never does this arithmetic.
-# scale = min(1, sqrt(pixels / (w * h)), edge / max(w, h)), and the box's sides when one is set.
-# Sizes round down, so the budget holds; the epsilon keeps a side the box sets exactly from
-# losing a pixel to floating point.
+# Sizes round down so the budget holds.
 geometry() {
     local geometry width height
     geometry=$(display_geometry) || fail "cannot read display $display"
@@ -407,7 +381,6 @@ command_display() {
     options=$(sed -n 's/^options: *//p' <<<"$query")
     local scale source
     scale=$(awk -v s="$sent_width" -v a="$actual_width" 'BEGIN { printf "%.2f", s / a }')
-    # Where the budget came from: the settings that replaced it, or else the harness table.
     if [ ${#budget_overrides[@]} -gt 0 ]; then
         source=override
     else
@@ -444,8 +417,7 @@ command_display() {
     fi
 }
 
-# A JSON string, or null for an empty value. AGENT_HARNESS comes from the environment, which
-# anything may set, so it is escaped.
+# AGENT_HARNESS can hold anything, so escape it.
 json_string_or_null() {
     [ -n "$1" ] || { echo null; return 0; }
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/[[:cntrl:]]//g; s/^/"/; s/$/"/'

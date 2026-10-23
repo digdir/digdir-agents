@@ -253,8 +253,7 @@ async fn run_lifecycle_execution(
 /// sibling Sessions; the token only rejects stale or accidental reports. The
 /// Session's recorded model selection is part of every launch, resumed or not.
 /// The harness also learns its agent, session name, host and source directory,
-/// so it can say where it runs, and which harness it is, so tools it runs, such
-/// as the desktop helper's screenshot budget, can suit its model.
+/// so it can say where it runs, and which harness it is.
 fn launch_arguments(
     session: &Session,
     context: LaunchContext<'_>,

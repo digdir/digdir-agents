@@ -26,9 +26,8 @@ so never do resolution arithmetic yourself.
 `playwright-cli open --browser chromium --headed` puts the browser on this same desktop, so one
 browser is scriptable, in the tree and visible: act on refs with `playwright-cli click e12`, and
 take a screenshot only when layout, styling or rendering is the actual question. A snapshot or a
-tree costs a few hundred text tokens; a screenshot costs about 1.5k image tokens every time, or
-more for a model that takes larger images. Reach for the screenshot when you need to judge a
-screen, not to find out what is on it.
+tree costs a few hundred text tokens; a screenshot costs about 1.5k image tokens or more every
+time. Reach for the screenshot when you need to judge a screen, not to find out what is on it.
 
 Use the desktop rather than a headless browser when the task is a native application, when a
 person will watch or take over, or when the rendered result is the deliverable.
@@ -89,8 +88,7 @@ every capture already waits until the screen stops changing.
 
 ## Bound what you spend
 
-Every screenshot is about 1.5k image tokens: the helper sends it within the screenshot budget of
-the harness you run in, which `desktop display` shows. Prefer `desktop windows`, `desktop tree` and
+Every screenshot is about 1.5k image tokens or more; `desktop display` shows the budget. Prefer `desktop windows`, `desktop tree` and
 `playwright-cli snapshot` when they answer the question, batch so that one screenshot covers
 several actions, and take a full screenshot at a step boundary rather than after each action. Do
 not raise the display resolution to fit more on screen; a larger display is downscaled to the same
