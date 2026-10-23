@@ -34,9 +34,14 @@ attributing a failure to the bump, repeat the check on an Agent built with the p
   resumes the Session. Run the real idle-stop once, in the background.
 - A long foreground tool call: ask for `timeout 90 tail -f /dev/null`. Claude Code refuses a bare `sleep` and may run a
   command in the background instead.
-- A Claude Code permission prompt: add `"permissions": {"ask": ["Bash(touch:*)"]}` to `~/.claude/settings.json` in the
-  Sandbox, start a new Session and ask it to run `touch`; ask rules prompt despite `--dangerously-skip-permissions`.
-  Restore the file afterwards. The `AskUserQuestion` tool blocks on the operator without any configuration.
+- Claude Code Bash approvals: add `"permissions": {"ask": ["Bash(touch *)"]}` to the project's
+  `.claude/settings.local.json` in the Sandbox, start a new Session and ask it to run `touch`. The platform's
+  `PermissionRequest` hook approves the call,
+  including requests that Claude's deletion checks raise despite `--dangerously-skip-permissions`. Confirm that
+  `prompt --wait` waits for the completed turn rather than returning `WaitingForInput` at the approval.
+- A Claude Code permission prompt: use `"permissions": {"ask": ["Write"]}` instead, and ask for a file written with
+  the `Write` tool. Other tool permissions still wait for the operator. Restore the file afterwards. The
+  `AskUserQuestion` tool blocks on the operator without any configuration.
 - A daemon restart: `pkill -x agentd`; the next `agentctl` command starts it again.
 
 | Check                                                                | Harness     | Expected result                                                                                                                                                                                                         |
@@ -48,6 +53,7 @@ attributing a failure to the bump, repeat the check on an Agent built with the p
 | Prompt during an active tool call, including identical text          | Both        | Input appears in `turns`; waiting follows work observed during settling, but does not demand an extra turn when input is absorbed into the current one.                                                                 |
 | Prompt while a background command runs, until it finishes            | Claude Code | The wait ends with the operator's turn; the completion notification's own turn does not end a later wait early.                                                                                                         |
 | Tool success and tool failure                                        | Both        | STATE reflects activity; tool completion alone does not complete a turn; `turns` marks only the failed call.                                                                                                            |
+| Bash permission request, including a deletion safety check          | Claude Code | Runs without operator approval; `prompt --wait` ends only when the turn completes. Repeat in a background subagent. |
 | Permission prompt and `AskUserQuestion`, approved and denied         | Claude Code | While blocked, STATE is `WaitingForInput` and `activity.turns` does not advance; answering or approving completes the turn. A denial is an interruption (#147). Not tested for Codex, which launches without approvals. |
 | Interruption during a tool call, then another prompt                 | Both        | Codex reports `Interrupt`, which releases the wait. Known gap (#147): Claude Code has no interrupt hook, so STATE stays `Working` and a wait times out. The next prompt works in both.                                  |
 | Model error reported through `StopFailure`                           | Claude Code | Create with an unknown `--model`. The completion report ends the wait, but does not imply a successful model response; inspect `turns`.                                                                                 |
