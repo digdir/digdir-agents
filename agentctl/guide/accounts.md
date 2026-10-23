@@ -22,11 +22,16 @@ Suggest a dedicated account, such as a bot, rather than the person's own: what t
 told apart from what they do, and the account reaches only what it is given.
 
 `agentctl status --json` lists the stored tokens under `github` (`agentctl guide status`). An agent whose owner has
-no token, or an expired one, fails naming the login, and starts once the person has run it.
+no token, or an expired one, runs without GitHub access and status names the login; once the person has run it, the
+token works at once.
+
+Any manifest applied on this machine can name any stored owner, as any manifest can use the host's harness logins, so
+the person should apply manifests only from repositories they trust. Tightening this is tracked in
+https://github.com/digdir/digdir-agents/issues/259.
 
 A manifest cannot have both an account and its own `GITHUB_TOKEN`. To move an agent from a token in `.env`, remove
 the `GITHUB_TOKEN` secret from `agent.yaml` and the line from `.env`, add the account, have the person log in, and
 apply again.
 
-`agentctl github logout my-org` takes the token from agents at once, but it keeps working on GitHub until it expires
-or the person revokes it there.
+`agentctl github logout my-org` ends agents' GitHub access at once and nothing else, but the token keeps working on
+GitHub until it expires or the person revokes it there.
