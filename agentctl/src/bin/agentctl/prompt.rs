@@ -56,6 +56,46 @@ pub(crate) fn confirm_lines(lines: &[&str]) -> Result<bool, Error> {
     }
 }
 
+/// Asks which of `options` to use, numbered from 1, on standard error, and returns its index.
+/// Pressing Enter picks the first.
+///
+/// # Errors
+///
+/// Returns an error when standard input cannot be read or ends.
+pub(crate) fn choose(question: &str, options: &[&str]) -> Result<usize, Error> {
+    let mut lines = vec![question.to_owned()];
+    lines.extend(
+        options
+            .iter()
+            .enumerate()
+            .map(|(index, option)| format!("{}. {option}", index + 1)),
+    );
+    pose(
+        &lines.iter().map(String::as_str).collect::<Vec<_>>(),
+        "\n  Number [1]: ",
+    );
+    loop {
+        if let Some(index) = option_number(&read_answer()?, options.len()) {
+            return Ok(index);
+        }
+        eprint!("Type a number from 1 to {}: ", options.len());
+        std::io::stderr().flush().ok();
+    }
+}
+
+/// The index of the option `answer` numbers among `count`, the first for no answer.
+fn option_number(answer: &str, count: usize) -> Option<usize> {
+    let answer = answer.trim();
+    if answer.is_empty() {
+        return (count > 0).then_some(0);
+    }
+    answer
+        .parse::<usize>()
+        .ok()
+        .filter(|number| (1..=count).contains(number))
+        .map(|number| number - 1)
+}
+
 /// The answer `y`, `yes`, `n` or `no` gives, in any case; anything else is no answer.
 fn yes_or_no(answer: &str) -> Option<bool> {
     match answer.trim().to_ascii_lowercase().as_str() {
@@ -67,7 +107,16 @@ fn yes_or_no(answer: &str) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::yes_or_no;
+    use super::{option_number, yes_or_no};
+
+    #[test]
+    fn an_option_is_chosen_by_its_number_or_enter_for_the_first() {
+        assert_eq!(option_number("", 2), Some(0));
+        assert_eq!(option_number(" 2 ", 2), Some(1));
+        for answer in ["0", "3", "-1", "one", "1.0"] {
+            assert_eq!(option_number(answer, 2), None, "{answer:?}");
+        }
+    }
 
     #[test]
     fn yes_and_no_must_be_typed() {

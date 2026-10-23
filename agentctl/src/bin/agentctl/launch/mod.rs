@@ -15,7 +15,7 @@ use std::{
 };
 
 pub(crate) use browser::{as_browser, open_argument, sign_in};
-pub(crate) use host::{launch_blocked, open_url};
+pub(crate) use host::{find_program, launch_blocked, open_url};
 
 /// How long a launcher gets to fail before it is taken to have launched.
 const LAUNCH_GRACE: Duration = Duration::from_secs(2);
@@ -54,7 +54,7 @@ impl Editor {
 
     /// Finds the editor's launcher on `path`, a `PATH`-style variable.
     pub(crate) fn locate(self, path: Option<&OsStr>) -> Option<PathBuf> {
-        host::find_executable(path, self.executables())
+        find_program(self.executables(), path)
     }
 
     /// How to open `directory` in the Agent reached as the OpenSSH `alias`, given the launcher

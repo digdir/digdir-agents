@@ -15,15 +15,22 @@ The main goals are:
 
 ## Install
 
-Install the released `agentctl` and `agentd` on Linux or macOS, then log in to Claude Code:
+Install the released `agentctl` and `agentd` on Linux or macOS, then run `agentctl init` in the repository you want
+an agent for:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/digdir/digdir-agents/main/agentctl/install.sh | sh
-agentctl claude login
+cd ~/src/my-app
+agentctl init
 ```
 
+`agentctl init` starts the coding agent you already use here, Claude Code, Codex or Pi, and asks it to set up an agent
+with you: it asks what the agent should work on, writes its folder, starts it and checks that it works. You approve
+its commands as usual. Without any of them installed, `agentctl init` prints the request to paste into the coding
+agent you use.
+
 Windows additionally requires the `HypervisorPlatform` optional feature. Install from PowerShell, then open a new
-PowerShell window so the updated user `PATH` takes effect:
+PowerShell window so the updated user `PATH` takes effect, and run `agentctl init` there:
 
 ```powershell
 irm https://raw.githubusercontent.com/digdir/digdir-agents/main/agentctl/install.ps1 | iex
@@ -37,7 +44,8 @@ keys stay stable, for agents and scripts that check their own setup.
 
 `agentctl guide` prints, from the installed version, what a coding agent needs to set up an agent with you: how to
 go about it (`agentctl guide setup`), an annotated manifest, the image, instructions and the `status --json` object.
-To set one up, ask the coding agent you use to run `agentctl guide setup` and follow it.
+`agentctl init` asks a coding agent to follow `agentctl guide setup`; a coding agent you are already talking to can
+run it too.
 
 ### Building an Agent image
 

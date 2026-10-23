@@ -52,6 +52,28 @@ impl Harness {
         }
     }
 
+    /// Returns the name of the program that runs this harness, without an executable extension.
+    #[must_use]
+    pub const fn program(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => claude_code::PROGRAM,
+            Self::Codex => codex::PROGRAM,
+            Self::Pi => pi::PROGRAM,
+        }
+    }
+
+    /// Returns the arguments that start this harness on a person's own machine, interactively,
+    /// on a first prompt. None of an Agent's launch flags apply: the person approves its
+    /// commands as usual, and it uses their own settings and model.
+    #[must_use]
+    pub fn host_arguments(self, prompt: &str) -> Vec<String> {
+        match self {
+            // Each takes the first prompt as a positional argument; `--` keeps one that
+            // begins with `-` from being read as an option.
+            Self::ClaudeCode | Self::Codex | Self::Pi => vec!["--".into(), prompt.into()],
+        }
+    }
+
     /// Returns the manifest and CLI spelling of this harness family.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -827,6 +849,30 @@ mod tests {
         let expanded = "'".repeat(MAX_INITIAL_PROMPT_ARGUMENT_BYTES / 4);
         assert!(validate_initial_prompt(&expanded).is_err());
         assert!(validate_initial_prompt("before\0after").is_err());
+    }
+
+    #[test]
+    fn on_the_host_each_harness_starts_on_the_prompt_alone() {
+        let prompt = "-Help me set up an agent.";
+        for harness in Harness::ALL {
+            assert_eq!(harness.host_arguments(prompt), ["--", prompt], "{harness}");
+        }
+        assert_eq!(Harness::ALL.map(Harness::program), ["claude", "codex", "pi"]);
+    }
+
+    /// The host launch is the Agent's launch without the Agent's flags: the same program, and
+    /// the prompt as the one argument after `--`.
+    #[cfg(unix)]
+    #[test]
+    fn the_host_launch_is_the_agents_launch_without_its_flags() {
+        let prompt = "Help me set up an agent.";
+        for harness in Harness::ALL {
+            let launch = launch_linux(harness, &test_launch_request(None, Some(prompt)));
+            let in_agent = run_launch(harness.program(), &launch).expect("started");
+            let separator = in_agent.iter().position(|argument| argument == "--").expect("--");
+            assert!(separator > 0, "{harness} has flags in an Agent: {in_agent:?}");
+            assert_eq!(in_agent[separator..], harness.host_arguments(prompt), "{harness}");
+        }
     }
 
     #[tokio::test(flavor = "local")]

@@ -15,6 +15,8 @@ mod hooks;
 mod status_line;
 pub(super) mod transcript;
 
+/// The program Claude Code runs as, on the host and in an Agent.
+pub(super) const PROGRAM: &str = "claude";
 const PROVIDER: &str = "claude";
 const ACCESS_SECRET: &str = "claude-access-token";
 pub(super) const ACCESS_ENVIRONMENT: &str = "CLAUDE_CODE_OAUTH_TOKEN";
@@ -109,7 +111,7 @@ pub(super) fn acquire_host_token(sign_in: SignIn) -> Result<zeroize::Zeroizing<S
     use std::io::Write as _;
 
     eprintln!("Minting a long-lived Claude token with `claude setup-token`.");
-    let mut command = std::process::Command::new("claude");
+    let mut command = std::process::Command::new(PROGRAM);
     // The token must stay in the terminal's scrollback after it exits, for the
     // person to copy.
     command
@@ -267,7 +269,7 @@ pub(super) async fn verify_linux(
     sandbox: &sandbox::SandboxHandle,
     expected_version: Option<&str>,
 ) -> Result<(), Error> {
-    let output = super::version_output(sandbox, "claude").await?;
+    let output = super::version_output(sandbox, PROGRAM).await?;
     if !output.status.success() {
         let message = format!("`claude --version` exited with code {}", output.status.code);
         // 126/127 mean the image does not provide the harness; retrying cannot change that.
