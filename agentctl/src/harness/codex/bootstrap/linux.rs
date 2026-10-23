@@ -15,7 +15,7 @@ use super::super::{ACCESS_PLACEHOLDER, ACCOUNT_ENVIRONMENT, REFRESH_PLACEHOLDER}
 pub(super) async fn configure(
     sandbox: &SandboxHandle,
     home: &str,
-    instructions: Option<&[u8]>,
+    instructions: &[u8],
     skills: &[crate::harness::Skill],
 ) -> Result<(), Error> {
     let skills_path = format!("{home}/.agents/skills");
@@ -56,9 +56,7 @@ pub(super) async fn configure(
     if auth_needs_refresh(existing.as_deref(), &auth, now) {
         write_if_changed(sandbox, &auth_path, &serde_json::to_vec(&auth)?).await?;
     }
-    if let Some(instructions) = instructions {
-        write_if_changed(sandbox, &instructions_path, instructions).await?;
-    }
+    write_if_changed(sandbox, &instructions_path, instructions).await?;
     write_if_changed(sandbox, &hook_path, super::super::hooks::script()?.as_bytes()).await?;
     let hooks = serde_json::to_vec(&super::super::hooks::configuration(&hook_path))?;
     write_if_changed(sandbox, &hooks_config_path, &hooks).await?;
@@ -78,15 +76,13 @@ pub(super) async fn configure(
     )
     .await?;
     run_checked(sandbox, "/usr/bin/chmod", ["600", auth_path.as_str()]).await?;
-    if instructions.is_some() {
-        run_checked(
-            sandbox,
-            "/usr/bin/sudo",
-            ["/usr/bin/chown", "agent:agent", instructions_path.as_str()],
-        )
-        .await?;
-        run_checked(sandbox, "/usr/bin/chmod", ["644", instructions_path.as_str()]).await?;
-    }
+    run_checked(
+        sandbox,
+        "/usr/bin/sudo",
+        ["/usr/bin/chown", "agent:agent", instructions_path.as_str()],
+    )
+    .await?;
+    run_checked(sandbox, "/usr/bin/chmod", ["644", instructions_path.as_str()]).await?;
     crate::harness::skills::install_linux(sandbox, &skills_path, skills).await
 }
 

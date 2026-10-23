@@ -159,7 +159,7 @@ impl Linux {
                     installation.kind.as_str()
                 ))
                 .await;
-            harness::bootstrap_linux(installation.kind, sandbox, HOME, Some(&instructions), &skills).await?;
+            harness::bootstrap_linux(installation.kind, sandbox, HOME, &instructions, &skills).await?;
             step.complete().await;
         }
         Ok(())

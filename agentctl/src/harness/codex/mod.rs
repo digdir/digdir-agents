@@ -136,7 +136,7 @@ fn remove_stale_login_homes(temporary_root: &std::path::Path) {
 pub(super) async fn bootstrap_linux(
     sandbox: &sandbox::SandboxHandle,
     home: &str,
-    instructions: Option<&[u8]>,
+    instructions: &[u8],
     skills: &[crate::harness::Skill],
 ) -> Result<(), Error> {
     bootstrap::configure_linux(sandbox, home, instructions, skills).await

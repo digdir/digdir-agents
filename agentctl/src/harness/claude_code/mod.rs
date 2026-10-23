@@ -257,7 +257,7 @@ fn read_pasted_token(input: &mut impl std::io::BufRead) -> Result<zeroize::Zeroi
 pub(super) async fn bootstrap_linux(
     sandbox: &sandbox::SandboxHandle,
     home: &str,
-    instructions: Option<&[u8]>,
+    instructions: &[u8],
     skills: &[crate::harness::Skill],
 ) -> Result<(), Error> {
     bootstrap::configure_linux(sandbox, home, instructions, skills).await
