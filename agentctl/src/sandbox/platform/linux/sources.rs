@@ -6,10 +6,23 @@ use ignore::WalkBuilder;
 
 use crate::{Error, control_plane, harness};
 
-/// Concatenates the instruction files in manifest order, each terminated by a newline and
-/// separated by a blank line, so independent documents read as sections of one file.
-pub(super) async fn read_instructions(record: &control_plane::AgentRecord) -> Result<Option<Vec<u8>>, Error> {
+/// The platform's instructions in `about`, then the host-wide instructions in `host` when that
+/// file exists, then the agent's own in manifest order: each terminated by a newline and separated
+/// by a blank line, so independent documents read as sections of one file.
+pub(super) async fn read_instructions(
+    record: &control_plane::AgentRecord,
+    about: &str,
+    host: Option<&Path>,
+) -> Result<Vec<u8>, Error> {
     let mut combined = Vec::new();
+    append_instructions(&mut combined, about.as_bytes());
+    if let Some(host) = host {
+        match tokio::fs::read(host).await {
+            Ok(contents) => append_instructions(&mut combined, &contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     for (index, spec) in record.agent.spec.instructions.iter().enumerate() {
         let source = if spec.source.is_absolute() {
             spec.source.clone()
@@ -22,14 +35,23 @@ pub(super) async fn read_instructions(record: &control_plane::AgentRecord) -> Re
                 "spec.instructions[{index}].source must identify a file"
             )));
         }
-        let contents = tokio::fs::read(source).await?;
-        if !combined.is_empty() {
-            combined.push(b'\n');
-        }
-        combined.extend_from_slice(contents.strip_suffix(b"\n").unwrap_or(&contents));
+        append_instructions(&mut combined, &tokio::fs::read(source).await?);
+    }
+    Ok(combined)
+}
+
+/// Appends one instructions document, separated from what came before by a blank line; an empty
+/// one adds nothing.
+fn append_instructions(combined: &mut Vec<u8>, contents: &[u8]) {
+    let contents = contents.strip_suffix(b"\n").unwrap_or(contents);
+    if contents.trim_ascii().is_empty() {
+        return;
+    }
+    if !combined.is_empty() {
         combined.push(b'\n');
     }
-    Ok((!combined.is_empty()).then_some(combined))
+    combined.extend_from_slice(contents);
+    combined.push(b'\n');
 }
 
 pub(super) async fn read_skills(record: &control_plane::AgentRecord) -> Result<Vec<harness::Skill>, Error> {

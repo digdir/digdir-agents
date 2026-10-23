@@ -1,5 +1,6 @@
 //! Sandbox operating-system-specific adapters.
 
+mod about;
 pub(crate) mod files;
 pub(crate) mod linux;
 

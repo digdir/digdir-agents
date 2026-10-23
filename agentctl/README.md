@@ -213,10 +213,25 @@ cannot be optional.
 Each installation may declare `defaults` with a `model` and an `effort` level for its new Sessions, in the harness's
 own vocabulary. The published manifests select `model: fable` for Claude Code because a mediated token cannot list
 Fable in the `/model` picker.
-`spec.instructions` names one harness-neutral Agent instruction file. Every declared Harness Adapter installs that source
-at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md` for Codex and
-`~/.pi/agent/AGENTS.md` for Pi.
+`spec.instructions` names one harness-neutral Agent instruction file. Every declared Harness Adapter installs the
+Agent's instructions at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md`
+for Codex and `~/.pi/agent/AGENTS.md` for Pi.
 Repository-local instruction files continue to be discovered by the harness itself.
+
+### Instructions
+
+Every Agent's instructions are three layers, in this order, separated by blank lines:
+
+1. **About this sandbox**, written by the platform: the Agent runs in a VM whose files last until it is recreated,
+   its bind mounts are the person's own files (read-only ones marked), credentials in its environment are placeholders
+   that work, settings live in environment variables, and its setup is declared on the host. It also says how to treat
+   the tools and repositories its own instructions list: check for them at the start of a session, install or clone
+   what is missing at the versions listed, and say what was installed.
+2. **Host-wide**, `~/.agent/instructions.md` in agentd's home, for everything every agent on this machine should
+   know, such as how you track work. `agentctl instructions edit` opens it in `$VISUAL` or `$EDITOR`, creating it
+   if needed. agentd reads it on every pass, so running agents get a change within a minute without being recreated;
+   an empty or missing file adds nothing.
+3. **The Agent's own**, from `spec.instructions`, including the tools and repositories it should have, in short prose.
 
 Harness Adapters own authentication, version verification, managed configuration, hooks, native conversation IDs and
 launch arguments. Claude Code Bash permission requests, including deletion safety prompts, are automatically approved

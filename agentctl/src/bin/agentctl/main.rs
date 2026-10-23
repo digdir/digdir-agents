@@ -102,6 +102,11 @@ enum Command {
         #[command(subcommand)]
         command: CodexCommand,
     },
+    /// Edit the instructions every agent on this machine gets, ahead of its own.
+    Instructions {
+        #[command(subcommand)]
+        command: InstructionsCommand,
+    },
     /// Run a command in an agent.
     Exec {
         /// Pass stdin to an allocated terminal.
@@ -512,6 +517,15 @@ enum ClaudeCommand {
 }
 
 #[derive(Subcommand)]
+enum InstructionsCommand {
+    /// Open the host-wide instructions in `$VISUAL` or `$EDITOR`, creating the file if needed.
+    ///
+    /// Every agent receives them after the platform's and ahead of its own instructions, within
+    /// one reconciliation pass and without being recreated. Empty the file to give agents none.
+    Edit,
+}
+
+#[derive(Subcommand)]
 enum SshConfigCommand {
     /// Include the generated agent configuration from `~/.ssh/config`, once, at the top.
     Install,
@@ -581,7 +595,11 @@ fn run() -> CommandResult<ExitCode> {
         }
         if !matches!(
             arguments.command,
-            Command::Create { .. } | Command::Prompt { .. } | Command::Self_ { .. } | Command::SshConfig { .. }
+            Command::Create { .. }
+                | Command::Prompt { .. }
+                | Command::Self_ { .. }
+                | Command::SshConfig { .. }
+                | Command::Instructions { .. }
         ) {
             ensure_daemon(&home, &client).await?;
         }
@@ -753,6 +771,9 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         Command::Turns { target, last } => turns(client, target, last).await?,
         Command::Tui => return tui::run(home, client).await,
         Command::Status { json } => status::run(home, client, json).await?,
+        Command::Instructions {
+            command: InstructionsCommand::Edit,
+        } => edit_instructions(home)?,
         Command::Wait {
             condition,
             timeout,
@@ -1921,6 +1942,44 @@ fn read_apply_request_in(
     })
 }
 
+/// Opens the host-wide instructions file in `$VISUAL` or `$EDITOR`, creating it empty first.
+fn edit_instructions(home: &ControlPlaneHome) -> CommandResult<()> {
+    let path = home.instructions_path();
+    home.prepare()?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(Error::from)?;
+    let Some(editor) = ["VISUAL", "EDITOR"]
+        .into_iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.trim().is_empty()))
+    else {
+        return Err(CommandError::Message(format!(
+            "set VISUAL or EDITOR to your editor, or edit {} yourself",
+            path.display()
+        )));
+    };
+    let mut words = editor.split_whitespace();
+    let program = words.next().unwrap_or_default();
+    let status = std::process::Command::new(program)
+        .args(words)
+        .arg(&path)
+        .status()
+        .map_err(|error| CommandError::Message(format!("could not start the editor `{editor}`: {error}")))?;
+    if !status.success() {
+        return Err(CommandError::Message(format!(
+            "the editor `{editor}` did not finish cleanly; {} keeps what it saved",
+            path.display()
+        )));
+    }
+    println!(
+        "Running agents get {} within a minute, without being recreated.",
+        path.display()
+    );
+    Ok(())
+}
+
 fn read_token_from_stdin() -> Result<zeroize::Zeroizing<String>, Error> {
     let mut line = zeroize::Zeroizing::new(String::new());
     std::io::stdin()
@@ -1996,6 +2055,18 @@ mod tests {
         };
         assert!(!parse(&["agentctl", "status"]));
         assert!(parse(&["agentctl", "status", "--json"]));
+    }
+
+    #[test]
+    fn instructions_edit_parses() {
+        assert!(matches!(
+            Arguments::try_parse_from(["agentctl", "instructions", "edit"])
+                .expect("instructions edit")
+                .command,
+            Command::Instructions {
+                command: InstructionsCommand::Edit
+            }
+        ));
     }
 
     #[test]

@@ -41,6 +41,7 @@ pub(crate) const PORTABLE_TERMINAL: &str = "xterm-256color";
 /// Agent setup for Linux Sandboxes.
 pub struct Linux {
     platform_api_url: String,
+    host_instructions: Option<std::path::PathBuf>,
 }
 
 impl Linux {
@@ -50,7 +51,16 @@ impl Linux {
     pub fn new(platform_api_url: impl Into<String>) -> Self {
         Self {
             platform_api_url: platform_api_url.into(),
+            host_instructions: None,
         }
+    }
+
+    /// Gives every agent the instructions in `path`, re-read on every pass, after the platform's
+    /// and ahead of its own. A missing or empty file adds nothing.
+    #[must_use]
+    pub fn with_host_instructions(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.host_instructions = Some(path.into());
+        self
     }
 }
 
@@ -139,7 +149,8 @@ impl Linux {
         }
         configure_git_identity(sandbox).await?;
         step.complete().await;
-        let instructions = read_instructions(record).await?;
+        let about = super::about::instructions(&record.agent.spec);
+        let instructions = read_instructions(record, &about, self.host_instructions.as_deref()).await?;
         let skills = read_skills(record).await?;
         for installation in &installations {
             let step = steps
@@ -148,7 +159,7 @@ impl Linux {
                     installation.kind.as_str()
                 ))
                 .await;
-            harness::bootstrap_linux(installation.kind, sandbox, HOME, instructions.as_deref(), &skills).await?;
+            harness::bootstrap_linux(installation.kind, sandbox, HOME, Some(&instructions), &skills).await?;
             step.complete().await;
         }
         Ok(())

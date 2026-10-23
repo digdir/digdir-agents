@@ -36,6 +36,12 @@ impl ControlPlaneHome {
         &self.0
     }
 
+    /// Returns the host-wide instructions file, which every agent receives ahead of its own.
+    #[must_use]
+    pub fn instructions_path(&self) -> PathBuf {
+        self.0.join("instructions.md")
+    }
+
     /// Returns the fixed local API socket path.
     ///
     /// The socket lives in its own directory because Windows can leave a stale
