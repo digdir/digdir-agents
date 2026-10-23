@@ -951,3 +951,132 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
         "unexpected error: {error:?}"
     );
 }
+
+fn command(spec: &sandbox::execution::ExecutionSpec) -> Option<Vec<String>> {
+    match spec.program() {
+        Program::Command { executable, args } => Some(
+            std::iter::once(executable.as_str().to_owned())
+                .chain(args.iter().cloned())
+                .collect(),
+        ),
+        Program::ImageEntrypoint => None,
+    }
+}
+
+/// Runs setup for an agent whose folder lists `repositories`, on an image whose workspace script is
+/// `present`, returning the outcome and every command it ran.
+async fn setup_with_repositories(
+    repositories: Option<&str>,
+    present: bool,
+) -> (Result<(), agent::Error>, Rc<memory::Provider>, sandbox::SandboxHandle) {
+    let directory = TempDir::new().expect("temporary directory");
+    std::fs::write(directory.path().join("instructions.md"), "test instructions\n").expect("instruction file");
+    if let Some(repositories) = repositories {
+        std::fs::write(directory.path().join("repositories.yaml"), repositories).expect("repositories file");
+    }
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home = None;
+    let record = AgentRecord {
+        id: "7d1e2c3b-4a5f-4e6d-8c7b-9a0f1e2d3c4b".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    };
+    let backend = Rc::new(memory::Provider::new());
+    backend.queue_execution_events_matching(is_claude_version, answers("2.1.266 (Claude Code)\n", 0));
+    backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    if !present {
+        backend.queue_execution_events_matching(
+            |spec| {
+                command(spec)
+                    .is_some_and(|args| args == ["/usr/bin/test", "-x", "/usr/local/libexec/agent-workspace-init"])
+            },
+            completed(1),
+        );
+    }
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+    let outcome = Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await;
+    (outcome, backend, sandbox)
+}
+
+const START_WORKSPACE_UNIT: [&str; 6] = [
+    "/usr/bin/sudo",
+    "-n",
+    "/usr/bin/systemctl",
+    "start",
+    "--no-block",
+    "agent-workspace-init.service",
+];
+
+/// The folder's repositories reach the base image's workspace unit, which is started on every pass
+/// so a repository added later is cloned without recreating the agent.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_hands_the_folders_repositories_to_the_workspace_unit() {
+    let (outcome, backend, sandbox) = setup_with_repositories(
+        Some("- repo: digdir/app\n- repo: digdir/microsandbox\n  path: forks/microsandbox\n  about: The fork.\n"),
+        true,
+    )
+    .await;
+    outcome.expect("setup");
+
+    let list = read_file(&sandbox, "/etc/agent-workspace.d/agentctl.list").await;
+    assert_eq!(list, b"digdir/app app\ndigdir/microsandbox forks/microsandbox\n");
+    let commands: Vec<Vec<String>> = backend.execution_specs().iter().filter_map(command).collect();
+    assert!(
+        commands.iter().any(|args| args == &START_WORKSPACE_UNIT),
+        "{commands:?}"
+    );
+}
+
+#[tokio::test(flavor = "local")]
+async fn linux_setup_without_repositories_starts_no_clone() {
+    let (outcome, backend, _sandbox) = setup_with_repositories(None, true).await;
+    outcome.expect("setup");
+
+    let commands: Vec<Vec<String>> = backend.execution_specs().iter().filter_map(command).collect();
+    assert!(
+        !commands.iter().any(|args| args == &START_WORKSPACE_UNIT),
+        "{commands:?}"
+    );
+    assert!(
+        commands.iter().any(|args| args
+            == &[
+                "/usr/bin/sudo",
+                "-n",
+                "/bin/rm",
+                "-f",
+                "/etc/agent-workspace.d/agentctl.list"
+            ]),
+        "a list left from an earlier pass is removed: {commands:?}"
+    );
+}
+
+#[tokio::test(flavor = "local")]
+async fn linux_setup_refuses_repositories_an_image_cannot_clone() {
+    let (outcome, _backend, _sandbox) = setup_with_repositories(Some("- repo: digdir/app\n"), false).await;
+    let error = outcome.expect_err("an image without the workspace unit");
+    assert!(error.to_string().contains("repositories.yaml"), "{error}");
+}
+
+#[tokio::test(flavor = "local")]
+async fn linux_setup_rejects_an_invalid_repositories_file() {
+    let (outcome, _backend, _sandbox) = setup_with_repositories(Some("- repo: ../app\n"), true).await;
+    let error = outcome.expect_err("an invalid repository");
+    assert!(error.to_string().contains("owner/name"), "{error}");
+}
