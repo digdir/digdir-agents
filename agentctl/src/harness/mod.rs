@@ -686,6 +686,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn harness_names_match_the_desktop_helpers_screenshot_budget_table() {
+        // Sessions get these as AGENT_HARNESS, which the base image's `desktop` helper matches on.
+        assert_eq!(Harness::ClaudeCode.as_str(), "claudeCode");
+        assert_eq!(Harness::Codex.as_str(), "codex");
+        assert_eq!(Harness::Pi.as_str(), "pi");
+    }
+
+    #[test]
     fn launch_selections_are_opaque_but_command_line_safe() {
         for value in [
             "fable",

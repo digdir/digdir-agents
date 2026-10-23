@@ -730,12 +730,14 @@ mod tests {
             .filter(|pair| pair[0] == "-e")
             .map(|pair| pair[1].as_str())
             .collect();
+        let harness = format!("AGENT_HARNESS={}", session.harness);
         for expected in [
             "AGENT_NAME=worker",
             "AGENT_SESSION_NAME=review",
             "AGENT_HOST=laptop",
             "AGENT_SOURCE_DIRECTORY=/Users/someone/code/app",
             "AGENT_SESSION_ID=dd4cdbaf-9ea0-477e-96dd-bbd6b1e4f7dc",
+            harness.as_str(),
         ] {
             assert!(environment.contains(&expected), "{expected} in {environment:?}");
         }
@@ -751,34 +753,6 @@ mod tests {
             ],
             "the label is set on the new session, after its command: {arguments:?}"
         );
-    }
-
-    #[test]
-    fn a_launch_names_its_harness_as_the_desktop_helper_expects() {
-        for (harness, expected) in [
-            (harness::Harness::ClaudeCode, "AGENT_HARNESS=claudeCode"),
-            (harness::Harness::Codex, "AGENT_HARNESS=codex"),
-            (harness::Harness::Pi, "AGENT_HARNESS=pi"),
-        ] {
-            let mut session = named_session();
-            session.harness = harness;
-            let arguments = super::launch_arguments(
-                &session,
-                super::LaunchContext {
-                    platform_api_url: "http://platform",
-                    agent: "worker",
-                    source_directory: std::path::Path::new("/Users/someone/code/app"),
-                    host: "laptop",
-                },
-                &crate::sessions::LaunchToken::generate(),
-                None,
-                None,
-            );
-            assert!(
-                arguments.iter().any(|argument| argument == expected),
-                "{expected} in {arguments:?}"
-            );
-        }
     }
 
     #[test]
