@@ -80,13 +80,9 @@ pub(super) async fn verify_linux(
 
 /// The environment defaults the platform gives Pi. Each applies only when the Session's
 /// environment does not set the name, so an Agent's `spec.environment` decides: the launch
-/// command spells them with `${NAME-default}`.
-const ENVIRONMENT_DEFAULTS: [(&str, &str); 3] = [
-    // Pi runs on Node, which ignores the system trust store; this bundle holds the mediation CA.
-    ("NODE_EXTRA_CA_CERTS", "/etc/ssl/certs/ca-certificates.crt"),
-    ("PI_TELEMETRY", "0"),
-    ("PI_SKIP_VERSION_CHECK", "1"),
-];
+/// command spells them with `${NAME-default}`. Pi runs on Node, which ignores the system trust
+/// store, but every Session in an Agent already names the mediation CA in `NODE_EXTRA_CA_CERTS`.
+const ENVIRONMENT_DEFAULTS: [(&str, &str); 2] = [("PI_TELEMETRY", "0"), ("PI_SKIP_VERSION_CHECK", "1")];
 
 pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
     let mut command = String::new();
@@ -255,10 +251,7 @@ mod tests {
     #[test]
     fn launch_environment_defaults_apply_only_when_the_agent_leaves_the_names_unset() {
         let defaults = launched_environment(&[]);
-        assert_eq!(
-            defaults.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
-            Some("/etc/ssl/certs/ca-certificates.crt")
-        );
+        assert!(!defaults.contains_key("NODE_EXTRA_CA_CERTS"));
         assert_eq!(defaults.get("PI_TELEMETRY").map(String::as_str), Some("0"));
         assert_eq!(defaults.get("PI_SKIP_VERSION_CHECK").map(String::as_str), Some("1"));
         // The Agent's directory is Pi's own default; the platform never moves it, and it does not

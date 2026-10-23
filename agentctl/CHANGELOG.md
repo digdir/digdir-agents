@@ -27,6 +27,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Fixed
 
+- Node.js programs in an Agent, such as `npm`, `corepack` and Pi, no longer fail with `self-signed certificate in certificate chain` in Sessions, `agentctl exec` and SSH logins. Restart a running Agent with `agentctl stop` and `agentctl start` to fix its Sessions. ([#235](https://github.com/digdir/digdir-agents/issues/235))
 - Claude Code Sessions in Agents no longer pause for Bash approval, including deletion safety prompts. Other tool permission prompts and user questions remain interactive, and deny rules remain enforced. ([#237](https://github.com/digdir/digdir-agents/pull/237))
 - Claude Sessions no longer hang on the startup bypass-permissions warning when starting or resuming in Agents with custom user settings in `spec.home`. ([#230](https://github.com/digdir/digdir-agents/pull/230))
 - `agentctl apply` no longer fails with `Socket not found: /var/run/docker.sock` for Dockerfile-backed Agents using Docker Desktop or Colima's selected local context. Background retries recover after starting Docker or switching local contexts without restarting `agentd`. ([#220](https://github.com/digdir/digdir-agents/pull/220))

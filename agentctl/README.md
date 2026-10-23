@@ -230,8 +230,9 @@ provider key as a secret, and its home overlay or image provides Pi's own files 
 
 `--model`, `--effort` and `defaults` pass to `pi --model` and `pi --thinking` unchanged, and skills install in
 `~/.agents/skills`. Pi starts with `--approve`, trusting the working directory's `.pi` resources. The launch sets
-`NODE_EXTRA_CA_CERTS` to the mediation CA bundle, `PI_TELEMETRY=0` and `PI_SKIP_VERSION_CHECK=1` unless
-`spec.environment` sets them. See the [self-dev Agent](../agents/self-dev/README.md#pi) for a worked example.
+`PI_TELEMETRY=0` and `PI_SKIP_VERSION_CHECK=1` unless `spec.environment` sets them, and Pi trusts the mediation CA
+through the `NODE_EXTRA_CA_CERTS` every Session in an Agent has. See the
+[self-dev Agent](../agents/self-dev/README.md#pi) for a worked example.
 
 Harness types are fixed when an Agent is created, so adding Pi means deleting and re-applying the Agent. An `agentd`
 built before Pi support cannot list Agents once one has `type: pi`; delete those before moving to an older build.

@@ -209,7 +209,7 @@ async fn access_is_idempotent_and_only_public_material_enters_the_guest() {
         fixture.backend.queue_execution_events_matching(
             is_environment_snapshot,
             environment(
-                b"PATH=/home/agent/.cargo/bin:/usr/local/go/bin:/usr/bin\0NODE_EXTRA_CA_CERTS=/.msb/tls/ca.pem\0GIT_USER_NAME=Agent #1 \"Reviewer\"\0TERM=dumb\0HOME=/image-home\0",
+                b"PATH=/home/agent/.cargo/bin:/usr/local/go/bin:/usr/bin\0NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/microsandbox-ca.pem\0GIT_USER_NAME=Agent #1 \"Reviewer\"\0TERM=dumb\0HOME=/image-home\0",
             ),
         );
     }
@@ -221,6 +221,15 @@ async fn access_is_idempotent_and_only_public_material_enters_the_guest() {
     let authorized = read_guest_file(&sandbox, "/var/lib/agent/ssh/authorized_keys")
         .await
         .expect("authorized_keys in guest");
+    let login_environment = read_guest_file(&sandbox, "/home/agent/.ssh/environment")
+        .await
+        .expect("login environment in guest");
+    assert!(
+        String::from_utf8_lossy(&login_environment)
+            .lines()
+            .any(|line| line == "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/microsandbox-ca.pem"),
+        "SSH logins keep the NODE_EXTRA_CA_CERTS the captured environment holds"
+    );
     let ssh_home = fixture.ssh_home();
     let client_private = std::fs::read_to_string(ssh_home.identity_path(record.id)).expect("client private key");
     let client_public = std::fs::read_to_string(ssh_home.public_identity_path(record.id)).expect("client public key");
