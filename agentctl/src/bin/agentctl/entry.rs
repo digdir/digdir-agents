@@ -26,7 +26,8 @@ enum Offer {
 
 /// The offer for `resolved`, the current directory's agent, from bare `agentctl` (`bare`) or a
 /// command that uses it. Nothing is offered without a person at the terminal, nor for a
-/// command whose agent is running or ambiguous, nor for an error other than finding none.
+/// command whose agent is running or ambiguous, nor for an error other than finding none or
+/// several, such as agentd not running.
 fn offer(resolved: &Result<Agent, Error>, bare: bool, interactive: bool) -> Option<Offer> {
     if !interactive {
         return None;
@@ -72,22 +73,32 @@ fn accepted(offer: &Offer, bare: bool) -> CommandResult<bool> {
     Ok(prompt::confirm_lines(&[&about, &ask])?)
 }
 
-/// `agentctl` on its own at a terminal: offers to open, start or set up the current
-/// directory's agent, and prints the help when declined.
-pub(crate) async fn bare(home: &ControlPlaneHome, client: &Client) -> CommandResult<ExitCode> {
-    let directory = std::env::current_dir().map_err(Error::from)?;
-    let manifest_here = directory.join(agent::manifest::MANIFEST_FILE).is_file();
-    let resolved = client.resolve_agent_variant(directory, None).await;
+/// `agentctl` on its own at a terminal, once `daemon` says whether agentd answered: offers to
+/// open, start or set up the current directory's agent, and prints the help when declined.
+/// `None` when there is nothing to offer because agentd is not running or the directory could not
+/// be resolved: the caller then prints the help as bare `agentctl` always did.
+pub(crate) async fn bare(
+    home: &ControlPlaneHome,
+    client: &Client,
+    daemon: Result<(), Error>,
+) -> CommandResult<Option<ExitCode>> {
+    let resolved = match daemon {
+        Ok(()) => match std::env::current_dir() {
+            Ok(directory) => client.resolve_agent_variant(directory, None).await,
+            Err(error) => Err(error.into()),
+        },
+        Err(error) => {
+            eprintln!("agentctl: agentd is not running: {error}");
+            Err(error)
+        }
+    };
     let Some(offer) = offer(&resolved, true, true) else {
-        return Err(crate::inference_error(
-            resolved.err().unwrap_or(Error::NotFound),
-            manifest_here,
-        ));
+        return Ok(None);
     };
     if !accepted(&offer, true)? {
         use clap::CommandFactory as _;
         crate::Arguments::command().print_help().map_err(Error::from)?;
-        return Ok(ExitCode::SUCCESS);
+        return Ok(Some(ExitCode::SUCCESS));
     }
     match offer {
         Offer::Open(_) => tui::run(home, client).await,
@@ -97,6 +108,7 @@ pub(crate) async fn bare(home: &ControlPlaneHome, client: &Client) -> CommandRes
         }
         Offer::Init => init::run(),
     }
+    .map(Some)
 }
 
 /// The agent a command goes on with, or how it ended instead.
@@ -250,6 +262,15 @@ mod tests {
         assert_eq!(offer(&not_found, true, true), Some(Offer::Init));
         assert_eq!(offer(&several, true, true), Some(Offer::Open(None)));
         assert_eq!(offer(&rpc(-32603), true, true), None);
+        // Without agentd, or without the directory, bare `agentctl` prints the help instead.
+        assert_eq!(
+            offer(&Err(Error::Daemon("automatic startup exited".into())), true, true),
+            None
+        );
+        assert_eq!(
+            offer(&Err(std::io::Error::other("no current directory").into()), true, true),
+            None
+        );
         assert_eq!(
             question(&Offer::Start("worker".into()), true)[1],
             "Start it and open agentctl tui?"

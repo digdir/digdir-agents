@@ -601,8 +601,8 @@ fn apply_error(error: Error, name: &str) -> CommandError {
 }
 
 fn run() -> CommandResult<ExitCode> {
-    let (home, command) = match Arguments::try_parse() {
-        Ok(arguments) => (arguments.home, Some(arguments.command)),
+    let (home, parsed) = match Arguments::try_parse() {
+        Ok(arguments) => (arguments.home, Ok(arguments.command)),
         // `agentctl` on its own, at a terminal, offers what the person probably meant.
         Err(error)
             if matches!(
@@ -615,17 +615,23 @@ fn run() -> CommandResult<ExitCode> {
                 .subcommand_required(false)
                 .arg_required_else_help(false)
                 .get_matches();
-            (options.get_one::<PathBuf>("home").cloned(), None)
+            (options.get_one::<PathBuf>("home").cloned(), Err(error))
         }
         Err(error) => error.exit(),
     };
     let home = ControlPlaneHome::resolve(home.as_deref())?;
     let client = Client::for_path(home.socket_path());
     LocalRuntime::new().map_err(Error::from)?.block_on(async move {
-        let Some(command) = command else {
-            self_update::resume_pending_before_command(&home)?;
-            ensure_daemon(&home, &client).await?;
-            return Box::pin(entry::bare(&home, &client)).await;
+        let command = match parsed {
+            Ok(command) => command,
+            // Help, as without a terminal, whenever there is nothing to offer.
+            Err(help) => {
+                self_update::resume_pending_before_command(&home)?;
+                let daemon = ensure_daemon(&home, &client).await;
+                return Box::pin(entry::bare(&home, &client, daemon))
+                    .await?
+                    .map_or_else(|| help.exit(), Ok);
+            }
         };
         if !matches!(command, Command::Self_ { .. }) {
             self_update::resume_pending_before_command(&home)?;
