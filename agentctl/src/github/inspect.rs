@@ -26,16 +26,7 @@ pub(super) struct Inspection {
 /// Errors never contain the token: they name the status, or the request that failed, which
 /// carries the token only in a header.
 pub(super) async fn inspect_at(api: &str, token: &str) -> Result<Inspection, Error> {
-    let response = reqwest::Client::new()
-        .get(format!("{api}/user"))
-        .timeout(REQUEST_TIMEOUT)
-        .bearer_auth(token)
-        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
-        .header(
-            reqwest::header::USER_AGENT,
-            concat!("agentctl/", env!("CARGO_PKG_VERSION")),
-        )
-        .send()
+    let response = request(&format!("{api}/user"), token)
         .await
         .map_err(|error| Error::Invalid(format!("could not reach GitHub to check the token: {error}")))?;
     let status = response.status();
@@ -60,6 +51,40 @@ pub(super) async fn inspect_at(api: &str, token: &str) -> Result<Inspection, Err
         expires_at,
         missing_scopes,
     })
+}
+
+/// Whether `token` can see `repository`, asking GitHub at `api`. GitHub answers an unselected or
+/// unapproved private repository as missing.
+///
+/// # Errors
+///
+/// Returns an error, never containing the token, when GitHub cannot be reached or answers
+/// anything but success, not found or forbidden.
+pub(super) async fn can_see_at(api: &str, token: &str, repository: &super::Repository) -> Result<bool, Error> {
+    let response = request(&format!("{api}/repos/{repository}"), token)
+        .await
+        .map_err(|error| Error::Invalid(format!("could not reach GitHub to check the token: {error}")))?;
+    match response.status() {
+        status if status.is_success() => Ok(true),
+        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::FORBIDDEN => Ok(false),
+        status => Err(Error::Invalid(format!(
+            "GitHub answered {status} when asked whether the token can see {repository}"
+        ))),
+    }
+}
+
+async fn request(url: &str, token: &str) -> reqwest::Result<reqwest::Response> {
+    reqwest::Client::new()
+        .get(url)
+        .timeout(REQUEST_TIMEOUT)
+        .bearer_auth(token)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .header(
+            reqwest::header::USER_AGENT,
+            concat!("agentctl/", env!("CARGO_PKG_VERSION")),
+        )
+        .send()
+        .await
 }
 
 #[derive(Deserialize)]

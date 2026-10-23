@@ -5,55 +5,200 @@ use std::fmt::Write as _;
 use agent::{
     Error,
     control_api::Client,
-    github::{GithubLogin, GithubToken},
+    github::{GithubLogin, GithubToken, Repository},
 };
 use time::OffsetDateTime;
+use zeroize::Zeroizing;
 
-use crate::{CommandResult, prompt};
+use crate::{CommandError, CommandResult, prompt};
 
-/// Has agentd keep a GitHub token for Agents of `owner`, read from standard input or pasted at
-/// the terminal. At the terminal, what GitHub says about the token is shown and must be confirmed
-/// before anything is stored; standard input leaves nothing to answer on, so it is shown after.
+/// Has agentd keep a GitHub token for Agents of `owner`, by default the owner of this
+/// repository's GitHub remote. At the terminal it walks through GitHub's pre-filled token form,
+/// reads the pasted token, and shows what GitHub says about it, with warnings, for the person to
+/// confirm before anything is stored; a rejected or declined token can be replaced. From standard
+/// input it stores at once and shows the same after.
 ///
 /// # Errors
 ///
-/// Returns an error when there is no terminal to paste on without `from_stdin`, no token is
-/// given, GitHub rejects it, or agentd cannot keep it.
-pub(crate) async fn login(client: &Client, owner: &str, from_stdin: bool) -> CommandResult<()> {
-    let owner = &github_owner(owner)?;
-    let token = if from_stdin {
-        crate::read_token_from_stdin()?
-    } else if prompt::interactive() {
-        prompt::secret(&format!("Paste the GitHub token for {owner} (it is not shown)"))?
-    } else {
+/// Returns an error when there is no terminal to paste on without `from_stdin`, no owner is given
+/// or found, no token is given, GitHub rejects it, or agentd cannot keep it.
+pub(crate) async fn login(client: &Client, owner: Option<&str>, from_stdin: bool) -> CommandResult<()> {
+    let owner = owner.map(github_owner).transpose()?;
+    let repository = this_repository();
+    if from_stdin {
+        let owner = match (owner, &repository) {
+            (Some(owner), _) => owner,
+            (None, Some(repository)) => {
+                eprintln!("Storing the token for {}, the owner of {repository}.", repository.owner);
+                repository.owner.clone()
+            }
+            (None, None) => {
+                return Err(Error::Invalid(
+                    "no GitHub remote here to take the owner from; name it with `--owner OWNER`".into(),
+                )
+                .into());
+            }
+        };
+        let token = crate::read_token_from_stdin()?;
+        let stored = client.github_login(&token, &owner).await?;
+        let now = OffsetDateTime::now_utc();
+        eprint!("{}", summary(&stored, &warnings(&stored, None, now), now));
+        println!("{}", stored_line(&stored));
+        return Ok(());
+    }
+    if !prompt::interactive() {
         return Err(Error::Invalid(
             "no terminal to paste the token on; pipe it to `agentctl github login --owner OWNER --from-stdin`".into(),
         )
         .into());
+    }
+    let owner = match owner {
+        Some(owner) => owner,
+        None => ask_owner(repository.as_ref())?,
     };
-    let now = OffsetDateTime::now_utc();
-    if !from_stdin {
-        // Checked here so nothing is stored before the person agrees; agentd checks it again.
-        let checked = agent::github::check(&token, owner).await?;
-        eprint!("{}", summary(&checked, now));
-        let question = format!(
-            "Agents for {} will use GitHub as {}. Store this token?",
-            checked.token.owner, checked.token.account.login
-        );
-        if !prompt::confirm_lines(&[&question])? {
-            eprintln!("Nothing was stored.");
-            return Ok(());
+    let repository = repository.filter(|repository| repository.owner == owner);
+    loop {
+        let token = paste_from_form(&owner, repository.as_ref()).await?;
+        match review(&token, &owner, repository.as_ref()).await {
+            Ok(true) => {
+                let stored = client.github_login(&token, &owner).await?;
+                println!("{}", stored_line(&stored));
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!("{}", crate::error_text(&error)),
+        }
+        if !prompt::confirm_lines(&["Try again with another token?"])? {
+            return Err(CommandError::Message("no GitHub token was stored".into()));
         }
     }
-    let stored = client.github_login(&token, owner).await?;
-    if from_stdin {
-        eprint!("{}", summary(&stored, now));
-    }
-    println!(
+}
+
+fn stored_line(stored: &GithubLogin) -> String {
+    format!(
         "Agents for {} now use GitHub as {}.",
         stored.token.owner, stored.token.account.login
+    )
+}
+
+/// The owner the person names, offering the owner of this repository's GitHub remote.
+fn ask_owner(repository: Option<&Repository>) -> Result<String, Error> {
+    let context = repository.map(|repository| format!("This repository is {repository} on GitHub."));
+    let mut lines = vec!["Which GitHub user or organization will the agents work for?"];
+    lines.extend(context.as_deref());
+    lines.push("Owner");
+    let default = repository.map(|repository| repository.owner.as_str());
+    let mut answer = prompt::ask(&lines, default)?;
+    loop {
+        // Never repeated: the answer may be a token pasted in the wrong place.
+        match github_owner(&answer) {
+            Ok(owner) => return Ok(owner),
+            Err(_) if answer.is_empty() => {}
+            Err(_) => eprintln!("That is not a GitHub user or organization name: letters, digits and inner hyphens."),
+        }
+        answer = prompt::ask(&["Owner"], default)?;
+    }
+}
+
+/// Shows the steps to create a fine-grained token, opens GitHub's pre-filled form, and reads the
+/// token the person pastes.
+async fn paste_from_form(owner: &str, repository: Option<&Repository>) -> Result<Zeroizing<String>, Error> {
+    let host = whoami::hostname().unwrap_or_else(|_| "this host".into());
+    // The name is short, so it takes the host's first label; the description has all of it.
+    let short_host = host.split('.').next().unwrap_or(&host);
+    let url = agent::github::token_form_url(
+        owner,
+        &format!("agentctl {owner} on {short_host}"),
+        &format!("Agents for {owner} on {host}, stored by agentctl"),
     );
-    Ok(())
+    let pick = repository.map_or_else(
+        || "the repositories the agents need".to_owned(),
+        |repository| format!("{repository} and any others the agents need"),
+    );
+    eprint!(
+        "\nCreate a fine-grained GitHub token for {owner}:\n\n  \
+         1. Sign in to github.com as the account the agents should act as, such as a bot account.\n  \
+         2. In the form below, the name, owner, a {days}-day lifetime and the permissions are filled in.\n  \
+         3. Under Repository access, choose \"Only select repositories\" and pick {pick}.\n     \
+         The form cannot be given the repositories.\n  \
+         4. Generate the token, copy it and paste it here.\n\n  {url}\n",
+        days = agent::github::TOKEN_LIFETIME_DAYS,
+    );
+    if crate::launch::launch_blocked(|name| std::env::var_os(name)).is_none()
+        && let Err(error) = crate::launch::open_url(&url).await
+    {
+        eprintln!("Could not open the browser ({error}); open the address above instead.");
+    }
+    prompt::secret(&format!("Paste the GitHub token for {owner} (it is not shown)"))
+}
+
+/// Asks GitHub what the token is and whether it sees `repository`, shows it with any warnings,
+/// and asks whether to store it.
+async fn review(token: &str, owner: &str, repository: Option<&Repository>) -> CommandResult<bool> {
+    // Checked here so nothing is stored before the person agrees; agentd checks it again.
+    let checked = agent::github::check(token, owner).await?;
+    let visible = match repository {
+        Some(repository) => Some((repository, agent::github::can_see(token, repository).await?)),
+        None => None,
+    };
+    let now = OffsetDateTime::now_utc();
+    eprint!("{}", summary(&checked, &warnings(&checked, visible, now), now));
+    let question = format!(
+        "Agents for {} will use GitHub as {}. Store this token?",
+        checked.token.owner, checked.token.account.login
+    );
+    Ok(prompt::confirm_lines(&[&question])?)
+}
+
+/// The GitHub repository of this directory's Git remote: `origin` when it is on GitHub, else the
+/// first remote that is. `None` outside a repository, or without a Git that runs unattended.
+fn this_repository() -> Option<Repository> {
+    let output = std::process::Command::new(git()?)
+        .args(["remote", "-v"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| repository_from_remotes(&String::from_utf8_lossy(&output.stdout)))?
+}
+
+/// Git on `PATH`. On macOS only with the Command Line Tools: without them Apple's `git` is a stub
+/// that opens an installer dialog instead of running, and Git elsewhere is rare enough to skip.
+fn git() -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH");
+    let git = crate::launch::find_program(&["git"], path.as_deref())?;
+    let tools = || {
+        crate::launch::find_program(&["xcode-select"], path.as_deref()).is_some_and(|program| {
+            std::process::Command::new(program)
+                .arg("-p")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+    };
+    (!cfg!(target_os = "macos") || tools()).then_some(git)
+}
+
+/// The GitHub repository `git remote -v` lists: `origin`'s when it is on GitHub, else the first.
+fn repository_from_remotes(remotes: &str) -> Option<Repository> {
+    let found: Vec<(bool, Repository)> = remotes
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let name = fields.next()?;
+            Some((name == "origin", Repository::from_remote(fields.next()?)?))
+        })
+        .collect();
+    found
+        .iter()
+        .find(|(origin, _)| *origin)
+        .or_else(|| found.first())
+        .map(|(_, repository)| repository.clone())
 }
 
 /// Lists the stored tokens: owner, account, kind and expiry.
@@ -90,8 +235,49 @@ fn github_owner(value: &str) -> Result<String, Error> {
     }
 }
 
-/// What GitHub said about a token: whom it acts as, its kind, owner and expiry, then warnings.
-fn summary(login: &GithubLogin, now: OffsetDateTime) -> String {
+/// What to warn of about a token: that it cannot see this repository (`visible`), expires
+/// within [`agent::github::EXPIRY_WARNING`], reaches every repository of its account, or lacks
+/// recommended scopes.
+fn warnings(login: &GithubLogin, visible: Option<(&Repository, bool)>, now: OffsetDateTime) -> Vec<String> {
+    let token = &login.token;
+    let account = &token.account.login;
+    let mut warnings = Vec::new();
+    if let Some((repository, false)) = visible {
+        warnings.push(if !token.kind.single_owner() {
+            format!("{account} cannot see {repository}; give the account access to it")
+        } else if token.owner.eq_ignore_ascii_case(account) {
+            format!("the token cannot see {repository}: it was probably not selected under Repository access")
+        } else {
+            format!(
+                "the token cannot see {repository}: it was not selected, or {} has yet to approve the token",
+                token.owner
+            )
+        });
+    }
+    if let Some(expires_at) = token
+        .expires_at
+        .filter(|expires_at| *expires_at <= now + agent::github::EXPIRY_WARNING)
+    {
+        warnings.push(format!("the token expires on {}, within a week", expires_at.date()));
+    }
+    if !token.kind.single_owner() {
+        warnings.push(format!(
+            "this {} token reaches every repository {account} can, not only {}'s",
+            token.kind.label(),
+            token.owner
+        ));
+    }
+    if !login.missing_scopes.is_empty() {
+        warnings.push(format!(
+            "the token lacks {}, so some `gh` and Git commands will fail",
+            login.missing_scopes.join(", ")
+        ));
+    }
+    warnings
+}
+
+/// What GitHub said about a token: whom it acts as, its kind, owner and expiry, then `warnings`.
+fn summary(login: &GithubLogin, warnings: &[String], now: OffsetDateTime) -> String {
     let token = &login.token;
     let account = &token.account;
     let mut text = format!(
@@ -103,21 +289,8 @@ fn summary(login: &GithubLogin, now: OffsetDateTime) -> String {
         token.owner,
         expiry(token, now)
     );
-    if !token.kind.single_owner() {
-        let _ = writeln!(
-            text,
-            "  Warning:  this {} token reaches every repository {} can, not only {}'s",
-            token.kind.label(),
-            account.login,
-            token.owner
-        );
-    }
-    if !login.missing_scopes.is_empty() {
-        let _ = writeln!(
-            text,
-            "  Warning:  the token lacks {}, so some `gh` and Git commands will fail",
-            login.missing_scopes.join(", ")
-        );
+    for warning in warnings {
+        let _ = writeln!(text, "  Warning:  {warning}");
     }
     text
 }
@@ -198,34 +371,105 @@ mod tests {
         }
     }
 
+    fn checked(owner: &str, kind: TokenKind, expires_at: Option<OffsetDateTime>, missing: &[&str]) -> GithubLogin {
+        GithubLogin {
+            token: token(owner, kind, expires_at),
+            missing_scopes: missing.iter().map(|scope| (*scope).to_owned()).collect(),
+        }
+    }
+
+    fn repository(owner: &str, name: &str) -> Repository {
+        Repository::from_remote(&format!("https://github.com/{owner}/{name}")).expect("repository")
+    }
+
     #[test]
-    fn the_summary_names_the_account_and_warns_of_broad_tokens_and_missing_scopes() {
-        let narrow = GithubLogin {
-            token: token("digdir", TokenKind::FineGrained, Some(january())),
-            missing_scopes: Vec::new(),
-        };
+    fn the_summary_names_the_account_and_lists_the_warnings() {
+        let narrow = checked("digdir", TokenKind::FineGrained, Some(january()), &[]);
+        let before = january() - time::Duration::days(30);
         assert_eq!(
-            summary(&narrow, january() - time::Duration::days(1)),
+            summary(&narrow, &warnings(&narrow, None, before), before),
             "\n  Acts as:  digdir-bot (digdir bot <1+digdir-bot@users.noreply.github.com>)\n  Kind:     fine-grained\n  For:      digdir\n  Expires:  2027-01-13\n"
         );
-        let broad = GithubLogin {
-            token: token("digdir", TokenKind::Classic, None),
-            missing_scopes: vec!["workflow".into(), "read:project".into()],
-        };
-        let text = summary(&broad, january());
+        let broad = checked("digdir", TokenKind::Classic, None, &["workflow"]);
+        let text = summary(&broad, &warnings(&broad, None, january()), january());
         assert!(text.contains("  Expires:  none stated\n"), "{text}");
         assert!(
-            text.contains(
-                "  Warning:  this classic token reaches every repository digdir-bot can, not only digdir's\n"
+            text.ends_with(
+                "  Warning:  this classic token reaches every repository digdir-bot can, not only digdir's\n\
+                 \x20 Warning:  the token lacks workflow, so some `gh` and Git commands will fail\n"
             ),
             "{text}"
         );
-        assert!(
-            text.contains(
-                "  Warning:  the token lacks workflow, read:project, so some `gh` and Git commands will fail\n"
-            ),
-            "{text}"
+    }
+
+    #[test]
+    fn each_warning_is_raised_by_its_own_condition() {
+        let case_web = repository("digdir", "case-web");
+        let fine = checked("digdir", TokenKind::FineGrained, Some(january()), &[]);
+        let long_before = january() - time::Duration::days(8);
+        assert_eq!(
+            warnings(&fine, Some((&case_web, true)), long_before),
+            Vec::<String>::new()
         );
+        assert_eq!(warnings(&fine, None, long_before), Vec::<String>::new());
+
+        assert_eq!(
+            warnings(&fine, Some((&case_web, false)), long_before),
+            ["the token cannot see digdir/case-web: it was not selected, or digdir has yet to approve the token"]
+        );
+        let personal = GithubLogin {
+            token: GithubToken {
+                owner: "digdir-bot".into(),
+                ..fine.token.clone()
+            },
+            missing_scopes: Vec::new(),
+        };
+        let own = repository("digdir-bot", "notes");
+        assert_eq!(
+            warnings(&personal, Some((&own, false)), long_before),
+            ["the token cannot see digdir-bot/notes: it was probably not selected under Repository access"]
+        );
+
+        assert_eq!(
+            warnings(&fine, None, january() - time::Duration::days(6)),
+            ["the token expires on 2027-01-13, within a week"]
+        );
+
+        let classic = checked("digdir", TokenKind::Classic, None, &["read:org"]);
+        assert_eq!(
+            warnings(&classic, Some((&case_web, false)), january()),
+            [
+                "digdir-bot cannot see digdir/case-web; give the account access to it",
+                "this classic token reaches every repository digdir-bot can, not only digdir's",
+                "the token lacks read:org, so some `gh` and Git commands will fail",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_repository_is_origins_on_github_else_the_first_on_github() {
+        let remotes = "\
+fork\tgit@github.com:someone/case-web.git (fetch)
+fork\tgit@github.com:someone/case-web.git (push)
+origin\thttps://github.com/Digdir/case-web.git (fetch)
+origin\thttps://github.com/Digdir/case-web.git (push)
+";
+        assert_eq!(repository_from_remotes(remotes), Some(repository("digdir", "case-web")));
+        let without_origin = "\
+gitlab\thttps://gitlab.com/digdir/case-web.git (fetch)
+origin\tgit@gitlab.com:digdir/case-web.git (fetch)
+upstream\tssh://git@github.com/altinn/app-lib.git (fetch)
+z\thttps://github.com/zzz/other (fetch)
+";
+        assert_eq!(
+            repository_from_remotes(without_origin),
+            Some(repository("altinn", "app-lib"))
+        );
+        assert_eq!(
+            repository_from_remotes("origin\thttps://gitlab.com/a/b.git (fetch)\n"),
+            None
+        );
+        assert_eq!(repository_from_remotes(""), None);
     }
 
     #[test]
@@ -261,7 +505,7 @@ altinn  altinn-bot  other         none stated
     async fn a_token_given_as_the_owner_is_refused_without_being_repeated() {
         let client = Client::for_path("/nonexistent/agentctl.sock".into());
         for result in [
-            login(&client, "ghp_FAKE_canary", true).await,
+            login(&client, Some("ghp_FAKE_canary"), true).await,
             logout(&client, "ghp_FAKE_canary").await,
         ] {
             let Err(error) = result else {
@@ -281,7 +525,8 @@ altinn  altinn-bot  other         none stated
     async fn without_a_terminal_a_login_needs_the_token_on_standard_input() {
         assert!(!prompt::interactive(), "tests run without a terminal");
         let client = Client::for_path("/nonexistent/agentctl.sock".into());
-        let Err(crate::CommandError::Agent(Error::Invalid(message))) = login(&client, "digdir", false).await else {
+        let Err(crate::CommandError::Agent(Error::Invalid(message))) = login(&client, Some("digdir"), false).await
+        else {
             panic!("refused before reaching agentd");
         };
         assert!(message.contains("--from-stdin"), "{message}");

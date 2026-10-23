@@ -568,13 +568,16 @@ enum CodexCommand {
 enum GithubCommand {
     /// Store a GitHub token for agents of one user or organization, separate from any `gh` login.
     ///
-    /// Paste the token when asked; it is not shown. What GitHub says about it is shown before
-    /// anything is stored. Agents whose manifest has `accounts: [{type: github, owner: OWNER}]`
-    /// use it, and those that failed for want of it start again.
+    /// At a terminal it opens GitHub's form for a fine-grained token, with everything but the
+    /// repositories filled in; paste the token when asked; it is not shown. What GitHub says about
+    /// it is shown before anything is stored. Agents whose manifest has
+    /// `accounts: [{type: github, owner: OWNER}]` use it, and those that failed for want of it
+    /// start again.
     Login {
-        /// The GitHub user or organization whose repositories the agents work on.
+        /// The GitHub user or organization whose repositories the agents work on; by default the
+        /// owner of this repository's GitHub remote.
         #[arg(long)]
-        owner: String,
+        owner: Option<String>,
         /// Read the token from standard input instead, and store it without asking.
         #[arg(long)]
         from_stdin: bool,
@@ -719,7 +722,9 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             println!("{} authentication stored", imported.provider);
         }
         Command::Github { command } => match command {
-            GithubCommand::Login { owner, from_stdin } => github::login(client, &owner, from_stdin).await?,
+            GithubCommand::Login { owner, from_stdin } => {
+                github::login(client, owner.as_deref(), from_stdin).await?;
+            }
             GithubCommand::List => github::list(client).await?,
             GithubCommand::Logout { owner } => github::logout(client, &owner).await?,
         },
@@ -2213,7 +2218,7 @@ mod tests {
             parse(&["agentctl", "github", "login", "--owner", "digdir", "--from-stdin"]),
             Ok(Command::Github {
                 command: GithubCommand::Login { owner, from_stdin: true }
-            }) if owner == "digdir"
+            }) if owner.as_deref() == Some("digdir")
         ));
         assert!(matches!(
             parse(&["agentctl", "github", "logout", "digdir"]),
@@ -2222,8 +2227,16 @@ mod tests {
             }) if owner == "digdir"
         ));
         assert!(
-            parse(&["agentctl", "github", "login"]).is_err(),
-            "the owner is required"
+            matches!(
+                parse(&["agentctl", "github", "login"]),
+                Ok(Command::Github {
+                    command: GithubCommand::Login {
+                        owner: None,
+                        from_stdin: false
+                    }
+                })
+            ),
+            "the owner defaults to this repository's"
         );
         for arguments in [
             &[

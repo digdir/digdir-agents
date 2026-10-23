@@ -58,6 +58,24 @@ pub(crate) fn confirm_lines(lines: &[&str]) -> Result<bool, Error> {
     }
 }
 
+/// Asks for a line of text on standard error, what it is about first and the label last; Enter
+/// alone takes `default`, shown in brackets, when there is one.
+///
+/// # Errors
+///
+/// Returns an error when standard input cannot be read or ends.
+pub(crate) fn ask(lines: &[&str], default: Option<&str>) -> Result<String, Error> {
+    pose(
+        lines,
+        &default.map_or_else(|| ": ".to_owned(), |default| format!(" [{default}]: ")),
+    );
+    let answer = read_answer()?;
+    Ok(match default {
+        Some(default) if answer.is_empty() => default.to_owned(),
+        _ => answer,
+    })
+}
+
 /// Reads a secret typed or pasted at the terminal, without echoing it, until Enter.
 ///
 /// # Errors
