@@ -1,4 +1,0 @@
-triggers/*
-!triggers/.gitkeep
-workspaces/
-*.log
