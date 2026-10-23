@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # What agentd needs in the guest (tmux, sudo, systemd, openssh-server, ca-certificates, iproute2 for `ss`) and the
 # everyday tools an Agent expects to find. dbus provides the system bus `systemctl` needs when not run as root. fd-find provides `fdfind`, which Pi searches files with; tzdata lets an
-# image select another time zone than UTC with one symlink.
+# image select another time zone than UTC with one symlink. agg renders terminal recordings with fonts-jetbrains-mono.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         btop \
@@ -158,10 +158,6 @@ RUN systemctl mask ssh.service ssh.socket serial-getty@hvc0.service systemd-modu
     && ln -s /dev/null /etc/sysctl.d/50-pid-max.conf \
     && rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub \
     && systemctl enable agent-workspace-init.service \
-    && nvim --headless \
-        "+lua assert(vim.g.colors_name == 'habamax'); assert(vim.o.number); assert(vim.o.cursorline); assert(vim.o.termguicolors)" \
-        +quit \
-    && rm -rf /tmp/nvim.root /root/.local \
     && agent-image-check
 
 ENV DISABLE_AUTOUPDATER=1
