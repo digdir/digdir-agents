@@ -25,10 +25,6 @@ told apart from what they do, and the account reaches only what it is given.
 no token, or an expired one, runs without GitHub access and status names the login; once the person has run it, the
 token works at once.
 
-Any manifest applied on this machine can name any stored owner, as any manifest can use the host's harness logins, so
-the person should apply manifests only from repositories they trust. Tightening this is tracked in
-https://github.com/digdir/digdir-agents/issues/259.
-
 A manifest cannot have both an account and its own `GITHUB_TOKEN`. To move an agent from a token in `.env`, remove
 the `GITHUB_TOKEN` secret from `agent.yaml` and the line from `.env`, add the account, have the person log in, and
 apply again.

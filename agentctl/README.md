@@ -358,10 +358,6 @@ a bot, keeps what Agents do apart from what you do.
 one, runs without GitHub access, and `agentctl status` names the login. `agentctl github logout OWNER` ends Agents'
 GitHub access at once and nothing else; the token keeps working on GitHub until it expires or you revoke it there.
 
-Any manifest applied on this machine can name any stored owner, as any manifest can use the host's harness logins, so
-apply manifests only from repositories you trust. Tightening this is tracked in
-[#259](https://github.com/digdir/digdir-agents/issues/259).
-
 ## Current scope and direction
 
 The current milestone provides persistent Agents and Sessions, real Microsandbox lifecycle, mediated harness and GitHub
