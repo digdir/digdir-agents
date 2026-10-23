@@ -40,8 +40,8 @@ pub(super) fn script() -> Result<String, serde_json::Error> {
     SCRIPT.render()
 }
 
-/// The `hooks` value of Claude Code's settings. Bash permission requests are
-/// approved; other permission requests and activity events report to the platform.
+/// The `hooks` value of Claude Code's settings. Automatically approve Bash requests;
+/// notify agentd about other permission prompts and Session activity.
 pub(super) fn configuration(hook_path: &str) -> serde_json::Value {
     let command = serde_json::json!({ "type": "command", "command": format!("node {hook_path}") });
     let hooks = SCRIPT
