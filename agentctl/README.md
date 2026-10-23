@@ -215,7 +215,7 @@ own vocabulary. The published manifests select `model: fable` for Claude Code be
 Fable in the `/model` picker.
 `spec.instructions` names one harness-neutral Agent instruction file. Every declared Harness Adapter installs the
 Agent's instructions at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md`
-for Codex and `~/.pi/agent/AGENTS.md` for Pi.
+for Codex and `~/.pi/agent/AGENTS.md` for Pi, replacing a file the image or `home` put there.
 Repository-local instruction files continue to be discovered by the harness itself.
 
 ### Instructions

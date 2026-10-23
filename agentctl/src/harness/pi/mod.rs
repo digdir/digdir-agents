@@ -3,7 +3,7 @@
 //! The adapter knows nothing about providers, gateways or models: an Agent configures those
 //! itself, through Pi's own files under `~/.pi/agent/` (its home overlay or image), environment
 //! variables and `spec.secrets`. The platform contributes only what every Pi user needs: the
-//! activity extension, the manifest's instructions in `~/.pi/agent/AGENTS.md`, skills and the launch.
+//! activity extension, the Agent's instructions in `~/.pi/agent/AGENTS.md`, skills and the launch.
 
 use std::fmt::Write as _;
 
@@ -17,8 +17,8 @@ mod extension;
 pub(super) mod transcript;
 
 /// Where bootstrap installs what the platform adds to Pi, away from `~/.pi/agent/`, which
-/// belongs to the Agent: nothing there is written, and Pi does not discover anything here on
-/// its own. The launch loads the extension.
+/// belongs to the Agent apart from the instructions in `AGENTS.md`; Pi does not discover anything
+/// here on its own. The launch loads the extension.
 fn platform_directory(home: &str) -> String {
     format!("{home}/.local/share/agent-platform/pi")
 }
@@ -34,8 +34,8 @@ fn extension_path(home: &str) -> String {
     format!("{}/activity.ts", platform_directory(home))
 }
 
-/// The manifest's instructions, in Pi's global context file, as `~/.codex/AGENTS.md` holds them
-/// for Codex.
+/// The Agent's instructions, in Pi's global context file, as `~/.codex/AGENTS.md` holds them
+/// for Codex. Bootstrap writes it on every pass, replacing what the image or `home` put there.
 fn instructions_path(home: &str) -> String {
     format!("{home}/.pi/agent/AGENTS.md")
 }
