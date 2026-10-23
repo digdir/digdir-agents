@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashSet, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
 
 use ignore::WalkBuilder;
 
@@ -49,34 +49,46 @@ pub struct ControlPlane {
 /// Agents whose stop ends their Sandbox at once, without letting the guest shut down.
 ///
 /// The Control Plane records the request and the reconciler carries it out, also by cutting
-/// short a graceful stop already under way.
+/// short a graceful stop already under way. Each request belongs to the generation that stored
+/// the stop, so only a start stored after it can supersede it.
 #[derive(Clone, Default)]
 pub struct ImmediateStops {
-    requested: Rc<RefCell<HashSet<AgentId>>>,
+    requested: Rc<RefCell<HashMap<AgentId, u64>>>,
     changed: Rc<tokio::sync::Notify>,
 }
 
 impl ImmediateStops {
-    /// Asks for the Agent's stop to be immediate, waking a graceful stop under way.
-    pub(crate) fn request(&self, id: AgentId) {
-        self.requested.borrow_mut().insert(id);
+    /// Asks for the Agent's stop stored at `generation` to be immediate, waking a graceful stop
+    /// under way.
+    pub(crate) fn request(&self, id: AgentId, generation: u64) {
+        self.requested.borrow_mut().insert(id, generation);
         self.changed.notify_waiters();
     }
 
-    /// Whether the Agent's stop was asked to be immediate, forgetting the request.
-    pub(crate) fn take(&self, id: AgentId) -> bool {
+    /// The generation of the stop asked to be immediate, forgetting the request.
+    pub(crate) fn take(&self, id: AgentId) -> Option<u64> {
         self.requested.borrow_mut().remove(&id)
     }
 
-    /// Completes, forgetting the request, once the Agent's stop is asked to be immediate.
-    pub(crate) async fn requested(&self, id: AgentId) {
+    /// Forgets a request that a start stored at `generation` superseded. A pass that read the
+    /// Agent before its stop was stored sees an older generation and keeps the request.
+    pub(crate) fn supersede(&self, id: AgentId, generation: u64) {
+        let mut requested = self.requested.borrow_mut();
+        if requested.get(&id).is_some_and(|stop| *stop < generation) {
+            requested.remove(&id);
+        }
+    }
+
+    /// Completes, forgetting the request, once the Agent's stop is asked to be immediate, and
+    /// returns the generation of that stop.
+    pub(crate) async fn requested(&self, id: AgentId) -> u64 {
         loop {
             let changed = self.changed.notified();
             tokio::pin!(changed);
             // Registered before the check, so a request between the two still wakes it.
             changed.as_mut().enable();
-            if self.take(id) {
-                return;
+            if let Some(generation) = self.take(id) {
+                return generation;
             }
             changed.await;
         }
@@ -449,12 +461,11 @@ impl ControlPlane {
     /// Returns an error when the Agent does not exist, is being deleted, or cannot be stored.
     pub async fn stop_now(&self, name: &str) -> Result<Agent, Error> {
         let id = self.store.get_by_name(name).await?.id;
-        self.immediate_stops.request(id);
-        let stopping = self.set_run_state(name, crate::RunState::Stopped).await;
-        if stopping.is_err() {
-            self.immediate_stops.take(id);
-        }
-        stopping
+        let stopping = self.set_run_state(name, crate::RunState::Stopped).await?;
+        // Requested once the stop's generation is known; a graceful stop a pass began meanwhile
+        // is cut short by it.
+        self.immediate_stops.request(id, stopping.metadata.generation);
+        Ok(stopping)
     }
 
     /// Marks an Agent for asynchronous release. Repeated deletion is safe.

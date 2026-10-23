@@ -87,10 +87,10 @@ impl Reconciler {
         };
         if record.agent.metadata.deletion_timestamp.is_some() {
             // A kill asked for before the delete still ends the Sandbox at once.
-            if self.immediate_stops.take(id)
+            if let Some(generation) = self.immediate_stops.take(id)
                 && let Err(error) = self.sandboxes.stop(&record, true).await
             {
-                self.immediate_stops.request(id);
+                self.immediate_stops.request(id, generation);
                 return Err(error);
             }
             return self.release(&record).await;
@@ -98,8 +98,9 @@ impl Reconciler {
         if record.agent.spec.is_stopped() {
             return self.stop(&record).await;
         }
-        // A start overtook an immediate stop that no pass carried out, so a later stop is graceful.
-        self.immediate_stops.take(id);
+        // A start stored after an immediate stop that no pass carried out supersedes it, so a
+        // later stop is graceful.
+        self.immediate_stops.supersede(id, record.agent.metadata.generation);
 
         if record.agent.status.sandbox.is_none() {
             let provider = match self.sandboxes.resolve(&record).await {
@@ -134,22 +135,27 @@ impl Reconciler {
         } else {
             SandboxObserver::new(record.id, self.provisioning.clone())
         };
-        // An immediate stop asked for while the Sandbox is set up abandons the setup: the stop was
-        // stored first, so the controller's next pass finds the Agent stopped and kills it.
-        let ensuring = tokio::select! {
-            ensured = self.sandboxes.ensure(&record, observer.reporter()) => ensured,
-            () = self.immediate_stops.requested(record.id) => {
-                self.abandon_setup(&observer, record.id);
-                return Ok(());
+        // An immediate stop asked for while the Sandbox or its access is set up abandons the
+        // setup: the stop was stored first, so the controller's next pass finds the Agent stopped
+        // and kills it.
+        tokio::select! {
+            set_up = self.set_up(&record, &observer) => set_up,
+            generation = self.immediate_stops.requested(record.id) => {
+                self.abandon_setup(&observer, record.id, generation);
+                Ok(())
             }
-        };
-        let ensured = match ensuring {
+        }
+    }
+
+    /// Ensures the Sandbox of a running Agent, reconciles its declared access and records it Ready.
+    async fn set_up(&self, record: &AgentRecord, observer: &SandboxObserver) -> Result<(), Error> {
+        let ensured = match self.sandboxes.ensure(record, observer.reporter()).await {
             Ok(ensured) => ensured,
             Err(error @ Error::SandboxUnresponsive(_)) => {
                 let assignment = record.agent.status.sandbox.clone();
-                return self.record_unresponsive(&record, assignment, &observer, error).await;
+                return self.record_unresponsive(record, assignment, observer, error).await;
             }
-            Err(error) => return self.record_ensure_failure(&record, &observer, error).await,
+            Err(error) => return self.record_ensure_failure(record, observer, error).await,
         };
 
         let provider = record
@@ -172,7 +178,7 @@ impl Reconciler {
             "SandboxRunning",
             "",
         )];
-        self.reconcile_declared_access(&record, &ensured.sandbox, &assignment, &mut conditions, &observer)
+        self.reconcile_declared_access(record, &ensured.sandbox, &assignment, &mut conditions, observer)
             .await?;
         conditions.insert(
             1,
@@ -181,7 +187,7 @@ impl Reconciler {
         conditions.push(condition(Condition::READY, ConditionStatus::True, "SandboxReady", ""));
         let status = Status::observed(record.agent.metadata.generation, Some(assignment), conditions);
         // As on failure, readiness is stored before followers see the pass end.
-        self.update_status(&record, status, None).await?;
+        self.update_status(record, status, None).await?;
         observer.succeeded();
         if ensured.runtime_restarted {
             self.notify_sessions(record.id);
@@ -342,12 +348,12 @@ impl Reconciler {
 
     /// Ends a setup pass that an immediate stop overtook, saying so in its progress, and keeps the
     /// request for the stop pass that follows.
-    fn abandon_setup(&self, observer: &SandboxObserver, id: crate::AgentId) {
+    fn abandon_setup(&self, observer: &SandboxObserver, id: crate::AgentId, generation: u64) {
         observer.failed(&ReconcileFailure {
             kind: FailureKind::Transient,
             message: "setup was abandoned for an immediate stop".into(),
         });
-        self.immediate_stops.request(id);
+        self.immediate_stops.request(id, generation);
     }
 
     /// Stops the Sandbox of an Agent whose run state is Stopped and records it
@@ -368,19 +374,21 @@ impl Reconciler {
             SandboxObserver::new(record.id, self.provisioning.clone())
         };
         let phase = observer.reporter().start_phase(crate::progress::SANDBOX_STOP).await;
-        let (stopped, killed) = if self.immediate_stops.take(record.id) {
-            (self.sandboxes.stop(record, true).await, true)
+        let (stopped, killed) = if let Some(generation) = self.immediate_stops.take(record.id) {
+            (self.sandboxes.stop(record, true).await, Some(generation))
         } else {
             // An immediate stop asked for while the guest shuts down kills it instead.
             tokio::select! {
-                stopped = self.sandboxes.stop(record, false) => (stopped, false),
-                () = self.immediate_stops.requested(record.id) => (self.sandboxes.stop(record, true).await, true),
+                stopped = self.sandboxes.stop(record, false) => (stopped, None),
+                generation = self.immediate_stops.requested(record.id) => {
+                    (self.sandboxes.stop(record, true).await, Some(generation))
+                }
             }
         };
         if let Err(error) = stopped {
-            if killed {
+            if let Some(generation) = killed {
                 // The retry kills too, as it was asked.
-                self.immediate_stops.request(record.id);
+                self.immediate_stops.request(record.id, generation);
             }
             let failure = ReconcileFailure::classify(&error);
             let stored = self.record_failure(record, Condition::REASON_STOPPING, &failure).await;
