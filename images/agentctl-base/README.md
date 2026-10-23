@@ -144,13 +144,14 @@ import { createRequire } from 'node:module';
 const { chromium } = createRequire(import.meta.url)('playwright');
 ```
 
-A repository pinned to another Playwright installs its own build beside the pinned one, as the agent user:
-`npx playwright install chromium`. The pinned build stays root's, so neither the agent nor Playwright's cleanup of
-unused builds can remove it. If that Playwright needs more system packages, install them with
+A repository that uses another Playwright version installs its build beside the base's: run
+`npx playwright install chromium` in the repository, after `npm install`, as the agent user. The base's build belongs
+to root, so the agent cannot remove it, and Playwright's cleanup of unused builds keeps it while the base's
+`playwright-cli` is installed. If that Playwright needs more system packages, install them with
 `sudo npx playwright install-deps chromium`.
 
-To bake another build into an image, install it as root from a Playwright package the image keeps, so that the build
-stays referenced and readable to everyone:
+To bake another build into an image, install it as root from a Playwright package that stays in the image, so that
+Playwright's cleanup keeps the build and every user can read it:
 
 ```dockerfile
 USER root
@@ -172,10 +173,10 @@ by the Sandbox boundary. It persists with the home directory across Stop and Sta
 
 ## Using another Node.js
 
-The base's Node.js is in `/usr/local`, where it runs agentd's hooks and Claude Code's status line, which are plain Node
-scripts, and the globally installed harnesses. An image that needs another Node.js installs it over `/usr/local` from
-the official tarball, as the base does; the harnesses stay where they are. Remove the old npm first so that its files
-do not mix with the new one's. Node.js 26 also needs `libatomic1`, and ships without Corepack.
+The base installs Node.js in `/usr/local`. It runs agentd's hooks, Claude Code's status line and the global harnesses.
+An image that needs another Node.js installs it over `/usr/local` from the official tarball, as the base does; the
+harnesses stay where they are. Remove the old npm first so that its files do not mix with the new one's. Node.js 26 also
+needs `libatomic1`, and ships without Corepack.
 
 ```dockerfile
 USER root
@@ -199,8 +200,8 @@ RUN apt-get update \
 RUN agent-image-check
 ```
 
-Pi needs Node.js 22.19.0 or later and Codex 16 or later; Claude Code is a native binary. `agent-image-check` runs
-`node`, `claude`, `codex` and `pi --version`, so it fails a build whose Node.js breaks a harness.
+Pi needs Node.js 22.19.0 or later, and Codex needs Node.js 16 or later; Claude Code is a native binary.
+`agent-image-check` runs `node` and each harness with `--version`, so it fails a build whose Node.js cannot start one.
 
 ## Changing them
 
