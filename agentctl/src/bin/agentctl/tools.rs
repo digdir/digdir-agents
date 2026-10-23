@@ -573,6 +573,25 @@ pub(crate) fn outdated_agents(home: &ControlPlaneHome, agents: &[agent::Agent]) 
 /// agent and the manifest it was created from, or else the current directory when it has a
 /// `tools.yaml`.
 async fn target(client: &Client, agent: Option<&str>) -> CommandResult<(PathBuf, Option<(String, PathBuf)>)> {
+    if let Some((folder, agent)) = agent_folder(client, agent).await? {
+        return Ok((folder, Some(agent)));
+    }
+    let directory = std::env::current_dir().map_err(Error::from)?;
+    if directory.join(TOOLS_FILE).is_file() {
+        return Ok((directory, None));
+    }
+    if directory.join(agent::manifest::MANIFEST_FILE).is_file() {
+        return Err(kept_by_hand(&directory).into());
+    }
+    Err(Error::Invalid("no agent here; `agentctl init` sets one up, or pass --agent NAME".into()).into())
+}
+
+/// The folder of `agent`, or of the current directory's agent, with its name and the manifest it
+/// was created from; `None` when no agent matches the current directory.
+pub(crate) async fn agent_folder(
+    client: &Client,
+    agent: Option<&str>,
+) -> CommandResult<Option<(PathBuf, (String, PathBuf))>> {
     let directory = std::env::current_dir().map_err(Error::from)?;
     let found = match agent {
         Some(name) => Some(client.get(name).await?),
@@ -596,15 +615,9 @@ async fn target(client: &Client, agent: Option<&str>) -> CommandResult<(PathBuf,
             .and_then(|provenance| provenance.manifest_path.clone())
         && let Some(folder) = manifest.parent().map(Path::to_path_buf)
     {
-        return Ok((folder, Some((agent.metadata.name, manifest))));
+        return Ok(Some((folder, (agent.metadata.name, manifest))));
     }
-    if directory.join(TOOLS_FILE).is_file() {
-        return Ok((directory, None));
-    }
-    if directory.join(agent::manifest::MANIFEST_FILE).is_file() {
-        return Err(kept_by_hand(&directory).into());
-    }
-    Err(Error::Invalid("no agent here; `agentctl init` sets one up, or pass --agent NAME".into()).into())
+    Ok(None)
 }
 
 /// The answer for an agent folder without `tools.yaml`, whose image is not agentctl's to write.

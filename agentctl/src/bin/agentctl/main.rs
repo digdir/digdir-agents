@@ -24,6 +24,7 @@ mod init;
 mod launch;
 mod progress;
 mod prompt;
+mod repos;
 mod self_update;
 mod tools;
 mod tui;
@@ -105,6 +106,17 @@ enum Command {
         agent: Option<String>,
         #[command(subcommand)]
         command: Option<ToolsCommand>,
+    },
+    /// Show or change the GitHub repositories an agent clones.
+    ///
+    /// The current directory's agent, or the one `--agent` names. A running agent clones a
+    /// repository added here within a minute, without being recreated.
+    Repos {
+        /// The agent whose repositories to show or change.
+        #[arg(long, global = true)]
+        agent: Option<String>,
+        #[command(subcommand)]
+        command: Option<ReposCommand>,
     },
     /// Let agents work on GitHub, and manage the accounts they use.
     Github {
@@ -574,6 +586,22 @@ enum ToolsCommand {
 }
 
 #[derive(Subcommand)]
+enum ReposCommand {
+    /// Add a GitHub repository, as `owner/name`.
+    Add {
+        repo: String,
+        /// Where it goes below the working directory, when not its name.
+        #[arg(long)]
+        path: Option<String>,
+        /// What the agent uses it for, in a line.
+        #[arg(long)]
+        about: Option<String>,
+    },
+    /// Remove a repository from the list; the agent keeps its clone.
+    Remove { repo: String },
+}
+
+#[derive(Subcommand)]
 enum InstructionsCommand {
     /// Open the host-wide instructions in your editor, creating the file if needed.
     ///
@@ -834,6 +862,13 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         Command::Instructions {
             command: InstructionsCommand::Edit,
         } => edit_instructions(home)?,
+        Command::Repos { agent, command } => {
+            let change = command.map(|command| match command {
+                ReposCommand::Add { repo, path, about } => repos::Change::Add { repo, path, about },
+                ReposCommand::Remove { repo } => repos::Change::Remove { repo },
+            });
+            repos::run(client, agent.as_deref(), change).await?;
+        }
         Command::Tools { agent, command } => {
             let (add, remove) = match command {
                 Some(ToolsCommand::Add { tools }) => (tools, Vec::new()),

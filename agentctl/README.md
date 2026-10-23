@@ -48,6 +48,7 @@ altinn-studio:
 | `agent.yaml` | The manifest, with every setting a person is likely to change later; those that do not apply yet are commented out |
 | `agent.worktree.yaml` | A variant of a cloning `agent.yaml` that works on this checkout through a read-write mount instead |
 | `tools.yaml` | The tools the image installs: containers (Podman with `docker` and `docker compose`), a browser, toolchains at the versions the repository declares (Node.js and Corepack, .NET, Go, Rust, Python, Java and Maven), Ubuntu packages and global npm packages. Every manifest in the folder builds the same image |
+| `repositories.yaml` | The GitHub repositories the agent clones into its working directory, with where each goes and what it is for. A running agent clones one added here within a minute, without being recreated |
 | `Dockerfile` | Starts from an [`agentctl-base`](../images/agentctl-base) image. Its generated block comes from `tools.yaml`, rewritten whenever an agent is created from the folder; steps after the block are yours. It ends with `agent-image-check`, and Docker on your machine builds it |
 | `instructions.md` | The agent's own instructions, installed for every harness beside the checkout's `CLAUDE.md` or `AGENTS.md` |
 | `home/` | Files copied into `/home/agent`, such as dotfiles |
@@ -207,8 +208,15 @@ runtime must establish the common interface before one is introduced.
 See the [harness compatibility test plan](HARNESSES.md) when updating harness installations.
 
 Agent images own installed tools and optional workspace initialization. Repository checkouts are persistent runtime
-data beneath `/home/agent/code`; they are not declared, updated or deleted by the Agent controller. Sessions may clone
-repositories they can access, and image init may make a simple best-effort checkout for convenience.
+data beneath `/home/agent/code`; the Agent controller never updates or deletes them. Sessions may clone repositories
+they can access, and image init may make a simple best-effort checkout for convenience.
+
+An agent folder's `repositories.yaml` lists GitHub repositories as `repo: owner/name`, each with an optional `path`
+below the working directory and an optional `about` line saying what the agent uses it for. On every pass, Agent setup
+writes the list to `/etc/agent-workspace.d/agentctl.list` and starts the base image's `agent-workspace-init.service`,
+which clones each repository that is not there yet, so a running Agent clones one added later without being recreated.
+A repository removed from the list keeps its checkout. An image not built on `agentctl-base` cannot clone them, and
+setup fails while the file lists any. `agentctl repos` shows the list, and `agentctl repos add` and `remove` change it.
 `spec.sandbox.mounts` can instead attach caller-owned host directories or temporary memory filesystems when the selected
 Sandbox Provider supports them; these attachments are immutable for the Agent incarnation.
 
