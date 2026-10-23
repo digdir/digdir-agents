@@ -581,7 +581,7 @@ enum GithubCommand {
     },
     /// List the stored tokens: owner, account, kind and expiry.
     List,
-    /// Forget the token stored for a user or organization; agents lose GitHub access at once.
+    /// Forget the token stored for a user or organization; agents lose GitHub access at once, and nothing else.
     ///
     /// The token keeps working on GitHub until it expires or you revoke it there.
     Logout {

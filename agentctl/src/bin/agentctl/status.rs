@@ -365,7 +365,8 @@ fn next_steps(
             ));
         }
     }
-    // An agent with a GitHub account fails without its owner's token, or with an expired one.
+    // An agent with a GitHub account has no GitHub access without its owner's token, or with an
+    // expired one.
     if let Ok(Some(agent)) = resolution
         && let Some(owner) = agent.spec.github_owner().map(str::to_ascii_lowercase)
         && github.iter().all(|token| token.owner != owner || token.expired)

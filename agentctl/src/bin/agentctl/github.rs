@@ -166,7 +166,7 @@ fn expiry(token: &GithubToken, now: OffsetDateTime) -> String {
 
 fn forgotten(token: &GithubToken) -> String {
     format!(
-        "Forgot the GitHub token for {owner}; Agents for {owner} lose GitHub access at once.\n\
+        "Forgot the GitHub token for {owner}; agents for {owner} lose GitHub access at once, and nothing else.\n\
          It works on GitHub until it expires or is revoked: sign in as {login} at {page}\n",
         owner = token.owner,
         login = token.account.login,
@@ -251,7 +251,7 @@ altinn  altinn-bot  other         none stated
         let text = forgotten(&token("digdir", TokenKind::FineGrained, None));
         assert_eq!(
             text,
-            "Forgot the GitHub token for digdir; Agents for digdir lose GitHub access at once.\n\
+            "Forgot the GitHub token for digdir; agents for digdir lose GitHub access at once, and nothing else.\n\
              It works on GitHub until it expires or is revoked: sign in as digdir-bot at https://github.com/settings/personal-access-tokens\n"
         );
         assert!(forgotten(&token("digdir", TokenKind::Classic, None)).contains("https://github.com/settings/tokens\n"));
