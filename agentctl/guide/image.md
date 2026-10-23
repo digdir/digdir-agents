@@ -1,7 +1,7 @@
 # The agent's image
 
-Build the image `FROM` an agentctl base image. It already has what agentd needs: the `agent` user with
-passwordless sudo, systemd, tmux, git, `gh`, Node.js, the harnesses (Claude Code, Codex and Pi), ripgrep and jq.
+Build the image `FROM` an agentctl base image. It already has what agentd needs, the harnesses, Node.js, `gh` and
+git; the full list is at https://github.com/digdir/digdir-agents/blob/main/images/agentctl-base/README.md
 
 | Image | For |
 | --- | --- |
