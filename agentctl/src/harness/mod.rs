@@ -30,6 +30,9 @@ pub enum Harness {
 }
 
 impl Harness {
+    /// Every supported harness, in the order agentctl lists them.
+    pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Pi];
+
     /// The only authentication mode the harness accepts in a manifest.
     #[must_use]
     pub const fn auth_mode(self) -> HarnessAuthMode {
@@ -308,6 +311,16 @@ pub struct ImportedAuthentication {
     pub ready: bool,
 }
 
+/// Whether a harness's host login is stored, without the credential.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct HarnessLogin {
+    /// The harness.
+    pub harness: Harness,
+    /// Whether a usable login is stored, or `None` for a harness without a platform login.
+    pub stored: Option<bool>,
+}
+
 /// Dispatches host-side authentication to the selected harness adapter.
 pub struct AuthenticationManager {
     database: persistence::Database,
@@ -324,6 +337,23 @@ impl AuthenticationManager {
             claude_code: claude_code::authentication::Authentication::new(database.clone()),
             codex: codex::authentication::Authentication::new(database),
         }
+    }
+
+    /// Reports, for every harness, whether its host login is stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database cannot be read.
+    pub async fn logins(&self) -> Result<Vec<HarnessLogin>, Error> {
+        let mut logins = Vec::new();
+        for harness in Harness::ALL {
+            let stored = match harness.auth_mode() {
+                HarnessAuthMode::Mediated => Some(authentication_ready(harness, &self.database).await?),
+                HarnessAuthMode::None => None,
+            };
+            logins.push(HarnessLogin { harness, stored });
+        }
+        Ok(logins)
     }
 
     /// Stores a credential for the selected harness.
@@ -787,5 +817,18 @@ mod tests {
         let expanded = "'".repeat(MAX_INITIAL_PROMPT_ARGUMENT_BYTES / 4);
         assert!(validate_initial_prompt(&expanded).is_err());
         assert!(validate_initial_prompt("before\0after").is_err());
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn logins_list_every_harness_and_none_for_one_without_a_platform_login() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let database = persistence::Database::open(&directory.path().join("agent.db")).expect("database");
+        let logins = AuthenticationManager::new(database).logins().await.expect("logins");
+        let expected = Harness::ALL.map(|harness| HarnessLogin {
+            harness,
+            stored: (harness.auth_mode() == HarnessAuthMode::Mediated).then_some(false),
+        });
+        assert_eq!(logins, expected);
+        assert!(logins.iter().any(|login| login.stored.is_none()));
     }
 }

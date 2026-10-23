@@ -31,6 +31,10 @@ irm https://raw.githubusercontent.com/digdir/digdir-agents/main/agentctl/install
 
 Update an installation with `agentctl self update`.
 
+`agentctl status` shows whether agentd answers, which harness logins are stored, the current directory's agent and a
+count of every agent, with the commands to run next. `agentctl status --json` prints the same as a JSON object whose
+keys stay stable, for agents and scripts that check their own setup.
+
 ### Building an Agent image
 
 An Agent whose `image` specifies a Dockerfile needs a running Docker Engine on the host. Published OCI image

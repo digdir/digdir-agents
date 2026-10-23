@@ -4,6 +4,8 @@ mod provisioning;
 mod terminal;
 mod view;
 
+pub(crate) use app::agent_state;
+
 use std::{
     collections::HashMap,
     io::IsTerminal as _,

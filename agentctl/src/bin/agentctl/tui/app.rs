@@ -2586,12 +2586,12 @@ fn offset_clamped(current: usize, limit: usize, delta: isize) -> usize {
 }
 
 /// An Agent row's state, the detail beside it and when it entered the state.
-struct AgentState {
+pub(crate) struct AgentState {
     tone: Tone,
-    label: &'static str,
-    detail: String,
+    pub(crate) label: &'static str,
+    pub(crate) detail: String,
     /// The detail is a failure, whose cause is at its end.
-    failure: bool,
+    pub(crate) failure: bool,
     since: Option<OffsetDateTime>,
 }
 
@@ -2602,7 +2602,7 @@ struct AgentState {
 /// retrying stays Retrying through each retry, and time in state is how long
 /// `Ready` has been in its current state. A pass for a newer generation is
 /// provisioning the change, and its time in state is the pass's own.
-fn agent_state(agent: &Agent) -> AgentState {
+pub(crate) fn agent_state(agent: &Agent) -> AgentState {
     let state = |tone, label, detail, since| AgentState {
         tone,
         label,
