@@ -356,12 +356,14 @@ impl MicrosandboxProvider {
                 record.resources = resources;
                 self.state.update_sandbox(&record).await?;
                 if running {
-                    self.runtime_handle(&record.runtime_name)
+                    let stopped = self
+                        .runtime_handle(&record.runtime_name)
                         .await?
-                        .ok_or_else(|| Error::not_found(ResourceKind::Sandbox, &record.id))?
-                        .start_detached()
-                        .await
-                        .map_err(error::microsandbox)?;
+                        .ok_or_else(|| Error::not_found(ResourceKind::Sandbox, &record.id))?;
+                    // The change was compared with what the VM booted, so a setting an earlier
+                    // interrupted update left stored for the next start may still differ.
+                    Box::pin(converge_next_start(&record, &stopped)).await?;
+                    stopped.start_detached().await.map_err(error::microsandbox)?;
                 }
                 step.complete().await;
             }
@@ -933,9 +935,10 @@ fn boot_changes(
     (modification, changed)
 }
 
-/// Makes a stopped runtime boot what its record says. A resource update interrupted after it
-/// persisted the change for the next start, but before it saved the record, leaves the two
-/// apart, and applying the record's resources again then finds nothing to change.
+/// Makes a stopped runtime boot what its record says, before every start. A resource update
+/// interrupted after it persisted the change for the next start, but before it saved the
+/// record, leaves the two apart, and applying the record's resources again then finds nothing
+/// to change.
 async fn converge_next_start(
     record: &SandboxRecord,
     handle: &microsandbox::sandbox::SandboxHandle,
@@ -1197,6 +1200,36 @@ mod tests {
             .await
             .expect("the check should run");
         assert!(output.status.success(), "the started guest should have /dev/kvm");
+
+        // Interrupted again while the VM runs, then retried with another change, which restarts
+        // the running VM from the update itself.
+        provider
+            .runtime_handle(&record.runtime_name)
+            .await
+            .expect("the runtime should be found")
+            .expect("the runtime should exist")
+            .modify()
+            .nested_virt(false)
+            .next_start()
+            .apply()
+            .await
+            .expect("the change should be persisted for the next start");
+        let mut request = request;
+        request.spec_mut().resources = SandboxResources::new(
+            "1".parse::<CpuQuantity>().expect("test CPU should be valid"),
+            "768Mi".parse::<ByteQuantity>().expect("test memory should be valid"),
+            RootFilesystem::layered("1Gi".parse::<ByteQuantity>().expect("test disk should be valid")),
+        )
+        .with_nested_sandboxes(true);
+        let sandbox = service.ensure(&request).await.expect("the Sandbox should restart");
+        let output = sandbox
+            .run_execution(ExecutionSpec::command(
+                sandbox::SandboxPath::new("/bin/sh"),
+                ["-c".to_string(), "test -c /dev/kvm".to_string()],
+            ))
+            .await
+            .expect("the check should run");
+        assert!(output.status.success(), "the restarted guest should have /dev/kvm");
         provider
             .delete(&record.id)
             .await

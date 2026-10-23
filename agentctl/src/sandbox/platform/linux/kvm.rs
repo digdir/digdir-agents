@@ -11,9 +11,10 @@ const KVM: &str = "/dev/kvm";
 
 /// Gives `/dev/kvm` to the `agent` group, as Podman's socket is, so the Agent can run nested
 /// Sandboxes without its image granting the device. The guest creates the device anew at every
-/// boot, and setup runs after every boot, so the grant is made on every pass. On a systemd guest
-/// it waits for boot to finish, so that an image's own tmpfiles or udev rule for the device
-/// cannot undo it.
+/// boot, and setup runs after every boot, so the grant is made on every pass. On a guest already
+/// running systemd it first waits for boot to finish, so that an image's own tmpfiles or udev
+/// rule for the device runs before the grant; setup that starts before the image's entrypoint
+/// has become systemd can still be undone by such a rule until the next pass.
 pub(super) async fn grant_kvm(sandbox: &SandboxHandle) -> Result<(), Error> {
     if !path_exists(sandbox, "-c", KVM).await? {
         return Ok(());
