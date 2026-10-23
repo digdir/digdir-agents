@@ -854,8 +854,8 @@ impl Server {
         result_response(id, forgotten.map(|forgotten| GithubLogoutResult { forgotten }))
     }
 
-    /// Re-converges the Agents that declare `owner`'s GitHub account, so one that failed for
-    /// want of a token recovers at once instead of on the controller's next periodic pass.
+    /// Re-converges the Agents that declare `owner`'s GitHub account, so their setup commits as
+    /// the account now stored at once instead of on the controller's next periodic pass.
     async fn wake_github_owner(&self, owner: &str) {
         let agents = match self.agents.list().await {
             Ok(agents) => agents,
