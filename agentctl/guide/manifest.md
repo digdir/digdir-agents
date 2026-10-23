@@ -17,6 +17,13 @@ copy in `~/code`, as its instructions list. agentd refuses a bind mount that con
 that mounts the checkout it is defined in takes its values from a file outside it: `agentctl apply -f
 agents/dev/agent.yaml --env-file ~/.agentctl-dev.env`.
 
+Pi has no login on the host, so `login_stored` is `null` for it in `agentctl status --json`. It reads its providers
+and models from `~/.pi/agent/models.json`: put that file in a `home` folder beside the manifest, such as
+`agents/dev/home/.pi/agent/models.json` with `home: {source: home}` under `spec`, which agentd copies into
+`/home/agent` on every pass. Write the provider's key there as `"apiKey": "$PROVIDER_API_KEY"`, declare
+`PROVIDER_API_KEY` as a secret allowed only to the provider's host, and set the harness's `defaults.model` to
+`<provider>/<model id>`. Without the key Pi starts, but its prompts time out.
+
 A variant, `agent.<variant>.yaml` in the same folder, changes only what differs from `agent.yaml`. Mappings merge,
 lists and values replace, and `null` removes. It is a separate agent with its own name; apply it with
 `agentctl apply -f agents/dev/agent.small.yaml`:

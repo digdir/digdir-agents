@@ -54,14 +54,16 @@ Other agents on the machine share them.
 Write the non-secret values in `.env` yourself, such as `GIT_USER_NAME` and `GIT_USER_EMAIL` from `git config` in the
 repository; confirm them with the person when they look like a personal identity rather than the one they use here.
 Never ask for a secret in the conversation and never read one: tell the person which line to add to the file, such as
-`GITHUB_TOKEN=`, and make sure Git ignores the file. `apply` refuses a secret that is empty, so wait until they have
-filled it in, or mark the secret `optional: true` when the agent can start without it.
+`GITHUB_TOKEN=`, and make sure Git ignores the file. A required secret that is missing or empty fails the agent's setup,
+so `apply --wait` exits with an error naming it: wait until they have filled it in, or mark the secret `optional: true`
+when the agent can start without it.
 
 ## 4. Start it and check it
 
 Check that the harness the agent uses has a login: in `agentctl status --json`, its `login_stored` is `true`. If
 not, ask the person to run `agentctl claude login` or `agentctl codex login` in their own terminal; it opens a
-browser. Wait for the login and for every secret before you apply.
+browser. Pi has no login (`login_stored` is `null`): its provider and API key are configured as `agentctl guide
+manifest` describes. Wait for the login and for every secret before you apply.
 
 Build the image once yourself first: a Dockerfile error then shows in a minute, not after `apply` has set the agent
 up. Remove the test image afterwards.
@@ -84,10 +86,14 @@ then show the agent with `state` `ready`; `agentctl describe agent/<name>` has t
 `exec` to check that the tools you put in the image are there.
 
 Applying again updates a running agent. The size changes in place, restarting the VM, and the disk can only grow.
-The image, mounts, instructions file, init system and harness types cannot change: `apply` refuses with
-`immutable Agent field changed` and the field. A changed Dockerfile is also only built when the agent is created. To
-change those, run `agentctl delete agent/<name>`, wait until `agentctl get agents` no longer lists it, and apply
-again. The agent's disk starts over, so ask the person first if it has work that is not pushed.
+Some fields cannot change, such as the image, mounts, `home`, instructions, skills and the harnesses' types: `apply`
+refuses with `immutable Agent field changed` and names the field. A changed Dockerfile is also only built when
+the agent is created. To change those, run `agentctl delete agent/<name>`, wait until `agentctl get agents` no longer
+lists it, and apply again. The agent's disk starts over, so ask the person first if it has work that is not pushed.
+
+When `apply` says an agent with that name was already applied from another directory, the name belongs to another
+agent, such as one in another checkout of the repository: choose another name in `metadata.name`, or apply with
+`--name`. Never delete that agent.
 
 ## 5. Hand over
 
