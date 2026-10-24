@@ -17,8 +17,8 @@ pub(super) struct PreparedNetwork {
     pub(super) bindings_changed: bool,
     pub(super) environment: BTreeMap<String, String>,
     pub(super) harnesses: Vec<crate::Harness>,
-    /// The account of the Agent's stored GitHub token, for setup's Git identity.
-    pub(super) github_account: Option<crate::github::GithubAccount>,
+    /// The Agent's stored GitHub token, without the token, for setup's Git identity and instructions.
+    pub(super) github_token: Option<crate::github::GithubToken>,
 }
 
 impl Preparation {
@@ -109,7 +109,7 @@ impl Preparation {
                     managed_secrets.push(secret);
                 }
             }
-            let github_account = github_account(&self.database, &record.agent.spec, &mut managed_secrets).await?;
+            let github_token = github_token(&self.database, &record.agent.spec, &mut managed_secrets).await?;
             self.policy.set_agent(
                 &sandbox_name,
                 &record.agent,
@@ -136,7 +136,7 @@ impl Preparation {
                 bindings_changed,
                 environment: guest_environment,
                 harnesses: installed,
-                github_account,
+                github_token,
             })
         }
         .await;
@@ -153,20 +153,20 @@ impl Preparation {
 }
 
 /// Adds the GitHub account's mediated token for an Agent that has one, whether or not a token is
-/// stored, returning the account a stored token acts as.
+/// stored, returning the stored token without the token.
 ///
-/// The account reaches the guest through setup rather than the environment, since changing a
+/// Its account reaches the guest through setup rather than the environment, since changing a
 /// running Sandbox's environment restarts it.
-async fn github_account(
+async fn github_token(
     database: &persistence::Database,
     spec: &crate::Spec,
     managed_secrets: &mut Vec<harness::MediatedSecret>,
-) -> Result<Option<crate::github::GithubAccount>, Error> {
+) -> Result<Option<crate::github::GithubToken>, Error> {
     let Some(owner) = spec.github_owner() else {
         return Ok(None);
     };
     managed_secrets.push(crate::github::mediated_token(owner)?);
-    crate::github::account(database, owner).await
+    crate::github::stored(database, owner).await
 }
 
 fn secret_value<'a>(
@@ -339,7 +339,7 @@ spec:
             BTreeMap::from([("GITHUB_TOKEN".into(), "github_pat_AGENT_MEDIATED_GITHUB_TOKEN".into())])
         );
         assert_eq!(
-            prepared.github_account.map(|account| account.email).as_deref(),
+            prepared.github_token.map(|token| token.account.email).as_deref(),
             Some("1+digdir-bot@users.noreply.github.com")
         );
         assert!(
@@ -392,7 +392,7 @@ spec:
 
         assert!(!prepared.bindings_changed, "the binding outlives the token");
         assert_eq!(prepared.environment, before.environment);
-        assert_eq!(prepared.github_account, None);
+        assert_eq!(prepared.github_token, None);
         for host in ["models.example", "github.com"] {
             assert!(may_request(&policy, &record, host).await, "{host}");
         }
@@ -407,7 +407,7 @@ spec:
         let relogged = preparation.prepare(&record).await.expect("prepare after a login");
         assert!(!relogged.bindings_changed);
         assert_eq!(relogged.environment, before.environment);
-        assert!(relogged.github_account.is_some());
+        assert!(relogged.github_token.is_some());
     }
 
     /// GitHub enforces a token's expiry itself, so a stored expiry that has passed changes nothing.

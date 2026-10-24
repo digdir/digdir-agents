@@ -101,10 +101,10 @@ impl PlatformAdapter for Linux {
         record: &'a control_plane::AgentRecord,
         sandbox: &'a SandboxHandle,
         harnesses: &'a [crate::Harness],
-        github_account: Option<&'a crate::github::GithubAccount>,
+        github_token: Option<&'a crate::github::GithubToken>,
         steps: &'a ::sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<(), Error>> {
-        Box::pin(self.setup(record, sandbox, harnesses, github_account, steps))
+        Box::pin(self.setup(record, sandbox, harnesses, github_token, steps))
     }
 }
 
@@ -116,7 +116,7 @@ impl Linux {
         record: &control_plane::AgentRecord,
         sandbox: &SandboxHandle,
         harnesses: &[crate::Harness],
-        github_account: Option<&crate::github::GithubAccount>,
+        github_token: Option<&crate::github::GithubToken>,
         steps: &::sandbox::SandboxProgress,
     ) -> Result<(), Error> {
         let installations: Vec<&crate::HarnessSpec> = record
@@ -149,9 +149,14 @@ impl Linux {
             // After the home sync, so a file of the same name in the Agent's home cannot replace it.
             point_podman_at_socket(sandbox).await?;
         }
-        configure_git(sandbox, record.agent.spec.github_owner().is_some(), github_account).await?;
+        configure_git(
+            sandbox,
+            record.agent.spec.github_owner().is_some(),
+            github_token.map(|token| &token.account),
+        )
+        .await?;
         step.complete().await;
-        let about = super::about::instructions(&record.agent.spec);
+        let about = super::about::instructions(&record.agent.spec, github_token);
         let instructions = read_instructions(record, &about, self.host_instructions.as_deref()).await?;
         let skills = read_skills(record).await?;
         for installation in &installations {
