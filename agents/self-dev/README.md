@@ -72,6 +72,10 @@ To find the context size, send a chat completion to `/v1/chat/completions` with 
 names the model's total token limit. Add an image to the request to see whether the model reads images. A model that
 reads only text rejects it.
 
+Then add the model and try it in Pi with a prompt that runs a shell command, at each thinking level. The gateway's
+answers do not show whether a model calls tools, accepts Pi's requests or supports every thinking level. Map the
+levels it rejects onto ones it accepts with `thinkingLevelMap`, and leave out a model that cannot call tools.
+
 ## Inside the Agent
 
 [`instructions.md`](instructions.md), plus [`full/desktop.md`](full/desktop.md) on `full`, are the Agent's own

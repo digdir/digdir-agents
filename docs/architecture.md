@@ -38,7 +38,8 @@ Host
   host, and treats what comes out of it as input to check, never as fact.
 - **Small attack surface.** Isolation is only as strong as what the Sandbox can touch, so it gets as few devices,
   channels and host endpoints as possible, each added deliberately. Real secrets never enter it, and its network goes
-  through the host, where policy fails closed.
+  through the host, where policy fails closed. A Provider blocks any other way out, so nothing leaves the Sandbox
+  without the host checking it.
 - **Long-running.** An Agent is a computer that lives on, with durable Sessions, not a job that runs and ends.
 
 ## Diagrams
