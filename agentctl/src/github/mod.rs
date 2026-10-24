@@ -265,13 +265,13 @@ pub(crate) fn mediated_token(owner: &str) -> Result<MediatedSecret, Error> {
     })
 }
 
-/// The account `owner`'s stored token acts as, expired or not; `None` when none is stored or
-/// `owner` is not a GitHub login.
+/// The token stored for `owner`, without the token, expired or not; `None` when none is stored
+/// or `owner` is not a GitHub login.
 ///
 /// # Errors
 ///
 /// Returns an error when the database cannot be read.
-pub(crate) async fn account(database: &persistence::Database, owner: &str) -> Result<Option<GithubAccount>, Error> {
+pub(crate) async fn stored(database: &persistence::Database, owner: &str) -> Result<Option<GithubToken>, Error> {
     let owner = owner.to_ascii_lowercase();
     if !valid_owner(&owner) {
         return Ok(None);
@@ -280,8 +280,7 @@ pub(crate) async fn account(database: &persistence::Database, owner: &str) -> Re
     let Some(metadata) = database.provider_account_metadata(&provider).await? else {
         return Ok(None);
     };
-    let token: GithubToken = serde_json::from_str(&metadata)?;
-    Ok(Some(token.account))
+    Ok(Some(serde_json::from_str(&metadata)?))
 }
 
 /// Whether a manifest secret would collide with the binding the GitHub account owns. Mediation
@@ -778,10 +777,10 @@ mod tests {
         let expired = time::OffsetDateTime::from_unix_timestamp(1_000_000_000).expect("timestamp");
         store(&github.database, "digdir", "github_pat_FAKE_canary", Some(expired)).await;
 
-        let known = account(&github.database, "Digdir").await.expect("account");
-        assert_eq!(known.map(|account| account.login).as_deref(), Some("digdir-bot"));
-        assert_eq!(account(&github.database, "altinn").await.expect("account"), None);
-        assert_eq!(account(&github.database, "not a login").await.expect("account"), None);
+        let known = stored(&github.database, "Digdir").await.expect("account");
+        assert_eq!(known.map(|token| token.account.login).as_deref(), Some("digdir-bot"));
+        assert_eq!(stored(&github.database, "altinn").await.expect("account"), None);
+        assert_eq!(stored(&github.database, "not a login").await.expect("account"), None);
     }
 
     #[test]
