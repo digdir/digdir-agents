@@ -6,6 +6,10 @@
 # areas were skipped. New areas are added here without changing branch
 # protection.
 #
+# CI runs only on pull requests, which test their merge with main; main is
+# not tested again after merging. cache-warm.yml saves the Rust caches they
+# restore.
+#
 # Draft pull requests run nothing: CI starts when one is marked ready for
 # review. A draft labeled `ci` runs CI anyway, from its next push: labeling
 # does not start a run, since every label change would then cancel the run in
@@ -17,12 +21,10 @@ name: CI
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed]
-  push:
-    branches: [main]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -30,7 +32,7 @@ permissions:
 jobs:
   changes:
     name: changes
-    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'ci'))) }}
+    if: ${{ github.event.action != 'closed' && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'ci')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -49,21 +51,13 @@ jobs:
           # Each area's paths, as an extended regular expression over the changed file names.
           areas=(
             'integrations=^(integrations/|\.github/CODEOWNERS$|\.github/workflows/(ci|integrations)\.yml$)'
-            'rust=^(agentctl/|sandbox/|\.cargo/|(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|rustfmt\.toml|clippy\.toml|deny\.toml|Makefile)$|\.github/workflows/(ci|rust)\.yml$)'
+            'rust=^(agentctl/|sandbox/|\.cargo/|(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|rustfmt\.toml|clippy\.toml|deny\.toml|Makefile)$|\.github/workflows/(ci|rust|cache-warm)\.yml$)'
           )
           # A renamed file counts under both its old and its new name.
           names='.filename, (.previous_filename // empty)'
-          every_area=false
-          if [ "${GITHUB_EVENT_NAME}" = pull_request ]; then
-            gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq ".[] | ${names}" > changed.txt
-          elif [ "$(jq '.commits | length' "${GITHUB_EVENT_PATH}")" = 1 ]; then
-            # main is squash-merged, so a push is one commit.
-            gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" --jq ".files[] | ${names}" > changed.txt
-          else
-            every_area=true
-          fi
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq ".[] | ${names}" > changed.txt
           for area in "${areas[@]}"; do
-            if [ "${every_area}" = true ] || grep -q -E "${area#*=}" changed.txt; then
+            if grep -q -E "${area#*=}" changed.txt; then
               echo "${area%%=*}=true" >> "${GITHUB_OUTPUT}"
             else
               echo "${area%%=*}=false" >> "${GITHUB_OUTPUT}"
@@ -83,7 +77,7 @@ jobs:
   ci-gate:
     name: ci-gate
     # Also in a cancelled run, which fails it: GitHub would accept a skipped required check.
-    if: ${{ always() && (github.event_name != 'pull_request' || (github.event.action != 'closed' && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'ci')))) }}
+    if: ${{ always() && github.event.action != 'closed' && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'ci')) }}
     needs: [changes, integrations, rust]
     runs-on: ubuntu-latest
     steps:

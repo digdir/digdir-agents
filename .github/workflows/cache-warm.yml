@@ -1,0 +1,127 @@
+# Saves the caches CI restores. Caches saved by a pull request are visible to it alone, while those saved on main are
+# visible to every pull request, so this is the only workflow that saves the Rust caches. Each job builds what the CI
+# job sharing its cache builds, without running anything: the Rust cache keeps only the dependencies a job used.
+#
+# A cache whose key matches exactly is never saved again, so each Rust cache's shared key, which rust.yml uses too,
+# hashes the files that decide what CI builds: the Makefile and this workflow. Changing either starts a new cache.
+#
+# Runs each weekday morning, and on main whenever dependencies, the toolchain or what CI builds change, so pull
+# requests do not build them cold until the next morning. Weekends are skipped: caches unused for 7 days are evicted, and Friday's survive
+# to Monday. A run whose caches are already warm restores them exactly and saves nothing.
+name: Cache warm
+
+on:
+  schedule:
+    # 07:00 Oslo in winter, 08:00 in summer.
+    - cron: '0 6 * * 1-5'
+  push:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .cargo/**
+      - Makefile
+      - integrations/package-lock.json
+      - .github/workflows/cache-warm.yml
+  workflow_dispatch:
+
+concurrency:
+  group: cache-warm
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The cache of rust.yml's build job.
+  rust-build:
+    name: Warm Rust build cache
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libcap-ng-dev
+
+      - name: Install Rust toolchain
+        run: |
+          RUST_VERSION="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "${RUST_VERSION}"
+          rustup toolchain install "${RUST_VERSION}" --profile minimal --component clippy,rustfmt
+          rustup default "${RUST_VERSION}"
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: build-${{ hashFiles('Makefile', '.github/workflows/cache-warm.yml') }}
+
+      # Installed after the cache is restored, so the cache keeps it.
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --version 0.9.2 --locked
+
+      # make build builds the test targets too.
+      - name: Build
+        run: make build lint
+
+  # The cache of rust.yml's end-to-end job.
+  rust-end-to-end:
+    name: Warm Rust end-to-end cache
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libcap-ng-dev
+
+      - name: Install Rust toolchain
+        run: |
+          RUST_VERSION="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "${RUST_VERSION}"
+          rustup toolchain install "${RUST_VERSION}" --profile minimal
+          rustup default "${RUST_VERSION}"
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: end-to-end-${{ hashFiles('Makefile', '.github/workflows/cache-warm.yml') }}
+
+      # The tests make test-e2e runs.
+      - name: Build end-to-end tests
+        run: |
+          cargo test -p agent --lib --locked --no-run
+          cargo test -p sandbox-microsandbox --tests --locked --no-run
+
+  # The npm cache of integrations.yml.
+  integrations:
+    name: Warm integrations npm cache
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: integrations
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: integrations/package-lock.json
+      - run: npm ci
