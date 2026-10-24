@@ -7,7 +7,7 @@ use ::sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
 
 use crate::Error;
 
-use super::linux::{SYSTEMCTL, SYSTEMD_RUNNING, path_exists, run_checked, systemd_available, wait_for_systemd};
+use super::{SYSTEMCTL, SYSTEMD_RUNNING, path_exists, run_checked, systemd_available, wait_for_systemd};
 
 /// The image contract: what this image provides for `access: [{type: vnc}]`.
 pub(crate) const DESCRIPTOR: &str = "/etc/agent-access.d/vnc.conf";

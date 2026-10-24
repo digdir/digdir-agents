@@ -172,9 +172,9 @@ impl Access {
     }
 }
 
-async fn grant_guest_access(os: &str, sandbox: &SandboxHandle) -> Result<platform::linux_vnc::Capability, Error> {
+async fn grant_guest_access(os: &str, sandbox: &SandboxHandle) -> Result<platform::linux::vnc::Capability, Error> {
     match os {
-        "linux" => platform::linux_vnc::grant(sandbox).await,
+        "linux" => platform::linux::vnc::grant(sandbox).await,
         os => Err(Error::Invalid(format!(
             "VNC access is not supported on Sandbox operating system {os:?}"
         ))),
@@ -183,7 +183,7 @@ async fn grant_guest_access(os: &str, sandbox: &SandboxHandle) -> Result<platfor
 
 async fn remove_guest_state(os: &str, sandbox: &SandboxHandle) -> Result<(), Error> {
     match os {
-        "linux" => platform::linux_vnc::withdraw(sandbox).await,
+        "linux" => platform::linux::vnc::withdraw(sandbox).await,
         // Nothing was ever granted on an unsupported operating system.
         _ => Ok(()),
     }

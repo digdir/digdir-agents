@@ -459,7 +459,7 @@ fn prepare_directory(path: &Path) -> Result<(), Error> {
 
 async fn verify_guest_server(os: &str, sandbox: &SandboxHandle) -> Result<(), Error> {
     match os {
-        "linux" => platform::linux_ssh::verify_server(sandbox).await,
+        "linux" => platform::linux::ssh::verify_server(sandbox).await,
         os => Err(Error::Invalid(format!(
             "SSH access is not supported on Sandbox operating system {os:?}"
         ))),
@@ -468,7 +468,7 @@ async fn verify_guest_server(os: &str, sandbox: &SandboxHandle) -> Result<(), Er
 
 async fn install_guest_state(os: &str, sandbox: &SandboxHandle, material: &GuestMaterial) -> Result<(), Error> {
     match os {
-        "linux" => platform::linux_ssh::install_server_state(sandbox, material).await,
+        "linux" => platform::linux::ssh::install_server_state(sandbox, material).await,
         os => Err(Error::Invalid(format!(
             "SSH access is not supported on Sandbox operating system {os:?}"
         ))),
@@ -477,7 +477,7 @@ async fn install_guest_state(os: &str, sandbox: &SandboxHandle, material: &Guest
 
 async fn remove_guest_state(os: &str, sandbox: &SandboxHandle) -> Result<(), Error> {
     match os {
-        "linux" => platform::linux_ssh::remove_server_state(sandbox).await,
+        "linux" => platform::linux::ssh::remove_server_state(sandbox).await,
         // Nothing was ever installed on an unsupported operating system.
         _ => Ok(()),
     }
