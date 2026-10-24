@@ -55,8 +55,9 @@ enum Command {
     /// Set up an agent for this repository, with the coding agent you already use here.
     ///
     /// Starts Claude Code, Codex or Pi in the repository's root, asking which when several are
-    /// installed, on a short prompt that has it follow `agentctl guide setup` with you. Without
-    /// any of them, prints that prompt to paste into the coding agent you use.
+    /// installed, on a short prompt that has it follow `agentctl guide setup` with you. When it
+    /// exits, offers to open a session in the agent it set up. Without any of them, prints that
+    /// prompt to paste into the coding agent you use.
     Init,
     /// Show agentd, the harness logins and this directory's agent, with what to run next.
     Status {
@@ -693,7 +694,7 @@ fn run() -> CommandResult<ExitCode> {
 )]
 async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> CommandResult<ExitCode> {
     match command {
-        Command::Init => return init::run(),
+        Command::Init => return Box::pin(init::run(home, client)).await,
         Command::Self_ { command } => self_update::execute(command, home).await?,
         Command::Claude {
             command: ClaudeCommand::Login { from_stdin },
@@ -832,7 +833,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             variant,
             resource,
             command,
-        } => return Box::pin(ssh(client, resource, agent, variant, &command)).await,
+        } => return Box::pin(ssh(home, client, resource, agent, variant, &command)).await,
         Command::SshProxy { resource } => return ssh_proxy(home, client, resource).await,
         Command::SshConfig {
             command: SshConfigCommand::Install,
@@ -978,7 +979,7 @@ async fn attach(
     };
     let agent = match agent {
         Some(agent) => agent,
-        None => match entry::current_agent(client, variant).await? {
+        None => match entry::current_agent(home, client, variant).await? {
             entry::Target::Agent(agent) => agent,
             entry::Target::Done(code) => return Ok(code),
         },
@@ -1013,7 +1014,7 @@ async fn exec_command(
     stdin: bool,
     tty: bool,
 ) -> CommandResult<ExitCode> {
-    let agent = match execution_agent(client, resource, agent, variant).await? {
+    let agent = match execution_agent(home, client, resource, agent, variant).await? {
         entry::Target::Agent(agent) => agent,
         entry::Target::Done(code) => return Ok(code),
     };
@@ -1141,13 +1142,14 @@ async fn hold_forwards(forwards: &[forward::PortForward]) -> CommandResult<ExitC
 /// The Agent is converged first, so the server and the key material exist by
 /// the time `ssh` runs the `ProxyCommand`.
 async fn ssh(
+    home: &ControlPlaneHome,
     client: &Client,
     resource: Option<String>,
     agent: Option<String>,
     variant: Option<AgentVariantName>,
     command: &[String],
 ) -> CommandResult<ExitCode> {
-    let agent = match execution_agent(client, resource, agent, variant).await? {
+    let agent = match execution_agent(home, client, resource, agent, variant).await? {
         entry::Target::Agent(agent) => agent,
         entry::Target::Done(code) => return Ok(code),
     };
@@ -1190,6 +1192,23 @@ fn run_in_place(mut command: ProcessCommand) -> std::io::Result<ExitCode> {
 fn run_in_place(mut command: ProcessCommand) -> std::io::Result<ExitCode> {
     let status = command.status()?;
     Ok(status.code().map_or(ExitCode::FAILURE, exit_code))
+}
+
+/// Runs `command` on agentctl's terminal and waits for its exit code. Until it exits, Ctrl-C is
+/// left to it: agentctl, which the terminal interrupts too, carries on, and ends on Ctrl-C again
+/// once it has exited.
+fn run_and_wait(mut command: ProcessCommand) -> std::io::Result<ExitCode> {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    // signal-hook's handler shares the flag; a handled signal is reset to its default in the child.
+    let interrupt_ends = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register_conditional_default(signal_hook::consts::SIGINT, Arc::clone(&interrupt_ends))?;
+    let status = command.status();
+    interrupt_ends.store(true, Ordering::SeqCst);
+    Ok(status?.code().map_or(ExitCode::FAILURE, exit_code))
 }
 
 fn ssh_client_error(error: &std::io::Error) -> CommandError {
@@ -1518,13 +1537,14 @@ fn print_turns(turns: &[agent::sessions::Turn]) {
 /// The agent `exec` and `ssh` use: the one named, or the current directory's, offering to set
 /// it up or start it at a terminal.
 async fn execution_agent(
+    home: &ControlPlaneHome,
     client: &Client,
     resource: Option<String>,
     explicit: Option<String>,
     variant: Option<AgentVariantName>,
 ) -> CommandResult<entry::Target> {
     if resource.is_none() && explicit.is_none() {
-        return entry::current_agent(client, variant).await;
+        return entry::current_agent(home, client, variant).await;
     }
     resolve_execution_agent(client, resource, explicit, variant)
         .await

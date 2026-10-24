@@ -1,5 +1,5 @@
 //! `agentctl init`: hands setting up an agent to the coding agent the person already uses here,
-//! which does it by reading `agentctl guide setup`.
+//! which does it by reading `agentctl guide setup`, and takes the person into that agent after.
 
 use std::{
     ffi::OsStr,
@@ -8,13 +8,18 @@ use std::{
     process::{Command, ExitCode},
 };
 
-use agent::Harness;
+use agent::{Agent, Error, Harness, control_api::Client, local::home::ControlPlaneHome};
 
-use crate::{CommandError, CommandResult, launch, prompt, tui};
+use crate::{
+    CommandError, CommandResult, launch, prompt,
+    tui::{self, AgentPhase},
+};
 
 /// Starts a coding agent found on `PATH` in the repository holding the current directory, on the
-/// handover prompt, and exits with its exit code. Without one, prints the prompt to paste.
-pub(crate) fn run() -> CommandResult<ExitCode> {
+/// handover prompt, and waits for it. Then offers to open a session in the agent it set up, or
+/// says what to do next, and exits with the coding agent's exit code unless the session opens.
+/// Without a coding agent, prints the prompt to paste.
+pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResult<ExitCode> {
     require_terminal(std::io::stdin().is_terminal(), std::io::stdout().is_terminal())?;
     let current = std::env::current_dir().map_err(agent::Error::from)?;
     let root = tui::repository_root(&current);
@@ -33,7 +38,75 @@ pub(crate) fn run() -> CommandResult<ExitCode> {
     eprintln!("Starting {name} to set up an agent with you.");
     let mut command = Command::new(program);
     command.args(harness.host_arguments(&handover)).current_dir(directory);
-    crate::run_in_place(command).map_err(|error| CommandError::Message(format!("could not start {name}: {error}")))
+    let code = crate::run_and_wait(command)
+        .map_err(|error| CommandError::Message(format!("could not start {name}: {error}")))?;
+    let resolved = match crate::ensure_daemon(home, client).await {
+        Ok(()) => client.resolve_agent_variant(directory.to_path_buf(), None).await,
+        Err(error) => Err(error),
+    };
+    let onward = onward(&resolved);
+    if let Onward::Offer(name) = &onward
+        && prompt::confirm_lines(&[&format!("Your agent {name} is set up."), "Open a session in it now?"])?
+    {
+        let selection = crate::SessionSelection::default();
+        return Box::pin(crate::attach(home, client, None, None, None, None, selection)).await;
+    }
+    eprintln!("{}", next_step(&onward, root.is_some()));
+    Ok(code)
+}
+
+/// What follows the coding agent's exit, from the agent found here afterwards.
+#[derive(Debug, PartialEq, Eq)]
+enum Onward {
+    /// The agent is ready or on its way: a session in it is offered.
+    Offer(String),
+    /// The agent failed, or is being deleted.
+    Failed(String),
+    /// No agent here.
+    Nothing,
+    /// Several agents here.
+    Several,
+    /// agentd could not say, for this reason.
+    Unknown(String),
+}
+
+fn onward(resolved: &Result<Agent, Error>) -> Onward {
+    match resolved {
+        Ok(agent) => {
+            let name = agent.metadata.name.clone();
+            match tui::agent_state(agent).phase {
+                AgentPhase::Failed | AgentPhase::Retrying | AgentPhase::Unresponsive | AgentPhase::Terminating => {
+                    Onward::Failed(name)
+                }
+                _ => Onward::Offer(name),
+            }
+        }
+        Err(Error::Rpc(error)) if error.is_not_found() => Onward::Nothing,
+        Err(Error::Rpc(error)) if error.is_invalid_params() => Onward::Several,
+        Err(error) => Onward::Unknown(error.to_string()),
+    }
+}
+
+/// The line that says where to go from `onward`, when no session is opened.
+fn next_step(onward: &Onward, in_repository: bool) -> String {
+    let place = if in_repository {
+        "from anywhere in the repository"
+    } else {
+        "in this directory"
+    };
+    match onward {
+        Onward::Offer(_) => format!("Open a session in it later with `agentctl attach` {place}."),
+        Onward::Failed(name) => {
+            format!("Your agent {name} is not running; `agentctl status` shows why and what to do next.")
+        }
+        Onward::Nothing => "Nothing was set up; run `agentctl init` again to continue.".into(),
+        Onward::Several => "This directory has several agents; open one with `agentctl attach --agent NAME`, or \
+                            all of them in `agentctl tui`."
+            .into(),
+        Onward::Unknown(reason) => {
+            format!("Could not look up the agent here: {reason}. `agentctl attach` {place} opens it once agentd runs.")
+        }
+    }
 }
 
 fn require_terminal(stdin: bool, stdout: bool) -> CommandResult<()> {
@@ -56,7 +129,8 @@ fn handover_prompt(directory: &Path, in_repository: bool) -> String {
     };
     format!(
         "Help me set up an agentctl agent {subject}. agentctl runs coding agents like you in sandboxed Linux VMs on \
-         this machine. Run `agentctl guide setup` and follow it."
+         this machine. Run `agentctl guide setup` and follow it. This conversation is only for setting up the agent: \
+         when it is running, tell me to exit, and agentctl will take me into it."
     )
 }
 
@@ -108,7 +182,9 @@ mod tests {
         assert_eq!(
             handover_prompt(directory, true),
             "Help me set up an agentctl agent for this repository, /work/app. agentctl runs coding agents like \
-             you in sandboxed Linux VMs on this machine. Run `agentctl guide setup` and follow it."
+             you in sandboxed Linux VMs on this machine. Run `agentctl guide setup` and follow it. This \
+             conversation is only for setting up the agent: when it is running, tell me to exit, and agentctl will \
+             take me into it."
         );
         let outside = handover_prompt(directory, false);
         assert!(
@@ -116,6 +192,82 @@ mod tests {
             "{outside}"
         );
         assert!(!outside.contains("repository"), "{outside}");
+    }
+
+    fn agent(name: &str, reason: &str, ready: bool, failure: Option<agent::FailureKind>) -> Agent {
+        let mut agent: Agent =
+            serde_yaml_ng::from_str(include_str!("../../../examples/minimal/agent.yaml")).expect("example manifest");
+        agent.metadata.name = name.into();
+        agent.status.conditions.push(agent::Condition {
+            kind: agent::Condition::READY.into(),
+            status: if ready {
+                agent::ConditionStatus::True
+            } else {
+                agent::ConditionStatus::False
+            },
+            reason: reason.into(),
+            message: String::new(),
+            last_transition_time: None,
+        });
+        agent.status.failure = failure;
+        agent
+    }
+
+    fn rpc(code: i32) -> Result<Agent, Error> {
+        Err(Error::Rpc(agent::control_api::ResponseError {
+            code,
+            message: "from agentd".into(),
+        }))
+    }
+
+    #[test]
+    fn after_the_coding_agent_a_session_is_offered_in_an_agent_ready_or_on_its_way() {
+        let ready = agent("dev", "SandboxReady", true, None);
+        assert_eq!(onward(&Ok(ready)), Onward::Offer("dev".into()));
+        let starting = agent("dev", agent::Condition::REASON_STARTING, false, None);
+        assert_eq!(onward(&Ok(starting)), Onward::Offer("dev".into()));
+        assert_eq!(
+            next_step(&Onward::Offer("dev".into()), true),
+            "Open a session in it later with `agentctl attach` from anywhere in the repository."
+        );
+        assert_eq!(
+            next_step(&Onward::Offer("dev".into()), false),
+            "Open a session in it later with `agentctl attach` in this directory."
+        );
+    }
+
+    #[test]
+    fn after_the_coding_agent_a_failed_agent_points_to_status() {
+        for failure in [agent::FailureKind::Invalid, agent::FailureKind::Transient] {
+            let failed = agent("dev", "ImageBuildFailed", false, Some(failure));
+            assert_eq!(onward(&Ok(failed)), Onward::Failed("dev".into()), "{failure:?}");
+        }
+        assert_eq!(
+            next_step(&Onward::Failed("dev".into()), true),
+            "Your agent dev is not running; `agentctl status` shows why and what to do next."
+        );
+    }
+
+    #[test]
+    fn after_the_coding_agent_no_agent_several_or_no_agentd_say_where_to_go() {
+        // agentd's codes for no agent here, and for several.
+        assert_eq!(onward(&rpc(-32004)), Onward::Nothing);
+        assert_eq!(onward(&rpc(-32602)), Onward::Several);
+        let unreachable = onward(&Err(Error::Daemon("automatic startup exited".into())));
+        assert!(
+            matches!(&unreachable, Onward::Unknown(reason) if reason.contains("automatic startup exited")),
+            "{unreachable:?}"
+        );
+        assert_eq!(
+            next_step(&Onward::Nothing, true),
+            "Nothing was set up; run `agentctl init` again to continue."
+        );
+        assert!(next_step(&Onward::Several, true).contains("`agentctl attach --agent NAME`"));
+        let unknown = next_step(&unreachable, true);
+        assert!(
+            unknown.contains("automatic startup exited") && unknown.contains("`agentctl attach`"),
+            "{unknown}"
+        );
     }
 
     #[test]
