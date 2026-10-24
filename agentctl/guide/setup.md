@@ -47,7 +47,8 @@ Ask only what the person decides and you cannot find out. Usually:
 - Does it need to run containers, test web apps in a browser, or use a desktop they can watch?
 - Anything it must not do, or anything they always want it to do?
 
-Propose answers from what you found, and let them correct you. Don't explain file layouts or YAML unless asked.
+Propose answers from what you found, and let them correct you. Include the agent's name among them, such as "I'll
+call it `dev`": they use it to open and refer to the agent. Don't explain file layouts or YAML unless asked.
 
 ## 3. Write the agent's folder
 
