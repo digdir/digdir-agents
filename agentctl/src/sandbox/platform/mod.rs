@@ -1,9 +1,7 @@
 //! Sandbox operating-system-specific adapters.
 
 pub(crate) mod files;
-mod linux;
-pub(crate) mod linux_ssh;
-pub(crate) mod linux_vnc;
+pub(crate) mod linux;
 
 use ::sandbox::execution::ExecutionSpec;
 

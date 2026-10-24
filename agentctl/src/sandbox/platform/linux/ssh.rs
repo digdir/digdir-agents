@@ -13,8 +13,8 @@ use ::sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
 use crate::{Error, ssh::GuestMaterial};
 
 use super::{
-    files::write_if_changed,
-    linux::{SYSTEMCTL, SYSTEMD_RUNNING, path_exists, run_checked, systemd_available, wait_for_systemd},
+    super::files::write_if_changed, SYSTEMCTL, SYSTEMD_RUNNING, path_exists, run_checked, systemd_available,
+    wait_for_systemd,
 };
 
 /// Directory holding every server file `agentd` writes.
@@ -99,9 +99,9 @@ pub(crate) async fn install_server_state(sandbox: &SandboxHandle, material: &Gue
             "-m",
             "0700",
             "-o",
-            super::linux::USER,
+            super::USER,
             "-g",
-            super::linux::USER,
+            super::USER,
             USER_SSH_DIRECTORY,
         ],
     )
@@ -231,7 +231,7 @@ fn render_server_config() -> String {
          LogLevel INFO\n\
          Subsystem sftp internal-sftp\n",
         crate::ssh::GUEST_PORT,
-        super::linux::USER
+        super::USER
     )
 }
 
@@ -272,7 +272,7 @@ fn render_oom_drop_in() -> String {
 async fn verify_effective_policy(sandbox: &SandboxHandle) -> Result<(), Error> {
     let connection = format!(
         "user={},host=localhost,addr=127.0.0.1,laddr=127.0.0.1,lport={}",
-        super::linux::USER,
+        super::USER,
         crate::ssh::GUEST_PORT
     );
     let args = [
@@ -386,7 +386,7 @@ async fn capture_login_environment(sandbox: &SandboxHandle) -> Result<Vec<u8>, E
         )));
     }
     let mut environment = parse_environment(&output.stdout)?;
-    environment.insert("LANG".into(), super::linux::UTF8_LOCALE.into());
+    environment.insert("LANG".into(), super::UTF8_LOCALE.into());
     render_environment(&environment)
 }
 
