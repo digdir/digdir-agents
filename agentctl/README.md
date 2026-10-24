@@ -29,6 +29,11 @@ with you: it asks what the agent should work on, writes its folder, starts it an
 its commands as usual. Without any of them installed, `agentctl init` prints the request to paste into the coding
 agent you use.
 
+At a terminal, `agentctl` on its own offers what you probably meant: setting up an agent where there is none, starting
+the agent here when it is stopped, or opening it in `agentctl tui`. `attach`, `exec` and `ssh` offer the same setup
+or start when they find no agent here or a stopped one, and `agentctl attach` without a session opens the agent's only
+session, starts one when it has none, or asks which.
+
 Windows additionally requires the `HypervisorPlatform` optional feature. Install from PowerShell, then open a new
 PowerShell window so the updated user `PATH` takes effect, and run `agentctl init` there:
 
