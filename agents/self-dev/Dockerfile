@@ -129,8 +129,6 @@ RUN case "${TARGETARCH}" in \
 ENV CARGO_HOME=/home/agent/.cargo
 ENV CARGO_TARGET_DIR=/home/agent/.cache/cargo-target
 ENV PATH=/home/agent/.local/bin:/home/agent/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# What `agent-feature env containers nested-agents` prints.
-ENV DOCKER_HOST=unix:///run/podman/podman.sock
 
 RUN agent-image-check
 

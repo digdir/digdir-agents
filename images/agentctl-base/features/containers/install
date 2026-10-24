@@ -11,6 +11,9 @@ feature=$(dirname "$0")
 apt-get update
 apt-get install --yes --no-install-recommends aardvark-dns nftables podman podman-docker
 rm -rf /var/lib/apt/lists/*
+# podman-docker's login script points the agent user at a rootless socket that isn't running; without it, Docker
+# clients use /run/docker.sock.
+rm -f /etc/profile.d/podman-docker.sh /etc/profile.d/podman-docker.csh
 
 cp -R "${feature}/rootfs/." /
 

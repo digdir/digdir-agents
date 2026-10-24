@@ -87,7 +87,7 @@ USER agent
 | Feature | Adds |
 | --- | --- |
 | `browser` | Chromium with `playwright-cli` and its skill, ffmpeg, and the `video-to-gif` and `media-preview` helpers. Chromium trusts the Agent's mediated CA once `$XDG_RUNTIME_DIR/chromium-ca-ready` exists, shortly after boot. |
-| `containers` | Podman, with bridge networks and container name resolution. `podman.socket` belongs to the `agent` group from boot, and `DOCKER_HOST` points Docker API clients at it. The `docker` command runs Podman; it comes from podman-docker, which conflicts with Docker's own CLI packages. |
+| `containers` | Podman, with bridge networks and container name resolution. `podman.socket` belongs to the `agent` group from boot, and Docker API clients reach it at the default `/run/docker.sock`. The `docker` command runs Podman; it comes from podman-docker, which conflicts with Docker's own CLI packages. |
 | `desktop` | `browser`, plus an X11 desktop on display `:1` with VNC access and a [Secret Service](#the-secret-service), the `desktop`, `desktop-terminal` and `chromium` commands, and the `computer-use` skill. Provides `/etc/agent-access.d/vnc.conf`, so an Agent on it can declare `access: [{type: vnc}]`. |
 | `nested-agents` | `containers`, plus `agentctl ssh-config install` as the agent user at boot and once `agentctl` is installed, so the `agentctl-<name>` SSH aliases of nested Agents work. It looks for `agentctl` in `~/.local/bin`, where its installer puts it, and `/usr/local/bin`. |
 

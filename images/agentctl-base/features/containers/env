@@ -1,2 +1,0 @@
-# Docker API clients use the Podman socket. Without it, login shells get podman-docker's rootless one.
-DOCKER_HOST=unix:///run/podman/podman.sock
