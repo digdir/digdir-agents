@@ -8,7 +8,7 @@
 #
 # Runs each weekday morning, and on main whenever dependencies, the toolchain or what CI builds change, so pull
 # requests do not build them cold until the next morning. Weekends are skipped: caches unused for 7 days are evicted,
-# and Friday's survive to Monday. A run whose caches are already warm restores them exactly and saves nothing.
+# and Friday's survive to Monday. A run whose caches are already warm restores them exactly, builds nothing and saves nothing.
 #
 # ci.yml also calls it for a pull request that changes it, saving nothing, so that a command that no longer builds
 # fails ci-gate before it reaches main.
@@ -65,6 +65,7 @@ jobs:
           rustup default "${RUST_VERSION}"
 
       - name: Restore Rust cache
+        id: cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: build-${{ hashFiles('Makefile', '.github/workflows/cache-warm.yml') }}
@@ -72,10 +73,13 @@ jobs:
 
       # Installed after the cache is restored, so the cache keeps it.
       - name: Install cargo-machete
+        if: steps.cache.outputs.cache-hit != 'true' || github.event_name == 'pull_request'
         run: cargo install cargo-machete --version 0.9.2 --locked
 
-      # make build builds the test targets too.
+      # make build builds the test targets too. An exact cache hit is never saved again, so building would change
+      # nothing, except on a pull request, where the build is the check.
       - name: Build
+        if: steps.cache.outputs.cache-hit != 'true' || github.event_name == 'pull_request'
         run: make build lint
 
   # The caches of rust.yml's portable host jobs, one per host.
@@ -123,13 +127,16 @@ jobs:
           rustup default "${RUST_VERSION}"
 
       - name: Restore Rust cache
+        id: cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: portable-${{ hashFiles('.github/workflows/rust.yml', '.github/workflows/cache-warm.yml') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # The packages and targets rust.yml checks and tests on the portable hosts.
+      # The packages and targets rust.yml checks and tests on the portable hosts. Skipped on an exact cache hit, as
+      # for the build cache.
       - name: Build
+        if: steps.cache.outputs.cache-hit != 'true' || github.event_name == 'pull_request'
         run: |
           packages=(-p sandbox -p sandbox-authorization -p agent -p sandbox-microsandbox)
           cargo clippy "${packages[@]}" --all-targets --all-features --locked
