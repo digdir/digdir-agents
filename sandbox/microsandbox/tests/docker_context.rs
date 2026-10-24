@@ -32,7 +32,7 @@ fn dockerfile_resolution_recovers_when_context_socket_appears() {
     let output = Command::new(std::env::current_exe().expect("test binary"))
         .args([
             "--exact",
-            "dockerfile_resolution_recovers_when_context_socket_appears",
+            "docker_context::dockerfile_resolution_recovers_when_context_socket_appears",
             "--nocapture",
         ])
         .env(CHILD, directory.path())
@@ -41,11 +41,16 @@ fn dockerfile_resolution_recovers_when_context_socket_appears() {
         .env_remove("DOCKER_CONTEXT")
         .output()
         .expect("run isolated context test");
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
-        "isolated test failed:\n{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
+        "isolated test failed:\n{stdout}\n{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    // A filter that matches nothing also succeeds.
+    assert!(
+        stdout.contains("running 1 test"),
+        "isolated test did not run:\n{stdout}"
     );
 }
 

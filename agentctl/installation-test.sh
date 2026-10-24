@@ -4,15 +4,27 @@ set -euo pipefail
 
 old_version="v0.0.1-dev.upgrade-smoke"
 target_version="v0.1.0-preview.2.smoke"
+# Agent homes stay under a short temporary path, which keeps the socket paths
+# in them short.
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/au.XXXXXXXX")"
 export AGENT_SMOKE_ID="${smoke_root##*/}"
-# Build outside smoke_root: CI runners keep /tmp on a small tmpfs, and the two
-# dev-profile builds below do not fit there.
-smoke_target="${CARGO_TARGET_DIR:-$(git rev-parse --show-toplevel)/target}/upgrade-smoke-${AGENT_SMOKE_ID}"
-binary_directory="${smoke_target}/debug"
-target_binaries="${smoke_root}/target-binaries"
-old_archive="${smoke_root}/old.tar.gz"
-target_archive="${smoke_root}/target.tar.gz"
+# Passed to Cargo explicitly, so that the binaries are where this script looks.
+target_directory="${CARGO_TARGET_DIR:-${CARGO_BUILD_TARGET_DIR:-$(git rev-parse --show-toplevel)/target}}"
+# Git for Windows reports paths as D:/..., which tar reads as a remote host.
+if command -v cygpath > /dev/null; then
+  target_directory="$(cygpath -u "${target_directory}")"
+fi
+# The fixtures are built in the workspace's own target directory, so that only
+# agent recompiles for each version. That leaves its agentctl and agentd built
+# as the target version, until the next build without AGENT_VERSION.
+binary_directory="${target_directory}/debug"
+# Binaries, archives and installations are kept beside the target directory:
+# CI runners and Sandboxes may keep /tmp on a small tmpfs, and the copies of the
+# dev-profile binaries do not fit there.
+files_root="${target_directory}/installation-test-${AGENT_SMOKE_ID}"
+target_binaries="${files_root}/target-binaries"
+old_archive="${files_root}/old.tar.gz"
+target_archive="${files_root}/target.tar.gz"
 export AGENT_HOME="${smoke_root}/home"
 
 cleanup() {
@@ -38,32 +50,31 @@ cleanup() {
   else
     pkill -f "agentd.*--home ${AGENT_HOME}" 2>/dev/null || true
   fi
-  rm -rf -- "${smoke_root}" "${smoke_target}"
+  rm -rf -- "${smoke_root}" "${files_root}"
 }
 trap cleanup EXIT HUP INT TERM
 
-mkdir -p "${smoke_root}"
+mkdir -p "${smoke_root}" "${files_root}"
 
 # Build release fixtures
 
-CARGO_TARGET_DIR="${smoke_target}" CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 \
-  AGENT_VERSION="${old_version}" cargo build --locked -p agent --bins
+# --tests resolves the dependencies' features as the workspace's other builds
+# do, which --bins alone does not, so no dependency is rebuilt.
+AGENT_VERSION="${old_version}" cargo build --locked --target-dir "${target_directory}" -p agent --bins --tests
 ./agentctl/package.sh "${old_archive}" "${binary_directory}"
-CARGO_TARGET_DIR="${smoke_target}" CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 \
-  AGENT_VERSION="${target_version}" cargo build --locked -p agent --bins
+AGENT_VERSION="${target_version}" cargo build --locked --target-dir "${target_directory}" -p agent --bins --tests
 suffix=""
 if [ -f "${binary_directory}/agentctl.exe" ]; then
   suffix=".exe"
 fi
 mkdir "${target_binaries}"
-mv "${binary_directory}/agentctl${suffix}" "${binary_directory}/agentd${suffix}" "${target_binaries}/"
-rm -rf -- "${smoke_target}"
+cp "${binary_directory}/agentctl${suffix}" "${binary_directory}/agentd${suffix}" "${target_binaries}/"
 ./agentctl/package.sh "${target_archive}" "${target_binaries}"
 
 if [ "${RUNNER_OS:-}" = "Windows" ]; then
   # Standalone installation
 
-  standalone_root="${smoke_root}/standalone"
+  standalone_root="${files_root}/standalone"
   mkdir -p "${standalone_root}/managed"
   printf '{ "phase": "prepared" }\n' > "${standalone_root}/managed/update.json"
   export AGENT_INSTALL_MODE=standalone
@@ -94,8 +105,8 @@ if [ "${RUNNER_OS:-}" = "Windows" ]; then
 
   # Managed installation and self-update
 
-  AGENT_INSTALL_ROOT="$(cygpath -w "${smoke_root}/install")"
-  AGENT_INSTALL_DIR="$(cygpath -w "${smoke_root}/bin")"
+  AGENT_INSTALL_ROOT="$(cygpath -w "${files_root}/install")"
+  AGENT_INSTALL_DIR="$(cygpath -w "${files_root}/bin")"
   AGENT_HOME="$(cygpath -w "${smoke_root}/home")"
   export AGENT_VERSION="${old_version}"
   AGENT_LOCAL_ARCHIVE="$(cygpath -w "${old_archive}")"
@@ -118,7 +129,7 @@ if [ "${RUNNER_OS:-}" = "Windows" ]; then
     & $agentctl --home $env:AGENT_HOME self update --version $env:AGENT_TARGET_VERSION
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   '
-  AGENT_INSTALL_ROOT="$(cygpath -w "${smoke_root}/install")"
+  AGENT_INSTALL_ROOT="$(cygpath -w "${files_root}/install")"
   export AGENT_INSTALL_DIR="${AGENT_SMOKE_BIN}"
   AGENT_LOCAL_ARCHIVE="$(cygpath -w "${old_archive}")"
   export AGENT_VERSION="${old_version}"
@@ -167,7 +178,7 @@ if [ "${RUNNER_OS:-}" = "Windows" ]; then
 else
   # Standalone installation
 
-  standalone_root="${smoke_root}/standalone"
+  standalone_root="${files_root}/standalone"
   mkdir -p "${standalone_root}/managed"
   printf '{ "phase": "prepared" }\n' > "${standalone_root}/managed/update.json"
   AGENT_INSTALL_MODE=standalone \
@@ -187,8 +198,8 @@ else
 
   # Managed installation and self-update
 
-  export AGENT_INSTALL_ROOT="${smoke_root}/install"
-  export AGENT_INSTALL_DIR="${smoke_root}/bin"
+  export AGENT_INSTALL_ROOT="${files_root}/install"
+  export AGENT_INSTALL_DIR="${files_root}/bin"
   export AGENT_HOME="${smoke_root}/home"
   export AGENT_VERSION="${old_version}"
   export AGENT_LOCAL_ARCHIVE="${old_archive}"
@@ -199,8 +210,8 @@ else
   "${agentctl}" --home "${AGENT_HOME}" self update --version "${target_version}"
   test "$("${agentctl}" --version)" = "agentctl ${target_version}"
   "${agentctl}" --home "${AGENT_HOME}" self update --version "${target_version}"
-  export AGENT_INSTALL_ROOT="${smoke_root}/install"
-  export AGENT_INSTALL_DIR="${smoke_root}/bin"
+  export AGENT_INSTALL_ROOT="${files_root}/install"
+  export AGENT_INSTALL_DIR="${files_root}/bin"
   export AGENT_LOCAL_ARCHIVE="${old_archive}"
   export AGENT_VERSION="${old_version}"
   ./agentctl/install.sh

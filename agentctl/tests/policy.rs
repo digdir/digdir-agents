@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used)]
 
-mod support;
+use crate::support;
 
 use agent::{SecretSpec, authorization::AgentPolicyEngine};
 use sandbox::SandboxName;

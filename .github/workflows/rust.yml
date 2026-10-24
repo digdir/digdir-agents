@@ -31,11 +31,13 @@ jobs:
           rustup toolchain install "${RUST_VERSION}" --profile minimal --component clippy,rustfmt
           rustup default "${RUST_VERSION}"
 
+      # cache-warm.yml saves this cache from main, where every pull request can restore it, under the same shared key.
+      # A cache saved here would be visible to this pull request alone.
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          # Saves only from main, so pull requests share its cache instead of evicting it with their own.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: build-${{ hashFiles('Makefile', '.github/workflows/cache-warm.yml') }}
+          save-if: false
 
       - name: Install cargo-machete
         run: cargo install cargo-machete --version 0.9.2 --locked
@@ -91,10 +93,12 @@ jobs:
           rustup toolchain install "${RUST_VERSION}" --profile minimal
           rustup default "${RUST_VERSION}"
 
+      # The build job's cache: these tests use the dependencies it builds.
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: build-${{ hashFiles('Makefile', '.github/workflows/cache-warm.yml') }}
+          save-if: false
 
       - name: Run end-to-end tests
         run: make test-e2e
@@ -141,6 +145,14 @@ jobs:
           test -n "${RUST_VERSION}"
           rustup toolchain install "${RUST_VERSION}" --profile minimal --component clippy,rustfmt
           rustup default "${RUST_VERSION}"
+
+      # cache-warm.yml saves this cache from main. The key holds the runner's OS and architecture, so each host has its
+      # own; it hashes this workflow, which holds the commands below.
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: portable-${{ hashFiles('.github/workflows/rust.yml', '.github/workflows/cache-warm.yml') }}
+          save-if: false
 
       - name: Check native host
         run: >-
