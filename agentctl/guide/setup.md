@@ -41,8 +41,9 @@ Ask only what the person decides and you cannot find out. Usually:
   edits change their files directly)? Mount only the folders the work needs. Never mount a home directory itself
   or a folder holding credentials, such as `~/.ssh`, `~/.aws`, `~/.config` or `~/.agent`: the sandbox exists to keep
   those out.
-- Does it need to push to GitHub, open pull requests or clone private repositories? Then it needs a GitHub account
-  for the repositories' owner (`agentctl guide accounts`).
+- Does it need to push to GitHub, open pull requests or clone private repositories? Then it needs a GitHub account:
+  ask whether it should act as its own GitHub account across organizations, or with a token for one organization's
+  repositories (`agentctl guide accounts`).
 - Which coding agent should it run? Propose the one you are (`claudeCode`, `codex` or `pi` in the manifest).
 - Does it need to run containers, test web apps in a browser, or use a desktop they can watch?
 - Anything it must not do, or anything they always want it to do?
@@ -88,9 +89,9 @@ Check that the harness the agent uses has a login: in `agentctl status --json`, 
 not, ask the person to run `agentctl claude login` or `agentctl codex login` in their own terminal; it opens a
 browser. Pi has no login (`login_stored` is `null`): its provider and API key are configured as `agentctl guide
 manifest` describes. With a GitHub account in the manifest, check that `github` lists its owner with `expired`
-`false`. If not, ask the person to run `agentctl github login --owner <owner>` in their own terminal (in a repository
-it offers that repository's owner without `--owner`); it opens a browser and takes a token you must never see
-(`agentctl guide accounts`). Wait for the logins and for every secret before you apply.
+`false`. If not, ask the person to run `agentctl github login` in their own terminal: it asks whether to sign in
+through the browser as the agent's account or create a token for one owner, opens a browser and stores a token you
+must never see (`agentctl guide accounts`). For a token, add `--owner <owner>` outside that owner's repository. Wait for the logins and for every secret before you apply.
 
 Build the image once yourself first: a Dockerfile error then shows in a minute, not after `apply` has set the agent
 up. Remove the test image afterwards.

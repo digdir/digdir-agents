@@ -12,11 +12,12 @@ use zeroize::Zeroizing;
 
 use crate::{CommandError, CommandResult, prompt};
 
-/// Has agentd keep a GitHub token for Agents of `owner`, by default the owner of this
-/// repository's GitHub remote. At the terminal it walks through GitHub's pre-filled token form,
-/// reads the pasted token, and shows what GitHub says about it, with warnings, for the person to
-/// confirm before anything is stored; a rejected or declined token can be replaced. From standard
-/// input it stores at once and shows the same after.
+/// Has agentd keep a GitHub token for Agents of `owner`. At the terminal the person signs in
+/// through the browser as an account, kept for `owner` or else that account, or walks through
+/// GitHub's pre-filled token form for `owner`, by default the owner of this repository's GitHub
+/// remote. What GitHub says about the token, with warnings, is shown for the person to confirm
+/// before anything is stored; a rejected or declined token can be replaced. From standard input
+/// it stores at once and shows the same after.
 ///
 /// # Errors
 ///
@@ -42,7 +43,7 @@ pub(crate) async fn login(client: &Client, owner: Option<&str>, from_stdin: bool
         let token = crate::read_token_from_stdin()?;
         let stored = client.github_login(&token, &owner).await?;
         let now = OffsetDateTime::now_utc();
-        eprint!("{}", summary(&stored, &warnings(&stored, None, now), now));
+        eprint!("{}", summary(&stored, &warnings(&stored, None, false, now), now));
         println!("{}", stored_line(&stored));
         return Ok(());
     }
@@ -52,26 +53,80 @@ pub(crate) async fn login(client: &Client, owner: Option<&str>, from_stdin: bool
         )
         .into());
     }
-    let owner = match owner {
-        Some(owner) => owner,
-        None => ask_owner(repository.as_ref())?,
+    let browser = prompt::choose("How should agents sign in to GitHub?", &SIGN_IN_OPTIONS)? == 0;
+    let gh = browser
+        .then(|| {
+            gh_or_explain(crate::launch::find_program(
+                &["gh"],
+                std::env::var_os("PATH").as_deref(),
+            ))
+        })
+        .flatten();
+    let way = match (gh, owner) {
+        (Some(gh), owner) => SignIn::Browser { gh, owner },
+        (None, Some(owner)) => SignIn::Form { owner },
+        (None, None) => SignIn::Form {
+            owner: ask_owner(repository.as_ref())?,
+        },
     };
-    let repository = repository.filter(|repository| repository.owner == owner);
+    // A token from the form is for one owner, so only that owner's repository can tell.
+    let repository = match &way {
+        SignIn::Form { owner } => repository.filter(|repository| repository.owner == *owner),
+        SignIn::Browser { .. } => repository,
+    };
     loop {
-        let token = paste_from_form(&owner, repository.as_ref()).await?;
-        match review(&token, &owner, repository.as_ref()).await {
-            Ok(true) => {
-                let stored = client.github_login(&token, &owner).await?;
+        let (token, owner) = match &way {
+            SignIn::Browser { gh, owner } => (agent::github::sign_in(gh), owner.as_deref()),
+            SignIn::Form { owner } => (
+                Ok(paste_from_form(owner, repository.as_ref()).await?),
+                Some(owner.as_str()),
+            ),
+        };
+        let browser = matches!(way, SignIn::Browser { .. });
+        match review(token, owner, repository.as_ref(), browser).await {
+            Ok(Some((token, checked))) => {
+                let stored = client.github_login(&token, &checked.token.owner).await?;
                 println!("{}", stored_line(&stored));
+                println!("{}", manifest_line(&stored.token.owner));
                 return Ok(());
             }
-            Ok(false) => {}
+            Ok(None) => {}
             Err(error) => eprintln!("{}", crate::error_text(&error)),
         }
-        if !prompt::confirm_lines(&["Try again with another token?"])? {
+        if !prompt::confirm_lines(&["Try again?"])? {
             return Err(CommandError::Message("no GitHub token was stored".into()));
         }
     }
+}
+
+/// How the person gets agents a token.
+enum SignIn {
+    /// Signing in through the browser with the GitHub CLI `gh`, keeping the token for `owner`,
+    /// else for the account signed in as.
+    Browser {
+        gh: std::path::PathBuf,
+        owner: Option<String>,
+    },
+    /// Creating a fine-grained token for `owner` with GitHub's form.
+    Form { owner: String },
+}
+
+/// How agents can sign in: the first through the browser with the GitHub CLI, the second with a
+/// fine-grained token from GitHub's form.
+const SIGN_IN_OPTIONS: [&str; 2] = [
+    "Sign in through the browser as an account, such as the agents' own",
+    "Create a token for one owner's repositories",
+];
+
+/// `gh`, or when it is missing, `None` after saying that the browser sign-in needs it.
+fn gh_or_explain(gh: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    if gh.is_none() {
+        eprintln!(
+            "Signing in through the browser needs the GitHub CLI, `gh`, from https://cli.github.com. \
+             Install it and run this again, or create a token now."
+        );
+    }
+    gh
 }
 
 fn stored_line(stored: &GithubLogin) -> String {
@@ -79,6 +134,11 @@ fn stored_line(stored: &GithubLogin) -> String {
         "Agents for {} now use GitHub as {}.",
         stored.token.owner, stored.token.account.login
     )
+}
+
+/// What a manifest names to use the token stored for `owner`.
+fn manifest_line(owner: &str) -> String {
+    format!("Agents use it with `accounts: [{{type: github, owner: {owner}}}]` in their manifest.")
 }
 
 /// The owner the person names, offering the owner of this repository's GitHub remote.
@@ -132,22 +192,34 @@ async fn paste_from_form(owner: &str, repository: Option<&Repository>) -> Result
     prompt::secret(&format!("Paste the GitHub token for {owner} (it is not shown)"))
 }
 
-/// Asks GitHub what the token is and whether it sees `repository`, shows it with any warnings,
-/// and asks whether to store it.
-async fn review(token: &str, owner: &str, repository: Option<&Repository>) -> CommandResult<bool> {
+/// Asks GitHub what `token` is and whether it sees `repository`, shows it with any warnings, and
+/// asks whether to store it, for `owner` or else the account it acts as. `browser` says the
+/// person signed in as that account, so it reaching all the account can is expected.
+async fn review(
+    token: Result<Zeroizing<String>, Error>,
+    owner: Option<&str>,
+    repository: Option<&Repository>,
+    browser: bool,
+) -> CommandResult<Option<(Zeroizing<String>, GithubLogin)>> {
+    let token = token?;
     // Checked here so nothing is stored before the person agrees; agentd checks it again.
-    let checked = agent::github::check(token, owner).await?;
+    let checked = agent::github::check(&token, owner).await?;
     let visible = match repository {
-        Some(repository) => Some((repository, agent::github::can_see(token, repository).await?)),
+        Some(repository) => Some((repository, agent::github::can_see(&token, repository).await?)),
         None => None,
     };
     let now = OffsetDateTime::now_utc();
-    eprint!("{}", summary(&checked, &warnings(&checked, visible, now), now));
+    eprint!("{}", summary(&checked, &warnings(&checked, visible, browser, now), now));
+    let reach = if browser && !checked.token.kind.single_owner() {
+        ", in every repository it can reach"
+    } else {
+        ""
+    };
     let question = format!(
-        "Agents for {} will use GitHub as {}. Store this token?",
+        "Agents for {} will use GitHub as {}{reach}. Store this token?",
         checked.token.owner, checked.token.account.login
     );
-    Ok(prompt::confirm_lines(&[&question])?)
+    Ok(prompt::confirm_lines(&[&question])?.then_some((token, checked)))
 }
 
 /// The GitHub repository of this directory's Git remote: `origin` when it is on GitHub, else the
@@ -236,9 +308,14 @@ fn github_owner(value: &str) -> Result<String, Error> {
 }
 
 /// What to warn of about a token: that it cannot see this repository (`visible`), expires
-/// within [`agent::github::EXPIRY_WARNING`], reaches every repository of its account, or lacks
-/// recommended scopes.
-fn warnings(login: &GithubLogin, visible: Option<(&Repository, bool)>, now: OffsetDateTime) -> Vec<String> {
+/// within [`agent::github::EXPIRY_WARNING`], reaches every repository of its account unless it
+/// came from signing in as that account (`browser`), or lacks recommended scopes.
+fn warnings(
+    login: &GithubLogin,
+    visible: Option<(&Repository, bool)>,
+    browser: bool,
+    now: OffsetDateTime,
+) -> Vec<String> {
     let token = &login.token;
     let account = &token.account.login;
     let mut warnings = Vec::new();
@@ -260,7 +337,7 @@ fn warnings(login: &GithubLogin, visible: Option<(&Repository, bool)>, now: Offs
     {
         warnings.push(format!("the token expires on {}, within a week", expires_at.date()));
     }
-    if !token.kind.single_owner() {
+    if !token.kind.single_owner() && !browser {
         warnings.push(format!(
             "this {} token reaches every repository {account} can, not only {}'s",
             token.kind.label(),
@@ -387,11 +464,11 @@ mod tests {
         let narrow = checked("digdir", TokenKind::FineGrained, Some(january()), &[]);
         let before = january() - time::Duration::days(30);
         assert_eq!(
-            summary(&narrow, &warnings(&narrow, None, before), before),
+            summary(&narrow, &warnings(&narrow, None, false, before), before),
             "\n  Acts as:  digdir-bot (digdir bot <1+digdir-bot@users.noreply.github.com>)\n  Kind:     fine-grained\n  For:      digdir\n  Expires:  2027-01-13\n"
         );
         let broad = checked("digdir", TokenKind::Classic, None, &["workflow"]);
-        let text = summary(&broad, &warnings(&broad, None, january()), january());
+        let text = summary(&broad, &warnings(&broad, None, false, january()), january());
         assert!(text.contains("  Expires:  none stated\n"), "{text}");
         assert!(
             text.ends_with(
@@ -408,13 +485,13 @@ mod tests {
         let fine = checked("digdir", TokenKind::FineGrained, Some(january()), &[]);
         let long_before = january() - time::Duration::days(8);
         assert_eq!(
-            warnings(&fine, Some((&case_web, true)), long_before),
+            warnings(&fine, Some((&case_web, true)), false, long_before),
             Vec::<String>::new()
         );
-        assert_eq!(warnings(&fine, None, long_before), Vec::<String>::new());
+        assert_eq!(warnings(&fine, None, false, long_before), Vec::<String>::new());
 
         assert_eq!(
-            warnings(&fine, Some((&case_web, false)), long_before),
+            warnings(&fine, Some((&case_web, false)), false, long_before),
             ["the token cannot see digdir/case-web: it was not selected, or digdir has yet to approve the token"]
         );
         let personal = GithubLogin {
@@ -426,23 +503,43 @@ mod tests {
         };
         let own = repository("digdir-bot", "notes");
         assert_eq!(
-            warnings(&personal, Some((&own, false)), long_before),
+            warnings(&personal, Some((&own, false)), false, long_before),
             ["the token cannot see digdir-bot/notes: it was probably not selected under Repository access"]
         );
 
         assert_eq!(
-            warnings(&fine, None, january() - time::Duration::days(6)),
+            warnings(&fine, None, false, january() - time::Duration::days(6)),
             ["the token expires on 2027-01-13, within a week"]
         );
 
         let classic = checked("digdir", TokenKind::Classic, None, &["read:org"]);
         assert_eq!(
-            warnings(&classic, Some((&case_web, false)), january()),
+            warnings(&classic, Some((&case_web, false)), false, january()),
             [
                 "digdir-bot cannot see digdir/case-web; give the account access to it",
                 "this classic token reaches every repository digdir-bot can, not only digdir's",
                 "the token lacks read:org, so some `gh` and Git commands will fail",
             ]
+        );
+    }
+
+    #[test]
+    fn signing_in_as_an_account_reaches_all_it_can_without_a_warning() {
+        let case_web = repository("digdir", "case-web");
+        // A classic token stands in for the browser sign-in's: neither is limited to one owner.
+        let broad = checked("digdir-bot", TokenKind::Classic, None, &[]);
+        assert_eq!(
+            warnings(&broad, Some((&case_web, false)), true, january()),
+            ["digdir-bot-bot cannot see digdir/case-web; give the account access to it"]
+        );
+        assert_eq!(
+            warnings(&broad, None, false, january()),
+            ["this classic token reaches every repository digdir-bot-bot can, not only digdir-bot's"]
+        );
+        assert!(SIGN_IN_OPTIONS[0].starts_with("Sign in through the browser"));
+        assert_eq!(
+            manifest_line("digdir-agent"),
+            "Agents use it with `accounts: [{type: github, owner: digdir-agent}]` in their manifest."
         );
     }
 
