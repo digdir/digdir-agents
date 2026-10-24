@@ -28,7 +28,36 @@ pub(super) struct Observed<'a> {
     pub(super) podman: bool,
 }
 
-/// Renders the section for `record`, ending in a newline. A line with nothing to say is left out.
+/// Opens the section, so that a later pass can find and replace it in a file the image or the home
+/// overlay owns.
+const BEGIN: &str = "<!-- agentd: Agent sandbox section, rewritten on every pass -->\n";
+/// Closes the section.
+const END: &str = "<!-- agentd: end of Agent sandbox section -->\n";
+
+/// The instruction file: the section, then `rest`, separated by a blank line.
+pub(super) fn place(section: &str, rest: &[u8]) -> Vec<u8> {
+    let mut contents = section.as_bytes().to_vec();
+    if !rest.is_empty() {
+        contents.push(b'\n');
+        contents.extend_from_slice(rest);
+    }
+    contents
+}
+
+/// What an instruction file holds besides a section an earlier pass placed at its top.
+pub(super) fn without_section(existing: &[u8]) -> &[u8] {
+    existing
+        .strip_prefix(BEGIN.as_bytes())
+        .and_then(|after| {
+            let end = after.windows(END.len()).position(|window| window == END.as_bytes())?;
+            let rest = &after[end + END.len()..];
+            Some(rest.strip_prefix(b"\n").unwrap_or(rest))
+        })
+        .unwrap_or(existing)
+}
+
+/// Renders the section for `record`, between its markers and ending in a newline. A line with
+/// nothing to say is left out.
 pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
     let spec = &record.agent.spec;
     let name = &record.agent.metadata.name;
@@ -53,7 +82,7 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
         ("Nested Agents", Some(nested_agents(spec, observed).to_owned())),
     ];
     let mut section = format!(
-        "# Agent sandbox\n\n\
+        "{BEGIN}# Agent sandbox\n\n\
          Written by agentd {}. The Agent's own instructions follow and take precedence.\n\n",
         crate::build_version()
     );
@@ -64,6 +93,7 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
             let _ = writeln!(section, "- **{label}:**{separator}{text}");
         }
     }
+    section.push_str(END);
     section
 }
 

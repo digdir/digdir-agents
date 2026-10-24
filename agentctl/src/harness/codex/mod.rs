@@ -34,6 +34,11 @@ pub(super) fn owns_secret(reference: &SecretReference) -> bool {
     reference.as_str() == ACCESS_SECRET
 }
 
+/// Codex's global instruction file, which holds the Agent's instructions.
+pub(super) fn instructions_path(home: &str) -> String {
+    format!("{home}/.codex/AGENTS.md")
+}
+
 pub(super) async fn authentication_ready(database: &persistence::Database) -> Result<bool, Error> {
     authentication::is_ready(database).await
 }
@@ -62,11 +67,17 @@ pub(super) async fn prepare(database: &persistence::Database) -> Result<Vec<Medi
     ])
 }
 
-/// The placeholder credential file Agent setup gives Codex, in an Agent with Codex: `None` when
-/// the Agent has none.
+/// The placeholder credential file Agent setup gives Codex, in an Agent with Codex.
+///
+/// The account variable is bound only while the Agent has Codex, and survives Codex's default
+/// shell environment policy, so it tells a current file from one an earlier Codex left behind.
 pub(super) fn agent_credential(
     environment: impl Fn(&str) -> Option<std::ffi::OsString>,
-) -> Result<Option<zeroize::Zeroizing<String>>, Error> {
+) -> Result<zeroize::Zeroizing<String>, Error> {
+    let missing = |reason: String| super::no_agent_login(super::Harness::Codex, &reason);
+    if environment(ACCOUNT_ENVIRONMENT).is_none() {
+        return Err(missing(format!("`{ACCOUNT_ENVIRONMENT}` is not set here")));
+    }
     let home = environment("CODEX_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| environment("HOME").map(|home| std::path::Path::new(&home).join(".codex")))
@@ -74,7 +85,9 @@ pub(super) fn agent_credential(
     let path = home.join("auth.json");
     let mut file = match std::fs::File::open(&path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(missing(format!("{} does not exist", path.display())));
+        }
         Err(error) => {
             return Err(Error::Invalid(format!(
                 "could not read this Agent's Codex credential file {}: {error}",
@@ -84,7 +97,7 @@ pub(super) fn agent_credential(
     };
     let mut credential = zeroize::Zeroizing::new(String::new());
     file.read_to_string(&mut credential)?;
-    Ok(Some(credential))
+    Ok(credential)
 }
 
 pub(super) fn conflicts_with_managed_secret(name: &str, placeholder: Option<&str>) -> bool {
@@ -161,7 +174,7 @@ fn remove_stale_login_homes(temporary_root: &std::path::Path) {
 pub(super) async fn bootstrap_linux(
     sandbox: &sandbox::SandboxHandle,
     home: &str,
-    instructions: Option<&[u8]>,
+    instructions: &[u8],
     skills: &[crate::harness::Skill],
 ) -> Result<(), Error> {
     bootstrap::configure_linux(sandbox, home, instructions, skills).await
@@ -277,13 +290,26 @@ mod tests {
         std::fs::create_dir(directory.path().join(".codex")).expect("Codex home");
         std::fs::write(directory.path().join(".codex/auth.json"), "placeholder file").expect("auth.json");
         let home = directory.path().as_os_str().to_owned();
-        // Read from the file alone: a Codex shell environment policy may drop the token variable.
-        let inside = |name: &str| (name == "HOME").then(|| home.clone());
+        // The account variable, unlike the token's, survives Codex's default shell environment policy.
+        let with_codex = |name: &str| match name {
+            super::ACCOUNT_ENVIRONMENT => Some("account".into()),
+            "HOME" => Some(home.clone()),
+            _ => None,
+        };
+        let credential = super::agent_credential(with_codex).expect("credential");
+        assert_eq!(credential.as_str(), "placeholder file");
 
-        let credential = super::agent_credential(inside).expect("credential");
-        assert_eq!(credential.as_deref().map(String::as_str), Some("placeholder file"));
+        // A file an earlier Codex left behind, in an Agent that no longer has it, is not a login to reuse.
+        let without_codex = |name: &str| (name == "HOME").then(|| home.clone());
+        let error = super::agent_credential(without_codex).expect_err("Agent without Codex");
+        assert!(
+            error.to_string().contains("`AGENT_CODEX_ACCOUNT_ID` is not set"),
+            "{error}"
+        );
+
         std::fs::remove_file(directory.path().join(".codex/auth.json")).expect("remove auth.json");
-        assert!(super::agent_credential(inside).expect("no file").is_none());
+        let error = super::agent_credential(with_codex).expect_err("no file");
+        assert!(error.to_string().contains("auth.json does not exist"), "{error}");
     }
 
     #[test]

@@ -8,7 +8,7 @@ description: Drive Agents with agentctl, from a host session acting as orchestra
 An Agent is a Sandbox VM whose harness Sessions an `agentd` runs, and `agentctl` drives it. First work out where you
 are:
 
-- **Inside an Agent:** your instructions start with `# Agent sandbox`, or `AGENT_NAME` is set. The Agents you start
+- **Inside an Agent:** your instructions have an Agent sandbox section, or `AGENT_NAME` is set. The Agents you start
   are nested in this Sandbox, and that section says whether it can run them. Set up as below.
 - **On a host:** neither is true. `agentctl`, its logins, the Agents and their environment files are the user's.
   Follow the host rules below.

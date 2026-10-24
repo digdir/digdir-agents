@@ -42,6 +42,11 @@ const DISABLE_ALTERNATE_SCREEN_ENVIRONMENT: &str = "CLAUDE_CODE_DISABLE_ALTERNAT
 /// now declare the default for new Sessions.
 pub(super) const MODEL_LAUNCHED_BEFORE_SELECTION: &str = "fable";
 
+/// Claude Code's user instruction file, which holds the Agent's instructions.
+pub(super) fn instructions_path(home: &str) -> String {
+    format!("{home}/.claude/CLAUDE.md")
+}
+
 pub(super) async fn authentication_ready(database: &persistence::Database) -> Result<bool, Error> {
     authentication::is_ready(database).await
 }
@@ -71,10 +76,17 @@ pub(super) async fn prepare(database: &persistence::Database) -> Result<Vec<Medi
 /// The nested placeholder a Session in an Agent with Claude Code holds.
 pub(super) fn agent_credential(
     environment: impl Fn(&str) -> Option<std::ffi::OsString>,
-) -> Option<zeroize::Zeroizing<String>> {
-    let token = environment(NESTED_ENVIRONMENT)?.into_string().ok()?;
-    let token = zeroize::Zeroizing::new(token.trim().to_owned());
-    (!token.is_empty()).then_some(token)
+) -> Result<zeroize::Zeroizing<String>, Error> {
+    let token = environment(NESTED_ENVIRONMENT)
+        .and_then(|token| token.into_string().ok())
+        .map(|token| zeroize::Zeroizing::new(token.trim().to_owned()))
+        .filter(|token| !token.is_empty());
+    token.ok_or_else(|| {
+        super::no_agent_login(
+            super::Harness::ClaudeCode,
+            &format!("`{NESTED_ENVIRONMENT}` is not set here"),
+        )
+    })
 }
 
 pub(super) fn conflicts_with_managed_secret(name: &str, placeholder: Option<&str>) -> bool {
@@ -266,7 +278,7 @@ fn read_pasted_token(input: &mut impl std::io::BufRead) -> Result<zeroize::Zeroi
 pub(super) async fn bootstrap_linux(
     sandbox: &sandbox::SandboxHandle,
     home: &str,
-    instructions: Option<&[u8]>,
+    instructions: &[u8],
     skills: &[crate::harness::Skill],
 ) -> Result<(), Error> {
     bootstrap::configure_linux(sandbox, home, instructions, skills).await

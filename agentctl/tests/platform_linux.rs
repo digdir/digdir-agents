@@ -92,6 +92,7 @@ fn declared(record: &AgentRecord) -> Vec<agent::Harness> {
 /// host login was absent. Preparation decides and reports; setup is told. An omitted harness is
 /// skipped entirely: not verified, not configured.
 #[tokio::test(flavor = "local")]
+#[allow(clippy::too_many_lines)]
 async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
     let directory = TempDir::new().expect("temporary directory");
     let home = directory.path().join("home");
@@ -175,7 +176,8 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
 
     let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
     let expected = format!(
-        "# Agent sandbox
+        "<!-- agentd: Agent sandbox section, rewritten on every pass -->
+# Agent sandbox
 
 Written by agentd {}. The Agent's own instructions follow and take precedence.
 
@@ -195,6 +197,7 @@ persist real values.
 - **Access:** people on the host reach this computer with `agentctl ssh worker`.
 - **Nested Agents:** available (`/dev/kvm`, no Podman, so only manifests with an image `reference`); see the \
 `agentctl` skill.
+<!-- agentd: end of Agent sandbox section -->
 
 test instructions
 ",
@@ -203,11 +206,11 @@ test instructions
     assert_eq!(instructions, expected);
 }
 
-/// Without `spec.instructions` the harness's instruction file stays the image's or the home overlay's: the Agent sandbox
-/// section only precedes instructions of the Agent's own. A skill of the Agent's own named `agentctl` replaces the
-/// platform's.
+/// Without `spec.instructions` the Agent's image or home overlay may own the harness's instruction file: the Agent
+/// sandbox section goes above what the file holds, and a later pass replaces only the section. A skill of the Agent's
+/// own named `agentctl` replaces the platform's.
 #[tokio::test(flavor = "local")]
-async fn linux_setup_leaves_the_instruction_file_of_an_agent_without_instructions_alone() {
+async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns() {
     let directory = TempDir::new().expect("temporary directory");
     let home = directory.path().join("home");
     std::fs::create_dir_all(&home).expect("home directory");
@@ -230,15 +233,17 @@ async fn linux_setup_leaves_the_instruction_file_of_an_agent_without_instruction
         agent: resource,
     };
     let backend = Rc::new(memory::Provider::new());
-    backend.queue_execution_events_matching(
-        is_claude_version,
-        vec![
-            ExecutionEvent::Started { process_id: None },
-            ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
-            ExecutionEvent::Exited(ExitStatus { code: 0 }),
-        ],
-    );
-    backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    for _ in 0..2 {
+        backend.queue_execution_events_matching(
+            is_claude_version,
+            vec![
+                ExecutionEvent::Started { process_id: None },
+                ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
+                ExecutionEvent::Exited(ExitStatus { code: 0 }),
+            ],
+        );
+        backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    }
     let service = SandboxService::new(backend.clone());
     let spec = record
         .agent
@@ -252,18 +257,45 @@ async fn linux_setup_leaves_the_instruction_file_of_an_agent_without_instruction
         ))
         .await
         .expect("Sandbox");
+    let image_instructions = b"# The image's own\n";
+    sandbox
+        .write_file(
+            &SandboxPath::new("/home/agent/.claude/CLAUDE.md"),
+            Box::pin(Cursor::new(image_instructions.to_vec())),
+        )
+        .await
+        .expect("image instruction file");
+    let platform = Linux::new(PLATFORM_API_URL);
 
-    Linux::new(PLATFORM_API_URL)
+    platform
         .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
         .await
-        .expect("setup");
+        .expect("first setup");
+    let first = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+    let writes = backend.file_writes().len();
+    platform
+        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
+        .await
+        .expect("second setup");
 
-    let writes = backend.file_writes();
+    assert!(first.starts_with("<!-- agentd: Agent sandbox section"), "{first}");
     assert!(
-        !writes
+        first.ends_with("<!-- agentd: end of Agent sandbox section -->\n\n# The image's own\n"),
+        "{first}"
+    );
+    let second = read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await;
+    assert_eq!(
+        second,
+        first.as_bytes(),
+        "a later pass keeps one section above the image's text"
+    );
+    assert!(
+        !backend
+            .file_writes()
             .iter()
+            .skip(writes)
             .any(|path| path.as_str() == "/home/agent/.claude/CLAUDE.md"),
-        "{writes:?}"
+        "an unchanged pass does not rewrite the file"
     );
     let skill = read_file(&sandbox, "/home/agent/.claude/skills/agentctl/SKILL.md").await;
     assert_eq!(skill, b"---\nname: agentctl\n---\nour own");
@@ -395,7 +427,7 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     assert_eq!(preserved, mutable_state);
     let instructions = read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await;
     let instructions = String::from_utf8(instructions).expect("UTF-8 instructions");
-    assert!(instructions.starts_with("# Agent sandbox\n"), "{instructions}");
+    assert!(instructions.contains("\n# Agent sandbox\n"), "{instructions}");
     assert!(
         instructions.ends_with("\n\ntest instructions\n\n# Environment\n\nhas a browser\n"),
         "the Agent's own instructions follow the Agent sandbox section: {instructions}"

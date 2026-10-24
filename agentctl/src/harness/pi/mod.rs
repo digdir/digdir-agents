@@ -36,14 +36,14 @@ fn extension_path(home: &str) -> String {
 
 /// The manifest's instructions, in Pi's global context file, as `~/.codex/AGENTS.md` holds them
 /// for Codex.
-fn instructions_path(home: &str) -> String {
+pub(super) fn instructions_path(home: &str) -> String {
     format!("{home}/.pi/agent/AGENTS.md")
 }
 
 pub(super) async fn bootstrap_linux(
     sandbox: &sandbox::SandboxHandle,
     home: &str,
-    instructions: Option<&[u8]>,
+    instructions: &[u8],
     skills: &[crate::harness::Skill],
 ) -> Result<(), Error> {
     bootstrap::configure_linux(sandbox, home, instructions, skills).await

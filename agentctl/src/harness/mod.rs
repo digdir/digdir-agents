@@ -456,17 +456,20 @@ pub fn agent_credential(
     if !inside {
         return Ok(None);
     }
-    let credential = match harness {
-        Harness::ClaudeCode => claude_code::agent_credential(&environment),
-        Harness::Codex => codex::agent_credential(&environment)?,
-        Harness::Pi => return Ok(None),
-    };
-    credential.map(Some).ok_or_else(|| {
-        Error::Invalid(format!(
-            "this Agent has no {} login to reuse; log in to it on the host first, or pass a credential with `--from-stdin`",
-            harness.display_name()
-        ))
-    })
+    match harness {
+        Harness::ClaudeCode => claude_code::agent_credential(&environment).map(Some),
+        Harness::Codex => codex::agent_credential(&environment).map(Some),
+        Harness::Pi => Ok(None),
+    }
+}
+
+/// Refuses a login inside an Agent that has no login of `harness` to reuse, for `reason`.
+fn no_agent_login(harness: Harness, reason: &str) -> Error {
+    let name = harness.display_name();
+    Error::Invalid(format!(
+        "this Agent has no {name} login to reuse: {reason}. Its manifest must declare {name} and the host be logged \
+         in to it, which restarts this Agent; or pass a credential with `--from-stdin`"
+    ))
 }
 
 /// Reports whether the host login this harness mediates is present and usable.
@@ -517,13 +520,22 @@ pub(crate) async fn bootstrap_linux(
     harness: Harness,
     sandbox: &sandbox::SandboxHandle,
     home: &str,
-    instructions: Option<&[u8]>,
+    instructions: &[u8],
     skills: &[Skill],
 ) -> Result<(), Error> {
     match harness {
         Harness::ClaudeCode => claude_code::bootstrap_linux(sandbox, home, instructions, skills).await,
         Harness::Codex => codex::bootstrap_linux(sandbox, home, instructions, skills).await,
         Harness::Pi => pi::bootstrap_linux(sandbox, home, instructions, skills).await,
+    }
+}
+
+/// Where the harness reads the Agent's instructions from.
+pub(crate) fn instructions_path(harness: Harness, home: &str) -> String {
+    match harness {
+        Harness::ClaudeCode => claude_code::instructions_path(home),
+        Harness::Codex => codex::instructions_path(home),
+        Harness::Pi => pi::instructions_path(home),
     }
 }
 
@@ -782,7 +794,12 @@ mod tests {
         );
         // In an Agent without the harness, no sign-in could complete: fail at once instead.
         let error = agent_credential(Harness::ClaudeCode, true, |_: &str| None).expect_err("no login to reuse");
-        assert!(error.to_string().contains("no Claude Code login"), "{error}");
+        let error = error.to_string();
+        assert!(
+            error.contains("no Claude Code login to reuse: `AGENT_CLAUDE_ACCESS_TOKEN` is not set"),
+            "{error}"
+        );
+        assert!(error.contains("manifest must declare Claude Code"), "{error}");
     }
 
     #[test]

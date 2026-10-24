@@ -149,14 +149,8 @@ impl Linux {
             kvm,
             podman,
         };
-        // The section precedes the Agent's own instructions. Without any, the harness's instruction file is left to
-        // the image or the home overlay, as it always was.
-        let instructions = read_instructions(record).await?.map(|own| {
-            let mut instructions = preamble::render(record, &observed).into_bytes();
-            instructions.push(b'\n');
-            instructions.extend(own);
-            instructions
-        });
+        let section = preamble::render(record, &observed);
+        let own = read_instructions(record).await?;
         let mut skills = read_skills(record).await?;
         let platform_skill = harness::platform_skill();
         // An Agent's own skill of the same name replaces the platform's.
@@ -170,11 +164,35 @@ impl Linux {
                     installation.kind.as_str()
                 ))
                 .await;
-            harness::bootstrap_linux(installation.kind, sandbox, HOME, instructions.as_deref(), &skills).await?;
+            let instructions = if let Some(own) = &own {
+                preamble::place(&section, own)
+            } else {
+                // Without instructions of its own, the Agent's image or home overlay may own the file: the section
+                // goes above what it holds. The home sync restores an overlay's file on every pass, so for a
+                // moment before this rewrite it lacks the section.
+                let path = harness::instructions_path(installation.kind, HOME);
+                let existing = read_file_or_empty(sandbox, &path).await?;
+                preamble::place(&section, preamble::without_section(&existing))
+            };
+            harness::bootstrap_linux(installation.kind, sandbox, HOME, &instructions, &skills).await?;
             step.complete().await;
         }
         Ok(())
     }
+}
+
+/// A file's contents, or nothing when it does not exist.
+async fn read_file_or_empty(sandbox: &SandboxHandle, path: &str) -> Result<Vec<u8>, Error> {
+    use tokio::io::AsyncReadExt as _;
+
+    let mut reader = match sandbox.read_file(&SandboxPath::new(path)).await {
+        Ok(reader) => reader,
+        Err(error) if error.is_not_found() => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut contents = Vec::new();
+    reader.read_to_end(&mut contents).await?;
+    Ok(contents)
 }
 
 async fn configure_git_identity(sandbox: &SandboxHandle) -> Result<(), Error> {
