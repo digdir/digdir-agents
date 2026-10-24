@@ -5,10 +5,16 @@
 # `ci-gate` fails when a job that ran failed or was cancelled, and passes when
 # areas were skipped. New areas are added here without changing branch
 # protection.
+#
+# Draft pull requests run nothing: CI starts when one is marked ready for
+# review. Each push to a pull request cancels the run for the push before it,
+# and converting it to a draft or closing it cancels its run too, since those
+# events start a run in the same group that skips every job.
 name: CI
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed]
   push:
     branches: [main]
 
@@ -22,6 +28,7 @@ permissions:
 jobs:
   changes:
     name: changes
+    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -73,7 +80,8 @@ jobs:
 
   ci-gate:
     name: ci-gate
-    if: always()
+    # Also in a cancelled run, which fails it: GitHub would accept a skipped required check.
+    if: ${{ always() && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
     needs: [changes, integrations, rust]
     runs-on: ubuntu-latest
     steps:
