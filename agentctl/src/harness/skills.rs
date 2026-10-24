@@ -21,8 +21,8 @@ pub(crate) struct SkillFile {
     pub(crate) contents: Vec<u8>,
 }
 
-/// The skill every Agent gets for running nested Agents with `agentctl`, which the platform
-/// section of its instructions points to.
+/// The skill every Agent gets for driving Agents with `agentctl`, nested ones included, which the
+/// Agent sandbox section of its instructions points to.
 pub(crate) fn platform_skill() -> Skill {
     Skill {
         name: "agentctl".into(),

@@ -3,8 +3,8 @@
 //! Every Agent runs on the same platform, so what a harness needs to know about it is generated
 //! here, from the Agent's manifest and what setup found in its Sandbox, rather than copied into
 //! each Agent's instruction file, where it drifts from the release that runs it. It states facts
-//! only, one labelled line each, with a sub-bullet per item where a line lists several; how to run
-//! nested Agents is the `agentctl` skill's.
+//! only, one labelled line each, with a sub-bullet per item where a line lists several; how to drive
+//! Agents, nested ones included, is the `agentctl` skill's.
 
 use std::{collections::BTreeMap, fmt::Write as _};
 

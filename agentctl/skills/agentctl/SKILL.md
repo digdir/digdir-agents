@@ -1,58 +1,69 @@
 ---
 name: agentctl
-description: Run nested Agents from inside this Agent with agentctl. Covers installing it, logging its agentd in through this Agent's mediated credentials, applying a manifest, creating and prompting Sessions, reading their turns, and cleaning up. Use when a task needs a separate Agent, such as trying an Agent image or manifest or exercising agentctl end to end. Not for subagents, which are your harness's own and need none of this.
+description: Drive Agents with agentctl, from a host session acting as orchestrator or from inside an Agent running nested ones. Covers applying a manifest, creating and prompting Sessions, reading their turns and cleaning up, and, inside an Agent, installing agentctl and logging it in. Use when a task needs a separate Agent, such as handing work to one, trying an Agent image or manifest, or exercising agentctl end to end. Not for subagents, which are your harness's own and need none of this.
 ---
 
-# Nested Agents
+# Driving Agents with agentctl
 
-A nested Agent is a separate Sandbox VM, run by an `agentd` inside this Sandbox. The Agent sandbox section of your
-instructions says whether this Agent can run them.
+An Agent is a Sandbox VM whose harness Sessions an `agentd` runs, and `agentctl` drives it. First work out where you
+are:
 
-## 1. Install agentctl
+- **Inside an Agent:** your instructions start with `# Agent sandbox`, or `AGENT_NAME` is set. The Agents you start
+  are nested in this Sandbox, and that section says whether it can run them. Set up as below.
+- **On a host:** neither is true. `agentctl`, its logins, the Agents and their environment files are the user's.
+  Follow the host rules below.
+
+## Inside an Agent: set up
+
+**Install** `agentctl` unless it is on `PATH`. When you are changing agentctl itself, run `make user-install` from
+your checkout instead, so the nested Agent runs your build.
 
 ```sh
 command -v agentctl || curl -fsSL https://raw.githubusercontent.com/digdir/digdir-agents/main/agentctl/install.sh | sh
 ```
 
-That installs the latest release in `~/.local/bin`. When you are changing agentctl itself, run `make user-install` from
-your checkout instead, so the nested Agent runs your build. `agentctl` starts its own `agentd` on first use.
-
-## 2. Log in
-
-For each harness this Agent has, before `apply`. They reuse this Agent's login, with no sign-in.
+**Log in** for each harness this Agent has, before `apply`. They reuse this Agent's login, with no sign-in.
 
 ```sh
 agentctl claude login
 agentctl codex login
 ```
 
-## 3. Write the nested Agent's environment file
-
-Give it the variables the manifest declares, from this Agent's own, and keep it outside every checkout:
+**Write the environment file** with the variables the manifest declares, from this Agent's own, outside every
+checkout:
 
 ```sh
 printf 'GITHUB_TOKEN=%s\nGIT_USER_NAME=%s\nGIT_USER_EMAIL=%s\n' \
   "$GITHUB_TOKEN" "$GIT_USER_NAME" "$GIT_USER_EMAIL" > ~/nested.env
 ```
 
-## 4. Apply
+**Size** a nested Agent to fit inside this Sandbox beside your own work. Check `nproc` and `free -g`, and keep its
+`cpu` and `memory` well below them; Agents often ship a `nested` variant sized for this.
+
+## On a host: rules
+
+- The Agents already there are the user's work. Change only those you create or the user names, and never run
+  `stop --all`, `kill --all` or `delete` on the others.
+- Logins are the user's. When `apply` or `create` reports one missing, ask the user to run `agentctl claude login` or
+  `agentctl codex login`; do not sign in yourself.
+- Environment files hold real secrets. Never read, write or print one; ask the user which `--env-file` to pass.
+
+## Apply
 
 ```sh
-agentctl apply -f path/to/agent.yaml --env-file ~/nested.env --wait
+agentctl apply -f path/to/agent.yaml --env-file ENV_FILE --wait
 # or, from the manifest's directory, a sibling variant such as agent.nested.yaml:
-agentctl apply --variant nested --env-file ~/nested.env --wait
+agentctl apply --variant nested --env-file ENV_FILE --wait
 ```
 
-- **Size:** it must fit inside this Sandbox beside your own work. Check `nproc` and `free -g`, and keep its `cpu` and
-  `memory` well below them; Agents often ship a `nested` variant sized for this.
-- **Image:** `type: build` builds with Podman here and takes minutes; `type: reference` pulls.
+- **Image:** `type: build` builds the image first and takes minutes; `type: reference` pulls it.
 - **Name:** `--name` applies a second copy of one manifest.
 - **Source directory:** an Agent stays bound to the directory it was first applied from. To apply it from another,
   such as another worktree, delete it first.
 
 When `--wait` fails or stalls, `agentctl describe agent/NAME` shows its conditions.
 
-## 5. Use it
+## Use it
 
 ```sh
 agentctl create session/s1 --agent NAME --harness claudeCode --model haiku --effort low
@@ -61,17 +72,17 @@ agentctl turns session/s1 --agent NAME --last 1
 agentctl exec agent/NAME -- systemctl is-system-running
 ```
 
-- `--harness` is `claudeCode`, `codex` or `pi`. Test with the cheapest model and the lowest effort the harness offers.
+- `--harness` is `claudeCode`, `codex` or `pi`. For trials, use the cheapest model and the lowest effort it offers.
 - `prompt --wait` returns when the turn completes; read its result with `turns`.
 - `exec` runs a command directly, for checking what a Session did.
 - `attach` and `tui` need an interactive terminal; avoid them.
 - `agentctl get agents` and `agentctl get sessions --agent NAME` list what exists.
 
-## 6. Clean up
+## Clean up
 
 ```sh
 agentctl delete agent/NAME
 ```
 
-Delete every nested Agent you created once you are done, and before removing the directory it was applied from.
+Delete every Agent you created once you are done, and before removing the directory it was applied from.
 `agentctl stop agent/NAME` and `agentctl start agent/NAME` keep its disk and Sessions when you need it again later.
