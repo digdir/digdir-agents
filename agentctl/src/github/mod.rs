@@ -12,12 +12,20 @@ use zeroize::Zeroizing;
 
 pub use inspect::SCOPES;
 
-use crate::{Error, persistence};
+use crate::{Error, harness::MediatedSecret, persistence};
+use sandbox::secret_store::SecretReference;
 
 /// Provider account namespace; each owner's account is `github/<owner>`.
 const PROVIDER: &str = "github";
 /// Secret name prefix; each owner's token is `github-access-token/<owner>`.
 const ACCESS_SECRET: &str = "github-access-token";
+/// The variable that carries the inert token in the Sandbox.
+pub(crate) const ACCESS_ENVIRONMENT: &str = "GITHUB_TOKEN";
+/// `gh` attaches files only with a token it classifies by prefix, so the placeholder carries the
+/// fine-grained token prefix.
+const ACCESS_PLACEHOLDER: &str = "github_pat_AGENT_MEDIATED_GITHUB_TOKEN";
+/// The hosts `gh` and Git over HTTPS reach; the token is substituted nowhere else.
+const MEDIATED_HOSTS: [&str; 4] = ["github.com", "api.github.com", "gist.github.com", "uploads.github.com"];
 /// The longest login GitHub allows.
 const OWNER_MAX_LENGTH: usize = 39;
 
@@ -124,6 +132,56 @@ pub struct GithubLogin {
 /// The provider account and secret names of `owner`'s token. `owner` must be valid.
 fn names(owner: &str) -> (String, String) {
     (format!("{PROVIDER}/{owner}"), format!("{ACCESS_SECRET}/{owner}"))
+}
+
+/// The mediated `GITHUB_TOKEN` an Agent of `owner` receives, bound to that owner's token only.
+///
+/// The binding does not depend on a token being stored: the mediator looks the token up on every
+/// request, so a login or logout takes effect at once, and GitHub itself rejects an expired one.
+/// Requests that carry the placeholder while no token is stored are blocked; nothing else is.
+///
+/// # Errors
+///
+/// Returns an error when `owner` is not a GitHub login.
+pub(crate) fn mediated_token(owner: &str) -> Result<MediatedSecret, Error> {
+    let owner = owner.to_ascii_lowercase();
+    if !valid_owner(&owner) {
+        return Err(Error::Invalid(
+            "the GitHub account's owner is not a GitHub login".into(),
+        ));
+    }
+    let (_, secret) = names(&owner);
+    Ok(MediatedSecret {
+        environment: ACCESS_ENVIRONMENT,
+        placeholder: ACCESS_PLACEHOLDER.into(),
+        reference: SecretReference::from_opaque(secret),
+        allowed_hosts: MEDIATED_HOSTS.iter().map(|host| (*host).to_owned()).collect(),
+    })
+}
+
+/// The account `owner`'s stored token acts as, expired or not; `None` when none is stored or
+/// `owner` is not a GitHub login.
+///
+/// # Errors
+///
+/// Returns an error when the database cannot be read.
+pub(crate) async fn account(database: &persistence::Database, owner: &str) -> Result<Option<GithubAccount>, Error> {
+    let owner = owner.to_ascii_lowercase();
+    if !valid_owner(&owner) {
+        return Ok(None);
+    }
+    let (provider, _) = names(&owner);
+    let Some(metadata) = database.provider_account_metadata(&provider).await? else {
+        return Ok(None);
+    };
+    let token: GithubToken = serde_json::from_str(&metadata)?;
+    Ok(Some(token.account))
+}
+
+/// Whether a manifest secret would collide with the binding the GitHub account owns. Mediation
+/// needs placeholders that never contain one another, so overlapping ones are refused.
+pub(crate) fn conflicts_with_managed_secret(name: &str, placeholder: &str) -> bool {
+    name == ACCESS_ENVIRONMENT || placeholder.contains(ACCESS_PLACEHOLDER) || ACCESS_PLACEHOLDER.contains(placeholder)
 }
 
 /// Checks GitHub tokens with GitHub and keeps them per owner.
@@ -537,6 +595,89 @@ mod tests {
             .await
             .expect("login");
         assert_eq!(fine_grained.missing_scopes, Vec::<String>::new());
+    }
+
+    /// Stores `token` for `owner` as a login would, expiring at `expires_at`.
+    async fn store(
+        database: &persistence::Database,
+        owner: &str,
+        token: &str,
+        expires_at: Option<time::OffsetDateTime>,
+    ) {
+        let (provider, secret) = names(owner);
+        let stored = GithubToken {
+            owner: owner.into(),
+            account: GithubAccount {
+                login: format!("{owner}-bot"),
+                name: format!("{owner} bot"),
+                email: format!("1+{owner}-bot@users.noreply.github.com"),
+            },
+            kind: TokenKind::of(token),
+            expires_at,
+        };
+        database
+            .put_provider_account(persistence::ProviderAccountWrite {
+                provider,
+                credentials: vec![persistence::StoredSecret {
+                    name: secret,
+                    value: Zeroizing::new(token.as_bytes().to_vec()),
+                }],
+                metadata_json: serde_json::to_string(&stored).expect("metadata"),
+            })
+            .await
+            .expect("store");
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn an_agent_resolves_only_its_own_owners_token_for_githubs_hosts() {
+        let github = fixture(BOT).await;
+        store(&github.database, "digdir", "github_pat_FAKE_digdir", None).await;
+        store(&github.database, "altinn", "github_pat_FAKE_altinn", None).await;
+
+        for (owner, expected) in [
+            ("Digdir", "github_pat_FAKE_digdir"),
+            ("altinn", "github_pat_FAKE_altinn"),
+        ] {
+            let secret = mediated_token(owner).expect("binding");
+            let resolved = github.database.resolve(&secret.reference).await.expect("resolve");
+            assert_eq!(resolved.expose(), expected.as_bytes(), "{owner}");
+            assert_eq!(secret.environment, "GITHUB_TOKEN");
+            assert_eq!(secret.placeholder, ACCESS_PLACEHOLDER);
+            assert_eq!(
+                secret.allowed_hosts,
+                ["github.com", "api.github.com", "gist.github.com", "uploads.github.com"]
+            );
+        }
+
+        let unstored = mediated_token("digdir-other").expect("bound without a token");
+        assert!(github.database.resolve(&unstored.reference).await.is_err());
+        assert!(mediated_token("not a login").is_err());
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn the_account_is_known_while_a_token_is_stored_expired_or_not() {
+        let github = fixture(BOT).await;
+        // 2001-09-09 01:46 UTC, long past.
+        let expired = time::OffsetDateTime::from_unix_timestamp(1_000_000_000).expect("timestamp");
+        store(&github.database, "digdir", "github_pat_FAKE_canary", Some(expired)).await;
+
+        let known = account(&github.database, "Digdir").await.expect("account");
+        assert_eq!(known.map(|account| account.login).as_deref(), Some("digdir-bot"));
+        assert_eq!(account(&github.database, "altinn").await.expect("account"), None);
+        assert_eq!(account(&github.database, "not a login").await.expect("account"), None);
+    }
+
+    #[test]
+    fn manifest_secrets_may_not_overlap_the_accounts_binding() {
+        for (name, placeholder) in [
+            ("GITHUB_TOKEN", "anything"),
+            ("GH_TOKEN", ACCESS_PLACEHOLDER),
+            ("GH_TOKEN", "github_pat_AGENT"),
+            ("GH_TOKEN", "x_github_pat_AGENT_MEDIATED_GITHUB_TOKEN_x"),
+        ] {
+            assert!(conflicts_with_managed_secret(name, placeholder), "{name} {placeholder}");
+        }
+        assert!(!conflicts_with_managed_secret("GH_TOKEN", "$AGENT_SECRET_GH_TOKEN"));
     }
 
     #[test]
