@@ -34,7 +34,7 @@ jobs:
       # cache-warm.yml saves this cache from main, where every pull request can restore it, under the same shared key.
       # A cache saved here would be visible to this pull request alone.
       - name: Restore Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: build-${{ hashFiles('Makefile', '.github/workflows/cache-warm.yml') }}
           save-if: false
@@ -95,7 +95,7 @@ jobs:
 
       # The build job's cache: these tests use the dependencies it builds.
       - name: Restore Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: build-${{ hashFiles('Makefile', '.github/workflows/cache-warm.yml') }}
           save-if: false
@@ -149,7 +149,7 @@ jobs:
       # cache-warm.yml saves this cache from main. The key holds the runner's OS and architecture, so each host has its
       # own; it hashes this workflow, which holds the commands below.
       - name: Restore Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: portable-${{ hashFiles('.github/workflows/rust.yml', '.github/workflows/cache-warm.yml') }}
           save-if: false
