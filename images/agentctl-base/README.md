@@ -5,7 +5,7 @@ versions its adapters are tested with, so an Agent's Dockerfile only adds the to
 
 | Image | Contents |
 | --- | --- |
-| `ghcr.io/digdir/agentctl-base:ubuntu-26.04` | Headless: Ubuntu 26.04 booting systemd, the `agent` user, Claude Code, Codex and Pi, Node.js, `gh` with `gh-stack`, git, tmux, Neovim, ripgrep, fd, jq, btop, asciinema and agg |
+| `ghcr.io/digdir/agentctl-base:ubuntu-26.04` | Headless: Ubuntu 26.04 booting systemd, the `agent` user, Claude Code, Codex and Pi, Node.js, `gh` with `gh-stack`, git, tmux, Neovim, ripgrep, fd, jq, btop, asciinema and agg, shellcheck and actionlint, make, patch, file, unzip, zip and wget |
 | `ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop` | The headless image plus the [`desktop` feature](#features): Chromium with `playwright-cli`, ffmpeg, and an X11 desktop with VNC access and the `computer-use` skill |
 
 Both are published for `linux/amd64` and `linux/arm64` from `main` whenever this directory changes, and also tagged
