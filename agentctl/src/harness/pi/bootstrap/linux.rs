@@ -12,7 +12,7 @@ use super::super::{extension, extension_path, instructions_path, platform_direct
 pub(super) async fn configure(
     sandbox: &SandboxHandle,
     home: &str,
-    instructions: Option<&[u8]>,
+    instructions: &[u8],
     skills: &[crate::harness::Skill],
 ) -> Result<(), Error> {
     let skills_path = skills_directory(home);
@@ -31,11 +31,8 @@ pub(super) async fn configure(
     )
     .await?;
     write_if_changed(sandbox, &extension_path, extension::script()?.as_bytes()).await?;
-    let mut managed = vec![extension_path.as_str()];
-    if let Some(instructions) = instructions {
-        write_if_changed(sandbox, &instructions_path, instructions).await?;
-        managed.push(instructions_path.as_str());
-    }
+    write_if_changed(sandbox, &instructions_path, instructions).await?;
+    let managed = [extension_path.as_str(), instructions_path.as_str()];
     // Runtime file transfer writes as the Sandbox supervisor (root), while executions run as the
     // image user. Correct only the files managed above.
     let mut chown = vec!["/usr/bin/chown", "agent:agent"];

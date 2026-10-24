@@ -21,6 +21,18 @@ pub(crate) struct SkillFile {
     pub(crate) contents: Vec<u8>,
 }
 
+/// The skill every Agent gets for driving Agents with `agentctl`, nested ones included, which the
+/// Agent sandbox section of its instructions points to.
+pub(crate) fn platform_skill() -> Skill {
+    Skill {
+        name: "agentctl".into(),
+        files: vec![SkillFile {
+            relative_path: "SKILL.md".into(),
+            contents: include_bytes!("../../skills/agentctl/SKILL.md").to_vec(),
+        }],
+    }
+}
+
 /// Places every skill below `root` as `root/<name>/<relative path>`, owned by the image user.
 ///
 /// Harnesses watch their skill directories live, so a file whose contents are already in place

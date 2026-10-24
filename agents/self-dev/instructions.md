@@ -17,27 +17,21 @@ recording; the `pr-evidence` skill describes how to record and attach it. The `c
 lists the targets; run `make fmt lint build test` before reporting completion. `make test-e2e` and
 `make user-install` work here too: the Sandbox has Podman, and `/dev/kvm` unless the host cannot provide it.
 
-To run a nested Agent, log the nested `agentd` in with the placeholders this Sandbox already holds, then apply the
-`nested` variant from the task's worktree: it builds its image from the checkout it is applied from, so applying it
-from the primary checkout tests `main` instead of your change. Its build pulls the published agentctl base image,
-replacing a local image under the same name. To test a change to `images/agentctl-base`, build it from the worktree
-under a `localhost/` tag, as its README describes, and point `agents/self-dev/Dockerfile`'s `FROM` at it while you
-test. Use `agents/self-dev/full` instead of `minimal` for a nested Agent with a browser and a desktop. An Agent's
-source directory cannot change, so delete an earlier `agentctl-dev-nested` applied from another worktree first, and
-delete it before removing the worktree it reads from.
+The `agentctl` skill describes running nested Agents. Here, install `agentctl` with `make user-install` from the task's
+worktree, add `AIVAR_API_KEY`, which Pi uses, to the nested environment file, and apply the `nested` variant from the
+same worktree: it builds its image from the checkout it is applied from, so applying it from the primary checkout tests
+`main` instead of your change.
 
 ```sh
-printf '%s\n' "$AGENT_CLAUDE_ACCESS_TOKEN" | agentctl claude login --from-stdin
-agentctl codex login --from-stdin < ~/.codex/auth.json
-printf 'GITHUB_TOKEN=%s\nAIVAR_API_KEY=%s\nGIT_USER_NAME=%s\nGIT_USER_EMAIL=%s\n' \
-  "$GITHUB_TOKEN" "$AIVAR_API_KEY" "$GIT_USER_NAME" "$GIT_USER_EMAIL" > ~/nested.env
 cd /home/agent/code/.worktrees/<task>/agents/self-dev/minimal
-agentctl apply --variant nested --env-file ~/nested.env
+agentctl apply --variant nested --name <task>-nested --env-file ~/nested.env --wait
 ```
 
-Real secrets are host-mediated: never search for, print, copy or persist their values. The credential placeholder
-above is inert, and `AIVAR_API_KEY`, which Pi uses, chains through the same way. Git identity is explicitly selected
-non-secret data and enters both Sandboxes in plaintext.
+Its build pulls the published agentctl base image, replacing a local image under the same name. To test a change to
+`images/agentctl-base`, build it from the worktree under a `localhost/` tag, as its README describes, and point
+`agents/self-dev/Dockerfile`'s `FROM` at it while you test. Use `agents/self-dev/full` instead of `minimal` for a nested
+Agent with a browser and a desktop. Name it for the task, since other Sessions may run nested Agents of their own, and
+delete it before removing the worktree it reads from.
 
 Build steps inside Podman trust the mediated CA through the system store and `/run/agent/tls/ca-bundle.pem`. Buildah
 drops default environment from build stages, so a `RUN` that downloads through Node exports

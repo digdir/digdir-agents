@@ -92,6 +92,19 @@ impl Convergence {
         }
     }
 
+    /// Hints convergence of every Agent, for host state any of them may wait on, such as the login
+    /// an optional harness installation needs. The periodic pass still follows a dropped hint.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when the Agents cannot be listed.
+    pub async fn wake_all(&self) -> Result<(), Error> {
+        for record in self.store.list().await? {
+            self.wakeup.notify(record.id);
+        }
+        Ok(())
+    }
+
     /// Reads the waited-on Agent, which must still exist.
     async fn get(&self, id: AgentId) -> Result<super::AgentRecord, Error> {
         match self.store.get(id).await {

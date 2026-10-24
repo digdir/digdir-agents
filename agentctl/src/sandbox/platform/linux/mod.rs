@@ -4,6 +4,7 @@ mod command;
 mod home;
 mod kvm;
 mod podman;
+mod preamble;
 mod sources;
 pub(crate) mod ssh;
 mod systemd;
@@ -13,7 +14,10 @@ use ::sandbox::{LocalFuture, Platform, SandboxHandle, SandboxPath, execution::Ex
 
 use crate::{Error, control_plane, harness};
 
-use super::{super::PlatformAdapter, files::write_if_changed};
+use super::{
+    super::PlatformAdapter,
+    files::{read_existing, write_if_changed},
+};
 pub(crate) use command::run_checked;
 use command::{checked_output, path_exists};
 use home::{archive_home, sync_home};
@@ -30,6 +34,11 @@ pub(crate) const WORKING_DIRECTORY: &str = "/home/agent/code";
 /// report. `agentd` binds a new host port on every start; Agent setup rewrites the file first
 /// thing on every pass, so harnesses that outlive a daemon restart follow it as soon as the
 /// restarted daemon starts the Sandbox's network.
+///
+/// Its presence is also how `agentctl` knows it runs inside an Agent, in a Session, an Execution or
+/// an SSH login alike: [`crate::harness::inside_agent`] checks for this path, so moving the file
+/// or writing it anywhere but in an Agent's Sandbox changes what harness logins with `agentctl`
+/// do there.
 pub(crate) const PLATFORM_API_URL_FILE: &str = "/etc/agent-platform-api-url";
 /// Locale every Sandbox process runs with; the image ships it, so UTF-8 output
 /// renders regardless of the host's locale.
@@ -126,7 +135,7 @@ impl Linux {
         let step = steps.start_step("Prepare workspace and Podman").await;
         run_checked(sandbox, "/usr/bin/install", ["-d", "-m", "0755", WORKING_DIRECTORY]).await?;
         let podman = configure_podman(sandbox).await?;
-        grant_kvm(sandbox).await?;
+        let kvm = grant_kvm(sandbox).await?;
         step.complete().await;
         let step = steps.start_step("Sync home").await;
         let archive = archive_home(record.source_directory.clone(), record.agent.spec.home.source.clone()).await?;
@@ -137,8 +146,20 @@ impl Linux {
         }
         configure_git_identity(sandbox).await?;
         step.complete().await;
-        let instructions = read_instructions(record).await?;
-        let skills = read_skills(record).await?;
+        let observed = preamble::Observed {
+            harnesses,
+            environment: &sandbox.snapshot().environment,
+            kvm,
+            podman,
+        };
+        let section = preamble::render(record, &observed);
+        let own = read_instructions(record).await?;
+        let mut skills = read_skills(record).await?;
+        let platform_skill = harness::platform_skill();
+        // An Agent's own skill of the same name replaces the platform's.
+        if !skills.iter().any(|skill| skill.name == platform_skill.name) {
+            skills.push(platform_skill);
+        }
         for installation in &installations {
             let step = steps
                 .start_step(format!(
@@ -146,11 +167,44 @@ impl Linux {
                     installation.kind.as_str()
                 ))
                 .await;
-            harness::bootstrap_linux(installation.kind, sandbox, HOME, instructions.as_deref(), &skills).await?;
+            let instructions = if let Some(own) = &own {
+                preamble::place(&section, own)
+            } else {
+                // Without instructions of its own, the Agent's image or home overlay may own the file: the section
+                // goes above what it holds. The home sync restores an overlay's file on every pass, so for a
+                // moment before this rewrite it lacks the section.
+                let path = harness::instructions_path(installation.kind, HOME);
+                let existing = read_owned_instructions(sandbox, &path).await?;
+                preamble::place(&section, preamble::without_section(&existing))
+            };
+            harness::bootstrap_linux(installation.kind, sandbox, HOME, &instructions, &skills).await?;
             step.complete().await;
         }
         Ok(())
     }
+}
+
+/// The most of an instruction file the image or home overlay owns that setup reads back.
+const MAX_OWNED_INSTRUCTIONS: usize = 1024 * 1024;
+
+/// What the image or home overlay put in a harness's instruction file: nothing when it does not
+/// exist. The Sandbox user can replace the file, so it must be a regular file and is read only up
+/// to a bound; anything else fails setup rather than losing the file's text.
+async fn read_owned_instructions(sandbox: &SandboxHandle, path: &str) -> Result<Vec<u8>, Error> {
+    if !path_exists(sandbox, "-e", path).await? {
+        return Ok(Vec::new());
+    }
+    if !path_exists(sandbox, "-f", path).await? {
+        return Err(Error::SandboxSetup(format!(
+            "{path} is not a regular file, so the Agent sandbox section cannot be placed above it"
+        )));
+    }
+    read_existing(sandbox, path, MAX_OWNED_INSTRUCTIONS).await.ok_or_else(|| {
+        Error::SandboxSetup(format!(
+            "{path} is unreadable or larger than {MAX_OWNED_INSTRUCTIONS} bytes, so the Agent sandbox section cannot be \
+             placed above it"
+        ))
+    })
 }
 
 async fn configure_git_identity(sandbox: &SandboxHandle) -> Result<(), Error> {

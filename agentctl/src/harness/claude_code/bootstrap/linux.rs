@@ -15,7 +15,7 @@ const TRANSCRIPT_RETENTION_DAYS: u32 = 36_500;
 pub(super) async fn configure(
     sandbox: &SandboxHandle,
     home: &str,
-    instructions: Option<&[u8]>,
+    instructions: &[u8],
     skills: &[crate::harness::Skill],
 ) -> Result<(), Error> {
     let skills_path = format!("{home}/.claude/skills");
@@ -25,7 +25,7 @@ pub(super) async fn configure(
     let hook_path = format!("{config}/hooks/activity-hook.mjs");
     let settings_path = format!("{config}/agent-settings.json");
     let status_line_path = format!("{config}/status-line.mjs");
-    let instructions_path = format!("{config}/CLAUDE.md");
+    let instructions_path = super::super::instructions_path(home);
     run_checked(sandbox, "/usr/bin/mkdir", ["-p", hooks_path.as_str()]).await?;
     let credentials = serde_json::to_vec(&serde_json::json!({
         "claudeAiOauth": {
@@ -37,9 +37,7 @@ pub(super) async fn configure(
         }
     }))?;
     write_if_changed(sandbox, &credentials_path, &credentials).await?;
-    if let Some(instructions) = instructions {
-        write_if_changed(sandbox, &instructions_path, instructions).await?;
-    }
+    write_if_changed(sandbox, &instructions_path, instructions).await?;
     write_if_changed(sandbox, &hook_path, super::super::hooks::script()?.as_bytes()).await?;
     write_if_changed(sandbox, &status_line_path, super::super::status_line::script()).await?;
     // HACK: the mediated setup token is inference-only, so Claude Code cannot read the account's
@@ -83,14 +81,12 @@ pub(super) async fn configure(
     )
     .await?;
     run_checked(sandbox, "/usr/bin/chmod", ["600", credentials_path.as_str()]).await?;
-    if instructions.is_some() {
-        run_checked(
-            sandbox,
-            "/usr/bin/sudo",
-            ["/usr/bin/chown", "agent:agent", instructions_path.as_str()],
-        )
-        .await?;
-        run_checked(sandbox, "/usr/bin/chmod", ["644", instructions_path.as_str()]).await?;
-    }
+    run_checked(
+        sandbox,
+        "/usr/bin/sudo",
+        ["/usr/bin/chown", "agent:agent", instructions_path.as_str()],
+    )
+    .await?;
+    run_checked(sandbox, "/usr/bin/chmod", ["644", instructions_path.as_str()]).await?;
     crate::harness::skills::install_linux(sandbox, &skills_path, skills).await
 }

@@ -8,6 +8,7 @@
 !agentctl/Cargo.toml
 !agentctl/src/
 !agentctl/examples/
+!agentctl/skills/
 !sandbox/authorization/Cargo.toml
 !sandbox/authorization/src/
 !sandbox/core/Cargo.toml
