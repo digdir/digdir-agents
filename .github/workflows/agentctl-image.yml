@@ -7,7 +7,7 @@ name: agentctl image
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed, labeled]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed]
     paths:
       - .cargo/**
       - Cargo.toml
@@ -49,7 +49,8 @@ env:
 
 jobs:
   resolve:
-    # Drafts are skipped unless labeled `ci`, as in CI.
+    # Drafts are skipped unless labeled `ci`, from their next push, as in CI. Converting to a draft or closing starts a run
+    # that skips every job, which cancels the one in progress.
     if: >-
       ${{ github.event_name != 'pull_request' || (github.event.action != 'closed'
       && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'ci'))) }}
