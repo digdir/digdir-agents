@@ -1,6 +1,6 @@
 # The container images this repository publishes, for `docker buildx bake`. CI builds each architecture on its own
 # runner and publishes from main; `docker buildx bake -f docker-bake.hcl --load base-headless` builds one locally
-# under its published name. Always pass `-f docker-bake.hcl`: without it, bake also reads the root docker-compose.yml.
+# under its published name.
 
 # Where the agentctl base images are published.
 variable "BASE_REPOSITORY" {
