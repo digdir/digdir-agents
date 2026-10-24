@@ -6,7 +6,8 @@ metadata:
   name: minimal
 spec:
   sandbox:
-    # Built from the Dockerfile beside this manifest. Paths in a manifest resolve against its directory.
+    # Built from the Dockerfile beside this manifest. Paths in a manifest resolve against its directory,
+    # or against your home directory when they start with `~/`.
     image:
       type: build
       context: .

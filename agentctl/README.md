@@ -196,6 +196,10 @@ group, so the image need not grant it. Turning nested Sandboxes on or off restar
 not delete guest files that disappear from the source. Builders may use it to own harness configuration explicitly,
 with the consequence that those files are reapplied on every Agent pass.
 
+Host paths in a manifest (`spec.home`, `spec.instructions`, `spec.skills`, bind mount sources and the image build
+`context`) resolve against the manifest's directory unless absolute; one starting with `~/` resolves against your home
+directory, so a manifest can name a personal skill such as `~/.claude/skills/review` on any machine.
+
 `spec.harnesses` declares the harness installations available to Sessions and selects the default used for new Sessions.
 A declared `version` is verified against the image at setup; omit it when the image owns the version, so image bumps need no manifest change.
 Set `optional: true` when an absent host login should omit that installation instead of blocking Agent creation, so a

@@ -319,15 +319,26 @@ impl SandboxManifestSpec {
     }
 
     /// Resolves manifest-relative sources and an omitted architecture for a concrete Provider request.
-    #[must_use]
-    pub fn resolve_from(&self, source_directory: &std::path::Path, default_architecture: &str) -> sandbox::SandboxSpec {
-        sandbox::SandboxSpec {
-            image: self.image.resolve_from(source_directory),
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the build context starts with `~` and the home directory is unknown.
+    pub fn resolve_from(
+        &self,
+        source_directory: &std::path::Path,
+        default_architecture: &str,
+    ) -> Result<sandbox::SandboxSpec, Error> {
+        let mut image = self.image.clone();
+        if let ImageSource::Build { context, .. } = &mut image {
+            *context = resolve_host_path(source_directory, context, "spec.sandbox.image.context")?;
+        }
+        Ok(sandbox::SandboxSpec {
+            image,
             platform: self.platform.resolve(default_architecture),
             resources: self.resources.sandbox_resources(),
             init_system: self.init_system,
             retention_policy: self.resolved_retention_policy(),
-        }
+        })
     }
 
     /// Returns the Agent-layer retention default used when the manifest omits it.
@@ -354,7 +365,7 @@ impl SandboxManifestSpec {
 pub enum MountSpec {
     /// A caller-host directory mapped into the Sandbox.
     Bind {
-        /// Host path, resolved relative to the manifest directory at apply time.
+        /// Host path, resolved relative to the manifest directory, or to the home directory for `~/`, at apply time.
         source: std::path::PathBuf,
         /// Absolute path inside the Sandbox.
         target: SandboxPath,
@@ -725,7 +736,7 @@ fn valid_sandbox_path(path: &str) -> bool {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct HomeSpec {
-    /// Host path, resolved relative to the manifest directory.
+    /// Host path, resolved relative to the manifest directory, or to the home directory for `~/`.
     pub source: std::path::PathBuf,
 }
 
@@ -733,7 +744,7 @@ pub struct HomeSpec {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct InstructionsSpec {
-    /// Host file, resolved relative to the manifest directory.
+    /// Host file, resolved relative to the manifest directory, or to the home directory for `~/`.
     pub source: std::path::PathBuf,
 }
 
@@ -741,7 +752,8 @@ pub struct InstructionsSpec {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SkillSpec {
-    /// Host directory holding `SKILL.md`, resolved relative to the manifest directory.
+    /// Host directory holding `SKILL.md`, resolved relative to the manifest directory, or to the home directory
+    /// for `~/`.
     pub source: std::path::PathBuf,
     /// Installed skill directory name; defaults to the source directory name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1328,6 +1340,41 @@ fn string_field(mapping: &serde_yaml_ng::Mapping, field: &str, path: &Path) -> R
         .ok_or_else(|| Error::Invalid(format!("{}: {field} must be a string", display_leaf(path))))
 }
 
+/// Resolves a host path named by the manifest `field`: absolute as written, `~` or `~/…` below the home
+/// directory of the user running `agentd`, and anything else, `~user` forms included, against the manifest's
+/// directory.
+///
+/// # Errors
+///
+/// Returns an error when the path starts with `~` and the home directory is unknown.
+pub(crate) fn resolve_host_path(source_directory: &Path, path: &Path, field: &str) -> Result<PathBuf, Error> {
+    resolve_host_path_with(source_directory, path, field, crate::local::home::user_home_directory)
+}
+
+fn resolve_host_path_with(
+    source_directory: &Path,
+    path: &Path,
+    field: &str,
+    home: impl FnOnce() -> Option<PathBuf>,
+) -> Result<PathBuf, Error> {
+    let mut components = path.components();
+    if components.next() == Some(Component::Normal("~".as_ref())) {
+        let home = home()
+            .ok_or_else(|| Error::Invalid(format!("{field} starts with ~, but the home directory is not set")))?;
+        let rest = components.as_path();
+        return Ok(if rest.as_os_str().is_empty() {
+            home
+        } else {
+            home.join(rest)
+        });
+    }
+    Ok(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        source_directory.join(path)
+    })
+}
+
 fn absolute_lexical(path: &Path) -> Result<PathBuf, Error> {
     if path.is_absolute() {
         Ok(path.to_path_buf())
@@ -1360,4 +1407,55 @@ fn with_chain(error: Error, chain: &[PathBuf]) -> Error {
         .collect::<Vec<_>>()
         .join("\n");
     Error::Invalid(format!("{error}\ninheritance chain:\n{diagnostic}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::resolve_host_path_with;
+
+    fn resolve(path: &str, home: Option<&str>) -> Result<PathBuf, crate::Error> {
+        resolve_host_path_with(Path::new("/manifests/worker"), Path::new(path), "spec.field", || {
+            home.map(PathBuf::from)
+        })
+    }
+
+    #[test]
+    fn a_leading_tilde_names_the_home_directory_and_other_paths_are_unchanged() {
+        let resolved = |path| resolve(path, Some("/users/person")).ok();
+        assert_eq!(
+            resolved("~/skills/review"),
+            Some(PathBuf::from("/users/person/skills/review"))
+        );
+        assert_eq!(resolved("~/"), Some(PathBuf::from("/users/person")));
+        assert_eq!(resolved("~"), Some(PathBuf::from("/users/person")));
+        assert_eq!(
+            resolved("skills/review"),
+            Some(PathBuf::from("/manifests/worker/skills/review"))
+        );
+        assert_eq!(
+            resolved("../shared"),
+            Some(PathBuf::from("/manifests/worker/../shared"))
+        );
+        assert_eq!(
+            resolved("~other/skills"),
+            Some(PathBuf::from("/manifests/worker/~other/skills"))
+        );
+        assert_eq!(resolved("skills/~"), Some(PathBuf::from("/manifests/worker/skills/~")));
+        let absolute = std::env::temp_dir().join("skills");
+        assert_eq!(
+            resolve(absolute.to_str().unwrap_or_default(), Some("/users/person")).ok(),
+            Some(absolute)
+        );
+    }
+
+    #[test]
+    fn a_leading_tilde_without_a_home_directory_is_rejected() {
+        assert!(matches!(
+            resolve("~/skills", None),
+            Err(crate::Error::Invalid(message)) if message == "spec.field starts with ~, but the home directory is not set"
+        ));
+        assert!(resolve("skills", None).is_ok());
+    }
 }

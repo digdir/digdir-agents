@@ -640,3 +640,30 @@ fn rejects_unknown_duplicate_and_configured_access_capabilities() {
     )]);
     assert!(matches!(manifest::decode(&nested), Err(agent::Error::Yaml(_))));
 }
+
+#[test]
+fn a_build_context_starting_with_a_tilde_resolves_below_the_home_directory() {
+    let home = agent::local::home::user_home_directory().expect("home directory");
+    let source_directory = PathBuf::from("/manifests/worker");
+    let architecture = sandbox::Platform::native("linux").architecture;
+    let context_for = |context: &str| {
+        let mut agent = support::agent("worker");
+        agent.spec.sandbox.image = sandbox::image::ImageSource::Build {
+            context: PathBuf::from(context),
+            dockerfile: PathBuf::from("Dockerfile"),
+            target: None,
+        };
+        match agent.spec.sandbox.resolve_from(&source_directory, &architecture) {
+            Ok(sandbox::SandboxSpec {
+                image: sandbox::image::ImageSource::Build { context, .. },
+                ..
+            }) => context,
+            other => panic!("unexpected resolution: {other:?}"),
+        }
+    };
+
+    assert_eq!(context_for("~/images/worker"), home.join("images/worker"));
+    assert_eq!(context_for("~"), home);
+    assert_eq!(context_for("image"), source_directory.join("image"));
+    assert_eq!(context_for("~other/image"), source_directory.join("~other/image"));
+}

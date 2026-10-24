@@ -11,11 +11,11 @@ use crate::{Error, control_plane, harness};
 pub(super) async fn read_instructions(record: &control_plane::AgentRecord) -> Result<Option<Vec<u8>>, Error> {
     let mut combined = Vec::new();
     for (index, spec) in record.agent.spec.instructions.iter().enumerate() {
-        let source = if spec.source.is_absolute() {
-            spec.source.clone()
-        } else {
-            record.source_directory.join(&spec.source)
-        };
+        let source = crate::manifest::resolve_host_path(
+            &record.source_directory,
+            &spec.source,
+            &format!("spec.instructions[{index}].source"),
+        )?;
         let metadata = tokio::fs::metadata(&source).await?;
         if !metadata.is_file() {
             return Err(Error::Invalid(format!(
@@ -125,12 +125,7 @@ pub(super) fn resolve_source(
     source: &Path,
     field: &str,
 ) -> Result<std::path::PathBuf, Error> {
-    let source = if source.is_absolute() {
-        source.to_path_buf()
-    } else {
-        manifest_directory.join(source)
-    };
-    let source = std::fs::canonicalize(source)?;
+    let source = std::fs::canonicalize(crate::manifest::resolve_host_path(manifest_directory, source, field)?)?;
     if !source.is_dir() {
         return Err(Error::Invalid(format!("{field} must identify a directory")));
     }

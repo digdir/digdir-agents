@@ -160,7 +160,8 @@ impl Fixture {
             .agent
             .spec
             .sandbox
-            .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+            .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+            .expect("Sandbox spec");
         service
             .ensure(&EnsureSandboxRequest::new(
                 record.sandbox_name().expect("Sandbox name"),
