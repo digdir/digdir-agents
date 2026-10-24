@@ -3,7 +3,7 @@ FROM archlinux:base@sha256:b0deabeb3d283da2c7f7dbf0eea051b7b2cd0554e0b737cc457fd
 # The repository's rust-toolchain.toml selects the toolchain inside a checkout, and Renovate moves
 # this ARG together with it. The agent user (uid 1000, created below) owns RUSTUP_HOME, so a
 # checkout pinned ahead of this image installs its toolchain on first use instead of failing.
-ARG RUST_VERSION=1.97.1
+ARG RUST_VERSION=1.99.0
 
 ENV CARGO_HOME=/usr/local/cargo
 ENV DOTNET_ROOT=/usr/local/share/dotnet

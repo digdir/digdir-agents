@@ -560,7 +560,7 @@ mod tests {
             ),
             entry("c", Some("b"), &serde_json::json!({"role": "bashExecution", "command": "ls", "output": ""})),
         ];
-        assert!(parse(lines.join("\n").as_bytes()).expect("parse").is_empty());
+        assert_eq!(parse(lines.join("\n").as_bytes()).expect("parse"), []);
     }
 
     #[test]

@@ -2952,7 +2952,7 @@ mod tests {
             Action::None,
             "esc clears the filter first"
         );
-        assert!(app.filter.is_empty());
+        assert_eq!(app.filter, "");
         assert_eq!(app.rows.len(), 4, "folding applies again");
         assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Quit);
     }
@@ -4939,7 +4939,7 @@ mod tests {
             now,
         );
         assert_eq!(app.error.as_deref(), Some("zed failed"));
-        assert!(app.opening.is_empty());
+        assert_eq!(app.opening, []);
     }
 
     fn desktop_forward(id: u64, agent: &str, guest_port: u16) -> ForwardEntry {

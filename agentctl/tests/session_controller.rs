@@ -1073,14 +1073,9 @@ async fn upgrade_preflight_reports_work_and_terminal_attachments() {
         .expect("unarchive");
 
     harness.report(agent::sessions::ActivityEvent::TurnCompleted).await;
-    assert!(
-        harness
-            .service
-            .upgrade_readiness()
-            .await
-            .expect("quiescent")
-            .blockers
-            .is_empty()
+    assert_eq!(
+        harness.service.upgrade_readiness().await.expect("quiescent").blockers,
+        Vec::<String>::new()
     );
     harness.runtime.attached.set(true);
     assert_eq!(
@@ -2629,7 +2624,7 @@ async fn deleting_a_session_stops_its_harness_before_the_session_is_removed() {
     assert!(!runtime.present.get(), "the retry stops the harness");
     let stops = runtime.stop_calls.get();
     assert!(matches!(database.get_session(session.id).await, Err(Error::NotFound)));
-    assert!(database.list_all_sessions().await.expect("sessions").is_empty());
+    assert_eq!(database.list_all_sessions().await.expect("sessions"), []);
     reconciler
         .reconcile(session.id)
         .await
@@ -2714,7 +2709,7 @@ async fn deleting_a_session_through_the_service_releases_it_and_hides_it_at_once
 
     assert!(!runtime.present.get(), "the harness is stopped, not left running");
     assert!(matches!(service.get("worker", &name).await, Err(Error::NotFound)));
-    assert!(service.list(None).await.expect("sessions").is_empty());
+    assert_eq!(service.list(None).await.expect("sessions"), []);
     assert!(matches!(
         service.turns("worker", &name, None).await,
         Err(Error::NotFound)

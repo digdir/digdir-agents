@@ -10,7 +10,7 @@ USER root
 # The repository's rust-toolchain.toml selects the toolchain inside a checkout, and Renovate moves
 # this ARG together with it. The agent user owns RUSTUP_HOME, so a checkout pinned ahead of this
 # image installs its toolchain on first use instead of failing.
-ARG RUST_VERSION=1.97.1
+ARG RUST_VERSION=1.99.0
 
 ENV RUSTUP_HOME=/usr/local/rustup
 
