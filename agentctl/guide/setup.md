@@ -18,7 +18,8 @@ code or other tasks here: if they ask, say that the agent is the place for that,
   Docker Engine; Docker Desktop and Colima both work. If it does not answer, ask the person to start one.
 - The repository: its README and AGENTS.md, its build files and version files (such as `.nvmrc`, `package.json`,
   `global.json`, `go.mod`, `rust-toolchain.toml`, `pyproject.toml`), CI workflows, and its Git remote.
-- `agents/` at the repository root: an existing agent folder is a starting point, not something to overwrite.
+- `agents/` at the repository root, or in the folder the person works in when there is no repository: an
+  existing agent folder is a starting point, not something to overwrite.
 
 ## 2. Ask about goals, in plain words
 
@@ -37,8 +38,9 @@ Propose answers from what you found, and let them correct you. Don't explain fil
 
 ## 3. Write the agent's folder
 
-At the repository root, `agents/<name>/` (name: short, lowercase letters, digits and hyphens, such as `dev`, and
-not already used by another agent on the machine):
+At the repository root, or in the folder the person works in when there is no repository, `agents/<name>/`
+(name: short, lowercase letters, digits and hyphens, such as `dev`, and not already used by another agent on the
+machine):
 
 | File | What goes in it | Details |
 | --- | --- | --- |
@@ -104,7 +106,7 @@ agent, such as one in another checkout of the repository: choose another name in
 ## 5. Hand over
 
 Tell the person, in two or three lines, what you set up and how to start working with it: `agentctl attach` from
-anywhere in the repository opens the agent's session, starting one if it has none (detach with Ctrl-b d), and
+anywhere in the repository, or that folder, opens the agent's session, starting one if it has none (detach with Ctrl-b d), and
 `agentctl tui` shows every agent and session. Suggest they commit `agents/<name>/`, without `.env`, so
 others in the repository get the same agent.
 
