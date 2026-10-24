@@ -804,10 +804,10 @@ fn spawn_discovery(inputs: Inputs, agents: Vec<Agent>) {
 
 /// Assembles create-agent candidates from the working tree and recorded Agent manifests.
 ///
-/// Every manifest below the working directory is offered, or below the repository
-/// root when the working directory is inside a git repository, skipping hidden and
-/// ignored directories; a recorded manifest that is unreadable stays listed so its
-/// error is visible.
+/// Inside a git repository every manifest below the repository root is offered,
+/// skipping hidden and ignored directories; outside one only `agent.yaml` and
+/// `agents/*/agent.yaml` in the working directory are. A recorded manifest that is
+/// unreadable stays listed so its error is visible.
 async fn manifest_candidates(current_directory: Option<PathBuf>, agents: &[Agent]) -> Vec<ManifestCandidate> {
     let agents = agents.to_vec();
     tokio::task::spawn_blocking(move || manifest_candidates_blocking(current_directory.as_deref(), &agents))
@@ -854,22 +854,38 @@ fn repository_root(directory: &Path) -> Option<&Path> {
     directory.ancestors().find(|ancestor| ancestor.join(".git").exists())
 }
 
-/// Lists Agents and their variant manifests below `directory`, or below its git repository root.
+/// Lists Agents and their variant manifests for `directory`.
 ///
-/// The walk honors ignore files for directories and finds complete `agent.yaml`
-/// manifests. Each Agent directory is then enumerated directly so checkout-local,
-/// ignored `agent.<variant>.yaml` siblings remain discoverable.
+/// Inside a git repository the whole repository is walked, honoring ignore files;
+/// outside one only `directory/agent.yaml` and `directory/agents/*/agent.yaml` are
+/// checked, so running from a home directory never walks it. Each Agent directory
+/// is then enumerated directly so checkout-local, ignored `agent.<variant>.yaml`
+/// siblings remain discoverable.
 fn working_tree_manifests(directory: &Path) -> Vec<PathBuf> {
-    let root = repository_root(directory).unwrap_or(directory);
-    let mut found: Vec<PathBuf> = WalkBuilder::new(root)
-        .max_depth(Some(DISCOVERY_DEPTH))
-        .require_git(false)
-        .follow_links(false)
-        .build()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()) && entry.file_name() == MANIFEST_FILE)
-        .flat_map(|entry| {
-            let base = entry.into_path();
+    let agents: Vec<PathBuf> = match repository_root(directory) {
+        Some(root) => WalkBuilder::new(root)
+            .max_depth(Some(DISCOVERY_DEPTH))
+            .require_git(false)
+            .follow_links(false)
+            .build()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()) && entry.file_name() == MANIFEST_FILE)
+            .map(ignore::DirEntry::into_path)
+            .collect(),
+        None => std::iter::once(directory.join(MANIFEST_FILE))
+            .chain(
+                std::fs::read_dir(directory.join("agents"))
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path().join(MANIFEST_FILE)),
+            )
+            .filter(|path| path.is_file())
+            .collect(),
+    };
+    let mut found: Vec<PathBuf> = agents
+        .into_iter()
+        .flat_map(|base| {
             let Some(parent) = base.parent() else {
                 return vec![base];
             };
@@ -1184,9 +1200,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "local")]
-    async fn discovery_walks_the_working_directory_tree_but_not_hidden_or_ignored_directories() {
+    async fn discovery_walks_the_repository_but_not_hidden_or_ignored_directories() {
         let root = tempfile::tempdir().expect("temporary directory");
         let cwd = manifest_directory(root.path(), "cwd", &manifest_yaml("top"));
+        std::fs::write(cwd.join(".git"), "gitdir: elsewhere\n").expect("worktree marker should be written");
         let nested = manifest_directory(&cwd, "examples/deeper", &manifest_yaml("nested"));
         let sibling = manifest_directory(&cwd, "examples/other", &manifest_yaml("other"));
         manifest_directory(&cwd, ".hidden", &manifest_yaml("hidden"));
@@ -1206,6 +1223,34 @@ mod tests {
             ]
         );
         assert_eq!(candidates[1].name.as_deref(), Ok("nested"));
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn discovery_outside_a_repository_checks_only_the_conventional_layout() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let cwd = manifest_directory(root.path(), "cwd", &manifest_yaml("top"));
+        let dev = manifest_directory(&cwd, "agents/dev", &manifest_yaml("dev"));
+        std::fs::write(
+            dev.join("agent.mine.yaml"),
+            "apiVersion: agents.platform/v1alpha1\nkind: AgentVariant\nextends: agent.yaml\nmetadata:\n  name: mine\n",
+        )
+        .expect("local variant");
+        empty_directory(&cwd, "agents/empty");
+        manifest_directory(&cwd, "projects/checkout", &manifest_yaml("unrelated"));
+        manifest_directory(&cwd, "agents/dev/nested", &manifest_yaml("nested"));
+
+        let candidates = manifest_candidates(Some(cwd.clone()), &[]).await;
+
+        let paths: Vec<&std::path::Path> = candidates.iter().map(|candidate| candidate.path.as_path()).collect();
+        assert_eq!(
+            paths,
+            [
+                cwd.join(MANIFEST_FILE),
+                dev.join(MANIFEST_FILE),
+                dev.join("agent.mine.yaml")
+            ]
+        );
+        assert_eq!(candidates[2].name.as_deref(), Ok("mine"));
     }
 
     #[tokio::test(flavor = "local")]
