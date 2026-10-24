@@ -1,0 +1,6 @@
+# Variants of your own, such as agent.mine.yaml, and environment files stay out of Git.
+agent.*.yaml
+.env
+
+# The variants this directory ships.
+!agent.nested.yaml

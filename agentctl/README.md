@@ -29,6 +29,11 @@ agentctl codex login
 
 Update with `agentctl self update`. Agents and Sessions carry over. Stop every Agent at once with `agentctl kill --all`.
 
+## Your first Agent
+
+Start from the [.NET example](../agents/examples/dotnet-dev/), whose manifest and image explain each line. Copy it and
+change what your work needs.
+
 ## Documentation
 
 - [image-contract.md](docs/image-contract.md): what an Agent image must provide

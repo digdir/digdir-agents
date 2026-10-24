@@ -1,0 +1,107 @@
+# An Agent for .NET development: a computer of its own with the .NET SDK, Podman, a desktop with Chromium, Claude Code
+# and Codex, which clones your repositories at boot and works on GitHub without the token ever entering it.
+#
+# Copy this directory to start your own Agent. The values here are the ones we recommend. Paths in a manifest resolve
+# against the directory it is in.
+apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  # The Agent's name in agentctl's commands and the TUI. `agentctl apply --name` overrides it, so one manifest can
+  # create several Agents.
+  name: dotnet-dev
+spec:
+  sandbox:
+    # The image the Sandbox boots. `build` builds the Dockerfile beside this file on the host, which needs a running
+    # Docker Engine there. `type: reference` with `reference: <image>` pulls a published image instead.
+    image:
+      type: build
+      context: .
+      dockerfile: Dockerfile
+    platform:
+      os: linux
+    # What the Sandbox may use of the host.
+    resources:
+      cpu: "4"
+      memory: "8Gi"
+      rootFilesystem:
+        # The most disk the Agent can use. Builds, NuGet caches and container images fill it faster than you expect.
+        capacity: "100Gi"
+        # `direct` copies the whole image onto the Agent's own disk. `layered` instead shares the image and stores
+        # only what the Agent writes on top of it.
+        mode: direct
+      # Lets the agents in this Agent run Agents of their own, such as one to try a change to an Agent before you
+      # do. It needs a Linux x86_64 host with nested KVM, or an Apple M3 or newer on macOS 15 or newer. `preferred`
+      # starts the Agent without them on other hosts, and `required` fails there instead.
+      nestedSandboxes: preferred
+    # Boot the image's own init system, systemd in the base images. It runs the service that clones the
+    # repositories in workspace.list, Podman, and the servers for `access` below.
+    initSystem: image
+
+  # A directory copied over /home/agent every time agentd reconciles the Agent, for configuration you want to own
+  # from here, such as a NuGet.Config. It never deletes files in the Sandbox. Empty here.
+  home:
+    source: home
+
+  # What every harness is told about this computer, installed where each one reads its instructions.
+  instructions:
+    - source: instructions.md
+
+  # The harnesses Sessions can run. Each logs in on the host once, with `agentctl claude login` or
+  # `agentctl codex login`, and the Sandbox only sees a placeholder for the credential.
+  harnesses:
+    - type: claudeCode
+      # What a new Session runs when you do not choose a harness.
+      default: true
+      # The model and effort new Sessions start with, in the harness's own names. `--model` and `--effort` on
+      # `agentctl create` override them.
+      # defaults:
+      #   model: opus
+    - type: codex
+      # Without a Codex login on the host, the Agent starts without Codex instead of failing. Log in later, and
+      # the next reconcile adds it.
+      optional: true
+
+  # Plain values copied into the Sandbox from the environment file, `.env` beside this file unless
+  # `agentctl apply --env-file` names another. The Sandbox sees them as they are, so never put a secret here.
+  environment:
+    - name: GIT_USER_NAME
+    - name: GIT_USER_EMAIL
+
+  # Secrets stay on the host. The Sandbox sees a placeholder in the variable, and the host puts the real value into
+  # requests to the hosts listed, and nowhere else.
+  secrets:
+    - environment: GITHUB_TOKEN
+      # Without a value in the environment file, the Agent starts without it, but cannot clone private
+      # repositories, push or open pull requests.
+      optional: true
+      # gh attaches files to pull requests only with a token it recognizes by its prefix, so the placeholder
+      # carries the fine-grained token's prefix.
+      placeholder: github_pat_AGENT_MEDIATED_GITHUB_TOKEN
+      # Git and gh, gists, and the uploads behind `gh pr create --attach`.
+      allowedHosts:
+        - github.com
+        - api.github.com
+        - gist.github.com
+        - uploads.github.com
+    # A private NuGet feed takes another secret with its own host, such as:
+    # - environment: AZURE_ARTIFACTS_TOKEN
+    #   allowedHosts:
+    #     - pkgs.dev.azure.com
+
+  # Ways to reach the Agent besides agentctl's Sessions.
+  access:
+    # OpenSSH, for Rider, Visual Studio Code or a terminal of your own. `agentctl ssh-config install` adds the Agent
+    # to your SSH configuration as `agentctl-dotnet-dev`.
+    - type: ssh
+    # The desktop, in your browser with `agentctl vnc --web` or in a VNC client, to watch what the agent does there
+    # or take over. You share its keyboard and pointer. It needs the desktop image the Dockerfile builds on.
+    - type: vnc
+
+  # All traffic leaves through the host, which applies this policy.
+  network:
+    mode: mediated
+    allow: all
+    # Hosts the Agent may not reach. Google Cloud's metadata service hands out the credentials of the VM it runs on,
+    # so block it in case the host is one.
+    deny:
+      - metadata.google.internal
