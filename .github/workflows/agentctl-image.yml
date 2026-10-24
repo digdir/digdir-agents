@@ -49,8 +49,8 @@ env:
 
 jobs:
   resolve:
-    # Drafts are skipped unless labeled `ci`, from their next push, as in CI. Converting to a draft or closing starts a run
-    # that skips every job, which cancels the one in progress.
+    # Drafts are skipped unless labeled `ci`, from their next push, as in CI. Converting to a draft or closing starts a
+    # run that skips every job, which cancels the one in progress.
     if: >-
       ${{ github.event_name != 'pull_request' || (github.event.action != 'closed'
       && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'ci'))) }}
@@ -60,8 +60,9 @@ jobs:
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       epoch: ${{ steps.resolve.outputs.epoch }}
-      publish: ${{ steps.resolve.outputs.publish }}
-      release: ${{ steps.resolve.outputs.release }}
+      # `build` pushes nothing, `main` publishes the sha- and main tags and writes the cache, and `release` publishes
+      # the version.
+      mode: ${{ steps.resolve.outputs.mode }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -79,16 +80,19 @@ jobs:
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE: ${{ inputs.version }}
-          RELEASE_PUBLISH: ${{ inputs.publish }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          PUBLISH_RELEASE: ${{ inputs.publish }}
         run: |
           set -euo pipefail
 
-          if [ -n "${RELEASE}" ]; then
-            version="${RELEASE}"
+          if [ -n "${RELEASE_VERSION}" ]; then
+            version="${RELEASE_VERSION}"
             commit="${GITHUB_SHA}"
-            publish="${RELEASE_PUBLISH}"
-            release=true
+            if [ "${PUBLISH_RELEASE}" = true ]; then
+              mode=release
+            else
+              mode=build
+            fi
           else
             commit="$(git log -1 --format=%H -- \
               .cargo/config.toml Cargo.toml Cargo.lock rust-toolchain.toml \
@@ -119,19 +123,17 @@ jobs:
                 ;;
             esac
             if [ "${GITHUB_REF}" = refs/heads/main ] && [ "${GITHUB_EVENT_NAME}" != pull_request ]; then
-              publish=true
+              mode=main
             else
-              publish=false
+              mode=build
             fi
-            release=false
           fi
 
           echo "Building ${version} from ${GITHUB_SHA}"
           {
             echo "version=${version}"
             echo "epoch=$(git log -1 --format=%ct "${commit}")"
-            echo "publish=${publish}"
-            echo "release=${release}"
+            echo "mode=${mode}"
           } >> "${GITHUB_OUTPUT}"
 
   # Each architecture builds on a native runner, as the other images do. When publishing, each pushes its image by
@@ -159,7 +161,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GHCR
-        if: needs.resolve.outputs.publish == 'true'
+        if: needs.resolve.outputs.mode != 'build'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
@@ -169,15 +171,14 @@ jobs:
           ARCH: ${{ matrix.arch }}
           AGENT_VERSION: ${{ needs.resolve.outputs.version }}
           SOURCE_DATE_EPOCH: ${{ needs.resolve.outputs.epoch }}
-          PUBLISH: ${{ needs.resolve.outputs.publish }}
-          RELEASE: ${{ needs.resolve.outputs.release }}
+          MODE: ${{ needs.resolve.outputs.mode }}
         run: |
           set -eu
 
           metadata="${RUNNER_TEMP}/metadata.json"
           cache="${REPOSITORY}:buildcache-${ARCH}"
           set -- --set "agentctl.platform=linux/${ARCH}" --set "agentctl.cache-from=type=registry,ref=${cache}"
-          if [ "${PUBLISH}" = "true" ]; then
+          if [ "${MODE}" != build ]; then
             # Without clearing the bake file's tags, buildx refuses to push by digest; the publish job tags.
             set -- "$@" \
               --set "agentctl.tags=" \
@@ -185,14 +186,14 @@ jobs:
           fi
           # Only main writes the cache, which pull requests and releases read: a cache reference holds only its last
           # export, so a release's would cost main's next build its cache, and with it the digest it keeps.
-          if [ "${PUBLISH}" = "true" ] && [ "${RELEASE}" != "true" ]; then
+          if [ "${MODE}" = main ]; then
             set -- "$@" --set "agentctl.cache-to=type=registry,ref=${cache},mode=max,image-manifest=true"
           fi
 
           docker buildx bake --file docker-bake.hcl --provenance=false --sbom=false --metadata-file "${metadata}" \
             "$@" agentctl
 
-          if [ "${PUBLISH}" = "true" ]; then
+          if [ "${MODE}" != build ]; then
             mkdir -p "${RUNNER_TEMP}/digests"
             digest="$(jq -r '.agentctl."containerimage.digest"' "${metadata}")"
             case "${digest}" in
@@ -202,7 +203,7 @@ jobs:
           fi
 
       - name: Upload image digest
-        if: needs.resolve.outputs.publish == 'true'
+        if: needs.resolve.outputs.mode != 'build'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: agentctl-image-digest-${{ matrix.arch }}
@@ -211,7 +212,7 @@ jobs:
           retention-days: 1
 
   publish:
-    if: needs.resolve.outputs.publish == 'true'
+    if: needs.resolve.outputs.mode != 'build'
     name: Publish image
     needs: [resolve, build]
     runs-on: ubuntu-24.04
@@ -237,11 +238,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.resolve.outputs.version }}
-          RELEASE: ${{ needs.resolve.outputs.release }}
+          MODE: ${{ needs.resolve.outputs.mode }}
         run: |
           set -euo pipefail
 
-          if [ "${RELEASE}" = true ]; then
+          if [ "${MODE}" = release ]; then
             tags="${VERSION}"
           else
             tags="sha-${GITHUB_SHA::10}"
