@@ -35,7 +35,14 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
         return Ok(ExitCode::SUCCESS);
     };
     let name = harness.display_name();
-    eprintln!("Starting {name} to set up an agent with you.");
+    prompt::proceed(
+        &[
+            &format!("{name} opens next and sets up the agent with you."),
+            "It may first ask whether you trust this folder.",
+            &format!("When the agent is ready, exit {name} and agentctl takes you into it."),
+        ],
+        &format!("open {name}"),
+    )?;
     let mut command = Command::new(program);
     command.args(harness.host_arguments(&handover)).current_dir(directory);
     let code = crate::run_and_wait(command)
