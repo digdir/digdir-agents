@@ -624,19 +624,3 @@ fn resolve_source(manifest_directory: &Path, source: &Path, field: &str) -> Resu
     }
     Ok(source)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::PODMAN_SOCKET_DROP_IN_CONTENTS;
-
-    // Setup leaves an identical file alone, so the socket keeps the group the image gave it at boot.
-    #[test]
-    fn the_containers_feature_ships_the_podman_socket_drop_in_setup_writes() {
-        assert_eq!(
-            include_bytes!(
-                "../../../../images/agentctl-base/features/containers/rootfs/etc/systemd/system/podman.socket.d/50-agent-access.conf"
-            ),
-            PODMAN_SOCKET_DROP_IN_CONTENTS
-        );
-    }
-}

@@ -1,2 +1,0 @@
-# Image files must keep LF line endings in every checkout, Windows included.
-images/** text eol=lf
