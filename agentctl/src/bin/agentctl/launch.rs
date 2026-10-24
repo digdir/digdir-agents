@@ -431,6 +431,7 @@ mod tests {
     }
 
     /// `pairs`, with `PATH` holding only `directory`.
+    #[cfg(target_os = "linux")]
     fn with_path(
         directory: &Path,
         pairs: &'static [(&'static str, &'static str)],
@@ -446,12 +447,14 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn windows_path() -> tempfile::TempDir {
         let windows = tempfile::tempdir().expect("windows directory");
         std::fs::write(windows.path().join(WSL_OPENER), "").expect("opener");
         windows
     }
 
+    #[cfg(target_os = "linux")]
     const UNDER_WSL: &[(&str, &str)] = &[("WSL_DISTRO_NAME", "Ubuntu")];
 
     #[cfg(target_os = "linux")]
