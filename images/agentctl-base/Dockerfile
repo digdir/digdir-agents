@@ -8,6 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # What agentd needs in the guest (tmux, sudo, systemd, openssh-server, ca-certificates, iproute2 for `ss`) and the
 # everyday tools an Agent expects to find. dbus provides the system bus `systemctl` needs when not run as root. fd-find provides `fdfind`, which Pi searches files with; tzdata lets an
 # image select another time zone than UTC with one symlink. agg renders terminal recordings with fonts-jetbrains-mono.
+# file, make, patch, shellcheck, unzip, wget and zip are the build and inspection tools Agents reach for in any repository.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         btop \
@@ -15,22 +16,29 @@ RUN apt-get update \
         curl \
         dbus \
         fd-find \
+        file \
         fonts-jetbrains-mono \
         fonts-liberation \
         git \
         iproute2 \
         jq \
         less \
+        make \
         neovim \
         openssh-server \
+        patch \
         procps \
         python3 \
         ripgrep \
+        shellcheck \
         sudo \
         systemd \
         tmux \
         tzdata \
+        unzip \
+        wget \
         xz-utils \
+        zip \
     && rm -rf /var/lib/apt/lists/*
 
 # The image's ubuntu user becomes the agent user, UID 1000, with passwordless sudo, which agentd's setup steps use.
@@ -118,6 +126,21 @@ RUN case "${TARGETARCH}" in \
     && gh --version \
     && asciinema --version \
     && agg --version
+
+# actionlint is not in Ubuntu's archive, so it comes from its release, checked against the digest of the archive.
+ARG ACTIONLINT_VERSION=1.7.12
+RUN case "${TARGETARCH}" in \
+        amd64) ACTIONLINT_SHA256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 ;; \
+        arm64) ACTIONLINT_SHA256=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6 ;; \
+        *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL \
+        "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_${TARGETARCH}.tar.gz" \
+        -o /tmp/actionlint.tar.gz \
+    && echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/actionlint.tar.gz -C /usr/local/bin actionlint \
+    && rm -f /tmp/actionlint.tar.gz \
+    && actionlint --version
 
 # Route GitHub credentials through the gh CLI so plain git commands authenticate with the host-mediated token.
 # Written system-wide, below any user configuration, because the home directory is resynchronized from the host.

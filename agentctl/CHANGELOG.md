@@ -23,6 +23,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 - Images built on the desktop image can override its settings, such as `AGENT_DESKTOP_KEYBOARD`, in `/etc/agent-desktop.conf.d/`. ([desktop settings](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#desktop-settings), [#262](https://github.com/digdir/digdir-agents/pull/262))
 - On the base images, a repository pinned to another Playwright installs its own Chromium build with `npx playwright install chromium`, without sudo. ([browser](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#the-browser), [#265](https://github.com/digdir/digdir-agents/pull/265))
 - Images built on the base images can install another Node.js, such as Node.js 26, as the README describes. ([Using another Node.js](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#using-another-nodejs), [#265](https://github.com/digdir/digdir-agents/pull/265))
+- The base images include `shellcheck`, `actionlint`, `make`, `patch`, `file`, `unzip`, `zip` and `wget`, so an Agent's Dockerfile need not install them. ([images](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#building-on-them), [#285](https://github.com/digdir/digdir-agents/pull/285))
 
 ### Changed
 
