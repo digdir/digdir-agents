@@ -51,8 +51,8 @@ RUN apt-get update \
     && rustup component add clippy rustfmt \
     && chown -R agent:agent /usr/local/rustup
 
-# Podman, so that a nested agentd can build Agent images, and SSH aliases for nested Agents.
-RUN agent-feature install containers nested-agents
+# Podman, so that a nested agentd can build Agent images.
+RUN agent-feature install containers
 
 # A nested Microsandbox runtime needs /dev/kvm; tmpfiles.conf hands the device to the kvm group. The
 # workspace list names the repositories the base image's workspace unit clones at boot.

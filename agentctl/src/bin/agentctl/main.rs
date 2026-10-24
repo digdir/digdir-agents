@@ -535,8 +535,7 @@ fn run() -> CommandResult<ExitCode> {
     let home = ControlPlaneHome::resolve(arguments.home.as_deref())?;
     let client = Client::for_path(home.socket_path());
     LocalRuntime::new().map_err(Error::from)?.block_on(async move {
-        // Boot units run `ssh-config install`, and must not finish an update and start agentd in their own cgroup.
-        if !matches!(arguments.command, Command::Self_ { .. } | Command::SshConfig { .. }) {
+        if !matches!(arguments.command, Command::Self_ { .. }) {
             self_update::resume_pending_before_command(&home)?;
         }
         if !matches!(
