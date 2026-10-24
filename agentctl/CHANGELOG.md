@@ -45,6 +45,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 - `attach`, `exec`, `ssh` and the other commands that use the current directory's agent find one defined in a subdirectory, such as `agents/<name>/`, from anywhere in its repository. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#agent-layer))
 - An Agent manifest no longer needs `home` or `network`: without `home` nothing is copied into `/home/agent`, and without `network` all traffic goes through the host's network mediator, as before.
 - agentctl's help starts with what it is for and lists the commands people use first, its errors no longer begin with `invalid Agent:` or `Agent Control API error:`, and changing what only a new agent can change says how to do it. Applying a name that an agent from another directory already has asks for another name instead of reporting a changed `sourceDirectory`.
+- At a terminal, agentctl's yes/no and numbered questions take a single keypress, without Enter: `y` or `n`, or the number of one of up to nine options. Enter still picks the first option and still answers no yes/no question, and keys typed before a question appears don't answer it.
 
 ### Fixed
 
