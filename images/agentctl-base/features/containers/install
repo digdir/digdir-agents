@@ -1,5 +1,5 @@
 #!/bin/sh
-# Podman, with its socket and the `docker` command available to the agent user.
+# Podman, Docker Compose and the `docker` command; agentd sets up the socket for the agent user.
 #
 # Run by `agent-feature install containers` as root, with a scratch HOME.
 set -eu
@@ -17,8 +17,6 @@ rm -rf /var/lib/apt/lists/*
 rm -f /etc/profile.d/podman-docker.sh /etc/profile.d/podman-docker.csh
 
 cp -R "${feature}/rootfs/." /
-
-systemctl enable podman.socket
 
 podman --version
 /usr/libexec/docker/cli-plugins/docker-compose version
