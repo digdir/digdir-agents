@@ -36,9 +36,11 @@ RUN apt-get update \
 # The image's ubuntu user becomes the agent user, UID 1000, with passwordless sudo, which agentd's setup steps use.
 # OpenSSH rejects even public-key authentication for a locked account when PAM is disabled. Password and keyboard
 # authentication remain disabled by the platform-owned SSH policy.
+# usermod leaves the subordinate ID ranges rootless Podman needs under the old name.
 RUN usermod --login agent --home /home/agent --move-home ubuntu \
     && passwd --delete agent \
     && groupmod --new-name agent ubuntu \
+    && sed -i 's/^ubuntu:/agent:/' /etc/subuid /etc/subgid \
     && printf 'agent ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent \
     && install -d -m 0755 -o agent -g agent /home/agent/code \
