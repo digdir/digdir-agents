@@ -36,5 +36,10 @@ A repository mounted from the person's machine is listed with the folder it is m
 always wants this agent to do or never to do, in a line each, such as "Open pull requests as drafts". What a
 repository's own AGENTS.md or README says, the harness reads there.
 
+Don't write which repositories the agent can reach or push to. The token behind its GitHub account decides that, it
+can change at any time, and you can't see it; the first layer already says whose repositories GitHub works with.
+An agent for a folder rather than a repository can say what it clones on demand and which tools to install when a
+task needs them, instead of listing everything.
+
 agentd reads the file again on every pass, so an edit reaches a running agent within a minute. Naming a different
 file in the manifest means creating the agent again.

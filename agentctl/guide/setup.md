@@ -62,9 +62,13 @@ used by another agent on the machine):
 | `.dockerignore` | `*` unless the Dockerfile copies files from the folder | |
 | `.env` | Only when the manifest's `environment` or `secrets` name values; never committed, and outside any folder the agent mounts | `agentctl guide manifest` |
 
-Bake into the image what is large or always needed (a language toolchain, a database client). List every tool and
-repository in `instructions.md` either way: the agent inside checks that list and installs or clones what is
-missing, so the list is what keeps it working when the image falls behind.
+Bake into the image what is large and nearly every task needs (a language toolchain, a database client). List every
+tool and repository in `instructions.md` either way: the agent inside checks that list and installs or clones what
+is missing, so the list is what keeps it working when the image falls behind.
+
+For a folder that is not a repository, the work varies from task to task. Bake in only what the person says most of
+their work needs, and list the rest in `instructions.md` as tools to install when a task needs them. Don't build the
+image from every toolchain you find in their folders.
 
 Size the agent from the machine: up to half its cores, a quarter of its memory, and a disk that fits its free space.
 Other agents on the machine share them.
