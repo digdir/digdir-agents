@@ -10,6 +10,8 @@ on:
       - images/agentctl-base/**
       - docker-bake.hcl
       - .github/workflows/agentctl-base-images.yml
+      # Markdown outside features/ is not in the build context, which .dockerignore limits.
+      - '!images/agentctl-base/*.md'
   # Not on docker-bake.hcl changes alone: every build of the base has a new digest, which derived images then follow.
   push:
     branches:
@@ -17,6 +19,8 @@ on:
     paths:
       - images/agentctl-base/**
       - .github/workflows/agentctl-base-images.yml
+      # Markdown outside features/ is not in the build context, which .dockerignore limits.
+      - '!images/agentctl-base/*.md'
   workflow_dispatch:
 
 permissions:

@@ -2,6 +2,8 @@
 # branch protection, so green CI is enforced by the platform before merge.
 #
 # Each area is a reusable workflow that runs only when its paths change.
+# Markdown changes count only where a build bundles them, since no area builds
+# or tests the docs people read.
 # `ci-gate` fails when a job that ran failed or was cancelled, and passes when
 # areas were skipped. New areas are added here without changing branch
 # protection.
@@ -57,7 +59,11 @@ jobs:
           )
           # A renamed file counts under both its old and its new name.
           names='.filename, (.previous_filename // empty)'
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq ".[] | ${names}" > changed.txt
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq ".[] | ${names}" > files.txt
+          # Markdown files that a build bundles, which count like code.
+          bundled='^agentctl/skills/'
+          grep -E -v '\.md$' files.txt > changed.txt || true
+          grep -E "${bundled}" files.txt >> changed.txt || true
           for area in "${areas[@]}"; do
             if grep -q -E "${area#*=}" changed.txt; then
               echo "${area%%=*}=true" >> "${GITHUB_OUTPUT}"

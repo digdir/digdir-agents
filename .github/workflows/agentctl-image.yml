@@ -18,6 +18,9 @@ on:
       - images/agentctl/**
       - docker-bake.hcl
       - .github/workflows/agentctl-image.yml
+      # Markdown is not built into the binaries, except the skill agentctl bundles.
+      - '!**/*.md'
+      - agentctl/skills/**
   # Every commit on main, so that each has a tag to pin.
   push:
     branches:
