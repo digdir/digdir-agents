@@ -8,10 +8,12 @@ An agent's harness reads its instructions at the start of every session, as thre
 3. **The agent's own**, the file the manifest's `instructions` names, usually `agents/<name>/instructions.md`.
 
 The first layer already tells the agent that it runs in a VM whose files last until it is recreated, which folders
-are mounted from the person's machine, that credentials in its environment are placeholders that work, to look for
-settings with `printenv`, how to work in repositories (fetch first, branch from the default branch, never discard work
-it didn't make, push what should last), and that lasting changes to its setup are the person's. It also says to check
-at the start of a session for the tools and repositories its own instructions list, install or clone what is
+are mounted from the person's machine, that it may change anything inside the VM with `sudo` but acts outside it
+(pushes, pull requests, comments) only when a task asks, how big its disk is and to clean up what it creates, that
+credentials in its environment are placeholders that work, to look for settings with `printenv`, which GitHub account
+it is, how to work in repositories (clone under `~/code`, fetch first, branch from the default branch, never discard
+work it didn't make, push what should last), and that lasting changes to its setup are the person's. It also says to
+check at the start of a session for the tools and repositories its own instructions list, install or clone what is
 missing at the versions listed, and say what it installed. Don't repeat any of that.
 
 ## The agent's own instructions
