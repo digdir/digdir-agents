@@ -18,6 +18,7 @@ use agent::{
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod format;
+mod guide;
 mod launch;
 mod progress;
 mod prompt;
@@ -35,7 +36,7 @@ use tokio::runtime::LocalRuntime;
 #[command(
     name = "agentctl",
     about = "Run coding agents in sandboxes on this machine",
-    after_help = "To stop every agent at once: agentctl kill --all",
+    after_help = "To have a coding agent set up an agent: agentctl guide setup\nTo stop every agent at once: agentctl kill --all",
     version = agent::build_version()
 )]
 struct Arguments {
@@ -101,6 +102,11 @@ enum Command {
     Codex {
         #[command(subcommand)]
         command: CodexCommand,
+    },
+    /// Print how to set up an agent, for coding agents; without a topic, the topics.
+    Guide {
+        /// The topic, such as `setup`.
+        topic: Option<String>,
     },
     /// Edit the instructions every agent on this machine gets, ahead of its own.
     Instructions {
@@ -600,6 +606,7 @@ fn run() -> CommandResult<ExitCode> {
                 | Command::Self_ { .. }
                 | Command::SshConfig { .. }
                 | Command::Instructions { .. }
+                | Command::Guide { .. }
         ) {
             ensure_daemon(&home, &client).await?;
         }
@@ -771,6 +778,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         Command::Turns { target, last } => turns(client, target, last).await?,
         Command::Tui => return tui::run(home, client).await,
         Command::Status { json } => status::run(home, client, json).await?,
+        Command::Guide { topic } => guide::print(topic.as_deref())?,
         Command::Instructions {
             command: InstructionsCommand::Edit,
         } => edit_instructions(home)?,
