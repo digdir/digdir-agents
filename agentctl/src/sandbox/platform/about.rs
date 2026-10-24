@@ -39,12 +39,27 @@ ask.",
             folders.join(", ")
         );
     }
-    text.push_str(
+    let reaches = if folders.is_empty() {
+        "Nothing you do in the VM reaches the person's machine"
+    } else {
+        "Apart from their folders, nothing you do in the VM reaches the person's machine"
+    };
+    let _ = write!(
+        text,
         "
+- **Inside the VM, act freely; outside it, only when asked.** You are `agent`, with passwordless `sudo`. {reaches}, \
+so installing packages, editing `/etc`, restarting services and clearing caches need no permission. Keep a short note \
+of system changes and why, so the person can add them to the image. What leaves the VM is real and other people see \
+it: pushes, pull requests, comments and anything else you send to another service. Do those when the task asks for \
+them, and not otherwise.
+- **Your disk is {capacity} and lasts across sessions.** Check `df -h /` before large jobs, and `podman system df` \
+when you build images. Stop the servers and containers you start, and when a task is done remove what you created \
+for it: one-off images, finished worktrees, build output. Don't delete what you didn't create; ask instead.
 - **Network and credentials.** Your traffic goes through the person's machine. Credentials in your environment are \
 placeholders the host swaps for the real values on the way out, so authentication works; don't report them as broken \
 or replace them.
 ",
+        capacity = spec.sandbox.resources.root_filesystem.capacity(),
     );
     if let Some(owner) = spec.github_owner() {
         // Only a fine-grained token is limited to its owner; any other reaches all its account can.
@@ -57,7 +72,8 @@ or replace them.
         let _ = writeln!(
             text,
             "- **GitHub.** `gh` and `git` over HTTPS already work with GitHub {reach}; SSH remotes on github.com go \
-over HTTPS. Don't run `gh auth login` or replace `GITHUB_TOKEN`."
+over HTTPS; `gh api user --jq .login` shows which account you are. Don't run `gh auth login` or replace \
+`GITHUB_TOKEN`."
         );
     }
     text.push_str(
@@ -65,7 +81,8 @@ over HTTPS. Don't run `gh auth login` or replace `GITHUB_TOKEN`."
 - **Tools and repositories.** Your instructions may list tools and repositories you should have. At the start of a \
 session, check that they are there. Install or clone what is missing, at the versions listed, and tell the person what \
 you installed. What you install outside the image is gone when the agent is recreated, so suggest adding it to the \
-agent's image if it should stay. In repositories you clone, fetch before starting work, branch from the remote's \
+agent's image if it should stay. Clone repositories under `~/code`. In repositories you clone, fetch before \
+starting work, branch from the remote's \
 default branch, never reset or discard work you didn't make, and push what should outlive the agent.
 - **Your setup is declared on the person's machine.** For a lasting change to your folders, size or image, ask the \
 person.
@@ -122,6 +139,11 @@ spec:
             "printenv",
             "Tools and repositories",
             "suggest adding it to the agent's image if it should stay",
+            "Clone repositories under `~/code`",
+            "You are `agent`, with passwordless `sudo`. Nothing you do in the VM reaches the person's machine,",
+            "What leaves the VM is real",
+            "Your disk is 8Gi and lasts across sessions",
+            "Don't delete what you didn't create",
             "In repositories you clone, fetch before starting work",
             "ask the person.",
         ] {
@@ -149,6 +171,10 @@ spec:
             text.contains("don't switch branches, reset or push there unless they ask."),
             "the clone rules are not for the person's own checkout: {text}"
         );
+        assert!(
+            text.contains("Apart from their folders, nothing you do in the VM reaches the person's machine"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -167,7 +193,8 @@ spec:
         let line = |reach: &str| {
             format!(
                 "\n- **GitHub.** `gh` and `git` over HTTPS already work with GitHub {reach}; SSH remotes on github.com \
-go over HTTPS. Don't run `gh auth login` or replace `GITHUB_TOKEN`.\n- **Settings live"
+go over HTTPS; `gh api user --jq .login` shows which account you are. Don't run `gh auth login` or replace \
+`GITHUB_TOKEN`.\n- **Settings live"
             )
         };
         let owners = line("for `Digdir`'s repositories");
