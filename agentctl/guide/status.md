@@ -35,8 +35,10 @@ The object is a contract. Keys are `snake_case`, enumerations are the strings li
 - `github`: every stored GitHub token, `[]` when there is none, never the token itself: the `owner` (user or
   organization) it is stored for, the `account` it acts as, its `kind` (`fineGrained`, `classic`, `oauth` or
   `other`), when it `expires_at` as GitHub said at login, `null` when GitHub stated no expiry, and whether it has
-  `expired`. An agent whose manifest names an owner without an unexpired token runs without GitHub access until
-  `agentctl github login --owner OWNER` stores one.
+  `expired`. A browser sign-in is an `oauth` token, stored with the account's own login as owner unless
+  `--owner` named another. An agent whose
+  manifest names an owner without an unexpired token runs without GitHub access until `agentctl github login` stores
+  one.
 - `directory`: the current `path`, and the `agent` it resolves to as `attach` would, or `null`. An agent is found from
   its manifest's folder, a folder it bind-mounts, or anywhere in the Git checkout its manifest is in. `problem` says
   why the directory cannot resolve to one agent, such as several agents applied from it.
