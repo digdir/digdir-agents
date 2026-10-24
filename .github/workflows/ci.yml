@@ -7,7 +7,9 @@
 # protection.
 #
 # Draft pull requests run nothing: CI starts when one is marked ready for
-# review. Each push to a pull request cancels the run for the push before it,
+# review. A draft labeled `ci` runs CI anyway, from its next push: labeling
+# does not start a run, since every label change would then cancel the run in
+# progress. Each push to a pull request cancels the run for the push before it,
 # and converting it to a draft or closing it cancels its run too, since those
 # events start a run in the same group that skips every job.
 name: CI
@@ -28,7 +30,7 @@ permissions:
 jobs:
   changes:
     name: changes
-    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft) }}
+    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'ci'))) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -81,7 +83,7 @@ jobs:
   ci-gate:
     name: ci-gate
     # Also in a cancelled run, which fails it: GitHub would accept a skipped required check.
-    if: ${{ always() && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
+    if: ${{ always() && (github.event_name != 'pull_request' || (github.event.action != 'closed' && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'ci')))) }}
     needs: [changes, integrations, rust]
     runs-on: ubuntu-latest
     steps:
