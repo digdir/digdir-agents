@@ -1,0 +1,22 @@
+{
+  "$schema": "https://pi.dev/schemas/models.schema.json",
+  "providers": {
+    "aivar": {
+      "name": "aivar",
+      "baseUrl": "https://api.aivar.no/v1",
+      "api": "openai-responses",
+      "apiKey": "$AIVAR_API_KEY",
+      "models": [
+        {
+          "id": "sigma2:Qwen3.8-27B",
+          "name": "Qwen3.8 27B (Sigma2)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "thinkingLevelMap": { "minimal": "low", "high": "xhigh", "max": "xhigh" }
+        }
+      ]
+    }
+  }
+}

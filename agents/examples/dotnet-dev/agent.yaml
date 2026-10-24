@@ -1,5 +1,5 @@
-# An Agent for .NET development: a computer of its own with the .NET SDK, Podman, a desktop with Chromium, Claude Code
-# and Codex, which clones your repositories at boot and works on GitHub without the token ever entering it.
+# An Agent for .NET development: a computer of its own with the .NET SDK, Podman, a desktop with Chromium, Claude
+# Code, Codex and Pi, which clones your repositories at boot and works on GitHub without the token ever entering it.
 #
 # Copy this Agent definition, the directory this file is in, to start your own Agent. The values here are the ones we
 # recommend. Paths in a manifest resolve against the directory it is in.
@@ -38,7 +38,7 @@ spec:
     initSystem: image
 
   # A directory copied over /home/agent every time agentd reconciles the Agent, for configuration you want to own
-  # from here, such as a NuGet.Config. It never deletes files in the Sandbox. Empty here.
+  # from here, such as a NuGet.Config. It never deletes files in the Sandbox. Here it holds Pi's providers and models.
   home:
     source: home
 
@@ -46,7 +46,7 @@ spec:
   instructions:
     - source: instructions.md
 
-  # The harnesses Sessions can run. Each logs in on the host once, with `agentctl claude login` or
+  # The harnesses Sessions can run. Claude Code and Codex log in on the host once, with `agentctl claude login` or
   # `agentctl codex login`, and the Sandbox only sees a placeholder for the credential.
   harnesses:
     - type: claudeCode
@@ -60,6 +60,12 @@ spec:
       # Without a Codex login on the host, the Agent starts without Codex instead of failing. Log in later, and
       # the next reconcile adds it.
       optional: true
+    - type: pi
+      # Pi has no login of its own. It reaches models through the providers in home/.pi/agent/models.json, here
+      # Digdir's AI gateway with the AIVAR_API_KEY secret below. Point it at another provider by changing that file
+      # and the secret.
+      defaults:
+        model: aivar/sigma2:Qwen3.8-27B
 
   # Plain values copied into the Sandbox from the environment file, `.env` beside this file unless
   # `agentctl apply --env-file` names another. The Sandbox sees them as they are, so never put a secret here.
@@ -83,6 +89,11 @@ spec:
         - api.github.com
         - gist.github.com
         - uploads.github.com
+    # The key for Digdir's AI gateway, which Pi uses. Without it Pi starts, but rejects every prompt.
+    - environment: AIVAR_API_KEY
+      optional: true
+      allowedHosts:
+        - api.aivar.no
     # A private NuGet feed takes another secret with its own host, such as:
     # - environment: AZURE_ARTIFACTS_TOKEN
     #   allowedHosts:
