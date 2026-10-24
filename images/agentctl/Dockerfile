@@ -5,7 +5,7 @@
 
 # Bookworm's glibc is older than the distributions Agent images build on, so the binaries run on all of them. The
 # toolchain itself is the one rust-toolchain.toml names, which rustup installs when this image's differs.
-FROM docker.io/library/rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS build
+FROM docker.io/library/rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS build
 
 # libcap-ng, as the release builds install.
 RUN apt-get update \
