@@ -1,0 +1,4 @@
+# Repositories to clone into /home/agent/code at boot, one OWNER/NAME per line, optionally followed by a directory
+# name. A repository that is already there is left alone. Cloning a private repository needs GITHUB_TOKEN.
+#
+# Altinn/dialogporten

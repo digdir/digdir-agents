@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn describe_shows_the_failure_class_and_condition_age() {
         let mut agent: Agent =
-            serde_yaml_ng::from_str(include_str!("../../../examples/minimal/agent.yaml")).expect("example manifest");
+            serde_yaml_ng::from_str(include_str!("../../../tests/fixtures/agent.yaml")).expect("fixture manifest");
         agent.status.failure = Some(agent::FailureKind::Transient);
         agent.status.conditions = vec![agent::Condition {
             kind: "Ready".into(),

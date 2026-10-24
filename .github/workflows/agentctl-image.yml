@@ -96,7 +96,7 @@ jobs:
           else
             commit="$(git log -1 --format=%H -- \
               .cargo/config.toml Cargo.toml Cargo.lock rust-toolchain.toml \
-              agentctl/Cargo.toml agentctl/src agentctl/examples agentctl/skills \
+              agentctl/Cargo.toml agentctl/src agentctl/skills \
               sandbox/authorization/Cargo.toml sandbox/authorization/src \
               sandbox/core/Cargo.toml sandbox/core/src \
               sandbox/microsandbox/Cargo.toml sandbox/microsandbox/src \

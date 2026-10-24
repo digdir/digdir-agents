@@ -14,8 +14,8 @@ changelog needs to know what changed for them and whether they must act.
 - **One entry per change a reader notices**, however many pull requests it took. Do not join unrelated changes in one
   sentence, even when one pull request made them: make them separate entries, or sub-bullets under what they change.
   If `[Unreleased]` already has an entry for the same feature, extend or rewrite that entry instead of adding another.
-  No entry for refactors, tests or CI, or for a change an `[Unreleased]` entry already describes with its issue
-  linked: apply the `skip-changelog` label.
+  A change readers do not notice, such as a refactor, tests or CI, gets no entry: apply the `skip-changelog` label.
+  So does a change an `[Unreleased]` entry already describes with its issue linked.
 - **Short.** One or two sentences, 40 words or fewer as a rule, and never more than 60.
 - **Lead with what changed for the reader**, then say what they can do now or what they must do.
 - **Use the names readers know**, written exactly as they appear in the product, so the entry can be searched. Give a
@@ -24,8 +24,8 @@ changelog needs to know what changed for them and whether they must act.
   unless the reader must act on it.
 - **Fixed** entries describe the symptom the reader saw, not the cause.
 - **Breaking changes, deprecations and removals** say what to do instead, and breaking changes start with `Breaking:`.
-  Step-by-step migration belongs in the documentation, such as `agentctl/README.md`; link to it. Say so when a tool,
-  such as `agentctl self update`, makes the change for the reader.
+  Step-by-step migration belongs in the documentation, such as `agentctl/docs/`, which the entry links to. Say so
+  when a tool, such as `agentctl self update`, makes the change for the reader.
 - **End with the references in parentheses**: the documentation link first, when there is one, then every issue whose
   problem or request the entry describes, or the pull request when there is no issue:
   `([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#1234](https://github.com/digdir/digdir-agents/issues/1234))`.
@@ -34,8 +34,8 @@ changelog needs to know what changed for them and whether they must act.
   requests for it, so link it once, however many pull requests it took. When the issue is part of a larger one about the
   same change, such as a feature, link the larger one, but not an issue that gathers unrelated work, such as an epic or
   a list of findings. Do not link an issue the change is only related to. Write an issue or pull request in another
-  repository as `[digdir/microsandbox#12](https://github.com/digdir/microsandbox/pull/12)`.
-- **Without an issue, link the pull request.** Do not open an issue afterwards to have one to link.
+  repository as `[digdir/microsandbox#12](https://github.com/digdir/microsandbox/pull/12)`. Without an issue, link the
+  pull request itself once it is open, rather than opening an issue to have one to link.
 - **Sub-bullets group changes by what readers know them by**, such as a command, a manifest field or a view in
   `agentctl tui`: the top line names it, and each sub-bullet is one change to it. Use one level, at most five short
   sub-bullets, and put each reference on the line it belongs to, or on the top line when it covers every sub-bullet.
@@ -50,22 +50,19 @@ whether they need to do anything? Delete every clause that does not help with th
 You know the implementation too well to see it from the reader's side. Write the entry from what the reader will
 notice after upgrading, not from what you did:
 
-1. Decide whether the change is visible to the changelog's readers at all, and whether an `[Unreleased]` entry already
-   describes it with its issue linked. In either case, use the `skip-changelog` label.
-2. If your harness can start a subagent, give a fresh one only this skill, the pull request title and description, and
+1. If your harness can start a subagent, give a fresh one only this skill, the pull request title and description, and
    the diff of what the reader sees or uses, and have it draft the entry. Otherwise, write the entry before rereading
    the implementation.
-3. Merge it with any related `[Unreleased]` entry, keeping that entry's references. Link the issue for this pull
+2. Merge it with any related `[Unreleased]` entry, keeping that entry's references. Link the issue for this pull
    request, as the rules above describe, and reference it in the pull request description (`Closes #1234`, or
-   `Part of #1234`) so readers can get from the issue to the change. Without an issue, add this pull request's link
-   once it is open.
-4. Commit, then check the changelog with `agentctl/changelog.sh validate` and
+   `Part of #1234`) so readers can get from the issue to the change.
+3. Commit, then check the changelog with `agentctl/changelog.sh validate` and
    `agentctl/changelog.sh check-unreleased origin/main HEAD`.
 
 ## Preparing a release
 
-Read the entries being released together. If they follow the rules above, promote them as they are, as
-`agentctl/AGENTS.md` describes. Otherwise, fix them in the promotion pull request:
+Read the entries being released together. If they follow the rules above, release them as they are, in the
+pull request `CONTRIBUTING.md` describes. Otherwise fix them in that pull request:
 
 - Merge entries about the same feature, keeping all their references. Drop a pull request link when the merged entry
   links the issue for that pull request.

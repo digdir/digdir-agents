@@ -2374,10 +2374,10 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let manifest_path = directory.path().join("agent.yaml");
         std::fs::copy(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/minimal/agent.yaml"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/agent.yaml"),
             &manifest_path,
         )
-        .expect("copy example manifest");
+        .expect("copy fixture manifest");
 
         let request = read_apply_request_in(|| Ok(directory.path().to_path_buf()), PathBuf::from("agent.yaml"), None)
             .expect("read apply request");
