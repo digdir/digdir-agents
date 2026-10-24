@@ -1,5 +1,5 @@
 # The agentctl base images, published as ghcr.io/digdir/agentctl-base:ubuntu-26.04 (the headless stage) and
-# :ubuntu-26.04-desktop. They meet agentd's image contract (agentctl/IMAGE.md) and carry the harness pins agentd's
+# :ubuntu-26.04-desktop. They meet agentd's image contract (agentctl/docs/image-contract.md) and carry the harness pins agentd's
 # adapters are tested with, so an Agent image only adds its own tools. README.md beside this file describes them.
 FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS headless
 
@@ -147,7 +147,7 @@ RUN case "${TARGETARCH}" in \
 RUN git config --system credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential' \
     && git config --system credential.https://gist.github.com.helper '!/usr/local/bin/gh auth git-credential'
 
-# The harness pins agentd's adapters are tested with (agentctl/HARNESSES.md). agentd verifies and configures the
+# The harness pins agentd's adapters are tested with (agentctl/docs/harness-upgrades.md). agentd verifies and configures the
 # harnesses an Agent declares, but never installs one.
 ARG CLAUDE_CODE_VERSION=2.1.309
 ARG CODEX_VERSION=0.164.0

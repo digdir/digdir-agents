@@ -1,29 +1,29 @@
 ---
 name: pr-evidence
-description: Help pull request reviewers understand changes to the agentctl and agentd developer experience through terminal recordings and, on the full Agent, browser captures. Use when a change affects CLI output, provisioning progress, TUI workflows or a page in a browser.
+description: Help pull request reviewers understand changes to the agentctl and agentd developer experience through terminal recordings and, on the full Agent, browser captures. Use when a change can be seen, such as in CLI output, the TUI or a page in a browser.
 ---
 
 # Show the change to reviewers
 
 Demonstrate the scenario, the relevant change and its result so a reviewer can understand the experience without
-running it locally. Explain the premise and starting state in the recording or PR caption.
+running it locally. Explain the premise and starting state in the recording or its caption in the pull request.
 
-- Keep artifacts under `/home/agent/code/.artifacts/<task>/<run>/`, outside the checkout. No capture report is required.
-- Keep each attachment within 10 MiB. There is no fixed duration limit, but GIFs should be brief enough to follow
-  without seeking. Split longer demonstrations into focused clips.
+- Keep artifacts under `/home/agent/code/.artifacts/<task>/<run>/`, outside the checkout.
+- Keep each attachment within 10 MiB, and each GIF short enough to follow without seeking. Split longer
+  demonstrations into clips.
 - Capture actual behavior from the tested revision, using test data without secrets.
 
-The full Agent can also capture a browser; read [browser](references/browser.md) for that recipe.
+On the `full` Agent you can also capture a browser, as [browser.md](references/browser.md) describes.
 
 ## Record
 
-Prepare incidental setup before recording. Prefer familiar command names on `PATH` and a sensible working directory;
-avoid cluttering the demonstration with full binary paths, custom environment variables or a custom `HOME`. If such
-configuration is part of the behavior being demonstrated, show it and explain why it matters.
+Do the setup before recording, so the demonstration shows what a user would type: plain command names on `PATH` from
+a sensible working directory, not full binary paths, custom environment variables or a custom `HOME`. When such
+configuration is the point of the change, show it and say why.
 
-Set terminal capabilities on the recorder so the demonstrated program inherits them. The prefix below removes
-`NO_COLOR` and replaces an inherited `TERM=dumb`; it runs before capture, keeping setup out of the demonstration.
-Omit the override when demonstrating behavior under those settings. From the artifact directory:
+Give the recorder a colour-capable terminal, which the program inherits. The `env` prefix below removes `NO_COLOR` and
+replaces an inherited `TERM=dumb`. Leave it out when the change is about behavior under those settings. From the
+artifact directory:
 
 ```sh
 env -u NO_COLOR TERM=xterm-256color COLORTERM=truecolor \
@@ -36,15 +36,14 @@ For a scripted CLI demonstration, replace `agentctl tui` with `bash demo.sh` and
 it runs. Pause before execution and after output so a human can follow along. For a TUI, pause on relevant states
 before moving on. `--idle-time-limit` can compress long waits, but preserve enough time to read.
 
-For containerized programs, forward the capabilities with `podman run -e TERM -e COLORTERM ...` and ensure
-`NO_COLOR` is unset inside the container. For missing picker glyphs, try `agg --font-family 'JetBrains Mono'`.
-Keep the application's presentation faithful to the tested revision. Inspect representative frames with the image
-viewer, using `agg --select` at relevant positions to check readability beyond the GIF's first frame.
+For a program in a container, pass the capabilities through with `podman run -e TERM -e COLORTERM ...` and make sure
+`NO_COLOR` is unset inside it. If picker glyphs are missing, try `agg --font-family 'JetBrains Mono'`. Before
+attaching, look at frames from several positions with `agg --select`, not only the first, to check they are readable.
 
 ## Attach
 
-From the artifact directory, use local image references in the PR body; `gh --attach` uploads files and rewrites
-those references to hosted URLs. Pass one `--attach` per file. For example, after pushing the branch:
+Write the pull request body with local image references, and run `gh` from the artifact directory with one `--attach`
+per file. It uploads the files and rewrites the references to hosted URLs. After pushing the branch:
 
 ```sh
 gh pr create --repo digdir/digdir-agents --base main --head <branch> \
@@ -52,8 +51,7 @@ gh pr create --repo digdir/digdir-agents --base main --head <branch> \
 gh pr edit <number> --attach ./result.gif
 ```
 
-If an upload fails, inspect the PR before retrying: partial success can create or update the PR despite a nonzero
-exit. Retry missing attachments with `gh pr edit`, rather than repeating creation. Uploads need repository write
-access and a token recognized by `gh` as a personal access or OAuth token.
+If an upload fails, look at the pull request before retrying: a partial success can create or update it despite a
+nonzero exit. Retry missing attachments with `gh pr edit` rather than creating it again.
 
 Read the body back with `gh pr view <number> --json body -q .body` and confirm attachments have hosted URLs.

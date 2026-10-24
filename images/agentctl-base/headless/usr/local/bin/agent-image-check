@@ -1,5 +1,5 @@
 #!/bin/sh
-# Checks an Agent image against what agentd expects of it (agentctl/IMAGE.md in digdir/digdir-agents).
+# Checks an Agent image against what agentd expects of it (agentctl/docs/image-contract.md in digdir/digdir-agents).
 # Run it as root at the end of an image's last build stage, after every step that writes files:
 #
 #   RUN agent-image-check

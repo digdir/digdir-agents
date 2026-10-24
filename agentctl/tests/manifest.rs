@@ -9,7 +9,7 @@ use sandbox::RootFilesystemMode;
 
 #[test]
 fn decodes_the_minimal_manifest() {
-    let bytes = include_bytes!("../examples/minimal/agent.yaml");
+    let bytes = include_bytes!("fixtures/agent.yaml");
     let agent = manifest::decode(bytes).expect("minimal manifest should decode");
 
     assert_eq!(agent.api_version, API_VERSION);
@@ -32,7 +32,7 @@ fn decodes_the_minimal_manifest() {
 
 #[test]
 fn a_manifest_may_set_the_run_state_and_omits_it_by_default() {
-    let minimal = include_str!("../examples/minimal/agent.yaml");
+    let minimal = include_str!("fixtures/agent.yaml");
     let agent = manifest::decode(minimal.as_bytes()).expect("minimal manifest should decode");
     assert_eq!(agent.spec.run_state, None);
     assert!(!agent.spec.is_stopped());

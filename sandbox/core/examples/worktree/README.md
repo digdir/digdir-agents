@@ -1,19 +1,12 @@
 # Worktree sandbox
 
-Runs Codex or Claude Code directly through the Sandbox SDK in a microVM (Microsandbox), with the current Git worktree
-bind mounted along with Codex/Claude configuration from the current user's home directory. It exercises the Sandbox
-layer alone, without `agentd`; `agents/self-dev` runs the same kind of setup through `agentd`, with fresh clones
-instead of a mounted worktree.
+Runs Codex or Claude Code in a Sandbox through the Sandbox SDK alone, without `agentd`, with the current Git worktree
+and your Codex and Claude Code configuration mounted from your home directory. The
+[self-dev Agent](../../../../agents/self-dev/README.md) does the same through `agentd`, with fresh clones instead of a
+mounted worktree.
 
-Installed tools:
-- .NET 10
-- Rust
-- Go
-- nodejs
-- container tooling: docker with Buildx, kind, kubectl, flux, helm
-
-Note that though this protects e.g. the host filesystem, it has permissive network access.
-Defaults: 4 CPU, 8Gi memory, a 64Gi direct root filesystem and a 4Gi `/tmp`.
+Its [Dockerfile](Dockerfile) installs common toolchains and container tooling. The Sandbox protects the host
+filesystem, but its network access is not restricted.
 
 Run from the repository root:
 
