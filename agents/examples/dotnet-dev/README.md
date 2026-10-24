@@ -2,7 +2,7 @@
 
 An Agent to start from: a computer of its own with the .NET SDK, Podman, a desktop with Chromium, Claude Code and
 Codex, which clones your repositories at boot. [`agent.yaml`](agent.yaml) and the [`Dockerfile`](Dockerfile) explain
-each line and hold the values we recommend, so read them first and copy this directory to make the Agent your own.
+each line and hold the values we recommend. Copy this Agent definition and make it your own, or have an agent do it.
 
 ## Try it
 

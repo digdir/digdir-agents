@@ -1,8 +1,8 @@
 # An Agent for .NET development: a computer of its own with the .NET SDK, Podman, a desktop with Chromium, Claude Code
 # and Codex, which clones your repositories at boot and works on GitHub without the token ever entering it.
 #
-# Copy this directory to start your own Agent. The values here are the ones we recommend. Paths in a manifest resolve
-# against the directory it is in.
+# Copy this Agent definition, the directory this file is in, to start your own Agent. The values here are the ones we
+# recommend. Paths in a manifest resolve against the directory it is in.
 apiVersion: agents.platform/v1alpha1
 kind: Agent
 metadata:

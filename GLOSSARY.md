@@ -3,6 +3,7 @@
 | Term | Meaning |
 | --- | --- |
 | Agent | A computer that runs coding work for you: what its manifest declares, the Sandbox that runs it and the Sessions in it. It lives on until you delete it. |
+| Agent definition | The files that define an Agent, kept together in one directory: its manifest and variants, and what they refer to, such as a Dockerfile, instructions, skills and a home overlay. |
 | `agentctl` | The command-line tool and TUI for Agents. It talks to `agentd` and holds no state of its own. |
 | `agentd` | The daemon on the host that owns Agents: it stores what each manifest declares and keeps the Sandbox and Sessions matching it. Not to be confused with Microsandbox's guest agent, which also runs as `agentd` inside the Sandbox. |
 | Control API | How `agentctl`, or any other client, talks to `agentd`. Local to the host. |
