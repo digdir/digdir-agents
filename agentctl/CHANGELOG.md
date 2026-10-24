@@ -34,6 +34,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Fixed
 
+- In Agents with Podman, `podman` and `docker` run by the agent user use the Agent's shared Podman everywhere, such as in systemd units and cron, not only in Sessions, `agentctl exec` and SSH logins. Elsewhere they fell back to rootless Podman, which fails. ([#266](https://github.com/digdir/digdir-agents/pull/266))
 - Node.js programs in an Agent, such as `npm`, `corepack` and Pi, no longer fail with `self-signed certificate in certificate chain` in Sessions, `agentctl exec` and SSH logins. Restart a running Agent with `agentctl stop` and `agentctl start` to fix its Sessions. ([#235](https://github.com/digdir/digdir-agents/issues/235))
 - Claude Code Sessions in Agents no longer pause for Bash approval, including deletion safety prompts. Other tool permission prompts and user questions remain interactive, and deny rules remain enforced. ([#237](https://github.com/digdir/digdir-agents/pull/237))
 - Claude Sessions no longer hang on the startup bypass-permissions warning when starting or resuming in Agents with custom user settings in `spec.home`. ([#230](https://github.com/digdir/digdir-agents/pull/230))

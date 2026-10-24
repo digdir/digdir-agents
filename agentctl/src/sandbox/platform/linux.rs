@@ -52,6 +52,8 @@ const PODMAN_SOCKET_DROP_IN: &str = "/etc/systemd/system/podman.socket.d/50-agen
 const PODMAN_HOOKS_DIR: &str = "/etc/containers/oci/hooks.d";
 const PODMAN_CA_HOOK_CONF: &str = "/etc/containers/oci/hooks.d/50-agent-ca.json";
 const PODMAN_CA_HOOK: &str = "/usr/local/libexec/agent-container-ca";
+const PODMAN_USER_CONF_DIRECTORY: &str = "/home/agent/.config/containers/containers.conf.d";
+const PODMAN_USER_CONF: &str = "/home/agent/.config/containers/containers.conf.d/50-agent-socket.conf";
 const PODMAN_CONTAINERS_CONF_CONTENTS: &[u8] = br#"[containers]
 env = [
   "SSL_CERT_FILE=/run/agent/tls/ca-bundle.pem",
@@ -323,6 +325,15 @@ async fn configure_podman(sandbox: &SandboxHandle) -> Result<(), Error> {
         ["-n", "/usr/bin/install", "-d", "-m", "0755", "/run/podman"],
     )
     .await?;
+    // CONTAINER_HOST reaches only Sessions, Executions and SSH; this reaches every process of the agent user.
+    run_checked(sandbox, "/usr/bin/mkdir", ["-p", PODMAN_USER_CONF_DIRECTORY]).await?;
+    write_if_changed(sandbox, PODMAN_USER_CONF, podman_user_conf().as_bytes()).await?;
+    run_checked(
+        sandbox,
+        "/usr/bin/sudo",
+        ["-n", "/usr/bin/chown", "agent:agent", PODMAN_USER_CONF],
+    )
+    .await?;
     run_checked(sandbox, "/usr/bin/sudo", ["-n", "/usr/bin/systemctl", "daemon-reload"]).await?;
     // An already-listening socket retains its old mode until the next Sandbox
     // boot; the compile-time drop-in is not changed independently at runtime.
@@ -332,6 +343,12 @@ async fn configure_podman(sandbox: &SandboxHandle) -> Result<(), Error> {
         ["-n", "/usr/bin/systemctl", "enable", "--now", "podman.socket"],
     )
     .await
+}
+
+fn podman_user_conf() -> String {
+    format!(
+        "[engine]\nremote = true\nactive_service = \"agent\"\n\n[engine.service_destinations.agent]\nuri = \"{CONTAINER_HOST}\"\n"
+    )
 }
 
 /// Waits until systemd is PID 1 and has finished booting the guest.
