@@ -1,7 +1,7 @@
 # agentctl status --json
 
-`agentctl status --json` prints one JSON object: agentd, the harness logins, the agent the current directory
-resolves to, a count of every agent, and what to run next. It starts agentd if it is not running.
+`agentctl status --json` prints one JSON object: agentd, the harness logins, the stored GitHub accounts, the agent
+the current directory resolves to, a count of every agent, and what to run next. It starts agentd if it is not running.
 
 The object is a contract. Keys are `snake_case`, enumerations are the strings listed below, and anything absent is
 `null`, never left out. Later releases add keys without changing these; a change to an existing key raises `version`.
@@ -14,6 +14,9 @@ The object is a contract. Keys are `snake_case`, enumerations are the strings li
     {"harness": "claudeCode", "auth": "mediated", "login_stored": true},
     {"harness": "codex", "auth": "mediated", "login_stored": false},
     {"harness": "pi", "auth": "none", "login_stored": null}
+  ],
+  "github": [
+    {"owner": "digdir", "account": "digdir-bot", "kind": "fineGrained", "expires_at": "2027-01-13T10:00:00Z", "expired": false}
   ],
   "directory": {
     "path": "/Users/person/code/app",
@@ -29,6 +32,11 @@ The object is a contract. Keys are `snake_case`, enumerations are the strings li
 - `harnesses`: every harness agentctl supports, by its `harness` name (`claudeCode`, `codex` or `pi`), with its
   `auth` mode (`mediated` or `none`) and whether its login is stored, `login_stored`, which is `null` for a harness
   with no platform login.
+- `github`: every stored GitHub token, `[]` when there is none, never the token itself: the `owner` (user or
+  organization) it is stored for, the `account` it acts as, its `kind` (`fineGrained`, `classic`, `oauth` or
+  `other`), when it `expires_at` as GitHub said at login, `null` when GitHub stated no expiry, and whether it has
+  `expired`. An agent whose manifest names an owner without an unexpired token runs without GitHub access until
+  `agentctl github login --owner OWNER` stores one.
 - `directory`: the current `path`, and the `agent` it resolves to as `attach` would, or `null`. An agent is found from
   its manifest's folder, a folder it bind-mounts, or anywhere in the Git checkout its manifest is in. `problem` says
   why the directory cannot resolve to one agent, such as several agents applied from it.

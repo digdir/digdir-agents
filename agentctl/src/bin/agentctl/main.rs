@@ -19,6 +19,7 @@ use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
 
 mod entry;
 mod format;
+mod github;
 mod guide;
 mod init;
 mod launch;
@@ -111,6 +112,11 @@ enum Command {
     Codex {
         #[command(subcommand)]
         command: CodexCommand,
+    },
+    /// Give agents a GitHub account, one token per user or organization they work for.
+    Github {
+        #[command(subcommand)]
+        command: GithubCommand,
     },
     /// Print how to set up an agent, for coding agents; without a topic, the topics.
     Guide {
@@ -558,6 +564,32 @@ enum CodexCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum GithubCommand {
+    /// Store a GitHub token for agents of one user or organization, separate from any `gh` login.
+    ///
+    /// Paste the token when asked; it is not shown. What GitHub says about it is shown before
+    /// anything is stored. Agents whose manifest has `accounts: [{type: github, owner: OWNER}]`
+    /// use it, and those that failed for want of it start again.
+    Login {
+        /// The GitHub user or organization whose repositories the agents work on.
+        #[arg(long)]
+        owner: String,
+        /// Read the token from standard input instead, and store it without asking.
+        #[arg(long)]
+        from_stdin: bool,
+    },
+    /// List the stored tokens: owner, account, kind and expiry.
+    List,
+    /// Forget the token stored for a user or organization; agents lose GitHub access at once, and nothing else.
+    ///
+    /// The token keeps working on GitHub until it expires or you revoke it there.
+    Logout {
+        /// The GitHub user or organization, as `agentctl github list` shows it.
+        owner: String,
+    },
+}
+
 fn main() -> ExitCode {
     if launch::as_browser(|name| std::env::var_os(name)) {
         return launch::open_argument();
@@ -686,6 +718,11 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 .await?;
             println!("{} authentication stored", imported.provider);
         }
+        Command::Github { command } => match command {
+            GithubCommand::Login { owner, from_stdin } => github::login(client, &owner, from_stdin).await?,
+            GithubCommand::List => github::list(client).await?,
+            GithubCommand::Logout { owner } => github::logout(client, &owner).await?,
+        },
         Command::Apply {
             filename,
             variant,
@@ -2167,6 +2204,50 @@ mod tests {
         };
         assert!(!parse(&["agentctl", "status"]));
         assert!(parse(&["agentctl", "status", "--json"]));
+    }
+
+    #[test]
+    fn github_takes_an_owner_and_never_a_token_argument() {
+        let parse = |arguments: &[&str]| Arguments::try_parse_from(arguments).map(|arguments| arguments.command);
+        assert!(matches!(
+            parse(&["agentctl", "github", "login", "--owner", "digdir", "--from-stdin"]),
+            Ok(Command::Github {
+                command: GithubCommand::Login { owner, from_stdin: true }
+            }) if owner == "digdir"
+        ));
+        assert!(matches!(
+            parse(&["agentctl", "github", "logout", "digdir"]),
+            Ok(Command::Github {
+                command: GithubCommand::Logout { owner }
+            }) if owner == "digdir"
+        ));
+        assert!(
+            parse(&["agentctl", "github", "login"]).is_err(),
+            "the owner is required"
+        );
+        for arguments in [
+            &[
+                "agentctl",
+                "github",
+                "login",
+                "--owner",
+                "digdir",
+                "--token",
+                "ghp_FAKE_canary",
+            ][..],
+            &["agentctl", "github", "login", "--owner", "digdir", "ghp_FAKE_canary"],
+            &[
+                "agentctl",
+                "github",
+                "login",
+                "--owner",
+                "digdir",
+                "--token=ghp_FAKE_canary",
+            ],
+            &["agentctl", "github", "list", "ghp_FAKE_canary"],
+        ] {
+            assert!(parse(arguments).is_err(), "{arguments:?}");
+        }
     }
 
     #[test]

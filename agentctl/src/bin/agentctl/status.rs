@@ -1,4 +1,4 @@
-//! `agentctl status`: agentd, the harness logins, this directory's agent and every agent at a
+//! `agentctl status`: agentd, the harness logins, the GitHub accounts, this directory's agent and every agent at a
 //! glance, with the commands that would change what it shows.
 
 use std::{fmt::Write as _, path::PathBuf};
@@ -6,11 +6,13 @@ use std::{fmt::Write as _, path::PathBuf};
 use agent::{
     Agent, Error,
     control_api::Client,
+    github::{GithubToken, TokenKind},
     harness::{Harness, HarnessAuthMode, HarnessLogin},
     local::home::ControlPlaneHome,
     sessions::{Session, State},
 };
 use serde::Serialize;
+use time::OffsetDateTime;
 
 use crate::{
     CommandResult, print_json,
@@ -24,6 +26,7 @@ pub(crate) struct Status {
     version: u32,
     agentd: Agentd,
     harnesses: Vec<HarnessStatus>,
+    github: Vec<GithubStatus>,
     directory: Directory,
     agents: Agents,
     next: Vec<NextStep>,
@@ -40,6 +43,17 @@ struct HarnessStatus {
     harness: Harness,
     auth: HarnessAuthMode,
     login_stored: Option<bool>,
+}
+
+/// A stored GitHub token, without the token.
+#[derive(Debug, Serialize)]
+struct GithubStatus {
+    owner: String,
+    account: String,
+    kind: TokenKind,
+    #[serde(with = "time::serde::rfc3339::option")]
+    expires_at: Option<OffsetDateTime>,
+    expired: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,6 +95,7 @@ type Resolution = Result<Option<Agent>, String>;
 pub(crate) async fn run(home: &ControlPlaneHome, client: &Client, json: bool) -> CommandResult<()> {
     let daemon = client.health().await?;
     let logins = client.auth_logins().await?;
+    let github = client.github_accounts().await?;
     let path = std::env::current_dir().map_err(Error::from)?;
     let resolution = match client.resolve_agent_variant(path.clone(), None).await {
         Ok(agent) => Ok(Some(agent)),
@@ -95,7 +110,14 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client, json: bool) ->
     };
     let agents = client.list_agents().await?;
     let sessions = client.list_sessions(None).await?;
-    let status = Status::new(daemon, &logins, path, &resolution, &agents, &sessions, manifest_here);
+    let found = Found {
+        logins: &logins,
+        github: &github,
+        resolution: &resolution,
+        agents: &agents,
+        sessions: &sessions,
+    };
+    let status = Status::new(daemon, &found, path, manifest_here, OffsetDateTime::now_utc());
     if json {
         print_json(&status)
     } else {
@@ -104,16 +126,24 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client, json: bool) ->
     }
 }
 
+/// What agentd reported, for [`Status::new`].
+struct Found<'a> {
+    logins: &'a [HarnessLogin],
+    github: &'a [GithubToken],
+    resolution: &'a Resolution,
+    agents: &'a [Agent],
+    sessions: &'a [Session],
+}
+
 impl Status {
-    fn new(
-        daemon: Agentd,
-        logins: &[HarnessLogin],
-        path: PathBuf,
-        resolution: &Resolution,
-        agents: &[Agent],
-        sessions: &[Session],
-        manifest_here: bool,
-    ) -> Self {
+    fn new(daemon: Agentd, found: &Found<'_>, path: PathBuf, manifest_here: bool, now: OffsetDateTime) -> Self {
+        let Found {
+            logins,
+            github,
+            resolution,
+            agents,
+            sessions,
+        } = *found;
         let sessions: Vec<&Session> = sessions.iter().filter(|session| !session.is_archived()).collect();
         let waiting = |agent: Option<&str>| {
             sessions
@@ -157,7 +187,17 @@ impl Status {
             }),
             problem,
         };
-        let next = next_steps(logins, resolution, &directory, &summary, manifest_here);
+        let github: Vec<GithubStatus> = github
+            .iter()
+            .map(|token| GithubStatus {
+                owner: token.owner.clone(),
+                account: token.account.login.clone(),
+                kind: token.kind,
+                expires_at: token.expires_at,
+                expired: token.expired(now),
+            })
+            .collect();
+        let next = next_steps(logins, &github, resolution, &directory, &summary, manifest_here);
         Self {
             version: 1,
             agentd: daemon,
@@ -169,6 +209,7 @@ impl Status {
                     login_stored: login.stored,
                 })
                 .collect(),
+            github,
             directory,
             agents: summary,
             next,
@@ -192,6 +233,18 @@ impl Status {
             })
             .collect::<Vec<_>>()
             .join(", ");
+        let github = if self.github.is_empty() {
+            "no accounts".to_owned()
+        } else {
+            self.github
+                .iter()
+                .map(|token| {
+                    let expired = if token.expired { " (expired)" } else { "" };
+                    format!("{} as {}{expired}", token.owner, token.account)
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let here = match (&self.directory.agent, &self.directory.problem) {
             (Some(agent), _) => {
                 let mut line = format!("{}: {}", agent.name, agent.state.label().to_lowercase());
@@ -235,6 +288,7 @@ impl Status {
         for (label, value) in [
             ("agentd", daemon),
             ("Logins", logins),
+            ("GitHub", github),
             ("This directory", here),
             ("All agents", everywhere),
         ] {
@@ -270,6 +324,7 @@ const fn login_command(harness: Harness) -> Option<&'static str> {
 /// sessions waiting for the person.
 fn next_steps(
     logins: &[HarnessLogin],
+    github: &[GithubStatus],
     resolution: &Resolution,
     directory: &Directory,
     agents: &Agents,
@@ -309,6 +364,20 @@ fn next_steps(
                 format!("Let agents use {}{alternatives}", harness.display_name()),
             ));
         }
+    }
+    // An agent with a GitHub account has no GitHub access without its owner's token, or with an
+    // expired one.
+    if let Ok(Some(agent)) = resolution
+        && let Some(owner) = agent.spec.github_owner().map(str::to_ascii_lowercase)
+        && github.iter().all(|token| token.owner != owner || token.expired)
+    {
+        let name = &agent.metadata.name;
+        let purpose = if github.iter().any(|token| token.owner == owner) {
+            format!("Replace {owner}'s expired GitHub token, which {name} needs")
+        } else {
+            format!("Store a GitHub token for {owner}, which {name} needs")
+        };
+        next.push(step(format!("agentctl github login --owner {owner}"), purpose));
     }
     match (resolution, &directory.agent) {
         (Ok(None), _) if manifest_here => next.push(step(
@@ -414,18 +483,52 @@ mod tests {
     }
 
     fn status(stored: &[Harness], resolution: &Resolution, agents: &[Agent], sessions: &[Session]) -> Status {
+        with_github(stored, &[], resolution, agents, sessions)
+    }
+
+    /// 2027-01-13 10:00 UTC, when [`github_token`]s expire.
+    fn january() -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(1_799_834_400).expect("timestamp")
+    }
+
+    fn github_token(owner: &str, expires_at: Option<OffsetDateTime>) -> GithubToken {
+        GithubToken {
+            owner: owner.into(),
+            account: agent::github::GithubAccount {
+                login: format!("{owner}-bot"),
+                name: format!("{owner} bot"),
+                email: format!("1+{owner}-bot@users.noreply.github.com"),
+            },
+            kind: TokenKind::FineGrained,
+            expires_at,
+        }
+    }
+
+    /// The status a day before [`january`], with `github` stored.
+    fn with_github(
+        stored: &[Harness],
+        github: &[GithubToken],
+        resolution: &Resolution,
+        agents: &[Agent],
+        sessions: &[Session],
+    ) -> Status {
         let daemon = Agentd {
             version: Some("1.2.3".into()),
             home: PathBuf::from("/home/person/.agent"),
         };
-        Status::new(
-            daemon,
-            &logins(stored),
-            PathBuf::from("/work/repo"),
+        let found = Found {
+            logins: &logins(stored),
+            github,
             resolution,
             agents,
             sessions,
+        };
+        Status::new(
+            daemon,
+            &found,
+            PathBuf::from("/work/repo"),
             false,
+            january() - time::Duration::days(1),
         )
     }
 
@@ -436,8 +539,9 @@ mod tests {
     #[test]
     fn the_json_keys_are_a_contract() {
         let worker = failed("worker", "the image does not exist");
-        let value = serde_json::to_value(status(
+        let value = serde_json::to_value(with_github(
             &[Harness::ClaudeCode],
+            &[github_token("digdir", Some(january())), github_token("altinn", None)],
             &Ok(Some(worker.clone())),
             &[worker],
             &[],
@@ -452,6 +556,10 @@ mod tests {
                     {"harness": "claudeCode", "auth": "mediated", "login_stored": true},
                     {"harness": "codex", "auth": "mediated", "login_stored": false},
                     {"harness": "pi", "auth": "none", "login_stored": null},
+                ],
+                "github": [
+                    {"owner": "digdir", "account": "digdir-bot", "kind": "fineGrained", "expires_at": "2027-01-13T10:00:00Z", "expired": false},
+                    {"owner": "altinn", "account": "altinn-bot", "kind": "fineGrained", "expires_at": null, "expired": false},
                 ],
                 "directory": {
                     "path": "/work/repo",
@@ -473,6 +581,7 @@ mod tests {
         let nothing = serde_json::to_value(status(&[], &Ok(None), &[], &[])).expect("json");
         assert_eq!(nothing["directory"]["agent"], serde_json::Value::Null);
         assert_eq!(nothing["directory"]["problem"], serde_json::Value::Null);
+        assert_eq!(nothing["github"], serde_json::json!([]), "always present");
     }
 
     #[test]
@@ -499,7 +608,9 @@ mod tests {
             .expect("an example object");
         let example: serde_json::Value = serde_json::from_str(example).expect("the example is JSON");
         let worker = failed("worker", "the image does not exist");
-        let actual = serde_json::to_value(status(&[], &Ok(Some(worker.clone())), &[worker], &[])).expect("json");
+        let github = [github_token("digdir", Some(january()))];
+        let actual =
+            serde_json::to_value(with_github(&[], &github, &Ok(Some(worker.clone())), &[worker], &[])).expect("json");
         let (mut documented, mut produced) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
         keys(&example, "", &mut documented);
         keys(&actual, "", &mut produced);
@@ -617,6 +728,32 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_here_with_a_github_account_needs_its_owners_unexpired_token() {
+        let mut worker = failed("worker", "invalid Agent: no GitHub token is stored for digdir");
+        worker.spec.accounts = vec![agent::AccountSpec::Github { owner: "Digdir".into() }];
+        let here = Ok(Some(worker.clone()));
+        let agents = [worker];
+        let next = |github: &[GithubToken]| {
+            with_github(&[Harness::ClaudeCode], github, &here, &agents, &[])
+                .next
+                .into_iter()
+                .next()
+                .map(|step| (step.command, step.purpose))
+        };
+        let login = |purpose: &str| Some(("agentctl github login --owner digdir".to_owned(), purpose.to_owned()));
+        let store = login("Store a GitHub token for digdir, which worker needs");
+        assert_eq!(next(&[]), store);
+        assert_eq!(next(&[github_token("altinn", None)]), store);
+        let expired = github_token("digdir", Some(january() - time::Duration::days(2)));
+        assert_eq!(
+            next(&[expired]),
+            login("Replace digdir's expired GitHub token, which worker needs")
+        );
+        let current = next(&[github_token("digdir", Some(january()))]).map(|(command, _)| command);
+        assert_ne!(current.as_deref(), Some("agentctl github login --owner digdir"));
+    }
+
+    #[test]
     fn the_text_has_one_line_per_fact_then_the_next_steps() {
         let worker = ready("worker");
         let agents = [worker.clone(), stopped("paused"), failed("broken", "no such image")];
@@ -630,12 +767,22 @@ mod tests {
             "\
 agentd          answering, version 1.2.3, home /home/person/.agent
 Logins          Claude Code signed in, Codex not signed in, Pi set up by each agent
+GitHub          no accounts
 This directory  worker: ready, 2 sessions, 1 waiting for you
 All agents      3 agents: 1 running, 1 failing, 1 stopped; 1 session waiting for you
 
 Next
   agentctl tui  Answer the 1 session waiting for you
 "
+        );
+        let github = [
+            github_token("digdir", Some(january())),
+            github_token("altinn", Some(january() - time::Duration::days(2))),
+        ];
+        let text = with_github(&[Harness::ClaudeCode], &github, &Ok(None), &[], &[]).text();
+        assert!(
+            text.contains("\nGitHub          digdir as digdir-bot, altinn as altinn-bot (expired)\n"),
+            "{text}"
         );
         let broken = failed("broken", "no such image");
         let text = status(&[Harness::ClaudeCode], &Ok(Some(broken.clone())), &[broken], &[]).text();
@@ -666,17 +813,22 @@ Next
 
     #[test]
     fn a_manifest_here_without_its_agent_is_applied_rather_than_set_up() {
+        let found = Found {
+            logins: &logins(&[Harness::ClaudeCode]),
+            github: &[],
+            resolution: &Ok(None),
+            agents: &[],
+            sessions: &[],
+        };
         let with_manifest = Status::new(
             Agentd {
                 version: Some("1.2.3".into()),
                 home: PathBuf::from("/home/person/.agent"),
             },
-            &logins(&[Harness::ClaudeCode]),
+            &found,
             PathBuf::from("/work/repo/agents/dev"),
-            &Ok(None),
-            &[],
-            &[],
             true,
+            january() - time::Duration::days(1),
         );
         assert_eq!(commands(&with_manifest), ["agentctl apply"]);
         assert_eq!(with_manifest.next[0].purpose, "Create the agent from ./agent.yaml");
