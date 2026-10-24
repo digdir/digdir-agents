@@ -1,25 +1,36 @@
 # GitHub accounts
 
-An agent whose manifest has `accounts: [{type: github, owner: my-org}]` works on GitHub as one account for that user
-or organization: `gh` and `git` over HTTPS work with the owner's repositories, SSH remotes on github.com go over
-HTTPS, and commits carry the account's name and email unless `environment` declares `GIT_USER_NAME` and
-`GIT_USER_EMAIL`. The agent sees only a placeholder `GITHUB_TOKEN`; agentd keeps the token on the host, one per
-owner, and puts it only into requests to GitHub.
+An agent whose manifest has `accounts: [{type: github, owner: my-org}]` works on GitHub as one account: `gh` and
+`git` over HTTPS work with GitHub, SSH remotes on github.com go over HTTPS, and commits carry the account's name and
+email unless `environment` declares `GIT_USER_NAME` and `GIT_USER_EMAIL`. The agent sees only a placeholder
+`GITHUB_TOKEN`; agentd keeps the token on the host, one per owner, and puts it only into requests to GitHub. An agent
+has at most one account: never write a second `accounts` entry, which the manifest check rejects.
 
-The person stores the token, never you. Ask them to run this in their own terminal, from the repository so it offers
-its owner, or with `--owner my-org`:
+Ask the person, in plain words, which of these they want:
+
+- **The agent acts as its own GitHub account**, such as `my-org-agent`, which works across organizations the way a
+  person does. They sign in through the browser as that account. The owner in the manifest is that account's login:
+  `accounts: [{type: github, owner: my-org-agent}]`.
+- **The agent uses a token for one organization's repositories.** They create a fine-grained token in GitHub's form
+  and pick the repositories there. The owner in the manifest is the organization: `owner: my-org`.
+
+The person stores the token, never you. Ask them to run this in their own terminal; it asks which of the two, and opens
+a browser:
 
 ```sh
 agentctl github login
 ```
 
-It opens GitHub's form for a fine-grained token with the owner, a 90-day lifetime and the permissions filled in.
-They pick the repositories the agent needs there; the form cannot be given them. An organization may have to approve
-the token before it reaches private repositories. agentctl shows which account the token acts as, and warns when it
-cannot see the repository or expires soon, before it is stored. Never ask for the token or read it.
+For the browser sign-in it needs the GitHub CLI, `gh` (https://cli.github.com), and leaves their own `gh` login
+alone; afterwards it prints the owner the manifest names. For the token form, run it from the repository so it offers
+its owner, or with `--owner my-org`; an organization may have to approve the token before it reaches private
+repositories. agentctl shows which account the token acts as, and warns when it cannot see the repository or expires
+soon, before it is stored. Never ask for the token or read it.
 
 Suggest a dedicated account, such as a bot, rather than the person's own: what the agent does on GitHub is then
-told apart from what they do, and the account reaches only what it is given.
+told apart from what they do, and the account reaches only what it is given. Which organizations and repositories
+it reaches is up to that account or token, can change at any time, and you can't see it: don't write it in the
+agent's instructions.
 
 `agentctl status --json` lists the stored tokens under `github` (`agentctl guide status`). An agent whose owner has
 no token, or an expired one, runs without GitHub access and status names the login; once the person has run it, the

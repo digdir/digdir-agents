@@ -5,11 +5,13 @@
 //! account the token acts as and when it expires. The token stays in the host's secret store;
 //! what is listed and returned about it never contains it.
 
+mod gh;
 mod inspect;
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+pub use gh::sign_in;
 pub use inspect::SCOPES;
 
 use crate::{Error, harness::MediatedSecret, persistence};
@@ -289,29 +291,29 @@ pub(crate) fn conflicts_with_managed_secret(name: &str, placeholder: &str) -> bo
     name == ACCESS_ENVIRONMENT || placeholder.contains(ACCESS_PLACEHOLDER) || ACCESS_PLACEHOLDER.contains(placeholder)
 }
 
-/// Asks GitHub what `token` would be for `owner`, as a login would, without storing anything, so
-/// a person can see it before agentd keeps it.
+/// Asks GitHub what `token` would be for `owner`, by default the account it acts as, as a login
+/// would, without storing anything, so a person can see it before agentd keeps it.
 ///
 /// # Errors
 ///
 /// Returns an error when the token is empty, the owner is not a GitHub login, GitHub rejects the
 /// token or cannot be reached, or the token has expired. No error contains the token.
-pub async fn check(token: &str, owner: &str) -> Result<GithubLogin, Error> {
+pub async fn check(token: &str, owner: Option<&str>) -> Result<GithubLogin, Error> {
     check_at(inspect::API, token, owner).await
 }
 
-async fn check_at(api: &str, token: &str, owner: &str) -> Result<GithubLogin, Error> {
+async fn check_at(api: &str, token: &str, owner: Option<&str>) -> Result<GithubLogin, Error> {
     let token = token.trim();
     if token.is_empty() {
         return Err(Error::Invalid("no GitHub token was provided".into()));
     }
     // The owner is not repeated: a token pasted in its place must not end up in the error.
-    if !valid_owner(owner) {
+    if !owner.is_none_or(valid_owner) {
         return Err(Error::Invalid(OWNER_RULE.into()));
     }
     let inspection = inspect::inspect_at(api, token).await?;
     let checked = GithubToken {
-        owner: owner.to_ascii_lowercase(),
+        owner: owner.unwrap_or(&inspection.account.login).to_ascii_lowercase(),
         account: inspection.account,
         kind: TokenKind::of(token),
         expires_at: inspection.expires_at,
@@ -347,7 +349,7 @@ impl Authentication {
     /// stored then, and no error contains the token.
     pub(crate) async fn login(&self, token: Zeroizing<String>, owner: &str) -> Result<GithubLogin, Error> {
         let token = Zeroizing::new(token.trim().to_owned());
-        let checked = check_at(&self.api, &token, owner).await?;
+        let checked = check_at(&self.api, &token, Some(owner)).await?;
         let (provider, secret) = names(&checked.token.owner);
         self.database
             .put_provider_account(persistence::ProviderAccountWrite {
@@ -781,6 +783,24 @@ mod tests {
         assert_eq!(known.map(|token| token.account.login).as_deref(), Some("digdir-bot"));
         assert_eq!(stored(&github.database, "altinn").await.expect("account"), None);
         assert_eq!(stored(&github.database, "not a login").await.expect("account"), None);
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn a_check_without_an_owner_is_for_the_account_signed_in_as() {
+        let (api, _) = serve(BOT).await;
+
+        let own = check_at(&api, "gho_FAKE_canary", None).await.expect("own");
+        let named = check_at(&api, "gho_FAKE_canary", Some("Digdir")).await.expect("named");
+
+        assert_eq!(
+            (own.token.owner.as_str(), own.token.kind),
+            ("digdir-bot", TokenKind::Oauth)
+        );
+        assert_eq!(named.token.owner, "digdir");
+        let Err(Error::Invalid(message)) = check_at(&api, "gho_FAKE_canary", Some("gho_FAKE_canary")).await else {
+            panic!("not an owner");
+        };
+        assert!(!message.contains("FAKE_canary"), "{message}");
     }
 
     #[test]

@@ -37,7 +37,7 @@ always wants this agent to do or never to do, in a line each, such as "Open pull
 repository's own AGENTS.md or README says, the harness reads there.
 
 Don't write which repositories the agent can reach or push to. The token behind its GitHub account decides that, it
-can change at any time, and you can't see it; the first layer already says whose repositories GitHub works with.
+can change at any time, and you can't see it; the first layer already says how GitHub works for the agent.
 An agent for a folder rather than a repository can say what it clones on demand and which tools to install when a
 task needs them, instead of listing everything.
 
