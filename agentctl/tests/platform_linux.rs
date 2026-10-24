@@ -181,6 +181,7 @@ Written by agentd {}. The Agent's own instructions follow and take precedence.
 
 - **Computer:** Agent `worker`, a Linux Sandbox VM that is yours to manage. User `agent` with passwordless `sudo`, \
 home `/home/agent`, work in `/home/agent/code`.
+- **Resources:** 2 CPUs, 1Gi memory, 4Gi disk; `df -h /` shows how much is free.
 - **Harnesses:**
   - Claude Code (default)
   - Codex: not installed until the host logs in to it

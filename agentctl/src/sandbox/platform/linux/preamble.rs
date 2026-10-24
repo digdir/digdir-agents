@@ -40,6 +40,7 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
                  `sudo`, home `{HOME}`, work in `{WORKING_DIRECTORY}`."
             )),
         ),
+        ("Resources", Some(resources(spec))),
         ("Harnesses", Some(harnesses(spec, observed.harnesses))),
         ("Secrets", secrets(spec, observed.environment)),
         (
@@ -64,6 +65,17 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
         }
     }
     section
+}
+
+/// What the manifest gives the Sandbox. Disk is what nested Agents and image builds run out of first.
+fn resources(spec: &Spec) -> String {
+    let resources = &spec.sandbox.resources;
+    format!(
+        "{} CPUs, {} memory, {} disk; `df -h /` shows how much is free.",
+        resources.cpu,
+        resources.memory,
+        resources.root_filesystem.capacity()
+    )
 }
 
 /// One sub-bullet per declared harness, naming the default and those not installed.

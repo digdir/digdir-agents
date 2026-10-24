@@ -37,8 +37,10 @@ printf 'GITHUB_TOKEN=%s\nGIT_USER_NAME=%s\nGIT_USER_EMAIL=%s\n' \
   "$GITHUB_TOKEN" "$GIT_USER_NAME" "$GIT_USER_EMAIL" > ~/nested.env
 ```
 
-**Size** a nested Agent to fit inside this Sandbox beside your own work. Check `nproc` and `free -g`, and keep its
-`cpu` and `memory` well below them; Agents often ship a `nested` variant sized for this.
+**Size** a nested Agent to fit inside this Sandbox beside your own work. Disk usually runs out first: the nested
+Agent's disk can grow to its `rootFilesystem.capacity`, and every image built for one stays in Podman's storage. Check
+`df -h /`, `nproc` and `free -g`, and keep its `capacity`, `cpu` and `memory` well below them; Agents often ship a
+`nested` variant sized for this.
 
 ## On a host: rules
 
@@ -87,5 +89,5 @@ agentctl exec agent/NAME -- systemctl is-system-running
 both, and `agentctl start agent/NAME` resumes it.
 
 - **Inside an Agent:** delete the nested Agents you applied for a trial once you are done, and before removing the
-  directory one was applied from.
+  directory one was applied from. `podman image prune` then frees the space of images no longer tagged.
 - **On a host:** stop rather than delete, unless the user asks you to delete.

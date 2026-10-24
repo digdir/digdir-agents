@@ -215,8 +215,9 @@ Fable in the `/model` picker.
 at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md` for Codex and
 `~/.pi/agent/AGENTS.md` for Pi.
 `agentd` writes a short Agent sandbox section ahead of it, from the manifest and what setup finds in the Sandbox: the
-installed harnesses, the configured secrets and their hosts, network, access and whether nested Agents can run. Every
-Agent also gets an `agentctl` skill for driving Agents, nested ones included; a skill of its own by that name replaces it.
+Agent's resources, the installed harnesses, the configured secrets and their hosts, network, access and whether nested
+Agents can run. Every Agent also gets an `agentctl` skill for driving Agents, nested ones included; a skill of its own
+by that name replaces it.
 Repository-local instruction files continue to be discovered by the harness itself.
 
 Harness Adapters own authentication, version verification, managed configuration, hooks, native conversation IDs and
