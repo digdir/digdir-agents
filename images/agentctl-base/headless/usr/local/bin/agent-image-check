@@ -54,6 +54,14 @@ for path in /usr/bin/env /usr/bin/sudo /usr/bin/tmux /usr/bin/tar /usr/bin/insta
     [ -x "$path" ] || fail "$path is missing"
 done
 [ -f /etc/ssl/certs/ca-certificates.crt ] || fail "/etc/ssl/certs/ca-certificates.crt is missing; install ca-certificates"
+# Every process in the Sandbox runs with LANG=C.UTF-8 and TERM=xterm-256color. locale reports a missing locale on
+# stderr but still succeeds.
+[ -z "$(LC_ALL=C.UTF-8 locale 2>&1 >/dev/null)" ] || fail "the C.UTF-8 locale is missing"
+terminfo=
+for directory in /etc/terminfo /lib/terminfo /usr/share/terminfo; do
+    [ -e "$directory/x/xterm-256color" ] && terminfo=1
+done
+[ -n "$terminfo" ] || fail "there is no terminfo entry for xterm-256color; install ncurses-base"
 # The probes write caches under HOME and TMPDIR, so both point at a scratch directory removed afterwards.
 scratch="$(mktemp -d)"
 for command in node claude codex pi; do

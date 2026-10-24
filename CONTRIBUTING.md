@@ -51,9 +51,14 @@ time.
 
 ### Diagrams
 
-The diagrams in [docs/architecture/](docs/architecture/) are hand-written SVGs that share one
-`<style>` block: use its classes, keep the block identical in every file, and show a changed diagram rendered in the
-pull request description.
+The diagrams in [docs/architecture/](docs/architecture/) are hand-written SVGs that share one `<style>` block, whose
+comments say how to use it. Their positions are absolute, so look at a changed diagram rendered and show it in the
+pull request description. To render one at twice its size, with the window size from its `viewBox`:
+
+```sh
+chromium --headless --hide-scrollbars --force-device-scale-factor=2 --window-size=1600,1040 \
+  --screenshot=runtime.png docs/architecture/runtime.svg
+```
 
 ## Changelog and releases
 

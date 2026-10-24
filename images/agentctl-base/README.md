@@ -1,7 +1,7 @@
 # agentctl base images
 
-Images to build Agent images on. They meet `agentd`'s [image contract](../../agentctl/docs/image-contract.md) and carry the harness
-versions its adapters are tested with, so an Agent's Dockerfile only adds the tools its work needs.
+Images to build Agent images on. They meet `agentd`'s [image contract](../../agentctl/docs/image-contract.md) and
+carry the harness versions its adapters are tested with, so an Agent's Dockerfile only adds the tools its work needs.
 
 | Image | Contents |
 | --- | --- |
@@ -81,9 +81,10 @@ The base images do not include `agentctl` and `agentd`. An image that runs neste
 
 ## Changing them
 
-The harness versions here are the platform's pins: update them as [harness-upgrades.md](../../agentctl/docs/harness-upgrades.md)
-describes, in the same pull request as any adapter change they need. To try a change locally, build the images under
-`localhost/` tags and point your image's `FROM` at one for the test:
+The harness versions here are the platform's pins: update them as
+[harness-upgrades.md](../../agentctl/docs/harness-upgrades.md) describes, in the same pull request as any adapter
+change they need. To try a change locally, build the images under `localhost/` tags and point your image's `FROM` at
+one for the test:
 
 ```sh
 podman build --target headless --tag localhost/agentctl-base:ubuntu-26.04 images/agentctl-base

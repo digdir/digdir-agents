@@ -1,7 +1,8 @@
 # Agent image contract
 
-What `agentd` expects of the image an Agent runs. Build on the [agentctl base images](../../images/agentctl-base/README.md)
-and end the build with `agent-image-check`, which checks the contract and explains each check in its
+What `agentd` expects of the image an Agent runs. Build on the
+[agentctl base images](../../images/agentctl-base/README.md) and end the build with `agent-image-check`, which checks
+the contract and explains each check in its
 [source](../../images/agentctl-base/headless/usr/local/bin/agent-image-check).
 
 `agent-image-check` cannot check the following:

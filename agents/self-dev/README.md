@@ -16,9 +16,10 @@ Nested Agents and the end-to-end tests need nested Sandboxes, which a Linux x86_
 or newer on macOS 15 or newer can provide. The manifests ask for them (`nestedSandboxes: preferred`), and on other
 hosts the Agent starts without them.
 
-The images are built from this directory's `Dockerfile` on the [agentctl base images](../../images/agentctl-base/README.md)
-and published to `ghcr.io/digdir/digdir-agents` whenever they or the base images change on `main`. See
-[Changing them](../../images/agentctl-base/README.md#changing-them) for changes to the base images.
+The images are built from this directory's `Dockerfile` on the
+[agentctl base images](../../images/agentctl-base/README.md) and published to `ghcr.io/digdir/digdir-agents` whenever
+they or the base images change on `main`. See [Changing them](../../images/agentctl-base/README.md#changing-them) for
+changes to the base images.
 
 ## Getting started
 
@@ -60,6 +61,16 @@ starts but rejects every prompt, so `agentctl prompt --wait` times out.
 Pi's provider and models come from [`home/.pi/agent/models.json`](home/.pi/agent/models.json), in the shared home
 overlay. `agentd` writes the overlay into the Sandbox every time it reconciles the Agent, so edit it here rather than
 in the Sandbox.
+
+Before adding a model, ask the gateway what it offers. Its model list has only the IDs:
+
+```sh
+curl -fsS -H "Authorization: Bearer $AIVAR_API_KEY" https://api.aivar.no/v1/models
+```
+
+To find the context size, send a chat completion to `/v1/chat/completions` with an oversized `max_tokens`. The error
+names the model's total token limit. Add an image to the request to see whether the model reads images. A model that
+reads only text rejects it.
 
 ## Inside the Agent
 
