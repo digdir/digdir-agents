@@ -572,6 +572,47 @@ async fn an_agent_defined_in_a_subdirectory_resolves_from_anywhere_in_its_reposi
 }
 
 #[tokio::test(flavor = "local")]
+async fn an_agent_in_agents_outside_a_repository_resolves_from_the_folder_holding_it() {
+    let fixture = fixture();
+    let temporary = tempfile::TempDir::new().expect("temporary directory");
+    let home = temporary.path().join("home");
+    std::fs::create_dir_all(home.join("agents/dev")).expect("agent directory");
+    std::fs::create_dir_all(home.join("notes/2026")).expect("folder below the holder");
+    std::fs::create_dir_all(home.join("code/project/.git")).expect("repository below the holder");
+    let loose = temporary.path().join("loose");
+    std::fs::create_dir_all(loose.join("helper")).expect("agent directory outside agents/");
+    let elsewhere = temporary.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("directory outside the holder");
+    fixture
+        .control_plane
+        .apply(apply_request_in("dev", home.join("agents/dev")))
+        .await
+        .expect("apply");
+    fixture
+        .control_plane
+        .apply(apply_request_in("helper", loose.join("helper")))
+        .await
+        .expect("apply");
+
+    for directory in [home.clone(), home.join("notes/2026"), home.join("agents/dev")] {
+        let resolved = fixture
+            .control_plane
+            .resolve_directory(&directory)
+            .await
+            .expect("the folder's Agent");
+        assert_eq!(resolved.metadata.name, "dev", "from {}", directory.display());
+    }
+    for directory in [home.join("code/project"), elsewhere, loose] {
+        let resolved = fixture.control_plane.resolve_directory(&directory).await;
+        assert!(
+            matches!(resolved, Err(Error::NotFound)),
+            "from {}: {resolved:?}",
+            directory.display()
+        );
+    }
+}
+
+#[tokio::test(flavor = "local")]
 async fn directory_resolution_selects_leaf_variants_and_prefers_the_default_manifest() {
     let fixture = fixture();
     let root = std::env::temp_dir().join("agent-platform-variant-sources");

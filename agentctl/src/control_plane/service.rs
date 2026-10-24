@@ -359,15 +359,29 @@ impl ControlPlane {
             return Err(Error::Invalid("directory must be absolute".into()));
         }
         let directory = canonical_or_original(directory).await;
+        let here_repository = repository_root(&directory).await;
         let mut matches = Vec::new();
         for record in self.store.list().await? {
             // How close a match is: its depth, then whether it is one of the Agent's own
-            // directories rather than the repository holding them, which loses a tie.
+            // directories rather than the folder holding them, which loses a tie.
             let mut closest: Option<(usize, bool)> = None;
-            let repository = repository_root(&record.source_directory).await;
+            let holding = match repository_root(&record.source_directory).await {
+                Some(repository) => Some(repository),
+                None => match agents_holder(&record.source_directory) {
+                    Some(holder) => {
+                        let holder = canonical_or_original(holder).await;
+                        // A repository inside that folder belongs to its own Agents, or none.
+                        here_repository
+                            .as_deref()
+                            .is_none_or(|repository| !repository.starts_with(&holder))
+                            .then_some(holder)
+                    }
+                    None => None,
+                },
+            };
             let sources = association_directories(&record)
                 .map(|source| (source, true))
-                .chain(repository.as_deref().map(|source| (source, false)));
+                .chain(holding.as_deref().map(|source| (source, false)));
             for (source, own) in sources {
                 let source = canonical_or_original(source).await;
                 if directory.starts_with(&source) {
@@ -732,6 +746,14 @@ async fn repository_root(directory: &std::path::Path) -> Option<std::path::PathB
         }
     }
     None
+}
+
+/// The folder holding the `agents/` directory an Agent outside any repository is defined in, as
+/// `agents/<name>/`. An Agent is associated with it as with a repository, so an Agent set up for
+/// a folder such as the home directory is found from there.
+fn agents_holder(source: &std::path::Path) -> Option<&std::path::Path> {
+    let agents = source.parent()?;
+    (agents.file_name()? == "agents").then(|| agents.parent()).flatten()
 }
 
 fn association_directories(record: &AgentRecord) -> impl Iterator<Item = &std::path::Path> {
