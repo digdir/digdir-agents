@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use crate::{
     Error,
-    harness::{LaunchRequest, MediatedSecret, ProcessLaunch, shell_single_quoted},
+    harness::{LaunchRequest, MediatedSecret, ProcessLaunch, SignIn, shell_single_quoted},
     persistence,
 };
 use sandbox::secret_store::SecretReference;
@@ -89,45 +89,74 @@ const SETUP_TOKEN_PREFIX: &str = "sk-ant-oat";
 
 /// Mints a long-lived Claude token on the host with `claude setup-token`.
 ///
-/// Runs the harness CLI to completion with the terminal attached so its own
-/// browser-redirect OAuth flow (and the ephemeral localhost callback it starts)
-/// can finish; it is never timed out. The token is read from stdout, with a
-/// paste fallback when the harness prints it only to the terminal.
+/// Runs the harness CLI to completion with the terminal attached; it is never
+/// timed out. With a browser here, sign-in completes through the ephemeral
+/// localhost callback it starts, so nothing needs typing: its interface is
+/// hidden and the token read from its output. Otherwise its interface keeps
+/// the terminal, the only place it redraws in place, to show the sign-in link
+/// and code prompt, and the person pastes the token it prints.
 ///
 /// # Errors
 ///
 /// Returns an error when the harness CLI is missing, fails, or yields no token.
-pub(super) fn acquire_host_token() -> Result<zeroize::Zeroizing<String>, Error> {
+pub(super) fn acquire_host_token(sign_in: SignIn) -> Result<zeroize::Zeroizing<String>, Error> {
     use std::process::{Command, Stdio};
 
     eprintln!("Minting a long-lived Claude token with `claude setup-token`.");
-    eprintln!("A browser window will open — approve the request, then return here.");
-    let output = Command::new("claude")
-        .arg("setup-token")
-        .stdin(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            Error::Invalid(format!(
-                "could not run `claude setup-token` (is Claude Code installed on this host?): {error}"
-            ))
-        })?
-        .wait_with_output()
-        .map_err(|error| Error::Invalid(format!("`claude setup-token` did not run: {error}")))?;
-    if !output.status.success() {
+    let mut command = Command::new("claude");
+    command.arg("setup-token");
+    let run = match sign_in {
+        SignIn::Browser(opener) => {
+            if let Some(opener) = opener.filter(|_| std::env::var_os("BROWSER").is_none()) {
+                command.env("BROWSER", opener.program).env(opener.environment, "1");
+            }
+            eprintln!("A browser window will open — approve the request, then return here.");
+            eprintln!("If none opens, press Ctrl+C and run again with AGENTCTL_OPEN=copy.");
+            command
+                .stdin(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .output()
+                .map(|output| (output.status, Some(zeroize::Zeroizing::new(output.stdout))))
+        }
+        SignIn::Elsewhere => {
+            eprintln!("Open the sign-in link it shows in any browser, then paste the token it prints.");
+            command.status().map(|status| (status, None))
+        }
+    };
+    let (status, stdout) = run.map_err(|error| {
+        Error::Invalid(format!(
+            "could not run `claude setup-token` (is Claude Code installed on this host?): {error}"
+        ))
+    })?;
+    if !status.success() {
         return Err(Error::Invalid("`claude setup-token` did not complete".into()));
     }
-    if let Some(token) = String::from_utf8_lossy(&output.stdout)
-        .split_whitespace()
-        .find(|word| word.starts_with(SETUP_TOKEN_PREFIX))
-    {
-        return Ok(zeroize::Zeroizing::new(token.to_owned()));
-    }
-    prompt_for_token()
+    let Some(stdout) = stdout else {
+        return prompt_for_token();
+    };
+    find_setup_token(&stdout)
+        .map(|token| zeroize::Zeroizing::new(token.to_owned()))
+        .ok_or_else(|| {
+            Error::Invalid(
+                "`claude setup-token` printed no token; run again with AGENTCTL_OPEN=copy to sign in by hand".into(),
+            )
+        })
 }
 
-/// Reads a token pasted by the user when it did not appear on stdout.
+/// Finds the first setup token in terminal output, which interleaves it with
+/// ANSI escape sequences rather than only whitespace.
+fn find_setup_token(output: &[u8]) -> Option<&str> {
+    let prefix = SETUP_TOKEN_PREFIX.as_bytes();
+    let start = output.windows(prefix.len()).position(|window| window == prefix)?;
+    let rest = &output[start..];
+    let end = rest
+        .iter()
+        .position(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
+        .unwrap_or(rest.len());
+    std::str::from_utf8(&rest[..end]).ok()
+}
+
+/// Reads the token the person pastes from the interface shown above.
 fn prompt_for_token() -> Result<zeroize::Zeroizing<String>, Error> {
     use std::io::Write as _;
 
@@ -237,6 +266,18 @@ mod tests {
             assert!(super::conflicts_with_managed_secret("UNRELATED", Some(placeholder)));
         }
         assert!(super::manages_environment(super::DISABLE_ALTERNATE_SCREEN_ENVIRONMENT));
+    }
+
+    #[test]
+    fn a_setup_token_is_found_between_terminal_escapes() {
+        const TOKEN: &str = "sk-ant-oat01-Ab_c-9";
+        for (output, expected) in [
+            (format!("Your token:\n{TOKEN}\n"), Some(TOKEN)),
+            (format!("\x1b[1m{TOKEN}\x1b[22m"), Some(TOKEN)),
+            ("Paste code here if prompted >".to_owned(), None),
+        ] {
+            assert_eq!(super::find_setup_token(output.as_bytes()), expected, "{output:?}");
+        }
     }
 }
 

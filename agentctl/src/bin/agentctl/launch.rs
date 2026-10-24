@@ -121,20 +121,80 @@ impl Launch {
 ///
 /// Returns why the opener could not be started or failed at once.
 pub(crate) async fn open_url(url: &str) -> Result<(), String> {
-    // Explorer exits with 1 even when it opened the address, so there only a
-    // failure to start it tells.
-    run_detached(OsStr::new(opener()), &[url.to_owned()], !cfg!(windows)).await
+    let opener = opener();
+    let arguments = opener
+        .arguments
+        .iter()
+        .copied()
+        .chain([url])
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    run_detached(OsStr::new(opener.program), &arguments, opener.exit_tells).await
+}
+
+/// A program that opens the address given after its own `arguments`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Opener {
+    pub(crate) program: &'static str,
+    arguments: &'static [&'static str],
+    /// Whether a failing exit status means the address did not open.
+    exit_tells: bool,
 }
 
 /// The program that opens addresses on this operating system.
-pub(crate) const fn opener() -> &'static str {
+pub(crate) fn opener() -> Opener {
+    let opener = |program, arguments, exit_tells| Opener {
+        program,
+        arguments,
+        exit_tells,
+    };
     if cfg!(target_os = "macos") {
-        "open"
+        opener("open", &[], true)
     } else if cfg!(target_os = "windows") {
-        "explorer"
+        // Explorer exits with 1 even when it opened the address, so there only
+        // a failure to start it tells.
+        opener("explorer", &[], false)
+    } else if wsl(|name| std::env::var_os(name)) {
+        // Explorer started from WSL opens a folder instead of an address with
+        // a long query string, such as a sign-in link; the URL protocol
+        // handler opens any address in the default browser.
+        opener("rundll32.exe", &["url.dll,FileProtocolHandler"], true)
     } else {
-        "xdg-open"
+        opener("xdg-open", &[], true)
     }
+}
+
+/// Set for a harness that runs agentctl as its browser, so that agentctl only
+/// opens the address it is given, with [`opener`].
+pub(crate) const AS_BROWSER_ENVIRONMENT: &str = "AGENTCTL_AS_BROWSER";
+
+/// Opens the one address agentctl is given when it runs as a harness's browser.
+pub(crate) fn open_argument() -> std::process::ExitCode {
+    let mut arguments = std::env::args_os().skip(1);
+    let opened = match (arguments.next(), arguments.next()) {
+        (Some(url), None) => url.to_str().map_or_else(
+            || Err("the address to open is not UTF-8".to_owned()),
+            |url| {
+                tokio::runtime::LocalRuntime::new()
+                    .map_err(|error| format!("could not start: {error}"))
+                    .and_then(|runtime| runtime.block_on(open_url(url)))
+            },
+        ),
+        _ => Err("expected one address to open".to_owned()),
+    };
+    opened.map_or_else(
+        |error| {
+            eprintln!("agentctl: {error}");
+            std::process::ExitCode::FAILURE
+        },
+        |()| std::process::ExitCode::SUCCESS,
+    )
+}
+
+/// Whether this is Linux under WSL, whose Linux openers cannot reach the
+/// Windows desktop but whose Windows programs, such as Explorer, can.
+pub(crate) fn wsl(variable: impl Fn(&str) -> Option<OsString>) -> bool {
+    cfg!(target_os = "linux") && variable("WSL_DISTRO_NAME").is_some_and(|value| !value.is_empty())
 }
 
 /// Runs a launcher outside the caller's terminal: its output is discarded,
@@ -187,9 +247,9 @@ pub(crate) const fn forward_label(guest_port: u16) -> Option<&'static str> {
 /// when it would not. `AGENTCTL_OPEN=launch` or `copy` overrides the guess.
 ///
 /// On Linux a window needs a display; that also covers `ssh -X` and remote
-/// shells that are not SSH. macOS and Windows have no display variable, and
-/// open windows on the machine's own screen, so there a terminal reached over
-/// SSH is taken to be elsewhere.
+/// shells that are not SSH. macOS, Windows and WSL, which opens on the Windows
+/// desktop, need no display variable and open windows on the machine's own
+/// screen, so there a terminal reached over SSH is taken to be elsewhere.
 pub(crate) fn launch_blocked(variable: impl Fn(&str) -> Option<OsString>) -> Option<String> {
     let set = |name: &str| variable(name).is_some_and(|value| !value.is_empty());
     match variable("AGENTCTL_OPEN").as_deref().and_then(OsStr::to_str) {
@@ -197,7 +257,7 @@ pub(crate) fn launch_blocked(variable: impl Fn(&str) -> Option<OsString>) -> Opt
         Some("copy") => return Some("AGENTCTL_OPEN=copy asks to copy instead of opening".into()),
         _ => {}
     }
-    if cfg!(any(target_os = "macos", windows)) {
+    if cfg!(any(target_os = "macos", windows)) || wsl(&variable) {
         (set("SSH_CONNECTION") || set("SSH_TTY"))
             .then(|| "this terminal is reached over SSH, so it would open on that machine".into())
     } else {
@@ -310,6 +370,16 @@ mod tests {
         );
         assert!(launch_blocked(only(&[("SSH_TTY", "/dev/pts/1")])).is_some());
         assert!(launch_blocked(only(&[("DISPLAY", "")])).is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn under_wsl_the_windows_desktop_is_reached_unless_over_ssh() {
+        const DISTRIBUTION: (&str, &str) = ("WSL_DISTRO_NAME", "Ubuntu");
+        assert!(wsl(only(&[DISTRIBUTION])));
+        assert!(!wsl(only(&[("WSL_DISTRO_NAME", "")])));
+        assert_eq!(launch_blocked(only(&[DISTRIBUTION])), None);
+        assert!(launch_blocked(only(&[DISTRIBUTION, ("DISPLAY", ":0"), ("SSH_TTY", "/dev/pts/1")])).is_some());
     }
 
     #[cfg(any(target_os = "macos", windows))]

@@ -373,10 +373,32 @@ impl sandbox::secret_store::SecretStore for AuthenticationManager {
     }
 }
 
+/// Where an interactive harness login sends the person to sign in.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SignIn {
+    /// A browser on this host, opened by the harness's own opener or, when
+    /// given, by this one, as under WSL where Linux openers cannot reach the
+    /// Windows desktop.
+    Browser(Option<UrlOpener>),
+    /// Any browser elsewhere: none opened here would reach the person, so the
+    /// harness shows a link to open on another device.
+    Elsewhere,
+}
+
+/// A program that opens the address given as its only argument when run with
+/// the `environment` variable set.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UrlOpener {
+    pub program: std::path::PathBuf,
+    pub environment: &'static str,
+}
+
 /// Acquires a host credential for the selected harness, interactively.
 ///
-/// Runs on the client host, where a terminal and browser are available; the
+/// Runs on the client host, where a terminal is available; the
 /// harness-specific login mechanism lives behind the closed harness enum.
+/// Codex's login shows its sign-in link itself, so only Claude Code follows
+/// `sign_in`.
 ///
 /// # Errors
 ///
@@ -384,9 +406,10 @@ impl sandbox::secret_store::SecretStore for AuthenticationManager {
 pub fn acquire_host_credential(
     harness: Harness,
     control_plane_home: &std::path::Path,
+    sign_in: SignIn,
 ) -> Result<Zeroizing<String>, Error> {
     match harness {
-        Harness::ClaudeCode => claude_code::acquire_host_token(),
+        Harness::ClaudeCode => claude_code::acquire_host_token(sign_in),
         Harness::Codex => codex::acquire_host_credential(control_plane_home),
         Harness::Pi => Err(Error::Invalid(
             "Pi has no platform login; the Agent supplies its credentials".into(),

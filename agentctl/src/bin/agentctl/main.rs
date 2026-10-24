@@ -516,6 +516,9 @@ enum CodexCommand {
 }
 
 fn main() -> ExitCode {
+    if std::env::var_os(launch::AS_BROWSER_ENVIRONMENT).is_some() {
+        return launch::open_argument();
+    }
     match run() {
         Ok(code) => code,
         // The daemon rejected the desired state; the message is the whole story.
@@ -561,7 +564,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             let token = if from_stdin {
                 read_token_from_stdin()?
             } else {
-                agent::harness::acquire_host_credential(agent::Harness::ClaudeCode, home.path())?
+                agent::harness::acquire_host_credential(agent::Harness::ClaudeCode, home.path(), sign_in())?
             };
             let imported = client
                 .auth_login(agent::Harness::ClaudeCode, token.to_string(), from_stdin)
@@ -574,7 +577,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             let credential = if from_stdin {
                 read_stdin_to_end()?
             } else {
-                agent::harness::acquire_host_credential(agent::Harness::Codex, home.path())?
+                agent::harness::acquire_host_credential(agent::Harness::Codex, home.path(), sign_in())?
             };
             let imported = client
                 .auth_login(agent::Harness::Codex, credential.to_string(), from_stdin)
@@ -1137,13 +1140,31 @@ async fn vnc(
     hold_forwards(std::slice::from_ref(&forward)).await
 }
 
+/// Where a harness login sends the person: a browser here when one would reach
+/// them, or else a link to open elsewhere. Only under WSL does a harness's own
+/// opener miss the desktop; agentctl then stands in as its browser.
+fn sign_in() -> agent::harness::SignIn {
+    let variable = |name: &str| std::env::var_os(name);
+    if launch::launch_blocked(variable).is_some() {
+        return agent::harness::SignIn::Elsewhere;
+    }
+    let opener = launch::wsl(variable)
+        .then(std::env::current_exe)
+        .and_then(Result::ok)
+        .map(|program| agent::harness::UrlOpener {
+            program,
+            environment: launch::AS_BROWSER_ENVIRONMENT,
+        });
+    agent::harness::SignIn::Browser(opener)
+}
+
 /// Hands the address to whichever local application handles its scheme.
 ///
 /// Best effort by design: there is no portable VNC viewer, the address is
 /// already printed, and a missing handler must not fail the forward.
 async fn open_locally(url: &str) {
     match launch::open_url(url).await {
-        Ok(()) => println!("Asked {} to open {url}.", launch::opener()),
+        Ok(()) => println!("Asked {} to open {url}.", launch::opener().program),
         Err(error) => eprintln!("{error}"),
     }
 }
