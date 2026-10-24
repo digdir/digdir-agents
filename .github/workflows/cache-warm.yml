@@ -34,7 +34,8 @@ permissions:
   contents: read
 
 jobs:
-  # The cache of rust.yml's build job.
+  # The cache of rust.yml's build job, which its end-to-end job restores too: make build builds the end-to-end tests'
+  # dependencies.
   rust-build:
     name: Warm Rust build cache
     if: github.ref == 'refs/heads/main'
@@ -70,41 +71,6 @@ jobs:
       # make build builds the test targets too.
       - name: Build
         run: make build lint
-
-  # The cache of rust.yml's end-to-end job.
-  rust-end-to-end:
-    name: Warm Rust end-to-end cache
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install native build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libcap-ng-dev
-
-      - name: Install Rust toolchain
-        run: |
-          RUST_VERSION="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
-          test -n "${RUST_VERSION}"
-          rustup toolchain install "${RUST_VERSION}" --profile minimal
-          rustup default "${RUST_VERSION}"
-
-      - name: Restore Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: end-to-end-${{ hashFiles('Makefile', '.github/workflows/cache-warm.yml') }}
-
-      # The tests make test-e2e runs.
-      - name: Build end-to-end tests
-        run: |
-          cargo test -p agent --lib --locked --no-run
-          cargo test -p sandbox-microsandbox --tests --locked --no-run
 
   # The npm cache of integrations.yml.
   integrations:

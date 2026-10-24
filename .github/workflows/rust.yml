@@ -93,10 +93,11 @@ jobs:
           rustup toolchain install "${RUST_VERSION}" --profile minimal
           rustup default "${RUST_VERSION}"
 
+      # The build job's cache: these tests use the dependencies it builds.
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: end-to-end-${{ hashFiles('Makefile', '.github/workflows/cache-warm.yml') }}
+          shared-key: build-${{ hashFiles('Makefile', '.github/workflows/cache-warm.yml') }}
           save-if: false
 
       - name: Run end-to-end tests
