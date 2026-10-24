@@ -205,6 +205,15 @@ RUN agent-image-check
 Pi needs Node.js 22.19.0 or later, and Codex needs Node.js 16 or later; Claude Code is a native binary.
 `agent-image-check` runs `node` and each harness with `--version`, so it fails a build whose Node.js cannot start one.
 
+## Adding agentctl
+
+The base images do not include `agentctl` and `agentd`. An image that runs nested Agents copies them from the
+[agentctl image](../agentctl/README.md), at a release, the newest `main` or one commit:
+
+```dockerfile
+COPY --from=ghcr.io/digdir/agentctl:v0.1.0-preview.13@sha256:… /agentctl /agentd /usr/local/bin/
+```
+
 ## Changing them
 
 The harness versions here are the platform's pins: update them as [HARNESSES.md](../../agentctl/HARNESSES.md)

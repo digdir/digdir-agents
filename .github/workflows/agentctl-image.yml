@@ -1,0 +1,266 @@
+# Builds the agentctl image from images/agentctl: agentctl and agentd alone, for Agent images to copy in. Pull requests
+# that change the Rust workspace or the image only build it. Every push to main, including a manual run on main,
+# publishes it to ghcr.io/digdir/agentctl as `sha-<commit>`, and as `main` while that commit is still main's head. The
+# release workflow calls this one to build a release's, and once the release is published, to publish it as
+# `<version>`, such as `v0.1.0-preview.13`.
+name: agentctl image
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed]
+    paths:
+      - .cargo/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - agentctl/**
+      - sandbox/**
+      - images/agentctl/**
+      - docker-bake.hcl
+      - .github/workflows/agentctl-image.yml
+  # Every commit on main, so that each has a tag to pin.
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version the binaries report and the image is tagged with, such as v0.1.0-preview.13
+        type: string
+        required: true
+      publish:
+        description: Publish the image, rather than only build it as a release dry run does
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+# A pull request's newer push cancels its older run. On main each commit has a group of its own: a group keeps only
+# one pending run, and a commit whose run were replaced would get no sha- tag.
+concurrency:
+  group: agentctl-image-${{ github.event.pull_request.number || inputs.version || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REPOSITORY: ghcr.io/digdir/agentctl
+
+jobs:
+  resolve:
+    # Drafts are skipped unless labeled `ci`, from their next push, as in CI. Converting to a draft or closing starts a
+    # run that skips every job, which cancels the one in progress.
+    if: >-
+      ${{ github.event_name != 'pull_request' || (github.event.action != 'closed'
+      && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'ci'))) }}
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      epoch: ${{ steps.resolve.outputs.epoch }}
+      # `build` pushes nothing, `main` publishes the sha- and main tags and writes the cache, and `release` publishes
+      # the version.
+      mode: ${{ steps.resolve.outputs.mode }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
+
+      # A build from main names the newest commit that changed what the build reads, the paths
+      # images/agentctl/Dockerfile.dockerignore lets in and the Dockerfile itself, and takes its time as
+      # SOURCE_DATE_EPOCH. A commit that changes none of them, such as one to the changelog, then builds the same
+      # version with the same build arguments, reuses the cached build and publishes the same digest, so that a
+      # digest pin on `main` moves only when the binaries do.
+      - name: Resolve version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          PUBLISH_RELEASE: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${RELEASE_VERSION}" ]; then
+            version="${RELEASE_VERSION}"
+            commit="${GITHUB_SHA}"
+            if [ "${PUBLISH_RELEASE}" = true ]; then
+              mode=release
+            else
+              mode=build
+            fi
+          else
+            commit="$(git log -1 --format=%H -- \
+              .cargo/config.toml Cargo.toml Cargo.lock rust-toolchain.toml \
+              agentctl/Cargo.toml agentctl/src agentctl/examples \
+              sandbox/authorization/Cargo.toml sandbox/authorization/src \
+              sandbox/core/Cargo.toml sandbox/core/src \
+              sandbox/microsandbox/Cargo.toml sandbox/microsandbox/src \
+              sandbox/core/examples/worktree/Cargo.toml sandbox/core/examples/worktree/src \
+              images/agentctl/Dockerfile images/agentctl/Dockerfile.dockerignore)"
+            test -n "${commit}"
+
+            # The latest release as the installers resolve it: the newest agentctl/ tag.
+            latest="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '.[] | select(.tag_name | startswith("agentctl/v")) | .tag_name' | head -n 1)"
+            base="${latest#agentctl/}"
+            if ! printf '%s\n' "${base}" | grep -q -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+              echo "::error::no agentctl release to base the version on: '${latest}'"
+              exit 1
+            fi
+            # A main build sorts after the release it follows and before the next one: after a preview it extends
+            # the preview, and after a stable release it is a prerelease of the next patch. The g keeps a commit
+            # that has only digits and starts with 0 from being an invalid semantic version identifier.
+            case "${base}" in
+              *-*) version="${base}.main.g${commit::7}" ;;
+              *)
+                patch="${base##*.}"
+                version="${base%.*}.$((patch + 1))-main.g${commit::7}"
+                ;;
+            esac
+            if [ "${GITHUB_REF}" = refs/heads/main ] && [ "${GITHUB_EVENT_NAME}" != pull_request ]; then
+              mode=main
+            else
+              mode=build
+            fi
+          fi
+
+          echo "Building ${version} from ${GITHUB_SHA}"
+          {
+            echo "version=${version}"
+            echo "epoch=$(git log -1 --format=%ct "${commit}")"
+            echo "mode=${mode}"
+          } >> "${GITHUB_OUTPUT}"
+
+  # Each architecture builds on a native runner, as the other images do. When publishing, each pushes its image by
+  # digest, and the publish job joins them into the tagged multi-platform image.
+  build:
+    name: Build image (${{ matrix.arch }})
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login to GHCR
+        if: needs.resolve.outputs.mode != 'build'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Build image
+        env:
+          ARCH: ${{ matrix.arch }}
+          AGENT_VERSION: ${{ needs.resolve.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ needs.resolve.outputs.epoch }}
+          MODE: ${{ needs.resolve.outputs.mode }}
+        run: |
+          set -eu
+
+          metadata="${RUNNER_TEMP}/metadata.json"
+          cache="${REPOSITORY}:buildcache-${ARCH}"
+          set -- --set "agentctl.platform=linux/${ARCH}" --set "agentctl.cache-from=type=registry,ref=${cache}"
+          if [ "${MODE}" != build ]; then
+            # Without clearing the bake file's tags, buildx refuses to push by digest; the publish job tags.
+            set -- "$@" \
+              --set "agentctl.tags=" \
+              --set "agentctl.output=type=image,name=${REPOSITORY},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true"
+          fi
+          # Only main writes the cache, which pull requests and releases read: a cache reference holds only its last
+          # export, so a release's would cost main's next build its cache, and with it the digest it keeps.
+          if [ "${MODE}" = main ]; then
+            set -- "$@" --set "agentctl.cache-to=type=registry,ref=${cache},mode=max,image-manifest=true"
+          fi
+
+          docker buildx bake --file docker-bake.hcl --provenance=false --sbom=false --metadata-file "${metadata}" \
+            "$@" agentctl
+
+          if [ "${MODE}" != build ]; then
+            mkdir -p "${RUNNER_TEMP}/digests"
+            digest="$(jq -r '.agentctl."containerimage.digest"' "${metadata}")"
+            case "${digest}" in
+              sha256:*) printf '%s\n' "${digest}" > "${RUNNER_TEMP}/digests/agentctl" ;;
+              *) echo "::error::no image digest for agentctl in ${metadata}"; exit 1 ;;
+            esac
+          fi
+
+      - name: Upload image digest
+        if: needs.resolve.outputs.mode != 'build'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: agentctl-image-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    if: needs.resolve.outputs.mode != 'build'
+    name: Publish image
+    needs: [resolve, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download image digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: agentctl-image-digest-*
+          path: ${{ runner.temp }}/digests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      # `main` moves only while this commit is main's head, so that a run that finishes after a newer commit's, or a
+      # re-run of an older one, cannot move it back.
+      - name: Tag multi-platform image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          MODE: ${{ needs.resolve.outputs.mode }}
+        run: |
+          set -euo pipefail
+
+          if [ "${MODE}" = release ]; then
+            tags="${VERSION}"
+          else
+            tags="sha-${GITHUB_SHA::10}"
+            head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+            if [ "${head}" = "${GITHUB_SHA}" ]; then
+              tags="${tags} main"
+            else
+              echo "main is now ${head}; leaving the main tag to its run"
+            fi
+          fi
+
+          set --
+          for tag in ${tags}; do
+            set -- "$@" --tag "${REPOSITORY}:${tag}"
+          done
+          docker buildx imagetools create "$@" \
+            "${REPOSITORY}@$(cat "${RUNNER_TEMP}/digests/agentctl-image-digest-amd64/agentctl")" \
+            "${REPOSITORY}@$(cat "${RUNNER_TEMP}/digests/agentctl-image-digest-arm64/agentctl")"
+          for tag in ${tags}; do
+            docker buildx imagetools inspect "${REPOSITORY}:${tag}"
+          done

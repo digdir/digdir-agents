@@ -12,7 +12,7 @@ Agents get their own computer, with mediated network access and no real secrets 
 | --- | --- |
 | [`agentctl/`](agentctl/) | The `agentctl` CLI and the `agentd` Session API backend, independent of model and harness. Start here to install and run an Agent. |
 | [`sandbox/`](sandbox/) | The Sandbox SDK, with an implementation on Digdir's forks of [microsandbox](https://github.com/digdir/microsandbox) and [libkrunfw](https://github.com/digdir/libkrunfw). |
-| [`images/agentctl-base/`](images/agentctl-base/) | Base images that Agent images build on, headless and desktop, with Claude Code, Codex and Pi. |
+| [`images/`](images/) | Container images for building Agent images. |
 | [`agents/self-dev/`](agents/self-dev/) | The Agent that develops this platform. It is also the example to start from when you make a new Agent. |
 | [`integrations/`](integrations/) | Slack and GitHub listener from the earlier orchestrator pipeline. It is kept as a possible entry point to agentctl Agents, but nothing consumes its events right now. |
 | [`docs/presentations/`](docs/presentations/) | Slide decks on agentctl and the Sandbox SDK, including a security view. |
