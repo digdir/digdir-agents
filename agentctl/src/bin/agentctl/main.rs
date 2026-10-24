@@ -516,6 +516,9 @@ enum CodexCommand {
 }
 
 fn main() -> ExitCode {
+    if launch::as_browser(|name| std::env::var_os(name)) {
+        return launch::open_argument();
+    }
     match run() {
         Ok(code) => code,
         // The daemon rejected the desired state; the message is the whole story.
@@ -561,7 +564,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             let token = if from_stdin {
                 read_token_from_stdin()?
             } else {
-                agent::harness::acquire_host_credential(agent::Harness::ClaudeCode, home.path())?
+                agent::harness::acquire_host_credential(agent::Harness::ClaudeCode, home.path(), sign_in)?
             };
             let imported = client
                 .auth_login(agent::Harness::ClaudeCode, token.to_string(), from_stdin)
@@ -574,7 +577,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             let credential = if from_stdin {
                 read_stdin_to_end()?
             } else {
-                agent::harness::acquire_host_credential(agent::Harness::Codex, home.path())?
+                agent::harness::acquire_host_credential(agent::Harness::Codex, home.path(), sign_in)?
             };
             let imported = client
                 .auth_login(agent::Harness::Codex, credential.to_string(), from_stdin)
@@ -1137,13 +1140,17 @@ async fn vnc(
     hold_forwards(std::slice::from_ref(&forward)).await
 }
 
+fn sign_in() -> agent::harness::SignIn {
+    launch::sign_in(|name| std::env::var_os(name), std::env::current_exe().ok())
+}
+
 /// Hands the address to whichever local application handles its scheme.
 ///
 /// Best effort by design: there is no portable VNC viewer, the address is
 /// already printed, and a missing handler must not fail the forward.
 async fn open_locally(url: &str) {
     match launch::open_url(url).await {
-        Ok(()) => println!("Asked {} to open {url}.", launch::opener()),
+        Ok(()) => println!("Asked {} to open {url}.", launch::opener().program),
         Err(error) => eprintln!("{error}"),
     }
 }
