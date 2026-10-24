@@ -20,9 +20,6 @@ spec:
       rootFilesystem:
         capacity: "64Gi"
         mode: layered
-  # Files copied into /home/agent on every reconciliation. Empty here.
-  home:
-    source: home
   # Installed where each harness reads its instructions; for Claude Code, ~/.claude/CLAUDE.md.
   instructions:
     - source: instructions.md
@@ -33,9 +30,5 @@ spec:
       # The mediated token cannot list Fable in the /model picker, so new Sessions select it at launch.
       defaults:
         model: fable
-  # No secrets, so no `.env` file is needed.
-  secrets: []
-  # All traffic passes through the host's network mediator.
-  network:
-    mode: mediated
-    allow: all
+  # No `home`, `secrets` or `network`: nothing is copied into /home/agent, no `.env` file is
+  # needed, and all traffic passes through the host's network mediator.
