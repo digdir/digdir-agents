@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use crate::{CommandError, CommandResult};
 
 /// Each topic's name, what it covers, and its text.
-const TOPICS: [(&str, &str, &str); 5] = [
+const TOPICS: [(&str, &str, &str); 6] = [
     (
         "setup",
         "Set up an agent with a person: what to find out, write, start and check",
@@ -31,6 +31,11 @@ const TOPICS: [(&str, &str, &str); 5] = [
         "instructions",
         "The agent's instructions: what agentctl already says, and what to write",
         include_str!("../../../guide/instructions.md"),
+    ),
+    (
+        "accounts",
+        "GitHub accounts: what they give an agent, and the login the person runs",
+        include_str!("../../../guide/accounts.md"),
     ),
     (
         "status",
@@ -113,7 +118,7 @@ mod tests {
         };
         assert_eq!(
             message,
-            "no guide topic \"manifests\"; the topics are setup, manifest, image, instructions, status"
+            "no guide topic \"manifests\"; the topics are setup, manifest, image, instructions, accounts, status"
         );
     }
 

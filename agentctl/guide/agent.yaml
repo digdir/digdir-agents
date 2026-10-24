@@ -45,20 +45,14 @@ spec:
     # Optional: without a Codex login on the host the agent is created without it, and gets it once there is one.
     - type: codex
       optional: true
-  # Plain values copied from .env into the agent's environment. git uses these two for commits.
-  environment:
-    - name: GIT_USER_NAME
-    - name: GIT_USER_EMAIL
-  # Values the agent never sees: it gets a placeholder, and the host substitutes the real value in requests to
-  # these hosts only. A fine-grained GitHub token lets gh and git push, open pull requests and clone private
-  # repositories; the placeholder's prefix makes gh accept it.
-  secrets:
-    - environment: GITHUB_TOKEN
-      placeholder: github_pat_AGENT_MEDIATED_GITHUB_TOKEN
-      allowedHosts:
-        - github.com
-        - api.github.com
-        - uploads.github.com
+  # GitHub as one account for this user or organization: gh and git over HTTPS work with its repositories, and
+  # commits carry the account's name and email; GIT_USER_NAME and GIT_USER_EMAIL under `environment` override
+  # them. The person stores its token with `agentctl github login` (`agentctl guide accounts`).
+  accounts:
+    - type: github
+      owner: my-org
+  # Other values come from .env: `environment` copies plain ones into the agent, and `secrets` stay on the host,
+  # the agent seeing a placeholder that the host replaces in requests to the hosts listed (`agentctl guide manifest`).
   # Skills: folders holding a SKILL.md, copied where each harness reads skills. Edits reach a running agent;
   # adding or removing one means recreating it.
   # skills:
