@@ -111,7 +111,7 @@ if [ -f /etc/agent-desktop.conf ]; then
 fi
 
 # Features installed with agent-feature need the environment their env files list, which only the image's ENV
-# instructions can set. A colon-separated list, such as NODE_PATH, may hold more entries than the one listed.
+# instructions can set. A colon-separated list, such as PATH, may hold more entries than the one listed.
 for marker in /var/lib/agentctl-base/features/*; do
     [ -e "$marker" ] || continue
     feature=${marker##*/}

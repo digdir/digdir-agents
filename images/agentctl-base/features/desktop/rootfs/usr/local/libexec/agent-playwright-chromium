@@ -7,11 +7,7 @@ set -eu
 for argument in "$@"; do
     case $argument in
         --headless | --headless=*)
-            for shell in /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-*/chrome-headless-shell; do
-                [ -x "$shell" ] && exec "$shell" "$@"
-            done
-            echo "agent-playwright-chromium: no Playwright headless shell under /opt/ms-playwright" >&2
-            exit 1
+            exec /usr/local/libexec/agent-browser/chrome-headless-shell "$@"
             ;;
     esac
 done

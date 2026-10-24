@@ -1,4 +1,2 @@
-# Standalone scripts resolve the globally installed `playwright` package from any directory.
-NODE_PATH=/usr/local/lib/node_modules
-# The single browser build playwright-cli, standalone scripts and the `chromium` launcher share.
+# The pinned Chromium build, and any build a project's own Playwright adds beside it.
 PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright

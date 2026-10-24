@@ -24,7 +24,9 @@ playwright-cli close
 ```
 
 `scenario.js` supplies an async Playwright function taking `page`. Use `playwright-cli --help` for commands or the
-`playwright-cli` skill for more involved automation. Standalone Playwright scripts are also an option.
+`playwright-cli` skill for more involved automation. Standalone Playwright scripts are also an option: run them with
+`NODE_PATH="$(npm root -g)" node script.js`, and in an ES module load Playwright with
+`createRequire(import.meta.url)('playwright')`, since `import` ignores `NODE_PATH`.
 
 `video-to-gif` supports `--start`, `--duration`, `--width` and `--fps`. Trim irrelevant waits or reduce dimensions/frame
 rate without sacrificing readability. For longer interactions, prefer MP4:

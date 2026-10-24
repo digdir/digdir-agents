@@ -20,14 +20,36 @@ apt-get install --yes --no-install-recommends ffmpeg libnss3-tools
 
 # Playwright ties every package version to one Chromium build. The browser CLI owns the version:
 # the `playwright` package is installed at exactly the version the CLI depends on, so the CLI,
-# standalone scripts and the single browser under PLAYWRIGHT_BROWSERS_PATH cannot drift apart.
+# standalone scripts and the pinned browser under PLAYWRIGHT_BROWSERS_PATH cannot drift apart.
 npm install --global "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}"
 playwright_version="$(node -p "require('${NODE_PATH}/@playwright/cli/package.json').dependencies.playwright")"
 test -n "${playwright_version}"
 npm install --global "playwright@${playwright_version}"
 test "$(node -p "require('playwright/package.json').version")" = "${playwright_version}"
 playwright install --with-deps chromium
+# The CLI runs its own copy of Playwright. Registering it too keeps Playwright's cleanup from removing the build.
+cli_core=$(dirname "$(node -p "require.resolve('playwright-core/package.json', { paths: ['${NODE_PATH}/@playwright/cli'] })")")
+node "${cli_core}/cli.js" install chromium
 chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"
+# The agent can add builds for other Playwright versions; the sticky bit stops it removing or renaming root's.
+chown root:agent "${PLAYWRIGHT_BROWSERS_PATH}" "${PLAYWRIGHT_BROWSERS_PATH}/.links"
+chmod 3775 "${PLAYWRIGHT_BROWSERS_PATH}" "${PLAYWRIGHT_BROWSERS_PATH}/.links"
+# The launchers start the pinned build, not one a project or the image added.
+chrome=$(node -p "require('playwright').chromium.executablePath()")
+revision=${chrome#"${PLAYWRIGHT_BROWSERS_PATH}/chromium-"}
+revision=${revision%%/*}
+set -- "${PLAYWRIGHT_BROWSERS_PATH}/chromium_headless_shell-${revision}"/chrome-headless-shell-*/chrome-headless-shell
+[ "$#" -eq 1 ] && [ -x "$1" ] || { echo "no Chromium headless shell for build ${revision}" >&2; exit 1; }
+install -d /usr/local/libexec/agent-browser
+ln -sfn "${chrome}" /usr/local/libexec/agent-browser/chrome
+ln -sfn "$1" /usr/local/libexec/agent-browser/chrome-headless-shell
+# Only Playwright's internal registry gives the headless shell's path, so a Playwright update may break this check.
+for pair in chromium:chrome chromium-headless-shell:chrome-headless-shell; do
+    expected=$(node -e 'process.stdout.write(require(process.argv[1]).registry.registry.findExecutable(process.argv[2]).executablePath())' \
+        "${cli_core}/lib/coreBundle" "${pair%%:*}")
+    [ "$(readlink -f "/usr/local/libexec/agent-browser/${pair#*:}")" = "${expected}" ] \
+        || { echo "agent-browser/${pair#*:} is not playwright-cli's ${pair%%:*}, ${expected}" >&2; exit 1; }
+done
 rm -rf /var/lib/apt/lists/*
 
 # This feature's files, copied after the packages so that dpkg installs over none of them.

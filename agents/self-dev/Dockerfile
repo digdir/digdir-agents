@@ -1,7 +1,7 @@
 # The self-development Agent's images, built on the agentctl base images in images/agentctl-base. FROM names the base
 # tag without a digest, so that these images follow the platform they develop: CI builds them on the base built from
-# the same commit (docker-bake.hcl), and a nested Agent builds on the base Podman has under that name, pulled or built
-# locally. renovate.json keeps Renovate from pinning it.
+# the same commit (docker-bake.hcl). A nested Agent's build pulls the published base, so to try a local base, build it
+# under a localhost/ tag and point FROM at it while you test. renovate.json keeps Renovate from pinning it.
 FROM ghcr.io/digdir/agentctl-base:ubuntu-26.04 AS minimal
 
 # The base ends as the unprivileged Agent user; installing packages needs root again.
@@ -152,7 +152,6 @@ RUN agent-feature install desktop
 COPY common/agent-desktop.conf /etc/agent-desktop.conf.d/self-dev.conf
 
 # What `agent-feature env desktop` prints.
-ENV NODE_PATH=/usr/local/lib/node_modules
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 ENV DISPLAY=:1
 ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus

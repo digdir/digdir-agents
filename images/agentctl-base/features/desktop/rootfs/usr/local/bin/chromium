@@ -22,15 +22,11 @@ if [ ! -e "$ready" ]; then
     [ -e "$ready" ] || echo "chromium: the CA import has not finished; certificate errors may follow" >&2
 fi
 
-for candidate in /opt/ms-playwright/chromium-*/chrome-linux*/chrome; do
-    [ -x "$candidate" ] && exec "$candidate" \
-        --no-first-run \
-        --no-default-browser-check \
-        --password-store=gnome-libsecret \
-        --disable-infobars \
-        --disable-dev-shm-usage \
-        --force-renderer-accessibility \
-        "$@"
-done
-echo "chromium: no Playwright Chromium build found under /opt/ms-playwright" >&2
-exit 1
+exec /usr/local/libexec/agent-browser/chrome \
+    --no-first-run \
+    --no-default-browser-check \
+    --password-store=gnome-libsecret \
+    --disable-infobars \
+    --disable-dev-shm-usage \
+    --force-renderer-accessibility \
+    "$@"

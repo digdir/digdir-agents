@@ -73,7 +73,6 @@ USER root
 RUN agent-feature install desktop
 # What `agent-feature env desktop` prints. A script cannot set an image's environment, and agent-image-check fails an
 # image without it.
-ENV NODE_PATH=/usr/local/lib/node_modules
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 ENV DISPLAY=:1
 ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
@@ -126,6 +125,44 @@ coordinates back to the display. The budget depends on the Session's harness, wh
 `DESKTOP_SCREENSHOT_PIXELS` and `DESKTOP_SCREENSHOT_MAX_EDGE` override the budget. `DESKTOP_MAX_WIDTH` and
 `DESKTOP_MAX_HEIGHT` still work and replace it with a box. `desktop display` shows the budget in use.
 
+### The browser
+
+The `browser` feature installs `playwright` and `playwright-cli` globally, with the Chromium build they are pinned to
+under `/opt/ms-playwright`.
+
+A script outside a project finds the global `playwright` only when you set `NODE_PATH` for that command:
+
+```sh
+NODE_PATH="$(npm root -g)" node script.js
+```
+
+An ES module's `import` ignores `NODE_PATH`. Load Playwright with `createRequire` instead, and run the script the same
+way:
+
+```js
+import { createRequire } from 'node:module';
+const { chromium } = createRequire(import.meta.url)('playwright');
+```
+
+A repository that uses another Playwright version installs its build beside the base's: run
+`npx playwright install chromium` in the repository, after `npm install`, as the agent user. The base's build belongs
+to root, so the agent cannot remove it, and Playwright's cleanup of unused builds keeps it while the base's
+`playwright-cli` is installed. If that Playwright needs more system packages, install them with
+`sudo npx playwright install-deps chromium`.
+
+To bake another build into an image, install it as root from a Playwright package that stays in the image, so that
+Playwright's cleanup keeps the build and every user can read it:
+
+```dockerfile
+USER root
+RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then export NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem; fi \
+    && npm install --prefix /opt/playwright-1.63 playwright@1.63.0 \
+    && PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright /opt/playwright-1.63/node_modules/.bin/playwright \
+        install --with-deps chromium \
+    && find /opt/ms-playwright ! -perm -a+r -exec chmod a+rX {} + \
+    && rm -rf /home/agent/.npm /var/lib/apt/lists/*
+```
+
 ### The Secret Service
 
 The `desktop` feature runs gnome-keyring as the Secret Service, unlocked at boot, for what uses libsecret: `secret-tool`,
@@ -134,16 +171,50 @@ Chromium and Electron choose it; they do not recognize openbox. A Sandbox has no
 keyring's password is a fixed newline: `~/.local/share/keyrings` is unencrypted at rest, in effect, and protected only
 by the Sandbox boundary. It persists with the home directory across Stop and Start.
 
+## Using another Node.js
+
+The base installs Node.js in `/usr/local`. It runs agentd's hooks, Claude Code's status line and the global harnesses.
+An image that needs another Node.js installs it over `/usr/local` from the official tarball, as the base does; the
+harnesses stay where they are. Remove the old npm first so that its files do not mix with the new one's. Node.js 26 also
+needs `libatomic1`, and ships without Corepack.
+
+```dockerfile
+USER root
+ARG TARGETARCH
+ARG NODE_VERSION=26.12.1
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends libatomic1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && case "${TARGETARCH}" in amd64) NODE_ARCH=x64 ;; arm64) NODE_ARCH=arm64 ;; *) exit 1 ;; esac \
+    && NODE_ARCHIVE="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+    && NODE_SHA256="$(curl -fsSL "https://nodejs.org/download/release/v${NODE_VERSION}/SHASUMS256.txt" \
+        | awk -v filename="${NODE_ARCHIVE}" '$2 == filename { print $1 }')" \
+    && test -n "${NODE_SHA256}" \
+    && curl -fsSL "https://nodejs.org/download/release/v${NODE_VERSION}/${NODE_ARCHIVE}" -o /tmp/node.tar.xz \
+    && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+        /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+    && tar -xJf /tmp/node.tar.xz --strip-components=1 --no-same-owner -C /usr/local \
+        --exclude="node-v${NODE_VERSION}-linux-${NODE_ARCH}/include" \
+    && rm /tmp/node.tar.xz
+RUN agent-image-check
+```
+
+Pi needs Node.js 22.19.0 or later, and Codex needs Node.js 16 or later; Claude Code is a native binary.
+`agent-image-check` runs `node` and each harness with `--version`, so it fails a build whose Node.js cannot start one.
+
 ## Changing them
 
 The harness versions here are the platform's pins: update them as [HARNESSES.md](../../agentctl/HARNESSES.md)
 describes, in the same pull request as any adapter change they need. To try a change locally, build the images under
-their published names; a build whose `FROM` names the tag without a digest, including a nested Agent's, then uses
-them:
+`localhost/` tags and point your image's `FROM` at one for the test:
 
 ```sh
-podman build --target headless --tag ghcr.io/digdir/agentctl-base:ubuntu-26.04 images/agentctl-base
-podman build --target desktop --tag ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop images/agentctl-base
+podman build --target headless --tag localhost/agentctl-base:ubuntu-26.04 images/agentctl-base
+podman build --target desktop --tag localhost/agentctl-base:ubuntu-26.04-desktop images/agentctl-base
 ```
+
+Do not tag them with the published names: agentd builds an Agent's image for a platform, and Podman then pulls the
+published image over a local one with the same name.
 
 CI builds both from [docker-bake.hcl](../../docker-bake.hcl).
