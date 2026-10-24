@@ -384,10 +384,7 @@ fn next_steps(
             "agentctl apply".to_owned(),
             "Create the agent from ./agent.yaml".to_owned(),
         )),
-        (Ok(None), _) => next.push(step(
-            "agentctl init".to_owned(),
-            "Set up an agent here".to_owned(),
-        )),
+        (Ok(None), _) => next.push(step("agentctl init".to_owned(), "Set up an agent here".to_owned())),
         (Ok(Some(agent)), Some(here)) if agent.spec.is_stopped() => next.push(step(
             format!("agentctl start agent/{}", here.name),
             format!("Start {} again", here.name),
