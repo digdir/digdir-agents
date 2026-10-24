@@ -216,8 +216,9 @@ at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.c
 `~/.pi/agent/AGENTS.md` for Pi.
 `agentd` writes a short Agent sandbox section ahead of it, from the manifest and what setup finds in the Sandbox: the
 Agent's resources, the installed harnesses, the configured secrets and their hosts, network, access and whether nested
-Agents can run. Every Agent also gets an `agentctl` skill for driving Agents, nested ones included; a skill of its own
-by that name replaces it.
+Agents can run. Without `spec.instructions` neither is written, so the image or `spec.home` may own those files. Every
+Agent also gets an `agentctl` skill for driving Agents, nested ones included. A skill of its own in `spec.skills` by
+that name replaces it; one in `spec.home` is overwritten.
 Repository-local instruction files continue to be discovered by the harness itself.
 
 Harness Adapters own authentication, version verification, managed configuration, hooks, native conversation IDs and

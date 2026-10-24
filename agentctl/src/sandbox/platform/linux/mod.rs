@@ -31,6 +31,11 @@ pub(crate) const WORKING_DIRECTORY: &str = "/home/agent/code";
 /// report. `agentd` binds a new host port on every start; Agent setup rewrites the file first
 /// thing on every pass, so harnesses that outlive a daemon restart follow it as soon as the
 /// restarted daemon starts the Sandbox's network.
+///
+/// Its presence is also how `agentctl` knows it runs inside an Agent, in a Session, an Execution or
+/// an SSH login alike: [`crate::harness::inside_agent`] checks for this path, so moving the file
+/// or writing it anywhere but in an Agent's Sandbox changes what harness logins with `agentctl`
+/// do there.
 pub(crate) const PLATFORM_API_URL_FILE: &str = "/etc/agent-platform-api-url";
 /// Locale every Sandbox process runs with; the image ships it, so UTF-8 output
 /// renders regardless of the host's locale.
@@ -144,11 +149,14 @@ impl Linux {
             kvm,
             podman,
         };
-        let mut instructions = preamble::render(record, &observed).into_bytes();
-        if let Some(own) = read_instructions(record).await? {
+        // The section precedes the Agent's own instructions. Without any, the harness's instruction file is left to
+        // the image or the home overlay, as it always was.
+        let instructions = read_instructions(record).await?.map(|own| {
+            let mut instructions = preamble::render(record, &observed).into_bytes();
             instructions.push(b'\n');
             instructions.extend(own);
-        }
+            instructions
+        });
         let mut skills = read_skills(record).await?;
         let platform_skill = harness::platform_skill();
         // An Agent's own skill of the same name replaces the platform's.
@@ -162,7 +170,7 @@ impl Linux {
                     installation.kind.as_str()
                 ))
                 .await;
-            harness::bootstrap_linux(installation.kind, sandbox, HOME, Some(&instructions), &skills).await?;
+            harness::bootstrap_linux(installation.kind, sandbox, HOME, instructions.as_deref(), &skills).await?;
             step.complete().await;
         }
         Ok(())

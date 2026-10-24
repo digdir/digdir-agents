@@ -24,13 +24,13 @@ same worktree: it builds its image from the checkout it is applied from, so appl
 
 ```sh
 cd /home/agent/code/.worktrees/<task>/agents/self-dev/minimal
-agentctl apply --variant nested --env-file ~/nested.env --wait
+agentctl apply --variant nested --name <task>-nested --env-file ~/nested.env --wait
 ```
 
 Its build pulls the published agentctl base image, replacing a local image under the same name. To test a change to
 `images/agentctl-base`, build it from the worktree under a `localhost/` tag, as its README describes, and point
 `agents/self-dev/Dockerfile`'s `FROM` at it while you test. Use `agents/self-dev/full` instead of `minimal` for a nested
-Agent with a browser and a desktop. Delete an earlier `agentctl-dev-nested` applied from another worktree first, and
+Agent with a browser and a desktop. Name it for the task, since other Sessions may run nested Agents of their own, and
 delete it before removing the worktree it reads from.
 
 Build steps inside Podman trust the mediated CA through the system store and `/run/agent/tls/ca-bundle.pem`. Buildah

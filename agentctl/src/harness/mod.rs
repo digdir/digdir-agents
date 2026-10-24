@@ -429,24 +429,44 @@ pub fn acquire_host_credential(
     }
 }
 
-/// The credential for the harness that this process holds inside an Agent that has it.
+/// Whether this process runs inside an Agent's Sandbox: in a Session, an Execution or an SSH login.
 ///
-/// It is the mediated placeholder the Agent's Sessions carry, never a real credential. Importing it lets a
-/// nested `agentd` chain through the outer Agent's mediation, so inside an Agent a login needs
-/// no sign-in. `None` outside an Agent, or inside one without the harness.
+/// Agent setup writes [`crate::sandbox::platform::PLATFORM_API_URL_FILE`] into every Agent's
+/// Sandbox and nowhere else, so its presence is the signal; see that constant.
+#[must_use]
+pub fn inside_agent() -> bool {
+    std::path::Path::new(crate::sandbox::platform::PLATFORM_API_URL_FILE).exists()
+}
+
+/// The credential for the harness that an Agent holds, for a login run `inside` it.
+///
+/// It is the mediated placeholder the Agent's Sessions carry, never a real credential. Importing it
+/// lets a nested `agentd` chain through the outer Agent's mediation, so inside an Agent a login
+/// needs no sign-in. `None` outside an Agent, where a login signs in.
 ///
 /// # Errors
 ///
-/// Returns an error when the Agent has the harness but its credential cannot be read.
+/// Returns an error inside an Agent without the harness, where no sign-in could complete, or when
+/// the Agent's credential cannot be read.
 pub fn agent_credential(
     harness: Harness,
+    inside: bool,
     environment: impl Fn(&str) -> Option<std::ffi::OsString>,
 ) -> Result<Option<Zeroizing<String>>, Error> {
-    match harness {
-        Harness::ClaudeCode => Ok(claude_code::agent_credential(&environment)),
-        Harness::Codex => codex::agent_credential(&environment),
-        Harness::Pi => Ok(None),
+    if !inside {
+        return Ok(None);
     }
+    let credential = match harness {
+        Harness::ClaudeCode => claude_code::agent_credential(&environment),
+        Harness::Codex => codex::agent_credential(&environment)?,
+        Harness::Pi => return Ok(None),
+    };
+    credential.map(Some).ok_or_else(|| {
+        Error::Invalid(format!(
+            "this Agent has no {} login to reuse; log in to it on the host first, or pass a credential with `--from-stdin`",
+            harness.display_name()
+        ))
+    })
 }
 
 /// Reports whether the host login this harness mediates is present and usable.
@@ -750,16 +770,19 @@ mod tests {
 
     #[test]
     fn inside_an_agent_a_login_takes_its_mediated_credentials() {
-        let inside = |name: &str| (name == "AGENT_CLAUDE_ACCESS_TOKEN").then(|| "placeholder\n".into());
-        let claude = agent_credential(Harness::ClaudeCode, inside).expect("Claude Code");
+        let holding = |name: &str| (name == "AGENT_CLAUDE_ACCESS_TOKEN").then(|| "placeholder\n".into());
+        let claude = agent_credential(Harness::ClaudeCode, true, holding).expect("Claude Code");
         assert_eq!(claude.as_deref().map(String::as_str), Some("placeholder"));
-        assert!(agent_credential(Harness::Pi, inside).expect("Pi").is_none());
 
-        // On a host, or in an Agent without the harness, a login signs in instead.
-        let outside = |_: &str| None;
-        for harness in [Harness::ClaudeCode, Harness::Codex] {
-            assert!(agent_credential(harness, outside).expect("outside").is_none());
-        }
+        // On a host a login signs in, whatever its environment holds.
+        assert!(
+            agent_credential(Harness::ClaudeCode, false, holding)
+                .expect("host")
+                .is_none()
+        );
+        // In an Agent without the harness, no sign-in could complete: fail at once instead.
+        let error = agent_credential(Harness::ClaudeCode, true, |_: &str| None).expect_err("no login to reuse");
+        assert!(error.to_string().contains("no Claude Code login"), "{error}");
     }
 
     #[test]

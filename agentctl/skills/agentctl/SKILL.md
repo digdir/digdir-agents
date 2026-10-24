@@ -22,7 +22,8 @@ your checkout instead, so the nested Agent runs your build.
 command -v agentctl || curl -fsSL https://raw.githubusercontent.com/digdir/digdir-agents/main/agentctl/install.sh | sh
 ```
 
-**Log in** for each harness this Agent has, before `apply`. They reuse this Agent's login, with no sign-in.
+**Log in** for each harness this Agent has, before `apply`. They reuse this Agent's login; for a harness it lacks,
+they fail rather than sign in.
 
 ```sh
 agentctl claude login
@@ -46,12 +47,10 @@ Agent's disk can grow to its `rootFilesystem.capacity`, and every image built fo
 
 - The Agents already there are the user's work. Change only those you create or the user names, and never run
   `stop --all` or `kill --all`.
-- `apply` updates an existing Agent of the same name. Check `agentctl get agents` first, and pass `--name` to give
-  yours a name of its own.
 - Logins are the user's. When `apply` or `create` reports one missing, ask the user to run `agentctl claude login` or
   `agentctl codex login`; do not sign in yourself.
-- Environment files hold real secrets: never read, write or print one. Without `--env-file`, `apply` uses `.env`
-  beside the manifest; when the manifest needs values and that file is absent, ask the user which file to pass.
+- Environment files hold real secrets: never read, write or print one. When the manifest needs values and there is
+  no env file to use, as below, ask the user which to pass.
 
 ## Apply
 
@@ -61,10 +60,12 @@ agentctl apply -f path/to/agent.yaml --env-file ENV_FILE --wait
 agentctl apply --variant nested --env-file ENV_FILE --wait
 ```
 
+- **Name:** `apply` updates the Agent of the manifest's name, and refuses one first applied from another directory.
+  Others may share this `agentctl`, such as the user on a host or other Sessions in an Agent: check
+  `agentctl get agents` first, and pass `--name` to give yours a name of its own.
+- **Env file:** without `--env-file`, the first `apply` uses `.env` beside the manifest, and later ones the file it
+  recorded.
 - **Image:** `type: build` builds the image first and takes minutes; `type: reference` pulls it.
-- **Name:** `--name` applies a second copy of one manifest.
-- **Source directory:** an Agent stays bound to the directory it was first applied from. To apply it from another,
-  such as another worktree, delete it first.
 
 When `--wait` fails or stalls, `agentctl describe agent/NAME` shows its conditions.
 
@@ -88,6 +89,7 @@ agentctl exec agent/NAME -- systemctl is-system-running
 `agentctl delete agent/NAME` removes an Agent with its disk and Sessions, for good. `agentctl stop agent/NAME` keeps
 both, and `agentctl start agent/NAME` resumes it.
 
-- **Inside an Agent:** delete the nested Agents you applied for a trial once you are done, and before removing the
-  directory one was applied from. `podman image prune` then frees the space of images no longer tagged.
+- **Inside an Agent:** delete the nested Agents you applied once you are done, and before removing the directory one
+  was applied from. Images built for them stay in Podman's storage: `podman system df` shows its size, and
+  `podman image ls` and `podman rmi` remove those no longer needed.
 - **On a host:** stop rather than delete, unless the user asks you to delete.

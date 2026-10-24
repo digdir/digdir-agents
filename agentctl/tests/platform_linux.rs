@@ -181,7 +181,7 @@ Written by agentd {}. The Agent's own instructions follow and take precedence.
 
 - **Computer:** Agent `worker`, a Linux Sandbox VM that is yours to manage. User `agent` with passwordless `sudo`, \
 home `/home/agent`, work in `/home/agent/code`.
-- **Resources:** 2 CPUs, 1Gi memory, 4Gi disk; `df -h /` shows how much is free.
+- **Resources:** cpu 2, memory 1Gi, disk 4Gi; `df -h /` shows how much is free.
 - **Harnesses:**
   - Claude Code (default)
   - Codex: not installed until the host logs in to it
@@ -193,14 +193,80 @@ persist real values.
 - **Network:** all traffic passes through the host, which intercepts TLS with a CA that the system store and \
 `NODE_EXTRA_CA_CERTS` trust. Denied: `metadata.google.internal`.
 - **Access:** people on the host reach this computer with `agentctl ssh worker`.
-- **Nested Agents:** available, but without Podman only for manifests with an image `reference`. Use the `agentctl` \
-skill.
+- **Nested Agents:** available (`/dev/kvm`, no Podman, so only manifests with an image `reference`); see the \
+`agentctl` skill.
 
 test instructions
 ",
         agent::build_version()
     );
     assert_eq!(instructions, expected);
+}
+
+/// Without `spec.instructions` the harness's instruction file stays the image's or the home overlay's: the Agent sandbox
+/// section only precedes instructions of the Agent's own. A skill of the Agent's own named `agentctl` replaces the
+/// platform's.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_leaves_the_instruction_file_of_an_agent_without_instructions_alone() {
+    let directory = TempDir::new().expect("temporary directory");
+    let home = directory.path().join("home");
+    std::fs::create_dir_all(&home).expect("home directory");
+    let skill = directory.path().join("skills").join("agentctl");
+    std::fs::create_dir_all(&skill).expect("skill directory");
+    std::fs::write(skill.join("SKILL.md"), "---\nname: agentctl\n---\nour own").expect("skill file");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home.source = home;
+    resource.spec.instructions = Vec::new();
+    resource.spec.skills = vec![agent::SkillSpec {
+        source: PathBuf::from("skills/agentctl"),
+        name: None,
+    }];
+    let record = AgentRecord {
+        id: "0b6f3c7e-4a8d-4c55-9a3e-2f1d7c9b8e10".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    };
+    let backend = Rc::new(memory::Provider::new());
+    backend.queue_execution_events_matching(
+        is_claude_version,
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
+            ExecutionEvent::Exited(ExitStatus { code: 0 }),
+        ],
+    );
+    backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+
+    Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
+        .await
+        .expect("setup");
+
+    let writes = backend.file_writes();
+    assert!(
+        !writes
+            .iter()
+            .any(|path| path.as_str() == "/home/agent/.claude/CLAUDE.md"),
+        "{writes:?}"
+    );
+    let skill = read_file(&sandbox, "/home/agent/.claude/skills/agentctl/SKILL.md").await;
+    assert_eq!(skill, b"---\nname: agentctl\n---\nour own");
 }
 
 fn secret(environment: &str, hosts: &[&str]) -> agent::SecretSpec {

@@ -71,7 +71,7 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
 fn resources(spec: &Spec) -> String {
     let resources = &spec.sandbox.resources;
     format!(
-        "{} CPUs, {} memory, {} disk; `df -h /` shows how much is free.",
+        "cpu {}, memory {}, disk {}; `df -h /` shows how much is free.",
         resources.cpu,
         resources.memory,
         resources.root_filesystem.capacity()
@@ -149,9 +149,9 @@ fn access(spec: &Spec, name: &str) -> Option<String> {
 
 const fn nested_agents(spec: &Spec, observed: &Observed<'_>) -> &'static str {
     match (observed.kvm, observed.podman) {
-        (true, true) => "available: `/dev/kvm` and Podman are present. Use the `agentctl` skill.",
+        (true, true) => "available (`/dev/kvm` and Podman); see the `agentctl` skill.",
         (true, false) => {
-            "available, but without Podman only for manifests with an image `reference`. Use the `agentctl` skill."
+            "available (`/dev/kvm`, no Podman, so only manifests with an image `reference`); see the `agentctl` skill."
         }
         (false, _) if spec.sandbox.resources.nested_sandboxes.is_some() => {
             "unavailable: the host cannot provide `/dev/kvm`."

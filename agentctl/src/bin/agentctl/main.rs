@@ -1884,7 +1884,9 @@ async fn login(
 ) -> CommandResult<()> {
     let (credential, imported, source) = match from_stdin {
         Some(credential) => (credential?, true, ""),
-        None => match agent::harness::agent_credential(harness, |name| std::env::var_os(name))? {
+        None => match agent::harness::agent_credential(harness, agent::harness::inside_agent(), |name| {
+            std::env::var_os(name)
+        })? {
             Some(credential) => (credential, true, " from this Agent's mediated login"),
             None => (
                 agent::harness::acquire_host_credential(harness, home.path(), sign_in)?,

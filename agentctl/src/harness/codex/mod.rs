@@ -62,24 +62,26 @@ pub(super) async fn prepare(database: &persistence::Database) -> Result<Vec<Medi
     ])
 }
 
-/// The placeholder credential file Agent setup gives Codex, in an Agent with Codex.
+/// The placeholder credential file Agent setup gives Codex, in an Agent with Codex: `None` when
+/// the Agent has none.
 pub(super) fn agent_credential(
     environment: impl Fn(&str) -> Option<std::ffi::OsString>,
 ) -> Result<Option<zeroize::Zeroizing<String>>, Error> {
-    if environment(ACCESS_ENVIRONMENT).is_none() {
-        return Ok(None);
-    }
     let home = environment("CODEX_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| environment("HOME").map(|home| std::path::Path::new(&home).join(".codex")))
         .ok_or_else(|| Error::Invalid("neither CODEX_HOME nor HOME is set".into()))?;
     let path = home.join("auth.json");
-    let mut file = std::fs::File::open(&path).map_err(|error| {
-        Error::Invalid(format!(
-            "could not read this Agent's Codex credential file {}: {error}",
-            path.display()
-        ))
-    })?;
+    let mut file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(Error::Invalid(format!(
+                "could not read this Agent's Codex credential file {}: {error}",
+                path.display()
+            )));
+        }
+    };
     let mut credential = zeroize::Zeroizing::new(String::new());
     file.read_to_string(&mut credential)?;
     Ok(Some(credential))
@@ -275,17 +277,13 @@ mod tests {
         std::fs::create_dir(directory.path().join(".codex")).expect("Codex home");
         std::fs::write(directory.path().join(".codex/auth.json"), "placeholder file").expect("auth.json");
         let home = directory.path().as_os_str().to_owned();
-        let inside = |name: &str| match name {
-            super::ACCESS_ENVIRONMENT => Some("placeholder".into()),
-            "HOME" => Some(home.clone()),
-            _ => None,
-        };
+        // Read from the file alone: a Codex shell environment policy may drop the token variable.
+        let inside = |name: &str| (name == "HOME").then(|| home.clone());
 
         let credential = super::agent_credential(inside).expect("credential");
         assert_eq!(credential.as_deref().map(String::as_str), Some("placeholder file"));
-        // An Agent with Codex always has the file; its absence is an error, not a sign-in.
         std::fs::remove_file(directory.path().join(".codex/auth.json")).expect("remove auth.json");
-        assert!(super::agent_credential(inside).is_err());
+        assert!(super::agent_credential(inside).expect("no file").is_none());
     }
 
     #[test]
