@@ -146,6 +146,14 @@ jobs:
           rustup toolchain install "${RUST_VERSION}" --profile minimal --component clippy,rustfmt
           rustup default "${RUST_VERSION}"
 
+      # cache-warm.yml saves this cache from main. The key holds the runner's OS and architecture, so each host has its
+      # own; it hashes this workflow, which holds the commands below.
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: portable-${{ hashFiles('.github/workflows/rust.yml', '.github/workflows/cache-warm.yml') }}
+          save-if: false
+
       - name: Check native host
         run: >-
           cargo clippy

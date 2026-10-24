@@ -3,7 +3,8 @@
 # job sharing its cache builds, without running anything: the Rust cache keeps only the dependencies a job used.
 #
 # A cache whose key matches exactly is never saved again, so each Rust cache's shared key, which rust.yml uses too,
-# hashes the files that decide what CI builds: the Makefile and this workflow. Changing either starts a new cache.
+# hashes the files that decide what CI builds: this workflow, and the Makefile for the build cache or rust.yml for the
+# portable hosts' caches. Changing one starts a new cache.
 #
 # Runs each weekday morning, and on main whenever dependencies, the toolchain or what CI builds change, so pull
 # requests do not build them cold until the next morning. Weekends are skipped: caches unused for 7 days are evicted, and Friday's survive
@@ -22,6 +23,7 @@ on:
       - rust-toolchain.toml
       - .cargo/**
       - Makefile
+      - .github/workflows/rust.yml
       - integrations/package-lock.json
       - .github/workflows/cache-warm.yml
   workflow_dispatch:
@@ -71,6 +73,63 @@ jobs:
       # make build builds the test targets too.
       - name: Build
         run: make build lint
+
+  # The caches of rust.yml's portable host jobs, one per host.
+  rust-portable-hosts:
+    name: Warm Rust cache (${{ matrix.name }})
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+          - name: macOS ARM64
+            runner: macos-15
+          - name: Windows x64
+            runner: windows-2025
+          - name: Windows ARM64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Enable long paths for git on Windows
+        if: runner.os == 'Windows'
+        working-directory: ${{ runner.temp }}
+        run: git config --system core.longpaths true
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install native build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libcap-ng-dev
+
+      - name: Install Rust toolchain
+        run: |
+          RUST_VERSION="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "${RUST_VERSION}"
+          rustup toolchain install "${RUST_VERSION}" --profile minimal --component clippy,rustfmt
+          rustup default "${RUST_VERSION}"
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: portable-${{ hashFiles('.github/workflows/rust.yml', '.github/workflows/cache-warm.yml') }}
+
+      # The packages and targets rust.yml checks and tests on the portable hosts.
+      - name: Build
+        run: |
+          packages=(-p sandbox -p sandbox-authorization -p agent -p sandbox-microsandbox)
+          cargo clippy "${packages[@]}" --all-targets --all-features --locked
+          cargo test "${packages[@]}" --all-targets --all-features --locked --no-run
 
   # The npm cache of integrations.yml.
   integrations:
