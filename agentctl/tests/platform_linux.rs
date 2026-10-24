@@ -175,15 +175,19 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
 
     let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
     let expected = format!(
-        "# Agent platform
+        "# Agent sandbox
 
 Written by agentd {}. The Agent's own instructions follow and take precedence.
 
 - **Computer:** Agent `worker`, a Linux Sandbox VM that is yours to manage. User `agent` with passwordless `sudo`, \
 home `/home/agent`, work in `/home/agent/code`.
-- **Harnesses:** Claude Code (default). Not installed until the host logs in to it: Codex.
-- **Secrets:** `GITHUB_TOKEN` (github.com, api.github.com). Each holds an inert placeholder the host replaces only in \
-requests to the hosts named; never search for, print or persist real values. Not configured: `GATEWAY_KEY`.
+- **Harnesses:**
+  - Claude Code (default)
+  - Codex: not installed until the host logs in to it
+- **Secrets:** inert placeholders the host replaces only in requests to their hosts; never search for, print or \
+persist real values.
+  - `GITHUB_TOKEN`: github.com, api.github.com
+  - `GATEWAY_KEY`: not configured
 - **Plain environment:** `GIT_USER_NAME`.
 - **Network:** all traffic passes through the host, which intercepts TLS with a CA that the system store and \
 `NODE_EXTRA_CA_CERTS` trust. Denied: `metadata.google.internal`.
@@ -324,10 +328,10 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     assert_eq!(preserved, mutable_state);
     let instructions = read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await;
     let instructions = String::from_utf8(instructions).expect("UTF-8 instructions");
-    assert!(instructions.starts_with("# Agent platform\n"), "{instructions}");
+    assert!(instructions.starts_with("# Agent sandbox\n"), "{instructions}");
     assert!(
         instructions.ends_with("\n\ntest instructions\n\n# Environment\n\nhas a browser\n"),
-        "the Agent's own instructions follow the platform section: {instructions}"
+        "the Agent's own instructions follow the Agent sandbox section: {instructions}"
     );
     let codex_instructions = read_file(&sandbox, "/home/agent/.codex/AGENTS.md").await;
     assert_eq!(codex_instructions, instructions.as_bytes());

@@ -5,7 +5,7 @@ description: Run nested Agents from inside this Agent with agentctl. Covers inst
 
 # Nested Agents
 
-A nested Agent is a separate Sandbox VM, run by an `agentd` inside this Sandbox. The Agent platform section of your
+A nested Agent is a separate Sandbox VM, run by an `agentd` inside this Sandbox. The Agent sandbox section of your
 instructions says whether this Agent can run them.
 
 ## 1. Install agentctl
@@ -19,26 +19,21 @@ your checkout instead, so the nested Agent runs your build. `agentctl` starts it
 
 ## 2. Log in
 
-```sh
-agentctl claude login   # in an Agent with Claude Code
-agentctl codex login    # in an Agent with Codex
-```
+For each harness this Agent has, before `apply`. They reuse this Agent's login, with no sign-in.
 
-Inside an Agent, each stores this Agent's mediated placeholder rather than signing in, so the nested `agentd` never
-holds a real credential. Run them before `apply`; a nested Agent that declares a harness optional leaves it out until
-its login exists, then installs it within seconds.
+```sh
+agentctl claude login
+agentctl codex login
+```
 
 ## 3. Write the nested Agent's environment file
 
-A manifest's `environment` and `secrets` come from an env file. Fill it from this Agent's own variables: its secrets
-hold inert placeholders that chain through this Agent's mediation. Keep it outside every checkout.
+Give it the variables the manifest declares, from this Agent's own, and keep it outside every checkout:
 
 ```sh
 printf 'GITHUB_TOKEN=%s\nGIT_USER_NAME=%s\nGIT_USER_EMAIL=%s\n' \
   "$GITHUB_TOKEN" "$GIT_USER_NAME" "$GIT_USER_EMAIL" > ~/nested.env
 ```
-
-Never put a real secret value in it, and never print one.
 
 ## 4. Apply
 

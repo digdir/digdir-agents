@@ -1,9 +1,10 @@
-//! The platform section `agentd` writes ahead of an Agent's own instructions.
+//! The Agent sandbox section `agentd` writes ahead of an Agent's own instructions.
 //!
 //! Every Agent runs on the same platform, so what a harness needs to know about it is generated
 //! here, from the Agent's manifest and what setup found in its Sandbox, rather than copied into
 //! each Agent's instruction file, where it drifts from the release that runs it. It states facts
-//! only, one line each; how to run nested Agents is the `agentctl` skill's.
+//! only, one labelled line each, with a sub-bullet per item where a line lists several; how to run
+//! nested Agents is the `agentctl` skill's.
 
 use std::{collections::BTreeMap, fmt::Write as _};
 
@@ -51,70 +52,59 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
         ("Nested Agents", Some(nested_agents(spec, observed).to_owned())),
     ];
     let mut section = format!(
-        "# Agent platform\n\n\
+        "# Agent sandbox\n\n\
          Written by agentd {}. The Agent's own instructions follow and take precedence.\n\n",
         crate::build_version()
     );
     for (label, text) in lines {
         if let Some(text) = text {
-            let _ = writeln!(section, "- **{label}:** {text}");
+            // Text that is only sub-bullets starts on the next line.
+            let separator = if text.starts_with('\n') { "" } else { " " };
+            let _ = writeln!(section, "- **{label}:**{separator}{text}");
         }
     }
     section
 }
 
+/// One sub-bullet per declared harness, naming the default and those not installed.
 fn harnesses(spec: &Spec, installed: &[Harness]) -> String {
-    let (present, absent): (Vec<_>, Vec<_>) = spec
-        .harnesses
-        .iter()
-        .partition(|installation| installed.contains(&installation.kind));
-    let mut text = present
-        .iter()
-        .map(|installation| {
-            let label = installation.kind.display_name();
-            if installation.default {
-                format!("{label} (default)")
-            } else {
-                label.to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    if !absent.is_empty() {
-        let absent = absent
-            .iter()
-            .map(|installation| installation.kind.display_name())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let _ = write!(text, ". Not installed until the host logs in to it: {absent}");
-    }
-    text.push('.');
-    text
+    sub_bullets(spec.harnesses.iter().map(|installation| {
+        let label = installation.kind.display_name();
+        if !installed.contains(&installation.kind) {
+            format!("{label}: not installed until the host logs in to it")
+        } else if installation.default {
+            format!("{label} (default)")
+        } else {
+            label.to_owned()
+        }
+    }))
 }
 
-/// The configured secrets with their hosts, then those an empty optional value left out.
+/// One sub-bullet per secret, with the hosts it is sent to or that it was left unconfigured.
 fn secrets(spec: &Spec, environment: &BTreeMap<String, String>) -> Option<String> {
-    let (configured, missing): (Vec<_>, Vec<_>) = spec
-        .secrets
-        .iter()
-        .partition(|secret| environment.contains_key(&secret.environment));
-    let mut text = Vec::new();
-    if !configured.is_empty() {
-        let listed = configured
-            .iter()
-            .map(|secret| format!("`{}` ({})", secret.environment, secret.allowed_hosts.join(", ")))
-            .collect::<Vec<_>>()
-            .join(", ");
-        text.push(format!(
-            "{listed}. Each holds an inert placeholder the host replaces only in requests to the hosts named; \
-             never search for, print or persist real values."
-        ));
+    if spec.secrets.is_empty() {
+        return None;
     }
-    if !missing.is_empty() {
-        let listed = code_list(missing.iter().map(|secret| &secret.environment));
-        text.push(format!("Not configured: {listed}."));
-    }
-    (!text.is_empty()).then(|| text.join(" "))
+    let mut text = String::from(
+        "inert placeholders the host replaces only in requests to their hosts; never search for, print or \
+         persist real values.",
+    );
+    text.push_str(&sub_bullets(spec.secrets.iter().map(|secret| {
+        if environment.contains_key(&secret.environment) {
+            format!("`{}`: {}", secret.environment, secret.allowed_hosts.join(", "))
+        } else {
+            format!("`{}`: not configured", secret.environment)
+        }
+    })));
+    Some(text)
+}
+
+/// Items as sub-bullets of the line they follow.
+fn sub_bullets(items: impl Iterator<Item = String>) -> String {
+    items.fold(String::new(), |mut text, item| {
+        let _ = write!(text, "\n  - {item}");
+        text
+    })
 }
 
 fn network(spec: &Spec) -> String {
