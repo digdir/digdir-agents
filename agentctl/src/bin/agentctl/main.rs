@@ -1150,7 +1150,7 @@ fn sign_in() -> agent::harness::SignIn {
 /// already printed, and a missing handler must not fail the forward.
 async fn open_locally(url: &str) {
     match launch::open_url(url).await {
-        Ok(()) => println!("Asked {} to open {url}.", launch::opener().program),
+        Ok(opener) => println!("Asked {opener} to open {url}."),
         Err(error) => eprintln!("{error}"),
     }
 }
