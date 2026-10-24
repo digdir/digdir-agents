@@ -192,7 +192,7 @@ pub fn resolve_nested_sandboxes(
         (Some(_), Ok(())) => Ok(Some(NestedSandboxesOutcome::Available)),
         (Some(crate::NestedSandboxes::Preferred), Err(reason)) => Ok(Some(NestedSandboxesOutcome::Unavailable(reason))),
         (Some(crate::NestedSandboxes::Required), Err(reason)) => Err(Error::Invalid(format!(
-            "spec.sandbox.nestedSandboxes is required, but {reason}"
+            "spec.sandbox.resources.nestedSandboxes is required, but {reason}"
         ))),
     }
 }

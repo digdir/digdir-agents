@@ -25,7 +25,7 @@ use agent::{
 };
 use sandbox::{
     EnsureSandboxRequest, GuestHeartbeat, LocalFuture, Platform, RetentionPolicy, RootFilesystem, SandboxHandle,
-    SandboxName, SandboxPath, SandboxResources, SandboxService,
+    SandboxName, SandboxPath, SandboxService,
     backend::SandboxBackend as _,
     init::InitSystem,
     memory as sandbox_memory,
@@ -160,7 +160,7 @@ impl Provider for MemoryProvider {
                 }
             }
             let nested_sandboxes = resolve_nested_sandboxes(
-                record.agent.spec.sandbox.nested_sandboxes,
+                record.agent.spec.sandbox.resources.nested_sandboxes,
                 self.nested_sandboxes_offered.borrow().clone(),
             )?;
             let spec = record
@@ -939,7 +939,7 @@ async fn nested_sandboxes_are_reported_in_a_condition_and_an_unmet_requirement_f
     let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
     let apply = async |nested_sandboxes| {
         let mut request = apply_request("worker");
-        request.agent.spec.sandbox.nested_sandboxes = nested_sandboxes;
+        request.agent.spec.sandbox.resources.nested_sandboxes = nested_sandboxes;
         control_plane.apply(request).await.expect("apply");
         let id = store.get_by_name("worker").await.expect("Agent").id;
         // A pass that records an invalid Agent also returns why.
@@ -1084,12 +1084,8 @@ async fn repeated_apply_is_idempotent_and_immutable_fields_are_rejected() {
     assert!(matches!(error, Error::Immutable("spec.sandbox.initSystem")));
 
     let mut root_mode_change = updated_request;
-    let resources = root_mode_change.agent.spec.sandbox.resources;
-    root_mode_change.agent.spec.sandbox.resources = SandboxResources::new(
-        resources.cpu(),
-        resources.memory(),
-        RootFilesystem::direct(resources.root_filesystem().capacity()),
-    );
+    let resources = &mut root_mode_change.agent.spec.sandbox.resources;
+    resources.root_filesystem = RootFilesystem::direct(resources.root_filesystem.capacity());
     let error = fixture
         .control_plane
         .apply(root_mode_change)

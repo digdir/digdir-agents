@@ -186,7 +186,7 @@ repositories they can access, and image init may make a simple best-effort check
 `spec.sandbox.mounts` can instead attach caller-owned host directories or temporary memory filesystems when the selected
 Sandbox Provider supports them; these attachments are immutable for the Agent incarnation.
 
-`spec.sandbox.nestedSandboxes` lets the Sandbox run Sandboxes of its own, such as nested Agents. With `required`, the
+`spec.sandbox.resources.nestedSandboxes` lets the Sandbox run Sandboxes of its own, such as nested Agents. With `required`, the
 Agent fails on a host that cannot provide them; with `preferred`, it runs without them there, and its `NestedSandboxes`
 condition says why. Microsandbox gives the Sandbox `/dev/kvm` for them, which needs a Linux x86_64 host with nested KVM
 enabled or a Mac with an Apple M3 or newer chip and macOS 15 or newer. Agent setup gives the device to the `agent`

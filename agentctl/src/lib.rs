@@ -27,8 +27,8 @@ pub use harness::{Effort, Harness, HarnessAuthMode, HarnessSpec, Model, ModelSel
 pub use manifest::{
     API_VERSION, AccessSpec, Agent, AgentVariant, AgentVariantName, Condition, ConditionStatus, EnvironmentSpec,
     HomeSpec, InstructionsSpec, KIND, Metadata, MountSpec, NestedSandboxes, NetworkAllow, NetworkMode, NetworkSpec,
-    PlatformManifestSpec, Provenance, ResolvedManifest, RunState, SandboxManifestSpec, SecretSpec, SkillSpec, Spec,
-    Status, VARIANT_KIND,
+    PlatformManifestSpec, Provenance, ResolvedManifest, ResourcesManifestSpec, RunState, SandboxManifestSpec,
+    SecretSpec, SkillSpec, Spec, Status, VARIANT_KIND,
 };
 
 /// Version embedded in a matched `agentctl`/`agentd` build.

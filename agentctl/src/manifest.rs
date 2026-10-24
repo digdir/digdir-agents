@@ -5,8 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use time::OffsetDateTime;
 
 use ::sandbox::{
-    ByteQuantity, Platform, RetentionPolicy, SandboxName, SandboxPath, SandboxResources, image::ImageSource,
-    init::InitSystem, mount::Mount,
+    ByteQuantity, CpuQuantity, Platform, RetentionPolicy, RootFilesystem, SandboxName, SandboxPath, SandboxResources,
+    image::ImageSource, init::InitSystem, mount::Mount,
 };
 use serde::{Deserialize, Serialize};
 
@@ -263,19 +263,43 @@ pub struct SandboxManifestSpec {
     /// Desired platform constraints.
     pub platform: PlatformManifestSpec,
     /// Desired mutable compute and writable root filesystem resources.
-    pub resources: SandboxResources,
+    pub resources: ResourcesManifestSpec,
     /// Process responsible for initializing the Sandbox after backend setup.
     #[serde(default)]
     pub init_system: InitSystem,
-    /// Whether the Sandbox runs Sandboxes of its own, such as nested Agents. Absent, it does not.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nested_sandboxes: Option<NestedSandboxes>,
     /// Whether the Agent retains the Sandbox when releasing it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_policy: Option<RetentionPolicy>,
     /// Host filesystem and in-memory attachments materialized with the Sandbox.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<MountSpec>,
+}
+
+/// Sandbox resources as supplied by an Agent manifest.
+///
+/// Unlike the lower-layer [`SandboxResources`], which turns nested Sandboxes on or off, this
+/// representation keeps how much the Agent needs them; the Agent decides from that and the host.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ResourcesManifestSpec {
+    /// Desired CPU quantity.
+    pub cpu: CpuQuantity,
+    /// Desired Sandbox memory quantity.
+    pub memory: ByteQuantity,
+    /// Desired writable root filesystem capacity and mode.
+    pub root_filesystem: RootFilesystem,
+    /// Whether the Sandbox runs Sandboxes of its own, such as nested Agents. Absent, it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nested_sandboxes: Option<NestedSandboxes>,
+}
+
+impl ResourcesManifestSpec {
+    /// Returns the Sandbox resources without nested Sandboxes, which the Agent adds when it has
+    /// decided them.
+    #[must_use]
+    pub const fn sandbox_resources(self) -> SandboxResources {
+        SandboxResources::new(self.cpu, self.memory, self.root_filesystem)
+    }
 }
 
 /// How much an Agent needs its Sandbox to run Sandboxes of its own.
@@ -291,15 +315,7 @@ pub enum NestedSandboxes {
 impl SandboxManifestSpec {
     fn validate(&self) -> Result<(), sandbox::Error> {
         self.image.validate()?;
-        self.platform.validate()?;
-        // The Agent decides it from `nestedSandboxes` and the host.
-        if self.resources.nested_sandboxes() {
-            return Err(sandbox::Error::invalid(
-                "resources.nestedSandboxes",
-                "set nestedSandboxes beside resources instead",
-            ));
-        }
-        Ok(())
+        self.platform.validate()
     }
 
     /// Resolves manifest-relative sources and an omitted architecture for a concrete Provider request.
@@ -308,7 +324,7 @@ impl SandboxManifestSpec {
         sandbox::SandboxSpec {
             image: self.image.resolve_from(source_directory),
             platform: self.platform.resolve(default_architecture),
-            resources: self.resources,
+            resources: self.resources.sandbox_resources(),
             init_system: self.init_system,
             retention_policy: self.resolved_retention_policy(),
         }

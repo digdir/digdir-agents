@@ -4,11 +4,10 @@ use std::path::PathBuf;
 
 use agent::{
     API_VERSION, Agent, Harness, HarnessAuthMode, HarnessSpec, HomeSpec, InstructionsSpec, KIND, Metadata,
-    ModelSelection, NetworkAllow, NetworkMode, NetworkSpec, PlatformManifestSpec, SandboxManifestSpec, Spec, Status,
+    ModelSelection, NetworkAllow, NetworkMode, NetworkSpec, PlatformManifestSpec, ResourcesManifestSpec,
+    SandboxManifestSpec, Spec, Status,
 };
-use sandbox::{
-    ByteQuantity, CpuQuantity, Platform, RetentionPolicy, RootFilesystem, SandboxResources, image::ImageSource,
-};
+use sandbox::{ByteQuantity, CpuQuantity, Platform, RetentionPolicy, RootFilesystem, image::ImageSource};
 /// Drops reconciliation wake-ups, for tests that reconcile by hand or not at all.
 pub(crate) struct IgnoreNotifications;
 
@@ -40,17 +39,17 @@ pub(crate) fn agent(name: &str) -> Agent {
                     os_version: None,
                     os_features: std::collections::BTreeSet::new(),
                 },
-                resources: SandboxResources::new(
-                    "2".parse::<CpuQuantity>().expect("test CPU should be valid"),
-                    "1Gi".parse::<ByteQuantity>().expect("test memory should be valid"),
-                    RootFilesystem::layered(
+                resources: ResourcesManifestSpec {
+                    cpu: "2".parse::<CpuQuantity>().expect("test CPU should be valid"),
+                    memory: "1Gi".parse::<ByteQuantity>().expect("test memory should be valid"),
+                    root_filesystem: RootFilesystem::layered(
                         "4Gi"
                             .parse::<ByteQuantity>()
                             .expect("test root filesystem should be valid"),
                     ),
-                ),
+                    nested_sandboxes: None,
+                },
                 init_system: sandbox::init::InitSystem::Backend,
-                nested_sandboxes: None,
                 retention_policy: Some(RetentionPolicy::Retain),
                 mounts: Vec::new(),
             },

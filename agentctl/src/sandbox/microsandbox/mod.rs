@@ -154,7 +154,7 @@ impl Provider for Adapter {
         progress: ::sandbox::ProgressReporter,
     ) -> LocalFuture<'a, Result<ProviderEnsureOutcome, Error>> {
         Box::pin(async move {
-            let requested = record.agent.spec.sandbox.nested_sandboxes;
+            let requested = record.agent.spec.sandbox.resources.nested_sandboxes;
             let offered = match requested {
                 Some(_) => self.nested_sandboxes_offered(record).await?,
                 None => Ok(()),
