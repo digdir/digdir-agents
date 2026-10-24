@@ -43,10 +43,13 @@ printf 'GITHUB_TOKEN=%s\nGIT_USER_NAME=%s\nGIT_USER_EMAIL=%s\n' \
 ## On a host: rules
 
 - The Agents already there are the user's work. Change only those you create or the user names, and never run
-  `stop --all`, `kill --all` or `delete` on the others.
+  `stop --all` or `kill --all`.
+- `apply` updates an existing Agent of the same name. Check `agentctl get agents` first, and pass `--name` to give
+  yours a name of its own.
 - Logins are the user's. When `apply` or `create` reports one missing, ask the user to run `agentctl claude login` or
   `agentctl codex login`; do not sign in yourself.
-- Environment files hold real secrets. Never read, write or print one; ask the user which `--env-file` to pass.
+- Environment files hold real secrets: never read, write or print one. Without `--env-file`, `apply` uses `.env`
+  beside the manifest; when the manifest needs values and that file is absent, ask the user which file to pass.
 
 ## Apply
 
@@ -80,9 +83,9 @@ agentctl exec agent/NAME -- systemctl is-system-running
 
 ## Clean up
 
-```sh
-agentctl delete agent/NAME
-```
+`agentctl delete agent/NAME` removes an Agent with its disk and Sessions, for good. `agentctl stop agent/NAME` keeps
+both, and `agentctl start agent/NAME` resumes it.
 
-Delete every Agent you created once you are done, and before removing the directory it was applied from.
-`agentctl stop agent/NAME` and `agentctl start agent/NAME` keep its disk and Sessions when you need it again later.
+- **Inside an Agent:** delete the nested Agents you applied for a trial once you are done, and before removing the
+  directory one was applied from.
+- **On a host:** stop rather than delete, unless the user asks you to delete.
