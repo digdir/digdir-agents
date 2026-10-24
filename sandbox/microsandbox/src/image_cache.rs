@@ -586,7 +586,7 @@ mod tests {
             .remove_unused_at(SystemTime::now() + Duration::from_hours(25), DAY)
             .await
             .expect("pass");
-        assert!(home.references().await.is_empty());
+        assert_eq!(home.references().await, Vec::<String>::new());
         assert!(!files.exists(), "the image goes with its last entry");
     }
 

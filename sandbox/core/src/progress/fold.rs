@@ -420,7 +420,6 @@ impl Progress {
 
 impl OutputLog {
     /// Retained lines, oldest first.
-    #[must_use]
     pub fn lines(&self) -> impl ExactSizeIterator<Item = &OutputLine> {
         self.lines.iter()
     }
@@ -815,7 +814,7 @@ mod tests {
         assert_eq!(cursor.updates(&progress).len(), 2);
 
         let fresh = Progress::new();
-        assert!(cursor.updates(&fresh).is_empty());
+        assert_eq!(cursor.updates(&fresh), []);
         assert_eq!(cursor, ProgressCursor::default());
     }
 
@@ -829,7 +828,7 @@ mod tests {
         progress.apply(&ended(&step));
         progress.fail("build failed");
         let summary = progress.summary(2);
-        assert!(summary.finished()[0].steps.is_empty());
+        assert_eq!(summary.finished()[0].steps, []);
         assert_eq!(summary.finished()[0].omitted_steps, 1);
         assert_eq!(summary.finished()[0].outcome, Outcome::Failed);
         let lines = summary

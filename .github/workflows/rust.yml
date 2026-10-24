@@ -176,7 +176,7 @@ jobs:
       - name: Check dependency advisories, sources and licenses
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
-          rust-version: '1.97.1'
+          rust-version: '1.99.0'
           arguments: '--locked'
           command: check
           command-arguments: 'advisories sources licenses'

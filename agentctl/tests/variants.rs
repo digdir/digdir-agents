@@ -77,7 +77,7 @@ fn mappings_merge_while_arrays_replace_and_empty_arrays_clear() {
         .expect("array variant")
         .agent;
     assert_eq!(agent.spec.sandbox.mounts.len(), 1);
-    assert!(agent.spec.instructions.is_empty());
+    assert_eq!(agent.spec.instructions, []);
     assert_eq!(agent.spec.harnesses.len(), 1);
     assert_eq!(agent.spec.harnesses[0].kind, agent::Harness::Codex);
     assert_eq!(agent.spec.home.source, Path::new("home"));

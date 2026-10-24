@@ -922,7 +922,7 @@ async fn client_and_server_exchange_versioned_agent_operations() {
         .expect("execution target");
     assert_eq!(execution.operating_system, "linux");
     assert_eq!(execution.sandbox.provider().as_str(), "memory");
-    assert!(client.list_sessions(None).await.expect("list all Sessions").is_empty());
+    assert_eq!(client.list_sessions(None).await.expect("list all Sessions"), []);
     let session_error = client
         .get_session("worker", agent::sessions::SessionName::new("s1").expect("Session name"))
         .await
@@ -938,8 +938,8 @@ async fn client_and_server_exchange_versioned_agent_operations() {
 async fn resource_watch_returns_current_state_then_waits_for_the_next_change() {
     let fixture = api();
     let initial = fixture.client.watch_resources(None).await.expect("initial state");
-    assert!(initial.agents.is_empty());
-    assert!(initial.sessions.is_empty());
+    assert_eq!(initial.agents, []);
+    assert_eq!(initial.sessions, []);
 
     let watcher = Client::new(Rc::new(InProcessConnector {
         server: fixture.server.clone(),
@@ -1020,7 +1020,7 @@ async fn agent_progress_returns_the_status_then_waits_for_the_next_change() {
         .await
         .expect("current progress");
     assert!(current.provisioning.is_none(), "no pass has run");
-    assert!(current.status.conditions.is_empty());
+    assert_eq!(current.status.conditions, []);
 
     let follower = Client::new(Rc::new(InProcessConnector {
         server: fixture.server.clone(),

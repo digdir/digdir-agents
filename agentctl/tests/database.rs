@@ -554,7 +554,7 @@ fn finalized_agents_and_their_sessions_remain_as_tombstones_when_a_name_is_reuse
             .await
             .expect("new Agent incarnation");
         let sessions = store.list_agent_sessions("worker").await.expect("new Agent sessions");
-        assert!(sessions.is_empty());
+        assert_eq!(sessions, []);
     });
     drop(store);
 
@@ -587,7 +587,7 @@ fn released_preview_1_database_migrates_without_losing_state() {
             .expect("migrated Agent");
         assert_eq!(agent.source_directory, Path::new("/preview/source"));
         assert_eq!(agent.agent.spec.instructions.len(), 1);
-        assert!(agent.agent.spec.skills.is_empty());
+        assert_eq!(agent.agent.spec.skills, []);
         let sessions = database.list_agent_sessions("worker").await.expect("migrated Sessions");
         assert_eq!(sessions.len(), 4);
         assert_eq!(
@@ -637,7 +637,7 @@ fn released_preview_1_database_migrates_without_losing_state() {
             .expect("deleted Agent desired state"),
     )
     .expect("migrated deleted Agent");
-    assert!(deleted.spec.instructions.is_empty());
+    assert_eq!(deleted.spec.instructions, []);
     assert_eq!(
         connection
             .query_row(
