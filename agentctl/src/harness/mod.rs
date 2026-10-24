@@ -380,25 +380,25 @@ pub enum SignIn {
     /// given, by this one, as under WSL where Linux openers cannot reach the
     /// Windows desktop.
     Browser(Option<UrlOpener>),
-    /// Any browser elsewhere: none opened here would reach the person, so the
-    /// harness shows a link to open on another device.
-    Elsewhere,
+    /// Any browser elsewhere: none opened here would reach the person, for
+    /// `reason`, so the harness shows a link to open on another device.
+    Elsewhere { reason: String },
 }
 
 /// A program that opens the address given as its only argument when run with
-/// the `environment` variable set.
+/// the `environment` variable, a name and value, set.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UrlOpener {
     pub program: std::path::PathBuf,
-    pub environment: &'static str,
+    pub environment: (&'static str, &'static str),
 }
 
 /// Acquires a host credential for the selected harness, interactively.
 ///
 /// Runs on the client host, where a terminal is available; the
 /// harness-specific login mechanism lives behind the closed harness enum.
-/// Codex's login shows its sign-in link itself, so only Claude Code follows
-/// `sign_in`.
+/// `sign_in` is decided only for a harness whose login follows it; Codex's
+/// shows its sign-in link itself.
 ///
 /// # Errors
 ///
@@ -406,10 +406,10 @@ pub struct UrlOpener {
 pub fn acquire_host_credential(
     harness: Harness,
     control_plane_home: &std::path::Path,
-    sign_in: SignIn,
+    sign_in: impl FnOnce() -> SignIn,
 ) -> Result<Zeroizing<String>, Error> {
     match harness {
-        Harness::ClaudeCode => claude_code::acquire_host_token(sign_in),
+        Harness::ClaudeCode => claude_code::acquire_host_token(sign_in()),
         Harness::Codex => codex::acquire_host_credential(control_plane_home),
         Harness::Pi => Err(Error::Invalid(
             "Pi has no platform login; the Agent supplies its credentials".into(),
