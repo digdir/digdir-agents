@@ -1,10 +1,11 @@
 # The manifest: agent.yaml
 
-An agent is declared by `agent.yaml` in its own folder, such as `agents/dev/` at the root of a repository.
+An agent is declared by `agent.yaml` in its own folder, such as `agents/dev/` at the root of a repository, or of
+the folder the person works in when it is not a repository.
 `agentctl apply -f agents/dev/agent.yaml` creates or updates it; from inside the folder, `agentctl apply` alone does.
 Relative paths in a manifest (the build context, instructions, mount sources) resolve against the manifest's
 directory, and the agent belongs to that directory: commands such as `attach` find it from anywhere in the
-repository.
+repository or that folder.
 
 Values come from `.env` beside the manifest, or from the file `agentctl apply --env-file` names; agentd remembers that
 file for later applies. One `NAME=value` per line. `environment` copies the named values into the agent as plain
