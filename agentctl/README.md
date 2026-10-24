@@ -27,7 +27,7 @@ agentctl claude login
 agentctl codex login
 ```
 
-Update with `agentctl self update`. Agents and Sessions carry over. Stop every Agent at once with `agentctl kill --all`.
+Update with `agentctl self update`. Agents and Sessions carry over.
 
 ## Your first Agent
 
