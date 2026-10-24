@@ -81,7 +81,11 @@ done
 systemctl enable agent-desktop-display.service agent-desktop-session.service agent-desktop-dbus.service \
     agent-desktop-keyring.service
 
+# For image overrides, read after /etc/agent-desktop.conf.
+install -d -m 0755 /etc/agent-desktop.conf.d
+
 # The desktop's configuration, its units and the environment the image sets must agree.
+# Overrides are checked by agent-image-check.
 # shellcheck source=/dev/null
 . /etc/agent-desktop.conf
 grep -qxF "DISPLAY=${AGENT_DESKTOP_DISPLAY}" "${feature}/env" \

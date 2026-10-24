@@ -94,6 +94,23 @@ way. The instructions about the desktop belong to the Agent; see the self-dev
 Agent's [desktop.md](../../agents/self-dev/full/desktop.md). The desktop image is the headless one after
 `agent-feature install desktop`.
 
+### Desktop settings
+
+`/etc/agent-desktop.conf` sets the desktop's display, geometry, keyboard layout and VNC socket. Override settings in
+`/etc/agent-desktop.conf.d/*.conf` instead of editing it; files are read in name order and later ones win.
+
+```dockerfile
+COPY desktop.conf /etc/agent-desktop.conf.d/my-agent.conf
+```
+
+```sh
+# desktop.conf
+AGENT_DESKTOP_KEYBOARD=no
+```
+
+- `AGENT_DESKTOP_KEYBOARD` takes `setxkbmap` arguments, quoted if more than one, and defaults to `us`.
+- `AGENT_DESKTOP_DISPLAY` must match the image's `ENV DISPLAY`; `agent-image-check` checks it.
+
 ### The Secret Service
 
 The `desktop` feature runs gnome-keyring as the Secret Service, unlocked at boot, for what uses libsecret: `secret-tool`,

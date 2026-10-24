@@ -5,6 +5,7 @@ After=network.target
 
 [Service]
 EnvironmentFile=/etc/agent-desktop.conf
+EnvironmentFile=-/etc/agent-desktop.conf.d/*.conf
 # systemd services inherit none of the image's ENV, and `ws` is a global install that Node finds
 # only through this path. Without it the viewer exits with MODULE_NOT_FOUND on every start.
 Environment=NODE_PATH=/usr/local/lib/node_modules

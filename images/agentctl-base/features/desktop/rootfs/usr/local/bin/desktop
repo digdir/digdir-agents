@@ -71,7 +71,7 @@ Observe
   windows                        list mapped windows with geometry, class and title
   tree [APPLICATION]             what is showing, as an accessibility tree with click boxes
   cursor                         print the pointer position
-  display                        print display geometry and the screenshot budget
+  display                        print display geometry, the screenshot budget and the keyboard layout
 
 Point
   move X Y                       move the pointer
@@ -86,7 +86,7 @@ Point
   scroll up|down|left|right [N]  scroll N steps (default 3) at the pointer
 
 Type
-  type TEXT                      type literal text, including æøå
+  type TEXT                      type literal text, any Unicode, whatever the keyboard layout
   key KEYSYM [--repeat N]        press an X11 key combination, for example ctrl+s or Page_Down
   hold-key KEYSYM COMMAND...     hold a modifier while running another desktop command
 
@@ -335,14 +335,20 @@ command_cursor() {
 }
 
 command_display() {
-    local actual_width actual_height sent_width sent_height
+    local actual_width actual_height sent_width sent_height query layout variant options
     read -r actual_width actual_height sent_width sent_height < <(geometry)
+    query=$(setxkbmap -query) || fail "cannot read the keyboard layout of display $display"
+    layout=$(sed -n 's/^layout: *//p' <<<"$query")
+    variant=$(sed -n 's/^variant: *//p' <<<"$query")
+    options=$(sed -n 's/^options: *//p' <<<"$query")
     if $json; then
-        printf '{"display":"%s","width":%d,"height":%d,"sentWidth":%d,"sentHeight":%d}\n' \
+        printf '{"display":"%s","width":%d,"height":%d,"sentWidth":%d,"sentHeight":%d,' \
             "$display" "$actual_width" "$actual_height" "$sent_width" "$sent_height"
+        printf '"keyboard":{"layout":"%s","variant":"%s","options":"%s"}}\n' "$layout" "$variant" "$options"
     else
         printf 'display %s is %dx%d; screenshots are sent at %dx%d\n' \
             "$display" "$actual_width" "$actual_height" "$sent_width" "$sent_height"
+        printf 'keyboard layout %s%s%s\n' "$layout" "${variant:+, variant $variant}" "${options:+, options $options}"
     fi
 }
 
@@ -416,9 +422,70 @@ command_scroll() {
     sync_x
 }
 
+# xdotool binds a character the layout lacks to one level of a spare keycode, which X expands to a
+# lower/upper pair, so ÆØÅ arrive as æøå. `type` binds such characters to both levels itself.
+type_bound() {
+    local text=$1; shift
+    local -a bind=() unbind=()
+    local binding cleanup='' pid status=0
+    for binding in "$@"; do
+        bind+=(-e "keycode ${binding% *} = ${binding#* } ${binding#* }")
+        unbind+=(-e "keycode ${binding% *} =")
+    done
+    # An interrupted type must not leave keys bound or xdotool still typing.
+    if [ ${#bind[@]} -gt 0 ]; then
+        cleanup="xmodmap ${unbind[*]@Q} 2>/dev/null"
+        # shellcheck disable=SC2064 # Expand the bindings now.
+        trap "$cleanup" EXIT
+        xmodmap "${bind[@]}" || fail "cannot bind keys on display $display"
+    fi
+    xdotool type --delay 12 -- "$text" &
+    pid=$!
+    # shellcheck disable=SC2064 # Expand the pid now.
+    trap "kill $pid 2>/dev/null; $cleanup" EXIT
+    wait "$pid" || status=$?
+    [ ${#bind[@]} -eq 0 ] || xmodmap "${unbind[@]}"
+    trap - EXIT
+    return "$status"
+}
+
 command_type() {
     [ $# -ge 1 ] || fail "type takes the text to enter"
-    xdotool type --delay 12 -- "$*"
+    local text=$* keymap type_lock
+    # Concurrent types would pick the same spare keycodes.
+    mkdir -p "$captures"
+    exec {type_lock}>"$captures/.type.lock"
+    flock "$type_lock"
+    keymap=$(xmodmap -pk) || fail "cannot read the keyboard map of display $display"
+    local -A present=() bound=()
+    local keysym
+    while read -r keysym; do present[$((keysym))]=1; done < <(grep -o '0x[0-9a-f]*' <<<"$keymap")
+    # Unmapped keycodes, less one that xdotool binds itself.
+    local -a spare
+    mapfile -t spare < <(awk '$1 ~ /^[0-9]+$/ && NF == 1 { print $1 }' <<<"$keymap")
+    local capacity=$((${#spare[@]} - 1))
+    # Type in segments when the layout lacks more characters than there are spare keycodes.
+    local -a bindings=()
+    local segment='' character code index
+    for ((index = 0; index < ${#text}; index++)); do
+        character=${text:index:1}
+        printf -v code '%d' "'$character"
+        # xdotool maps control characters itself.
+        if ((code >= 0x20 && (code < 0x7f || code >= 0xa0) && capacity > 0)); then
+            keysym=$((code <= 0xff ? code : code | 0x1000000))
+            if [ -z "${present[$keysym]:-}" ] && [ -z "${bound[$keysym]:-}" ]; then
+                if [ ${#bindings[@]} -eq "$capacity" ]; then
+                    type_bound "$segment" "${bindings[@]}"
+                    segment='' bindings=() bound=()
+                fi
+                printf -v keysym '0x%x' "$keysym"
+                bindings+=("${spare[${#bindings[@]}]} $keysym")
+                bound[$((keysym))]=1
+            fi
+        fi
+        segment+=$character
+    done
+    type_bound "$segment" "${bindings[@]}"
     sync_x
 }
 

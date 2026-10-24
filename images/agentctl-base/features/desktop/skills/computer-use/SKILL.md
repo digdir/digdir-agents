@@ -41,9 +41,9 @@ screenshot you already have, send them as one batch:
 desktop batch <<'EOF'
 click 207 265
 key ctrl+a
-type Blåbær Næringsutvikling AS
+type Zoë Ångström-Müller
 key Tab
-type 1 234,50
+type Привет, 1 234,50 €
 EOF
 ```
 
@@ -79,8 +79,9 @@ every capture already waits until the screen stops changing.
   something.
 - **Keys are X11 keysyms**: `Return`, `Tab`, `Escape`, `Page_Down`, `ctrl+s`, `ctrl+shift+t`,
   `alt+F4`. `desktop key --repeat 5 Down` repeats one.
-- **Type text, do not spell it out in keys.** `desktop type` enters Norwegian text, including
-  `ÆØÅ`, and any other Unicode. The desktop's keyboard layout is Norwegian.
+- **Type text, do not spell it out in keys.** `desktop type` enters any Unicode text, such as
+  `ÆØÅ`, `ß` or `Ж`, in either case, whatever the keyboard layout. `desktop display` shows the
+  layout.
 - **Verify before you report.** End a task with the cheapest observation that proves the result: a
   snapshot for page content, `desktop tree` for a value or a dialog, a screenshot when the result
   is visual. Say what it shows.
@@ -113,7 +114,7 @@ desktop zoom X Y W H [--out PATH]    # one region at native resolution
 desktop windows                      # id, position, size, class and title; * marks the focused one
 desktop tree [APPLICATION]           # what is showing: role, name, value, box and state
 desktop cursor                       # pointer position
-desktop display                      # display geometry and the size screenshots are sent at
+desktop display                      # display geometry, the size screenshots are sent at, keyboard layout
 
 desktop move X Y
 desktop click [X Y]                  # also right-click, middle-click, double-click, triple-click
