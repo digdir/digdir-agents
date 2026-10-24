@@ -48,7 +48,9 @@ Ask only what the person decides and you cannot find out. Usually:
 - Anything it must not do, or anything they always want it to do?
 
 Propose answers from what you found, and let them correct you. Include the agent's name among them, such as "I'll
-call it `dev`": they use it to open and refer to the agent. Don't explain file layouts or YAML unless asked.
+call it `dev`": they use it to open and refer to the agent. If they have skills of their own, such as folders in
+`~/.claude/skills`, propose the ones that fit the agent's work; it gets them through `skills` in the manifest. Don't
+explain file layouts or YAML unless asked.
 
 ## 3. Write the agent's folder
 
