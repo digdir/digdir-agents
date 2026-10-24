@@ -15,7 +15,7 @@ const VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 const MAX_INITIAL_PROMPT_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_SELECTION_CHARACTERS: usize = 128;
 
-pub(crate) use skills::{Skill, SkillFile};
+pub(crate) use skills::{Skill, SkillFile, platform_skill};
 
 /// Supported harnesses.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -46,6 +46,18 @@ impl Harness {
             Self::ClaudeCode => "claudeCode",
             Self::Codex => "codex",
             Self::Pi => "pi",
+        }
+    }
+}
+
+impl Harness {
+    /// The harness's product name, as people know it.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
+            Self::Pi => "Pi",
         }
     }
 }
@@ -417,6 +429,26 @@ pub fn acquire_host_credential(
     }
 }
 
+/// The credential for the harness that this process holds inside an Agent that has it.
+///
+/// It is the mediated placeholder the Agent's Sessions carry, never a real credential. Importing it lets a
+/// nested `agentd` chain through the outer Agent's mediation, so inside an Agent a login needs
+/// no sign-in. `None` outside an Agent, or inside one without the harness.
+///
+/// # Errors
+///
+/// Returns an error when the Agent has the harness but its credential cannot be read.
+pub fn agent_credential(
+    harness: Harness,
+    environment: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<Option<Zeroizing<String>>, Error> {
+    match harness {
+        Harness::ClaudeCode => Ok(claude_code::agent_credential(&environment)),
+        Harness::Codex => codex::agent_credential(&environment),
+        Harness::Pi => Ok(None),
+    }
+}
+
 /// Reports whether the host login this harness mediates is present and usable.
 ///
 /// An optional installation is omitted rather than failing provisioning when this is false, so the
@@ -714,6 +746,20 @@ mod tests {
         assert_eq!(Harness::ClaudeCode.as_str(), "claudeCode");
         assert_eq!(Harness::Codex.as_str(), "codex");
         assert_eq!(Harness::Pi.as_str(), "pi");
+    }
+
+    #[test]
+    fn inside_an_agent_a_login_takes_its_mediated_credentials() {
+        let inside = |name: &str| (name == "AGENT_CLAUDE_ACCESS_TOKEN").then(|| "placeholder\n".into());
+        let claude = agent_credential(Harness::ClaudeCode, inside).expect("Claude Code");
+        assert_eq!(claude.as_deref().map(String::as_str), Some("placeholder"));
+        assert!(agent_credential(Harness::Pi, inside).expect("Pi").is_none());
+
+        // On a host, or in an Agent without the harness, a login signs in instead.
+        let outside = |_: &str| None;
+        for harness in [Harness::ClaudeCode, Harness::Codex] {
+            assert!(agent_credential(harness, outside).expect("outside").is_none());
+        }
     }
 
     #[test]

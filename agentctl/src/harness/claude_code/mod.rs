@@ -68,6 +68,15 @@ pub(super) async fn prepare(database: &persistence::Database) -> Result<Vec<Medi
     ])
 }
 
+/// The nested placeholder a Session in an Agent with Claude Code holds.
+pub(super) fn agent_credential(
+    environment: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<zeroize::Zeroizing<String>> {
+    let token = environment(NESTED_ENVIRONMENT)?.into_string().ok()?;
+    let token = zeroize::Zeroizing::new(token.trim().to_owned());
+    (!token.is_empty()).then_some(token)
+}
+
 pub(super) fn conflicts_with_managed_secret(name: &str, placeholder: Option<&str>) -> bool {
     matches!(name, ACCESS_ENVIRONMENT | NESTED_ENVIRONMENT)
         || matches!(placeholder, Some(ACCESS_PLACEHOLDER | NESTED_PLACEHOLDER))

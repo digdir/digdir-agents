@@ -15,13 +15,16 @@ const KVM: &str = "/dev/kvm";
 /// running systemd it first waits for boot to finish, so that an image's own tmpfiles or udev
 /// rule for the device runs before the grant; setup that starts before the image's entrypoint
 /// has become systemd can still be undone by such a rule until the next pass.
-pub(super) async fn grant_kvm(sandbox: &SandboxHandle) -> Result<(), Error> {
+///
+/// Reports whether the device is present.
+pub(super) async fn grant_kvm(sandbox: &SandboxHandle) -> Result<bool, Error> {
     if !path_exists(sandbox, "-c", KVM).await? {
-        return Ok(());
+        return Ok(false);
     }
     if systemd_available(sandbox).await? {
         wait_for_systemd(sandbox).await?;
     }
     run_checked(sandbox, "/usr/bin/sudo", ["-n", "/bin/chown", "root:agent", KVM]).await?;
-    run_checked(sandbox, "/usr/bin/sudo", ["-n", "/bin/chmod", "0660", KVM]).await
+    run_checked(sandbox, "/usr/bin/sudo", ["-n", "/bin/chmod", "0660", KVM]).await?;
+    Ok(true)
 }

@@ -4,6 +4,7 @@ mod command;
 mod home;
 mod kvm;
 mod podman;
+mod preamble;
 mod sources;
 pub(crate) mod ssh;
 mod systemd;
@@ -126,7 +127,7 @@ impl Linux {
         let step = steps.start_step("Prepare workspace and Podman").await;
         run_checked(sandbox, "/usr/bin/install", ["-d", "-m", "0755", WORKING_DIRECTORY]).await?;
         let podman = configure_podman(sandbox).await?;
-        grant_kvm(sandbox).await?;
+        let kvm = grant_kvm(sandbox).await?;
         step.complete().await;
         let step = steps.start_step("Sync home").await;
         let archive = archive_home(record.source_directory.clone(), record.agent.spec.home.source.clone()).await?;
@@ -137,8 +138,23 @@ impl Linux {
         }
         configure_git_identity(sandbox).await?;
         step.complete().await;
-        let instructions = read_instructions(record).await?;
-        let skills = read_skills(record).await?;
+        let observed = preamble::Observed {
+            harnesses,
+            environment: &sandbox.snapshot().environment,
+            kvm,
+            podman,
+        };
+        let mut instructions = preamble::render(record, &observed).into_bytes();
+        if let Some(own) = read_instructions(record).await? {
+            instructions.push(b'\n');
+            instructions.extend(own);
+        }
+        let mut skills = read_skills(record).await?;
+        let platform_skill = harness::platform_skill();
+        // An Agent's own skill of the same name replaces the platform's.
+        if !skills.iter().any(|skill| skill.name == platform_skill.name) {
+            skills.push(platform_skill);
+        }
         for installation in &installations {
             let step = steps
                 .start_step(format!(
@@ -146,7 +162,7 @@ impl Linux {
                     installation.kind.as_str()
                 ))
                 .await;
-            harness::bootstrap_linux(installation.kind, sandbox, HOME, instructions.as_deref(), &skills).await?;
+            harness::bootstrap_linux(installation.kind, sandbox, HOME, Some(&instructions), &skills).await?;
             step.complete().await;
         }
         Ok(())

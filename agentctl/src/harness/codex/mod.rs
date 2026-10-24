@@ -62,6 +62,29 @@ pub(super) async fn prepare(database: &persistence::Database) -> Result<Vec<Medi
     ])
 }
 
+/// The placeholder credential file Agent setup gives Codex, in an Agent with Codex.
+pub(super) fn agent_credential(
+    environment: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<Option<zeroize::Zeroizing<String>>, Error> {
+    if environment(ACCESS_ENVIRONMENT).is_none() {
+        return Ok(None);
+    }
+    let home = environment("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| environment("HOME").map(|home| std::path::Path::new(&home).join(".codex")))
+        .ok_or_else(|| Error::Invalid("neither CODEX_HOME nor HOME is set".into()))?;
+    let path = home.join("auth.json");
+    let mut file = std::fs::File::open(&path).map_err(|error| {
+        Error::Invalid(format!(
+            "could not read this Agent's Codex credential file {}: {error}",
+            path.display()
+        ))
+    })?;
+    let mut credential = zeroize::Zeroizing::new(String::new());
+    file.read_to_string(&mut credential)?;
+    Ok(Some(credential))
+}
+
 pub(super) fn conflicts_with_managed_secret(name: &str, placeholder: Option<&str>) -> bool {
     matches!(name, ACCESS_ENVIRONMENT | ACCOUNT_ENVIRONMENT)
         || matches!(placeholder, Some(ACCESS_PLACEHOLDER | ACCOUNT_PLACEHOLDER))
@@ -245,6 +268,25 @@ pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
+
+    #[test]
+    fn inside_an_agent_a_login_takes_its_credential_file() {
+        let directory = TempDir::new().expect("temporary directory");
+        std::fs::create_dir(directory.path().join(".codex")).expect("Codex home");
+        std::fs::write(directory.path().join(".codex/auth.json"), "placeholder file").expect("auth.json");
+        let home = directory.path().as_os_str().to_owned();
+        let inside = |name: &str| match name {
+            super::ACCESS_ENVIRONMENT => Some("placeholder".into()),
+            "HOME" => Some(home.clone()),
+            _ => None,
+        };
+
+        let credential = super::agent_credential(inside).expect("credential");
+        assert_eq!(credential.as_deref().map(String::as_str), Some("placeholder file"));
+        // An Agent with Codex always has the file; its absence is an error, not a sign-in.
+        std::fs::remove_file(directory.path().join(".codex/auth.json")).expect("remove auth.json");
+        assert!(super::agent_credential(inside).is_err());
+    }
 
     #[test]
     fn input_readiness_waits_for_the_initialized_composer() {

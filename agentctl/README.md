@@ -186,13 +186,15 @@ repositories they can access, and image init may make a simple best-effort check
 `spec.sandbox.mounts` can instead attach caller-owned host directories or temporary memory filesystems when the selected
 Sandbox Provider supports them; these attachments are immutable for the Agent incarnation.
 
-`spec.sandbox.resources.nestedSandboxes` lets the Sandbox run Sandboxes of its own, such as nested Agents. With `required`, the
-Agent fails on a host that cannot provide them; with `preferred`, it runs without them there, and its `NestedSandboxes`
-condition says why. Microsandbox gives the Sandbox `/dev/kvm` for them, which needs a Linux x86_64 host with nested KVM
-enabled or a Mac with an Apple M3 or newer chip and macOS 15 or newer. Agent setup gives the device to the `agent`
-group, so the image need not grant it. Turning nested Sandboxes on or off restarts a running Agent. To run nested Agents,
-the image needs `agentctl` and `agentd`: copy them from the [agentctl image](../images/agentctl/README.md), at a
-release, the newest `main` or one commit.
+`spec.sandbox.resources.nestedSandboxes` lets the Sandbox run Sandboxes of its own, such as nested Agents. With
+`required`, the Agent fails on a host that cannot provide them; with `preferred`, it runs without them there, and its
+`NestedSandboxes` condition says why. Microsandbox gives the Sandbox `/dev/kvm` for them, which needs a Linux x86_64
+host with nested KVM enabled or a Mac with an Apple M3 or newer chip and macOS 15 or newer. Agent setup gives the device
+to the `agent` group, so the image need not grant it. Turning nested Sandboxes on or off restarts a running Agent. To
+run nested Agents, the image needs `agentctl` and `agentd`: copy them from the [agentctl
+image](../images/agentctl/README.md), at a release, the newest `main` or one commit. Inside an Agent, `agentctl claude
+login` and `agentctl codex login` store that Agent's mediated placeholders instead of signing in, so a nested `agentd`
+never holds a real credential.
 
 `spec.home` is a continuously applied overlay onto `/home/agent`. It converges files supplied by the builder but does
 not delete guest files that disappear from the source. Builders may use it to own harness configuration explicitly,
@@ -212,6 +214,9 @@ Fable in the `/model` picker.
 `spec.instructions` names one harness-neutral Agent instruction file. Every declared Harness Adapter installs that source
 at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md` for Codex and
 `~/.pi/agent/AGENTS.md` for Pi.
+`agentd` writes a short Agent platform section ahead of it, from the manifest and what setup finds in the Sandbox: the
+installed harnesses, the configured secrets and their hosts, network, access and whether nested Agents can run. Every
+Agent also gets an `agentctl` skill for running nested Agents; a skill of its own by that name replaces it.
 Repository-local instruction files continue to be discovered by the harness itself.
 
 Harness Adapters own authentication, version verification, managed configuration, hooks, native conversation IDs and

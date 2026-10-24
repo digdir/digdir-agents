@@ -110,6 +110,16 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         default: false,
         defaults: agent::ModelSelection::default(),
     });
+    resource.spec.secrets = vec![
+        secret("GITHUB_TOKEN", &["github.com", "api.github.com"]),
+        secret("GATEWAY_KEY", &["gateway.example.com"]),
+    ];
+    resource.spec.environment = vec![agent::EnvironmentSpec {
+        name: "GIT_USER_NAME".into(),
+        source: None,
+    }];
+    resource.spec.access = vec![agent::AccessSpec::Ssh {}];
+    resource.spec.network.deny = vec!["metadata.google.internal".into()];
     let record = AgentRecord {
         id: agent_id,
         source_directory: directory.path().to_path_buf(),
@@ -134,11 +144,12 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         .spec
         .sandbox
         .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+    // The optional gateway key was not configured, so preparation gave the Sandbox no placeholder.
     let sandbox = service
-        .ensure(&EnsureSandboxRequest::new(
-            record.sandbox_name().expect("Sandbox name"),
-            spec,
-        ))
+        .ensure(
+            &EnsureSandboxRequest::new(record.sandbox_name().expect("Sandbox name"), spec)
+                .with_environment([("GITHUB_TOKEN".into(), "placeholder".into())]),
+        )
         .await
         .expect("Sandbox");
 
@@ -161,6 +172,40 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         !writes.iter().any(|path| path.starts_with("/home/agent/.codex/")),
         "the omitted harness must not be configured: {writes:?}"
     );
+
+    let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+    let expected = format!(
+        "# Agent platform
+
+Written by agentd {}. The Agent's own instructions follow and take precedence.
+
+- **Computer:** Agent `worker`, a Linux Sandbox VM that is yours to manage. User `agent` with passwordless `sudo`, \
+home `/home/agent`, work in `/home/agent/code`.
+- **Harnesses:** Claude Code (default). Not installed until the host logs in to it: Codex.
+- **Secrets:** `GITHUB_TOKEN` (github.com, api.github.com). Each holds an inert placeholder the host replaces only in \
+requests to the hosts named; never search for, print or persist real values. Not configured: `GATEWAY_KEY`.
+- **Plain environment:** `GIT_USER_NAME`.
+- **Network:** all traffic passes through the host, which intercepts TLS with a CA that the system store and \
+`NODE_EXTRA_CA_CERTS` trust. Denied: `metadata.google.internal`.
+- **Access:** people on the host reach this computer with `agentctl ssh worker`.
+- **Nested Agents:** available, but without Podman only for manifests with an image `reference`. Use the `agentctl` \
+skill.
+
+test instructions
+",
+        agent::build_version()
+    );
+    assert_eq!(instructions, expected);
+}
+
+fn secret(environment: &str, hosts: &[&str]) -> agent::SecretSpec {
+    agent::SecretSpec {
+        environment: environment.into(),
+        optional: environment != "GITHUB_TOKEN",
+        placeholder: None,
+        allowed_hosts: hosts.iter().map(|host| (*host).into()).collect(),
+        source: None,
+    }
 }
 
 #[tokio::test(flavor = "local")]
@@ -278,10 +323,17 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     let preserved = read_file(&sandbox, "/home/agent/.claude/.claude.json").await;
     assert_eq!(preserved, mutable_state);
     let instructions = read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await;
-    assert_eq!(instructions, b"test instructions\n\n# Environment\n\nhas a browser\n");
+    let instructions = String::from_utf8(instructions).expect("UTF-8 instructions");
+    assert!(instructions.starts_with("# Agent platform\n"), "{instructions}");
+    assert!(
+        instructions.ends_with("\n\ntest instructions\n\n# Environment\n\nhas a browser\n"),
+        "the Agent's own instructions follow the platform section: {instructions}"
+    );
     let codex_instructions = read_file(&sandbox, "/home/agent/.codex/AGENTS.md").await;
-    assert_eq!(codex_instructions, instructions);
+    assert_eq!(codex_instructions, instructions.as_bytes());
     for root in ["/home/agent/.claude/skills", "/home/agent/.agents/skills"] {
+        let skill = read_file(&sandbox, &format!("{root}/agentctl/SKILL.md")).await;
+        assert!(skill.starts_with(b"---\nname: agentctl\n"));
         let skill = read_file(&sandbox, &format!("{root}/evidence/SKILL.md")).await;
         assert_eq!(skill, b"---\nname: evidence\n---\ncapture");
         let reference = read_file(&sandbox, &format!("{root}/evidence/references/gif.md")).await;

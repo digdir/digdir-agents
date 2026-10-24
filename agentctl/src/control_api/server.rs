@@ -259,11 +259,18 @@ pub trait ConvergenceApi {
     /// Waits until an Agent has its desired run state; see
     /// [`control_plane::Convergence::converge`].
     fn converge<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>>;
+
+    /// Hints convergence of every Agent; see [`control_plane::Convergence::wake_all`].
+    fn wake_all(&self) -> LocalFuture<'_, Result<(), Error>>;
 }
 
 impl ConvergenceApi for control_plane::Convergence {
     fn converge<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async move { self.converge(name, WaitPolicy::UntilConverged).await.map(drop) })
+    }
+
+    fn wake_all(&self) -> LocalFuture<'_, Result<(), Error>> {
+        Box::pin(self.wake_all())
     }
 }
 
@@ -768,12 +775,18 @@ impl Server {
         let Ok(params) = serde_json::from_value::<LoginParams>(value) else {
             return error_response(id, CODE_INVALID_PARAMS, "harness and credential are required");
         };
-        result_response(
-            id,
-            self.authentication
-                .login(params.harness, &params.credential, params.imported)
-                .await,
-        )
+        let stored = self
+            .authentication
+            .login(params.harness, &params.credential, params.imported)
+            .await;
+        if stored.is_ok() {
+            // An Agent may be waiting on this login, such as one whose optional installation of
+            // the harness was left out, so it need not wait for its next periodic pass.
+            if let Err(error) = self.convergence.wake_all().await {
+                (self.on_error)(&error);
+            }
+        }
+        result_response(id, stored)
     }
 
     async fn handle_session_ensure(&self, id: u64, value: Value) -> Response {
