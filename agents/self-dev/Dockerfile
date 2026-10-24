@@ -15,14 +15,11 @@ ARG RUST_VERSION=1.97.1
 ENV RUSTUP_HOME=/usr/local/rustup
 
 # The toolchain the agent platform's own Rust workspace needs (libcap-ng-dev links the Microsandbox
-# runtime), plus Podman so that a nested agentd can build Agent images through the Docker Engine API.
-# Podman's netavark backend invokes nft for rootful bridge networking and aardvark-dns for
-# container-name resolution. bc, bison, flex, libelf-dev and python3-pyelftools check libkrunfw's
-# kernel configuration; sqlite3, socat and tcpdump inspect agentd's database, sockets and Sandbox
-# traffic; hyperfine measures performance changes.
+# runtime). bc, bison, flex, libelf-dev and python3-pyelftools check libkrunfw's kernel
+# configuration; sqlite3, socat and tcpdump inspect agentd's database, sockets and Sandbox traffic;
+# hyperfine measures performance changes.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
-        aardvark-dns \
         bc \
         bison \
         build-essential \
@@ -32,10 +29,7 @@ RUN apt-get update \
         libelf-dev \
         libssl-dev \
         linux-perf \
-        nftables \
         pkg-config \
-        podman \
-        podman-docker \
         python3-pyelftools \
         rustup \
         shellcheck \
@@ -56,6 +50,9 @@ RUN apt-get update \
     && rustup default "${RUST_VERSION}" \
     && rustup component add clippy rustfmt \
     && chown -R agent:agent /usr/local/rustup
+
+# Podman, so that a nested agentd can build Agent images.
+RUN agent-feature install containers
 
 # A nested Microsandbox runtime needs /dev/kvm; tmpfiles.conf hands the device to the kvm group. The
 # workspace list names the repositories the base image's workspace unit clones at boot.
@@ -131,9 +128,6 @@ RUN case "${TARGETARCH}" in \
 # not share target state with the host and a fresh checkout keeps reusable artifacts outside Git.
 ENV CARGO_HOME=/home/agent/.cargo
 ENV CARGO_TARGET_DIR=/home/agent/.cache/cargo-target
-# The Sandbox Image Backend speaks the Docker Engine API; point it at the Podman socket the
-# platform enables and grants to the agent user.
-ENV DOCKER_HOST=unix:///run/podman/podman.sock
 ENV PATH=/home/agent/.local/bin:/home/agent/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN agent-image-check

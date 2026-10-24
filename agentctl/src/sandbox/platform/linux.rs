@@ -13,7 +13,6 @@ use super::{super::PlatformAdapter, files::write_if_changed};
 pub(crate) const USER: &str = "agent";
 pub(crate) const HOME: &str = "/home/agent";
 pub(crate) const WORKING_DIRECTORY: &str = "/home/agent/code";
-pub(crate) const CONTAINER_HOST: &str = "unix:///run/podman/podman.sock";
 /// Holds the Platform API base URL reachable from the Sandbox, read by harness hooks on every
 /// report. `agentd` binds a new host port on every start; Agent setup rewrites the file first
 /// thing on every pass, so harnesses that outlive a daemon restart follow it as soon as the
@@ -52,6 +51,9 @@ const PODMAN_SOCKET_DROP_IN: &str = "/etc/systemd/system/podman.socket.d/50-agen
 const PODMAN_HOOKS_DIR: &str = "/etc/containers/oci/hooks.d";
 const PODMAN_CA_HOOK_CONF: &str = "/etc/containers/oci/hooks.d/50-agent-ca.json";
 const PODMAN_CA_HOOK: &str = "/usr/local/libexec/agent-container-ca";
+const PODMAN_USER_CONF_DIRECTORY: &str = "/home/agent/.config/containers/containers.conf.d";
+const PODMAN_USER_CONF: &str = "/home/agent/.config/containers/containers.conf.d/50-agent-socket.conf";
+const PODMAN_USER_CONF_CONTENTS: &[u8] = b"[engine]\nremote = true\nactive_service = \"agent\"\n\n[engine.service_destinations.agent]\nuri = \"unix:///run/podman/podman.sock\"\n";
 const PODMAN_CONTAINERS_CONF_CONTENTS: &[u8] = br#"[containers]
 env = [
   "SSL_CERT_FILE=/run/agent/tls/ca-bundle.pem",
@@ -151,11 +153,7 @@ pub(super) fn execution_spec(command: &[String], terminal: bool) -> Result<Execu
     let (executable, arguments) = command
         .split_first()
         .ok_or_else(|| Error::Invalid("command is required".into()))?;
-    let mut environment = vec![
-        ("HOME".into(), HOME.into()),
-        ("LANG".into(), UTF8_LOCALE.into()),
-        ("CONTAINER_HOST".into(), CONTAINER_HOST.into()),
-    ];
+    let mut environment = vec![("HOME".into(), HOME.into()), ("LANG".into(), UTF8_LOCALE.into())];
     if terminal {
         // Host-specific TERM names are not necessarily installed in the guest.
         environment.push(("TERM".into(), PORTABLE_TERMINAL.into()));
@@ -211,11 +209,15 @@ impl Linux {
         }
         let step = steps.start_step("Prepare workspace and Podman").await;
         run_checked(sandbox, "/usr/bin/install", ["-d", "-m", "0755", WORKING_DIRECTORY]).await?;
-        configure_podman(sandbox).await?;
+        let podman = configure_podman(sandbox).await?;
         step.complete().await;
         let step = steps.start_step("Sync home").await;
         let archive = archive_home(record.source_directory.clone(), record.agent.spec.home.source.clone()).await?;
         sync_home(sandbox, archive).await?;
+        if podman {
+            // After the home sync, so a file of the same name in the Agent's home cannot replace it.
+            point_podman_at_socket(sandbox).await?;
+        }
         configure_git_identity(sandbox).await?;
         step.complete().await;
         let instructions = read_instructions(record).await?;
@@ -274,7 +276,8 @@ async fn run_git_config(sandbox: &SandboxHandle, key: &str, value: &str) -> Resu
     checked_output("/usr/bin/env", &args, &output)
 }
 
-async fn configure_podman(sandbox: &SandboxHandle) -> Result<(), Error> {
+/// Returns whether the image has Podman.
+async fn configure_podman(sandbox: &SandboxHandle) -> Result<bool, Error> {
     let present = sandbox
         .run_execution(ExecutionSpec::command(
             SandboxPath::new("/usr/bin/test"),
@@ -282,7 +285,7 @@ async fn configure_podman(sandbox: &SandboxHandle) -> Result<(), Error> {
         ))
         .await?;
     match present.status.code {
-        1 => return Ok(()),
+        1 => return Ok(false),
         0 => {}
         code => {
             return Err(Error::SandboxSetup(format!(
@@ -330,6 +333,19 @@ async fn configure_podman(sandbox: &SandboxHandle) -> Result<(), Error> {
         sandbox,
         "/usr/bin/sudo",
         ["-n", "/usr/bin/systemctl", "enable", "--now", "podman.socket"],
+    )
+    .await?;
+    Ok(true)
+}
+
+/// Makes every `podman` the agent user runs a client of the shared root Podman.
+async fn point_podman_at_socket(sandbox: &SandboxHandle) -> Result<(), Error> {
+    run_checked(sandbox, "/usr/bin/mkdir", ["-p", PODMAN_USER_CONF_DIRECTORY]).await?;
+    write_if_changed(sandbox, PODMAN_USER_CONF, PODMAN_USER_CONF_CONTENTS).await?;
+    run_checked(
+        sandbox,
+        "/usr/bin/sudo",
+        ["-n", "/usr/bin/chown", "agent:agent", PODMAN_USER_CONF],
     )
     .await
 }

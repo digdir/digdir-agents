@@ -2,9 +2,9 @@
 # Opens a terminal on the Agent's desktop, for a person watching it or taking over.
 #
 # A program started from the desktop inherits the desktop session's environment, which lacks what
-# agentd gives a Session: CONTAINER_HOST, the manifest's variables and the placeholders for mediated
-# secrets. SSH access writes that environment to ~/.ssh/environment, so the terminal loads it when
-# it is there. The shell is not a login shell, so /etc/profile.d cannot override those values.
+# agentd gives a Session: the manifest's variables and the placeholders for mediated secrets. SSH
+# access writes that environment to ~/.ssh/environment, so the terminal loads it when it is there.
+# The shell is not a login shell, so /etc/profile.d cannot override those values.
 set -eu
 
 environment=${AGENT_DESKTOP_ENVIRONMENT:-$HOME/.ssh/environment}

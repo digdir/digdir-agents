@@ -274,7 +274,6 @@ fn launch_arguments(
     let mut arguments = terminal_options();
     arguments.extend(["new-session".into(), "-d".into(), "-s".into(), session_name(session)]);
     let session_environment = launch.environment.iter().cloned().chain([
-        ("CONTAINER_HOST".into(), crate::sandbox::platform::CONTAINER_HOST.into()),
         ("AGENT_SESSION_ID".into(), session.id.to_string()),
         ("AGENT_HARNESS".into(), session.harness.as_str().to_owned()),
         ("AGENT_NAME".into(), context.agent.to_owned()),

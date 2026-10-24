@@ -387,7 +387,6 @@ async fn capture_login_environment(sandbox: &SandboxHandle) -> Result<Vec<u8>, E
     }
     let mut environment = parse_environment(&output.stdout)?;
     environment.insert("LANG".into(), super::linux::UTF8_LOCALE.into());
-    environment.insert("CONTAINER_HOST".into(), super::linux::CONTAINER_HOST.into());
     render_environment(&environment)
 }
 

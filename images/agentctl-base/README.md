@@ -63,9 +63,10 @@ USER agent
 
 ## Features
 
-The headless image carries the optional parts the desktop image adds, so an image built on it can add them after its
-own tools, at the versions the base pins. An image with a `minimal` and a desktop variant can then build the desktop
-variant on its `minimal` one and share those layers, instead of installing its tools twice on two base images:
+The headless image carries optional features, including those the desktop image adds, so an image built on it can add
+them after its own tools, at the versions the base pins. An image with a `minimal` and a desktop variant can then build
+the desktop variant on its `minimal` one and share those layers, instead of installing its tools twice on two base
+images:
 
 ```dockerfile
 FROM minimal AS desktop
@@ -86,6 +87,7 @@ USER agent
 | Feature | Adds |
 | --- | --- |
 | `browser` | Chromium with `playwright-cli` and its skill, ffmpeg, and the `video-to-gif` and `media-preview` helpers. Chromium trusts the Agent's mediated CA once `$XDG_RUNTIME_DIR/chromium-ca-ready` exists, shortly after boot. |
+| `containers` | Podman, with bridge networks and container name resolution. agentd sets up Podman's socket for the agent user, and Docker API clients reach it at the default `/run/docker.sock`. The `docker` command runs Podman; it comes from podman-docker, which conflicts with Docker's own CLI packages. `docker compose` and `podman compose` run Docker Compose. |
 | `desktop` | `browser`, plus an X11 desktop on display `:1` with VNC access and a [Secret Service](#the-secret-service), the `desktop`, `desktop-terminal` and `chromium` commands, and the `computer-use` skill. Provides `/etc/agent-access.d/vnc.conf`, so an Agent on it can declare `access: [{type: vnc}]`. |
 
 `agent-feature list` shows what an image has. The [self-dev images](../../agents/self-dev/Dockerfile) are built this
