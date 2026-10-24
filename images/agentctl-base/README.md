@@ -110,6 +110,21 @@ AGENT_DESKTOP_KEYBOARD=no
 
 - `AGENT_DESKTOP_KEYBOARD` takes `setxkbmap` arguments, quoted if more than one, and defaults to `us`.
 - `AGENT_DESKTOP_DISPLAY` must match the image's `ENV DISPLAY`; `agent-image-check` checks it.
+- `AGENT_DESKTOP_GEOMETRY` is the display size, `1600x900` by default.
+
+### The screenshot budget
+
+The `desktop` helper downscales screenshots to fit a budget, a pixel count and a longest edge, and maps the model's
+coordinates back to the display. The budget depends on the Session's harness, which agentd sets in `AGENT_HARNESS`:
+
+| Harness | Budget | 1600x900 is sent at |
+| --- | --- | --- |
+| `claudeCode` | 1,175,000 px, 1568 px edge (Anthropic's standard tier) | 1445x812 |
+| `codex` | 2,457,600 px, 2048 px edge (OpenAI's `high` detail) | 1600x900 |
+| `pi`, unknown or none | 1,175,000 px, 1568 px edge | 1445x812 |
+
+`DESKTOP_SCREENSHOT_PIXELS` and `DESKTOP_SCREENSHOT_MAX_EDGE` override the budget. `DESKTOP_MAX_WIDTH` and
+`DESKTOP_MAX_HEIGHT` still work and replace it with a box. `desktop display` shows the budget in use.
 
 ### The Secret Service
 

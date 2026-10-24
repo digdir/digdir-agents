@@ -5,9 +5,9 @@ This computer also has `playwright-cli` with Chromium (open it with `--browser c
 CA once `$XDG_RUNTIME_DIR/chromium-ca-ready` exists; the import finishes in the background seconds after boot, so if a
 browser reports a certificate error shortly after the Session starts, wait for that file and reopen the browser.
 
-It has a graphical desktop on display `:1`, 1456x819, running from boot: one process that is both X server and VNC
+It has a graphical desktop on display `:1`, 1600x900, running from boot: one process that is both X server and VNC
 server, the openbox window manager and a tint2 panel. `DISPLAY` is already set in every Session, and the keyboard
-layout is Norwegian, so `desktop type` enters æøå and ÆØÅ.
+layout is Norwegian.
 
 Drive it with the `desktop` helper and the `computer-use` skill. `desktop tree` reads what is showing as an
 accessibility tree, including the browser's own controls and dialogs, over the session bus at

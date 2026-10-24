@@ -14,7 +14,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Added
 
-- Sessions know where they run: `AGENT_NAME`, `AGENT_SESSION_NAME`, `AGENT_HOST` and `AGENT_SOURCE_DIRECTORY` are set for the harness, so instructions can ask an agent to name itself. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#agent-layer), [#206](https://github.com/digdir/digdir-agents/pull/206))
+- Sessions know where they run: `AGENT_NAME`, `AGENT_SESSION_NAME`, `AGENT_HOST`, `AGENT_SOURCE_DIRECTORY` and `AGENT_HARNESS` are set for the harness, so instructions can ask an agent to name itself and tools can suit its model. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#agent-layer), [#206](https://github.com/digdir/digdir-agents/pull/206), [#263](https://github.com/digdir/digdir-agents/pull/263))
 - The tmux status bar in a session shows its name and the keys to detach, open a shell beside it and move to the next window. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#agent-layer), [#206](https://github.com/digdir/digdir-agents/pull/206))
 - On the desktop image, apps that keep secrets in a keyring, such as `secret-tool`, Chromium and VS Code, now have one. It has no password: anything in the Agent can read it. ([Secret Service](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#the-secret-service), [#198](https://github.com/digdir/digdir-agents/pull/198))
 - `agentctl kill --all`, or `agentctl stop --all --now`, is an emergency stop: every Agent's VM ends at once, without shutting down, and stays stopped until started again. `agentctl stop` without an Agent asks before stopping every running one, and `X` in `agentctl tui` stops them all at once. ([agentctl](https://github.com/digdir/digdir-agents/tree/main/agentctl#stopping-every-agent))
@@ -26,6 +26,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 - VNC clients can no longer resize an Agent's desktop to fit their window; set them to scale instead. ([#198](https://github.com/digdir/digdir-agents/pull/198))
 - Newly created Agents using the shared images ship Node.js 24 LTS (24.22.1) and updated tools, including GitHub CLI 2.103.0, Claude Code 2.1.309 and Codex CLI 0.164.0. ([#198](https://github.com/digdir/digdir-agents/pull/198), [#229](https://github.com/digdir/digdir-agents/pull/229))
 - Breaking: the desktop image's keyboard layout is now US rather than Norwegian. An image that needs Norwegian sets `AGENT_DESKTOP_KEYBOARD=no` in `/etc/agent-desktop.conf.d/`. `desktop display` shows the layout. ([desktop settings](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#desktop-settings), [#262](https://github.com/digdir/digdir-agents/pull/262))
+- The desktop image's display is now 1600x900, and `desktop screenshot` sizes screenshots for the Session's harness: Claude Code gets 1600x900 at 1445x812, Codex at full size. To keep 1456x819, set `AGENT_DESKTOP_GEOMETRY` in `/etc/agent-desktop.conf.d/`. ([screenshot budget](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base#the-screenshot-budget), [#263](https://github.com/digdir/digdir-agents/pull/263))
 
 ### Fixed
 
