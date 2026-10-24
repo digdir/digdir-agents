@@ -170,6 +170,7 @@ jobs:
           AGENT_VERSION: ${{ needs.resolve.outputs.version }}
           SOURCE_DATE_EPOCH: ${{ needs.resolve.outputs.epoch }}
           PUBLISH: ${{ needs.resolve.outputs.publish }}
+          RELEASE: ${{ needs.resolve.outputs.release }}
         run: |
           set -eu
 
@@ -180,8 +181,12 @@ jobs:
             # Without clearing the bake file's tags, buildx refuses to push by digest; the publish job tags.
             set -- "$@" \
               --set "agentctl.tags=" \
-              --set "agentctl.output=type=image,name=${REPOSITORY},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true" \
-              --set "agentctl.cache-to=type=registry,ref=${cache},mode=max,image-manifest=true"
+              --set "agentctl.output=type=image,name=${REPOSITORY},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true"
+          fi
+          # Only main writes the cache, which pull requests and releases read: a cache reference holds only its last
+          # export, so a release's would cost main's next build its cache, and with it the digest it keeps.
+          if [ "${PUBLISH}" = "true" ] && [ "${RELEASE}" != "true" ]; then
+            set -- "$@" --set "agentctl.cache-to=type=registry,ref=${cache},mode=max,image-manifest=true"
           fi
 
           docker buildx bake --file docker-bake.hcl --provenance=false --sbom=false --metadata-file "${metadata}" \
