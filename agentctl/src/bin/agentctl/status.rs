@@ -386,7 +386,7 @@ fn next_steps(
         )),
         (Ok(None), _) => next.push(step(
             "agentctl init".to_owned(),
-            "Set up an agent for this repository".to_owned(),
+            "Set up an agent here".to_owned(),
         )),
         (Ok(Some(agent)), Some(here)) if agent.spec.is_stopped() => next.push(step(
             format!("agentctl start agent/{}", here.name),
@@ -806,7 +806,7 @@ Next
             "{text}"
         );
         assert!(
-            text.ends_with("  agentctl init          Set up an agent for this repository\n"),
+            text.ends_with("  agentctl init          Set up an agent here\n"),
             "{text}"
         );
     }

@@ -52,7 +52,7 @@ struct Arguments {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Set up an agent for this repository, with the coding agent you already use here.
+    /// Set up an agent for this repository or folder, with the coding agent you already use here.
     ///
     /// Starts Claude Code, Codex or Pi in the repository's root, asking which when several are
     /// installed, on a short prompt that has it follow `agentctl guide setup` with you. When it
