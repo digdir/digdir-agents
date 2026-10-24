@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(clippy::expect_used)]
 
 use std::path::PathBuf;
 

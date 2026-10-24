@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
-mod support;
+use crate::support;
 
 use std::{
     cell::{Cell, RefCell},

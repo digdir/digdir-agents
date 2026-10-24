@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used)]
 
-mod support;
+use crate::support;
 
 use std::{io::Cursor, path::PathBuf, rc::Rc};
 
