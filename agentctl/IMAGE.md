@@ -29,12 +29,11 @@ step that needs them; others, such as the home directory's ownership, only show 
 
 - **git.** With `git` on `PATH`, `agentd` sets the global `user.name` and `user.email` from `GIT_USER_NAME` and
   `GIT_USER_EMAIL`. Without it, the step is skipped.
-- **Podman.** With `/usr/bin/podman`, `agentd` waits for systemd, configures Podman to trust the mediated CA and
-  enables `podman.socket` for the `agent` group. The agent user's `podman` uses that socket everywhere: Executions,
-  Sessions and SSH logins get `CONTAINER_HOST=unix:///run/podman/podman.sock`, and other processes read
-  `~/.config/containers/containers.conf.d/50-agent-socket.conf`. An image with Podman therefore needs systemd running
-  and the `podman.socket` unit, and leaves the socket's configuration to `agentd`. The base images' `containers`
-  feature installs Podman this way.
+- **Podman.** With `/usr/bin/podman`, `agentd` waits for systemd, configures Podman to trust the mediated CA and enables
+  `podman.socket` for the `agent` group. `~/.config/containers/containers.conf.d/50-agent-socket.conf` makes every
+  `podman` the agent user runs use that socket. An image with Podman therefore needs systemd running and the
+  `podman.socket` unit, and leaves the socket's configuration to `agentd`. The base images' `containers` feature
+  installs Podman this way.
 
 ## Access
 

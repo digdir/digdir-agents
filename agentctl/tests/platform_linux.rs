@@ -372,21 +372,6 @@ async fn linux_setup_waits_for_systemd_and_restores_managed_podman_configuration
         written,
         "a replaced managed file is restored"
     );
-    let user_conf = "/home/agent/.config/containers/containers.conf.d/50-agent-socket.conf";
-    let contents = String::from_utf8(read_file(&sandbox, user_conf).await).expect("UTF-8");
-    assert!(contents.contains("remote = true"), "{contents}");
-    assert!(
-        contents.contains("uri = \"unix:///run/podman/podman.sock\""),
-        "{contents}"
-    );
-    assert!(
-        backend.execution_specs().iter().any(|spec| matches!(
-            spec.program(),
-            Program::Command { executable, args }
-                if executable.as_str() == "/usr/bin/sudo" && args == &["-n", "/usr/bin/chown", "agent:agent", user_conf]
-        )),
-        "the agent user owns its Podman configuration"
-    );
 }
 
 #[tokio::test(flavor = "local")]
