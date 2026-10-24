@@ -143,6 +143,15 @@ impl AuthenticationApi for FakeAuthentication {
             })
         })
     }
+
+    fn logins(&self) -> LocalFuture<'_, Result<Vec<agent::harness::HarnessLogin>, Error>> {
+        Box::pin(async {
+            Ok(vec![agent::harness::HarnessLogin {
+                harness: agent::Harness::Pi,
+                stored: None,
+            }])
+        })
+    }
 }
 
 impl SessionApi for FakeSessions {
@@ -685,6 +694,18 @@ async fn an_interrupted_prompt_is_still_delivered() {
     })
     .await
     .expect("the delivery runs to completion without its client");
+}
+
+#[tokio::test(flavor = "local")]
+async fn harness_logins_cross_the_wire_without_credentials() {
+    let fixture = api();
+    assert_eq!(
+        fixture.client.auth_logins().await.expect("logins"),
+        [agent::harness::HarnessLogin {
+            harness: agent::Harness::Pi,
+            stored: None,
+        }]
+    );
 }
 
 #[tokio::test(flavor = "local")]

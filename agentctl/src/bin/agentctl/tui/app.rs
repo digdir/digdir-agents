@@ -1329,7 +1329,7 @@ impl App {
     }
 
     fn agent_matches(&self, agent: &Agent) -> bool {
-        self.matches(&agent.metadata.name) || self.matches(agent_state(agent).label)
+        self.matches(&agent.metadata.name) || self.matches(agent_state(agent).phase.label())
     }
 
     /// Positions of the group's Sessions the tree lists, folded or not: the
@@ -1450,7 +1450,7 @@ impl App {
             provisioning: self
                 .agents
                 .iter()
-                .filter(|agent| agent_state(agent).label == "Provisioning")
+                .filter(|agent| agent_state(agent).phase == AgentPhase::Provisioning)
                 .count(),
             ..TriageCounts::default()
         };
@@ -2460,7 +2460,7 @@ impl App {
                     };
                     let AgentState {
                         tone,
-                        label: state,
+                        phase,
                         detail: status,
                         failure,
                         since,
@@ -2493,7 +2493,7 @@ impl App {
                         attention,
                         marker,
                         name: agent.metadata.name.clone(),
-                        state,
+                        state: phase.label(),
                         tone,
                         since: since.map_or_else(String::new, format::format_age),
                         detail,
@@ -2585,13 +2585,47 @@ fn offset_clamped(current: usize, limit: usize, delta: isize) -> usize {
     }
 }
 
+/// What an Agent is doing, as the tree shows it and `agentctl status --json` names it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AgentPhase {
+    Ready,
+    Pending,
+    Starting,
+    Provisioning,
+    Retrying,
+    Failed,
+    Unresponsive,
+    Stopping,
+    Stopped,
+    Terminating,
+}
+
+impl AgentPhase {
+    /// The phase as the tree shows it.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Ready => "Ready",
+            Self::Pending => "Pending",
+            Self::Starting => "Starting",
+            Self::Provisioning => "Provisioning",
+            Self::Retrying => "Retrying",
+            Self::Failed => "Failed",
+            Self::Unresponsive => "Unresponsive",
+            Self::Stopping => "Stopping",
+            Self::Stopped => "Stopped",
+            Self::Terminating => "Terminating",
+        }
+    }
+}
+
 /// An Agent row's state, the detail beside it and when it entered the state.
-struct AgentState {
+pub(crate) struct AgentState {
     tone: Tone,
-    label: &'static str,
-    detail: String,
+    pub(crate) phase: AgentPhase,
+    pub(crate) detail: String,
     /// The detail is a failure, whose cause is at its end.
-    failure: bool,
+    pub(crate) failure: bool,
     since: Option<OffsetDateTime>,
 }
 
@@ -2602,20 +2636,20 @@ struct AgentState {
 /// retrying stays Retrying through each retry, and time in state is how long
 /// `Ready` has been in its current state. A pass for a newer generation is
 /// provisioning the change, and its time in state is the pass's own.
-fn agent_state(agent: &Agent) -> AgentState {
-    let state = |tone, label, detail, since| AgentState {
+pub(crate) fn agent_state(agent: &Agent) -> AgentState {
+    let state = |tone, phase, detail, since| AgentState {
         tone,
-        label,
+        phase,
         detail,
         failure: false,
         since,
     };
-    let failed = |tone, label, detail, since| AgentState {
+    let failed = |tone, phase, detail, since| AgentState {
         failure: true,
-        ..state(tone, label, detail, since)
+        ..state(tone, phase, detail, since)
     };
     if let Some(deleted) = agent.metadata.deletion_timestamp {
-        return state(Tone::Red, "Terminating", String::new(), Some(deleted));
+        return state(Tone::Red, AgentPhase::Terminating, String::new(), Some(deleted));
     }
     let ready = agent.status.ready_condition();
     let entered = ready.and_then(|ready| ready.last_transition_time);
@@ -2626,39 +2660,39 @@ fn agent_state(agent: &Agent) -> AgentState {
         .filter(|_| agent.status.observed_generation == agent.metadata.generation);
     let changing = if agent.spec.is_stopped() {
         if !stop_pending(agent) {
-            return state(Tone::Gray, "Stopped", String::new(), entered);
+            return state(Tone::Gray, AgentPhase::Stopped, String::new(), entered);
         }
         // A failed stop reads as Retrying below, like any other failed pass.
-        failure.is_none().then_some("Stopping")
+        failure.is_none().then_some(AgentPhase::Stopping)
     } else {
         ready
             .is_some_and(|ready| ready.reason == Condition::REASON_STARTING)
-            .then_some("Starting")
+            .then_some(AgentPhase::Starting)
     };
-    if let Some(label) = changing {
+    if let Some(phase) = changing {
         let detail = provisioning(agent).map_or_else(String::new, progress_summary);
-        return state(Tone::Cyan, label, detail, entered);
+        return state(Tone::Cyan, phase, detail, entered);
     }
     // Retried like any transient failure, but nothing reaches the guest until it responds again.
     if agent.status.unresponsive().is_some() {
-        return failed(Tone::Red, "Unresponsive", message(), entered);
+        return failed(Tone::Red, AgentPhase::Unresponsive, message(), entered);
     }
     match (failure, provisioning(agent)) {
-        (Some(FailureKind::Invalid), _) => failed(Tone::Red, "Failed", message(), entered),
+        (Some(FailureKind::Invalid), _) => failed(Tone::Red, AgentPhase::Failed, message(), entered),
         (Some(FailureKind::Transient), Some(progress)) => {
-            state(Tone::Yellow, "Retrying", progress_summary(progress), entered)
+            state(Tone::Yellow, AgentPhase::Retrying, progress_summary(progress), entered)
         }
-        (Some(FailureKind::Transient), None) => failed(Tone::Yellow, "Retrying", message(), entered),
+        (Some(FailureKind::Transient), None) => failed(Tone::Yellow, AgentPhase::Retrying, message(), entered),
         (None, Some(progress)) => state(
             Tone::Cyan,
-            "Provisioning",
+            AgentPhase::Provisioning,
             progress_summary(progress),
             Some(pass_started(progress)),
         ),
         (None, None) => match ready.map(|ready| ready.status) {
-            None => state(Tone::Gray, "Pending", String::new(), None),
-            Some(ConditionStatus::True) => state(Tone::Green, "Ready", String::new(), entered),
-            Some(_) => failed(Tone::Cyan, "Starting", message(), entered),
+            None => state(Tone::Gray, AgentPhase::Pending, String::new(), None),
+            Some(ConditionStatus::True) => state(Tone::Green, AgentPhase::Ready, String::new(), entered),
+            Some(_) => failed(Tone::Cyan, AgentPhase::Starting, message(), entered),
         },
     }
 }
