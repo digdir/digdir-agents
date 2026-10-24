@@ -7,14 +7,15 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, sessions};
 
 use super::protocol::{
-    DaemonInfo, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, MAX_RESPONSE_BYTES,
-    METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE,
-    METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH,
-    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, ProgressParams, ReadMessage, Request,
-    ResourcesWatchParams, Response, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
-    SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
+    DaemonInfo, DirectoryParams, ExecutionEnsureParams, GithubLoginParams, GithubLogoutResult, GithubOwnerParams,
+    JSON_RPC_VERSION, LoginParams, MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS,
+    METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_GITHUB_ACCOUNTS, METHOD_GITHUB_LOGIN,
+    METHOD_GITHUB_LOGOUT, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
+    METHOD_RESOURCES_WATCH, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET,
+    METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN,
+    METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, ProgressParams,
+    ReadMessage, Request, ResourcesWatchParams, Response, SessionEnsureParams, SessionListParams, SessionParams,
+    SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
 };
 
 /// A byte stream usable by the Agent Control API client.
@@ -296,6 +297,42 @@ impl Client {
     /// Returns an error when the daemon cannot be reached or cannot read its database.
     pub async fn auth_logins(&self) -> Result<Vec<harness::HarnessLogin>, Error> {
         self.call(METHOD_AUTH_LOGINS, serde_json::json!({})).await
+    }
+
+    /// Has agentd check `token` with GitHub and keep it for Agents of `owner`, replacing the
+    /// owner's earlier token, then re-converge the Agents that declare that owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the token or owner is invalid, GitHub rejects the token or cannot be
+    /// reached, or it cannot be persisted. No error contains the token.
+    pub async fn github_login(&self, token: &str, owner: &str) -> Result<crate::github::GithubLogin, Error> {
+        let params = GithubLoginParams {
+            token: token.to_owned(),
+            owner: owner.to_owned(),
+        };
+        self.call(METHOD_GITHUB_LOGIN, params).await
+    }
+
+    /// Forgets the GitHub token kept for `owner`, returning it, or `None` when there was none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or cannot update its database.
+    pub async fn github_logout(&self, owner: &str) -> Result<Option<crate::github::GithubToken>, Error> {
+        let result: GithubLogoutResult = self
+            .call(METHOD_GITHUB_LOGOUT, GithubOwnerParams { owner: owner.into() })
+            .await?;
+        Ok(result.forgotten)
+    }
+
+    /// The stored GitHub tokens, by owner, without the tokens.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or cannot read its database.
+    pub async fn github_accounts(&self) -> Result<Vec<crate::github::GithubToken>, Error> {
+        self.call(METHOD_GITHUB_ACCOUNTS, serde_json::json!({})).await
     }
 
     /// Creates or resolves one named session attach target.
