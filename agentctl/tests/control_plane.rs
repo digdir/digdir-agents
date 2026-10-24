@@ -11,7 +11,8 @@ use std::{
 };
 
 use agent::{
-    AgentId, ConditionStatus, EnvironmentSpec, Error, FailureKind, MountSpec, SecretSpec, Status,
+    AgentId, Condition, ConditionStatus, EnvironmentSpec, Error, FailureKind, MountSpec, NestedSandboxes, SecretSpec,
+    Status,
     control_plane::{
         AgentRecord, AgentStore, ControlPlane, Controller, Convergence, Notifier, Reconciler, WaitPolicy, memory,
     },
@@ -19,11 +20,12 @@ use agent::{
     resources::Changes,
     sandbox::{
         ExecutionService, PlatformAdapter, Provider, ProviderEnsureOutcome, ProviderId, Service, UNRESPONSIVE_AFTER,
+        resolve_nested_sandboxes,
     },
 };
 use sandbox::{
     EnsureSandboxRequest, GuestHeartbeat, LocalFuture, Platform, RetentionPolicy, RootFilesystem, SandboxHandle,
-    SandboxName, SandboxPath, SandboxResources, SandboxService,
+    SandboxName, SandboxPath, SandboxService,
     backend::SandboxBackend as _,
     init::InitSystem,
     memory as sandbox_memory,
@@ -93,6 +95,8 @@ struct MemoryProvider {
     kills: Rc<Cell<usize>>,
     /// Graceful stops never finish, as for a guest that ignores the shutdown; kills still do.
     hanging_stops: Rc<Cell<bool>>,
+    /// Whether nested Sandboxes are offered, or why not.
+    nested_sandboxes_offered: Rc<RefCell<Result<(), String>>>,
 }
 
 impl MemoryProvider {
@@ -111,6 +115,7 @@ impl MemoryProvider {
             failing_stops: Rc::new(Cell::new(0)),
             kills: Rc::new(Cell::new(0)),
             hanging_stops: Rc::new(Cell::new(false)),
+            nested_sandboxes_offered: Rc::new(RefCell::new(Err("the memory backend cannot nest".into()))),
         }
     }
 
@@ -154,6 +159,10 @@ impl Provider for MemoryProvider {
                     blocking.release.notified().await;
                 }
             }
+            let nested_sandboxes = resolve_nested_sandboxes(
+                record.agent.spec.sandbox.resources.nested_sandboxes,
+                self.nested_sandboxes_offered.borrow().clone(),
+            )?;
             let spec = record
                 .agent
                 .spec
@@ -177,6 +186,7 @@ impl Provider for MemoryProvider {
                 .map_err(Error::from)?;
             Ok(ProviderEnsureOutcome {
                 sandbox,
+                nested_sandboxes,
                 runtime_restarted: self.report_runtime_restart.replace(false) || was_stopped,
                 harnesses: record
                     .agent
@@ -921,6 +931,69 @@ async fn sandbox_runtime_restart_notifies_sessions_without_an_identity_change() 
 }
 
 #[tokio::test(flavor = "local")]
+async fn nested_sandboxes_are_reported_in_a_condition_and_an_unmet_requirement_fails_the_agent() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let provider = MemoryProvider::new(Rc::new(sandbox_memory::Provider::new()));
+    let offered = provider.nested_sandboxes_offered.clone();
+    let reconciler = reconciler(store.clone(), Rc::new(provider));
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    let apply = async |nested_sandboxes| {
+        let mut request = apply_request("worker");
+        request.agent.spec.sandbox.resources.nested_sandboxes = nested_sandboxes;
+        control_plane.apply(request).await.expect("apply");
+        let id = store.get_by_name("worker").await.expect("Agent").id;
+        // A pass that records an invalid Agent also returns why.
+        if let Err(error) = reconciler.reconcile(id).await {
+            assert!(matches!(error, Error::Invalid(_)), "{error}");
+        }
+        store.get_by_name("worker").await.expect("Agent").agent.status
+    };
+    let nested = |status: &Status| {
+        status
+            .conditions
+            .iter()
+            .find(|condition| condition.kind == Condition::NESTED_SANDBOXES)
+            .map(|condition| (condition.status, condition.reason.clone(), condition.message.clone()))
+    };
+
+    *offered.borrow_mut() = Ok(());
+    let status = apply(Some(NestedSandboxes::Preferred)).await;
+    assert_eq!(
+        nested(&status),
+        Some((ConditionStatus::True, "Available".into(), String::new()))
+    );
+
+    *offered.borrow_mut() = Err("no nesting here".into());
+    let status = apply(Some(NestedSandboxes::Preferred)).await;
+    assert!(
+        status.is_ready(),
+        "a preference the host cannot meet still runs the Agent"
+    );
+    assert_eq!(
+        nested(&status),
+        Some((
+            ConditionStatus::False,
+            "HostUnsupported".into(),
+            "no nesting here".into()
+        ))
+    );
+
+    let status = apply(Some(NestedSandboxes::Required)).await;
+    assert_eq!(status.failure, Some(FailureKind::Invalid));
+    assert!(
+        status
+            .invalid()
+            .is_some_and(|detail| detail.contains("no nesting here")),
+        "{:?}",
+        status.invalid()
+    );
+
+    let status = apply(None).await;
+    assert!(status.is_ready());
+    assert_eq!(nested(&status), None, "an Agent that asks for none reports none");
+}
+
+#[tokio::test(flavor = "local")]
 async fn releasing_a_deleted_agent_notifies_its_sessions() {
     let store = Rc::new(memory::InMemoryAgentStore::new());
     let backend = Rc::new(sandbox_memory::Provider::new());
@@ -1011,12 +1084,8 @@ async fn repeated_apply_is_idempotent_and_immutable_fields_are_rejected() {
     assert!(matches!(error, Error::Immutable("spec.sandbox.initSystem")));
 
     let mut root_mode_change = updated_request;
-    let resources = root_mode_change.agent.spec.sandbox.resources;
-    root_mode_change.agent.spec.sandbox.resources = SandboxResources::new(
-        resources.cpu(),
-        resources.memory(),
-        RootFilesystem::direct(resources.root_filesystem().capacity()),
-    );
+    let resources = &mut root_mode_change.agent.spec.sandbox.resources;
+    resources.root_filesystem = RootFilesystem::direct(resources.root_filesystem.capacity());
     let error = fixture
         .control_plane
         .apply(root_mode_change)

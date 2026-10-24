@@ -28,6 +28,8 @@ pub enum SandboxFeature {
     NestedContainers,
     /// Hand Sandbox initialization to the init system supplied by the Image.
     ImageInit,
+    /// Run Sandboxes inside the Sandbox, with the means the Backend's own Sandboxes need.
+    NestedSandboxes,
 }
 
 /// A deterministic set of Sandbox Features.

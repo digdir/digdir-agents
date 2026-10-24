@@ -451,6 +451,9 @@ impl EnsureSandboxRequest {
         if self.spec.init_system == InitSystem::Image {
             required.insert(SandboxFeature::ImageInit);
         }
+        if self.spec.resources.nested_sandboxes() {
+            required.insert(SandboxFeature::NestedSandboxes);
+        }
         required
     }
 }

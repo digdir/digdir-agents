@@ -480,6 +480,35 @@ async fn ensure_reconciles_mutable_resources() {
 }
 
 #[tokio::test(flavor = "local")]
+async fn nested_sandboxes_need_a_backend_that_offers_them() {
+    let backend = Rc::new(memory::Provider::new());
+    let service = SandboxService::new(backend);
+    let mut request = request();
+    let nested = resources("2", "1Gi", "4Gi").with_nested_sandboxes(true);
+    request.spec_mut().resources = nested;
+    let error = service
+        .ensure(&request)
+        .await
+        .expect_err("creating it should be refused");
+    assert!(
+        matches!(error, Error::UnsupportedFeature(SandboxFeature::NestedSandboxes)),
+        "{error}"
+    );
+
+    request.spec_mut().resources = resources("2", "1Gi", "4Gi");
+    let _sandbox = service.ensure(&request).await.expect("a Sandbox without it is created");
+    request.spec_mut().resources = nested;
+    let error = service
+        .ensure(&request)
+        .await
+        .expect_err("enabling it should be refused");
+    assert!(
+        matches!(error, Error::UnsupportedFeature(SandboxFeature::NestedSandboxes)),
+        "{error}"
+    );
+}
+
+#[tokio::test(flavor = "local")]
 async fn ensure_reconciles_environment_by_restarting_the_sandbox_and_network() {
     let backend = Rc::new(memory::Provider::new());
     let network = Rc::new(memory::NetworkBackend::for_endpoint(

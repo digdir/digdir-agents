@@ -7,7 +7,8 @@ use bytes::Bytes;
 use futures_util::StreamExt as _;
 use sandbox::{
     ByteQuantity, CpuQuantity, EnsureSandboxRequest, Hostname, OperationEvent, Platform, ProgressEvent,
-    RetentionPolicy, RootFilesystem, Sandbox, SandboxName, SandboxResources, SandboxService, SandboxSpec, SandboxState,
+    RetentionPolicy, RootFilesystem, Sandbox, SandboxFeature, SandboxName, SandboxResources, SandboxService,
+    SandboxSpec, SandboxState,
     backend::SandboxBackend as _,
     execution::{self, ExecutionSpec, StartExecutionRequest},
     image::ImageSource,
@@ -172,6 +173,83 @@ async fn direct_reference_sandbox_restarts_on_its_root_filesystem() {
     }
 
     backend.delete(&sandbox.id).await.expect("Sandbox should be deleted");
+}
+
+#[tokio::test(flavor = "local")]
+#[ignore = "requires a Microsandbox host runtime, hardware virtualization and registry access"]
+async fn nested_sandboxes_follow_the_resource_across_updates() {
+    let temporary = RetainedOnFailureTempDir::new();
+    let backend = Rc::new(
+        MicrosandboxProvider::open(temporary.path().join("control-plane"))
+            .await
+            .expect("Backend should open"),
+    );
+    let service = SandboxService::new(backend.clone());
+    let supported = backend
+        .capabilities(&native_linux_platform())
+        .await
+        .expect("capabilities should be reported")
+        .features
+        .contains(SandboxFeature::NestedSandboxes);
+    let nested = resources("1", "512Mi", "1Gi").with_nested_sandboxes(true);
+    let mut request = EnsureSandboxRequest::new(
+        SandboxName::new("nested-worker").expect("test Sandbox name should be valid"),
+        SandboxSpec {
+            image: ImageSource::Reference {
+                reference: "docker.io/library/alpine:3.22".to_string(),
+            },
+            platform: native_linux_platform(),
+            resources: nested,
+            init_system: sandbox::init::InitSystem::Backend,
+            retention_policy: RetentionPolicy::Delete,
+        },
+    );
+    if !supported {
+        let error = service.ensure(&request).await.expect_err("this host cannot nest");
+        assert!(
+            matches!(
+                error,
+                sandbox::Error::UnsupportedFeature(SandboxFeature::NestedSandboxes)
+            ),
+            "{error}"
+        );
+        return;
+    }
+
+    let (sandbox, _) = collect_progress(service.ensure(&request))
+        .await
+        .expect("a nested Sandbox should start");
+    assert!(has_kvm(&backend, &sandbox).await, "the guest should have /dev/kvm");
+    request.spec_mut().resources = resources("1", "512Mi", "1Gi");
+    let (sandbox, _) = collect_progress(service.ensure(&request))
+        .await
+        .expect("nesting should be turned off");
+    assert!(
+        !has_kvm(&backend, &sandbox).await,
+        "the restarted guest should have no /dev/kvm"
+    );
+    // Turned on while stopped, it applies when the Sandbox starts again.
+    backend.stop(&sandbox.id).await.expect("Sandbox should stop");
+    request.spec_mut().resources = nested;
+    let (sandbox, _) = collect_progress(service.ensure(&request))
+        .await
+        .expect("nesting should be turned on");
+    assert!(
+        has_kvm(&backend, &sandbox).await,
+        "the started guest should have /dev/kvm again"
+    );
+
+    backend.delete(&sandbox.id).await.expect("Sandbox should be deleted");
+}
+
+async fn has_kvm(backend: &MicrosandboxProvider, sandbox: &Sandbox) -> bool {
+    let output = run(
+        backend,
+        &sandbox.id,
+        shell("if [ -c /dev/kvm ]; then echo yes; else echo no; fi"),
+    )
+    .await;
+    output.stdout.as_ref() == b"yes\n"
 }
 
 /// Disrupts the running Sandbox's runtime with `disrupt`, then checks that a

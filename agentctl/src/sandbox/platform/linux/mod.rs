@@ -2,6 +2,7 @@
 
 mod command;
 mod home;
+mod kvm;
 mod podman;
 mod sources;
 pub(crate) mod ssh;
@@ -16,6 +17,7 @@ use super::{super::PlatformAdapter, files::write_if_changed};
 pub(crate) use command::run_checked;
 use command::{checked_output, path_exists};
 use home::{archive_home, sync_home};
+use kvm::grant_kvm;
 use podman::{configure_podman, point_podman_at_socket};
 use sources::{read_instructions, read_skills};
 use systemd::{SYSTEMCTL, SYSTEMD_RUNNING, systemd_available, wait_for_systemd};
@@ -124,6 +126,7 @@ impl Linux {
         let step = steps.start_step("Prepare workspace and Podman").await;
         run_checked(sandbox, "/usr/bin/install", ["-d", "-m", "0755", WORKING_DIRECTORY]).await?;
         let podman = configure_podman(sandbox).await?;
+        grant_kvm(sandbox).await?;
         step.complete().await;
         let step = steps.start_step("Sync home").await;
         let archive = archive_home(record.source_directory.clone(), record.agent.spec.home.source.clone()).await?;

@@ -564,8 +564,8 @@ fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) -> Result<(
     if current.agent.spec.sandbox.init_system != desired.spec.sandbox.init_system {
         return Err(Error::Immutable("spec.sandbox.initSystem"));
     }
-    if current.agent.spec.sandbox.resources.root_filesystem().mode()
-        != desired.spec.sandbox.resources.root_filesystem().mode()
+    if current.agent.spec.sandbox.resources.root_filesystem.mode()
+        != desired.spec.sandbox.resources.root_filesystem.mode()
     {
         return Err(Error::Immutable("spec.sandbox.resources.rootFilesystem.mode"));
     }

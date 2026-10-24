@@ -4,7 +4,7 @@ mod support;
 
 use std::path::PathBuf;
 
-use agent::{API_VERSION, EnvironmentSpec, Harness, KIND, SecretSpec, manifest};
+use agent::{API_VERSION, EnvironmentSpec, Harness, KIND, NestedSandboxes, SecretSpec, manifest};
 use sandbox::RootFilesystemMode;
 
 #[test]
@@ -25,7 +25,7 @@ fn decodes_the_minimal_manifest() {
         Some(Harness::ClaudeCode)
     );
     assert_eq!(
-        agent.spec.sandbox.resources.root_filesystem().mode(),
+        agent.spec.sandbox.resources.root_filesystem.mode(),
         RootFilesystemMode::Layered
     );
 }
@@ -498,6 +498,51 @@ fn decodes_each_part_of_a_manifest_and_serializes_only_what_it_sets() {
         let agent = manifest::decode(&bytes).unwrap_or_else(|error| panic!("{what}: {error}"));
         let value = serde_json::to_value(&agent).expect("Agent JSON");
         check(&agent, &value);
+    }
+}
+
+#[test]
+fn nested_sandboxes_are_decoded_and_serialized_only_when_asked_for() {
+    let agent = manifest::decode(&manifest_with(&[])).expect("manifest");
+    assert_eq!(agent.spec.sandbox.resources.nested_sandboxes, None);
+    let value = serde_json::to_value(&agent).expect("Agent JSON");
+    assert!(value["spec"]["sandbox"]["resources"].get("nestedSandboxes").is_none());
+
+    for (mode, expected) in [
+        ("required", NestedSandboxes::Required),
+        ("preferred", NestedSandboxes::Preferred),
+    ] {
+        let nested = manifest_with(&[(
+            ROOT_FILESYSTEM_MODE,
+            &format!("        mode: layered\n      nestedSandboxes: {mode}\n"),
+        )]);
+        let agent = manifest::decode(&nested).expect("manifest");
+        assert_eq!(agent.spec.sandbox.resources.nested_sandboxes, Some(expected));
+        let value = serde_json::to_value(&agent).expect("Agent JSON");
+        assert_eq!(value["spec"]["sandbox"]["resources"]["nestedSandboxes"], mode);
+    }
+
+    // It is a resource, not a setting beside them.
+    let beside = manifest_with(&[(
+        ROOT_FILESYSTEM_MODE,
+        "        mode: layered\n    nestedSandboxes: preferred\n",
+    )]);
+    let error = manifest::decode(&beside).expect_err("the setting should be refused beside resources");
+    assert!(error.to_string().contains("unknown field `nestedSandboxes`"), "{error}");
+
+    // The manifest says how much the Agent needs them, not whether the Sandbox has them.
+    for value in ["true", "false", "bogus"] {
+        let invalid = manifest_with(&[(
+            ROOT_FILESYSTEM_MODE,
+            &format!("        mode: layered\n      nestedSandboxes: {value}\n"),
+        )]);
+        let error = manifest::decode(&invalid).expect_err("the value should be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("spec.sandbox.resources.nestedSandboxes: unknown variant"),
+            "{value}: {error}"
+        );
     }
 }
 

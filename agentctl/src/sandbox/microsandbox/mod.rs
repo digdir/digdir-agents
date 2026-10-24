@@ -19,7 +19,7 @@ pub use terminal::attach_terminal;
 
 use preparation::Preparation;
 
-use super::{Provider, ProviderEnsureOutcome, ProviderId};
+use super::{NestedSandboxesOutcome, Provider, ProviderEnsureOutcome, ProviderId, resolve_nested_sandboxes};
 
 /// `RUST_LOG` directives that keep this Provider's runtime helper processes quiet at the default level.
 pub const LOG_DIRECTIVES: &str = sandbox_microsandbox::LOG_DIRECTIVES;
@@ -110,6 +110,21 @@ impl Adapter {
             .resolve_from(&record.source_directory, &self.default_architecture)
     }
 
+    /// Reports whether the Provider offers nested Sandboxes for the Agent's platform, and why not
+    /// when it does not.
+    async fn nested_sandboxes_offered(&self, record: &AgentRecord) -> Result<Result<(), String>, Error> {
+        let capabilities = self.service.capabilities(&self.sandbox_spec(record).platform).await?;
+        if capabilities
+            .features()
+            .contains(::sandbox::SandboxFeature::NestedSandboxes)
+        {
+            return Ok(Ok(()));
+        }
+        Ok(Err(sandbox_microsandbox::nested_sandbox_support()
+            .err()
+            .unwrap_or_else(|| "this platform has no nested Sandboxes".into())))
+    }
+
     fn sandbox_mounts(record: &AgentRecord) -> Vec<::sandbox::mount::Mount> {
         record.agent.spec.sandbox.resolved_mounts()
     }
@@ -139,6 +154,12 @@ impl Provider for Adapter {
         progress: ::sandbox::ProgressReporter,
     ) -> LocalFuture<'a, Result<ProviderEnsureOutcome, Error>> {
         Box::pin(async move {
+            let requested = record.agent.spec.sandbox.resources.nested_sandboxes;
+            let offered = match requested {
+                Some(_) => self.nested_sandboxes_offered(record).await?,
+                None => Ok(()),
+            };
+            let nested_sandboxes = resolve_nested_sandboxes(requested, offered)?;
             let running_before = record
                 .agent
                 .status
@@ -156,13 +177,22 @@ impl Provider for Adapter {
                 }
             }
             let sandbox_name = record.sandbox_name()?;
-            // Ensure starts a stopped Sandbox, and restarts a running one to replace its environment.
+            let mut spec = self.sandbox_spec(record);
+            spec.resources = spec
+                .resources
+                .with_nested_sandboxes(nested_sandboxes == Some(NestedSandboxesOutcome::Available));
+            // Ensure starts a stopped Sandbox, and restarts a running one to replace its environment
+            // or its resources.
             let runtime_restarted = match self.service.inspect(&sandbox_name).await {
-                Ok(sandbox) => sandbox.state == SandboxState::Stopped || sandbox.environment != environment,
+                Ok(sandbox) => {
+                    sandbox.state == SandboxState::Stopped
+                        || sandbox.environment != environment
+                        || sandbox.resources != spec.resources
+                }
                 Err(error) if error.is_not_found() => false,
                 Err(error) => return Err(error.into()),
             };
-            let request = EnsureSandboxRequest::new(sandbox_name, self.sandbox_spec(record))
+            let request = EnsureSandboxRequest::new(sandbox_name, spec)
                 .with_hostname(record.sandbox_hostname()?)
                 .with_mounts(Self::sandbox_mounts(record))
                 .with_environment(environment);
@@ -176,6 +206,7 @@ impl Provider for Adapter {
                 sandbox,
                 runtime_restarted,
                 harnesses,
+                nested_sandboxes,
             })
         })
     }

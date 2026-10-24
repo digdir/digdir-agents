@@ -54,12 +54,8 @@ RUN apt-get update \
 # Podman, so that a nested agentd can build Agent images.
 RUN agent-feature install containers
 
-# A nested Microsandbox runtime needs /dev/kvm; tmpfiles.conf hands the device to the kvm group. The
-# workspace list names the repositories the base image's workspace unit clones at boot.
-COPY common/tmpfiles.conf /usr/lib/tmpfiles.d/agent-dev.conf
+# The workspace list names the repositories the base image's workspace unit clones at boot.
 COPY common/workspace.list /etc/agent-workspace.d/self-dev.list
-RUN { getent group kvm >/dev/null || groupadd --system kvm; } \
-    && usermod --append --groups kvm agent
 
 ARG TARGETARCH
 ARG ACTIONLINT_VERSION=1.7.12

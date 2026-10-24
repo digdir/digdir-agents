@@ -5,8 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use time::OffsetDateTime;
 
 use ::sandbox::{
-    ByteQuantity, Platform, RetentionPolicy, SandboxName, SandboxPath, SandboxResources, image::ImageSource,
-    init::InitSystem, mount::Mount,
+    ByteQuantity, CpuQuantity, Platform, RetentionPolicy, RootFilesystem, SandboxName, SandboxPath, SandboxResources,
+    image::ImageSource, init::InitSystem, mount::Mount,
 };
 use serde::{Deserialize, Serialize};
 
@@ -263,7 +263,7 @@ pub struct SandboxManifestSpec {
     /// Desired platform constraints.
     pub platform: PlatformManifestSpec,
     /// Desired mutable compute and writable root filesystem resources.
-    pub resources: SandboxResources,
+    pub resources: ResourcesManifestSpec,
     /// Process responsible for initializing the Sandbox after backend setup.
     #[serde(default)]
     pub init_system: InitSystem,
@@ -273,6 +273,43 @@ pub struct SandboxManifestSpec {
     /// Host filesystem and in-memory attachments materialized with the Sandbox.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<MountSpec>,
+}
+
+/// Sandbox resources as supplied by an Agent manifest.
+///
+/// Unlike the lower-layer [`SandboxResources`], which turns nested Sandboxes on or off, this
+/// representation keeps how much the Agent needs them; the Agent decides from that and the host.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ResourcesManifestSpec {
+    /// Desired CPU quantity.
+    pub cpu: CpuQuantity,
+    /// Desired Sandbox memory quantity.
+    pub memory: ByteQuantity,
+    /// Desired writable root filesystem capacity and mode.
+    pub root_filesystem: RootFilesystem,
+    /// Whether the Sandbox runs Sandboxes of its own, such as nested Agents. Absent, it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nested_sandboxes: Option<NestedSandboxes>,
+}
+
+impl ResourcesManifestSpec {
+    /// Returns the Sandbox resources without nested Sandboxes, which the Agent adds when it has
+    /// decided them.
+    #[must_use]
+    pub const fn sandbox_resources(self) -> SandboxResources {
+        SandboxResources::new(self.cpu, self.memory, self.root_filesystem)
+    }
+}
+
+/// How much an Agent needs its Sandbox to run Sandboxes of its own.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NestedSandboxes {
+    /// The Agent cannot do without them: it fails on a host that cannot provide them.
+    Required,
+    /// The Agent uses them where the host provides them, and runs without them elsewhere.
+    Preferred,
 }
 
 impl SandboxManifestSpec {
@@ -287,7 +324,7 @@ impl SandboxManifestSpec {
         sandbox::SandboxSpec {
             image: self.image.resolve_from(source_directory),
             platform: self.platform.resolve(default_architecture),
-            resources: self.resources,
+            resources: self.resources.sandbox_resources(),
             init_system: self.init_system,
             retention_policy: self.resolved_retention_policy(),
         }
@@ -940,6 +977,8 @@ impl Condition {
     /// Condition type for whether the running Sandbox's guest still makes
     /// progress, observed by the host without a round trip to the guest.
     pub const SANDBOX_RESPONSIVE: &'static str = "SandboxResponsive";
+    /// Condition type for whether the Sandbox runs the nested Sandboxes its Agent asks for.
+    pub const NESTED_SANDBOXES: &'static str = "NestedSandboxes";
     /// Condition type for declared SSH access underneath `Ready`.
     pub const SSH_READY: &'static str = "SshReady";
     /// VNC access is reconciled and the bridge to the desktop is listening.

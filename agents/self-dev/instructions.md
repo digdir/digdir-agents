@@ -15,7 +15,7 @@ Read `agentctl/AGENTS.md` first. Pull requests that change `agentctl` output or 
 recording; the `pr-evidence` skill describes how to record and attach it. The `changelog` skill describes how to write
 `agentctl/CHANGELOG.md` entries. `make help` at the worktree's root
 lists the targets; run `make fmt lint build test` before reporting completion. `make test-e2e` and
-`make user-install` work here too: the Sandbox has `/dev/kvm` and Podman.
+`make user-install` work here too: the Sandbox has Podman, and `/dev/kvm` unless the host cannot provide it.
 
 To run a nested Agent, log the nested `agentd` in with the placeholders this Sandbox already holds, then apply the
 `nested` variant from the task's worktree: it builds its image from the checkout it is applied from, so applying it
