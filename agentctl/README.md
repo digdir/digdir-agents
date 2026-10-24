@@ -36,7 +36,7 @@ change what your work needs.
 
 ## Documentation
 
-- [image-contract.md](docs/image-contract.md): what an Agent image must provide
+- [docs/](docs/README.md): agentctl's own docs, such as what an Agent image must provide
 - [architecture.md](../docs/architecture.md): the principles and diagrams
 - [GLOSSARY.md](../GLOSSARY.md): the terms used here
 - [CHANGELOG.md](CHANGELOG.md): release notes

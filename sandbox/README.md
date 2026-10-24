@@ -10,4 +10,4 @@ Rust crates for creating and running Sandboxes, isolated computers for untrusted
 | [`sandbox-authorization`](authorization/) | The contracts and vocabulary for deciding what a Sandbox may reach |
 
 [core/examples/worktree](core/examples/worktree/) runs a harness in a Sandbox without `agentd`.
-[docs/microsandbox-upgrade.md](docs/microsandbox-upgrade.md) covers updating the Microsandbox pin.
+[docs/](docs/README.md) lists its docs, such as how to update the Microsandbox pin.

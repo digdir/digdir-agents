@@ -5,6 +5,8 @@ How to name, place and write the docs in this repository.
 - A file whose name is a convention, such as `README.md`, `CHANGELOG.md` or `SKILL.md`, keeps that name. Every other
   document is lower-case kebab-case in a `docs/` directory next to the component it describes, such as
   `agentctl/docs/image-contract.md`, or in the root `docs/` when it spans components.
+- Every `docs/` directory has a `README.md` that lists its docs and what each is for, so a reader finds a doc without
+  knowing its name. Add a doc to it in the same change that adds the doc.
 - Use the terms [GLOSSARY.md](../GLOSSARY.md) defines, the same term for the same thing every time, and add a term
   there when a new concept needs one.
 - A README says what the component is, how to install or start it, and links onward.
