@@ -12,6 +12,9 @@ use crate::{
     harness::{LaunchRequest, ProcessLaunch, shell_single_quoted},
 };
 
+/// The program Pi runs as, on the host and in an Agent.
+pub(super) const PROGRAM: &str = "pi";
+
 mod bootstrap;
 mod extension;
 pub(super) mod transcript;
@@ -53,7 +56,7 @@ pub(super) async fn verify_linux(
     sandbox: &sandbox::SandboxHandle,
     expected_version: Option<&str>,
 ) -> Result<(), Error> {
-    let output = super::version_output(sandbox, "pi").await?;
+    let output = super::version_output(sandbox, PROGRAM).await?;
     if !output.status.success() {
         let message = format!("`pi --version` exited with code {}", output.status.code);
         // 126/127 mean the image does not provide the harness; retrying cannot change that.

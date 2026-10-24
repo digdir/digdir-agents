@@ -311,13 +311,13 @@ fn next_steps(
         }
     }
     match (resolution, &directory.agent) {
-        (Ok(None), _) => next.push(step(
+        (Ok(None), _) if manifest_here => next.push(step(
             "agentctl apply".to_owned(),
-            if manifest_here {
-                "Create the agent from ./agent.yaml".to_owned()
-            } else {
-                "Create an agent from an agent.yaml in this directory".to_owned()
-            },
+            "Create the agent from ./agent.yaml".to_owned(),
+        )),
+        (Ok(None), _) => next.push(step(
+            "agentctl init".to_owned(),
+            "Set up an agent for this repository".to_owned(),
         )),
         (Ok(Some(agent)), Some(here)) if agent.spec.is_stopped() => next.push(step(
             format!("agentctl start agent/{}", here.name),
@@ -548,7 +548,7 @@ mod tests {
     fn next_steps_lead_with_a_missing_login_then_this_directory() {
         assert_eq!(
             commands(&status(&[], &Ok(None), &[], &[])),
-            ["agentctl claude login", "agentctl apply"]
+            ["agentctl claude login", "agentctl init"]
         );
         assert_eq!(
             status(&[], &Ok(None), &[], &[]).next[0].purpose,
@@ -556,7 +556,7 @@ mod tests {
         );
         assert_eq!(
             commands(&status(&[Harness::Codex], &Ok(None), &[], &[])),
-            ["agentctl apply"]
+            ["agentctl init"]
         );
         // The agent here needs its own harness signed in, even when another one is.
         let worker = ready("worker");
@@ -607,7 +607,7 @@ mod tests {
         let waiting = [session("worker", "s1", true)];
         assert_eq!(
             commands(&status(&[Harness::ClaudeCode], &Ok(None), &[ready("worker")], &waiting)),
-            ["agentctl apply", "agentctl tui"]
+            ["agentctl init", "agentctl tui"]
         );
         // Several agents here: the problem says how to choose, and no command guesses.
         assert_eq!(
@@ -659,8 +659,26 @@ Next
             "{text}"
         );
         assert!(
-            text.ends_with("  agentctl apply         Create an agent from an agent.yaml in this directory\n"),
+            text.ends_with("  agentctl init          Set up an agent for this repository\n"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_manifest_here_without_its_agent_is_applied_rather_than_set_up() {
+        let with_manifest = Status::new(
+            Agentd {
+                version: Some("1.2.3".into()),
+                home: PathBuf::from("/home/person/.agent"),
+            },
+            &logins(&[Harness::ClaudeCode]),
+            PathBuf::from("/work/repo/agents/dev"),
+            &Ok(None),
+            &[],
+            &[],
+            true,
+        );
+        assert_eq!(commands(&with_manifest), ["agentctl apply"]);
+        assert_eq!(with_manifest.next[0].purpose, "Create the agent from ./agent.yaml");
     }
 }

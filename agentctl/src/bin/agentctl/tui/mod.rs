@@ -852,7 +852,7 @@ fn manifest_candidates_blocking(current_directory: Option<&Path>, agents: &[Agen
 /// Returns the root of the git repository containing `directory`, if any.
 ///
 /// A linked worktree keeps `.git` as a file, so only presence is checked.
-fn repository_root(directory: &Path) -> Option<&Path> {
+pub(crate) fn repository_root(directory: &Path) -> Option<&Path> {
     directory.ancestors().find(|ancestor| ancestor.join(".git").exists())
 }
 

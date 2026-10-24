@@ -19,6 +19,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 mod format;
 mod guide;
+mod init;
 mod launch;
 mod progress;
 mod prompt;
@@ -36,7 +37,7 @@ use tokio::runtime::LocalRuntime;
 #[command(
     name = "agentctl",
     about = "Run coding agents in sandboxes on this machine",
-    after_help = "To have a coding agent set up an agent: agentctl guide setup\nTo stop every agent at once: agentctl kill --all",
+    after_help = "To set up an agent with the coding agent you use: agentctl init\nTo stop every agent at once: agentctl kill --all",
     version = agent::build_version()
 )]
 struct Arguments {
@@ -49,6 +50,12 @@ struct Arguments {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Set up an agent for this repository, with the coding agent you already use here.
+    ///
+    /// Starts Claude Code, Codex or Pi in the repository's root, asking which when several are
+    /// installed, on a short prompt that has it follow `agentctl guide setup` with you. Without
+    /// any of them, prints that prompt to paste into the coding agent you use.
+    Init,
     /// Show agentd, the harness logins and this directory's agent, with what to run next.
     Status {
         /// Print a JSON object whose keys stay stable, for agents and scripts.
@@ -601,7 +608,8 @@ fn run() -> CommandResult<ExitCode> {
         }
         if !matches!(
             arguments.command,
-            Command::Create { .. }
+            Command::Init
+                | Command::Create { .. }
                 | Command::Prompt { .. }
                 | Command::Self_ { .. }
                 | Command::SshConfig { .. }
@@ -620,6 +628,7 @@ fn run() -> CommandResult<ExitCode> {
 )]
 async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> CommandResult<ExitCode> {
     match command {
+        Command::Init => return init::run(),
         Command::Self_ { command } => self_update::execute(command, home).await?,
         Command::Claude {
             command: ClaudeCommand::Login { from_stdin },
@@ -1055,16 +1064,22 @@ fn ssh_client_arguments(access: &agent::ssh::AccessInfo) -> [&std::ffi::OsStr; 3
     ["-F".as_ref(), access.config_file.as_os_str(), access.alias.as_ref()]
 }
 
+fn run_ssh_client(ssh: ProcessCommand) -> CommandResult<ExitCode> {
+    run_in_place(ssh).map_err(|error| ssh_client_error(&error))
+}
+
+/// Runs `command` in agentctl's place, on its terminal, for agentctl's exit code: on Unix
+/// agentctl becomes it, elsewhere waits for it.
 #[cfg(unix)]
-fn run_ssh_client(mut ssh: ProcessCommand) -> CommandResult<ExitCode> {
+fn run_in_place(mut command: ProcessCommand) -> std::io::Result<ExitCode> {
     use std::os::unix::process::CommandExt as _;
 
-    Err(ssh_client_error(&ssh.exec()))
+    Err(command.exec())
 }
 
 #[cfg(not(unix))]
-fn run_ssh_client(mut ssh: ProcessCommand) -> CommandResult<ExitCode> {
-    let status = ssh.status().map_err(|error| ssh_client_error(&error))?;
+fn run_in_place(mut command: ProcessCommand) -> std::io::Result<ExitCode> {
+    let status = command.status()?;
     Ok(status.code().map_or(ExitCode::FAILURE, exit_code))
 }
 
@@ -1538,16 +1553,22 @@ async fn resolve_agent_name(
         return Ok(agent);
     }
     let directory = std::env::current_dir().map_err(Error::from)?;
+    let manifest_here = directory.join(agent::manifest::MANIFEST_FILE).is_file();
     match client.resolve_agent_variant(directory, variant).await {
         Ok(agent) => Ok(agent.metadata.name),
-        Err(error) => Err(inference_error(error)),
+        Err(error) => Err(inference_error(error, manifest_here)),
     }
 }
 
-fn inference_error(error: Error) -> CommandError {
+/// Why no agent was found here, and what creates one: applying the manifest in this directory, or
+/// setting one up when there is none.
+fn inference_error(error: Error, manifest_here: bool) -> CommandError {
     match error {
-        Error::Rpc(error) if error.is_not_found() => {
+        Error::Rpc(error) if error.is_not_found() && manifest_here => {
             CommandError::Message("no agent here; `agentctl apply` creates one, or pass --agent NAME".into())
+        }
+        Error::Rpc(error) if error.is_not_found() => {
+            CommandError::Message("no agent here; `agentctl init` sets one up, or pass --agent NAME".into())
         }
         Error::Rpc(error) => CommandError::Message(error.message),
         error => error.into(),
@@ -2042,8 +2063,8 @@ mod tests {
             .filter_map(|line| line.split_whitespace().next())
             .collect::<Vec<_>>();
         assert_eq!(
-            commands[..6],
-            ["status", "tui", "attach", "stop", "kill", "start"],
+            commands[..7],
+            ["init", "status", "tui", "attach", "stop", "kill", "start"],
             "{help}"
         );
         for hidden in ["ssh-proxy", "vnc-proxy"] {
@@ -2567,22 +2588,32 @@ mod tests {
 
     #[test]
     fn inference_errors_have_one_actionable_message() {
-        let ambiguous = inference_error(Error::Rpc(agent::control_api::ResponseError {
-            code: -32602,
-            message: "multiple agents were applied from this directory; specify --agent or --variant".into(),
-        }));
+        let ambiguous = inference_error(
+            Error::Rpc(agent::control_api::ResponseError {
+                code: -32602,
+                message: "multiple agents were applied from this directory; specify --agent or --variant".into(),
+            }),
+            false,
+        );
         assert_eq!(
             ambiguous.to_string(),
             "multiple agents were applied from this directory; specify --agent or --variant"
         );
 
-        let missing = inference_error(Error::Rpc(agent::control_api::ResponseError {
-            code: -32004,
-            message: "Agent not found".into(),
-        }));
+        let missing = || {
+            Error::Rpc(agent::control_api::ResponseError {
+                code: -32004,
+                message: "Agent not found".into(),
+            })
+        };
         assert_eq!(
-            missing.to_string(),
-            "no agent here; `agentctl apply` creates one, or pass --agent NAME"
+            inference_error(missing(), false).to_string(),
+            "no agent here; `agentctl init` sets one up, or pass --agent NAME"
+        );
+        assert_eq!(
+            inference_error(missing(), true).to_string(),
+            "no agent here; `agentctl apply` creates one, or pass --agent NAME",
+            "an agent.yaml here is applied rather than set up"
         );
     }
 
