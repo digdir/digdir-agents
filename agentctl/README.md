@@ -190,7 +190,9 @@ Sandbox Provider supports them; these attachments are immutable for the Agent in
 Agent fails on a host that cannot provide them; with `preferred`, it runs without them there, and its `NestedSandboxes`
 condition says why. Microsandbox gives the Sandbox `/dev/kvm` for them, which needs a Linux x86_64 host with nested KVM
 enabled or a Mac with an Apple M3 or newer chip and macOS 15 or newer. Agent setup gives the device to the `agent`
-group, so the image need not grant it. Turning nested Sandboxes on or off restarts a running Agent.
+group, so the image need not grant it. Turning nested Sandboxes on or off restarts a running Agent. To run nested Agents,
+the image needs `agentctl` and `agentd`: copy them from the [agentctl image](../images/agentctl/README.md), at a
+release, the newest `main` or one commit.
 
 `spec.home` is a continuously applied overlay onto `/home/agent`. It converges files supplied by the builder but does
 not delete guest files that disappear from the source. Builders may use it to own harness configuration explicitly,

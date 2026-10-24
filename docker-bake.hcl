@@ -71,3 +71,25 @@ target "self-dev-full" {
     "org.opencontainers.image.description" = "The agentctl self-development Agent's image, with a browser and a desktop"
   }
 }
+
+# The version the agentctl image's binaries report. CI sets the release's, or `<latest release>.main.g<commit>` on main.
+variable "AGENT_VERSION" {
+  default = "v0.0.1-dev"
+}
+
+# agentctl and agentd alone, for Agent images to copy in. Built from the repository root; locally under a localhost/
+# tag, since Podman pulls a published name over a local image when agentd builds for a platform.
+target "agentctl" {
+  inherits   = ["_source"]
+  context    = "."
+  dockerfile = "images/agentctl/Dockerfile"
+  args = {
+    AGENT_VERSION = AGENT_VERSION
+  }
+  tags = ["localhost/agentctl:dev"]
+  labels = {
+    "org.opencontainers.image.title"       = "agentctl"
+    "org.opencontainers.image.description" = "agentctl and agentd, for Agent images to copy in"
+    "org.opencontainers.image.version"     = AGENT_VERSION
+  }
+}

@@ -1,0 +1,193 @@
+# Builds the agentctl image from images/agentctl: agentctl and agentd alone, for Agent images to copy in. Pull requests
+# only build it. Every push to main, including a manual run on main, publishes it to ghcr.io/digdir/agentctl as `main`
+# and `sha-<commit>`, reporting `<latest release>.main.g<commit>`; the release workflow calls this one to publish a
+# release's as `<version>`, such as `v0.1.0-preview.13`, once the release is published.
+name: agentctl image
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed]
+    paths:
+      - images/agentctl/**
+      - docker-bake.hcl
+      - .github/workflows/agentctl-image.yml
+  # Every commit on main, so that each has a tag to pin. The build reads only the Rust workspace, so a commit that
+  # changes nothing in it reuses the cached build and only adds its tags.
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version to publish as its own tag, such as v0.1.0-preview.13
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: agentctl-image-${{ github.event.pull_request.number || inputs.version || github.ref }}
+  # Every commit on main keeps its own run, so that none is left without its sha- tag.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REPOSITORY: ghcr.io/digdir/agentctl
+
+jobs:
+  resolve:
+    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft) }}
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      publish: ${{ steps.resolve.outputs.publish }}
+      tags: ${{ steps.resolve.outputs.tags }}
+    steps:
+      - name: Resolve version and tags
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${RELEASE}" ]; then
+            version="${RELEASE}"
+            publish=true
+            tags="${version}"
+          else
+            # The latest release as the installers resolve it: the newest agentctl/ tag. The g keeps a commit that
+            # starts with 0 and has only digits from being an invalid semantic version identifier.
+            latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '[.[] | select(.tag_name | startswith("agentctl/v"))][0].tag_name')"
+            base="${latest#agentctl/}"
+            case "${base}" in
+              *-*) version="${base}.main.g${GITHUB_SHA::7}" ;;
+              *) version="${base}-main.g${GITHUB_SHA::7}" ;;
+            esac
+            if [ "${GITHUB_REF}" = refs/heads/main ] && [ "${GITHUB_EVENT_NAME}" != pull_request ]; then
+              publish=true
+            else
+              publish=false
+            fi
+            tags="main sha-${GITHUB_SHA::10}"
+          fi
+
+          echo "Building ${version} from ${GITHUB_SHA}"
+          {
+            echo "version=${version}"
+            echo "publish=${publish}"
+            echo "tags=${tags}"
+          } >> "${GITHUB_OUTPUT}"
+
+  # Each architecture builds on a native runner, as the other images do. When publishing, each pushes its image by
+  # digest, and the publish job joins them into the tagged multi-platform image.
+  build:
+    name: Build image (${{ matrix.arch }})
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login to GHCR
+        if: needs.resolve.outputs.publish == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Build image
+        env:
+          ARCH: ${{ matrix.arch }}
+          AGENT_VERSION: ${{ needs.resolve.outputs.version }}
+          PUBLISH: ${{ needs.resolve.outputs.publish }}
+        run: |
+          set -eu
+
+          metadata="${RUNNER_TEMP}/metadata.json"
+          cache="${REPOSITORY}:buildcache-${ARCH}"
+          set -- --set "agentctl.platform=linux/${ARCH}" --set "agentctl.cache-from=type=registry,ref=${cache}"
+          if [ "${PUBLISH}" = "true" ]; then
+            # Without clearing the bake file's tags, buildx refuses to push by digest; the publish job tags.
+            set -- "$@" \
+              --set "agentctl.tags=" \
+              --set "agentctl.output=type=image,name=${REPOSITORY},push-by-digest=true,name-canonical=true,push=true" \
+              --set "agentctl.cache-to=type=registry,ref=${cache},mode=max,image-manifest=true"
+          fi
+
+          docker buildx bake --file docker-bake.hcl --provenance=false --sbom=false --metadata-file "${metadata}" \
+            "$@" agentctl
+
+          if [ "${PUBLISH}" = "true" ]; then
+            mkdir -p "${RUNNER_TEMP}/digests"
+            digest="$(jq -r '.agentctl."containerimage.digest"' "${metadata}")"
+            case "${digest}" in
+              sha256:*) printf '%s\n' "${digest}" > "${RUNNER_TEMP}/digests/agentctl" ;;
+              *) echo "::error::no image digest for agentctl in ${metadata}"; exit 1 ;;
+            esac
+          fi
+
+      - name: Upload image digest
+        if: needs.resolve.outputs.publish == 'true'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: agentctl-image-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    if: needs.resolve.outputs.publish == 'true'
+    name: Publish image
+    needs: [resolve, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download image digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: agentctl-image-digest-*
+          path: ${{ runner.temp }}/digests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Tag multi-platform image
+        env:
+          TAGS: ${{ needs.resolve.outputs.tags }}
+        run: |
+          set -eu
+
+          set --
+          for tag in ${TAGS}; do
+            set -- "$@" --tag "${REPOSITORY}:${tag}"
+          done
+          docker buildx imagetools create "$@" \
+            "${REPOSITORY}@$(cat "${RUNNER_TEMP}/digests/agentctl-image-digest-amd64/agentctl")" \
+            "${REPOSITORY}@$(cat "${RUNNER_TEMP}/digests/agentctl-image-digest-arm64/agentctl")"
+          for tag in ${TAGS}; do
+            docker buildx imagetools inspect "${REPOSITORY}:${tag}"
+          done

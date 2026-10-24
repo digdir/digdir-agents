@@ -1,0 +1,17 @@
+# Only what the build reads, so that a commit changing nothing else, such as the changelog, reuses the cached build.
+*
+!.cargo/config.toml
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!agentctl/Cargo.toml
+!agentctl/src/
+!agentctl/examples/
+!sandbox/authorization/Cargo.toml
+!sandbox/authorization/src/
+!sandbox/core/Cargo.toml
+!sandbox/core/src/
+!sandbox/microsandbox/Cargo.toml
+!sandbox/microsandbox/src/
+!sandbox/core/examples/worktree/Cargo.toml
+!sandbox/core/examples/worktree/src/
