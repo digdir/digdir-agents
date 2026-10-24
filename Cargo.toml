@@ -73,3 +73,8 @@ multiple_crate_versions = "allow"
 panic = "deny"
 redundant_pub_crate = "allow"
 unwrap_used = "deny"
+
+[profile.dev]
+# Keeps file and line numbers in backtraces. With full debuginfo, every test binary carries its own copy of every
+# dependency's, which made the workspace's about 12 GB and slowed every link.
+debug = "line-tables-only"
