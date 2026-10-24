@@ -862,27 +862,33 @@ fn repository_root(directory: &Path) -> Option<&Path> {
 /// is then enumerated directly so checkout-local, ignored `agent.<variant>.yaml`
 /// siblings remain discoverable.
 fn working_tree_manifests(directory: &Path) -> Vec<PathBuf> {
-    let agents: Vec<PathBuf> = match repository_root(directory) {
-        Some(root) => WalkBuilder::new(root)
-            .max_depth(Some(DISCOVERY_DEPTH))
-            .require_git(false)
-            .follow_links(false)
-            .build()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()) && entry.file_name() == MANIFEST_FILE)
-            .map(ignore::DirEntry::into_path)
-            .collect(),
-        None => std::iter::once(directory.join(MANIFEST_FILE))
-            .chain(
-                std::fs::read_dir(directory.join("agents"))
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Result::ok)
-                    .map(|entry| entry.path().join(MANIFEST_FILE)),
-            )
-            .filter(|path| path.is_file())
-            .collect(),
-    };
+    let agents: Vec<PathBuf> = repository_root(directory).map_or_else(
+        || {
+            std::iter::once(directory.join(MANIFEST_FILE))
+                .chain(
+                    std::fs::read_dir(directory.join("agents"))
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path().join(MANIFEST_FILE)),
+                )
+                .filter(|path| path.is_file())
+                .collect()
+        },
+        |root| {
+            WalkBuilder::new(root)
+                .max_depth(Some(DISCOVERY_DEPTH))
+                .require_git(false)
+                .follow_links(false)
+                .build()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry.file_type().is_some_and(|kind| kind.is_file()) && entry.file_name() == MANIFEST_FILE
+                })
+                .map(ignore::DirEntry::into_path)
+                .collect()
+        },
+    );
     let mut found: Vec<PathBuf> = agents
         .into_iter()
         .flat_map(|base| {
