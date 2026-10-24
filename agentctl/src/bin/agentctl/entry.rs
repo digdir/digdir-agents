@@ -106,7 +106,7 @@ pub(crate) async fn bare(
             start(client, &name).await?;
             tui::run(home, client).await
         }
-        Offer::Init => init::run(),
+        Offer::Init => init::run(home, client).await,
     }
     .map(Some)
 }
@@ -120,14 +120,18 @@ pub(crate) enum Target {
 /// The current directory's agent, for a command given no agent. At a terminal, offers to set
 /// one up when there is none, which ends the command with init's exit code, and to start it when
 /// it is stopped; declining either gives the error the command gives without a terminal.
-pub(crate) async fn current_agent(client: &Client, variant: Option<AgentVariantName>) -> CommandResult<Target> {
+pub(crate) async fn current_agent(
+    home: &ControlPlaneHome,
+    client: &Client,
+    variant: Option<AgentVariantName>,
+) -> CommandResult<Target> {
     let directory = std::env::current_dir().map_err(Error::from)?;
     let manifest_here = directory.join(agent::manifest::MANIFEST_FILE).is_file();
     let resolved = client.resolve_agent_variant(directory, variant).await;
     match (offer(&resolved, false, prompt::interactive()), resolved) {
         (Some(offer @ Offer::Init), Err(error)) => {
             if accepted(&offer, false)? {
-                return init::run().map(Target::Done);
+                return Box::pin(init::run(home, client)).await.map(Target::Done);
             }
             Err(crate::inference_error(error, manifest_here))
         }

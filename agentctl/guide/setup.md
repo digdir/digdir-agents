@@ -5,6 +5,9 @@ machine, with its own disk, network mediated by the host, and no real credential
 what they need, write the agent's folder, start it and check that it works. They may never have written a
 manifest or a Dockerfile; you will.
 
+This session runs on their machine, outside any sandbox, and exists only to set up the agent. Don't start on their
+code or other tasks here: if they ask, say that the agent is the place for that, once it is running.
+
 ## 1. Find out what you can before asking
 
 - `agentctl status --json`: agentd, the harness logins agents can use, the agent this directory already has, and
@@ -104,3 +107,6 @@ Tell the person, in two or three lines, what you set up and how to start working
 anywhere in the repository opens the agent's session, starting one if it has none (detach with Ctrl-b d), and
 `agentctl tui` shows every agent and session. Suggest they commit `agents/<name>/`, without `.env`, so
 others in the repository get the same agent.
+
+Once the agent is running, or set up as far as it can go, tell them to leave this session (`/exit` in Claude Code and
+Codex, `/quit` in Pi): agentctl then offers to take them into the new agent.
