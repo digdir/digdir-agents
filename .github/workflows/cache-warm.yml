@@ -7,8 +7,11 @@
 # portable hosts' caches. Changing one starts a new cache.
 #
 # Runs each weekday morning, and on main whenever dependencies, the toolchain or what CI builds change, so pull
-# requests do not build them cold until the next morning. Weekends are skipped: caches unused for 7 days are evicted, and Friday's survive
-# to Monday. A run whose caches are already warm restores them exactly and saves nothing.
+# requests do not build them cold until the next morning. Weekends are skipped: caches unused for 7 days are evicted,
+# and Friday's survive to Monday. A run whose caches are already warm restores them exactly and saves nothing.
+#
+# ci.yml also calls it for a pull request that changes it, saving nothing, so that a command that no longer builds
+# fails ci-gate before it reaches main.
 name: Cache warm
 
 on:
@@ -26,10 +29,11 @@ on:
       - .github/workflows/rust.yml
       - integrations/package-lock.json
       - .github/workflows/cache-warm.yml
+  workflow_call:
   workflow_dispatch:
 
 concurrency:
-  group: cache-warm
+  group: cache-warm-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -40,7 +44,6 @@ jobs:
   # dependencies.
   rust-build:
     name: Warm Rust build cache
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -65,6 +68,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: build-${{ hashFiles('Makefile', '.github/workflows/cache-warm.yml') }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Installed after the cache is restored, so the cache keeps it.
       - name: Install cargo-machete
@@ -77,7 +81,6 @@ jobs:
   # The caches of rust.yml's portable host jobs, one per host.
   rust-portable-hosts:
     name: Warm Rust cache (${{ matrix.name }})
-    if: github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
@@ -123,6 +126,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: portable-${{ hashFiles('.github/workflows/rust.yml', '.github/workflows/cache-warm.yml') }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The packages and targets rust.yml checks and tests on the portable hosts.
       - name: Build
@@ -132,9 +136,10 @@ jobs:
           cargo test "${packages[@]}" --all-targets --all-features --locked --no-run
 
   # The npm cache of integrations.yml.
+  # setup-node saves the cache wherever it runs, and integrations.yml already runs npm ci on pull requests.
   integrations:
     name: Warm integrations npm cache
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:

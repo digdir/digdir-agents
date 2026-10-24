@@ -40,6 +40,7 @@ jobs:
     outputs:
       integrations: ${{ steps.areas.outputs.integrations }}
       rust: ${{ steps.areas.outputs.rust }}
+      cache-warm: ${{ steps.areas.outputs.cache-warm }}
     steps:
       - name: Detect changed areas
         id: areas
@@ -51,7 +52,8 @@ jobs:
           # Each area's paths, as an extended regular expression over the changed file names.
           areas=(
             'integrations=^(integrations/|\.github/CODEOWNERS$|\.github/workflows/(ci|integrations)\.yml$)'
-            'rust=^(agentctl/|sandbox/|\.cargo/|(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|rustfmt\.toml|clippy\.toml|deny\.toml|Makefile)$|\.github/workflows/(ci|rust|cache-warm)\.yml$)'
+            'rust=^(agentctl/|sandbox/|\.cargo/|(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|rustfmt\.toml|clippy\.toml|deny\.toml|Makefile)$|\.github/workflows/(ci|rust)\.yml$)'
+            'cache-warm=^\.github/workflows/cache-warm\.yml$'
           )
           # A renamed file counts under both its old and its new name.
           names='.filename, (.previous_filename // empty)'
@@ -74,11 +76,17 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     uses: ./.github/workflows/rust.yml
 
+  # Builds what cache-warm.yml warms, on every host, without saving.
+  cache-warm:
+    needs: changes
+    if: needs.changes.outputs.cache-warm == 'true'
+    uses: ./.github/workflows/cache-warm.yml
+
   ci-gate:
     name: ci-gate
     # Also in a cancelled run, which fails it: GitHub would accept a skipped required check.
     if: ${{ always() && github.event.action != 'closed' && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'ci')) }}
-    needs: [changes, integrations, rust]
+    needs: [changes, integrations, rust, cache-warm]
     runs-on: ubuntu-latest
     steps:
       - name: Check that no needed job failed
