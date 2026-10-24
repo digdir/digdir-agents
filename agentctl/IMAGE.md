@@ -30,9 +30,11 @@ step that needs them; others, such as the home directory's ownership, only show 
 - **git.** With `git` on `PATH`, `agentd` sets the global `user.name` and `user.email` from `GIT_USER_NAME` and
   `GIT_USER_EMAIL`. Without it, the step is skipped.
 - **Podman.** With `/usr/bin/podman`, `agentd` waits for systemd, configures Podman to trust the mediated CA and
-  enables `podman.socket` for the `agent` group, which every Execution reaches through
-  `CONTAINER_HOST=unix:///run/podman/podman.sock`. An image with Podman therefore needs systemd running, and the
-  `podman.socket` unit.
+  enables `podman.socket` for the `agent` group. The agent user's `podman` uses that socket everywhere: Executions,
+  Sessions and SSH logins get `CONTAINER_HOST=unix:///run/podman/podman.sock`, and other processes read
+  `~/.config/containers/containers.conf.d/50-agent-socket.conf`. An image with Podman therefore needs systemd running
+  and the `podman.socket` unit, and leaves the socket's configuration to `agentd`. The base images' `containers`
+  feature installs Podman this way.
 
 ## Access
 
@@ -56,8 +58,9 @@ step that needs them; others, such as the home directory's ownership, only show 
 
 ## What `agentd` writes
 
-An image does not need to provide what `agentd` writes on every pass: the harnesses' credential placeholders, hooks,
-settings, instructions and skills in their own configuration directories, the SSH server state, Podman's CA
-configuration, the git identity and `/etc/agent-platform-api-url`. It leaves other files in those directories alone,
-so an image may ship skills of its own there, as the desktop base image does. It does not write Claude Code's
-onboarding and trust state in `~/.claude/.claude.json`; an image that runs Claude Code ships that.
+The image installs software, and `agentd` connects it to the platform. An image does not need to provide what `agentd`
+writes on every pass: the harnesses' credential placeholders, hooks, settings, instructions and skills in their own
+configuration directories, the SSH server state, Podman's configuration, the git identity and
+`/etc/agent-platform-api-url`. It leaves other files in those directories alone, so an image may ship skills of its own
+there, as the desktop base image does. It does not write Claude Code's onboarding and trust state in
+`~/.claude/.claude.json`; an image that runs Claude Code ships that.
