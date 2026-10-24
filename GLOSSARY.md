@@ -4,6 +4,8 @@
 | --- | --- |
 | Agent | A computer that runs coding work for you: what its manifest declares, the Sandbox that runs it and the Sessions in it. It lives on until you delete it. |
 | Agent definition | The files that define an Agent, kept together in one directory: its manifest and variants, and what they refer to, such as a Dockerfile, instructions, skills and a home overlay. |
+| Agent manifest | The `agent.yaml` file that declares an Agent. |
+| Agent variant | An Agent manifest, `agent.<variant>.yaml`, that extends another one beside it and changes only what differs. |
 | `agentctl` | The command-line tool and TUI for Agents. It talks to `agentd` and holds no state of its own. |
 | `agentd` | The daemon on the host that owns Agents: it stores what each manifest declares and keeps the Sandbox and Sessions matching it. Not to be confused with Microsandbox's guest agent, which also runs as `agentd` inside the Sandbox. |
 | Control API | How `agentctl`, or any other client, talks to `agentd`. Local to the host. |
@@ -13,8 +15,6 @@
 | Host | The machine `agentctl` and `agentd` run on. Trusted: it holds the real secrets and decides what the Sandbox may reach. |
 | Image | The container image an Agent's Sandbox boots from. Usually built on the agentctl base images. |
 | Interface | How a person reaches an Agent: `agentctl attach` or the TUI, SSH, VNC, an editor, or a desktop app connected over SSH. An interface talks to a harness, which talks to a model. |
-| Manifest | The `agent.yaml` file that declares an Agent. |
-| Variant | A manifest, `agent.<variant>.yaml`, that extends another manifest beside it and changes only what differs. |
 | Mediated network | All Sandbox traffic ends at the host, which applies the Agent's policy and puts real secrets into requests to the hosts allowed for them. |
 | Nested Agent | An Agent started from inside another Agent. |
 | Placeholder | What the Sandbox sees instead of a secret's real value. |
