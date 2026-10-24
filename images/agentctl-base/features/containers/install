@@ -8,8 +8,9 @@ feature=$(dirname "$0")
 
 # netavark runs nft for bridge networks, and aardvark-dns resolves container names on them. podman-docker adds the
 # `docker` command and /run/docker.sock for tools that only know Docker; /etc/containers/nodocker quiets its notice.
+# docker-compose-v2 runs `docker compose` and `podman compose` against the socket.
 apt-get update
-apt-get install --yes --no-install-recommends aardvark-dns nftables podman podman-docker
+apt-get install --yes --no-install-recommends aardvark-dns docker-compose-v2 nftables podman podman-docker
 rm -rf /var/lib/apt/lists/*
 # podman-docker's login script points the agent user at a rootless socket that isn't running; without it, Docker
 # clients use /run/docker.sock.
@@ -20,5 +21,6 @@ cp -R "${feature}/rootfs/." /
 systemctl enable podman.socket
 
 podman --version
+/usr/libexec/docker/cli-plugins/docker-compose version
 nft --version
 test -x /usr/lib/podman/aardvark-dns
