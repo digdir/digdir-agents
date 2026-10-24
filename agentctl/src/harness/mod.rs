@@ -505,7 +505,7 @@ pub(crate) async fn bootstrap_linux(
     harness: Harness,
     sandbox: &sandbox::SandboxHandle,
     home: &str,
-    instructions: Option<&[u8]>,
+    instructions: &[u8],
     skills: &[Skill],
 ) -> Result<(), Error> {
     match harness {

@@ -222,6 +222,79 @@ async fn linux_setup_without_a_home_copies_nothing_into_the_guest_home() {
     );
 }
 
+/// The last line of the platform's instructions, which every agent gets first.
+const PLATFORM_END: &str = "For a lasting change to your folders, size or image, ask the person.\n";
+
+/// What `instructions` hold after the platform's own, or `None` when they do not start with them.
+fn after_the_platforms(instructions: &str) -> Option<&str> {
+    let rest = instructions
+        .strip_prefix("# About this sandbox\n")?
+        .split_once(PLATFORM_END)?
+        .1;
+    Some(rest.strip_prefix('\n').unwrap_or(rest))
+}
+
+/// The platform's instructions come first, then the host's, then the agent's own; the host's file
+/// is read again on every pass, so editing or emptying it needs no new agent, and an empty or
+/// missing one adds nothing.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_layers_the_platforms_the_hosts_and_the_agents_instructions() {
+    let directory = TempDir::new().expect("temporary directory");
+    let host = directory.path().join("host-instructions.md");
+    std::fs::write(directory.path().join("instructions.md"), "Repository rules\n").expect("instruction file");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home = None;
+    let record = AgentRecord {
+        id: "7b1e2c3d-4f5a-4b6c-8d7e-9f0a1b2c3d4e".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    };
+    let backend = Rc::new(memory::Provider::new());
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+    let platform = Linux::new(PLATFORM_API_URL).with_host_instructions(&host);
+
+    for (contents, expected) in [
+        (None, "Repository rules\n"),
+        (Some("Host rules\n"), "Host rules\n\nRepository rules\n"),
+        (Some("Host rules, edited\n"), "Host rules, edited\n\nRepository rules\n"),
+        (Some("\n"), "Repository rules\n"),
+    ] {
+        if let Some(contents) = contents {
+            std::fs::write(&host, contents).expect("host instructions");
+        }
+        backend.queue_execution_events_matching(
+            is_claude_version,
+            vec![
+                ExecutionEvent::Started { process_id: None },
+                ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
+                ExecutionEvent::Exited(ExitStatus { code: 0 }),
+            ],
+        );
+        backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+        platform
+            .setup(&record, &sandbox, &declared(&record), &setup_phase())
+            .await
+            .expect("setup");
+        let written = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+        assert_eq!(after_the_platforms(&written), Some(expected), "host file {contents:?}");
+    }
+}
+
 #[tokio::test(flavor = "local")]
 #[allow(clippy::too_many_lines)]
 async fn linux_setup_rewrites_configuration_without_owning_workspace_initialization() {
@@ -337,7 +410,10 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     let preserved = read_file(&sandbox, "/home/agent/.claude/.claude.json").await;
     assert_eq!(preserved, mutable_state);
     let instructions = read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await;
-    assert_eq!(instructions, b"test instructions\n\n# Environment\n\nhas a browser\n");
+    assert_eq!(
+        after_the_platforms(std::str::from_utf8(&instructions).expect("UTF-8")),
+        Some("test instructions\n\n# Environment\n\nhas a browser\n")
+    );
     let codex_instructions = read_file(&sandbox, "/home/agent/.codex/AGENTS.md").await;
     assert_eq!(codex_instructions, instructions);
     for root in ["/home/agent/.claude/skills", "/home/agent/.agents/skills"] {
