@@ -217,8 +217,9 @@ at its global instruction location: `~/.claude/CLAUDE.md` for Claude Code, `~/.c
 `agentd` writes a short Agent sandbox section ahead of it, from the manifest and what setup finds in the Sandbox: the
 Agent's resources, the installed harnesses, the configured secrets and their hosts, network, access and whether nested
 Agents can run. Without `spec.instructions` the image or `spec.home` may own those files, and the section goes above
-what they hold. Every Agent also gets an `agentctl` skill for driving Agents, nested ones included. A skill of its own
-in `spec.skills` by that name replaces it; one in `spec.home` is overwritten.
+what they hold; Codex does not read it when the image ships `~/.codex/AGENTS.override.md`. Every Agent also gets an
+`agentctl` skill for driving Agents, nested ones included. A skill of its own in `spec.skills` by that name replaces it;
+one in `spec.home` is overwritten.
 Repository-local instruction files continue to be discovered by the harness itself.
 
 Harness Adapters own authentication, version verification, managed configuration, hooks, native conversation IDs and

@@ -179,7 +179,7 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         "<!-- agentd: Agent sandbox section, rewritten on every pass -->
 # Agent sandbox
 
-Written by agentd {}. The Agent's own instructions follow and take precedence.
+Written by agentd {}. Instructions after this section are the Agent's own and take precedence.
 
 - **Computer:** Agent `worker`, a Linux Sandbox VM that is yours to manage. User `agent` with passwordless `sudo`, \
 home `/home/agent`, work in `/home/agent/code`.

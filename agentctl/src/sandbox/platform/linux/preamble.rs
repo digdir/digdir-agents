@@ -83,7 +83,7 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
     ];
     let mut section = format!(
         "{BEGIN}# Agent sandbox\n\n\
-         Written by agentd {}. The Agent's own instructions follow and take precedence.\n\n",
+         Written by agentd {}. Instructions after this section are the Agent's own and take precedence.\n\n",
         crate::build_version()
     );
     for (label, text) in lines {

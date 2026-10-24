@@ -14,7 +14,10 @@ use ::sandbox::{LocalFuture, Platform, SandboxHandle, SandboxPath, execution::Ex
 
 use crate::{Error, control_plane, harness};
 
-use super::{super::PlatformAdapter, files::write_if_changed};
+use super::{
+    super::PlatformAdapter,
+    files::{read_existing, write_if_changed},
+};
 pub(crate) use command::run_checked;
 use command::{checked_output, path_exists};
 use home::{archive_home, sync_home};
@@ -171,7 +174,7 @@ impl Linux {
                 // goes above what it holds. The home sync restores an overlay's file on every pass, so for a
                 // moment before this rewrite it lacks the section.
                 let path = harness::instructions_path(installation.kind, HOME);
-                let existing = read_file_or_empty(sandbox, &path).await?;
+                let existing = read_owned_instructions(sandbox, &path).await?;
                 preamble::place(&section, preamble::without_section(&existing))
             };
             harness::bootstrap_linux(installation.kind, sandbox, HOME, &instructions, &skills).await?;
@@ -181,18 +184,27 @@ impl Linux {
     }
 }
 
-/// A file's contents, or nothing when it does not exist.
-async fn read_file_or_empty(sandbox: &SandboxHandle, path: &str) -> Result<Vec<u8>, Error> {
-    use tokio::io::AsyncReadExt as _;
+/// The most of an instruction file the image or home overlay owns that setup reads back.
+const MAX_OWNED_INSTRUCTIONS: usize = 1024 * 1024;
 
-    let mut reader = match sandbox.read_file(&SandboxPath::new(path)).await {
-        Ok(reader) => reader,
-        Err(error) if error.is_not_found() => return Ok(Vec::new()),
-        Err(error) => return Err(error.into()),
-    };
-    let mut contents = Vec::new();
-    reader.read_to_end(&mut contents).await?;
-    Ok(contents)
+/// What the image or home overlay put in a harness's instruction file: nothing when it does not
+/// exist. The Sandbox user can replace the file, so it must be a regular file and is read only up
+/// to a bound; anything else fails setup rather than losing the file's text.
+async fn read_owned_instructions(sandbox: &SandboxHandle, path: &str) -> Result<Vec<u8>, Error> {
+    if !path_exists(sandbox, "-e", path).await? {
+        return Ok(Vec::new());
+    }
+    if !path_exists(sandbox, "-f", path).await? {
+        return Err(Error::SandboxSetup(format!(
+            "{path} is not a regular file, so the Agent sandbox section cannot be placed above it"
+        )));
+    }
+    read_existing(sandbox, path, MAX_OWNED_INSTRUCTIONS).await.ok_or_else(|| {
+        Error::SandboxSetup(format!(
+            "{path} is unreadable or larger than {MAX_OWNED_INSTRUCTIONS} bytes, so the Agent sandbox section cannot be \
+             placed above it"
+        ))
+    })
 }
 
 async fn configure_git_identity(sandbox: &SandboxHandle) -> Result<(), Error> {
