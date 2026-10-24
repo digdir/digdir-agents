@@ -14,8 +14,8 @@ Debian 12, so the binaries run on the base images and on any distribution with a
 Every commit on `main` is published. A `main` build reports the latest release, then `.main.g` and the newest commit
 that changed what the build reads; after a stable release such as `v0.2.0`, it reports `v0.2.1-main.g…`. A commit that
 changes nothing the build reads, such as one to the documentation, reuses the cached build and so gets the same image,
-digest included: a digest pin on `main` moves only when the binaries do. Pin a digest, which Renovate keeps current, and copy the binaries onto
-the `PATH`:
+digest included: a digest pin on `main` moves only when the binaries do. Pin a digest, which Renovate keeps current, and
+copy the binaries onto the `PATH`:
 
 ```dockerfile
 FROM ghcr.io/digdir/agentctl-base:ubuntu-26.04@sha256:…
