@@ -8,11 +8,12 @@
 name: agentctl release
 
 on:
+  # A draft builds its release too.
   pull_request:
   push:
     branches:
       - main
-  # Builds the release on main when the merged pull request was not up to date, so that its run built another tree.
+  # On main, builds and publishes a release that no pull request run built, such as one merged after main moved.
   workflow_dispatch:
 
 permissions:
@@ -107,9 +108,42 @@ jobs:
       version: ${{ needs.version.outputs.version }}
       publish: true
 
+  notices:
+    name: Third-party notices
+    needs: version
+    if: needs.version.outputs.release == 'true' && github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: |
+          RUST_VERSION="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "${RUST_VERSION}"
+          rustup toolchain install "${RUST_VERSION}" --profile minimal
+          rustup default "${RUST_VERSION}"
+
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --features cli --version 0.9.2
+
+      - name: Generate third-party notices
+        run: |
+          mkdir -p notices
+          agentctl/notices/third-party-notices.sh notices/THIRD_PARTY_NOTICES.md
+
+      - name: Upload third-party notices
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: third-party-notices
+          path: notices/THIRD_PARTY_NOTICES.md
+          if-no-files-found: error
+
   assemble:
     name: Assemble release
-    needs: [version, build, image]
+    needs: [version, notices, build, image]
     runs-on: ubuntu-24.04
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -136,39 +170,36 @@ jobs:
         run: |
           cp agentctl/install.sh agentctl/install.ps1 release/dist/
 
-      - name: Install Rust toolchain
-        run: |
-          RUST_VERSION="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
-          test -n "${RUST_VERSION}"
-          rustup toolchain install "${RUST_VERSION}" --profile minimal
-          rustup default "${RUST_VERSION}"
-
-      - name: Install cargo-about
-        run: cargo install cargo-about --locked --features cli --version 0.9.2
-
       # The archives hold only the two binaries the installers and `agentctl self update` accept, so the license and
       # notices are separate assets.
-      - name: Add license and third-party notices
-        run: |
-          cp LICENSE release/dist/LICENSE
-          agentctl/notices/third-party-notices.sh release/dist/THIRD_PARTY_NOTICES.md
+      - name: Download third-party notices
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: third-party-notices
+          path: release/dist
 
-      # A pull request run checks out its merge with main. The release compares this tree with the commit that lands,
-      # so that it never publishes files built from other sources.
-      - name: Record the source tree
-        run: git rev-parse 'HEAD^{tree}' > release/tree
+      - name: Add license
+        run: cp LICENSE release/dist/LICENSE
+
+      # A pull request run builds its merge with main. Named by that tree, the release is found by the tree that lands,
+      # whatever the pull request's own head.
+      - name: Resolve the source tree
+        id: tree
+        run: echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "${GITHUB_OUTPUT}"
 
       - name: Upload the release
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: release
+          name: release-${{ steps.tree.outputs.tree }}
           path: release/
           if-no-files-found: error
 
   release:
     name: Publish release
-    needs: version
-    if: needs.version.outputs.release == 'true' && github.event_name == 'push'
+    needs: [version, assemble]
+    if: >-
+      ${{ !cancelled() && needs.version.outputs.release == 'true' && github.ref == 'refs/heads/main'
+      && (github.event_name == 'push' || needs.assemble.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -186,40 +217,53 @@ jobs:
         with:
           persist-credentials: false
 
-      # Only a run in this repository counts: a fork's pull request runs its own workflow file.
+      # The assemble job names the release by the tree it built. Only a successful run in this repository counts, since
+      # a fork's pull request runs its own workflow file. The oldest is the one a consumer could already have seen.
       - name: Find the run that built this tree
         id: build
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
-          tree="$(git rev-parse 'HEAD^{tree}')"
-          runs="repos/${GITHUB_REPOSITORY}/actions/workflows/agentctl-release.yml/runs?status=success&per_page=100"
-          builds=".workflow_runs[] | select(.event != \"push\")"
-          builds="${builds} | select(.head_repository.full_name == \"${GITHUB_REPOSITORY}\")"
+          name="release-$(git rev-parse 'HEAD^{tree}')"
           run_id=""
-          while read -r id head_sha; do
-            [ "$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${head_sha}" --jq .tree.sha)" = "${tree}" ] || continue
-            files="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/artifacts" \
-              --jq '[.artifacts[] | select(.name == "release" and (.expired | not))] | length')"
-            if [ "${files}" -gt 0 ]; then
-              run_id="${id}"
-              break
-            fi
-          done < <(gh api "${runs}" --jq "${builds} | \"\\(.id) \\(.head_sha)\"")
+          if [ "${GITHUB_EVENT_NAME}" != push ]; then
+            run_id="${GITHUB_RUN_ID}"
+          else
+            artifacts="repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${name}&per_page=100"
+            built="[.artifacts[] | select((.expired | not) and .workflow_run.head_repository_id == ${REPOSITORY_ID})]"
+            while read -r id; do
+              run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}" \
+                --jq '"\(.status) \(.conclusion) \(.path)"')"
+              case "${run}" in
+                "completed success .github/workflows/agentctl-release.yml") run_id="${id}"; break ;;
+                # A newer run has other files, so wait for this one.
+                *" .github/workflows/agentctl-release.yml")
+                  if [ "${run%% *}" != completed ]; then
+                    echo "::error::run ${id}, which built this tree, has not finished; re-run this job once it has"
+                    exit 1
+                  fi
+                  ;;
+              esac
+            done < <(gh api "${artifacts}" --jq "${built} | sort_by(.created_at) | .[].workflow_run.id")
+          fi
           if [ -z "${run_id}" ]; then
-            echo "::error::no successful run built ${VERSION} from tree ${tree}." \
-              "A release pull request must be up to date with main when it merges." \
-              "To release this commit, run this workflow on main by hand, wait for it to pass, then re-run this job"
+            echo "::error::no successful run built ${VERSION} from this tree (${name})." \
+              "If main moved after the release pull request's checks ran, they built another tree." \
+              "Run this workflow on main by hand, which builds and publishes the release"
             exit 1
           fi
           echo "Publishing the release built in ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
-          echo "run-id=${run_id}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "run-id=${run_id}"
+            echo "name=${name}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Download the release
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release
+          name: ${{ steps.build.outputs.name }}
           path: release
           run-id: ${{ steps.build.outputs.run-id }}
           github-token: ${{ github.token }}
@@ -232,13 +276,23 @@ jobs:
           run-id: ${{ steps.build.outputs.run-id }}
           github-token: ${{ github.token }}
 
-      - name: Verify the source tree
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      # Before the release, so that a missing image stops it. An image tag can move, so a run that fails afterwards
+      # tags the same digests again.
+      - name: Tag the release's image
         run: |
-          built="$(cat release/tree)"
-          if [ "${built}" != "$(git rev-parse 'HEAD^{tree}')" ]; then
-            echo "::error::the release was built from tree ${built}, not this commit's"
-            exit 1
-          fi
+          set -euo pipefail
+          docker buildx imagetools create --tag "${REPOSITORY}:${VERSION}" \
+            "${REPOSITORY}@$(cat "${RUNNER_TEMP}/digests/agentctl-image-digest-amd64/agentctl")" \
+            "${REPOSITORY}@$(cat "${RUNNER_TEMP}/digests/agentctl-image-digest-arm64/agentctl")"
+          docker buildx imagetools inspect "${REPOSITORY}:${VERSION}"
 
       # Immutable releases lock their assets on publication, so upload every asset to a draft first and publish it
       # last. Publishing the draft creates its tag on the commit that landed. A draft left by a failed run has no tag
@@ -266,20 +320,3 @@ jobs:
             exit 1
           fi
           gh release edit "${TAG}" --draft=false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Login to GHCR
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-
-      # The image built with the release, tagged once the release is out.
-      - name: Tag the release's image
-        run: |
-          set -euo pipefail
-          docker buildx imagetools create --tag "${REPOSITORY}:${VERSION}" \
-            "${REPOSITORY}@$(cat "${RUNNER_TEMP}/digests/agentctl-image-digest-amd64/agentctl")" \
-            "${REPOSITORY}@$(cat "${RUNNER_TEMP}/digests/agentctl-image-digest-arm64/agentctl")"
-          docker buildx imagetools inspect "${REPOSITORY}:${VERSION}"

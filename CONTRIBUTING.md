@@ -51,12 +51,17 @@ To release:
    request, and treats one as the release when it dates a version that `main` does not and that has no tag yet. For
    that pull request it builds and smoke-tests the archives for every host, builds the image, and assembles the
    release, with that changelog section as the release notes. For any other pull request it stops in seconds.
-2. Merge it while it is up to date with `main`. The release workflow then publishes exactly what the pull request
-   built, and creates the tag `agentctl/vX.Y.Z` as it does. Nothing is built after the merge, so a failure there
-   spends no version, since a tag can never be moved or reused. Never push the tag yourself.
+2. Merge it once its "Assemble release" check has passed. The release workflow then publishes exactly what the pull
+   request built, and creates the tag `agentctl/vX.Y.Z` as it does. Nothing is built after the merge, so a failure
+   there spends no version, since a tag can never be moved or reused. Never push the tag yourself.
 
-If the release reports that no run built the merged tree, because `main` moved before the merge, run the release
-workflow on `main` by hand, then re-run the failed release job.
+If the release fails, it has created no tag or release, and the version is still free:
+
+- If it says no run built the merged tree, `main` moved between the pull request's run and its merge, so that run
+  built another tree. Run the release workflow on `main` by hand. It builds the release for `main` and publishes it in
+  the same run.
+- Otherwise, fix the cause and re-run the failed job in the run that the merge started, so that it publishes the
+  files the pull request built.
 
 ## Maintenance
 
