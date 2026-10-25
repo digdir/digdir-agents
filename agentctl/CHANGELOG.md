@@ -16,6 +16,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 - `optional: true` in `spec.instructions` and `spec.skills` leaves out a source that does not exist, so a committed manifest can name your own files, such as `~/agent-instructions/everywhere.md`. `agentctl describe` names what was left out, and the Agent gets it once it exists. ([#331](https://github.com/digdir/digdir-agents/issues/331))
 - Your terminal tab is named after the Agent and Session you are attached to, such as `builder/b1`, and reads `agentctl` again when you return to `agentctl tui`. ([#343](https://github.com/digdir/digdir-agents/pull/343))
+- `agentctl status` shows whether agentd answers, the stored harness logins, the current directory's Agent and how many Agents run or wait for you, with the commands to run next; `--json` prints the same for coding agents and scripts. ([Your first Agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#240](https://github.com/digdir/digdir-agents/issues/240))
 
 ### Changed
 
