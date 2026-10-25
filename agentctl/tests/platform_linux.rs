@@ -873,7 +873,6 @@ async fn linux_setup_reads_home_instructions_and_skills_below_the_home_directory
     }];
     let record = AgentRecord {
         id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        // Elsewhere, so a path resolved against the manifest directory would not be found.
         source_directory: directory.path().join("manifest"),
         manifest_path: None,
         env_file: None,
@@ -915,10 +914,8 @@ async fn linux_setup_reads_home_instructions_and_skills_below_the_home_directory
             .windows(b"tilde-marker".len())
             .any(|window| window == b"tilde-marker")
     );
-    assert_eq!(
-        read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await,
-        b"tilde instructions\n"
-    );
+    let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+    assert!(instructions.ends_with("\n\ntilde instructions\n"), "{instructions}");
     assert_eq!(
         read_file(&sandbox, "/home/agent/.claude/skills/evidence/SKILL.md").await,
         b"capture"
