@@ -8,7 +8,14 @@ Follow [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Writing
 
-This applies to docs, skills, pull request descriptions and comments, and commit messages.
+This applies to what you write for others to read, such as:
+
+- docs and skills
+- code comments
+- commit messages
+- issue and pull request descriptions and comments
+
+It does not apply to your conversation with the person prompting you.
 
 - Say each thing once, and link to where it is already said. That includes the code: a version, a default or a list
   of tools belongs where it is defined.
