@@ -16,9 +16,10 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 - `optional: true` in `spec.instructions` and `spec.skills` leaves out a source that does not exist, so a committed manifest can name your own files, such as `~/agent-instructions/everywhere.md`. `agentctl describe` names what was left out, and the Agent gets it once it exists. ([#331](https://github.com/digdir/digdir-agents/issues/331))
 - `agentctl status` shows whether agentd answers, the stored harness logins, the current directory's Agent and how many Agents run or wait for you, with the commands to run next; `--json` prints the same for coding agents and scripts. ([Your first Agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#240](https://github.com/digdir/digdir-agents/issues/240))
-- `spec.accounts` gives an Agent a GitHub account, one per user or organization: ([#316](https://github.com/digdir/digdir-agents/pull/316))
+- `spec.accounts` gives an Agent a GitHub account, one per user or organization: ([GitHub accounts](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/github-accounts.md), [#316](https://github.com/digdir/digdir-agents/pull/316))
   - `agentctl github login --from-stdin`, `list` and `logout` store, show and forget its token
   - without a token the Agent runs without GitHub access, and `agentctl status` names the login
+  - at a terminal, `agentctl github login` offers a browser sign-in or a pre-filled token form ([#317](https://github.com/digdir/digdir-agents/pull/317), [#252](https://github.com/digdir/digdir-agents/issues/252))
 
 ### Changed
 
@@ -31,6 +32,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
   - for a name another directory's Agent has, ask for another name
 - At a terminal, agentctl's questions take a single key, without Enter, and ignore keys typed before they appear: ([#310](https://github.com/digdir/digdir-agents/pull/310))
   - yes/no questions take `y` or `n`, and Enter alone does not answer
+  - numbered questions take the number of one of up to nine options, and Enter picks the first ([#317](https://github.com/digdir/digdir-agents/pull/317))
 - The Agent sandbox section in Agents' instructions also lists the folders mounted from your machine, and asks the Agent to push or comment only when a task asks, clean up after itself, and note in `~/system-changes.md` what it changes outside the image. ([#240](https://github.com/digdir/digdir-agents/issues/240))
 
 ## [0.1.0-preview.13] - 2026-10-26

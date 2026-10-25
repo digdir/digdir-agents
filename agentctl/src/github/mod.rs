@@ -5,11 +5,13 @@
 //! account the token acts as and when it expires. The token stays in the host's secret store;
 //! what is listed and returned about it never contains it.
 
+mod gh;
 mod inspect;
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+pub use gh::sign_in;
 pub use inspect::SCOPES;
 
 use crate::{Error, harness::MediatedSecret, persistence};
@@ -116,6 +118,38 @@ pub fn valid_owner(owner: &str) -> bool {
 
 /// How long before its expiry a token is called out at login.
 pub const EXPIRY_WARNING: time::Duration = time::Duration::days(7);
+/// Days a token created from [`token_form_url`] lives, unless the owner's policy allows less.
+pub const TOKEN_LIFETIME_DAYS: u32 = 90;
+/// Fine-grained repository permissions an Agent needs: push code, work issues and pull requests,
+/// run workflows and read their logs, change workflow files, and read commit statuses.
+pub const PERMISSIONS: [(&str, &str); 6] = [
+    ("contents", "write"),
+    ("issues", "write"),
+    ("pull_requests", "write"),
+    ("actions", "write"),
+    ("workflows", "write"),
+    ("statuses", "read"),
+];
+const TOKEN_FORM: &str = "https://github.com/settings/personal-access-tokens/new";
+
+/// GitHub's form creating a fine-grained token for `owner`, pre-filled.
+///
+/// `name`, `description`, [`PERMISSIONS`] and [`TOKEN_LIFETIME_DAYS`] are filled in. GitHub takes
+/// no parameter for the repositories, which the person picks in the form.
+#[must_use]
+pub fn token_form_url(owner: &str, name: &str, description: &str) -> String {
+    let lifetime = TOKEN_LIFETIME_DAYS.to_string();
+    let parameters = [
+        ("name", name),
+        ("description", description),
+        ("target_name", owner),
+        ("expires_in", lifetime.as_str()),
+    ]
+    .into_iter()
+    .chain(PERMISSIONS);
+    reqwest::Url::parse_with_params(TOKEN_FORM, parameters).map_or_else(|_| TOKEN_FORM.to_owned(), String::from)
+}
+
 /// A GitHub repository, shown as `owner/name`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Repository {
@@ -152,6 +186,16 @@ impl std::fmt::Display for Repository {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{}/{}", self.owner, self.name)
     }
+}
+
+/// Whether `token` can see `repository` on GitHub.
+///
+/// # Errors
+///
+/// Returns an error, never containing the token, when GitHub cannot be reached or answers
+/// unexpectedly.
+pub async fn can_see(token: &str, repository: &Repository) -> Result<bool, Error> {
+    inspect::can_see_at(inspect::API, token.trim(), repository).await
 }
 
 /// A stored GitHub token, without the token.
@@ -245,6 +289,17 @@ pub(crate) async fn stored(database: &persistence::Database, owner: &str) -> Res
 /// needs placeholders that never contain one another, so overlapping ones are refused.
 pub(crate) fn conflicts_with_managed_secret(name: &str, placeholder: &str) -> bool {
     name == ACCESS_ENVIRONMENT || placeholder.contains(ACCESS_PLACEHOLDER) || ACCESS_PLACEHOLDER.contains(placeholder)
+}
+
+/// Asks GitHub what `token` would be for `owner`, by default the account it acts as, as a login
+/// would, without storing anything, so a person can see it before agentd keeps it.
+///
+/// # Errors
+///
+/// Returns an error when the token is empty, the owner is not a GitHub login, GitHub rejects the
+/// token or cannot be reached, or the token has expired. No error contains the token.
+pub async fn check(token: &str, owner: Option<&str>) -> Result<GithubLogin, Error> {
+    check_at(inspect::API, token, owner).await
 }
 
 async fn check_at(api: &str, token: &str, owner: Option<&str>) -> Result<GithubLogin, Error> {
@@ -730,6 +785,24 @@ mod tests {
         assert_eq!(stored(&github.database, "not a login").await.expect("account"), None);
     }
 
+    #[tokio::test(flavor = "local")]
+    async fn a_check_without_an_owner_is_for_the_account_signed_in_as() {
+        let (api, _) = serve(BOT).await;
+
+        let own = check_at(&api, "gho_FAKE_canary", None).await.expect("own");
+        let named = check_at(&api, "gho_FAKE_canary", Some("Digdir")).await.expect("named");
+
+        assert_eq!(
+            (own.token.owner.as_str(), own.token.kind),
+            ("digdir-bot", TokenKind::Oauth)
+        );
+        assert_eq!(named.token.owner, "digdir");
+        let Err(Error::Invalid(message)) = check_at(&api, "gho_FAKE_canary", Some("gho_FAKE_canary")).await else {
+            panic!("not an owner");
+        };
+        assert!(!message.contains("FAKE_canary"), "{message}");
+    }
+
     #[test]
     fn manifest_secrets_may_not_overlap_the_accounts_binding() {
         for (name, placeholder) in [
@@ -750,6 +823,40 @@ mod tests {
         assert_eq!(TokenKind::of("gho_x"), TokenKind::Oauth);
         assert_eq!(TokenKind::of("ghu_x"), TokenKind::Other);
         assert!(TokenKind::FineGrained.single_owner());
+    }
+
+    #[test]
+    fn the_token_form_is_prefilled_with_the_owner_lifetime_and_permissions_and_nothing_secret() {
+        let url = reqwest::Url::parse(&token_form_url(
+            "digdir",
+            "agentctl digdir on my-mac",
+            "Agents for digdir on my-mac, stored by agentctl",
+        ))
+        .expect("valid URL");
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("github.com"));
+        assert_eq!(url.path(), "/settings/personal-access-tokens/new");
+        let mut query: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+        query.sort();
+        let mut expected: Vec<(String, String)> = [
+            ("name", "agentctl digdir on my-mac"),
+            ("description", "Agents for digdir on my-mac, stored by agentctl"),
+            ("target_name", "digdir"),
+            ("expires_in", "90"),
+            ("contents", "write"),
+            ("issues", "write"),
+            ("pull_requests", "write"),
+            ("actions", "write"),
+            ("workflows", "write"),
+            ("statuses", "read"),
+        ]
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .to_vec();
+        expected.sort();
+        assert_eq!(query, expected, "exactly these parameters, so no token or credential");
+        assert_eq!(url.username(), "");
+        assert_eq!(url.password(), None);
+        assert_eq!(url.fragment(), None);
     }
 
     #[test]
@@ -787,5 +894,42 @@ mod tests {
         ] {
             assert_eq!(Repository::from_remote(remote), None, "{remote}");
         }
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn whether_a_token_sees_a_repository_is_asked_of_github_with_it() {
+        let repository = Repository::from_remote("git@github.com:digdir/case-web.git").expect("repository");
+        let (api, requests) = serve(BOT).await;
+        assert!(
+            inspect::can_see_at(&api, "github_pat_FAKE_canary", &repository)
+                .await
+                .expect("visible")
+        );
+        let request = requests.borrow()[0].to_ascii_lowercase();
+        assert!(request.starts_with("get /repos/digdir/case-web "), "{request}");
+        assert!(
+            request.contains("authorization: bearer github_pat_fake_canary"),
+            "{request}"
+        );
+
+        for status in ["404 Not Found", "403 Forbidden"] {
+            let (api, _) = serve(Answer { status, ..BOT }).await;
+            assert!(
+                !inspect::can_see_at(&api, "github_pat_FAKE_canary", &repository)
+                    .await
+                    .expect("answered")
+            );
+        }
+        let (api, _) = serve(Answer {
+            status: "500 Internal Server Error",
+            ..BOT
+        })
+        .await;
+        let error = inspect::can_see_at(&api, "github_pat_FAKE_canary", &repository)
+            .await
+            .expect_err("unexpected answer");
+        let message = format!("{error} {error:?}");
+        assert!(message.contains("500"), "{message}");
+        assert!(!message.contains("FAKE_canary"), "{message}");
     }
 }
