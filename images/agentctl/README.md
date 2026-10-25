@@ -7,7 +7,7 @@ nested Agents. It is published for `linux/amd64` and `linux/arm64`. The binaries
 | --- | --- |
 | `v<version>` | A release |
 | `main` | The newest commit on `main`. Its digest moves only when the binaries change |
-| `sha-<commit>` | One commit on `main` |
+| `sha-<commit>` | A commit on `main` that changes what the image is built from |
 
 Pin a digest, which Renovate keeps current:
 

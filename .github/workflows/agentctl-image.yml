@@ -1,6 +1,6 @@
 # Builds the agentctl image from images/agentctl: agentctl and agentd alone, for Agent images to copy in. Pull requests
-# that change the Rust workspace or the image only build it. Every push to main, including a manual run on main,
-# publishes it to ghcr.io/digdir/agentctl as `sha-<commit>`, and as `main` while that commit is still main's head. The
+# that change the Rust workspace or the image only build it. Every push to main that does, and a manual run on main,
+# publishes it to ghcr.io/digdir/agentctl as `sha-<commit>`, and as `main` while no newer commit has started a run. The
 # release workflow calls this one to build a release's, and once the release is published, to publish it as
 # `<version>`, such as `v0.1.0-preview.13`.
 name: agentctl image
@@ -21,10 +21,22 @@ on:
       # Markdown is not built into the binaries, except the skill agentctl bundles.
       - '!**/*.md'
       - agentctl/skills/**
-  # Every commit on main, so that each has a tag to pin.
+  # The same paths as pull requests, so that each commit on main that can change the image has a tag to pin.
   push:
     branches:
       - main
+    paths:
+      - .cargo/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - agentctl/**
+      - sandbox/**
+      - images/agentctl/**
+      - docker-bake.hcl
+      - .github/workflows/agentctl-image.yml
+      - '!**/*.md'
+      - agentctl/skills/**
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -76,7 +88,7 @@ jobs:
 
       # A build from main names the newest commit that changed what the build reads, the paths
       # images/agentctl/Dockerfile.dockerignore lets in and the Dockerfile itself, and takes its time as
-      # SOURCE_DATE_EPOCH. A commit that changes none of them, such as one to the changelog, then builds the same
+      # SOURCE_DATE_EPOCH. A commit that changes none of them, such as one to the tests, then builds the same
       # version with the same build arguments, reuses the cached build and publishes the same digest, so that a
       # digest pin on `main` moves only when the binaries do.
       - name: Resolve version
@@ -235,8 +247,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
 
-      # `main` moves only while this commit is main's head, so that a run that finishes after a newer commit's, or a
-      # re-run of an older one, cannot move it back.
+      # `main` moves only while this run's commit is the newest on main to start one, so that a run that finishes after
+      # a newer commit's, or a re-run of an older one, cannot move it back. Commits the paths filter skips, such as
+      # docs, start no run, so they leave it to the commit before them. A fork's pull request from its own main branch
+      # is listed under main too, so pull request runs are left out.
       - name: Tag multi-platform image
         env:
           GH_TOKEN: ${{ github.token }}
@@ -249,11 +263,12 @@ jobs:
             tags="${VERSION}"
           else
             tags="sha-${GITHUB_SHA::10}"
-            head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
-            if [ "${head}" = "${GITHUB_SHA}" ]; then
+            newest="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/agentctl-image.yml/runs?branch=main&per_page=20" \
+              --jq '[.workflow_runs[] | select(.event != "pull_request")][0].head_sha')"
+            if [ "${newest}" = "${GITHUB_SHA}" ]; then
               tags="${tags} main"
             else
-              echo "main is now ${head}; leaving the main tag to its run"
+              echo "${newest} has a newer run; leaving the main tag to it"
             fi
           fi
 

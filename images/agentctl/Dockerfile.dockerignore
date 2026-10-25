@@ -1,4 +1,4 @@
-# Only what the build reads, so that a commit changing nothing else, such as the changelog, reuses the cached build.
+# Only what the build reads, so that a commit changing nothing else, such as the tests, reuses the cached build.
 # .github/workflows/agentctl-image.yml lists the same paths to name a main build after its newest commit to them.
 *
 !.cargo/config.toml
