@@ -818,6 +818,13 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal, hit_map
                 ))
                 .render(frame, area, FORM_WIDTH, hit_map);
         }
+        Modal::ConfirmRestart { agent } => {
+            Form::new(" restart ", Color::Yellow, &CONFIRM_HINTS)
+                .row(Line::from(format!("Restart agent {agent}?")))
+                .row(note_line("Its VM shuts down, or is ended if it cannot."))
+                .row(note_line("It boots on the same disk; attaching resumes a Session."))
+                .render(frame, area, FORM_WIDTH, hit_map);
+        }
         Modal::ConfirmStopAll { agents } => {
             let question = match agents.as_slice() {
                 [agent] => format!("Stop {agent}, the running agent, at once?"),

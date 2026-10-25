@@ -17,6 +17,7 @@ pub(crate) const METHOD_EXECUTION_ENSURE: &str = "agents.v1.ensureExecution";
 pub(crate) const METHOD_DELETE: &str = "agents.v1.delete";
 pub(crate) const METHOD_STOP: &str = "agents.v1.stop";
 pub(crate) const METHOD_STOP_NOW: &str = "agents.v1.stopNow";
+pub(crate) const METHOD_RESTART: &str = "agents.v1.restart";
 pub(crate) const METHOD_START: &str = "agents.v1.start";
 pub(crate) const METHOD_CONVERGE: &str = "agents.v1.converge";
 pub(crate) const METHOD_SSH_ACCESS: &str = "agents.v1.sshAccess";
@@ -98,6 +99,15 @@ impl ResponseError {
 #[serde(deny_unknown_fields)]
 pub(crate) struct NameParams {
     pub name: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RestartParams {
+    pub name: String,
+    /// Ends the Sandbox at once instead of letting its guest shut down.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub now: bool,
 }
 
 #[derive(Deserialize, Serialize)]

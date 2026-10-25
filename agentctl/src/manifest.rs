@@ -166,7 +166,15 @@ impl Agent {
     pub(crate) fn clear_managed_fields(&mut self) {
         self.metadata.generation = 0;
         self.metadata.deletion_timestamp = None;
+        self.metadata.restart_timestamp = None;
         self.status = Status::default();
+    }
+
+    /// Returns whether a restart was asked for that no pass has carried out yet.
+    #[must_use]
+    pub fn restart_pending(&self) -> bool {
+        self.metadata.restart_timestamp.is_some()
+            && self.metadata.restart_timestamp != self.status.observed_restart_timestamp
     }
 }
 
@@ -186,14 +194,22 @@ pub struct Metadata {
         with = "time::serde::rfc3339::option"
     )]
     pub deletion_timestamp: Option<OffsetDateTime>,
+    /// Time of the latest restart asked for with `agentctl restart`. The reconciler stops and
+    /// starts the Sandbox until its status has observed this restart.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub restart_timestamp: Option<OffsetDateTime>,
 }
 
 /// Desired agent settings and exactly one generic sandbox specification.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Spec {
-    /// Whether the Agent's Sandbox runs. `agentctl stop` and `agentctl start`
-    /// change it. A manifest may set it; when it is omitted, `apply` keeps the
+    /// Whether the Agent's Sandbox runs. `agentctl stop`, `agentctl start` and
+    /// `agentctl restart` change it. A manifest may set it; when it is omitted, `apply` keeps the
     /// Agent's current run state, and a new Agent runs. Stored only when not
     /// Running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -870,6 +886,13 @@ pub struct Status {
     /// Desired generation observed by the reconciler.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub observed_generation: u64,
+    /// The restart, by its `metadata.restartTimestamp`, whose stop the reconciler has carried out.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub observed_restart_timestamp: Option<OffsetDateTime>,
     /// Sticky selected Provider and optional materialized Sandbox identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<crate::sandbox::Assignment>,
@@ -901,6 +924,7 @@ impl Status {
     ) -> Self {
         Self {
             observed_generation,
+            observed_restart_timestamp: None,
             sandbox,
             conditions,
             failure: None,
@@ -911,6 +935,7 @@ impl Status {
 
     const fn is_empty(&self) -> bool {
         self.observed_generation == 0
+            && self.observed_restart_timestamp.is_none()
             && self.sandbox.is_none()
             && self.conditions.is_empty()
             && self.failure.is_none()

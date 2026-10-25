@@ -302,6 +302,11 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                     app.error = Some(error.to_string());
                 }
             }
+            Action::Restart { agent } => {
+                if let Err(error) = client.restart(&agent, false).await {
+                    app.error = Some(error.to_string());
+                }
+            }
             Action::OpenCreate => {
                 if !app.discovering {
                     app.discovering = true;

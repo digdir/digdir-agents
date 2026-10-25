@@ -3222,17 +3222,22 @@ async fn a_session_of_a_stopped_agent_goes_idle_and_the_next_attach_resumes_it()
     );
 }
 
-#[tokio::test(flavor = "local")]
-async fn a_session_pass_in_flight_across_a_stop_and_start_launches_no_harness() {
-    const TOKEN: &str = "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3";
-    let directory = TempDir::new().expect("temporary directory");
-    let (database, sandboxes, session) = running_session(&directory, TOKEN, true).await;
-    let runtime = Rc::new(FakeRuntime::default());
-    let session_store: Rc<dyn agent::sessions::SessionStore> = Rc::new(database.clone());
-    let (session_controller, session_wakeup) = agent::sessions::Controller::new(
-        session_store.clone(),
+/// A Session controller over `runtime` and an Agent reconciler that settles its Sessions, wired as
+/// agentd wires them.
+fn controllers(
+    database: &persistence::Database,
+    sandboxes: &Rc<agent::sandbox::Service>,
+    runtime: &Rc<FakeRuntime>,
+) -> (
+    agent::sessions::Controller,
+    agent::sessions::Wakeup,
+    Rc<agent::control_plane::Reconciler>,
+) {
+    let store: Rc<dyn agent::sessions::SessionStore> = Rc::new(database.clone());
+    let (controller, wakeup) = agent::sessions::Controller::new(
+        store.clone(),
         Rc::new(agent::sessions::Reconciler::new(
-            session_store.clone(),
+            store.clone(),
             Rc::new(agent::sessions::AgentSandboxes::new(
                 Rc::new(database.clone()),
                 sandboxes.clone(),
@@ -3243,18 +3248,26 @@ async fn a_session_pass_in_flight_across_a_stop_and_start_launches_no_harness() 
         Duration::from_mins(1),
         Rc::new(|_, _| {}),
     );
-    let agents = Rc::new(
-        agent::control_plane::Reconciler::new(
-            Rc::new(database.clone()),
-            sandboxes,
-            agent::progress::ProvisioningState::default(),
-        )
-        .with_session_notifier(Rc::new(agent::sessions::AgentNotifier::new(
-            session_store,
-            session_wakeup.clone(),
-            Rc::new(|_| {}),
-        ))),
-    );
+    let agents = agent::control_plane::Reconciler::new(
+        Rc::new(database.clone()),
+        sandboxes.clone(),
+        agent::progress::ProvisioningState::default(),
+    )
+    .with_session_notifier(Rc::new(agent::sessions::AgentNotifier::new(
+        store,
+        wakeup.clone(),
+        Rc::new(|_| {}),
+    )));
+    (controller, wakeup, Rc::new(agents))
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_session_pass_in_flight_across_a_stop_and_start_launches_no_harness() {
+    const TOKEN: &str = "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3";
+    let directory = TempDir::new().expect("temporary directory");
+    let (database, sandboxes, session) = running_session(&directory, TOKEN, true).await;
+    let runtime = Rc::new(FakeRuntime::default());
+    let (session_controller, session_wakeup, agents) = controllers(&database, &sandboxes, &runtime);
     let task = tokio::task::spawn_local(session_controller.run());
     session_wakeup.reconcile(session.id).await.expect("startup pass");
 
@@ -3303,4 +3316,88 @@ async fn a_session_pass_in_flight_across_a_stop_and_start_launches_no_harness() 
         agent::sessions::State::Idle
     );
     task.abort();
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_daemon_that_crashes_while_a_restart_settles_sessions_launches_no_harness_after() {
+    const TOKEN: &str = "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3";
+    let directory = TempDir::new().expect("temporary directory");
+    let (database, sandboxes, session) = running_session(&directory, TOKEN, true).await;
+    let runtime = Rc::new(FakeRuntime::default());
+    let (controller, wakeup, agents) = controllers(&database, &sandboxes, &runtime);
+    let task = tokio::task::spawn_local(controller.run());
+    wakeup.reconcile(session.id).await.expect("startup Session pass");
+
+    // A pass observing the running harness is held while the restart stops the Agent.
+    runtime.hold_observe.set(true);
+    wakeup.notify(session.id);
+    runtime.observe_started.notified().await;
+    agent::control_plane::ControlPlane::new(Rc::new(database.clone()), Rc::new(NoNotifications))
+        .restart("worker", false)
+        .await
+        .expect("restart request");
+    let restarting = tokio::task::spawn_local({
+        let agents = agents.clone();
+        async move { agents.reconcile(session.agent_id).await }
+    });
+    loop {
+        let record = database.get(session.agent_id).await.expect("Agent");
+        if record.agent.status.is_stopped() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    // agentd ends while the restart waits for that pass to settle.
+    restarting.abort();
+    task.abort();
+    let _ = restarting.await;
+    let _ = task.await;
+    // The VM took the harness with it. Without backoff, a relaunch would happen at once.
+    runtime.present.set(false);
+    database
+        .reset_session_launch_attempts(session.id)
+        .await
+        .expect("reset launch backoff");
+    assert_eq!(
+        database
+            .get_session(session.id)
+            .await
+            .expect("Session")
+            .status
+            .lifecycle
+            .state,
+        agent::sessions::LifecycleState::Running,
+        "the Session missed the stop"
+    );
+
+    // agentd starts again, and the Agent's pass may run before the Session's.
+    let (new_controller, new_wakeup, restarted_agents) = controllers(&database, &sandboxes, &runtime);
+    let new_sessions = tokio::task::spawn_local(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        new_controller.run().await;
+    });
+    restarted_agents
+        .reconcile(session.agent_id)
+        .await
+        .expect("resume restart");
+    runtime.ready_without_report.set(true);
+    new_wakeup
+        .reconcile(session.id)
+        .await
+        .expect("Session pass after recovery");
+    new_sessions.abort();
+    assert!(
+        runtime.launch_tokens.borrow().is_empty(),
+        "the restart settles the Session before it starts the Agent, so it stays Idle until attached"
+    );
+    assert_eq!(
+        database.get_session(session.id).await.expect("Session").status.state,
+        agent::sessions::State::Idle
+    );
+}
+
+struct NoNotifications;
+
+impl agent::control_plane::Notifier for NoNotifications {
+    fn notify(&self, _id: AgentId) {}
 }

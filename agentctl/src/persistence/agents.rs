@@ -109,7 +109,7 @@ pub(super) fn update_status(
 ) -> Result<Status, Error> {
     let transaction = connection.transaction().map_err(database_error)?;
     let record = get(&transaction, id)?;
-    if record.agent.metadata.generation != generation {
+    if record.agent.metadata.generation != generation || record.agent.metadata.deletion_timestamp.is_some() {
         return Err(Error::Conflict);
     }
     scrub(&mut status);

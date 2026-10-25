@@ -175,6 +175,19 @@ enum Command {
         #[command(flatten)]
         target: RunStateTarget,
     },
+    /// Stop an Agent's Sandbox VM, start it on its kept disk and wait until the Agent is Ready.
+    ///
+    /// Use it when an Agent is unresponsive, for example after running out of memory. A stopped
+    /// Agent is started. agentd finishes the restart when the command is interrupted, and
+    /// attaching to a Session afterwards resumes it, as after a stop and a start.
+    Restart {
+        #[command(flatten)]
+        target: RunStateTarget,
+        /// End the VM at once instead of letting it shut down. Whatever the agent wrote in its last
+        /// seconds may be lost.
+        #[arg(long)]
+        now: bool,
+    },
     /// Archive a Session: stop its harness and hide it from listings, keeping its name and conversation.
     Archive {
         #[command(flatten)]
@@ -337,7 +350,7 @@ enum Resource {
     Session,
 }
 
-/// The Agent `stop` or `start` acts on: `agent/NAME` or `agent NAME`, and how long to wait.
+/// The Agent `start` or `restart` acts on: `agent/NAME` or `agent NAME`, and how long to wait.
 #[derive(clap::Args)]
 struct RunStateTarget {
     /// Agent resource, optionally combined with its name (for example `agent/worker`).
@@ -635,6 +648,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         Command::Stop { target } => stop(client, target).await?,
         Command::Kill { target } => stop(client, target.into()).await?,
         Command::Start { target } => set_run_state(client, target, RunState::Running).await?,
+        Command::Restart { target, now } => restart(client, target, now).await?,
         Command::Archive { target } => set_archived(client, target, true).await?,
         Command::Unarchive { target } => set_archived(client, target, false).await?,
         Command::Attach {
@@ -1665,6 +1679,20 @@ async fn set_run_state(client: &Client, target: RunStateTarget, state: RunState)
             )));
         }
     }
+    Ok(())
+}
+
+/// Restarts an Agent and waits until it is Ready again.
+async fn restart(client: &Client, target: RunStateTarget, now: bool) -> CommandResult<()> {
+    let name = agent_reference(&target.resource, target.name)?;
+    client.restart(&name, now).await?;
+    let converged = wait_until_converged(client, &name, target.timeout).await?;
+    if converged.spec.is_stopped() {
+        return Err(CommandError::Message(format!(
+            "agent/{name} was stopped again before it restarted"
+        )));
+    }
+    println!("agent/{name} restarted");
     Ok(())
 }
 

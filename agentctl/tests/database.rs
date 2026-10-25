@@ -262,6 +262,25 @@ fn stores_scrub_projected_provenance_and_keep_recorded_manifest_paths() {
     });
 }
 
+#[test]
+fn a_status_write_to_an_agent_being_deleted_conflicts() {
+    let directory = TempDir::new().expect("temporary directory");
+    let store = persistence::Database::open(&directory.path().join("control-plane.db")).expect("open database");
+    LocalRuntime::new().expect("local runtime").block_on(async {
+        let record = ready_record("worker", test_agent_id());
+        store.put(record.clone(), 0).await.expect("Agent stored");
+        store.mark_deleting("worker").await.expect("deletion marked");
+
+        let written = store
+            .update_status(record.id, record.agent.metadata.generation, Status::default())
+            .await;
+        assert!(
+            matches!(written, Err(Error::Conflict)),
+            "a pass that read the Agent before its delete records nothing: {written:?}"
+        );
+    });
+}
+
 fn ready_false(reason: &str, message: &str, at: Option<time::OffsetDateTime>) -> Condition {
     Condition {
         kind: Condition::READY.into(),

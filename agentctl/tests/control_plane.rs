@@ -91,6 +91,8 @@ struct MemoryProvider {
     report_runtime_restart: Rc<Cell<bool>>,
     /// Stops that fail before stopping anything, as a runtime that cannot be reached does.
     failing_stops: Rc<Cell<usize>>,
+    /// Stops that let the guest shut down.
+    stops: Rc<Cell<usize>>,
     /// Stops that ended the Sandbox at once.
     kills: Rc<Cell<usize>>,
     /// Graceful stops never finish, as for a guest that ignores the shutdown; kills still do.
@@ -113,6 +115,7 @@ impl MemoryProvider {
             blocking: None,
             report_runtime_restart: Rc::new(Cell::new(false)),
             failing_stops: Rc::new(Cell::new(0)),
+            stops: Rc::new(Cell::new(0)),
             kills: Rc::new(Cell::new(0)),
             hanging_stops: Rc::new(Cell::new(false)),
             nested_sandboxes_offered: Rc::new(RefCell::new(Err("the memory backend cannot nest".into()))),
@@ -213,6 +216,7 @@ impl Provider for MemoryProvider {
     }
 
     fn stop<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
+        self.stops.set(self.stops.get() + 1);
         Box::pin(async move {
             if self.hanging_stops.get() {
                 std::future::pending::<()>().await;
@@ -2652,6 +2656,207 @@ async fn a_start_before_an_immediate_stop_was_carried_out_leaves_later_stops_gra
     assert_stopped(&store, &backend, id).await;
 }
 
+/// Records, each time an Agent's Sessions are settled, whether the Agent was recorded stopped with
+/// its Sandbox stopped.
+struct StopSettlements {
+    store: Rc<memory::InMemoryAgentStore>,
+    backend: Rc<sandbox_memory::Provider>,
+    settled: RefCell<Vec<bool>>,
+}
+
+impl agent::control_plane::SessionNotifier for StopSettlements {
+    fn notify(&self, _id: AgentId) {}
+
+    fn settle(&self, id: AgentId) -> LocalFuture<'_, ()> {
+        Box::pin(async move {
+            let record = self.store.get(id).await.expect("stored Agent");
+            let sandbox = self.backend.find(&sandbox_name(&record)).await.expect("kept Sandbox");
+            self.settled
+                .borrow_mut()
+                .push(record.agent.status.is_stopped() && sandbox.state == sandbox::SandboxState::Stopped);
+        })
+    }
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_restart_stops_the_sandbox_and_starts_it_on_the_same_disk_in_one_pass() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let backend = Rc::new(sandbox_memory::Provider::new());
+    let memory = MemoryProvider::new(backend.clone());
+    let stops = memory.stops.clone();
+    let sessions = Rc::new(StopSettlements {
+        store: store.clone(),
+        backend: backend.clone(),
+        settled: RefCell::new(Vec::new()),
+    });
+    let reconciler = reconciler(store.clone(), Rc::new(memory)).with_session_notifier(sessions.clone());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    let mut request = apply_request("worker");
+    request.agent.metadata.restart_timestamp = Some(time::OffsetDateTime::UNIX_EPOCH);
+    let applied = control_plane.apply(request).await.expect("apply");
+    assert_eq!(
+        applied.metadata.restart_timestamp, None,
+        "only agentd asks for a restart"
+    );
+    let id = store.get_by_name("worker").await.expect("Agent").id;
+    reconciler.reconcile(id).await.expect("materialize");
+    let ready = store.get(id).await.expect("stored Agent");
+
+    let restarting = control_plane.restart("worker", false).await.expect("restart");
+    assert_eq!(restarting.metadata.generation, ready.agent.metadata.generation + 1);
+    assert!(restarting.restart_pending());
+    reconciler.reconcile(id).await.expect("restart");
+    let restarted = store.get(id).await.expect("stored Agent");
+    let status = &restarted.agent.status;
+    assert!(status.is_ready(), "{status:?}");
+    assert_eq!(status.observed_generation, restarted.agent.metadata.generation);
+    assert!(!restarted.agent.restart_pending());
+    assert_eq!(
+        status.sandbox, ready.agent.status.sandbox,
+        "the Sandbox keeps its identity"
+    );
+    assert_eq!(backend.count(), 1);
+    assert_eq!(stops.get(), 1);
+    assert_eq!(
+        *sessions.settled.borrow(),
+        [true],
+        "Sessions see the Agent stopped before its Sandbox starts again"
+    );
+
+    // Neither a later pass nor an apply restarts it again.
+    reconciler.reconcile(id).await.expect("resync");
+    let mut changed = apply_request("worker");
+    changed.agent.spec.harnesses[0].version = Some("2.1.240".into());
+    let changed = control_plane.apply(changed).await.expect("changed apply");
+    assert_eq!(
+        changed.metadata.restart_timestamp, restarted.agent.metadata.restart_timestamp,
+        "an apply keeps the restart"
+    );
+    reconciler.reconcile(id).await.expect("apply pass");
+    assert_eq!(stops.get(), 1);
+    assert!(store.get(id).await.expect("stored Agent").agent.status.is_ready());
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_restart_starts_a_stopped_agent() {
+    let fixture = fixture();
+    fixture
+        .control_plane
+        .apply(apply_request("worker"))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "worker").await;
+    fixture
+        .control_plane
+        .set_run_state("worker", agent::RunState::Stopped)
+        .await
+        .expect("stop");
+    reconcile(&fixture, "worker").await;
+    assert!(stored(&fixture, "worker").await.agent.status.is_stopped());
+
+    let restarting = fixture.control_plane.restart("worker", false).await.expect("restart");
+    assert!(!restarting.spec.is_stopped());
+    reconcile(&fixture, "worker").await;
+    assert!(stored(&fixture, "worker").await.agent.status.is_ready());
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_start_that_fails_after_a_restart_is_retried_without_stopping_again() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let memory = MemoryProvider::new(Rc::new(sandbox_memory::Provider::new()));
+    let stops = memory.stops.clone();
+    let platform = Rc::new(StallingPlatform::default());
+    let sandboxes = Rc::new(
+        Service::new(
+            [Rc::new(memory) as Rc<dyn Provider>],
+            [platform.clone() as Rc<dyn PlatformAdapter>],
+        )
+        .expect("Sandbox service"),
+    );
+    let reconciler = Reconciler::new(store.clone(), sandboxes, ProvisioningState::default());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let id = store.get_by_name("worker").await.expect("Agent").id;
+    reconciler.reconcile(id).await.expect("materialize");
+
+    control_plane.restart("worker", false).await.expect("restart");
+    platform.fail.set(true);
+    reconciler
+        .reconcile(id)
+        .await
+        .expect_err("setup fails after the restart stopped the Sandbox");
+    assert!(
+        !store.get(id).await.expect("stored Agent").agent.restart_pending(),
+        "the stop carried the restart out"
+    );
+    platform.fail.set(false);
+    reconciler.reconcile(id).await.expect("retry");
+    assert_eq!(stops.get(), 1, "the retry only starts the Agent");
+    assert!(store.get(id).await.expect("stored Agent").agent.status.is_ready());
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_stop_before_a_restart_was_carried_out_carries_it_out() {
+    let (control_plane, reconciler, store, backend, id, _, _, _) = immediate_stop_fixture().await;
+    control_plane.restart("worker", false).await.expect("restart");
+    control_plane
+        .set_run_state("worker", agent::RunState::Stopped)
+        .await
+        .expect("stop");
+    reconciler.reconcile(id).await.expect("stop");
+    assert_stopped(&store, &backend, id).await;
+    assert!(!store.get(id).await.expect("stored Agent").agent.restart_pending());
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_immediate_restart_kills_the_sandbox_and_a_later_one_shuts_it_down() {
+    let (control_plane, reconciler, store, _, id, kills, _, _) = immediate_stop_fixture().await;
+    control_plane.restart("worker", true).await.expect("restart now");
+    reconciler.reconcile(id).await.expect("restart");
+    assert_eq!(kills.get(), 1);
+    assert!(store.get(id).await.expect("stored Agent").agent.status.is_ready());
+
+    control_plane.restart("worker", false).await.expect("restart");
+    reconciler.reconcile(id).await.expect("restart");
+    assert_eq!(kills.get(), 1, "the request was used up");
+    assert!(store.get(id).await.expect("stored Agent").agent.status.is_ready());
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_restart_makes_an_unresponsive_agent_ready_again() {
+    let changes = Changes::new();
+    let fixture = stalling(changes.clone()).await;
+    let (controller, wakeup) = Controller::new(
+        fixture.store.clone(),
+        fixture.reconciler.clone(),
+        NO_BACKGROUND_PASSES,
+        Rc::new(|_, _| {}),
+    );
+    let task = tokio::task::spawn_local(controller.run());
+    let convergence = Convergence::new(wakeup, fixture.store.clone(), changes);
+    convergence
+        .converge("worker", WaitPolicy::UntilConverged)
+        .await
+        .expect("the healthy Agent should become Ready");
+    fixture.beat(1).await;
+    fixture.platform.stall.set(true);
+    let result = convergence.converge("worker", WaitPolicy::UntilConverged).await;
+    assert!(matches!(result, Err(Error::SandboxUnresponsive(_))), "{result:?}");
+
+    // The restart boots a guest that responds again.
+    fixture.platform.stall.set(false);
+    ControlPlane::new(fixture.store.clone(), Rc::new(NotificationCounter::default()))
+        .restart("worker", false)
+        .await
+        .expect("restart");
+    convergence
+        .converge("worker", WaitPolicy::UntilConverged)
+        .await
+        .expect("the wait follows the restart until the Agent is Ready");
+    assert!(fixture.record().await.agent.status.is_ready());
+    task.abort();
+}
+
 /// An Agent store whose next `get` reads the record and then waits to return it, as a pass does
 /// that read the Agent just before a request changed it.
 struct HeldStore {
@@ -3260,4 +3465,113 @@ async fn a_failed_stop_reads_as_stopping_and_converges_once_a_retry_stops_it() {
     assert_eq!(failing_stops.get(), 0, "the wait went through a failed retry");
     assert_stopped(&store, &backend, id).await;
     task.abort();
+}
+
+/// Deletes the Agent `worker` while its Sessions settle, as a delete during a restart's stop does.
+struct DeleteAtSettlement {
+    store: Rc<memory::InMemoryAgentStore>,
+}
+
+impl agent::control_plane::SessionNotifier for DeleteAtSettlement {
+    fn notify(&self, _id: AgentId) {}
+    fn settle(&self, _id: AgentId) -> LocalFuture<'_, ()> {
+        Box::pin(async move {
+            self.store.mark_deleting("worker").await.expect("delete during restart");
+        })
+    }
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_delete_while_a_restart_stops_the_agent_keeps_it_from_booting_again() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let backend = Rc::new(sandbox_memory::Provider::new());
+    let provider = Rc::new(MemoryProvider::new(backend.clone()));
+    let reconciler =
+        reconciler(store.clone(), provider).with_session_notifier(Rc::new(DeleteAtSettlement { store: store.clone() }));
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let record = store.get_by_name("worker").await.expect("Agent");
+    reconciler.reconcile(record.id).await.expect("initial boot");
+    control_plane.restart("worker", false).await.expect("restart");
+    reconciler.reconcile(record.id).await.expect("the restart's pass");
+    let sandbox = backend.find(&sandbox_name(&record)).await.expect("Sandbox");
+    assert_eq!(
+        sandbox.state,
+        sandbox::SandboxState::Stopped,
+        "the pass the delete woke releases it instead"
+    );
+}
+
+/// An Agent store that deletes the Agent `worker`, once armed, just before the restart's Starting
+/// status is written, as a delete can between a pass's reads and its writes.
+struct DeleteBeforeStarting {
+    inner: Rc<memory::InMemoryAgentStore>,
+    armed: Cell<bool>,
+}
+
+impl AgentStore for DeleteBeforeStarting {
+    fn get(&self, id: AgentId) -> LocalFuture<'_, Result<AgentRecord, Error>> {
+        self.inner.get(id)
+    }
+    fn get_by_name<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<AgentRecord, Error>> {
+        self.inner.get_by_name(name)
+    }
+    fn list(&self) -> LocalFuture<'_, Result<Vec<AgentRecord>, Error>> {
+        self.inner.list()
+    }
+    fn put(&self, record: AgentRecord, generation: u64) -> LocalFuture<'_, Result<(), Error>> {
+        self.inner.put(record, generation)
+    }
+    fn update_status(&self, id: AgentId, generation: u64, status: Status) -> LocalFuture<'_, Result<Status, Error>> {
+        Box::pin(async move {
+            if status
+                .conditions
+                .iter()
+                .any(|condition| condition.reason == Condition::REASON_STARTING)
+                && self.armed.replace(false)
+            {
+                self.inner.mark_deleting("worker").await.expect("concurrent delete");
+            }
+            self.inner.update_status(id, generation, status).await
+        })
+    }
+    fn mark_deleting<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<AgentRecord, Error>> {
+        self.inner.mark_deleting(name)
+    }
+    fn finalize_deletion(&self, id: AgentId, generation: u64) -> LocalFuture<'_, Result<(), Error>> {
+        self.inner.finalize_deletion(id, generation)
+    }
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_delete_just_before_a_restart_starts_the_agent_keeps_it_from_booting_again() {
+    let store = Rc::new(DeleteBeforeStarting {
+        inner: Rc::new(memory::InMemoryAgentStore::new()),
+        armed: Cell::new(false),
+    });
+    let backend = Rc::new(sandbox_memory::Provider::new());
+    let provider = Rc::new(MemoryProvider::new(backend.clone()));
+    let reconciler = reconciler(store.clone(), provider);
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let record = store.get_by_name("worker").await.expect("Agent");
+    reconciler.reconcile(record.id).await.expect("initial boot");
+    control_plane.restart("worker", false).await.expect("restart");
+    store.armed.set(true);
+    reconciler.reconcile(record.id).await.expect("restart pass");
+    assert!(
+        store
+            .get(record.id)
+            .await
+            .expect("Agent")
+            .agent
+            .metadata
+            .deletion_timestamp
+            .is_some()
+    );
+    assert_eq!(
+        backend.find(&sandbox_name(&record)).await.expect("Sandbox").state,
+        sandbox::SandboxState::Stopped,
+        "the Starting write fails, so the pass the delete woke releases it instead"
+    );
 }

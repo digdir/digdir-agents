@@ -16,11 +16,12 @@ use super::protocol::{
     CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams,
     MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_CONVERGE, METHOD_DELETE,
     METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
-    METHOD_RESOURCES_WATCH, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET,
-    METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN,
-    METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, PROTOCOL_VERSION,
-    ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, SessionEnsureParams, SessionListParams,
-    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
+    METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE,
+    METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE,
+    METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams,
+    PROTOCOL_VERSION, ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams,
+    SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams,
+    error_response, read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -60,6 +61,9 @@ pub trait AgentApi {
     /// Stops an Agent without letting its guest shut down; see
     /// [`control_plane::ControlPlane::stop_now`].
     fn stop_now<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Agent, Error>>;
+
+    /// Records a restart of an Agent; see [`control_plane::ControlPlane::restart`].
+    fn restart<'a>(&'a self, name: &'a str, now: bool) -> LocalFuture<'a, Result<Agent, Error>>;
 
     /// Reads an Agent's stored status and its latest pass's progress, with
     /// only the output after `output` when it names the same pass.
@@ -101,6 +105,10 @@ impl AgentApi for control_plane::ControlPlane {
 
     fn stop_now<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Agent, Error>> {
         Box::pin(async move { Self::stop_now(self, name).await })
+    }
+
+    fn restart<'a>(&'a self, name: &'a str, now: bool) -> LocalFuture<'a, Result<Agent, Error>> {
+        Box::pin(async move { Self::restart(self, name, now).await })
     }
 
     fn progress<'a>(
@@ -559,6 +567,7 @@ impl Server {
                     .await
             }
             METHOD_STOP_NOW => self.handle_stop_now(request.id, request.params).await,
+            METHOD_RESTART => self.handle_restart(request.id, request.params).await,
             METHOD_SSH_ACCESS => self.handle_ssh_access(request.id, request.params).await,
             METHOD_VNC_ACCESS => self.handle_vnc_access(request.id, request.params).await,
             METHOD_AUTH_LOGIN => self.handle_auth_login(request.id, request.params).await,
@@ -690,6 +699,16 @@ impl Server {
             Err(response) => return response_with_id(id, response),
         };
         result_response(id, self.agents.stop_now(&params.name).await)
+    }
+
+    async fn handle_restart(&self, id: u64, value: Value) -> Response {
+        let Some(params) = serde_json::from_value::<RestartParams>(value)
+            .ok()
+            .filter(|params| !params.name.is_empty())
+        else {
+            return error_response(id, CODE_INVALID_PARAMS, "name is required");
+        };
+        result_response(id, self.agents.restart(&params.name, params.now).await)
     }
 
     async fn handle_ssh_access(&self, id: u64, value: Value) -> Response {
@@ -914,6 +933,7 @@ fn is_mutating(method: &str) -> bool {
             | METHOD_DELETE
             | METHOD_STOP
             | METHOD_STOP_NOW
+            | METHOD_RESTART
             | METHOD_START
             | METHOD_EXECUTION_ENSURE
             | METHOD_AUTH_LOGIN
