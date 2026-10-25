@@ -18,7 +18,7 @@ use crate::{
 };
 
 use super::{LaunchContext, Observation};
-use crate::sessions::{Activity, AttachTarget, LaunchToken, LifecycleState, Phase, Session, Turn};
+use crate::sessions::{Activity, AttachTarget, LaunchToken, LifecycleState, Phase, Prelaunch, Session, Turn};
 
 /// Quiet period after the latest hook event before input is pasted into a
 /// harness that is not waiting for input. The start hook fires before the
@@ -29,6 +29,13 @@ const INPUT_READY_GRACE: std::time::Duration = std::time::Duration::from_secs(2)
 /// fails the operation instead of holding it.
 const LIFECYCLE_EXECUTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const LIFECYCLE_EXECUTION_KILL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long the prelaunch script may run before it is killed and the harness launches anyway.
+const PRELAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How much of the end of the prelaunch script's output is kept.
+const PRELAUNCH_OUTPUT_TAIL: usize = 4 * 1024;
+/// Runs the prelaunch script, passed as `$1`, with `sh`, so it needs no executable bit, and joins its
+/// standard error to its standard output so the kept tail reads in order.
+const PRELAUNCH_WRAPPER: &str = "exec /bin/sh -c \"$1\" agent-prelaunch 2>&1";
 const DETACH_KEYS: &str = "ctrl-b,d";
 
 // Set history-limit before pane creation; reapply on attach for existing servers.
@@ -234,15 +241,195 @@ async fn run_lifecycle_execution(
     if let Ok(output) = tokio::time::timeout_at(deadline, &mut collecting).await {
         output.map_err(Error::from)
     } else {
-        match tokio::time::timeout(LIFECYCLE_EXECUTION_KILL_TIMEOUT, sandbox.kill_execution(&execution_id)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                tracing::warn!(%error, %execution_id, "failed to kill timed-out Session runtime execution");
-            }
-            Err(_) => tracing::warn!(%execution_id, "timed out killing Session runtime execution"),
-        }
+        kill_abandoned(sandbox, &execution_id).await;
         Err(Error::Session(format!("{operation} timed out")))
     }
+}
+
+/// Kills an execution whose result is no longer awaited.
+async fn kill_abandoned(sandbox: &SandboxHandle, execution_id: &::sandbox::execution::ExecutionId) {
+    match tokio::time::timeout(LIFECYCLE_EXECUTION_KILL_TIMEOUT, sandbox.kill_execution(execution_id)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%error, %execution_id, "failed to kill abandoned Session runtime execution");
+        }
+        Err(_) => tracing::warn!(%execution_id, "timed out killing Session runtime execution"),
+    }
+}
+
+/// Runs the prelaunch `script` as the Sandbox user in their home, with the environment the harness
+/// launches with, and says how it ended. It never fails the launch: an error becomes the outcome.
+async fn prelaunch(
+    session: &Session,
+    sandbox: &SandboxHandle,
+    context: LaunchContext<'_>,
+    token: &LaunchToken,
+    script: &str,
+) -> Prelaunch {
+    let harness = harness_launch(session, None, None);
+    let spec = ExecutionSpec::command(
+        SandboxPath::new("/bin/sh"),
+        [
+            "-c".into(),
+            PRELAUNCH_WRAPPER.into(),
+            "agent-prelaunch".into(),
+            script.into(),
+        ],
+    )
+    .with_working_directory(SandboxPath::new(crate::sandbox::platform::HOME))
+    .with_environment(
+        session_environment(session, context, token, harness.environment)
+            .into_iter()
+            .chain(base_environment()),
+    );
+    let mut tail = Vec::new();
+    match collect_tail(sandbox, spec, &mut tail).await {
+        Ok(Some(status)) if status.success() => prelaunch_outcome("ok".into(), &tail),
+        Ok(Some(status)) => prelaunch_outcome(format!("failed:{}", status.code), &tail),
+        Ok(None) => prelaunch_outcome("timeout".into(), &tail),
+        Err(error) => Prelaunch {
+            status: "error".into(),
+            output: error.to_string(),
+        },
+    }
+}
+
+/// Runs an execution, keeping the end of its output in `tail`, until it exits or
+/// [`PRELAUNCH_TIMEOUT`] after it started; see [`follow`].
+async fn collect_tail(
+    sandbox: &SandboxHandle,
+    spec: ExecutionSpec,
+    tail: &mut Vec<u8>,
+) -> Result<Option<ExitStatus>, Error> {
+    let started = tokio::time::timeout(
+        LIFECYCLE_EXECUTION_TIMEOUT,
+        sandbox.start_execution(StartExecutionRequest::new(spec)),
+    )
+    .await
+    .map_err(|_| Error::Session("the prelaunch script did not start in time".into()))??;
+    let ::sandbox::execution::StartedExecution { id, mut events } = started;
+    let deadline = tokio::time::Instant::now() + PRELAUNCH_TIMEOUT;
+    follow(&mut events, deadline, tail, || kill_abandoned(sandbox, &id)).await
+}
+
+/// Follows `events` like [`tail_until`] and calls `kill` whenever they end without an exit: on the
+/// deadline, a broken stream or one that ends early. No run then outlives the outcome recorded for
+/// it, or overlaps the Agent's next one.
+async fn follow<Killed: std::future::Future<Output = ()>>(
+    events: &mut ::sandbox::execution::ExecutionEventStream,
+    deadline: tokio::time::Instant,
+    tail: &mut Vec<u8>,
+    kill: impl FnOnce() -> Killed,
+) -> Result<Option<ExitStatus>, Error> {
+    let ended = tail_until(events, deadline, tail).await;
+    if !matches!(ended, Ok(Some(_))) {
+        kill().await;
+    }
+    ended
+}
+
+/// Follows `events` into `tail` until the process exits, or `None` once `deadline` passes.
+async fn tail_until(
+    events: &mut ::sandbox::execution::ExecutionEventStream,
+    deadline: tokio::time::Instant,
+    tail: &mut Vec<u8>,
+) -> Result<Option<ExitStatus>, Error> {
+    use ::sandbox::execution::ExecutionEvent;
+    use futures_util::StreamExt as _;
+
+    loop {
+        let Ok(event) = tokio::time::timeout_at(deadline, events.next()).await else {
+            return Ok(None);
+        };
+        match event.transpose()? {
+            Some(ExecutionEvent::Stdout(chunk) | ExecutionEvent::Stderr(chunk)) => {
+                tail.extend_from_slice(&chunk);
+                if tail.len() > 2 * PRELAUNCH_OUTPUT_TAIL {
+                    tail.drain(..tail.len() - PRELAUNCH_OUTPUT_TAIL);
+                }
+            }
+            Some(ExecutionEvent::Exited(status)) => return Ok(Some(status)),
+            Some(ExecutionEvent::Failed { message }) => return Err(Error::Session(message)),
+            Some(_) => {}
+            None => {
+                return Err(Error::Session(
+                    "the prelaunch script's output ended without an exit status".into(),
+                ));
+            }
+        }
+    }
+}
+
+fn prelaunch_outcome(status: String, tail: &[u8]) -> Prelaunch {
+    let kept = &tail[tail.len().saturating_sub(PRELAUNCH_OUTPUT_TAIL)..];
+    Prelaunch {
+        status,
+        output: String::from_utf8_lossy(kept).into_owned(),
+    }
+}
+
+fn base_environment() -> [(String, String); 2] {
+    [
+        ("HOME".into(), crate::sandbox::platform::HOME.into()),
+        ("LANG".into(), UTF8_LOCALE.into()),
+    ]
+}
+
+fn harness_launch(session: &Session, resume: Option<&str>, initial_message: Option<&str>) -> harness::ProcessLaunch {
+    harness::launch_linux(
+        session.harness,
+        &harness::LaunchRequest {
+            home: crate::sandbox::platform::HOME,
+            resume,
+            resume_transcript: session.status.reported.harness_transcript_path.as_deref(),
+            initial_prompt: initial_message,
+            model_selection: &session.model_selection,
+        },
+    )
+}
+
+/// The environment of one launch of `session`'s harness, and of the prelaunch script before it:
+/// the harness's own, then what the harness learns about its Agent, Session, host and source
+/// directory, its launch token, and how the prelaunch script ended when one ran.
+fn session_environment(
+    session: &Session,
+    context: LaunchContext<'_>,
+    token: &LaunchToken,
+    harness: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    harness
+        .into_iter()
+        .chain([
+            ("AGENT_SESSION_ID".into(), session.id.to_string()),
+            ("AGENT_HARNESS".into(), session.harness.as_str().to_owned()),
+            ("AGENT_NAME".into(), context.agent.to_owned()),
+            ("AGENT_SESSION_NAME".into(), session.name.to_string()),
+            ("AGENT_HOST".into(), context.host.to_owned()),
+            (
+                "AGENT_SOURCE_DIRECTORY".into(),
+                context.source_directory.display().to_string(),
+            ),
+            ("AGENT_SESSION_TOKEN".into(), token.expose()),
+            // TODO: Remove in the release after the first one with `PLATFORM_API_URL_FILE`, with
+            // agentd's removal of `platform-api-port`. Hook scripts installed by earlier releases
+            // read the endpoint only from here, and a relaunch after an upgrade can run before
+            // setup replaces them; current hook scripts read `PLATFORM_API_URL_FILE` instead. An
+            // upgrade that skips that release loses such a relaunch's reports until setup completes.
+            (
+                "AGENT_SESSION_HOOK_URL".into(),
+                format!(
+                    "{}{}",
+                    context.platform_api_url,
+                    crate::platform_api::SESSION_HOOKS_PATH
+                ),
+            ),
+        ])
+        .chain(
+            context
+                .prelaunch_status
+                .map(|status| ("AGENT_PRELAUNCH_STATUS".into(), status.to_owned())),
+        )
+        .collect()
 }
 
 /// Builds the tmux `new-session` arguments for one launch of `session`'s harness.
@@ -253,7 +440,7 @@ async fn run_lifecycle_execution(
 /// sibling Sessions; the token only rejects stale or accidental reports. The
 /// Session's recorded model selection is part of every launch, resumed or not.
 /// The harness also learns its agent, session name, host and source directory,
-/// so it can say where it runs, and which harness it is.
+/// so it can say where it runs, and which harness it is; see [`session_environment`].
 fn launch_arguments(
     session: &Session,
     context: LaunchContext<'_>,
@@ -261,44 +448,10 @@ fn launch_arguments(
     resume: Option<&str>,
     initial_message: Option<&str>,
 ) -> Vec<String> {
-    let launch = harness::launch_linux(
-        session.harness,
-        &harness::LaunchRequest {
-            home: crate::sandbox::platform::HOME,
-            resume,
-            resume_transcript: session.status.reported.harness_transcript_path.as_deref(),
-            initial_prompt: initial_message,
-            model_selection: &session.model_selection,
-        },
-    );
+    let launch = harness_launch(session, resume, initial_message);
     let mut arguments = terminal_options();
     arguments.extend(["new-session".into(), "-d".into(), "-s".into(), session_name(session)]);
-    let session_environment = launch.environment.iter().cloned().chain([
-        ("AGENT_SESSION_ID".into(), session.id.to_string()),
-        ("AGENT_HARNESS".into(), session.harness.as_str().to_owned()),
-        ("AGENT_NAME".into(), context.agent.to_owned()),
-        ("AGENT_SESSION_NAME".into(), session.name.to_string()),
-        ("AGENT_HOST".into(), context.host.to_owned()),
-        (
-            "AGENT_SOURCE_DIRECTORY".into(),
-            context.source_directory.display().to_string(),
-        ),
-        ("AGENT_SESSION_TOKEN".into(), token.expose()),
-        // TODO: Remove in the release after the first one with `PLATFORM_API_URL_FILE`, with
-        // agentd's removal of `platform-api-port`. Hook scripts installed by earlier releases
-        // read the endpoint only from here, and a relaunch after an upgrade can run before
-        // setup replaces them; current hook scripts read `PLATFORM_API_URL_FILE` instead. An
-        // upgrade that skips that release loses such a relaunch's reports until setup completes.
-        (
-            "AGENT_SESSION_HOOK_URL".into(),
-            format!(
-                "{}{}",
-                context.platform_api_url,
-                crate::platform_api::SESSION_HOOKS_PATH
-            ),
-        ),
-    ]);
-    for (name, value) in session_environment {
+    for (name, value) in session_environment(session, context, token, launch.environment) {
         arguments.push("-e".into());
         arguments.push(format!("{name}={value}"));
     }
@@ -328,10 +481,7 @@ async fn launch(
         sandbox,
         ExecutionSpec::command(SandboxPath::new("/usr/bin/tmux"), arguments)
             .with_working_directory(SandboxPath::new(crate::sandbox::platform::WORKING_DIRECTORY))
-            .with_environment([
-                ("HOME".into(), crate::sandbox::platform::HOME.into()),
-                ("LANG".into(), UTF8_LOCALE.into()),
-            ]),
+            .with_environment(base_environment()),
         "tmux Session launch",
     )
     .await?;
@@ -430,6 +580,17 @@ impl super::SessionRuntime for Tmux {
         initial_prompt: Option<&'a str>,
     ) -> ::sandbox::LocalFuture<'a, Result<(), Error>> {
         Box::pin(launch(session, sandbox, context, token, resume, initial_prompt))
+    }
+
+    fn prelaunch<'a>(
+        &'a self,
+        session: &'a Session,
+        sandbox: &'a SandboxHandle,
+        context: LaunchContext<'a>,
+        token: &'a LaunchToken,
+        script: &'a str,
+    ) -> ::sandbox::LocalFuture<'a, Prelaunch> {
+        Box::pin(prelaunch(session, sandbox, context, token, script))
     }
 
     fn stop<'a>(
@@ -715,6 +876,7 @@ mod tests {
                 agent: "worker",
                 source_directory: std::path::Path::new("/Users/someone/code/app"),
                 host: "laptop",
+                prelaunch_status: None,
             },
             &crate::sessions::LaunchToken::generate(),
             None,
@@ -751,6 +913,109 @@ mod tests {
                 "review"
             ],
             "the label is set on the new session, after its command: {arguments:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_prelaunch_script_that_outlives_its_timeout_is_cut_off_with_its_output_so_far() {
+        use futures_util::StreamExt as _;
+        use sandbox::execution::ExecutionEvent;
+
+        let mut events: sandbox::execution::ExecutionEventStream = Box::pin(
+            futures_util::stream::iter([Ok(ExecutionEvent::Stdout("cloning\n".into()))])
+                .chain(futures_util::stream::pending()),
+        );
+        let mut tail = Vec::new();
+        let deadline = tokio::time::Instant::now() + super::PRELAUNCH_TIMEOUT;
+        let ended = super::tail_until(&mut events, deadline, &mut tail)
+            .await
+            .expect("no stream error");
+        assert_eq!(ended, None, "a timeout");
+        assert_eq!(tokio::time::Instant::now(), deadline);
+        let outcome = super::prelaunch_outcome("timeout".into(), &tail);
+        assert_eq!(outcome.output, "cloning\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_prelaunch_wrapper_runs_the_script_text_with_sh_and_joins_its_output() {
+        let output = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                super::PRELAUNCH_WRAPPER,
+                "agent-prelaunch",
+                "echo out; echo err >&2; echo \"$0\"; exit 7",
+            ])
+            .output()
+            .expect("sh");
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "out\nerr\nagent-prelaunch\n");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_prelaunch_run_is_killed_whenever_it_ends_without_exiting() {
+        use futures_util::StreamExt as _;
+        use sandbox::execution::ExecutionEvent;
+
+        let output = || Ok(ExecutionEvent::Stdout("cloning\n".into()));
+        let cases: [(&str, sandbox::execution::ExecutionEventStream, bool); 4] = [
+            (
+                "exited",
+                Box::pin(futures_util::stream::iter([
+                    output(),
+                    Ok(ExecutionEvent::Exited(ExitStatus { code: 1 })),
+                ])),
+                false,
+            ),
+            (
+                "timed out",
+                Box::pin(futures_util::stream::iter([output()]).chain(futures_util::stream::pending())),
+                true,
+            ),
+            (
+                "broken stream",
+                Box::pin(futures_util::stream::iter([
+                    output(),
+                    Err(sandbox::Error::invalid("stream", "broken")),
+                ])),
+                true,
+            ),
+            ("ended early", Box::pin(futures_util::stream::iter([output()])), true),
+        ];
+        for (case, mut events, killed) in cases {
+            let kills = std::cell::Cell::new(0);
+            let deadline = tokio::time::Instant::now() + super::PRELAUNCH_TIMEOUT;
+            let _ended = super::follow(&mut events, deadline, &mut Vec::new(), || async {
+                kills.set(kills.get() + 1);
+            })
+            .await;
+            assert_eq!(kills.get(), usize::from(killed), "{case}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_prelaunch_script_keeps_only_the_end_of_its_output() {
+        use sandbox::execution::ExecutionEvent;
+
+        let chunk = |byte: u8| Ok(ExecutionEvent::Stdout(vec![byte; super::PRELAUNCH_OUTPUT_TAIL].into()));
+        let mut events: sandbox::execution::ExecutionEventStream = Box::pin(futures_util::stream::iter([
+            chunk(b'a'),
+            chunk(b'b'),
+            chunk(b'c'),
+            Ok(ExecutionEvent::Stderr("last\n".into())),
+            Ok(ExecutionEvent::Exited(ExitStatus { code: 0 })),
+        ]));
+        let mut tail = Vec::new();
+        let deadline = tokio::time::Instant::now() + super::PRELAUNCH_TIMEOUT;
+        let ended = super::tail_until(&mut events, deadline, &mut tail).await.expect("exit");
+        assert_eq!(ended, Some(ExitStatus { code: 0 }));
+        assert!(tail.len() <= 2 * super::PRELAUNCH_OUTPUT_TAIL, "bounded while it runs");
+        let output = super::prelaunch_outcome("ok".into(), &tail).output;
+        assert_eq!(
+            output,
+            format!("{}last\n", "c".repeat(super::PRELAUNCH_OUTPUT_TAIL - 5)),
+            "only the end, standard error included"
         );
     }
 

@@ -15,6 +15,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 ### Added
 
 - `optional: true` in `spec.instructions` and `spec.skills` leaves out a source that does not exist, so a committed manifest can name your own files, such as `~/agent-instructions/everywhere.md`. `agentctl describe` names what was left out, and the Agent gets it once it exists. ([#331](https://github.com/digdir/digdir-agents/issues/331))
+- `spec.prelaunch` names a script the Agent runs before each Session's harness starts, for setup that needs credentials or network, such as cloning repositories; with `optional: true`, a missing script is skipped. The harness sees its outcome in `AGENT_PRELAUNCH_STATUS`. ([prelaunch script](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/prelaunch-script.md), [#322](https://github.com/digdir/digdir-agents/issues/322))
 
 ## [0.1.0-preview.13] - 2026-10-26
 

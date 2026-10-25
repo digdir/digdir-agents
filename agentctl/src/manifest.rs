@@ -224,6 +224,9 @@ pub struct Spec {
     /// Skill directories installed through every declared Harness Adapter.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillSpec>,
+    /// Script run in the Sandbox before each harness launch of a Session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prelaunch: Option<PrelaunchSpec>,
     /// Harness installations available to Sessions in this Agent.
     pub harnesses: Vec<HarnessSpec>,
     /// Deliberately selected non-secret values exposed in plaintext inside the Sandbox.
@@ -563,6 +566,13 @@ impl Spec {
             )));
         }
         self.validate_skills()?;
+        if self
+            .prelaunch
+            .as_ref()
+            .is_some_and(|prelaunch| prelaunch.source.as_os_str().is_empty())
+        {
+            return Err(Error::Invalid("spec.prelaunch.source must not be empty".into()));
+        }
         if self.harnesses.is_empty() {
             return Err(Error::Invalid("spec.harnesses must not be empty".into()));
         }
@@ -763,6 +773,17 @@ pub struct InstructionsSpec {
     /// Host file, resolved relative to the manifest directory.
     pub source: std::path::PathBuf,
     /// Whether a missing source is skipped rather than failing setup.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
+}
+
+/// The script run in the Sandbox before each harness launch of a Session, read at every launch.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PrelaunchSpec {
+    /// Host file, resolved relative to the manifest directory.
+    pub source: std::path::PathBuf,
+    /// Whether a missing file means no script runs, instead of a launch recording the error.
     #[serde(default, skip_serializing_if = "is_false")]
     pub optional: bool,
 }

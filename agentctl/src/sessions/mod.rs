@@ -171,6 +171,9 @@ pub struct Status {
     /// Facts the running harness reported about itself.
     #[serde(default)]
     pub reported: Reported,
+    /// What the Agent's prelaunch script did before the current launch, when one ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prelaunch: Option<Prelaunch>,
 }
 
 impl Status {
@@ -216,6 +219,7 @@ impl Status {
             state_since,
             lifecycle,
             reported,
+            prelaunch: None,
         }
     }
 
@@ -345,6 +349,18 @@ impl Lifecycle {
             failure: Some(failure.into()),
         }
     }
+}
+
+/// How the Agent's prelaunch script ended before the current launch.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Prelaunch {
+    /// The value the harness gets as `AGENT_PRELAUNCH_STATUS`: `ok`, `failed:<exit code>`,
+    /// `timeout`, or `error` when the script could not be run.
+    pub status: String,
+    /// The end of its combined output, or why it could not be run.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub output: String,
 }
 
 /// Report half of [`Status`]: what the running harness said about itself.
@@ -665,6 +681,14 @@ pub trait SessionStore: SessionReports {
         id: SessionId,
         launch: LaunchRecord,
     ) -> ::sandbox::LocalFuture<'_, Result<Option<String>, Error>>;
+
+    /// Records what the prelaunch script did before the current launch. Recording a
+    /// new launch clears it, so it never describes an earlier one.
+    fn record_session_prelaunch(
+        &self,
+        id: SessionId,
+        prelaunch: Prelaunch,
+    ) -> ::sandbox::LocalFuture<'_, Result<(), Error>>;
 
     /// Reads the most recent launch bookkeeping, when one exists.
     fn session_launch_state(&self, id: SessionId) -> ::sandbox::LocalFuture<'_, Result<Option<LaunchState>, Error>>;

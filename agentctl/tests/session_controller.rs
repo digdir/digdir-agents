@@ -295,6 +295,12 @@ struct FakeRuntime {
     sent: RefCell<Vec<String>>,
     launches: RefCell<Vec<(Option<String>, Option<String>)>>,
     launch_tokens: RefCell<Vec<agent::sessions::LaunchToken>>,
+    /// Prelaunch scripts running now, and the most that ever ran at once.
+    prelaunch_running: Cell<usize>,
+    prelaunch_most: Cell<usize>,
+    /// How long a prelaunch script runs, and when the latest one ended, in Unix seconds.
+    prelaunch_takes: Cell<Duration>,
+    prelaunch_ended_at: Cell<i64>,
 }
 
 impl Default for FakeRuntime {
@@ -323,6 +329,10 @@ impl Default for FakeRuntime {
             sent: RefCell::default(),
             launches: RefCell::default(),
             launch_tokens: RefCell::default(),
+            prelaunch_running: Cell::new(0),
+            prelaunch_most: Cell::new(0),
+            prelaunch_takes: Cell::new(Duration::from_millis(20)),
+            prelaunch_ended_at: Cell::new(0),
         }
     }
 }
@@ -390,6 +400,29 @@ impl agent::sessions::SessionRuntime for FakeRuntime {
                 Err(Error::Session("injected uncertain launch".into()))
             } else {
                 Ok(())
+            }
+        })
+    }
+
+    fn prelaunch<'a>(
+        &'a self,
+        _session: &'a agent::sessions::Session,
+        _sandbox: &'a SandboxHandle,
+        _context: agent::sessions::LaunchContext<'a>,
+        _token: &'a agent::sessions::LaunchToken,
+        _script: &'a str,
+    ) -> LocalFuture<'a, agent::sessions::Prelaunch> {
+        Box::pin(async move {
+            self.prelaunch_running.set(self.prelaunch_running.get() + 1);
+            self.prelaunch_most
+                .set(self.prelaunch_most.get().max(self.prelaunch_running.get()));
+            tokio::time::sleep(self.prelaunch_takes.get()).await;
+            self.prelaunch_running.set(self.prelaunch_running.get() - 1);
+            self.prelaunch_ended_at
+                .set(time::OffsetDateTime::now_utc().unix_timestamp());
+            agent::sessions::Prelaunch {
+                status: "ok".into(),
+                output: String::new(),
             }
         })
     }
@@ -503,9 +536,21 @@ async fn running_session(
     Rc<agent::sandbox::Service>,
     agent::sessions::Session,
 ) {
+    running_session_on(Rc::new(sandbox_memory::Provider::new()), directory, token, started).await
+}
+
+async fn running_session_on(
+    backend: Rc<sandbox_memory::Provider>,
+    directory: &TempDir,
+    token: &str,
+    started: bool,
+) -> (
+    persistence::Database,
+    Rc<agent::sandbox::Service>,
+    agent::sessions::Session,
+) {
     let database = persistence::Database::open(&directory.path().join("agent.db")).expect("database");
     let agent_id = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
-    let backend = Rc::new(sandbox_memory::Provider::new());
     let provider_service =
         SandboxService::new(backend).with_network_backend(Rc::new(sandbox_memory::NetworkBackend::for_endpoint(
             "memory",
@@ -3400,4 +3445,481 @@ struct NoNotifications;
 
 impl agent::control_plane::Notifier for NoNotifications {
     fn notify(&self, _id: AgentId) {}
+}
+
+fn is_prelaunch(spec: &sandbox::execution::ExecutionSpec) -> bool {
+    matches!(
+        spec.program(),
+        Program::Command { args, .. } if args.get(2).is_some_and(|name| name == "agent-prelaunch")
+    )
+}
+
+fn is_tmux_launch(spec: &sandbox::execution::ExecutionSpec) -> bool {
+    matches!(
+        spec.program(),
+        Program::Command { executable, args }
+            if executable.as_str() == "/usr/bin/tmux" && args.iter().any(|argument| argument == "new-session")
+    )
+}
+
+fn arguments(spec: &sandbox::execution::ExecutionSpec) -> &[String] {
+    let Program::Command { args, .. } = spec.program() else {
+        panic!("a command");
+    };
+    args
+}
+
+/// Declares `spec` as the prelaunch script of Agent `id`, whose manifest is in `directory`.
+async fn declare_prelaunch(
+    database: &persistence::Database,
+    id: AgentId,
+    directory: &TempDir,
+    spec: Option<agent::PrelaunchSpec>,
+) {
+    let mut record = database.get(id).await.expect("Agent");
+    record.source_directory = directory.path().to_path_buf();
+    record.agent.spec.prelaunch = spec;
+    let generation = record.agent.metadata.generation;
+    database
+        .put(record, generation)
+        .await
+        .expect("declared prelaunch script");
+}
+
+fn prelaunch_spec(optional: bool) -> agent::PrelaunchSpec {
+    agent::PrelaunchSpec {
+        source: PathBuf::from("prelaunch.sh"),
+        optional,
+    }
+}
+
+/// A Session whose harness is gone, so the next pass launches it through the tmux runtime, with
+/// `prelaunch.sh` beside the Agent's manifest declared as its prelaunch script.
+struct PrelaunchFixture {
+    database: persistence::Database,
+    backend: Rc<sandbox_memory::Provider>,
+    reconciler: agent::sessions::Reconciler,
+    session: agent::sessions::Session,
+    script: PathBuf,
+}
+
+impl PrelaunchFixture {
+    async fn new(directory: &TempDir) -> Self {
+        let backend = Rc::new(sandbox_memory::Provider::new());
+        let (database, sandboxes, session) = running_session_on(
+            backend.clone(),
+            directory,
+            "abababab-abab-4bab-8bab-abababababab",
+            false,
+        )
+        .await;
+        declare_prelaunch(&database, session.agent_id, directory, Some(prelaunch_spec(false))).await;
+        let script = directory.path().join("prelaunch.sh");
+        let reconciler = agent::sessions::Reconciler::new(
+            Rc::new(database.clone()),
+            Rc::new(agent::sessions::AgentSandboxes::new(
+                Rc::new(database.clone()),
+                sandboxes,
+            )),
+            tmux_runtime(),
+            "http://platform-api".into(),
+        );
+        Self {
+            database,
+            backend,
+            reconciler,
+            session,
+            script,
+        }
+    }
+
+    /// Launches the harness again, the prelaunch script ending with `events` when it runs, and
+    /// returns the prelaunch and tmux executions of this launch.
+    async fn launch(
+        &self,
+        events: Vec<ExecutionEvent>,
+    ) -> (
+        Option<sandbox::execution::ExecutionSpec>,
+        sandbox::execution::ExecutionSpec,
+    ) {
+        let before = self.backend.execution_specs().len();
+        self.database
+            .reset_session_launch_attempts(self.session.id)
+            .await
+            .expect("reset backoff");
+        self.backend.queue_execution_events_matching(
+            is_session_observation,
+            vec![
+                ExecutionEvent::Started { process_id: None },
+                ExecutionEvent::Exited(ExitStatus { code: 10 }),
+            ],
+        );
+        self.backend.queue_execution_events_matching(is_prelaunch, events);
+        self.reconciler.reconcile(self.session.id).await.expect("launch");
+        let specs = self.backend.execution_specs().split_off(before);
+        let launch = specs.iter().position(is_tmux_launch).expect("tmux launch");
+        let prelaunch = specs.iter().position(is_prelaunch);
+        if let Some(prelaunch) = prelaunch {
+            assert!(
+                prelaunch < launch,
+                "the script runs before the harness launches: {specs:?}"
+            );
+        }
+        assert_eq!(
+            specs.iter().filter(|spec| is_prelaunch(spec)).count(),
+            usize::from(prelaunch.is_some())
+        );
+        (prelaunch.map(|index| specs[index].clone()), specs[launch].clone())
+    }
+
+    async fn session(&self) -> agent::sessions::Session {
+        self.database.get_session(self.session.id).await.expect("Session")
+    }
+}
+
+fn launch_environment(launch: &sandbox::execution::ExecutionSpec) -> Vec<&str> {
+    arguments(launch)
+        .windows(2)
+        .filter(|pair| pair[0] == "-e")
+        .map(|pair| pair[1].as_str())
+        .collect()
+}
+
+fn exited(code: i32, output: &str) -> Vec<ExecutionEvent> {
+    vec![
+        ExecutionEvent::Started { process_id: None },
+        ExecutionEvent::Stdout(output.as_bytes().to_vec().into()),
+        ExecutionEvent::Exited(ExitStatus { code }),
+    ]
+}
+
+#[tokio::test(flavor = "local")]
+async fn without_a_prelaunch_script_a_launch_runs_and_records_nothing_extra() {
+    let directory = TempDir::new().expect("temporary directory");
+    let fixture = PrelaunchFixture::new(&directory).await;
+    declare_prelaunch(&fixture.database, fixture.session.agent_id, &directory, None).await;
+    std::fs::write(&fixture.script, "true\n").expect("undeclared script");
+
+    let (prelaunch, launch) = fixture.launch(exited(0, "")).await;
+
+    assert!(prelaunch.is_none(), "no script declared, no execution");
+    let environment = launch_environment(&launch);
+    assert!(
+        !environment
+            .iter()
+            .any(|value| value.starts_with("AGENT_PRELAUNCH_STATUS=")),
+        "{environment:?}"
+    );
+    let session = fixture.session().await;
+    assert_eq!(session.status.prelaunch, None);
+    assert_eq!(session.status.lifecycle.state, agent::sessions::LifecycleState::Running);
+    let json = serde_json::to_value(&session).expect("Session JSON");
+    assert!(json["status"].get("prelaunch").is_none(), "{json}");
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_prelaunch_script_runs_as_a_session_would_before_the_launch_and_its_outcome_is_kept() {
+    let directory = TempDir::new().expect("temporary directory");
+    let fixture = PrelaunchFixture::new(&directory).await;
+    std::fs::write(&fixture.script, "echo fetched\n").expect("script");
+
+    let (prelaunch, launch) = fixture.launch(exited(0, "fetched\n")).await;
+
+    let prelaunch = prelaunch.expect("the script ran");
+    let Program::Command { executable, args } = prelaunch.program() else {
+        panic!("a command");
+    };
+    assert_eq!(executable.as_str(), "/bin/sh", "no executable bit needed");
+    assert_eq!(
+        args.last().map(String::as_str),
+        Some("echo fetched\n"),
+        "the file's contents, read now"
+    );
+    assert_eq!(
+        prelaunch.working_directory().map(sandbox::SandboxPath::as_str),
+        Some("/home/agent")
+    );
+    let environment = prelaunch.environment();
+    for (name, value) in [
+        ("HOME", "/home/agent"),
+        ("AGENT_NAME", "worker"),
+        ("AGENT_SESSION_NAME", "s1"),
+        ("AGENT_HARNESS", "claudeCode"),
+    ] {
+        assert_eq!(
+            environment.get(name).map(String::as_str),
+            Some(value),
+            "{environment:?}"
+        );
+    }
+    assert!(!environment.contains_key("AGENT_PRELAUNCH_STATUS"));
+    assert!(launch_environment(&launch).contains(&"AGENT_PRELAUNCH_STATUS=ok"));
+    let session = fixture.session().await;
+    assert_eq!(
+        session.status.prelaunch,
+        Some(agent::sessions::Prelaunch {
+            status: "ok".into(),
+            output: "fetched\n".into(),
+        })
+    );
+
+    std::fs::write(&fixture.script, "echo edited\n").expect("edited script");
+    let (prelaunch, _) = fixture.launch(exited(0, "")).await;
+    let prelaunch = prelaunch.expect("the script ran again");
+    assert_eq!(
+        arguments(&prelaunch).last().map(String::as_str),
+        Some("echo edited\n"),
+        "an edit applies to the next launch"
+    );
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_prelaunch_script_that_fails_or_cannot_be_read_never_blocks_the_launch() {
+    let directory = TempDir::new().expect("temporary directory");
+    let fixture = PrelaunchFixture::new(&directory).await;
+    std::fs::write(&fixture.script, "exit 3\n").expect("script");
+
+    let (_, launch) = fixture.launch(exited(3, "no network\n")).await;
+
+    assert!(launch_environment(&launch).contains(&"AGENT_PRELAUNCH_STATUS=failed:3"));
+    let session = fixture.session().await;
+    assert_eq!(session.status.lifecycle.state, agent::sessions::LifecycleState::Running);
+    assert_eq!(
+        session.status.prelaunch,
+        Some(agent::sessions::Prelaunch {
+            status: "failed:3".into(),
+            output: "no network\n".into(),
+        })
+    );
+
+    // Lifecycle updates keep it.
+    fixture
+        .backend
+        .queue_execution_events_matching(is_session_observation, exited(0, "0 5\n"));
+    fixture
+        .reconciler
+        .reconcile(fixture.session.id)
+        .await
+        .expect("steady pass");
+    assert!(fixture.session().await.status.prelaunch.is_some());
+
+    std::fs::write(&fixture.script, [0xff, 0xfe]).expect("unreadable script");
+    let (prelaunch, launch) = fixture.launch(exited(0, "")).await;
+    assert!(prelaunch.is_none(), "a script that is not text is not run");
+    assert!(launch_environment(&launch).contains(&"AGENT_PRELAUNCH_STATUS=error"));
+    let unreadable = fixture.session().await.status.prelaunch.expect("recorded");
+    assert!(unreadable.output.contains("not UTF-8"), "{unreadable:?}");
+
+    std::fs::remove_file(&fixture.script).expect("remove script");
+    let (prelaunch, launch) = fixture.launch(exited(0, "")).await;
+    assert!(prelaunch.is_none());
+    assert!(launch_environment(&launch).contains(&"AGENT_PRELAUNCH_STATUS=error"));
+    let missing = fixture.session().await.status.prelaunch.expect("recorded");
+    assert!(
+        missing.output.contains(&fixture.script.display().to_string()),
+        "a declared script that is missing is an error: {missing:?}"
+    );
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_optional_prelaunch_script_that_is_missing_runs_nothing_but_one_that_is_no_file_is_an_error() {
+    let directory = TempDir::new().expect("temporary directory");
+    let fixture = PrelaunchFixture::new(&directory).await;
+    declare_prelaunch(
+        &fixture.database,
+        fixture.session.agent_id,
+        &directory,
+        Some(prelaunch_spec(true)),
+    )
+    .await;
+    std::fs::write(&fixture.script, "exit 3\n").expect("script");
+    fixture.launch(exited(3, "")).await;
+    assert!(fixture.session().await.status.prelaunch.is_some());
+
+    std::fs::remove_file(&fixture.script).expect("remove script");
+    let (prelaunch, launch) = fixture.launch(exited(0, "")).await;
+    assert!(prelaunch.is_none());
+    assert!(
+        !launch_environment(&launch)
+            .iter()
+            .any(|value| value.starts_with("AGENT_PRELAUNCH_STATUS="))
+    );
+    assert_eq!(
+        fixture.session().await.status.prelaunch,
+        None,
+        "nothing ran before this launch"
+    );
+
+    std::fs::create_dir(&fixture.script).expect("a directory in its place");
+    let (prelaunch, launch) = fixture.launch(exited(0, "")).await;
+    assert!(prelaunch.is_none());
+    assert!(launch_environment(&launch).contains(&"AGENT_PRELAUNCH_STATUS=error"));
+    let directory_outcome = fixture.session().await.status.prelaunch.expect("recorded");
+    assert!(directory_outcome.output.contains("not a file"), "{directory_outcome:?}");
+}
+
+#[tokio::test(flavor = "local")]
+async fn one_prelaunch_script_runs_at_a_time_in_an_agent() {
+    let directory = TempDir::new().expect("temporary directory");
+    let (database, sandboxes, first) = running_session(&directory, "ffffffff-ffff-4fff-8fff-ffffffffffff", false).await;
+    database
+        .reset_session_launch_attempts(first.id)
+        .await
+        .expect("reset backoff");
+    let second = database
+        .ensure_session(
+            "worker",
+            &SessionName::new("s2").expect("name"),
+            NewSession::for_harness(agent::Harness::ClaudeCode),
+        )
+        .await
+        .expect("Session");
+    database.activate_session(second.id).await.expect("activate");
+    declare_prelaunch(&database, first.agent_id, &directory, Some(prelaunch_spec(false))).await;
+    std::fs::write(directory.path().join("prelaunch.sh"), "true\n").expect("script");
+    let runtime = Rc::new(FakeRuntime::default());
+    runtime.present.set(false);
+    let reconciler = agent::sessions::Reconciler::new(
+        Rc::new(database.clone()),
+        Rc::new(agent::sessions::AgentSandboxes::new(
+            Rc::new(database.clone()),
+            sandboxes,
+        )),
+        runtime.clone(),
+        "http://platform-api".into(),
+    );
+
+    let (first, second) = tokio::join!(reconciler.reconcile(first.id), reconciler.reconcile(second.id));
+
+    first.expect("first launch");
+    second.expect("second launch");
+    assert_eq!(runtime.launches.borrow().len(), 2);
+    assert_eq!(runtime.prelaunch_most.get(), 1, "the Agent's runs do not overlap");
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_prelaunch_outcome_that_cannot_be_recorded_does_not_stop_the_launch() {
+    let directory = TempDir::new().expect("temporary directory");
+    let fixture = PrelaunchFixture::new(&directory).await;
+    std::fs::write(&fixture.script, "true\n").expect("script");
+    rusqlite::Connection::open(directory.path().join("agent.db"))
+        .expect("second connection")
+        .execute_batch(
+            "CREATE TRIGGER refuse_prelaunch BEFORE UPDATE OF lifecycle_json ON sessions \
+             WHEN NEW.lifecycle_json LIKE '%prelaunch%' BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+        )
+        .expect("failing write");
+
+    let (prelaunch, launch) = fixture.launch(exited(0, "")).await;
+
+    assert!(prelaunch.is_some());
+    assert!(launch_environment(&launch).contains(&"AGENT_PRELAUNCH_STATUS=ok"));
+    let session = fixture.session().await;
+    assert_eq!(session.status.lifecycle.state, agent::sessions::LifecycleState::Running);
+    assert_eq!(session.status.prelaunch, None, "the write failed");
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_launch_is_timed_from_after_its_prelaunch_script() {
+    let directory = TempDir::new().expect("temporary directory");
+    let (database, sandboxes, session) =
+        running_session(&directory, "ffffffff-ffff-4fff-8fff-ffffffffffff", false).await;
+    database
+        .reset_session_launch_attempts(session.id)
+        .await
+        .expect("reset backoff");
+    declare_prelaunch(&database, session.agent_id, &directory, Some(prelaunch_spec(false))).await;
+    std::fs::write(directory.path().join("prelaunch.sh"), "true\n").expect("script");
+    let runtime = Rc::new(FakeRuntime::default());
+    runtime.present.set(false);
+    runtime.prelaunch_takes.set(Duration::from_millis(1_100));
+    let reconciler = agent::sessions::Reconciler::new(
+        Rc::new(database.clone()),
+        Rc::new(agent::sessions::AgentSandboxes::new(
+            Rc::new(database.clone()),
+            sandboxes,
+        )),
+        runtime.clone(),
+        "http://platform-api".into(),
+    );
+    let before = time::OffsetDateTime::now_utc().unix_timestamp();
+
+    reconciler.reconcile(session.id).await.expect("launch");
+
+    let launched = database
+        .session_launch_state(session.id)
+        .await
+        .expect("launch state")
+        .expect("recorded launch");
+    assert!(runtime.prelaunch_ended_at.get() > before, "the script took a while");
+    assert!(
+        launched.launched_at >= runtime.prelaunch_ended_at.get(),
+        "the health window and backoff start with the harness, not with the script: {} < {}",
+        launched.launched_at,
+        runtime.prelaunch_ended_at.get()
+    );
+
+    // A harness that exits right away is backed off, not taken as healthy.
+    runtime.present.set(false);
+    reconciler.reconcile(session.id).await.expect("backoff pass");
+    let backed_off = database.get_session(session.id).await.expect("Session");
+    assert_eq!(
+        backed_off.status.lifecycle.state,
+        agent::sessions::LifecycleState::Failed
+    );
+    assert_eq!(runtime.launches.borrow().len(), 1, "no immediate relaunch");
+    assert_eq!(
+        database
+            .session_launch_state(session.id)
+            .await
+            .expect("launch state")
+            .expect("recorded launch")
+            .attempts,
+        1
+    );
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_launch_cut_short_during_its_prelaunch_script_keeps_the_first_prompt() {
+    let directory = TempDir::new().expect("temporary directory");
+    let (database, sandboxes, existing) =
+        running_session(&directory, "ffffffff-ffff-4fff-8fff-ffffffffffff", false).await;
+    declare_prelaunch(&database, existing.agent_id, &directory, Some(prelaunch_spec(false))).await;
+    std::fs::write(directory.path().join("prelaunch.sh"), "true\n").expect("script");
+    let prompted = database
+        .ensure_session(
+            "worker",
+            &SessionName::new("prompted").expect("name"),
+            NewSession {
+                initial_prompt: Some("start here".into()),
+                ..NewSession::for_harness(agent::Harness::ClaudeCode)
+            },
+        )
+        .await
+        .expect("Session");
+    database.activate_session(prompted.id).await.expect("activate");
+    let runtime = Rc::new(FakeRuntime::default());
+    runtime.present.set(false);
+    runtime.prelaunch_takes.set(Duration::from_secs(60));
+    let reconciler = agent::sessions::Reconciler::new(
+        Rc::new(database.clone()),
+        Rc::new(agent::sessions::AgentSandboxes::new(
+            Rc::new(database.clone()),
+            sandboxes,
+        )),
+        runtime.clone(),
+        "http://platform-api".into(),
+    );
+
+    // agentd stopping while the script runs drops the pass.
+    let cut = tokio::time::timeout(Duration::from_millis(100), reconciler.reconcile(prompted.id)).await;
+    assert!(cut.is_err(), "the pass was still running the script");
+    runtime.prelaunch_takes.set(Duration::ZERO);
+    reconciler.reconcile(prompted.id).await.expect("launch");
+
+    assert_eq!(
+        runtime.launches.borrow().as_slice(),
+        [(None, Some("start here".to_owned()))],
+        "the first prompt waits for a harness that starts"
+    );
 }

@@ -1,14 +1,14 @@
 //! At-least-once convergence of one durable Session.
 
-use std::{rc::Rc, time::Duration};
+use std::{cell::RefCell, collections::HashMap, path::Path, rc::Rc, time::Duration};
 
 use ::sandbox::LocalFuture;
 
 use crate::Error;
 
 use super::{
-    Activity, ActivityEvent, AgentSandboxes, LaunchRecord, LaunchToken, Lifecycle, LifecycleState, Phase, Session,
-    SessionId, SessionRuntime, SharedStore, runtime::Observation,
+    Activity, ActivityEvent, AgentSandboxes, LaunchRecord, LaunchToken, Lifecycle, LifecycleState, Phase, Prelaunch,
+    Session, SessionId, SessionRuntime, SharedStore, runtime::Observation,
 };
 
 /// A launch is considered healthy after surviving this long, resetting backoff.
@@ -29,6 +29,10 @@ const ARCHIVE_TURN_QUIET_SECONDS: u64 = 60;
 const RESUME_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const RESUME_READY_POLL: Duration = Duration::from_millis(100);
 
+/// The largest prelaunch script that is run. It travels as one process argument, which Linux
+/// limits to 128 KiB.
+const MAX_PRELAUNCH_SCRIPT: usize = 64 * 1024;
+
 /// Converges persistent Sessions onto the tmux runtime in their Agent's Sandbox.
 pub struct Reconciler {
     sessions: SharedStore,
@@ -37,6 +41,8 @@ pub struct Reconciler {
     platform_api_url: String,
     /// This host's name, read once, for harnesses to name where they run.
     host: String,
+    /// One prelaunch run at a time per Agent, so scripts need not guard against themselves.
+    prelaunch_runs: RefCell<HashMap<crate::AgentId, Rc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Reconciler {
@@ -57,7 +63,46 @@ impl Reconciler {
             runtime,
             platform_api_url,
             host: host_name(),
+            prelaunch_runs: RefCell::default(),
         }
+    }
+
+    /// Runs the Agent's prelaunch script before a launch, when it declares one, and says how it
+    /// ended. Nothing it does stops the launch.
+    async fn prelaunch(
+        &self,
+        session: &Session,
+        agent: &crate::control_plane::AgentRecord,
+        sandbox: &::sandbox::SandboxHandle,
+        context: super::LaunchContext<'_>,
+        token: &LaunchToken,
+    ) -> Option<Prelaunch> {
+        let spec = agent.agent.spec.prelaunch.as_ref()?;
+        let script = read_prelaunch_script(&agent.source_directory, spec).await?;
+        let outcome = match script {
+            Ok(script) => {
+                let runs = self
+                    .prelaunch_runs
+                    .borrow_mut()
+                    .entry(session.agent_id)
+                    .or_default()
+                    .clone();
+                let outcome = {
+                    let _only_run = runs.lock().await;
+                    self.runtime.prelaunch(session, sandbox, context, token, &script).await
+                };
+                // Held by the map and here only: nobody else waits, so the Agent's entry can go.
+                if Rc::strong_count(&runs) == 2 {
+                    self.prelaunch_runs.borrow_mut().remove(&session.agent_id);
+                }
+                outcome
+            }
+            Err(reason) => Prelaunch {
+                status: "error".into(),
+                output: reason,
+            },
+        };
+        Some(outcome)
     }
 
     /// Stops the harness of a Session marked for release and then removes it.
@@ -245,32 +290,49 @@ impl Reconciler {
         .await
     }
 
-    /// Consumes the first prompt before launch; recovery never replays it.
+    /// Runs the prelaunch script, then consumes the first prompt just before the harness starts;
+    /// recovery never replays it.
     async fn launch(
         &self,
         session: &Session,
         agent: &crate::control_plane::AgentRecord,
         sandbox: &::sandbox::SandboxHandle,
-        record: LaunchRecord,
+        mut record: LaunchRecord,
         resume: Option<&str>,
     ) -> Result<Lifecycle, Error> {
         let token = record.token.clone();
+        let mut context = super::LaunchContext {
+            platform_api_url: &self.platform_api_url,
+            agent: &agent.agent.metadata.name,
+            source_directory: &agent.source_directory,
+            host: &self.host,
+            prelaunch_status: None,
+        };
+        let prelaunch = self.prelaunch(session, agent, sandbox, context, &token).await;
+        // The script's run, and the wait for the Agent's previous one, is not harness uptime.
+        record.launched_at = time::OffsetDateTime::now_utc().unix_timestamp();
         let initial_prompt = self.sessions.record_session_launch(session.id, record).await?;
+        if let Some(outcome) = &prelaunch {
+            // The outcome still reaches the harness; only `agentctl get` misses it.
+            if let Err(error) = self
+                .sessions
+                .record_session_prelaunch(session.id, outcome.clone())
+                .await
+            {
+                tracing::warn!(session = %session.id, %error, "could not record the prelaunch outcome");
+            }
+        }
         if resume.is_some() {
             self.sessions
                 .update_session_lifecycle(session.id, Lifecycle::resuming(), session.activation_generation)
                 .await?;
         }
+        context.prelaunch_status = prelaunch.as_ref().map(|prelaunch| prelaunch.status.as_str());
         self.runtime
             .start(
                 session,
                 sandbox,
-                super::LaunchContext {
-                    platform_api_url: &self.platform_api_url,
-                    agent: &agent.agent.metadata.name,
-                    source_directory: &agent.source_directory,
-                    host: &self.host,
-                },
+                context,
                 &token,
                 resume,
                 initial_prompt.as_deref().filter(|_| resume.is_none()),
@@ -398,6 +460,37 @@ fn backoff_seconds(attempts: u32) -> i64 {
     } else {
         wait
     }
+}
+
+/// Reads the declared prelaunch script for this launch, or why it cannot be run. `None` when an
+/// optional script is missing, which runs nothing.
+async fn read_prelaunch_script(
+    source_directory: &Path,
+    spec: &crate::manifest::PrelaunchSpec,
+) -> Option<Result<String, String>> {
+    let path = match crate::manifest::resolve_present_host_path(
+        source_directory,
+        &spec.source,
+        spec.optional,
+        "spec.prelaunch.source",
+    ) {
+        Ok(Some(path)) => path,
+        Ok(None) => return None,
+        Err(error) => return Some(Err(error.to_string())),
+    };
+    let script = match tokio::fs::metadata(&path).await {
+        Err(error) => Err(error.to_string()),
+        // Reading a FIFO or a device could hold the launch.
+        Ok(metadata) if !metadata.is_file() => Err("it is not a file".to_owned()),
+        Ok(_) => match tokio::fs::read(&path).await {
+            Err(error) => Err(error.to_string()),
+            Ok(script) if script.len() > MAX_PRELAUNCH_SCRIPT => {
+                Err(format!("it is larger than {} KiB", MAX_PRELAUNCH_SCRIPT / 1024))
+            }
+            Ok(script) => String::from_utf8(script).map_err(|_| "it is not UTF-8 text".to_owned()),
+        },
+    };
+    Some(script.map_err(|reason| format!("could not read {}: {reason}", path.display())))
 }
 
 /// This host's name, read through native OS APIs, for a launched harness to name where it runs.

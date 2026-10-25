@@ -14,7 +14,7 @@ use ::sandbox::SandboxHandle;
 
 use crate::Error;
 
-use super::{AttachTarget, LaunchToken, Session, Turn};
+use super::{AttachTarget, LaunchToken, Prelaunch, Session, Turn};
 
 /// Runtime-observed liveness and inactivity for a Session.
 ///
@@ -45,6 +45,9 @@ pub struct LaunchContext<'a> {
     pub source_directory: &'a std::path::Path,
     /// The host machine's name.
     pub host: &'a str,
+    /// How the prelaunch script ended before this launch, as [`Prelaunch::status`]; `None` when
+    /// none ran.
+    pub prelaunch_status: Option<&'a str>,
 }
 
 /// One harness Session carried inside a Sandbox.
@@ -74,6 +77,18 @@ pub trait SessionRuntime {
         resume: Option<&'a str>,
         initial_prompt: Option<&'a str>,
     ) -> ::sandbox::LocalFuture<'a, Result<(), Error>>;
+
+    /// Runs the Agent's prelaunch `script` in the Sandbox before a launch, with the environment
+    /// [`Self::start`] gives the harness, and says how it ended. Never fails: a script that fails,
+    /// times out or cannot run is an outcome, and the launch goes ahead.
+    fn prelaunch<'a>(
+        &'a self,
+        session: &'a Session,
+        sandbox: &'a SandboxHandle,
+        context: LaunchContext<'a>,
+        token: &'a LaunchToken,
+        script: &'a str,
+    ) -> ::sandbox::LocalFuture<'a, Prelaunch>;
 
     /// Stops a deliberately idle Session.
     fn stop<'a>(
