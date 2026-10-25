@@ -68,8 +68,8 @@ impl MicrosandboxImageBackend {
 
     /// Scratch directory for image and build-context archives, inside the Microsandbox cache.
     ///
-    /// The system temporary directory is often a small tmpfs (a Sandbox guest gives `/tmp`
-    /// 512 MiB), while an exported image archive is as large as the image itself.
+    /// The system temporary directory may be a small tmpfs, while an exported image archive is
+    /// as large as the image itself.
     async fn scratch_dir(&self) -> Result<PathBuf, Error> {
         let scratch = self.images.scratch_directory();
         tokio::fs::create_dir_all(&scratch)

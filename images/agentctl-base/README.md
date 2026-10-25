@@ -46,6 +46,18 @@ USER agent
   per line, into `/home/agent/code` with the Agent's `GITHUB_TOKEN`.
 - Skills an image ships go in `~/.claude/skills` for Claude Code and `~/.agents/skills` for Codex and Pi.
 
+## Temporary files
+
+`/tmp` shares the Sandbox's root disk, so build scratch files use the capacity set by
+`spec.sandbox.resources.rootFilesystem.capacity`. It is cleared at boot and receives periodic cleanup of old files,
+as [tmp.conf](headless/etc/tmpfiles.d/tmp.conf) defines. Keep work that must survive a restart under `/home/agent/code`.
+
+An Agent that needs RAM-backed temporary files can explicitly mount a `tmpfs` at `/tmp` through
+`spec.sandbox.mounts`. Its contents then consume guest memory.
+
+Existing Agents keep their image and mounts. To adopt this default, rebuild your image on the updated base, remove
+any `/tmp` tmpfs mount from the manifest, and recreate the Agent after saving work you need to keep.
+
 ## Features
 
 The headless image carries the optional features below, so an image built on it can add them after its own tools, at

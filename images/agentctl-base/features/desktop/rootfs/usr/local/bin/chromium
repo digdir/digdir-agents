@@ -1,7 +1,7 @@
 #!/bin/sh
 # The desktop's browser: the Playwright Chromium the image already carries. --disable-gpu and
 # --use-gl=swiftshader are left out because they measured no faster here. --disable-dev-shm-usage
-# keeps shared memory in the /tmp the Agent sizes. --force-renderer-accessibility fills in the
+# keeps shared memory in /tmp. --force-renderer-accessibility fills in the
 # tree `desktop tree` reads; without it Chromium exposes only its window frames.
 # --password-store=gnome-libsecret keeps the profile's passwords and cookies under a key in the
 # desktop's Secret Service: Chromium does not recognize openbox as a desktop, and would otherwise

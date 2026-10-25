@@ -231,7 +231,7 @@ capture_settled() {
 
 new_capture_path() {
     mkdir -p "$captures"
-    # /tmp is a tmpfs a build also uses. Keep recent captures readable and let the rest go, so a
+    # Captures share /tmp with builds. Keep recent captures readable and let the rest go, so a
     # long session, or a loop that screenshots more than it should, cannot fill it.
     # `find` rather than `ls` on a glob: with no capture yet the glob matches nothing, `ls` exits 2,
     # and under pipefail and inherit_errexit that would end every first screenshot silently.
