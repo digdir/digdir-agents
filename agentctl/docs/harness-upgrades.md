@@ -37,10 +37,12 @@ attributing a failure to the bump, repeat the check on an Agent built with the p
   `PermissionRequest` hook approves the call,
   including requests that Claude's deletion checks raise despite `--dangerously-skip-permissions`. Confirm that
   `prompt --wait` waits for the completed turn rather than returning `WaitingForInput` at the approval.
-- Claude Code outside a Session, as T3 Code runs it: in `agentctl ssh`, pipe
-  `{"type":"user","message":{"role":"user","content":"Run exactly: sh -c 'cd /tmp/x && rm -rf $(echo a)'"}}` into
-  `claude -p --input-format stream-json --output-format stream-json --verbose --permission-mode bypassPermissions
-  --allow-dangerously-skip-permissions --permission-prompt-tool stdio`, after `mkdir -p /tmp/x/a`.
+- Claude Code outside a Session, as T3 Code runs it: in `agentctl ssh`, run `mkdir -p /tmp/x/a`, write
+  `{"type":"user","message":{"role":"user","content":"Run exactly: sh -c 'cd /tmp/x && rm -rf $(echo a)'"}}` to
+  `/tmp/x/prompt.jsonl`, and pipe `(cat /tmp/x/prompt.jsonl; sleep 60)` into
+  `claude -p --input-format stream-json --output-format stream-json --verbose --permission-prompt-tool stdio`, first
+  with `--permission-mode bypassPermissions --allow-dangerously-skip-permissions`, then with
+  `--permission-mode default`. Claude Code needs its input open to receive the answer to a permission request.
 - A Claude Code permission prompt: use `"permissions": {"ask": ["Write"]}` instead, and ask for a file written with
   the `Write` tool. Other tool permissions still wait for the operator. Restore the file afterwards. The
   `AskUserQuestion` tool blocks on the operator without any configuration.
@@ -56,7 +58,7 @@ attributing a failure to the bump, repeat the check on an Agent built with the p
 | Prompt while a background command runs, until it finishes            | Claude Code | The wait ends with the operator's turn; the completion notification's own turn does not end a later wait early.                                                                                                         |
 | Tool success and tool failure                                        | Both        | STATE reflects activity; tool completion alone does not complete a turn; `turns` marks only the failed call.                                                                                                            |
 | Bash permission request, including a deletion safety check          | Claude Code | Runs without operator approval; `prompt --wait` ends only when the turn completes. Repeat in a background subagent. |
-| Deletion safety check outside a Session                              | Claude Code | The tool result's `permission_decision` comes from the `hook`, any `can_use_tool` request is followed by its `control_cancel_request`, and `/tmp/x/a` is gone. |
+| Deletion safety check outside a Session                              | Claude Code | In bypass mode, the tool result's `permission_decision` comes from the `hook`, any `can_use_tool` request is followed by its `control_cancel_request`, and `/tmp/x/a` is gone. In default mode, the `can_use_tool` request waits for the client. |
 | Permission prompt and `AskUserQuestion`, approved and denied         | Claude Code | While blocked, STATE is `WaitingForInput` and `activity.turns` does not advance; answering or approving completes the turn. A denial is an interruption (#147). Not tested for Codex, which launches without approvals. |
 | Interruption during a tool call, then another prompt                 | Both        | Codex reports `Interrupt`, which releases the wait. Known gap (#147): Claude Code has no interrupt hook, so STATE stays `Working` and a wait times out. The next prompt works in both.                                  |
 | Model error reported through `StopFailure`                           | Claude Code | Create with an unknown `--model`. The completion report ends the wait, but does not imply a successful model response; inspect `turns`.                                                                                 |

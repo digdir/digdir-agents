@@ -57,29 +57,27 @@ pub(super) async fn configure(
         super::super::status_line::configuration(&status_line_path),
     );
     write_if_changed(sandbox, &settings_path, &serde_json::to_vec(&settings)?).await?;
-    // The launch settings above repeat these for Sessions: Claude Code skips managed settings
-    // files when an organization delivers server-managed settings.
+    // The launch settings above repeat these for Sessions: when an organization delivers managed
+    // settings, Claude Code takes from a managed settings file only what restricts.
     run_checked(
         sandbox,
         "/usr/bin/sudo",
         ["/usr/bin/mkdir", "-p", MANAGED_SETTINGS_DIRECTORY],
     )
     .await?;
-    if write_if_changed(
+    write_if_changed(
         sandbox,
         MANAGED_SETTINGS_PATH,
         &serde_json::to_vec(&sandbox_settings())?,
     )
-    .await?
-    {
-        // Root writes it, and every user's Claude Code must read it.
-        run_checked(
-            sandbox,
-            "/usr/bin/sudo",
-            ["/usr/bin/chmod", "644", MANAGED_SETTINGS_PATH],
-        )
-        .await?;
-    }
+    .await?;
+    // Root owns it, and every user's Claude Code must read it.
+    run_checked(
+        sandbox,
+        "/usr/bin/sudo",
+        ["/usr/bin/chmod", "644", MANAGED_SETTINGS_PATH],
+    )
+    .await?;
     // Runtime file transfer writes as the Sandbox supervisor (root), while
     // executions run as the image user. Correct only the directories and files
     // managed above: recursive ownership walks would traverse the growing
