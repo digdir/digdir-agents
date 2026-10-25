@@ -48,9 +48,10 @@ To release:
 
 1. Open a pull request that renames `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and adds an empty
    `## [Unreleased]` above it.
-2. Once it is merged, run the release workflow manually on `main` with the version, as a dry run.
-3. Push the tag `agentctl/vX.Y.Z`. The release workflow publishes that changelog section as the release notes. A tag
-   can never be moved or reused.
+2. Once it is merged, run the [release workflow](.github/workflows/agentctl-release.yml) manually on `main` with the
+   version `vX.Y.Z` and `publish` checked. It publishes that changelog section as the release notes, and creates the
+   tag `agentctl/vX.Y.Z` only once everything is built, since a tag can never be moved or reused. Leave `publish`
+   unchecked for a dry run.
 
 ## Maintenance
 
