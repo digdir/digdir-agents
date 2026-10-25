@@ -100,7 +100,9 @@ impl Reconciler {
         // in the same pass, whose progress shows both.
         let mut restarting = None;
         if stopped || record.agent.restart_pending() {
-            let (status, observer) = self.stop(&record).await?;
+            let Some((status, observer)) = self.stop(&record).await? else {
+                return Ok(());
+            };
             if stopped {
                 observer.succeeded();
                 return Ok(());
@@ -112,8 +114,7 @@ impl Reconciler {
             starting.observed_restart_timestamp = record.agent.metadata.restart_timestamp;
             record.agent.status = match self.update_status(&record, starting, None).await {
                 Ok(stored) => stored,
-                // Deleted or changed while it stopped, the Agent is left to the pass that change
-                // woke, so a deleted one does not boot again.
+                // As in the stop, so a deleted Agent does not boot again.
                 Err(Error::Conflict | Error::NotFound) => {
                     observer.succeeded();
                     return Ok(());
@@ -388,14 +389,20 @@ impl Reconciler {
     /// identity, storage and assignment, so a start boots the same disk. Nothing reaches into the
     /// guest, so a guest that stopped responding cannot hold the stop up.
     ///
-    /// Returns the status as stored and the pass's progress, which the caller ends.
-    async fn stop(&self, record: &AgentRecord) -> Result<(Status, SandboxObserver), Error> {
+    /// Returns the status as stored and the pass's progress, which the caller ends; nothing when
+    /// the Agent was deleted or changed since the pass read it, leaving it to the pass that change
+    /// woke.
+    async fn stop(&self, record: &AgentRecord) -> Result<Option<(Status, SandboxObserver)>, Error> {
         let current = record.agent.status.observed_generation == record.agent.metadata.generation;
         let already_stopped = current && record.agent.status.is_stopped();
         if !(current && recorded_by_stop(&record.agent.status)) {
             // Not Ready before the VM goes away, so Sessions are told and go Idle first.
             let stopping = not_ready(record, Condition::REASON_STOPPING, "");
-            self.update_status(record, stopping, None).await?;
+            match self.update_status(record, stopping, None).await {
+                Ok(_) => {}
+                Err(Error::Conflict | Error::NotFound) => return Ok(None),
+                Err(error) => return Err(error),
+            }
         }
         let observer = if already_stopped {
             SandboxObserver::resync(record.id, self.provisioning.clone())
@@ -454,7 +461,14 @@ impl Reconciler {
         if !restarting {
             stopped.observed_restart_timestamp = record.agent.metadata.restart_timestamp;
         }
-        let stored = self.update_status(record, stopped, None).await?;
+        let stored = match self.update_status(record, stopped, None).await {
+            Ok(stored) => stored,
+            Err(Error::Conflict | Error::NotFound) => {
+                observer.succeeded();
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
         // A restart settles even when a pass before a crash recorded the stop, as its start follows.
         if (restarting || !already_stopped)
             && let Some(sessions) = &self.sessions
@@ -464,7 +478,7 @@ impl Reconciler {
             // relaunch its harness in the started VM.
             sessions.settle(record.id).await;
         }
-        Ok((stored, observer))
+        Ok(Some((stored, observer)))
     }
 
     async fn release(&self, record: &AgentRecord) -> Result<(), Error> {
