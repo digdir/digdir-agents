@@ -2883,7 +2883,7 @@ mod tests {
         std::fs::create_dir_all(&below).expect("directories");
         assert_eq!(unapplied(root), Unapplied::None);
 
-        std::fs::create_dir_all(root.join("agents/web")).expect("agent without a manifest");
+        std::fs::create_dir_all(root.join("agents/app")).expect("a folder without a manifest, sorting first");
         std::fs::create_dir_all(root.join("agents/dev")).expect("agent folder");
         std::fs::write(root.join("agents/dev/agent.yaml"), "").expect("manifest");
         std::fs::create_dir_all(root.join("agents/zed")).expect("agent folder");
