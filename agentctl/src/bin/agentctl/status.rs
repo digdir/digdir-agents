@@ -20,7 +20,7 @@ use crate::{
 };
 
 /// What `agentctl status --json` prints, for agents that set up and check agentctl. The object is a
-/// contract, described key by key in `agentctl/guide/status.md`.
+/// contract, described key by key in `agentctl/guide/status.md` (`agentctl guide status`).
 #[derive(Debug, Serialize)]
 pub(crate) struct Status {
     version: u32,
