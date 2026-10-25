@@ -11,7 +11,7 @@ on:
       - images/agentctl-base/**
       - docker-bake.hcl
       - .github/workflows/agentctl-self-dev-images.yml
-      # Neither image's .dockerignore admits this Markdown. agentctl applies the self-dev Agent's from its manifest.
+      # Neither this image's .dockerignore nor the base's admits this Markdown. agentctl applies the self-dev Agent's from its manifest.
       - '!agents/self-dev/**/*.md'
       - '!images/agentctl-base/*.md'
   push:
@@ -22,7 +22,7 @@ on:
       - images/agentctl-base/**
       - docker-bake.hcl
       - .github/workflows/agentctl-self-dev-images.yml
-      # Neither image's .dockerignore admits this Markdown. agentctl applies the self-dev Agent's from its manifest.
+      # Neither this image's .dockerignore nor the base's admits this Markdown. agentctl applies the self-dev Agent's from its manifest.
       - '!agents/self-dev/**/*.md'
       - '!images/agentctl-base/*.md'
   workflow_dispatch:

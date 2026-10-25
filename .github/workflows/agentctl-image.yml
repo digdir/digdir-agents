@@ -232,6 +232,11 @@ jobs:
     needs: [resolve, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # To list this workflow's runs on main, which decide whether `main` moves.
+    permissions:
+      actions: read
+      contents: read
+      packages: write
     steps:
       - name: Download image digests
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -247,10 +252,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
 
-      # `main` moves only while this run's commit is the newest on main to start one, so that a run that finishes after
-      # a newer commit's, or a re-run of an older one, cannot move it back. Commits the paths filter skips, such as
-      # docs, start no run, so they leave it to the commit before them. A fork's pull request from its own main branch
-      # is listed under main too, so pull request runs are left out.
+      # `main` moves only while no run on main is for a newer commit, one this run's commit is an ancestor of, so that
+      # a run that finishes after a newer commit's, or a re-run of an older one, cannot move it back. Commits the paths
+      # filter skips, such as docs, start no run, so they leave it to the commit before them. Ancestry rather than run
+      # order decides, since two pushes close together may start their runs in either order. A fork's pull request
+      # from its own main branch is listed under main too, so pull request runs are left out.
       - name: Tag multi-platform image
         env:
           GH_TOKEN: ${{ github.token }}
@@ -263,12 +269,20 @@ jobs:
             tags="${VERSION}"
           else
             tags="sha-${GITHUB_SHA::10}"
-            newest="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/agentctl-image.yml/runs?branch=main&per_page=20" \
-              --jq '[.workflow_runs[] | select(.event != "pull_request")][0].head_sha')"
-            if [ "${newest}" = "${GITHUB_SHA}" ]; then
+            newer=""
+            for sha in $(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/agentctl-image.yml/runs?branch=main&per_page=20" \
+              --jq '[.workflow_runs[] | select(.event != "pull_request") | .head_sha] | unique | .[]'); do
+              # A commit since force-pushed off main cannot be compared, and is not newer.
+              status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${GITHUB_SHA}...${sha}" --jq .status || true)"
+              if [ "${status}" = ahead ]; then
+                newer="${sha}"
+                break
+              fi
+            done
+            if [ -z "${newer}" ]; then
               tags="${tags} main"
             else
-              echo "${newest} has a newer run; leaving the main tag to it"
+              echo "${newer} is newer and has a run; leaving the main tag to it"
             fi
           fi
 
