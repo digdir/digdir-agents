@@ -132,13 +132,9 @@ fn handover_prompt(directory: &Path, in_repository: bool) -> String {
     let subject = if in_repository {
         format!("for this repository, {directory}")
     } else {
-        format!("for my work in {directory}")
+        format!("for this folder, {directory}")
     };
-    format!(
-        "Help me set up an agentctl agent {subject}. agentctl runs coding agents like you in sandboxed Linux VMs on \
-         this machine. Run `agentctl guide setup` and follow it. This conversation is only for setting up the agent: \
-         when it is running, tell me to exit, and agentctl will take me into it."
-    )
+    format!("Set up an agentctl agent {subject}. Run `agentctl guide setup` and follow it.")
 }
 
 /// `names` as alternatives: `A`, `A or B`, `A, B or C`.
@@ -188,17 +184,12 @@ mod tests {
         let directory = Path::new("/work/app");
         assert_eq!(
             handover_prompt(directory, true),
-            "Help me set up an agentctl agent for this repository, /work/app. agentctl runs coding agents like \
-             you in sandboxed Linux VMs on this machine. Run `agentctl guide setup` and follow it. This \
-             conversation is only for setting up the agent: when it is running, tell me to exit, and agentctl will \
-             take me into it."
+            "Set up an agentctl agent for this repository, /work/app. Run `agentctl guide setup` and follow it."
         );
-        let outside = handover_prompt(directory, false);
-        assert!(
-            outside.starts_with("Help me set up an agentctl agent for my work in /work/app. agentctl runs"),
-            "{outside}"
+        assert_eq!(
+            handover_prompt(directory, false),
+            "Set up an agentctl agent for this folder, /work/app. Run `agentctl guide setup` and follow it."
         );
-        assert!(!outside.contains("repository"), "{outside}");
     }
 
     fn agent(name: &str, reason: &str, ready: bool, failure: Option<agent::FailureKind>) -> Agent {
