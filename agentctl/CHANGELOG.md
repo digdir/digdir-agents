@@ -36,6 +36,8 @@ agents. The Rust workspace version is a build detail and is not tracked here.
   - They no longer start with `invalid agent:` or `Control API error:`.
   - Changing a field an existing agent can't change, such as `spec.sandbox.image`, tells you to delete the agent and apply again.
   - Applying a name that an agent from another directory already has asks you to choose another name.
+- At a terminal, agentctl's questions take a single key, without Enter, and ignore keys typed before they appear: ([#310](https://github.com/digdir/digdir-agents/pull/310))
+  - Yes/no questions take `y` or `n`. Enter on its own answers nothing.
 
 ### Fixed
 
