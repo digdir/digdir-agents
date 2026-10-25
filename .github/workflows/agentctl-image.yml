@@ -49,7 +49,7 @@ on:
           Push the image by digest for the release workflow to tag once the release is published, rather than only
           build it as a release dry run does
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
@@ -154,8 +154,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
   # Each architecture builds on a native runner, as the other images do. When publishing, each pushes its image by
-  # digest, and the publish job, or for a release the release workflow, joins them into the tagged multi-platform
-  # image.
+  # digest, to be joined into the tagged multi-platform image.
   build:
     name: Build image (${{ matrix.arch }})
     needs: resolve
@@ -227,9 +226,9 @@ jobs:
           name: agentctl-image-digest-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/
           if-no-files-found: error
-          retention-days: 1
+          # A release's are kept for re-running the release workflow's image-tag job.
+          retention-days: ${{ needs.resolve.outputs.mode == 'release' && 7 || 1 }}
 
-  # A release's image is tagged by the release workflow, once the release is published.
   publish:
     if: needs.resolve.outputs.mode == 'main'
     name: Publish image

@@ -1,5 +1,5 @@
-# Releases agentctl from main: the archives for every host, the installers, the license and third-party notices, with
-# the version's CHANGELOG.md section as the release notes, and the version's agentctl image,
+# Releases agentctl from a manual run on main: the archives for every host, the installers, the license and
+# third-party notices, with the version's CHANGELOG.md section as the release notes, and the version's agentctl image,
 # ghcr.io/digdir/agentctl:<version>. A run without `publish` is a dry run: it builds, smoke-tests and assembles
 # everything, image included, and uploads the release as an artifact. A run with it also publishes what it built, and
 # creates the `agentctl/v<version>` tag on the run's commit together with the release. A tag can never be moved or
@@ -158,9 +158,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "$(gh release view "${TAG}" --json isDraft --jq .isDraft 2>/dev/null)" = true ]; then
-            gh release delete "${TAG}" --yes
-          fi
+          # Every draft for the tag goes, so that the commands below, which find the release by its tag, find only
+          # this run's.
+          drafts="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq ".[] | select(.draft and .tag_name == \"${TAG}\") | .id")"
+          for id in ${drafts}; do
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${id}"
+          done
           gh release create "${TAG}" --draft --prerelease --latest=false --target "${GITHUB_SHA}" \
             --title "agentctl ${VERSION}" --notes-file release-notes.md
           gh release upload "${TAG}" dist/*
