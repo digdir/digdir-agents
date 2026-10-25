@@ -1,7 +1,8 @@
 # Publishes an agentctl release for an `agentctl/v<version>` tag: the archives for every host, the installers, the
-# license and third-party notices, with the version's CHANGELOG.md section as the release notes. A manual run is a dry
-# run for a version: it builds, smoke-tests and assembles everything and uploads it as an artifact, but publishes
-# nothing, so a failure is caught before the immutable tag is spent.
+# license and third-party notices, with the version's CHANGELOG.md section as the release notes, and then the version's
+# agentctl image, ghcr.io/digdir/agentctl:<version>. A manual run is a dry run for a version: it builds, smoke-tests
+# and assembles everything, image included, and uploads the release as an artifact, but publishes nothing, so a failure
+# is caught before the immutable tag is spent.
 name: agentctl release
 
 on:
@@ -109,3 +110,16 @@ jobs:
             --title "agentctl ${TAG#agentctl/}" --notes-file release-notes.md
           gh release upload "${TAG}" dist/*
           gh release edit "${TAG}" --draft=false
+
+  # The release's image, built from the tag's commit, once the release itself is published. A dry run builds it without
+  # publishing, so that an image that does not build is caught before the tag is spent.
+  image:
+    name: agentctl image
+    needs: [version, release]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/agentctl-image.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      publish: ${{ github.event_name == 'push' }}

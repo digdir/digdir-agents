@@ -92,6 +92,7 @@ fn declared(record: &AgentRecord) -> Vec<agent::Harness> {
 /// host login was absent. Preparation decides and reports; setup is told. An omitted harness is
 /// skipped entirely: not verified, not configured.
 #[tokio::test(flavor = "local")]
+#[allow(clippy::too_many_lines)]
 async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
     let directory = TempDir::new().expect("temporary directory");
     let home = directory.path().join("home");
@@ -110,6 +111,16 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         default: false,
         defaults: agent::ModelSelection::default(),
     });
+    resource.spec.secrets = vec![
+        secret("GITHUB_TOKEN", &["github.com", "api.github.com"]),
+        secret("GATEWAY_KEY", &["gateway.example.com"]),
+    ];
+    resource.spec.environment = vec![agent::EnvironmentSpec {
+        name: "GIT_USER_NAME".into(),
+        source: None,
+    }];
+    resource.spec.access = vec![agent::AccessSpec::Ssh {}];
+    resource.spec.network.deny = vec!["metadata.google.internal".into()];
     let record = AgentRecord {
         id: agent_id,
         source_directory: directory.path().to_path_buf(),
@@ -135,11 +146,12 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         .sandbox
         .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
         .expect("Sandbox spec");
+    // The optional gateway key was not configured, so preparation gave the Sandbox no placeholder.
     let sandbox = service
-        .ensure(&EnsureSandboxRequest::new(
-            record.sandbox_name().expect("Sandbox name"),
-            spec,
-        ))
+        .ensure(
+            &EnsureSandboxRequest::new(record.sandbox_name().expect("Sandbox name"), spec)
+                .with_environment([("GITHUB_TOKEN".into(), "placeholder".into())]),
+        )
         .await
         .expect("Sandbox");
 
@@ -162,6 +174,233 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         !writes.iter().any(|path| path.starts_with("/home/agent/.codex/")),
         "the omitted harness must not be configured: {writes:?}"
     );
+
+    let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+    let expected = format!(
+        "<!-- agentd: Agent sandbox section, rewritten on every pass -->
+# Agent sandbox
+
+Written by agentd {}. Instructions after this section are the Agent's own and take precedence.
+
+- **Computer:** Agent `worker`, a Linux Sandbox VM that is yours to manage. User `agent` with passwordless `sudo`, \
+home `/home/agent`, work in `/home/agent/code`.
+- **Resources:** cpu 2, memory 1Gi, disk 4Gi; `df -h /` shows how much is free.
+- **Harnesses:**
+  - Claude Code (default)
+  - Codex: not installed until the host logs in to it
+- **Secrets:** inert placeholders the host replaces only in requests to their hosts; never search for, print or \
+persist real values.
+  - `GITHUB_TOKEN`: github.com, api.github.com
+  - `GATEWAY_KEY`: not configured
+- **Plain environment:** `GIT_USER_NAME`.
+- **Network:** all traffic passes through the host, which intercepts TLS with a CA that the system store and \
+`NODE_EXTRA_CA_CERTS` trust. Denied: `metadata.google.internal`.
+- **Access:** people on the host reach this computer with `agentctl ssh worker`.
+- **Nested Agents:** available (`/dev/kvm`, no Podman, so only manifests with an image `reference`); see the \
+`agentctl` skill.
+<!-- agentd: end of Agent sandbox section -->
+
+test instructions
+",
+        agent::build_version()
+    );
+    assert_eq!(instructions, expected);
+}
+
+/// Without `spec.instructions` the Agent's image or home overlay may own the harness's instruction file: the Agent
+/// sandbox section goes above what the file holds, and a later pass replaces only the section. A skill of the Agent's
+/// own named `agentctl` replaces the platform's.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns() {
+    let directory = TempDir::new().expect("temporary directory");
+    let home = directory.path().join("home");
+    std::fs::create_dir_all(&home).expect("home directory");
+    let skill = directory.path().join("skills").join("agentctl");
+    std::fs::create_dir_all(&skill).expect("skill directory");
+    std::fs::write(skill.join("SKILL.md"), "---\nname: agentctl\n---\nour own").expect("skill file");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home.source = home;
+    resource.spec.instructions = Vec::new();
+    resource.spec.skills = vec![agent::SkillSpec {
+        source: PathBuf::from("skills/agentctl"),
+        name: None,
+    }];
+    let record = AgentRecord {
+        id: "0b6f3c7e-4a8d-4c55-9a3e-2f1d7c9b8e10".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    };
+    let backend = Rc::new(memory::Provider::new());
+    for _ in 0..2 {
+        backend.queue_execution_events_matching(
+            is_claude_version,
+            vec![
+                ExecutionEvent::Started { process_id: None },
+                ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
+                ExecutionEvent::Exited(ExitStatus { code: 0 }),
+            ],
+        );
+        backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    }
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+    let image_instructions = b"# The image's own\n";
+    sandbox
+        .write_file(
+            &SandboxPath::new("/home/agent/.claude/CLAUDE.md"),
+            Box::pin(Cursor::new(image_instructions.to_vec())),
+        )
+        .await
+        .expect("image instruction file");
+    let platform = Linux::new(PLATFORM_API_URL);
+
+    platform
+        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
+        .await
+        .expect("first setup");
+    let first = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+    let writes = backend.file_writes().len();
+    platform
+        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
+        .await
+        .expect("second setup");
+
+    assert!(first.starts_with("<!-- agentd: Agent sandbox section"), "{first}");
+    assert!(
+        first.ends_with("<!-- agentd: end of Agent sandbox section -->\n\n# The image's own\n"),
+        "{first}"
+    );
+    let second = read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await;
+    assert_eq!(
+        second,
+        first.as_bytes(),
+        "a later pass keeps one section above the image's text"
+    );
+    assert!(
+        !backend
+            .file_writes()
+            .iter()
+            .skip(writes)
+            .any(|path| path.as_str() == "/home/agent/.claude/CLAUDE.md"),
+        "an unchanged pass does not rewrite the file"
+    );
+    let skill = read_file(&sandbox, "/home/agent/.claude/skills/agentctl/SKILL.md").await;
+    assert_eq!(skill, b"---\nname: agentctl\n---\nour own");
+}
+
+/// Claude Code that the platform does not launch, such as T3 Code's, approves Bash requests in bypass mode as Sessions
+/// do, and asks in the modes a person picks to be asked in. Sessions still report other permission prompts.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_approves_claude_bash_requests_in_bypass_mode_for_every_claude_process() {
+    use std::{io::Write as _, process::Stdio};
+
+    const MANAGED_SETTINGS: &str = "/etc/claude-code/managed-settings.d/10-agent-platform.json";
+    let directory = TempDir::new().expect("temporary directory");
+    let home = directory.path().join("home");
+    std::fs::create_dir_all(&home).expect("home directory");
+    std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home.source = home;
+    resource.spec.harnesses[0].version = None;
+    let record = AgentRecord {
+        id: "5d0c2f7a-93b1-4e8e-8c4f-1a6b2e9d7f30".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    };
+    let backend = Rc::new(memory::Provider::new());
+    for _ in 0..2 {
+        backend.queue_execution_events_matching(
+            is_claude_version,
+            vec![
+                ExecutionEvent::Started { process_id: None },
+                ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
+                ExecutionEvent::Exited(ExitStatus { code: 0 }),
+            ],
+        );
+        backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    }
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+    let platform = Linux::new(PLATFORM_API_URL);
+
+    platform
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("first setup");
+    let writes = backend.file_writes().len();
+    platform
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("second setup");
+
+    let settings = |bytes: Vec<u8>| serde_json::from_slice::<serde_json::Value>(&bytes).expect("settings JSON");
+    let input = serde_json::json!({
+        "session": settings(read_file(&sandbox, "/home/agent/.claude/agent-settings.json").await),
+        "managed": settings(read_file(&sandbox, MANAGED_SETTINGS).await),
+    });
+    let mut child = std::process::Command::new("node")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/claude_permission_hooks.mjs"
+        ))
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("Node.js answers permission requests");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(input.to_string().as_bytes())
+        .expect("write settings");
+    assert!(child.wait().expect("permission requests answered").success());
+    assert!(
+        !backend
+            .file_writes()
+            .iter()
+            .skip(writes)
+            .any(|path| path.as_str() == MANAGED_SETTINGS),
+        "an unchanged pass does not rewrite the managed settings"
+    );
+}
+
+fn secret(environment: &str, hosts: &[&str]) -> agent::SecretSpec {
+    agent::SecretSpec {
+        environment: environment.into(),
+        optional: environment != "GITHUB_TOKEN",
+        placeholder: None,
+        allowed_hosts: hosts.iter().map(|host| (*host).into()).collect(),
+        source: None,
+    }
 }
 
 #[tokio::test(flavor = "local")]
@@ -280,10 +519,17 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     let preserved = read_file(&sandbox, "/home/agent/.claude/.claude.json").await;
     assert_eq!(preserved, mutable_state);
     let instructions = read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await;
-    assert_eq!(instructions, b"test instructions\n\n# Environment\n\nhas a browser\n");
+    let instructions = String::from_utf8(instructions).expect("UTF-8 instructions");
+    assert!(instructions.contains("\n# Agent sandbox\n"), "{instructions}");
+    assert!(
+        instructions.ends_with("\n\ntest instructions\n\n# Environment\n\nhas a browser\n"),
+        "the Agent's own instructions follow the Agent sandbox section: {instructions}"
+    );
     let codex_instructions = read_file(&sandbox, "/home/agent/.codex/AGENTS.md").await;
-    assert_eq!(codex_instructions, instructions);
+    assert_eq!(codex_instructions, instructions.as_bytes());
     for root in ["/home/agent/.claude/skills", "/home/agent/.agents/skills"] {
+        let skill = read_file(&sandbox, &format!("{root}/agentctl/SKILL.md")).await;
+        assert!(skill.starts_with(b"---\nname: agentctl\n"));
         let skill = read_file(&sandbox, &format!("{root}/evidence/SKILL.md")).await;
         assert_eq!(skill, b"---\nname: evidence\n---\ncapture");
         let reference = read_file(&sandbox, &format!("{root}/evidence/references/gif.md")).await;

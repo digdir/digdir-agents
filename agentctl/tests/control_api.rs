@@ -29,7 +29,11 @@ use support::{IgnoreNotifications, agent};
 
 struct FakeAuthentication;
 /// Converges an Agent at once, except `stuck`, which never converges.
-struct FakeConvergence;
+/// Counts the hints to converge every Agent.
+#[derive(Default)]
+struct FakeConvergence {
+    woken: Rc<Cell<usize>>,
+}
 struct FakeSshAccess;
 struct FakeVncAccess;
 
@@ -277,6 +281,11 @@ impl ConvergenceApi for FakeConvergence {
             Ok(())
         })
     }
+
+    fn wake_all(&self) -> LocalFuture<'_, Result<(), Error>> {
+        self.woken.set(self.woken.get() + 1);
+        Box::pin(async { Ok(()) })
+    }
 }
 
 impl ExecutionApi for FakeExecutions {
@@ -325,6 +334,8 @@ struct ApiFixture {
     conversation: Rc<RefCell<Vec<agent::sessions::Turn>>>,
     /// Execution ensures still waiting in the server.
     waiting: Rc<Cell<usize>>,
+    /// Hints to converge every Agent.
+    woken: Rc<Cell<usize>>,
     ensured: Rc<RefCell<Vec<agent::sessions::SessionRequest>>>,
     sent: Rc<RefCell<Vec<SentMessage>>>,
     changes: Changes,
@@ -381,10 +392,12 @@ fn api() -> ApiFixture {
     let upgrade_gates = Rc::new(UpgradeGates::default());
     let executions = Rc::new(FakeExecutions::default());
     let waiting = executions.waiting.clone();
+    let convergence = FakeConvergence::default();
+    let woken = convergence.woken.clone();
     let server = Rc::new(Server::new(
         control_plane,
         Rc::new(FakeAuthentication),
-        Rc::new(FakeConvergence),
+        Rc::new(convergence),
         executions,
         Rc::new(FakeSessions {
             conversation: conversation.clone(),
@@ -407,6 +420,7 @@ fn api() -> ApiFixture {
         client,
         conversation,
         waiting,
+        woken,
         ensured,
         sent,
         changes,
@@ -538,6 +552,20 @@ async fn session_operations_carry_their_parameters_across_the_wire() {
         &[request, agent::sessions::SessionRequest::default()],
         "model and effort travel as opaque values and stay absent when omitted"
     );
+}
+
+/// An Agent whose optional harness waits for this login installs it at once, not at its next pass.
+#[tokio::test(flavor = "local")]
+async fn a_login_wakes_every_agent() {
+    let fixture = api();
+
+    fixture
+        .client
+        .auth_login(agent::Harness::ClaudeCode, "token".into(), false)
+        .await
+        .expect("login");
+
+    assert_eq!(fixture.woken.get(), 1);
 }
 
 #[tokio::test(flavor = "local")]

@@ -3,25 +3,23 @@
 This Agent develops the Agent platform itself: `agentctl/`, `sandbox/` and the Rust workspace in digdir-agents. Each
 Agent clones `digdir/digdir-agents`, `digdir/microsandbox` and `digdir/libkrunfw` at boot.
 
-| Agent / variant | Image | Resources |
-| --- | --- | --- |
-| `minimal` default | Published `agentctl-self-dev-minimal` | 4 CPUs, 8 GiB memory, 100 GiB disk |
-| `minimal` `nested` | `minimal` stage built from this checkout | Reduced to fit inside another Agent |
-| `full` default | Published `agentctl-self-dev-full`: `minimal` plus Chromium and a graphical desktop | 4 CPUs, 8 GiB memory, 100 GiB disk |
-| `full` `nested` | `full` stage built from this checkout | Reduced to fit inside another Agent |
+| Agent | Image |
+| --- | --- |
+| `minimal` | `agentctl-self-dev-minimal`, published |
+| `full` | `agentctl-self-dev-full`, published: `minimal` plus Chromium and a graphical desktop |
 
+Each has a `nested` variant that builds the same image from this checkout and is sized to fit inside another Agent.
 Both Agents are named `agentctl-dev`, and their nested variants `agentctl-dev-nested`, since you typically use one or
 the other. Pass `--name` to run both at once.
 
-Both Agents prefer [nested Sandboxes](../../agentctl/README.md#images-home-and-harnesses), for the `/dev/kvm` their
-Microsandbox runtime uses. That needs a Linux x86_64 host with nested KVM enabled or a Mac with an Apple M3 or newer
-chip and macOS 15 or newer; elsewhere they start without it, and cannot run nested Agents or the end-to-end tests.
+Nested Agents and the end-to-end tests need nested Sandboxes, which a Linux x86_64 host with nested KVM or an Apple M3
+or newer on macOS 15 or newer can provide. The manifests ask for them (`nestedSandboxes: preferred`), and on other
+hosts the Agent starts without them.
 
-The images are built from this directory's `Dockerfile` on the [agentctl base images](../../images/agentctl-base/README.md),
-and published to `ghcr.io/digdir/digdir-agents` whenever they or the base images change on `main`. `full` is `minimal`
-plus the base images' `desktop` feature. Use a `nested` variant to try changes to the image itself. It builds on the
-published base image; to try a change to the base, build it under a `localhost/` tag and point the `Dockerfile`'s `FROM`
-at it while you test.
+The images are built from this directory's `Dockerfile` on the
+[agentctl base images](../../images/agentctl-base/README.md) and published to `ghcr.io/digdir/digdir-agents` whenever
+they or the base images change on `main`. See [Changing them](../../images/agentctl-base/README.md#changing-them) for
+changes to the base images.
 
 ## Getting started
 
@@ -40,52 +38,47 @@ Use `agents/self-dev/full` instead for a browser and a desktop. `agentctl vnc --
 that desktop in your browser. `agentctl tui`, run from anywhere in this checkout, offers both Agents and their variants
 when it creates an Agent.
 
-For a reduced Agent built from this checkout:
+To try a change to the image, apply the `nested` variant, which builds it from this checkout:
 
 ```sh
 agentctl apply --variant nested --env-file ~/.agent/self-dev.env --wait
 agentctl create session/s1 --variant nested --harness codex
 ```
 
-Ignored local variants such as `agent.mine.yaml` may extend another sibling variant. Keep their credentials outside the
-checkout.
+A variant of your own, such as `agent.mine.yaml`, which Git ignores, can extend any manifest beside it. Keep
+credentials outside the checkout.
 
 ## Credentials
-
-The GitHub token stays on the host. The Agent sees a placeholder, which is substituted only in requests to GitHub.
-`GIT_USER_NAME` and `GIT_USER_EMAIL` enter the Agent in plaintext.
 
 `GITHUB_TOKEN` is a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with
 `Contents` and `Pull requests` read and write.
 
-`AIVAR_API_KEY` is optional. It is the key for the company AI gateway at `api.aivar.no`, which Pi uses, and is likewise
-substituted only in requests to that host. Without it Pi starts, but rejects every prompt and a wait for one times out.
+`AIVAR_API_KEY` is optional. It is the key for the company AI gateway at `api.aivar.no`, which Pi uses. Without it Pi
+starts but rejects every prompt, so `agentctl prompt --wait` times out.
 
 ## Pi
 
-The `pi` installation in `agent.yaml` defaults to `aivar/sigma2:Qwen3.8-27B`, and the shared home overlay in `home/`
-supplies `~/.pi/agent/models.json` with the `aivar` provider (`https://api.aivar.no/v1`, key from `$AIVAR_API_KEY`).
-The overlay is applied again on every pass, so edit it here rather than in the Sandbox. An existing self-dev Agent
-needs `agentctl delete` and a new `apply`: its harness types and home overlay, which moved to `home/`, are fixed
-when it is created.
+Pi's provider and models come from [`home/.pi/agent/models.json`](home/.pi/agent/models.json), in the shared home
+overlay. `agentd` writes the overlay into the Sandbox every time it reconciles the Agent, so edit it here rather than
+in the Sandbox.
 
-The findings behind `models.json`, checked through Pi 1.3.0 on 2026-10-17 with a bash tool call at every thinking
-level. The limits are the gateway's own, from its error to an oversized `max_tokens` request.
+Before adding a model, ask the gateway what it offers. Its model list has only the IDs:
 
-| Model | Offered | Notes |
-| --- | --- | --- |
-| `sigma2:Qwen3.8-27B` | Yes | Accepts only the efforts `low`, `medium` and `xhigh`, so `thinkingLevelMap` maps the others onto them. |
-| `azure:DeepSeek-V4.1-Flash` | Yes | Chat Completions only: the `azure:` route rejects Pi's Responses input. |
-| `sigma2:Borealis2-preview` | Yes | |
-| `aivar:borealis` | Yes | 32k tokens in total, and text only; the others also read images. |
-| `azure:gpt-6.1-sol` | No | Rejects tool calls on both APIs. |
-| `sigma2:Borealis-27B` | No | Never calls a tool. |
+```sh
+curl -fsS -H "Authorization: Bearer $AIVAR_API_KEY" https://api.aivar.no/v1/models
+```
 
-Re-check these when the gateway or Pi changes.
+To find the context size, send a chat completion to `/v1/chat/completions` with an oversized `max_tokens`. The error
+names the model's total token limit. Add an image to the request to see whether the model reads images. A model that
+reads only text rejects it.
+
+Then add the model and try it in Pi with a prompt that runs a shell command, at each thinking level. The gateway's
+answers do not show whether a model calls tools, accepts Pi's requests or supports every thinking level. Map the
+levels it rejects onto ones it accepts with `thinkingLevelMap`, and leave out a model that cannot call tools.
 
 ## Inside the Agent
 
-`instructions.md` tells the harness how to build, test and run the platform nested; the `full` Agent adds
-`full/desktop.md`. The `pr-evidence` skill describes how to record `agentctl` demonstrations and attach them to pull
-requests, and the `changelog` skill how to write changelog entries. The `full` image also ships the `computer-use`
-skill for driving its desktop.
+[`instructions.md`](instructions.md), plus [`full/desktop.md`](full/desktop.md) on `full`, are the Agent's own
+instructions. Its skills are [`pr-evidence`](skills/pr-evidence/SKILL.md), for showing a change to reviewers, and
+[`changelog`](skills/changelog/SKILL.md), for changelog entries. The `full` image also ships the base image's
+`computer-use` skill for its desktop.

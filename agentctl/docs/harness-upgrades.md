@@ -1,26 +1,24 @@
-# Harness compatibility
+# Harness upgrades
 
-Treat harness installation version bumps as adapter changes: existing unit tests and transcript fixtures do not
-establish compatibility with a new binary. Terminal behavior, transcript formats, hook semantics, authentication
-and resume behavior all need live verification. Version verification checks identity, not compatibility.
+A harness version bump is an adapter change. The unit tests and transcript fixtures only show that the adapter worked
+with the version they were recorded from, and `agentd`'s version check only confirms that the image has the pinned
+version. Only a live run shows whether the adapter still handles the new version's terminal, transcripts, hooks, login
+and resume.
 
 An existing Agent keeps the image it was created with, but `agentctl self update` gives it the new `agentd` at once.
 Adapter changes that accompany a bump must therefore also work with the previous pin.
 
-Implementation: [adapters](src/harness), [terminal runtime](src/sessions/runtime/tmux.rs),
-[Session service](src/sessions/service.rs). Harness pins: the [base images](../images/agentctl-base/Dockerfile), which
-the self-dev Agent builds on, [minimal](examples/minimal/Dockerfile) (Claude Code only) and
-[worktree](../sandbox/core/examples/worktree/Dockerfile); update them together.
+The adapters live in [`src/harness`](../src/harness). Update every pin of a harness together. `git grep` its previous
+version to find them.
 
 ## Upgrade test plan
 
-Install the current platform with `make user-install` from the repository root; it replaces and restarts `agentd`, and
-refuses while any Session reports `Working` (#149, #150), so archive or delete earlier test Sessions first. Test the
-self-dev image built from the branch: build the base images from the branch under `localhost/` tags, as
-[their README](../images/agentctl-base/README.md#changing-them) describes, and point `agents/self-dev/Dockerfile`'s
-`FROM` at them, since a nested build otherwise pulls the published base. Then from `agents/self-dev/minimal` in the branch's checkout, `agentctl apply --variant nested --env-file <file> --wait` builds it on them with all three
-harnesses and fits inside another Agent. Keep the env file outside the checkout. Use fresh Session names and confirm `claude --version`,
-`codex --version` and `pi --version` in the Sandbox; testing an existing Sandbox does not prove the rebuilt image works.
+Test with `agentctl` and the self-dev image both built from the branch: run `make user-install`, then apply the
+self-dev `nested` variant on base images built from the branch, as
+[their README](../../images/agentctl-base/README.md#changing-them) describes. `make user-install` restarts `agentd` and
+refuses while a Session is `Working`, so archive or delete earlier test Sessions first. Use fresh Sessions and check
+`claude --version`, `codex --version` and `pi --version` in the Sandbox. An existing Sandbox does not prove the
+rebuilt image works.
 
 Run each check against Claude Code and Codex ("Both") unless the table names one, and against Pi as [below](#pi). A
 low-cost model is enough, but Sessions on each installation's manifest `defaults` must work at least once. Before
@@ -39,6 +37,12 @@ attributing a failure to the bump, repeat the check on an Agent built with the p
   `PermissionRequest` hook approves the call,
   including requests that Claude's deletion checks raise despite `--dangerously-skip-permissions`. Confirm that
   `prompt --wait` waits for the completed turn rather than returning `WaitingForInput` at the approval.
+- Claude Code outside a Session, as T3 Code runs it: in `agentctl ssh`, run `mkdir -p /tmp/x/a`, write
+  `{"type":"user","message":{"role":"user","content":"Run exactly: sh -c 'cd /tmp/x && rm -rf $(echo a)'"}}` to
+  `/tmp/x/prompt.jsonl`, and pipe `(cat /tmp/x/prompt.jsonl; sleep 60)` into
+  `claude -p --input-format stream-json --output-format stream-json --verbose --permission-prompt-tool stdio`, first
+  with `--permission-mode bypassPermissions --allow-dangerously-skip-permissions`, then with
+  `--permission-mode default`. Claude Code needs its input open to receive the answer to a permission request.
 - A Claude Code permission prompt: use `"permissions": {"ask": ["Write"]}` instead, and ask for a file written with
   the `Write` tool. Other tool permissions still wait for the operator. Restore the file afterwards. The
   `AskUserQuestion` tool blocks on the operator without any configuration.
@@ -54,6 +58,7 @@ attributing a failure to the bump, repeat the check on an Agent built with the p
 | Prompt while a background command runs, until it finishes            | Claude Code | The wait ends with the operator's turn; the completion notification's own turn does not end a later wait early.                                                                                                         |
 | Tool success and tool failure                                        | Both        | STATE reflects activity; tool completion alone does not complete a turn; `turns` marks only the failed call.                                                                                                            |
 | Bash permission request, including a deletion safety check          | Claude Code | Runs without operator approval; `prompt --wait` ends only when the turn completes. Repeat in a background subagent. |
+| Deletion safety check outside a Session                              | Claude Code | In bypass mode, the tool result's `permission_decision` comes from the `hook`, any `can_use_tool` request is followed by its `control_cancel_request`, and `/tmp/x/a` is gone. In default mode, the `can_use_tool` request waits for the client. |
 | Permission prompt and `AskUserQuestion`, approved and denied         | Claude Code | While blocked, STATE is `WaitingForInput` and `activity.turns` does not advance; answering or approving completes the turn. A denial is an interruption (#147). Not tested for Codex, which launches without approvals. |
 | Interruption during a tool call, then another prompt                 | Both        | Codex reports `Interrupt`, which releases the wait. Known gap (#147): Claude Code has no interrupt hook, so STATE stays `Working` and a wait times out. The next prompt works in both.                                  |
 | Model error reported through `StopFailure`                           | Claude Code | Create with an unknown `--model`. The completion report ends the wait, but does not imply a successful model response; inspect `turns`.                                                                                 |
@@ -67,12 +72,12 @@ attributing a failure to the bump, repeat the check on an Agent built with the p
 | Transcript location                                                  | Both        | `get sessions -o json` reports a `harnessTranscriptPath` that exists and grows with each turn, also after resume.                                                                                                       |
 | Authentication and configuration                                     | Both        | Mediated login/inference works without unexpected onboarding or authentication dialogs; startup shows no new warnings; the status line renders; configured instructions and skills are available.                       |
 | Home overlay replaces Claude's user settings                         | Claude Code | With no legacy bypass acknowledgement in the image and no acknowledgement in the overlay, create, prompt, re-apply, archive and resume repeatedly. The platform's `agent-settings.json` keeps the acknowledgement; the overlay's settings remain unchanged. |
-| Nested Agent                                                         | Both        | Inside a Session, `agentctl claude login --from-stdin` with `$AGENT_CLAUDE_ACCESS_TOKEN` and `agentctl codex login --from-stdin < ~/.codex/auth.json` let a nested Agent run both harnesses.                            |
+| Nested Agent                                                         | Both        | Inside a Session, `agentctl claude login` and `agentctl codex login` let a nested Agent run both harnesses.                                                                                                             |
 | New `agentd` with the previous pin                                   | Both        | When the change touches adapter code, an Agent on the previous image still creates, prompts, reads turns and resumes.                                                                                                   |
 
 ## Pi
 
-Test Pi on an Agent that configures it, such as [self-dev](../agents/self-dev/README.md#pi). The checks above apply,
+Test Pi on an Agent that configures it, such as [self-dev](../../agents/self-dev/README.md#pi). The checks above apply,
 with these differences:
 
 - Pi asks for no permissions; only an extension dialog reports `WaitingForInput`.
@@ -86,17 +91,14 @@ with these differences:
 - Resume opens the reported transcript only when it is non-empty; otherwise the Session starts fresh.
 - An initial prompt starting with `@` gets a leading space, since Pi reads `@name` as a file.
 - `spec.instructions` reach the model from `~/.pi/agent/AGENTS.md`, and the Agent's other `~/.pi/agent/` files are
-  unchanged after re-convergence.
+  unchanged after `agentd` reconciles the Agent again.
 
-Completion waits poll local database activity every 250 ms and require identical completed, waiting activity
-in two consecutive polls.
+## Judging and reporting
 
 Inspect `get sessions` (including `-o json`) and `turns` alongside the terminal. Check user messages, assistant answers,
 tool results and turn boundaries, including after compaction. A successful model response alone is insufficient.
 
-Run the normal formatting, lint and test checks, plus `cargo test -p agent --lib -- --ignored`, which `make test-e2e`
-and CI also run, on a host with Node.js and tmux. Those tests drive tmux with a synthetic program, not the harnesses, so
-they do not replace a live check; the scrollback and Ctrl-Z checks also require Linux and util-linux `script`. Record in
-the PR, for each check and harness, the result or why it was not run, with the tested versions and commands. Update
-adapter fixtures when native output changes, and add a changelog entry. Never publish credentials or
-authentication-bearing process arguments.
+Also run `cargo test -p agent --lib -- --ignored`, part of `make test-e2e`, on a host with Node.js and tmux. It drives
+tmux with a synthetic program, not the harnesses, so it does not replace the live checks. Record in the pull request,
+for each check and harness, the result or why it was not run, with the tested versions. Update adapter fixtures when
+native output changes. Never paste credentials into the pull request, including command lines that carry a token.

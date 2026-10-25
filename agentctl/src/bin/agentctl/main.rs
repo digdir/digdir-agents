@@ -487,11 +487,11 @@ type CommandResult<T> = Result<T, CommandError>;
 #[derive(Subcommand)]
 enum ClaudeCommand {
     /// Mint a long-lived Claude token on the host and store it for agents.
+    ///
+    /// Inside an Agent with Claude Code, store that Agent's mediated placeholder instead, so a
+    /// nested `agentd` chains through the outer mediation without ever holding a real credential.
     Login {
-        /// Read an existing credential from standard input instead of signing in. Inside an Agent
-        /// this accepts the mediated placeholder the Session holds as `AGENT_CLAUDE_ACCESS_TOKEN`,
-        /// so a nested `agentd` chains through the outer mediation without ever holding a real
-        /// credential.
+        /// Read an existing credential from standard input instead.
         #[arg(long)]
         from_stdin: bool,
     },
@@ -506,10 +506,13 @@ enum SshConfigCommand {
 #[derive(Subcommand)]
 enum CodexCommand {
     /// Sign in with `ChatGPT` and store an Agent-only grant.
+    ///
+    /// Inside an Agent with Codex, store the placeholder credential file that Agent's Codex has
+    /// instead, so a nested `agentd` chains through the outer mediation without ever holding a
+    /// real credential.
     Login {
-        /// Read the harness's credential file from standard input instead of signing in. Inside
-        /// an Agent this accepts the file the harness already has, whose placeholders let a nested
-        /// `agentd` chain through the outer mediation without ever holding a real credential.
+        /// Read a credential file from standard input instead; only an Agent's placeholder file
+        /// is accepted that way.
         #[arg(long)]
         from_stdin: bool,
     },
@@ -561,28 +564,18 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         Command::Claude {
             command: ClaudeCommand::Login { from_stdin },
         } => {
-            let token = if from_stdin {
-                read_token_from_stdin()?
-            } else {
-                agent::harness::acquire_host_credential(agent::Harness::ClaudeCode, home.path(), sign_in)?
-            };
-            let imported = client
-                .auth_login(agent::Harness::ClaudeCode, token.to_string(), from_stdin)
-                .await?;
-            println!("{} authentication stored", imported.provider);
+            login(
+                client,
+                home,
+                agent::Harness::ClaudeCode,
+                from_stdin.then(read_token_from_stdin),
+            )
+            .await?;
         }
         Command::Codex {
             command: CodexCommand::Login { from_stdin },
         } => {
-            let credential = if from_stdin {
-                read_stdin_to_end()?
-            } else {
-                agent::harness::acquire_host_credential(agent::Harness::Codex, home.path(), sign_in)?
-            };
-            let imported = client
-                .auth_login(agent::Harness::Codex, credential.to_string(), from_stdin)
-                .await?;
-            println!("{} authentication stored", imported.provider);
+            login(client, home, agent::Harness::Codex, from_stdin.then(read_stdin_to_end)).await?;
         }
         Command::Apply {
             filename,
@@ -1881,6 +1874,32 @@ fn read_apply_request_in(
     })
 }
 
+/// Stores a harness login: the credential on standard input when given, else, inside an Agent with
+/// the harness, that Agent's mediated credential, else a sign-in on this host.
+async fn login(
+    client: &Client,
+    home: &ControlPlaneHome,
+    harness: agent::Harness,
+    from_stdin: Option<Result<zeroize::Zeroizing<String>, Error>>,
+) -> CommandResult<()> {
+    let (credential, imported, source) = match from_stdin {
+        Some(credential) => (credential?, true, ""),
+        None => match agent::harness::agent_credential(harness, agent::harness::inside_agent(), |name| {
+            std::env::var_os(name)
+        })? {
+            Some(credential) => (credential, true, " from this Agent's mediated login"),
+            None => (
+                agent::harness::acquire_host_credential(harness, home.path(), sign_in)?,
+                false,
+                "",
+            ),
+        },
+    };
+    let stored = client.auth_login(harness, credential.to_string(), imported).await?;
+    println!("{} authentication stored{source}", stored.provider);
+    Ok(())
+}
+
 fn read_token_from_stdin() -> Result<zeroize::Zeroizing<String>, Error> {
     let mut line = zeroize::Zeroizing::new(String::new());
     std::io::stdin()
@@ -2355,10 +2374,10 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let manifest_path = directory.path().join("agent.yaml");
         std::fs::copy(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/minimal/agent.yaml"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/agent.yaml"),
             &manifest_path,
         )
-        .expect("copy example manifest");
+        .expect("copy fixture manifest");
 
         let request = read_apply_request_in(|| Ok(directory.path().to_path_buf()), PathBuf::from("agent.yaml"), None)
             .expect("read apply request");
