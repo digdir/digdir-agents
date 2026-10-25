@@ -37,6 +37,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
   - for a name another directory's agent has, ask for another name
 - At a terminal, agentctl's questions take a single key, without Enter, and ignore keys typed before they appear: ([#310](https://github.com/digdir/digdir-agents/pull/310))
   - yes/no questions take `y` or `n`, and Enter alone does not answer
+- The Agent sandbox section in agents' instructions also lists the folders mounted from your machine, and asks the agent to push or comment only when a task asks, clean up after itself, and note in `~/system-changes.md` what it changes outside the image. ([#240](https://github.com/digdir/digdir-agents/issues/240))
 
 ### Fixed
 
