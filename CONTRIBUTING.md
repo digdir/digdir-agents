@@ -15,11 +15,12 @@ Follow the [architecture principles](docs/architecture.md#principles) and the
 
 ### Design feedback
 
-Keep changes targeted. When the existing design gets in the way, such as code that is hard to change, duplication or an
-abstraction that no longer fits, say so as soon as you notice it rather than working around it. Suggest what you would
-do about it, and whether to do it before, as part of or after the change. Agents raise it with the person prompting
-them. This way the architecture and design evolve with what the changes demand, and the code stays maintainable over
-time.
+We want the design to improve as the code changes, not to be worked around. When the code makes your change bigger or
+trickier than it needs to be, stop and think about whether a refactor or
+[semantic compression](docs/coding-standards.md#design) would remove that accidental complexity. Whether and when is
+up to you. Small ones often fit in the same pull request. Larger ones are easier to review on their own, before your
+change if they make it simpler, or after if they can wait. Agents talk through the larger ones with the person
+prompting them.
 
 ## Pull requests
 

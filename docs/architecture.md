@@ -24,6 +24,11 @@ Host
   is a new adapter, not a change to the core.
 - **Logic in the core.** The core, meaning Agents, Sessions, reconciliation and policy, is where we have leverage and
   where behavior is cheap to test. Adapters translate and stay thin. When in doubt, move logic toward the core.
+- **Deep modules.** A function, type, module or crate is deep when it does a lot behind a small surface. That surface
+  is everything a caller must know to use it. It includes the order of calls, the errors and the configuration, not
+  just the signature. Keep it small. Then callers get a lot done with little to learn, tests stay simple because they
+  use the same surface, and a change or fix is contained within it. If deleting a module would not make its callers
+  any more complex, it only passes calls through and should be removed.
 - **Converge, don't script.** `agentd` stores the desired state before it acts, and reconcilers keep moving towards
   it, repairing what drifts or fails. A lost event, a restart or a Sandbox that stops responding delays an Agent but
   does not break it. For each declared field, `agentd` either fixes it when it creates the Agent or Session and
