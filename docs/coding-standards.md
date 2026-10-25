@@ -7,6 +7,15 @@ talk to each other is in the [architecture principles](architecture.md#principle
 
 - Do not add abstractions ahead of a concrete need, such as traits or channels for implementations that do not exist
   yet.
+- Apply semantic compression to code that has already repeated, so its shape comes from real uses rather than
+  guesses.
+  - Prefer merging the repeated parts where they are, with a loop, a table or by reordering.
+  - A helper function pays off when it does a lot behind a small surface, as the
+    [deep modules](architecture.md#principles) principle describes, or when it holds real behavior, such as a rule or
+    a conversion. Each one is another entry point to read and keep consistent, and many small ones can be harder to
+    follow than the repetition they replaced.
+- Do not write one-line functions that only forward a call or give an expression a name. A reader has to jump to
+  them only to find out they do nothing.
 - Make invalid states unrepresentable. Parse input once, where it enters, into types that cannot hold an invalid
   value, so the code past that point never checks it again.
 - Give domain values their own types, such as `SandboxName` or `ByteQuantity`, instead of passing plain strings and
