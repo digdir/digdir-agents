@@ -22,11 +22,11 @@ use crate::{backend::RuntimeBundle, error};
 
 // Published runtime bundle digests for Microsandbox 0.7.11-digdir.1. Update these
 // together with the pinned Microsandbox revisions in the workspace manifest.
-const LINUX_X86_64_RUNTIME_SHA256: &str = "117568bd4043be94c44105c6f38902fe24246d4c8e5f906004b1ff5718ad7ce0";
-const LINUX_AARCH64_RUNTIME_SHA256: &str = "662ce4c6c7b021aae247d791f7dda05fde4aaca88f3c3e9e94bc1ca84fda5071";
-const MACOS_AARCH64_RUNTIME_SHA256: &str = "8ca1782942d53b9d8432e5ec12e25b5e283487080bbc2b03fa1a29b159734f1c";
-const WINDOWS_X86_64_RUNTIME_SHA256: &str = "03746496500550f5e7b3d260ea59e68cbc8d041f9b36b91775296e2506473a6f";
-const WINDOWS_AARCH64_RUNTIME_SHA256: &str = "6a3f3ad63f81e9dd50624ee77e89355498798cd1e9d7c9b1856f806faa4cc52b";
+const LINUX_X86_64_RUNTIME_SHA256: &str = "3f373f3d77ea339b6d0440f60a62f968783cdb4c01220edd6c862e7a8d2f3c65";
+const LINUX_AARCH64_RUNTIME_SHA256: &str = "519c161783bc29503d580c357c95f4101e816f9c7ed06ad42fad8dac2e1d99db";
+const MACOS_AARCH64_RUNTIME_SHA256: &str = "64b3239666ea02c69668fee1a6af4d80d1271fe436a153457e330667eb92c7ee";
+const WINDOWS_X86_64_RUNTIME_SHA256: &str = "55f4be7de4aa664994d9a8300eb627c29766f1b2f374f3968eb67d68636e45ed";
+const WINDOWS_AARCH64_RUNTIME_SHA256: &str = "9b9dfd1a27c3ecf39c91a29f7fc3d1b35d840dd0d82781555eb80e47f685821e";
 
 /// Keeps Microsandbox's thread-safe ownership model at the SDK boundary.
 #[derive(Clone)]

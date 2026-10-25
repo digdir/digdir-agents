@@ -26,9 +26,9 @@ flate2 = "1.1.9"
 ignore = "0.4.33"
 # Microsandbox fork commit tagged `v0.7.11-digdir.1`.
 # Update all three revisions together with the runtime bundle digests.
-microsandbox = { git = "https://github.com/digdir/microsandbox.git", rev = "fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5", default-features = false, features = ["local", "net"] }
-microsandbox-image = { git = "https://github.com/digdir/microsandbox.git", rev = "fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5", package = "microsandbox-image" }
-microsandbox-network = { git = "https://github.com/digdir/microsandbox.git", rev = "fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5", package = "microsandbox-network" }
+microsandbox = { git = "https://github.com/digdir/microsandbox.git", rev = "9e43b12874b41059fe1a885521a4edd3388c73c8", default-features = false, features = ["local", "net"] }
+microsandbox-image = { git = "https://github.com/digdir/microsandbox.git", rev = "9e43b12874b41059fe1a885521a4edd3388c73c8", package = "microsandbox-image" }
+microsandbox-network = { git = "https://github.com/digdir/microsandbox.git", rev = "9e43b12874b41059fe1a885521a4edd3388c73c8", package = "microsandbox-network" }
 mimalloc = "0.1.52"
 ratatui = "0.30.2"
 reqwest = { version = "0.13.4", features = ["json"] }
