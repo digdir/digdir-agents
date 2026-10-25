@@ -212,6 +212,7 @@ impl Reconciler {
             responsive_condition(self.sandboxes.reports_heartbeat(&ensured.sandbox.snapshot().id)),
         );
         conditions.extend(nested_sandboxes_condition(ensured.nested_sandboxes.as_ref()));
+        conditions.extend(optional_sources_condition(&record.agent.spec, &ensured.missing_sources));
         conditions.push(condition(Condition::READY, ConditionStatus::True, "SandboxReady", ""));
         let status = Status::observed(record.agent.metadata.generation, Some(assignment), conditions);
         // As on failure, readiness is stored before followers see the pass end.
@@ -604,6 +605,26 @@ fn nested_sandboxes_condition(outcome: Option<&crate::sandbox::NestedSandboxesOu
             "HostUnsupported",
             reason,
         ),
+    })
+}
+
+/// Reports whether the Agent's optional instructions and skills exist, naming those setup left out;
+/// nothing when it declares none.
+fn optional_sources_condition(spec: &crate::Spec, missing: &[String]) -> Option<Condition> {
+    let declares = spec.instructions.iter().any(|instructions| instructions.optional)
+        || spec.skills.iter().any(|skill| skill.optional);
+    if !declares {
+        return None;
+    }
+    Some(if missing.is_empty() {
+        condition(Condition::OPTIONAL_SOURCES, ConditionStatus::True, "Found", "")
+    } else {
+        condition(
+            Condition::OPTIONAL_SOURCES,
+            ConditionStatus::False,
+            "Missing",
+            &format!("left out {}", missing.join(", ")),
+        )
     })
 }
 

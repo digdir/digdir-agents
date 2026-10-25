@@ -71,8 +71,8 @@ impl PlatformAdapter for NoopPlatform {
         _sandbox: &'a SandboxHandle,
         _harnesses: &'a [agent::Harness],
         _steps: &'a sandbox::SandboxProgress,
-    ) -> LocalFuture<'a, Result<(), Error>> {
-        Box::pin(async { Ok(()) })
+    ) -> LocalFuture<'a, Result<Vec<String>, Error>> {
+        Box::pin(async { Ok(Vec::new()) })
     }
 }
 
@@ -1015,6 +1015,82 @@ async fn nested_sandboxes_are_reported_in_a_condition_and_an_unmet_requirement_f
     let status = apply(None).await;
     assert!(status.is_ready());
     assert_eq!(nested(&status), None, "an Agent that asks for none reports none");
+}
+
+/// Reports `missing` as the optional sources setup left out.
+#[derive(Default)]
+struct MissingSourcesPlatform {
+    missing: RefCell<Vec<String>>,
+}
+
+impl PlatformAdapter for MissingSourcesPlatform {
+    fn supports(&self, platform: &Platform) -> bool {
+        platform.os == "linux"
+    }
+
+    fn setup<'a>(
+        &'a self,
+        _record: &'a AgentRecord,
+        _sandbox: &'a SandboxHandle,
+        _harnesses: &'a [agent::Harness],
+        _steps: &'a sandbox::SandboxProgress,
+    ) -> LocalFuture<'a, Result<Vec<String>, Error>> {
+        Box::pin(async { Ok(self.missing.borrow().clone()) })
+    }
+}
+
+#[tokio::test(flavor = "local")]
+async fn missing_optional_sources_are_reported_in_a_condition_of_a_ready_agent() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let provider: Rc<dyn Provider> = Rc::new(MemoryProvider::new(Rc::new(sandbox_memory::Provider::new())));
+    let platform = Rc::new(MissingSourcesPlatform::default());
+    let service = Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service");
+    let reconciler = Reconciler::new(store.clone(), Rc::new(service), ProvisioningState::default());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    let optional_sources = async |name: &str| {
+        let id = store.get_by_name(name).await.expect("Agent").id;
+        reconciler.reconcile(id).await.expect("reconcile");
+        let status = store.get_by_name(name).await.expect("Agent").agent.status;
+        assert!(
+            status.is_ready(),
+            "a missing optional source does not keep the Agent from running"
+        );
+        status
+            .conditions
+            .iter()
+            .find(|condition| condition.kind == Condition::OPTIONAL_SOURCES)
+            .map(|condition| (condition.status, condition.reason.clone(), condition.message.clone()))
+    };
+
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    assert_eq!(
+        optional_sources("worker").await,
+        None,
+        "an Agent that declares no optional source reports none"
+    );
+
+    let mut request = apply_request("reviewer");
+    request.agent.spec.skills.push(agent::SkillSpec {
+        source: PathBuf::from("~/skills/review"),
+        name: None,
+        optional: true,
+    });
+    control_plane.apply(request).await.expect("apply");
+    *platform.missing.borrow_mut() = vec!["spec.skills[0].source ~/skills/review".into()];
+    assert_eq!(
+        optional_sources("reviewer").await,
+        Some((
+            ConditionStatus::False,
+            "Missing".into(),
+            "left out spec.skills[0].source ~/skills/review".into()
+        ))
+    );
+
+    platform.missing.borrow_mut().clear();
+    assert_eq!(
+        optional_sources("reviewer").await,
+        Some((ConditionStatus::True, "Found".into(), String::new()))
+    );
 }
 
 #[tokio::test(flavor = "local")]
@@ -2145,7 +2221,7 @@ impl PlatformAdapter for StallingPlatform {
         _sandbox: &'a SandboxHandle,
         _harnesses: &'a [agent::Harness],
         _steps: &'a sandbox::SandboxProgress,
-    ) -> LocalFuture<'a, Result<(), Error>> {
+    ) -> LocalFuture<'a, Result<Vec<String>, Error>> {
         Box::pin(async move {
             self.setups.set(self.setups.get() + 1);
             if self.fail.get() {
@@ -2155,7 +2231,7 @@ impl PlatformAdapter for StallingPlatform {
                 self.started.notify_one();
                 std::future::pending::<()>().await;
             }
-            Ok(())
+            Ok(Vec::new())
         })
     }
 }

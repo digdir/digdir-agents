@@ -225,6 +225,7 @@ async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns
     resource.spec.skills = vec![agent::SkillSpec {
         source: PathBuf::from("skills/agentctl"),
         name: None,
+        optional: false,
     }];
     let record = AgentRecord {
         id: "0b6f3c7e-4a8d-4c55-9a3e-2f1d7c9b8e10".parse().expect("Agent ID"),
@@ -426,9 +427,11 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     resource.spec.skills = vec![agent::SkillSpec {
         source: PathBuf::from("skills/evidence"),
         name: None,
+        optional: false,
     }];
     resource.spec.instructions.push(agent::InstructionsSpec {
         source: PathBuf::from("environment.md"),
+        optional: false,
     });
     resource.spec.harnesses[0].default = true;
     resource.spec.harnesses.push(agent::HarnessSpec {
@@ -866,10 +869,12 @@ async fn linux_setup_reads_home_instructions_and_skills_below_the_home_directory
     resource.spec.home.source = support::via_home(&home);
     resource.spec.instructions = vec![agent::InstructionsSpec {
         source: support::via_home(&directory.path().join("instructions.md")),
+        optional: false,
     }];
     resource.spec.skills = vec![agent::SkillSpec {
         source: support::via_home(&skill),
         name: None,
+        optional: false,
     }];
     let record = AgentRecord {
         id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
@@ -945,6 +950,7 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
     resource.spec.skills = vec![agent::SkillSpec {
         source: PathBuf::from("skills/evidence"),
         name: None,
+        optional: false,
     }];
     let record = AgentRecord {
         id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
@@ -987,4 +993,144 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
         matches!(&error, agent::Error::Invalid(message) if message.contains("non-regular file pipe")),
         "unexpected error: {error:?}"
     );
+}
+
+/// A Sandbox for `record` whose Claude Code version check answers `passes` setups.
+async fn claude_sandbox(record: &AgentRecord, passes: usize) -> sandbox::SandboxHandle {
+    let backend = Rc::new(memory::Provider::new());
+    for _ in 0..passes {
+        backend.queue_execution_events_matching(
+            is_claude_version,
+            vec![
+                ExecutionEvent::Started { process_id: None },
+                ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
+                ExecutionEvent::Exited(ExitStatus { code: 0 }),
+            ],
+        );
+        backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    }
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
+    SandboxService::new(backend)
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox")
+}
+
+/// A record in `directory` with one required instruction file and the given optional sources.
+fn optional_sources_record(directory: &std::path::Path, instructions: &str, skill: &str) -> AgentRecord {
+    let home = directory.join("home");
+    std::fs::create_dir_all(&home).expect("home directory");
+    std::fs::write(directory.join("instructions.md"), "required\n").expect("instruction file");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home.source = home;
+    resource.spec.instructions.push(agent::InstructionsSpec {
+        source: PathBuf::from(instructions),
+        optional: true,
+    });
+    resource.spec.skills = vec![agent::SkillSpec {
+        source: PathBuf::from(skill),
+        name: None,
+        optional: true,
+    }];
+    AgentRecord {
+        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
+        source_directory: directory.to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    }
+}
+
+/// Optional sources that do not exist are left out and reported, and the next pass installs them
+/// once they exist, with no change to the Agent.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_leaves_out_missing_optional_sources_until_they_exist() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = optional_sources_record(directory.path(), "personal.md", "skills/review");
+    let sandbox = claude_sandbox(&record, 2).await;
+    let platform = Linux::new(PLATFORM_API_URL);
+
+    let missing = platform
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("setup without the optional sources");
+
+    assert_eq!(
+        missing,
+        [
+            "spec.instructions[1].source personal.md",
+            "spec.skills[0].source skills/review",
+        ]
+    );
+    let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+    assert!(instructions.ends_with("\n\nrequired\n"), "{instructions}");
+
+    std::fs::write(directory.path().join("personal.md"), "personal\n").expect("optional instruction file");
+    let skill = directory.path().join("skills").join("review");
+    std::fs::create_dir_all(&skill).expect("skill directory");
+    std::fs::write(skill.join("SKILL.md"), "review").expect("skill file");
+    let missing = platform
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("setup with the optional sources");
+
+    assert!(missing.is_empty(), "{missing:?}");
+    let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+    assert!(instructions.ends_with("\n\nrequired\n\npersonal\n"), "{instructions}");
+    assert_eq!(
+        read_file(&sandbox, "/home/agent/.claude/skills/review/SKILL.md").await,
+        b"review"
+    );
+}
+
+/// `optional` forgives only a source that does not exist: one that exists but cannot be used still
+/// fails setup, and so does a missing source that is required.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_fails_on_optional_sources_that_exist_but_cannot_be_used() {
+    let directory = TempDir::new().expect("temporary directory");
+    std::fs::create_dir_all(directory.path().join("skills").join("review")).expect("skill without SKILL.md");
+    std::fs::create_dir_all(directory.path().join("folder.md")).expect("directory as instruction file");
+    let cases = [
+        (
+            "folder.md",
+            "skills/absent",
+            "spec.instructions[1].source must identify a file",
+        ),
+        (
+            "absent.md",
+            "skills/review",
+            "spec.skills[0].source must contain SKILL.md",
+        ),
+    ];
+    for (instructions, skill, expected) in cases {
+        let record = optional_sources_record(directory.path(), instructions, skill);
+        let sandbox = claude_sandbox(&record, 1).await;
+
+        let error = Linux::new(PLATFORM_API_URL)
+            .setup(&record, &sandbox, &declared(&record), &setup_phase())
+            .await
+            .expect_err(expected);
+
+        assert!(
+            matches!(&error, agent::Error::Invalid(message) if message == expected),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    let mut record = optional_sources_record(directory.path(), "absent.md", "skills/absent");
+    record.agent.spec.instructions[1].optional = false;
+    let sandbox = claude_sandbox(&record, 1).await;
+    Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect_err("a required instruction file must exist");
 }
