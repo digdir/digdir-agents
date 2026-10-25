@@ -19,6 +19,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 mod format;
 mod github;
+mod guide;
 mod launch;
 mod progress;
 mod prompt;
@@ -120,6 +121,11 @@ enum Command {
     Github {
         #[command(subcommand)]
         command: GithubCommand,
+    },
+    /// Print how to set up an agent, for coding agents; without a topic, the topics.
+    Guide {
+        /// The topic, such as `setup`.
+        topic: Option<String>,
     },
     /// Run a command in an agent.
     Exec {
@@ -634,7 +640,11 @@ fn run() -> CommandResult<ExitCode> {
         }
         if !matches!(
             arguments.command,
-            Command::Create { .. } | Command::Prompt { .. } | Command::Self_ { .. } | Command::SshConfig { .. }
+            Command::Create { .. }
+                | Command::Prompt { .. }
+                | Command::Self_ { .. }
+                | Command::SshConfig { .. }
+                | Command::Guide { .. }
         ) {
             ensure_daemon(&home, &client).await?;
         }
@@ -804,6 +814,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         Command::Turns { target, last } => turns(client, target, last).await?,
         Command::Tui => return tui::run(home, client).await,
         Command::Status { json } => status::run(home, client, json).await?,
+        Command::Guide { topic } => guide::print(topic.as_deref())?,
         Command::Wait {
             condition,
             timeout,

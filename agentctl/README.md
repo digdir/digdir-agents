@@ -35,6 +35,10 @@ Update with `agentctl self update`. Agents and Sessions carry over.
 count of every Agent, with the commands to run next. `agentctl status --json` prints the same as a JSON object whose
 keys stay stable, for agents and scripts that check their own setup.
 
+`agentctl guide` prints, from the installed version, what a coding agent needs to set up an Agent with you: how to
+go about it (`agentctl guide setup`), an annotated manifest, the image, instructions, GitHub accounts and the
+`status --json` object.
+
 Start from the [.NET example](../agents/examples/dotnet-dev/), an [Agent definition](../GLOSSARY.md) whose manifest
 and image explain each line. Let an agent make it yours: ask Claude Code or Codex to copy it and change it for the
 tools and repositories your work needs. An agent working in an Agent can apply what it writes as a nested Agent and
@@ -43,6 +47,7 @@ try it before you do.
 ## Documentation
 
 - [docs/](docs/README.md): agentctl's own docs, such as what an Agent image must provide
+- [guide/](guide/): what `agentctl guide` prints, for coding agents that set up an Agent
 - [architecture.md](../docs/architecture.md): the principles and diagrams
 - [GLOSSARY.md](../GLOSSARY.md): the terms used here
 - [CHANGELOG.md](CHANGELOG.md): release notes

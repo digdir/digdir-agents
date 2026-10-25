@@ -1,0 +1,78 @@
+# agents/dev/agent.yaml
+apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  # Unique on this machine: lowercase letters, digits and hyphens. `apply --name` overrides it.
+  name: dev
+spec:
+  sandbox:
+    # Built from the Dockerfile beside this manifest when the agent is created (`agentctl guide image`).
+    # A published image works too: `type: reference` with `reference: ghcr.io/owner/image@sha256:...`.
+    image:
+      type: build
+      context: .
+      dockerfile: Dockerfile
+    platform:
+      os: linux
+    # The base images boot systemd, which runs their services (desktop, Podman, clones at boot).
+    initSystem: image
+    resources:
+      cpu: "4"
+      memory: "8Gi"
+      rootFilesystem:
+        # The agent's disk. A layered one stores only what the agent writes on top of the image.
+        capacity: "64Gi"
+        mode: layered
+    # The person's checkout, two levels up from agents/dev/, as ~/code/<repository> in the agent. Its edits change
+    # their files directly. Leave mounts out to have the agent clone its own copy instead.
+    mounts:
+      - type: bind
+        source: ../..
+        target: /home/agent/code/my-repository
+        readOnly: false
+  # Installed where each harness reads its instructions, after the platform's, in this order.
+  instructions:
+    - source: instructions.md
+    # Instructions the person keeps for every agent, only when they have such a file. Optional, so the agent
+    # still starts where the file is missing (`agentctl guide instructions`).
+    # - source: ~/agent-instructions.md
+    #   optional: true
+  # The coding agents a session can run. Each needs its login on the host (`agentctl claude login`,
+  # `agentctl codex login`) and its binary in the image; the base images have all three.
+  harnesses:
+    - type: claudeCode
+      default: true
+      # Model and effort for new sessions, in the harness's own words.
+      defaults:
+        model: fable
+    # Optional: without a Codex login on the host the agent is created without it, and gets it once there is one.
+    - type: codex
+      optional: true
+  # GitHub as one account for this user or organization: gh and git over HTTPS work with its repositories, and
+  # commits carry the account's name and email; GIT_USER_NAME and GIT_USER_EMAIL under `environment` override
+  # them. The person stores its token with `agentctl github login` (`agentctl guide accounts`).
+  accounts:
+    - type: github
+      owner: my-org
+  # Other values come from .env: `environment` copies plain ones into the agent, and `secrets` stay on the host,
+  # the agent seeing a placeholder that the host replaces in requests to the hosts listed (`agentctl guide manifest`).
+  # environment:
+  #   - name: DATABASE_URL
+  # secrets:
+  #   - environment: OPENAI_API_KEY
+  #     allowedHosts: [api.openai.com]
+  #     # The agent starts without it when .env has no value for it.
+  #     optional: true
+  # Skills: folders holding a SKILL.md, copied where each harness reads skills. Edits reach a running agent;
+  # adding or removing one means recreating it.
+  # skills:
+  #   - source: skills/release-notes
+  # `agentctl ssh` and editors over SSH. Add `- type: vnc` for an image with the desktop feature, to watch it
+  # with `agentctl vnc --web --open`.
+  access:
+    - type: ssh
+  # Network: everything is allowed through the host's mediator unless denied, for example:
+  # network:
+  #   mode: mediated
+  #   allow: all
+  #   deny: [metadata.google.internal]
