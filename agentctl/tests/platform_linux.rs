@@ -198,6 +198,14 @@ persist real values.
 - **Access:** people on the host reach this computer with `agentctl ssh worker`.
 - **Nested Agents:** available (`/dev/kvm`, no Podman, so only manifests with an image `reference`); see the \
 `agentctl` skill.
+- **Changes:** inside this VM, apart from the person's folders, act freely; outside it, such as pushes, pull requests \
+and comments, act only when a task asks. Note what you change in the system, and why, in `~/system-changes.md`, so it \
+can be moved into the image.
+- **Cleanup:** stop the servers and containers you start. When a task is done, remove what you created for it, such \
+as one-off images, finished worktrees and build output, and nothing else.
+- **Tools and repositories:** at the start of a session, check for those your instructions list; install or clone \
+what is missing, at the versions listed, and say what you installed. In clones, fetch first, branch from the default \
+branch, never discard work you didn't make, and push what should outlive this Agent.
 <!-- agentd: end of Agent sandbox section -->
 
 test instructions
