@@ -239,14 +239,14 @@ pub(crate) const HELP: [&[HelpSection]; 2] = [
         (
             "Fleet",
             &[
-                ("tab", "next Session needing you"),
+                ("tab", "next session needing you"),
                 ("j / k", "move"),
-                ("enter", "fold, or attach a Session"),
+                ("enter", "fold, or attach a session"),
                 ("z", "fold or unfold all"),
-                ("X", "stop every Agent at once"),
-                ("A", "show or hide archived Sessions"),
+                ("X", "stop every agent at once"),
+                ("A", "show or hide archived sessions"),
                 ("/", "filter by name or state"),
-                ("c", "create an Agent"),
+                ("c", "create an agent"),
                 ("F", "port forwards"),
                 ("q", "quit"),
             ],
@@ -257,17 +257,17 @@ pub(crate) const HELP: [&[HelpSection]; 2] = [
                 ("j / k", "scroll a detail view"),
                 ("o", "open, in forwards"),
                 ("q / esc", "back, or close a form"),
-                ("ctrl-b d", "detach from a Session"),
+                ("ctrl-b d", "detach from a session"),
             ],
         ),
     ],
     &[
         (
-            "Selected Agent",
+            "Selected agent",
             &[
                 ("p", "follow provisioning"),
                 ("s / y", "describe, or show YAML"),
-                ("n", "new Session"),
+                ("n", "new session"),
                 ("o", "open in editor, desktop…"),
                 ("e", "shell in its Sandbox"),
                 ("f", "forward a port"),
@@ -277,12 +277,12 @@ pub(crate) const HELP: [&[HelpSection]; 2] = [
             ],
         ),
         (
-            "Selected Session",
+            "Selected session",
             &[
                 ("p", "prompt without attaching"),
                 ("s / y", "describe, or show YAML"),
-                ("n", "new Session on its Agent"),
-                ("o", "open its Agent"),
+                ("n", "new session on its agent"),
+                ("o", "open its agent"),
                 ("a", "archive, or unarchive"),
                 ("d", "delete"),
             ],
@@ -911,7 +911,7 @@ impl CreateForm {
     fn submission(&self, agents: &[Agent]) -> Result<Action, String> {
         let candidate = self
             .candidate()
-            .ok_or_else(|| "no Agent manifests found; apply one with agentctl apply".to_owned())?;
+            .ok_or_else(|| "no agent manifests found; apply one with agentctl apply".to_owned())?;
         let manifest_name = candidate.name.as_ref().map_err(Clone::clone)?;
         let name = if self.name.is_empty() {
             numbered_name(manifest_name, agents)
@@ -2951,7 +2951,7 @@ mod tests {
         );
         app.filter.clear();
         type_text(&mut app, "work");
-        assert_eq!(app.rows.len(), 3, "an Agent that matches keeps all its Sessions");
+        assert_eq!(app.rows.len(), 3, "an agent that matches keeps all its sessions");
 
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
         assert!(app.modal.is_none());
@@ -2996,7 +2996,7 @@ mod tests {
             ],
         );
         app.on_key(key(KeyCode::Char('z')));
-        assert_eq!(app.rows.len(), 2, "both Agents are folded");
+        assert_eq!(app.rows.len(), 2, "both agents are folded");
         app.on_key(key(KeyCode::Tab));
         assert_eq!(
             app.selection,
@@ -3005,7 +3005,7 @@ mod tests {
                 session: SessionName::new("c").expect("name"),
             })
         );
-        assert!(!app.collapsed.contains("second"), "the Agent holding it unfolds");
+        assert!(!app.collapsed.contains("second"), "the agent holding it unfolds");
 
         app.filter = "first".into();
         app.select_index(0);
@@ -3041,13 +3041,13 @@ mod tests {
         assert_eq!(
             app.selection,
             Some(TreeRowId::Agent("builder".into())),
-            "not worker, which folding moved to the Session's former position"
+            "not worker, which folding moved to the session's former position"
         );
         app.on_key(key(KeyCode::Char('z')));
         assert_eq!(
             app.selection,
             Some(TreeRowId::Agent("builder".into())),
-            "unfolding keeps it on the Agent"
+            "unfolding keeps it on the agent"
         );
     }
 
@@ -3100,7 +3100,7 @@ mod tests {
     fn session_target(agent: &str, session: &str) -> RowTarget {
         RowTarget::Tree(TreeRowId::Session {
             agent: agent.into(),
-            session: SessionName::new(session).expect("valid Session name"),
+            session: SessionName::new(session).expect("valid session name"),
         })
     }
 
@@ -3117,7 +3117,7 @@ mod tests {
             app.on_mouse(MouseAction::Primary(session_target("worker", "s2"))),
             Action::Attach {
                 agent: "worker".into(),
-                session: SessionName::new("s2").expect("valid Session name"),
+                session: SessionName::new("s2").expect("valid session name"),
             }
         );
 
@@ -3142,12 +3142,12 @@ mod tests {
                 session("builder", "b1", "starting"),
             ],
         );
-        assert_eq!(app.selected_index(), Some(5), "the new Agent moved the Session down");
+        assert_eq!(app.selected_index(), Some(5), "the new agent moved the session down");
         assert_eq!(
             app.on_mouse(MouseAction::Primary(rendered)),
             Action::Attach {
                 agent: "worker".into(),
-                session: SessionName::new("s1").expect("valid Session name"),
+                session: SessionName::new("s1").expect("valid session name"),
             }
         );
         assert_eq!(
@@ -3215,7 +3215,7 @@ mod tests {
             agent: "builder".into(),
             session: b1.clone(),
         };
-        assert_eq!(app.tree_index(&b1_row), None, "archived Sessions are hidden");
+        assert_eq!(app.tree_index(&b1_row), None, "archived sessions are hidden");
         assert_eq!(app.triage_counts().archived, 1, "but counted");
         assert_eq!(app.triage_counts().starting, 0);
 
@@ -3226,7 +3226,7 @@ mod tests {
         assert_eq!(
             app.on_key(key(KeyCode::Enter)),
             Action::None,
-            "an archived Session is not attached"
+            "an archived session is not attached"
         );
         assert!(app.modal.is_none(), "nor prompted");
         assert_eq!(app.on_key(key(KeyCode::Char('p'))), Action::None);
@@ -3238,7 +3238,7 @@ mod tests {
                 session: b1,
                 archived: false,
             },
-            "a unarchives an archived Session"
+            "a unarchives an archived session"
         );
 
         app.selection = Some(TreeRowId::Session {
@@ -3280,7 +3280,7 @@ mod tests {
             ],
         );
         let detail = |app: &App| app.render_rows()[0].detail.clone();
-        assert_eq!(detail(&app), "2 sessions", "a hidden archived Session is not counted");
+        assert_eq!(detail(&app), "2 sessions", "a hidden archived session is not counted");
         assert!(!app.render_rows()[0].attention, "nor does it ask for attention");
 
         app.on_key(key(KeyCode::Char('A')));
@@ -3293,7 +3293,7 @@ mod tests {
         app.filter.clear();
         app.collapsed.insert("worker".into());
         app.rebuild();
-        assert_eq!(detail(&app), "3 sessions", "a folded Agent tells what unfolding shows");
+        assert_eq!(detail(&app), "3 sessions", "a folded agent tells what unfolding shows");
     }
 
     /// A row the selection was on leaves the tree, and where the selection lands.
@@ -3355,7 +3355,7 @@ mod tests {
                 expected: TreeRowId::Agent("c".into()),
             },
             NeighbourCase {
-                why: "the next Session takes the place of one that leaves",
+                why: "the next session takes the place of one that leaves",
                 show_archived: false,
                 agents: &["builder", "worker"],
                 sessions: worker_sessions(&[]),
@@ -3364,7 +3364,7 @@ mod tests {
                 expected: session_row("worker", "s3"),
             },
             NeighbourCase {
-                why: "the last Session gives way to the one above",
+                why: "the last session gives way to the one above",
                 show_archived: false,
                 agents: &["builder", "worker"],
                 sessions: worker_sessions(&["s2"]),
@@ -3375,7 +3375,7 @@ mod tests {
                 expected: session_row("worker", "s1"),
             },
             NeighbourCase {
-                why: "the last listed Session gives way to its Agent",
+                why: "the last listed session gives way to its agent",
                 show_archived: false,
                 agents: &["builder", "worker"],
                 sessions: worker_sessions(&["s2", "s3"]),
@@ -3407,7 +3407,7 @@ mod tests {
                 expected: session_row("worker", "s3"),
             },
             NeighbourCase {
-                why: "hiding archived Sessions moves to a listed neighbour",
+                why: "hiding archived sessions moves to a listed neighbour",
                 show_archived: true,
                 agents: &["worker"],
                 sessions: vec![
@@ -3421,7 +3421,7 @@ mod tests {
                 expected: session_row("worker", "s2"),
             },
             NeighbourCase {
-                why: "rows above, of its own and of another Agent, left with it",
+                why: "rows above, of its own and of another agent, left with it",
                 show_archived: true,
                 agents: &["alpha", "worker"],
                 sessions: alpha_and_worker(),
@@ -3496,7 +3496,7 @@ mod tests {
         );
         let rows = app.render_rows();
         assert_eq!((rows[1].name.as_str(), rows[1].state), ("s1", "Archiving"));
-        assert!(!rows[1].attention, "an archived Session never asks for attention");
+        assert!(!rows[1].attention, "an archived session never asks for attention");
         assert_eq!((rows[2].name.as_str(), rows[2].state), ("s2", "Archived"));
         app.filter = "archiving".into();
         app.rebuild();
@@ -3529,11 +3529,11 @@ mod tests {
         assert_eq!(app.triage_counts().archived, 1);
 
         app.on_key(key(KeyCode::Char('A')));
-        assert!(app.notice.is_none(), "showing archived Sessions answers the notice");
+        assert!(app.notice.is_none(), "showing archived sessions answers the notice");
         assert_eq!(app.render_rows()[1].state, "Archiving");
 
         app.archive_changed(archived(session("worker", "gone", "idle")), Instant::now());
-        assert_eq!(app.sessions.len(), 2, "a Session the tree does not list is not added");
+        assert_eq!(app.sessions.len(), 2, "a session the tree does not list is not added");
     }
 
     #[test]
@@ -3569,7 +3569,7 @@ mod tests {
 
         assert_eq!(app.on_key(key(KeyCode::Char('d'))), Action::None);
         let Some(Modal::ConfirmDeleteSession { agent, session }) = &app.modal else {
-            panic!("deleting a Session must ask for confirmation");
+            panic!("deleting a session must ask for confirmation");
         };
         assert_eq!((agent.as_str(), session.as_str()), ("builder", "b1"));
 
@@ -4369,10 +4369,10 @@ mod tests {
         assert_eq!(
             app.on_key(key(KeyCode::Char('e'))),
             Action::None,
-            "nothing runs in a stopped Agent"
+            "nothing runs in a stopped agent"
         );
         app.on_key(key(KeyCode::Char('n')));
-        assert!(app.modal.is_none(), "no Session is created in a stopped Agent");
+        assert!(app.modal.is_none(), "no session is created in a stopped agent");
     }
 
     #[test]
@@ -4458,7 +4458,7 @@ mod tests {
         assert_eq!(
             since,
             [("retrying".into(), "5m".into()), ("updating".into(), "0s".into())],
-            "a retry keeps the time the Agent started failing, and a pass shows its own"
+            "a retry keeps the time the agent started failing, and a pass shows its own"
         );
     }
 
@@ -4644,7 +4644,7 @@ mod tests {
         assert_eq!(app.followed_agent(), None);
         app.select_index(1);
         app.on_key(key(KeyCode::Char('p')));
-        assert_eq!(app.followed_agent(), Some("builder"), "p follows the selected Agent");
+        assert_eq!(app.followed_agent(), Some("builder"), "p follows the selected agent");
     }
 
     #[test]
@@ -4686,15 +4686,15 @@ mod tests {
         );
         app.side_panel = true;
         app.select_index(0);
-        assert_eq!(app.transcript_request(), None, "an Agent row has no turns");
+        assert_eq!(app.transcript_request(), None, "an agent row has no turns");
         app.select_index(1);
-        let target = app.transcript_request().expect("the selected Session's turns");
+        let target = app.transcript_request().expect("the selected session's turns");
         assert_eq!(app.transcript_request(), None, "one request at a time");
         app.select_index(3);
         assert_eq!(
             app.transcript_request(),
             None,
-            "another Session waits for the load in flight"
+            "another session waits for the load in flight"
         );
         app.select_index(1);
         assert_eq!(app.transcript_request(), None, "coming back waits for the same load");
@@ -4896,7 +4896,7 @@ mod tests {
     fn the_ssh_setup_is_checked_with_an_agent_openssh_knows_and_again_on_each_menu() {
         let mut app = App::new();
         app.apply_snapshot(vec![ready_agent("builder")], Vec::new());
-        assert_eq!(app.ssh_check_request(), None, "no Agent has an alias to resolve");
+        assert_eq!(app.ssh_check_request(), None, "no agent has an alias to resolve");
 
         let mut app = ssh_app(SshSetup::Unknown);
         let mut other = ready_agent("alpha");
@@ -4914,7 +4914,7 @@ mod tests {
         assert_eq!(
             app.ssh_check_request().as_deref(),
             Some("worker"),
-            "the menu's Agent first"
+            "the menu's agent first"
         );
     }
 

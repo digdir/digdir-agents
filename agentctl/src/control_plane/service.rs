@@ -154,7 +154,7 @@ impl ControlPlane {
                         return Err(Error::Conflict);
                     }
                     if current.source_directory != request.source_directory {
-                        return Err(Error::Immutable("sourceDirectory"));
+                        return Err(name_clash(&desired.metadata.name, &current.source_directory));
                     }
                     validate_immutable_fields(&current, &desired)?;
                     desired.spec.set_run_state(applied_run_state(run_state, Some(&current)));
@@ -364,23 +364,43 @@ impl ControlPlane {
             return Err(Error::Invalid("directory must be absolute".into()));
         }
         let directory = canonical_or_original(directory).await;
+        let here_repository = repository_root(&directory).await;
         let mut matches = Vec::new();
         for record in self.store.list().await? {
-            let mut closest_depth: Option<usize> = None;
-            for source in association_directories(&record) {
+            // How close a match is: its depth, then whether it is one of the Agent's own
+            // directories rather than the folder holding them, which loses a tie.
+            let mut closest: Option<(usize, bool)> = None;
+            let holding = match repository_root(&record.source_directory).await {
+                Some(repository) => Some(repository),
+                None => match agents_holder(&record.source_directory) {
+                    Some(holder) => {
+                        let holder = canonical_or_original(holder).await;
+                        // A repository inside that folder belongs to its own Agents, or none.
+                        here_repository
+                            .as_deref()
+                            .is_none_or(|repository| !repository.starts_with(&holder))
+                            .then_some(holder)
+                    }
+                    None => None,
+                },
+            };
+            let sources = association_directories(&record)
+                .map(|source| (source, true))
+                .chain(holding.as_deref().map(|source| (source, false)));
+            for (source, own) in sources {
                 let source = canonical_or_original(source).await;
                 if directory.starts_with(&source) {
-                    closest_depth = Some(closest_depth.unwrap_or_default().max(source.components().count()));
+                    closest = closest.max(Some((source.components().count(), own)));
                 }
             }
-            if let Some(depth) = closest_depth {
-                matches.push((record, depth));
+            if let Some(closeness) = closest {
+                matches.push((record, closeness));
             }
         }
-        let Some(depth) = matches.iter().map(|(_, depth)| *depth).max() else {
+        let Some(closest) = matches.iter().map(|(_, closeness)| *closeness).max() else {
             return Err(Error::NotFound);
         };
-        matches.retain(|(_, candidate_depth)| *candidate_depth == depth);
+        matches.retain(|(_, closeness)| *closeness == closest);
         if let Some(variant) = variant {
             let filename = variant.filename();
             matches.retain(|(record, _)| {
@@ -661,6 +681,14 @@ fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) -> Result<(
     Ok(())
 }
 
+/// Another directory's agent has the name: nothing about this agent changed, so it is not an immutable field.
+fn name_clash(name: &str, other_directory: &std::path::Path) -> Error {
+    Error::Invalid(format!(
+        "an agent named {name:?} was already applied from {}; choose another name in metadata.name or pass `--name`",
+        other_directory.display()
+    ))
+}
+
 async fn resolve_mount_sources(agent: &mut Agent, source_directory: &std::path::Path) -> Result<(), Error> {
     for (index, mount) in agent.spec.sandbox.mounts.iter_mut().enumerate() {
         let MountSpec::Bind { source, .. } = mount else {
@@ -750,6 +778,27 @@ async fn canonical_secret_file(path: &std::path::Path) -> PathBuf {
             _ => return path.to_path_buf(),
         }
     }
+}
+
+/// The Git working tree that holds `directory`, found by its `.git` entry: a directory in a
+/// checkout, a file in a linked worktree. An Agent is also associated with it, as its least
+/// specific directory, so an Agent defined in `agents/<name>/` is found from anywhere in the
+/// checkout.
+async fn repository_root(directory: &std::path::Path) -> Option<std::path::PathBuf> {
+    for ancestor in directory.ancestors() {
+        if tokio::fs::try_exists(ancestor.join(".git")).await.unwrap_or(false) {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    None
+}
+
+/// The folder holding the `agents/` directory an Agent outside any repository is defined in, as
+/// `agents/<name>/`. An Agent is associated with it as with a repository, so an Agent set up for
+/// a folder such as the home directory is found from there.
+fn agents_holder(source: &std::path::Path) -> Option<&std::path::Path> {
+    let agents = source.parent()?;
+    (agents.file_name()? == "agents").then(|| agents.parent()).flatten()
 }
 
 fn association_directories(record: &AgentRecord) -> impl Iterator<Item = &std::path::Path> {
