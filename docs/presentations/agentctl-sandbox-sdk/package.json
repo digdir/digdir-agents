@@ -11,5 +11,10 @@
     "@slidev/cli": "^53.0.0",
     "@slidev/theme-default": "^0.25.0",
     "@slidev/types": "^53.0.0"
+  },
+  "overrides": {
+    "monaco-editor": {
+      "dompurify": "^3.4.17"
+    }
   }
 }
