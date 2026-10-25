@@ -3466,3 +3466,38 @@ async fn a_failed_stop_reads_as_stopping_and_converges_once_a_retry_stops_it() {
     assert_stopped(&store, &backend, id).await;
     task.abort();
 }
+
+/// Deletes the Agent `worker` while its Sessions settle, as a delete during a restart's stop does.
+struct DeleteAtSettlement {
+    store: Rc<memory::InMemoryAgentStore>,
+}
+
+impl agent::control_plane::SessionNotifier for DeleteAtSettlement {
+    fn notify(&self, _id: AgentId) {}
+    fn settle(&self, _id: AgentId) -> LocalFuture<'_, ()> {
+        Box::pin(async move {
+            self.store.mark_deleting("worker").await.expect("delete during restart");
+        })
+    }
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_delete_while_a_restart_stops_the_agent_keeps_it_from_booting_again() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let backend = Rc::new(sandbox_memory::Provider::new());
+    let provider = Rc::new(MemoryProvider::new(backend.clone()));
+    let reconciler =
+        reconciler(store.clone(), provider).with_session_notifier(Rc::new(DeleteAtSettlement { store: store.clone() }));
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let record = store.get_by_name("worker").await.expect("Agent");
+    reconciler.reconcile(record.id).await.expect("initial boot");
+    control_plane.restart("worker", false).await.expect("restart");
+    reconciler.reconcile(record.id).await.expect("the restart's pass");
+    let sandbox = backend.find(&sandbox_name(&record)).await.expect("Sandbox");
+    assert_eq!(
+        sandbox.state,
+        sandbox::SandboxState::Stopped,
+        "the pass the delete woke releases it instead"
+    );
+}
