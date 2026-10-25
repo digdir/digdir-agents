@@ -15,8 +15,9 @@ use agent::{
     sandbox::forward,
     sessions::{Session, SessionName, SessionRequest},
 };
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
 
+mod entry;
 mod format;
 mod github;
 mod guide;
@@ -58,10 +59,11 @@ enum Command {
     },
     /// Open the terminal UI with every agent and session.
     Tui,
-    /// Create or attach to a named Session in an Agent sandbox.
+    /// Open a session in an agent: its only one, a new one, one you choose, or one by name.
     Attach {
-        /// Session resource, optionally combined with its name (for example `session/s1`).
-        resource: String,
+        /// Session resource, optionally combined with its name (for example `session/s1`); without
+        /// it, the agent's only session, a new one when it has none, or the one you choose.
+        resource: Option<String>,
         /// Optional session name when it is not part of `resource`.
         name: Option<String>,
         /// Owning agent; inferred from the current directory when omitted.
@@ -631,15 +633,43 @@ fn apply_error(error: Error, name: &str) -> CommandError {
 }
 
 fn run() -> CommandResult<ExitCode> {
-    let arguments = Arguments::parse();
-    let home = ControlPlaneHome::resolve(arguments.home.as_deref())?;
+    let (home, parsed) = match Arguments::try_parse() {
+        Ok(arguments) => (arguments.home, Ok(arguments.command)),
+        // `agentctl` on its own, at a terminal, offers what the person probably meant.
+        Err(error)
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                    | clap::error::ErrorKind::MissingSubcommand
+            ) && prompt::interactive() =>
+        {
+            let options = Arguments::command()
+                .subcommand_required(false)
+                .arg_required_else_help(false)
+                .get_matches();
+            (options.get_one::<PathBuf>("home").cloned(), Err(error))
+        }
+        Err(error) => error.exit(),
+    };
+    let home = ControlPlaneHome::resolve(home.as_deref())?;
     let client = Client::for_path(home.socket_path());
     LocalRuntime::new().map_err(Error::from)?.block_on(async move {
-        if !matches!(arguments.command, Command::Self_ { .. }) {
+        let command = match parsed {
+            Ok(command) => command,
+            // Help, as without a terminal, whenever there is nothing to offer.
+            Err(help) => {
+                self_update::resume_pending_before_command(&home)?;
+                let daemon = ensure_daemon(&home, &client).await;
+                return Box::pin(entry::bare(&home, &client, daemon))
+                    .await?
+                    .map_or_else(|| help.exit(), Ok);
+            }
+        };
+        if !matches!(command, Command::Self_ { .. }) {
             self_update::resume_pending_before_command(&home)?;
         }
         if !matches!(
-            arguments.command,
+            command,
             Command::Create { .. }
                 | Command::Prompt { .. }
                 | Command::Self_ { .. }
@@ -648,7 +678,7 @@ fn run() -> CommandResult<ExitCode> {
         ) {
             ensure_daemon(&home, &client).await?;
         }
-        Box::pin(execute(arguments.command, &home, &client)).await
+        Box::pin(execute(command, &home, &client)).await
     })
 }
 
@@ -750,7 +780,18 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             agent,
             variant,
             selection,
-        } => attach(home, client, &resource, name, agent, variant, selection).await?,
+        } => {
+            return Box::pin(attach(
+                home,
+                client,
+                resource.as_deref(),
+                name,
+                agent,
+                variant,
+                selection,
+            ))
+            .await;
+        }
         Command::Exec {
             stdin,
             tty,
@@ -758,7 +799,12 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             agent,
             variant,
             command,
-        } => return exec_command(home, client, resource, agent, variant, &command, stdin, tty).await,
+        } => {
+            return Box::pin(exec_command(
+                home, client, resource, agent, variant, &command, stdin, tty,
+            ))
+            .await;
+        }
         Command::PortForward {
             agent,
             variant,
@@ -771,7 +817,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             variant,
             resource,
             command,
-        } => return ssh(client, resource, agent, variant, &command).await,
+        } => return Box::pin(ssh(client, resource, agent, variant, &command)).await,
         Command::SshProxy { resource } => return ssh_proxy(home, client, resource).await,
         Command::SshConfig {
             command: SshConfigCommand::Install,
@@ -896,18 +942,30 @@ fn print_json<T: serde::Serialize>(value: &T) -> CommandResult<()> {
 async fn attach(
     home: &ControlPlaneHome,
     client: &Client,
-    resource: &str,
+    resource: Option<&str>,
     name: Option<String>,
     agent: Option<String>,
     variant: Option<AgentVariantName>,
     selection: SessionSelection,
-) -> CommandResult<()> {
-    let (resource, name) = resource_reference(resource, name)?;
-    if resource != Resource::Session {
-        return Err(Error::Invalid("attach requires a session resource".into()).into());
-    }
-    let session = SessionName::new(require_name(name, "Session")?)?;
-    let agent = resolve_agent_name(client, agent, variant).await?;
+) -> CommandResult<ExitCode> {
+    let named = match resource {
+        Some(resource) => {
+            let (resource, name) = resource_reference(resource, name)?;
+            if resource != Resource::Session {
+                return Err(Error::Invalid("attach requires a session resource".into()).into());
+            }
+            Some(SessionName::new(require_name(name, "Session")?)?)
+        }
+        None => None,
+    };
+    let agent = match agent {
+        Some(agent) => agent,
+        None => entry::current_agent(client, variant).await?,
+    };
+    let session = match named {
+        Some(session) => session,
+        None => SessionName::new(entry::session(client, &agent).await?)?,
+    };
     let wait = progress::Wait::start();
     let target = wait
         .until(
@@ -917,7 +975,7 @@ async fn attach(
         )
         .await?;
     agent::sessions::attach(home.path(), &target).await?;
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 #[allow(
@@ -934,7 +992,7 @@ async fn exec_command(
     stdin: bool,
     tty: bool,
 ) -> CommandResult<ExitCode> {
-    let agent = resolve_execution_agent(client, resource, agent, variant).await?;
+    let agent = execution_agent(client, resource, agent, variant).await?;
     if tty && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal()) {
         return Err(Error::Invalid("-it requires an interactive local terminal".into()).into());
     }
@@ -1065,7 +1123,7 @@ async fn ssh(
     variant: Option<AgentVariantName>,
     command: &[String],
 ) -> CommandResult<ExitCode> {
-    let agent = resolve_execution_agent(client, resource, agent, variant).await?;
+    let agent = execution_agent(client, resource, agent, variant).await?;
     let wait = progress::Wait::start();
     wait.until(
         client,
@@ -1422,6 +1480,20 @@ fn print_turns(turns: &[agent::sessions::Turn]) {
     for line in format::turn_lines(turns) {
         println!("{line}");
     }
+}
+
+/// The agent `exec` and `ssh` use: the one named, or the current directory's, offering to start
+/// it at a terminal.
+async fn execution_agent(
+    client: &Client,
+    resource: Option<String>,
+    explicit: Option<String>,
+    variant: Option<AgentVariantName>,
+) -> CommandResult<String> {
+    if resource.is_none() && explicit.is_none() {
+        return entry::current_agent(client, variant).await;
+    }
+    resolve_execution_agent(client, resource, explicit, variant).await
 }
 
 async fn resolve_execution_agent(
@@ -2150,6 +2222,28 @@ mod tests {
         ] {
             assert!(parse(arguments).is_err(), "{arguments:?}");
         }
+    }
+
+    #[test]
+    fn agentctl_alone_is_still_a_usage_error_and_attach_needs_no_session() {
+        // `run` offers what was meant only for these, at a terminal; elsewhere clap reports them.
+        for (arguments, kind) in [
+            (
+                &["agentctl"][..],
+                clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand,
+            ),
+            (
+                &["agentctl", "--home", "/tmp/agent"][..],
+                clap::error::ErrorKind::MissingSubcommand,
+            ),
+        ] {
+            let Err(error) = Arguments::try_parse_from(arguments) else {
+                panic!("{arguments:?} parsed");
+            };
+            assert_eq!(error.kind(), kind, "{arguments:?}");
+        }
+        let attach = Arguments::try_parse_from(["agentctl", "attach"]).expect("attach");
+        assert!(matches!(attach.command, Command::Attach { resource: None, .. }));
     }
 
     #[test]

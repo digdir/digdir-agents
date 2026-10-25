@@ -31,6 +31,11 @@ Update with `agentctl self update`. Agents and Sessions carry over.
 
 ## Your first Agent
 
+At a terminal, `agentctl` on its own offers what you probably meant: starting
+the Agent here when it is stopped, or opening it in `agentctl tui`. `attach`, `exec` and `ssh` offer the same
+start when they find a stopped one, and `agentctl attach` without a Session opens the Agent's only
+Session, starts one when it has none, or asks which.
+
 `agentctl status` shows whether agentd answers, which harness logins are stored, the current directory's Agent and a
 count of every Agent, with the commands to run next. `agentctl status --json` prints the same as a JSON object whose
 keys stay stable, for agents and scripts that check their own setup.
