@@ -1,18 +1,20 @@
 ## Summary
 
-<!-- What changes and why, starting with the big picture. Show the shape of the change rather than describing it: a
-sketched diff, a call or file tree, a diagram, or a before and after. Keep the text short. The reviewer has the
-diff. -->
+<!-- What changes and why, starting with the big picture. Show the shape of the change with the smallest view that
+makes it clear: pseudocode, a call or file tree, a diff of one, a Mermaid diagram, or a rendered image such as an
+architecture diagram. At most about 150 words besides that. One or two paragraphs, or one paragraph and a list, is
+usually enough. -->
 
 ## Evidence
 
 <!-- Show that it works, briefly: a terminal recording or screenshot when the change can be seen, otherwise the test
-that failed before and passes now, or the output that changed. Pick what convinces rather than listing every check. -->
+that failed before and passes now, or the output that changed. Pick what convinces rather than listing every check.
+Don't repeat what the pull request's checks already show. -->
 
 ## Risk
 
 <!-- What could break, and for whom, if this is wrong? Does anything outlast reverting this pull request, such as a
-database migration or a release? -->
+database migration or a release? Use bullet points. -->
 
 ## Follow-ups
 
