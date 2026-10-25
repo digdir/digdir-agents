@@ -74,6 +74,27 @@ impl TokenKind {
         }
     }
 
+    /// The kind in words, such as `fine-grained`.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::FineGrained => "fine-grained",
+            Self::Classic => "classic",
+            Self::Oauth => "OAuth",
+            Self::Other => "other",
+        }
+    }
+
+    /// The GitHub settings page where a token of this kind is revoked, signed in as its account.
+    #[must_use]
+    pub const fn revoke_page(self) -> &'static str {
+        match self {
+            Self::FineGrained => "https://github.com/settings/personal-access-tokens",
+            Self::Classic => "https://github.com/settings/tokens",
+            Self::Oauth | Self::Other => "https://github.com/settings/applications",
+        }
+    }
+
     /// Whether the token reaches only the one owner it was created for, rather than every
     /// repository its account can.
     #[must_use]
@@ -91,6 +112,46 @@ pub fn valid_owner(owner: &str) -> bool {
         && !owner.starts_with('-')
         && !owner.ends_with('-')
         && owner.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+/// How long before its expiry a token is called out at login.
+pub const EXPIRY_WARNING: time::Duration = time::Duration::days(7);
+/// A GitHub repository, shown as `owner/name`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Repository {
+    /// The user or organization that owns it, lowercased.
+    pub owner: String,
+    /// The repository name.
+    pub name: String,
+}
+
+impl Repository {
+    /// The GitHub repository a Git remote URL names, in its HTTPS, SSH or `scp`-like form; `None`
+    /// for any other host, or a URL carrying credentials.
+    #[must_use]
+    pub fn from_remote(url: &str) -> Option<Self> {
+        let url = url.trim();
+        let path = ["https://github.com/", "ssh://git@github.com/", "git@github.com:"]
+            .iter()
+            .find_map(|prefix| url.strip_prefix(prefix))?;
+        let path = path.trim_end_matches('/');
+        let (owner, name) = path.strip_suffix(".git").unwrap_or(path).split_once('/')?;
+        let valid_name = !name.is_empty()
+            && !name.starts_with('.')
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+        (valid_owner(owner) && valid_name).then(|| Self {
+            owner: owner.to_ascii_lowercase(),
+            name: name.to_owned(),
+        })
+    }
+}
+
+impl std::fmt::Display for Repository {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}/{}", self.owner, self.name)
+    }
 }
 
 /// A stored GitHub token, without the token.
@@ -689,5 +750,42 @@ mod tests {
         assert_eq!(TokenKind::of("gho_x"), TokenKind::Oauth);
         assert_eq!(TokenKind::of("ghu_x"), TokenKind::Other);
         assert!(TokenKind::FineGrained.single_owner());
+    }
+
+    #[test]
+    fn remotes_name_a_github_repository_in_https_ssh_or_scp_form() {
+        let expected = Some(Repository {
+            owner: "digdir".into(),
+            name: "case-web".into(),
+        });
+        for remote in [
+            "https://github.com/digdir/case-web.git",
+            "https://github.com/Digdir/case-web",
+            "https://github.com/digdir/case-web/",
+            "ssh://git@github.com/digdir/case-web.git",
+            "git@github.com:digdir/case-web.git",
+            "git@github.com:digdir/case-web",
+        ] {
+            assert_eq!(Repository::from_remote(remote), expected, "{remote}");
+        }
+        assert_eq!(
+            expected.map(|repository| repository.to_string()).as_deref(),
+            Some("digdir/case-web")
+        );
+        for remote in [
+            "https://gitlab.com/digdir/case-web.git",
+            "git@gitlab.com:digdir/case-web.git",
+            "https://github.com.evil.example/digdir/case-web",
+            "https://x-access-token:ghp_FAKE@github.com/digdir/case-web.git",
+            "https://github.com/digdir",
+            "https://github.com/digdir/case-web/tree/main",
+            "https://github.com/-digdir/case-web",
+            "https://github.com/digdir/..",
+            "https://github.com/digdir/a%2fb",
+            "/srv/git/case-web.git",
+            "",
+        ] {
+            assert_eq!(Repository::from_remote(remote), None, "{remote}");
+        }
     }
 }
