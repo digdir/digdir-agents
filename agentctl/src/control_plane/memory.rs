@@ -133,7 +133,8 @@ impl AgentStore for InMemoryAgentStore {
                     return Err(Error::NotFound);
                 }
                 let record = state.records.get_mut(&id).ok_or(Error::NotFound)?;
-                if record.agent.metadata.generation != generation {
+                if record.agent.metadata.generation != generation || record.agent.metadata.deletion_timestamp.is_some()
+                {
                     return Err(Error::Conflict);
                 }
                 status.stamp_transitions(&record.agent.status, OffsetDateTime::now_utc());

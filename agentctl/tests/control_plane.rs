@@ -3501,3 +3501,77 @@ async fn a_delete_while_a_restart_stops_the_agent_keeps_it_from_booting_again() 
         "the pass the delete woke releases it instead"
     );
 }
+
+/// An Agent store that deletes the Agent `worker`, once armed, just before the restart's Starting
+/// status is written, as a delete can between a pass's reads and its writes.
+struct DeleteBeforeStarting {
+    inner: Rc<memory::InMemoryAgentStore>,
+    armed: Cell<bool>,
+}
+
+impl AgentStore for DeleteBeforeStarting {
+    fn get(&self, id: AgentId) -> LocalFuture<'_, Result<AgentRecord, Error>> {
+        self.inner.get(id)
+    }
+    fn get_by_name<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<AgentRecord, Error>> {
+        self.inner.get_by_name(name)
+    }
+    fn list(&self) -> LocalFuture<'_, Result<Vec<AgentRecord>, Error>> {
+        self.inner.list()
+    }
+    fn put(&self, record: AgentRecord, generation: u64) -> LocalFuture<'_, Result<(), Error>> {
+        self.inner.put(record, generation)
+    }
+    fn update_status(&self, id: AgentId, generation: u64, status: Status) -> LocalFuture<'_, Result<Status, Error>> {
+        Box::pin(async move {
+            if status
+                .conditions
+                .iter()
+                .any(|condition| condition.reason == Condition::REASON_STARTING)
+                && self.armed.replace(false)
+            {
+                self.inner.mark_deleting("worker").await.expect("concurrent delete");
+            }
+            self.inner.update_status(id, generation, status).await
+        })
+    }
+    fn mark_deleting<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<AgentRecord, Error>> {
+        self.inner.mark_deleting(name)
+    }
+    fn finalize_deletion(&self, id: AgentId, generation: u64) -> LocalFuture<'_, Result<(), Error>> {
+        self.inner.finalize_deletion(id, generation)
+    }
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_delete_just_before_a_restart_starts_the_agent_keeps_it_from_booting_again() {
+    let store = Rc::new(DeleteBeforeStarting {
+        inner: Rc::new(memory::InMemoryAgentStore::new()),
+        armed: Cell::new(false),
+    });
+    let backend = Rc::new(sandbox_memory::Provider::new());
+    let provider = Rc::new(MemoryProvider::new(backend.clone()));
+    let reconciler = reconciler(store.clone(), provider);
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let record = store.get_by_name("worker").await.expect("Agent");
+    reconciler.reconcile(record.id).await.expect("initial boot");
+    control_plane.restart("worker", false).await.expect("restart");
+    store.armed.set(true);
+    reconciler.reconcile(record.id).await.expect("restart pass");
+    assert!(
+        store
+            .get(record.id)
+            .await
+            .expect("Agent")
+            .agent
+            .metadata
+            .deletion_timestamp
+            .is_some()
+    );
+    assert_eq!(
+        backend.find(&sandbox_name(&record)).await.expect("Sandbox").state,
+        sandbox::SandboxState::Stopped,
+        "the Starting write fails, so the pass the delete woke releases it instead"
+    );
+}

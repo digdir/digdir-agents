@@ -105,25 +105,21 @@ impl Reconciler {
                 observer.succeeded();
                 return Ok(());
             }
-            // Deleted or changed while it stopped, the Agent is left to the pass that change woke,
-            // so a deleted one does not boot again.
-            let current = match self.store.get(id).await {
-                Ok(current) => current,
-                Err(Error::NotFound) => return Ok(()),
-                Err(error) => return Err(error),
-            };
-            if current.agent.metadata.deletion_timestamp.is_some()
-                || current.agent.metadata.generation != record.agent.metadata.generation
-            {
-                observer.succeeded();
-                return Ok(());
-            }
             // Its Sessions have settled, so the restart is carried out; a crash before this
             // stops and settles again.
             record.agent.status = status;
             let mut starting = not_ready(&record, Condition::REASON_STARTING, "");
             starting.observed_restart_timestamp = record.agent.metadata.restart_timestamp;
-            record.agent.status = self.update_status(&record, starting, None).await?;
+            record.agent.status = match self.update_status(&record, starting, None).await {
+                Ok(stored) => stored,
+                // Deleted or changed while it stopped, the Agent is left to the pass that change
+                // woke, so a deleted one does not boot again.
+                Err(Error::Conflict | Error::NotFound) => {
+                    observer.succeeded();
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
             restarting = Some(observer);
         }
         // A start stored after an immediate stop that no pass carried out supersedes it, so a

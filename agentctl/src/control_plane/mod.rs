@@ -33,9 +33,9 @@ pub trait AgentStore {
     /// Creates or replaces desired state if the stored generation still matches.
     fn put(&self, record: AgentRecord, expected_generation: u64) -> LocalFuture<'_, Result<(), Error>>;
 
-    /// Replaces observed state if the reconciled generation is still current,
-    /// stamping condition transition times against the stored status, and
-    /// returns the status as stored.
+    /// Replaces observed state if the reconciled generation is still current
+    /// and the Agent is not being deleted, stamping condition transition times
+    /// against the stored status, and returns the status as stored.
     fn update_status(&self, id: AgentId, generation: u64, status: Status) -> LocalFuture<'_, Result<Status, Error>>;
 
     /// Atomically records the first deletion request.
