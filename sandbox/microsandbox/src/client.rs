@@ -189,17 +189,20 @@ impl Client {
                 {
                     return Ok(());
                 }
-                let (source, sha256) = match &self.runtime_bundle {
-                    Some(bundle) => (
+                let (source, sha256) = if let Some(bundle) = &self.runtime_bundle {
+                    (
                         microsandbox::setup::InstallSource::Archive(bundle.path.clone()),
                         bundle.sha256.clone(),
-                    ),
-                    None => (
+                    )
+                } else {
+                    let sha256 = released_runtime_sha256()
+                        .ok_or_else(|| Error::UnsupportedPlatform(sandbox::Platform::native("linux")))?
+                        .to_owned();
+                    let source = unreleased_runtime_bundle()?.map_or(
                         microsandbox::setup::InstallSource::ReleaseDownload,
-                        released_runtime_sha256()
-                            .ok_or_else(|| Error::UnsupportedPlatform(sandbox::Platform::native("linux")))?
-                            .to_owned(),
-                    ),
+                        microsandbox::setup::InstallSource::Archive,
+                    );
+                    (source, sha256)
                 };
                 microsandbox::setup::install_runtime(
                     config,
@@ -320,6 +323,33 @@ fn is_pinned_runtime(msb: &Path) -> bool {
 
 fn released_runtime_sha256() -> Option<&'static str> {
     runtime_sha256(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// Names a directory holding the pinned runtime's release bundles before the
+/// release exists, such as the fork's `release-<tree>` artifact that
+/// `sandbox/microsandbox/fetch-runtime.sh` downloads. The bundle must still
+/// match the pinned digest, so this only changes where the same bytes come
+/// from. It lets a pin update run its tests while the fork's release waits for it.
+const UNRELEASED_RUNTIME_DIR: &str = "AGENT_MICROSANDBOX_RUNTIME_DIR";
+
+fn unreleased_runtime_bundle() -> Result<Option<PathBuf>, Error> {
+    let Some(directory) = std::env::var_os(UNRELEASED_RUNTIME_DIR).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(directory).join(runtime_bundle_name(std::env::consts::OS, std::env::consts::ARCH));
+    if !path.is_file() {
+        return Err(Error::Backend(format!(
+            "{UNRELEASED_RUNTIME_DIR} has no Microsandbox runtime bundle {}",
+            path.display()
+        )));
+    }
+    Ok(Some(path))
+}
+
+/// The file name of the platform's bundle among the fork's release assets.
+fn runtime_bundle_name(os: &str, architecture: &str) -> String {
+    let os = if os == "macos" { "darwin" } else { os };
+    format!("microsandbox-{os}-{architecture}.tar.gz")
 }
 
 pub(crate) fn runtime_sha256(os: &str, architecture: &str) -> Option<&'static str> {
@@ -566,5 +596,20 @@ mod tests {
 
         assert!(Client::sandbox_builder("sandbox", "alpine", fractional_cpu).is_err());
         assert!(Client::sandbox_builder("sandbox", "alpine", decimal_memory).is_err());
+    }
+
+    #[test]
+    fn unreleased_bundle_names_match_the_fork_release_assets() {
+        let names = [
+            ("linux", "x86_64", "microsandbox-linux-x86_64.tar.gz"),
+            ("linux", "aarch64", "microsandbox-linux-aarch64.tar.gz"),
+            ("macos", "aarch64", "microsandbox-darwin-aarch64.tar.gz"),
+            ("windows", "x86_64", "microsandbox-windows-x86_64.tar.gz"),
+            ("windows", "aarch64", "microsandbox-windows-aarch64.tar.gz"),
+        ];
+        for (os, architecture, name) in names {
+            assert!(super::runtime_sha256(os, architecture).is_some());
+            assert_eq!(super::runtime_bundle_name(os, architecture), name);
+        }
     }
 }
