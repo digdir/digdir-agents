@@ -26,6 +26,8 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
   - no longer begin with `invalid Agent:` or `Agent Control API error:`
   - for a field only a new Agent takes, such as `spec.sandbox.image`, say how to create the Agent again
   - for a name another directory's Agent has, ask for another name
+- At a terminal, agentctl's questions take a single key, without Enter, and ignore keys typed before they appear: ([#310](https://github.com/digdir/digdir-agents/pull/310))
+  - yes/no questions take `y` or `n`, and Enter alone does not answer
 
 ## [0.1.0-preview.13] - 2026-10-26
 
