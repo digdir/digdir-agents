@@ -272,6 +272,7 @@ pub(crate) const HELP: [&[HelpSection]; 2] = [
                 ("e", "shell in its Sandbox"),
                 ("f", "forward a port"),
                 ("x", "stop, or start"),
+                ("r", "restart"),
                 ("d", "delete"),
             ],
         ),
@@ -447,6 +448,9 @@ pub(crate) enum Modal {
         sessions: usize,
     },
     ConfirmStop {
+        agent: String,
+    },
+    ConfirmRestart {
         agent: String,
     },
     /// The emergency stop: every running agent, ended at once.
@@ -1131,6 +1135,9 @@ pub(crate) enum Action {
         agent: String,
         state: RunState,
     },
+    Restart {
+        agent: String,
+    },
     DeleteSession {
         agent: String,
         session: SessionName,
@@ -1749,6 +1756,8 @@ impl App {
                 };
             }
             KeyCode::Char('x') => self.modal = Some(Modal::ConfirmStop { agent: name }),
+            // A stopped Agent is started with x; a stopping one would have its stop undone.
+            KeyCode::Char('r') if !agent.spec.is_stopped() => self.modal = Some(Modal::ConfirmRestart { agent: name }),
             KeyCode::Char('n') => self.open_new_session(group),
             KeyCode::Char('o') => self.open_menu(&name),
             KeyCode::Char('e') => return Action::Exec { agent: name },
@@ -1847,12 +1856,14 @@ impl App {
         }
     }
 
-    fn confirm_stop_all(&mut self, key: KeyEvent, agents: Vec<String>) -> Action {
+    /// Answers a confirmation: `y` takes `yes`, `esc`, `n` and `q` decline, and any other key
+    /// keeps `modal` open.
+    fn confirm(&mut self, key: KeyEvent, modal: Modal, yes: Action) -> Action {
         match key.code {
-            KeyCode::Char('y') => Action::StopAll { agents },
+            KeyCode::Char('y') => yes,
             KeyCode::Esc | KeyCode::Char('n' | 'q') => Action::None,
             _ => {
-                self.modal = Some(Modal::ConfirmStopAll { agents });
+                self.modal = Some(modal);
                 Action::None
             }
         }
@@ -1866,34 +1877,32 @@ impl App {
                 }
                 Action::None
             }
-            Some(Modal::ConfirmDelete { agent, sessions }) => match key.code {
-                KeyCode::Char('y') => Action::Delete { agent },
-                KeyCode::Esc | KeyCode::Char('n' | 'q') => Action::None,
-                _ => {
-                    self.modal = Some(Modal::ConfirmDelete { agent, sessions });
-                    Action::None
-                }
-            },
-            Some(Modal::ConfirmStop { agent }) => match key.code {
-                KeyCode::Char('y') => Action::SetRunState {
-                    agent,
+            Some(Modal::ConfirmDelete { agent, sessions }) => {
+                let yes = Action::Delete { agent: agent.clone() };
+                self.confirm(key, Modal::ConfirmDelete { agent, sessions }, yes)
+            }
+            Some(Modal::ConfirmStop { agent }) => {
+                let yes = Action::SetRunState {
+                    agent: agent.clone(),
                     state: RunState::Stopped,
-                },
-                KeyCode::Esc | KeyCode::Char('n' | 'q') => Action::None,
-                _ => {
-                    self.modal = Some(Modal::ConfirmStop { agent });
-                    Action::None
-                }
-            },
-            Some(Modal::ConfirmStopAll { agents }) => self.confirm_stop_all(key, agents),
-            Some(Modal::ConfirmDeleteSession { agent, session }) => match key.code {
-                KeyCode::Char('y') => Action::DeleteSession { agent, session },
-                KeyCode::Esc | KeyCode::Char('n' | 'q') => Action::None,
-                _ => {
-                    self.modal = Some(Modal::ConfirmDeleteSession { agent, session });
-                    Action::None
-                }
-            },
+                };
+                self.confirm(key, Modal::ConfirmStop { agent }, yes)
+            }
+            Some(Modal::ConfirmRestart { agent }) => {
+                let yes = Action::Restart { agent: agent.clone() };
+                self.confirm(key, Modal::ConfirmRestart { agent }, yes)
+            }
+            Some(Modal::ConfirmStopAll { agents }) => {
+                let yes = Action::StopAll { agents: agents.clone() };
+                self.confirm(key, Modal::ConfirmStopAll { agents }, yes)
+            }
+            Some(Modal::ConfirmDeleteSession { agent, session }) => {
+                let yes = Action::DeleteSession {
+                    agent: agent.clone(),
+                    session: session.clone(),
+                };
+                self.confirm(key, Modal::ConfirmDeleteSession { agent, session }, yes)
+            }
             Some(Modal::NewSession(mut form)) => {
                 if let Some(action) = form.key(key, &self.sessions) {
                     return action;
@@ -1923,14 +1932,7 @@ impl App {
                 Action::None
             }
             Some(Modal::Open(menu)) => self.open_menu_key(menu, key),
-            Some(Modal::ConfirmQuit) => match key.code {
-                KeyCode::Char('y') => Action::Quit,
-                KeyCode::Esc | KeyCode::Char('n' | 'q') => Action::None,
-                _ => {
-                    self.modal = Some(Modal::ConfirmQuit);
-                    Action::None
-                }
-            },
+            Some(Modal::ConfirmQuit) => self.confirm(key, Modal::ConfirmQuit, Action::Quit),
             Some(Modal::ConfirmSshSetup { agent, include, then }) => {
                 self.confirm_ssh_setup_key(agent, include, then, key)
             }
@@ -2536,6 +2538,7 @@ impl App {
             return match modal {
                 Modal::ConfirmDelete { .. }
                 | Modal::ConfirmStop { .. }
+                | Modal::ConfirmRestart { .. }
                 | Modal::ConfirmStopAll { .. }
                 | Modal::ConfirmDeleteSession { .. }
                 | Modal::ConfirmQuit => &CONFIRM_HINTS,
@@ -2630,9 +2633,15 @@ fn agent_state(agent: &Agent) -> AgentState {
         }
         // A failed stop reads as Retrying below, like any other failed pass.
         failure.is_none().then_some("Stopping")
+    } else if agent.restart_pending() {
+        // Until its Sandbox has stopped; a failed stop reads as Retrying below.
+        failure.is_none().then_some("Restarting")
     } else {
+        // A running Agent recorded stopped, as a start or a restart leaves it, starts next.
         ready
-            .is_some_and(|ready| ready.reason == Condition::REASON_STARTING)
+            .is_some_and(|ready| {
+                [Condition::REASON_STARTING, Condition::REASON_STOPPED].contains(&ready.reason.as_str())
+            })
             .then_some("Starting")
     };
     if let Some(label) = changing {
@@ -4221,6 +4230,64 @@ mod tests {
                 ("d-starting".into(), "Starting", Tone::Cyan),
             ]
         );
+    }
+
+    #[test]
+    fn a_restarting_agent_reads_restarting_until_stopped_and_starting_after() {
+        let restart = Some(time::OffsetDateTime::UNIX_EPOCH);
+        // Recorded unresponsive and failed by the passes before the restart was asked for.
+        let mut stalled = provisioning_agent("a-stalled", Some(FailureKind::Transient));
+        stalled.status.conditions = vec![agent::Condition {
+            kind: "Ready".into(),
+            status: ConditionStatus::False,
+            reason: "SandboxUnresponsive".into(),
+            message: String::new(),
+            last_transition_time: None,
+        }];
+        stalled.metadata.generation = stalled.status.observed_generation + 1;
+        stalled.metadata.restart_timestamp = restart;
+        let mut stopped = not_ready_agent("b-stopped", RunState::Running, agent::Condition::REASON_STOPPED);
+        stopped.metadata.restart_timestamp = restart;
+        stopped.status.observed_restart_timestamp = restart;
+        let mut app = App::new();
+        app.apply_snapshot(vec![stalled, stopped], Vec::new());
+        let states = app
+            .render_rows()
+            .into_iter()
+            .map(|row| (row.name, row.state))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            states,
+            [("a-stalled".into(), "Restarting"), ("b-stopped".into(), "Starting")]
+        );
+    }
+
+    #[test]
+    fn r_restarts_an_agent_once_confirmed_but_not_a_stopped_one() {
+        let mut app = App::new();
+        app.apply_snapshot(
+            vec![
+                not_ready_agent("idle", RunState::Stopped, agent::Condition::REASON_STOPPED),
+                ready_agent("worker"),
+            ],
+            Vec::new(),
+        );
+
+        app.select_index(1);
+        assert_eq!(app.on_key(key(KeyCode::Char('r'))), Action::None);
+        assert!(matches!(&app.modal, Some(Modal::ConfirmRestart { agent }) if agent == "worker"));
+        assert_eq!(app.hints(), &CONFIRM_HINTS);
+        assert_eq!(app.on_key(key(KeyCode::Char('n'))), Action::None, "declined");
+        assert!(app.modal.is_none());
+        app.on_key(key(KeyCode::Char('r')));
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('y'))),
+            Action::Restart { agent: "worker".into() }
+        );
+
+        app.select_index(0);
+        assert_eq!(app.on_key(key(KeyCode::Char('r'))), Action::None);
+        assert!(app.modal.is_none(), "x starts a stopped Agent");
     }
 
     #[test]

@@ -127,6 +127,10 @@ impl ControlPlane {
     ///
     /// Returns an error when the request is invalid, changes an immutable field, conflicts with deletion,
     /// or cannot be stored.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one retry loop over creating and updating, which share the validated desired state"
+    )]
     pub async fn apply(&self, request: ApplyRequest) -> Result<Agent, Error> {
         validate_request_paths(&request)?;
 
@@ -173,6 +177,7 @@ impl ControlPlane {
 
                     let expected_generation = current.agent.metadata.generation;
                     desired.metadata.generation = expected_generation + 1;
+                    desired.metadata.restart_timestamp = current.agent.metadata.restart_timestamp;
                     desired.status = current.agent.status;
                     self.store
                         .put(
@@ -433,24 +438,14 @@ impl ControlPlane {
     /// Returns an error when the Agent does not exist, is being deleted, or
     /// cannot be stored.
     pub async fn set_run_state(&self, name: &str, state: crate::RunState) -> Result<Agent, Error> {
-        loop {
-            let mut record = self.store.get_by_name(name).await?;
-            if record.agent.metadata.deletion_timestamp.is_some() {
-                return Err(Error::Conflict);
-            }
-            if record.agent.spec.run_state() != state {
-                let expected_generation = record.agent.metadata.generation;
-                record.agent.spec.set_run_state(state);
-                record.agent.metadata.generation = expected_generation + 1;
-                match self.store.put(record.clone(), expected_generation).await {
-                    Ok(()) => {}
-                    Err(Error::Conflict) => continue,
-                    Err(error) => return Err(error),
-                }
-            }
-            self.notifier.notify(record.id);
-            return Ok(self.resource(record));
-        }
+        let record = self
+            .change_desired(name, |agent| {
+                let changed = agent.spec.run_state() != state;
+                agent.spec.set_run_state(state);
+                changed
+            })
+            .await?;
+        Ok(self.resource(record))
     }
 
     /// Records an Agent as stopped, as [`Self::set_run_state`] does, and has the reconciler end
@@ -466,6 +461,56 @@ impl ControlPlane {
         // is cut short by it.
         self.immediate_stops.request(id, stopping.metadata.generation);
         Ok(stopping)
+    }
+
+    /// Records a restart of an Agent as a new generation and returns the Agent as stored, without
+    /// waiting for the reconciler to carry it out. The reconciler stops the Sandbox as a stop
+    /// does, then starts it on the same disk; a stopped Agent is started. With `now`, the stop
+    /// ends the Sandbox at once, as [`Self::stop_now`] does.
+    ///
+    /// The restart is stored with the run state, so no other write can come between its stop and
+    /// its start, and the reconciler finishes it even when the client goes away.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Agent does not exist, is being deleted, or cannot be stored.
+    pub async fn restart(&self, name: &str, now: bool) -> Result<Agent, Error> {
+        let requested = time::OffsetDateTime::now_utc();
+        let record = self
+            .change_desired(name, |agent| {
+                agent.spec.set_run_state(crate::RunState::Running);
+                agent.metadata.restart_timestamp = Some(requested);
+                true
+            })
+            .await?;
+        if now {
+            self.immediate_stops
+                .request(record.id, record.agent.metadata.generation);
+        }
+        Ok(self.resource(record))
+    }
+
+    /// Stores `change` to an Agent's desired state as a new generation, retrying it on a
+    /// concurrent write, wakes the reconciler and returns the Agent as stored. When `change`
+    /// reports that it changed nothing, nothing is stored and the reconciler is only woken.
+    async fn change_desired(&self, name: &str, change: impl Fn(&mut Agent) -> bool) -> Result<AgentRecord, Error> {
+        loop {
+            let mut record = self.store.get_by_name(name).await?;
+            if record.agent.metadata.deletion_timestamp.is_some() {
+                return Err(Error::Conflict);
+            }
+            if change(&mut record.agent) {
+                let expected_generation = record.agent.metadata.generation;
+                record.agent.metadata.generation = expected_generation + 1;
+                match self.store.put(record.clone(), expected_generation).await {
+                    Ok(()) => {}
+                    Err(Error::Conflict) => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            self.notifier.notify(record.id);
+            return Ok(record);
+        }
     }
 
     /// Marks an Agent for asynchronous release. Repeated deletion is safe.

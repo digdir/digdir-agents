@@ -21,19 +21,19 @@ pub const UNRESPONSIVE_AFTER: Duration = Duration::from_secs(15);
 /// How often guest-touching work inspects its Sandbox's heartbeat.
 pub const OBSERVATION_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Describes a stalled guest for conditions and errors.
+/// Describes the stalled guest of the Agent named `agent` for conditions and errors.
 #[must_use]
-pub fn stall_detail() -> String {
+pub fn stall_detail(agent: &str) -> String {
     format!(
-        "the guest has not reported progress for more than {}s; stopping and starting the Agent restarts it",
+        "the guest has not reported progress for more than {}s; run `agentctl restart agent/{agent}` to restart it",
         UNRESPONSIVE_AFTER.as_secs()
     )
 }
 
-/// The error that ends guest-touching work once its guest has stalled.
+/// The error that ends guest-touching work once the guest of the Agent named `agent` has stalled.
 #[must_use]
-pub fn stalled() -> crate::Error {
-    crate::Error::SandboxUnresponsive(stall_detail())
+pub fn stalled(agent: &str) -> crate::Error {
+    crate::Error::SandboxUnresponsive(stall_detail(agent))
 }
 
 /// When each running Sandbox's heartbeat last changed, keyed by Sandbox.

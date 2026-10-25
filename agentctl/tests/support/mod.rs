@@ -23,6 +23,7 @@ pub(crate) fn agent(name: &str) -> Agent {
             name: name.into(),
             generation: 0,
             deletion_timestamp: None,
+            restart_timestamp: None,
         },
         spec: Spec {
             run_state: None,

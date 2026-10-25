@@ -9,12 +9,12 @@ use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, ses
 use super::protocol::{
     DaemonInfo, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, MAX_RESPONSE_BYTES,
     METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET,
-    METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH,
+    METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
     METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
     METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
     METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, ProgressParams, ReadMessage, Request,
-    ResourcesWatchParams, Response, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
-    SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
+    ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams,
+    SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
 };
 
 /// A byte stream usable by the Agent Control API client.
@@ -265,6 +265,18 @@ impl Client {
     /// Returns an error when transport, protocol validation, or the control-plane operation fails.
     pub async fn stop_now(&self, name: &str) -> Result<Agent, Error> {
         self.call(METHOD_STOP_NOW, NameParams { name: name.into() }).await
+    }
+
+    /// Records a restart of an Agent, which agentd carries out by stopping its Sandbox and
+    /// starting it on the same disk; `now` ends the Sandbox at once instead of letting its guest
+    /// shut down. Returns the Agent as stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the control-plane operation fails.
+    pub async fn restart(&self, name: &str, now: bool) -> Result<Agent, Error> {
+        self.call(METHOD_RESTART, RestartParams { name: name.into(), now })
+            .await
     }
 
     /// Stores a host-acquired harness credential in the daemon.

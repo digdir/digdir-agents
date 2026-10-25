@@ -390,18 +390,18 @@ impl Service {
         work: impl Future<Output = Result<T, Error>>,
     ) -> Result<T, Error> {
         if self.responsiveness.stalled(sandbox, tokio::time::Instant::now()) {
-            return Err(responsiveness::stalled());
+            return Err(responsiveness::stalled(&record.agent.metadata.name));
         }
         let provider = self.assigned_provider(record)?;
         let result = tokio::select! {
             biased;
-            _stalled = self.watch_heartbeat(provider, record, sandbox, None) => return Err(responsiveness::stalled()),
+            _stalled = self.watch_heartbeat(provider, record, sandbox, None) => return Err(responsiveness::stalled(&record.agent.metadata.name)),
             result = work => result,
         };
         let current = self.responsiveness.heartbeat(sandbox);
         match result {
             Err(error) if current.is_some() => match self.watch_heartbeat(provider, record, sandbox, current).await {
-                Heartbeat::Stalled => Err(responsiveness::stalled()),
+                Heartbeat::Stalled => Err(responsiveness::stalled(&record.agent.metadata.name)),
                 Heartbeat::Advanced => Err(error),
             },
             result => result,
