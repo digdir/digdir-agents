@@ -8,6 +8,7 @@ pub mod control_api;
 pub mod control_plane;
 mod controller;
 mod environment;
+pub mod github;
 pub mod harness;
 pub mod local;
 pub mod manifest;
