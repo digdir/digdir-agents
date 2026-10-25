@@ -41,6 +41,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # The build checks it too, but only once its runners start.
+      - name: Validate version
+        run: |
+          if ! printf '%s\n' "${VERSION}" | grep -q -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::${VERSION} is not v<semantic version>"
+            exit 1
+          fi
+
       - name: Build release notes from the changelog
         run: |
           agentctl/changelog.sh validate
