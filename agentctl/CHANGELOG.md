@@ -28,6 +28,13 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 - Applying a manifest that adds, removes or renames instruction files or skills updates the agent in place, keeping its disk and sessions, instead of being refused. A skill the agent no longer declares is removed from its harnesses, while the skills its image ships stay.
 - The Agent sandbox section at the top of an agent's instructions now tells the agent that what it sends through the host, such as pushes, pull requests, comments and API calls, reaches real services and people. ([#372](https://github.com/digdir/digdir-agents/pull/372))
 - Newly created agents using the shared images ship Claude Code 2.1.316, Codex CLI 0.166.0 and Pi 1.5.0. ([#392](https://github.com/digdir/digdir-agents/pull/392))
+- Commands that use the current directory's agent, such as `attach`, `exec` and `ssh`, find it from anywhere in its Git repository or, outside one, from the folder holding its `agents/`, and without `-f`, `agentctl apply` names the manifests it finds there. ([#309](https://github.com/digdir/digdir-agents/pull/309))
+- A manifest may leave out `spec.home` and `spec.network`: without `home` nothing is copied into `/home/agent`, and without `network` all traffic goes through the host's network mediator. ([#309](https://github.com/digdir/digdir-agents/pull/309))
+- agentctl's help starts with what it is for and lists the commands people use first. ([#309](https://github.com/digdir/digdir-agents/pull/309))
+- agentctl's error messages: ([#309](https://github.com/digdir/digdir-agents/pull/309))
+  - no longer begin with `invalid Agent:` or `Agent Control API error:`
+  - for a field only a new agent takes, such as `spec.sandbox.image`, say how to create the agent again
+  - for a name another directory's agent has, ask for another name
 
 ### Fixed
 

@@ -140,13 +140,7 @@ impl Linux {
         let kvm = grant_kvm(sandbox).await?;
         step.complete().await;
         let step = steps.start_step("Sync home").await;
-        let archive = archive_home(record.source_directory.clone(), record.agent.spec.home.source.clone()).await?;
-        sync_home(sandbox, archive).await?;
-        if podman {
-            // After the home sync, so a file of the same name in the agent's home cannot replace it.
-            point_podman_at_socket(sandbox).await?;
-        }
-        configure_git_identity(sandbox).await?;
+        set_up_home(record, sandbox, podman).await?;
         step.complete().await;
         let observed = preamble::Observed {
             harnesses,
@@ -253,6 +247,20 @@ async fn read_owned_instructions(sandbox: &SandboxHandle, path: &str) -> Result<
              placed above it"
         ))
     })
+}
+
+/// Copies the agent's home into the sandbox when it has one, points Podman at its socket when the
+/// image has Podman, and sets the Git identity.
+async fn set_up_home(record: &control_plane::AgentRecord, sandbox: &SandboxHandle, podman: bool) -> Result<(), Error> {
+    if let Some(home) = &record.agent.spec.home {
+        let archive = archive_home(record.source_directory.clone(), home.source.clone()).await?;
+        sync_home(sandbox, archive).await?;
+    }
+    if podman {
+        // After the home sync, so a file of the same name in the agent's home cannot replace it.
+        point_podman_at_socket(sandbox).await?;
+    }
+    configure_git_identity(sandbox).await
 }
 
 async fn configure_git_identity(sandbox: &SandboxHandle) -> Result<(), Error> {

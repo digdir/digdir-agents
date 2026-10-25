@@ -33,7 +33,12 @@ use tokio::io::AsyncWriteExt as _;
 use tokio::runtime::LocalRuntime;
 
 #[derive(Parser)]
-#[command(name = "agentctl", about = "Manage the per-user agent control plane", version = agent::build_version())]
+#[command(
+    name = "agentctl",
+    about = "Run coding agents in sandboxes on this machine",
+    after_help = "To stop every agent at once: agentctl kill --all",
+    version = agent::build_version()
+)]
 struct Arguments {
     /// Agent control-plane home.
     #[arg(long, global = true)]
@@ -44,17 +49,63 @@ struct Arguments {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Manage the agent CLI installation.
-    Self_ {
-        #[command(subcommand)]
-        command: self_update::SelfCommand,
+    /// Open the terminal UI with every agent and session.
+    Tui,
+    /// Create or attach to a named session in an agent sandbox.
+    Attach {
+        /// Session resource, optionally combined with its name (for example `session/s1`).
+        resource: String,
+        /// Optional session name when it is not part of `resource`.
+        name: Option<String>,
+        /// Owning agent; inferred from the current directory when omitted.
+        #[arg(long, conflicts_with = "variant")]
+        agent: Option<String>,
+        /// Select the closest agent by its applied leaf variant.
+        #[arg(long, value_parser = parse_variant_name, conflicts_with = "agent")]
+        variant: Option<AgentVariantName>,
+        #[command(flatten)]
+        selection: SessionSelection,
     },
-    /// Manage Claude Code harness authentication.
+    /// Stop an agent, or every agent; disks are kept, and sessions resume after a start.
+    ///
+    /// Running harnesses are stopped with the VM. Applying the manifest again keeps the agent stopped.
+    /// Without an agent, asks whether to stop every running agent; `--all --now` does so at once.
+    Stop {
+        #[command(flatten)]
+        target: StopTarget,
+    },
+    /// Stop an agent, or every agent, at once, as `stop --now` does: an emergency stop.
+    ///
+    /// The VMs end without shutting down; disks are kept, but what an agent wrote in its last
+    /// seconds may be lost. Without an agent, asks whether to stop every running agent.
+    Kill {
+        #[command(flatten)]
+        target: KillTarget,
+    },
+    /// Start a stopped agent on its kept disk and wait until it is ready.
+    Start {
+        #[command(flatten)]
+        target: RunStateTarget,
+    },
+    /// Stop an agent's sandbox VM, start it on its kept disk and wait until the agent is Ready.
+    ///
+    /// Use it when an agent is unresponsive, for example after running out of memory. A stopped
+    /// agent is started. agentd finishes the restart when the command is interrupted, and
+    /// attaching to a session afterwards resumes it, as after a stop and a start.
+    Restart {
+        #[command(flatten)]
+        target: RunStateTarget,
+        /// End the VM at once instead of letting it shut down. Whatever the agent wrote in its last
+        /// seconds may be lost.
+        #[arg(long)]
+        now: bool,
+    },
+    /// Sign agents in to Claude Code.
     Claude {
         #[command(subcommand)]
         command: ClaudeCommand,
     },
-    /// Manage Codex CLI harness authentication.
+    /// Sign agents in to Codex.
     Codex {
         #[command(subcommand)]
         command: CodexCommand,
@@ -63,6 +114,75 @@ enum Command {
     Skills {
         #[command(subcommand)]
         command: skills::SkillsCommand,
+    },
+    /// Run a command in an agent.
+    Exec {
+        /// Pass stdin to an allocated terminal.
+        #[arg(short = 'i', long, requires = "tty")]
+        stdin: bool,
+        /// Allocate a terminal; currently used together with --stdin.
+        #[arg(short = 't', long, requires = "stdin")]
+        tty: bool,
+        /// Agent resource or name; inferred from the current directory when omitted.
+        resource: Option<String>,
+        /// Agent name, as an alternative to the positional resource.
+        #[arg(long, conflicts_with_all = ["resource", "variant"])]
+        agent: Option<String>,
+        /// Select the closest agent by its applied leaf variant.
+        #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["agent", "resource"])]
+        variant: Option<AgentVariantName>,
+        /// Command and arguments to execute after `--`.
+        #[arg(last = true, required = true, num_args = 1..)]
+        command: Vec<String>,
+    },
+    /// Open an SSH session to an agent.
+    Ssh {
+        /// Agent name, as an alternative to the positional resource.
+        #[arg(long, conflicts_with_all = ["resource", "variant"])]
+        agent: Option<String>,
+        /// Select the closest agent by its applied leaf variant.
+        #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["agent", "resource"])]
+        variant: Option<AgentVariantName>,
+        /// Agent resource or name; inferred from the current directory when omitted.
+        resource: Option<String>,
+        /// Remote command and arguments after `--`; an interactive shell when omitted.
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+    /// Forward an agent's desktop to a local VNC port until interrupted.
+    Vnc {
+        /// Agent name, as an alternative to the positional resource.
+        #[arg(long, conflicts_with_all = ["resource", "variant"])]
+        agent: Option<String>,
+        /// Select the closest agent by its applied leaf variant.
+        #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["agent", "resource"])]
+        variant: Option<AgentVariantName>,
+        /// Agent resource or name; inferred from the current directory when omitted.
+        resource: Option<String>,
+        /// Local port to listen on. Defaults to a free port, which is printed.
+        #[arg(long)]
+        port: Option<u16>,
+        /// Forward the browser-based viewer instead of the raw RFB port, so no VNC client is needed.
+        #[arg(long)]
+        web: bool,
+        /// Hand the address to the local browser or VNC handler instead of only printing it.
+        #[arg(long)]
+        open: bool,
+    },
+    /// Forward local ports to a running agent sandbox until interrupted.
+    PortForward {
+        /// Agent name, as an alternative to a leading agent argument.
+        #[arg(long, conflicts_with = "variant")]
+        agent: Option<String>,
+        /// Select the closest agent by its applied leaf variant.
+        #[arg(long, value_parser = parse_variant_name, conflicts_with = "agent")]
+        variant: Option<AgentVariantName>,
+        /// Optional leading agent resource or name, followed by port mappings
+        /// written as GUEST, LOCAL:GUEST, or ADDRESS:LOCAL:GUEST. An empty
+        /// local port (`:GUEST`) selects an ephemeral local port. The agent is
+        /// inferred from the current directory when no leading agent is given.
+        #[arg(required = true, num_args = 1..)]
+        arguments: Vec<String>,
     },
     /// Create a session and wait until its harness is ready, without attaching.
     Create {
@@ -93,28 +213,6 @@ enum Command {
         /// Print only the last N turns.
         #[arg(long)]
         last: Option<usize>,
-    },
-    /// Create or update an agent from a manifest.
-    Apply {
-        /// Agent manifest path; defaults to ./agent.yaml.
-        #[arg(short = 'f', long = "filename", conflicts_with = "variant")]
-        filename: Option<PathBuf>,
-        /// Variant of the agent in the current directory.
-        #[arg(long, value_parser = parse_variant_name, conflicts_with = "filename")]
-        variant: Option<AgentVariantName>,
-        /// Override metadata.name so one manifest can create multiple agents.
-        #[arg(long)]
-        name: Option<String>,
-        /// File supplying declared manifest environment and secret values; defaults to `.env`
-        /// beside the manifest. Keep files containing secrets outside bind-mounted directories.
-        #[arg(long)]
-        env_file: Option<PathBuf>,
-        /// Stay attached after applying and show provisioning progress until the agent is Ready.
-        #[arg(long)]
-        wait: bool,
-        /// Maximum wait with `--wait`, written as seconds, minutes, or hours (for example `10m`).
-        #[arg(long, default_value = "10m", value_parser = parse_duration, requires = "wait")]
-        timeout: Duration,
     },
     /// Display one or more resources.
     Get {
@@ -151,6 +249,28 @@ enum Command {
         #[arg(short = 'o', long, default_value = "table", value_enum)]
         output: OutputFormat,
     },
+    /// Create or update an agent from a manifest.
+    Apply {
+        /// Agent manifest path; defaults to ./agent.yaml.
+        #[arg(short = 'f', long = "filename", conflicts_with = "variant")]
+        filename: Option<PathBuf>,
+        /// Variant of the agent in the current directory.
+        #[arg(long, value_parser = parse_variant_name, conflicts_with = "filename")]
+        variant: Option<AgentVariantName>,
+        /// Override metadata.name so one manifest can create multiple agents.
+        #[arg(long)]
+        name: Option<String>,
+        /// File supplying declared manifest environment and secret values; defaults to `.env`
+        /// beside the manifest. Keep files containing secrets outside bind-mounted directories.
+        #[arg(long)]
+        env_file: Option<PathBuf>,
+        /// Stay attached after applying and show provisioning progress until the agent is Ready.
+        #[arg(long)]
+        wait: bool,
+        /// Maximum wait with `--wait`, written as seconds, minutes, or hours (for example `10m`).
+        #[arg(long, default_value = "10m", value_parser = parse_duration, requires = "wait")]
+        timeout: Duration,
+    },
     /// Request deletion of a resource.
     Delete {
         /// Resource kind, optionally combined with a name (for example `agent/worker`).
@@ -164,40 +284,6 @@ enum Command {
         #[arg(long, value_parser = parse_variant_name, conflicts_with = "agent")]
         variant: Option<AgentVariantName>,
     },
-    /// Stop an agent, or every agent, keeping their disks, so attaching to a session after a start resumes it.
-    ///
-    /// Running harnesses are stopped with the VM. Applying the manifest again keeps the agent stopped.
-    /// Without an agent, asks whether to stop every running agent; `--all --now` does so at once.
-    Stop {
-        #[command(flatten)]
-        target: StopTarget,
-    },
-    /// Stop an agent, or every agent, at once, as `stop --now` does: an emergency stop.
-    ///
-    /// The VMs end without shutting down; disks are kept, but what an agent wrote in its last
-    /// seconds may be lost. Without an agent, asks whether to stop every running agent.
-    Kill {
-        #[command(flatten)]
-        target: KillTarget,
-    },
-    /// Start a stopped agent's sandbox VM on its kept disk and wait until the agent is Ready.
-    Start {
-        #[command(flatten)]
-        target: RunStateTarget,
-    },
-    /// Stop an agent's sandbox VM, start it on its kept disk and wait until the agent is Ready.
-    ///
-    /// Use it when an agent is unresponsive, for example after running out of memory. A stopped
-    /// agent is started. agentd finishes the restart when the command is interrupted, and
-    /// attaching to a session afterwards resumes it, as after a stop and a start.
-    Restart {
-        #[command(flatten)]
-        target: RunStateTarget,
-        /// End the VM at once instead of letting it shut down. Whatever the agent wrote in its last
-        /// seconds may be lost.
-        #[arg(long)]
-        now: bool,
-    },
     /// Archive a session: stop its harness and hide it from listings, keeping its name and conversation.
     Archive {
         #[command(flatten)]
@@ -208,76 +294,18 @@ enum Command {
         #[command(flatten)]
         target: SessionTarget,
     },
-    /// Create or attach to a named session in an agent sandbox.
-    Attach {
-        /// Session resource, optionally combined with its name (for example `session/s1`).
+    /// Wait for a resource condition.
+    Wait {
+        /// Condition expression. Only `condition=Ready` is currently supported.
+        #[arg(long = "for", default_value = "condition=Ready")]
+        condition: String,
+        /// Maximum wait, written as seconds, minutes, or hours (for example `30s` or `10m`).
+        #[arg(long, default_value = "10m", value_parser = parse_duration)]
+        timeout: Duration,
+        /// Agent resource, optionally combined with its name (for example `agent/worker`).
         resource: String,
-        /// Optional session name when it is not part of `resource`.
+        /// Optional agent name when it is not part of `resource`.
         name: Option<String>,
-        /// Owning agent; inferred from the current directory when omitted.
-        #[arg(long, conflicts_with = "variant")]
-        agent: Option<String>,
-        /// Select the closest agent by its applied leaf variant.
-        #[arg(long, value_parser = parse_variant_name, conflicts_with = "agent")]
-        variant: Option<AgentVariantName>,
-        #[command(flatten)]
-        selection: SessionSelection,
-    },
-    /// Execute a command in an agent sandbox.
-    Exec {
-        /// Pass stdin to an allocated terminal.
-        #[arg(short = 'i', long, requires = "tty")]
-        stdin: bool,
-        /// Allocate a terminal; currently used together with --stdin.
-        #[arg(short = 't', long, requires = "stdin")]
-        tty: bool,
-        /// Agent resource or name; inferred from the current directory when omitted.
-        resource: Option<String>,
-        /// Agent name, as an alternative to the positional resource.
-        #[arg(long, conflicts_with_all = ["resource", "variant"])]
-        agent: Option<String>,
-        /// Select the closest agent by its applied leaf variant.
-        #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["agent", "resource"])]
-        variant: Option<AgentVariantName>,
-        /// Command and arguments to execute after `--`.
-        #[arg(last = true, required = true, num_args = 1..)]
-        command: Vec<String>,
-    },
-    /// Forward local ports to a running agent sandbox until interrupted.
-    PortForward {
-        /// Agent name, as an alternative to a leading agent argument.
-        #[arg(long, conflicts_with = "variant")]
-        agent: Option<String>,
-        /// Select the closest agent by its applied leaf variant.
-        #[arg(long, value_parser = parse_variant_name, conflicts_with = "agent")]
-        variant: Option<AgentVariantName>,
-        /// Optional leading agent resource or name, followed by port mappings
-        /// written as GUEST, LOCAL:GUEST, or ADDRESS:LOCAL:GUEST. An empty
-        /// local port (`:GUEST`) selects an ephemeral local port. The agent is
-        /// inferred from the current directory when no leading agent is given.
-        #[arg(required = true, num_args = 1..)]
-        arguments: Vec<String>,
-    },
-    /// Open an OpenSSH session to an agent through `agentctl ssh-proxy`.
-    Ssh {
-        /// Agent name, as an alternative to the positional resource.
-        #[arg(long, conflicts_with_all = ["resource", "variant"])]
-        agent: Option<String>,
-        /// Select the closest agent by its applied leaf variant.
-        #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["agent", "resource"])]
-        variant: Option<AgentVariantName>,
-        /// Agent resource or name; inferred from the current directory when omitted.
-        resource: Option<String>,
-        /// Remote command and arguments after `--`; an interactive shell when omitted.
-        #[arg(last = true)]
-        command: Vec<String>,
-    },
-    /// Relay one connection to an agent's SSH server over standard input and output.
-    ///
-    /// The generated OpenSSH client configuration runs this as its `ProxyCommand`.
-    SshProxy {
-        /// Agent resource or name.
-        resource: String,
     },
     /// Manage the OpenSSH client configuration for agents.
     SshConfig {
@@ -298,31 +326,6 @@ enum Command {
         #[arg(short = 'o', long, default_value = "table", value_enum)]
         output: OutputFormat,
     },
-    /// Forward an agent's desktop to a local VNC port until interrupted.
-    Vnc {
-        /// Agent name, as an alternative to the positional resource.
-        #[arg(long, conflicts_with_all = ["resource", "variant"])]
-        agent: Option<String>,
-        /// Select the closest agent by its applied leaf variant.
-        #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["agent", "resource"])]
-        variant: Option<AgentVariantName>,
-        /// Agent resource or name; inferred from the current directory when omitted.
-        resource: Option<String>,
-        /// Local port to listen on. Defaults to a free port, which is printed.
-        #[arg(long)]
-        port: Option<u16>,
-        /// Forward the browser-based viewer instead of the raw RFB port, so no VNC client is needed.
-        #[arg(long)]
-        web: bool,
-        /// Hand the address to the local browser or VNC handler instead of only printing it.
-        #[arg(long)]
-        open: bool,
-    },
-    /// Relay one connection to an agent's desktop over standard input and output.
-    VncProxy {
-        /// Agent resource or name.
-        resource: String,
-    },
     /// Describe how to reach an agent's desktop over VNC.
     VncInfo {
         /// Agent resource or name; inferred from the current directory when omitted.
@@ -337,20 +340,24 @@ enum Command {
         #[arg(short = 'o', long, default_value = "table", value_enum)]
         output: OutputFormat,
     },
-    /// Open the interactive terminal UI.
-    Tui,
-    /// Wait for a resource condition.
-    Wait {
-        /// Condition expression. Only `condition=Ready` is currently supported.
-        #[arg(long = "for", default_value = "condition=Ready")]
-        condition: String,
-        /// Maximum wait, written as seconds, minutes, or hours (for example `30s` or `10m`).
-        #[arg(long, default_value = "10m", value_parser = parse_duration)]
-        timeout: Duration,
-        /// Agent resource, optionally combined with its name (for example `agent/worker`).
+    /// Update agentctl and agentd.
+    Self_ {
+        #[command(subcommand)]
+        command: self_update::SelfCommand,
+    },
+    /// Relay one connection to an agent's SSH server over standard input and output.
+    ///
+    /// The generated OpenSSH client configuration runs this as its `ProxyCommand`.
+    #[command(hide = true)]
+    SshProxy {
+        /// Agent resource or name.
         resource: String,
-        /// Optional agent name when it is not part of `resource`.
-        name: Option<String>,
+    },
+    /// Relay one connection to an agent's desktop over standard input and output.
+    #[command(hide = true)]
+    VncProxy {
+        /// Agent resource or name.
+        resource: String,
     },
 }
 
@@ -574,15 +581,39 @@ fn main() -> ExitCode {
     }
     match run() {
         Ok(code) => code,
-        // The daemon rejected the desired state; the message is the whole story.
-        Err(CommandError::Agent(Error::Rpc(error))) if error.is_invalid_params() => {
-            eprintln!("agentctl: {}", error.message);
-            ExitCode::FAILURE
-        }
         Err(error) => {
-            eprintln!("agentctl: {error}");
+            eprintln!("{}", error_text(&error));
             ExitCode::FAILURE
         }
+    }
+}
+
+/// What agentctl prints for a failed command.
+fn error_text(error: &CommandError) -> String {
+    match error {
+        // agentd's message is the whole story.
+        CommandError::Agent(Error::Rpc(error)) => format!("agentctl: {}", error.message),
+        // Most of agentctl's own refusals are `Invalid`, and few are about an agent.
+        CommandError::Agent(Error::Invalid(message)) => format!("agentctl: {message}"),
+        error => format!("agentctl: {error}"),
+    }
+}
+
+/// A refused apply, with how to change an immutable field of the agent it names.
+///
+/// A name taken by another directory's agent is not such a field: deleting would remove that agent.
+fn apply_error(error: Error, name: &str) -> CommandError {
+    match error {
+        Error::Rpc(error)
+            if error.message.starts_with("immutable Agent field changed")
+                && !error.message.ends_with("sourceDirectory") =>
+        {
+            CommandError::Message(format!(
+                "{}\nThat changes only by creating the agent again, which starts its disk over: `agentctl delete agent/{name}`, then apply.",
+                error.message
+            ))
+        }
+        error => error.into(),
     }
 }
 
@@ -644,12 +675,14 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             wait,
             timeout,
         } => {
-            let filename = apply_manifest_path(filename, variant)?;
+            let directory = std::env::current_dir().map_err(Error::from)?;
+            let filename = apply_manifest_path(filename, variant, &directory)?;
             let mut request = read_apply_request(filename, env_file)?;
             if let Some(name) = name {
                 request.agent.metadata.name = name;
             }
-            let applied = client.apply(request).await?;
+            let name = request.agent.metadata.name.clone();
+            let applied = client.apply(request).await.map_err(|error| apply_error(error, &name))?;
             let name = applied.metadata.name;
             println!("agent/{name} applied");
             if wait {
@@ -1607,9 +1640,9 @@ async fn resolve_agent_name(
 
 fn inference_error(error: Error) -> CommandError {
     match error {
-        Error::Rpc(error) if error.is_not_found() => CommandError::Message(
-            "no agent was applied from the current directory; specify --agent or --variant".into(),
-        ),
+        Error::Rpc(error) if error.is_not_found() => {
+            CommandError::Message("no agent here; `agentctl apply` creates one, or pass --agent NAME".into())
+        }
         Error::Rpc(error) => CommandError::Message(error.message),
         error => error.into(),
     }
@@ -1998,13 +2031,47 @@ fn daemon_executable(agentctl: &Path) -> PathBuf {
     agentctl.with_file_name(format!("agentd{}", std::env::consts::EXE_SUFFIX))
 }
 
-fn apply_manifest_path(filename: Option<PathBuf>, variant: Option<AgentVariantName>) -> Result<PathBuf, Error> {
+fn apply_manifest_path(
+    filename: Option<PathBuf>,
+    variant: Option<AgentVariantName>,
+    directory: &Path,
+) -> Result<PathBuf, Error> {
     match (filename, variant) {
         (Some(filename), None) => Ok(filename),
         (None, Some(variant)) => Ok(PathBuf::from(variant.filename())),
-        (None, None) => Ok(PathBuf::from(manifest::MANIFEST_FILE)),
+        (None, None) => default_manifest(directory),
         (Some(_), Some(_)) => Err(Error::Invalid("--filename and --variant are mutually exclusive".into())),
     }
+}
+
+/// The manifest `apply` uses without `--filename` in `directory`: its `agent.yaml`. Any other it
+/// finds, as [`found_manifests`] does, it only names, so nothing is applied that was not named.
+fn default_manifest(directory: &Path) -> Result<PathBuf, Error> {
+    if directory.join(manifest::MANIFEST_FILE).is_file() {
+        return Ok(PathBuf::from(manifest::MANIFEST_FILE));
+    }
+    let found = found_manifests(directory);
+    let shown = |path: &PathBuf| path.strip_prefix(directory).unwrap_or(path).display().to_string();
+    Err(Error::Invalid(match found.as_slice() {
+        [] if tui::repository_root(directory).is_some() => {
+            "no agent.yaml in this repository; name a manifest with --filename".into()
+        }
+        [] => "no agent.yaml here or in agents/<name>/; name a manifest with --filename".into(),
+        [only] => format!("no agent.yaml here; apply {0} with `--filename {0}`", shown(only)),
+        several => format!(
+            "no agent.yaml here; name one of these with --filename: {}",
+            several.iter().map(shown).collect::<Vec<_>>().join(", ")
+        ),
+    }))
+}
+
+/// The manifests `agentctl tui` would offer in `directory`: anywhere in its repository or, outside
+/// one, in `agents/<name>/`; variants left out.
+fn found_manifests(directory: &Path) -> Vec<PathBuf> {
+    tui::working_tree_manifests(directory)
+        .into_iter()
+        .filter(|path| path.file_name() == Some(std::ffi::OsStr::new(manifest::MANIFEST_FILE)))
+        .collect()
 }
 
 fn read_apply_request(filename: PathBuf, env_file: Option<PathBuf>) -> Result<ApplyRequest, Error> {
@@ -2168,6 +2235,30 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn help_leads_with_the_purpose_and_the_commands_people_use_first() {
+        let help = <Arguments as clap::CommandFactory>::command().render_help().to_string();
+        assert!(
+            help.starts_with("Run coding agents in sandboxes on this machine"),
+            "{help}"
+        );
+        let commands = help
+            .lines()
+            .skip_while(|line| line.trim() != "Commands:")
+            .skip(1)
+            .take_while(|line| !line.trim().is_empty())
+            .filter_map(|line| line.split_whitespace().next())
+            .collect::<Vec<_>>();
+        assert_eq!(commands[..5], ["tui", "attach", "stop", "kill", "start"], "{help}");
+        for hidden in ["ssh-proxy", "vnc-proxy"] {
+            assert!(!commands.contains(&hidden), "{help}");
+        }
+        assert!(
+            Arguments::try_parse_from(["agentctl", "ssh-proxy", "worker"]).is_ok(),
+            "OpenSSH still runs the hidden command"
+        );
+    }
 
     #[test]
     fn kill_is_stop_now() {
@@ -2556,6 +2647,45 @@ mod tests {
     }
 
     #[test]
+    fn apply_without_a_filename_names_the_manifests_it_finds_but_applies_none() {
+        let folder = tempfile::tempdir().expect("folder");
+        let home = folder.path();
+        let invalid = |result: Result<PathBuf, Error>| match result {
+            Err(Error::Invalid(message)) => message,
+            other => panic!("expected an invalid request, got {other:?}"),
+        };
+        assert!(invalid(default_manifest(home)).starts_with("no agent.yaml here or in agents/<name>/"));
+
+        std::fs::create_dir_all(home.join("agents/notes")).expect("agent folder");
+        std::fs::write(home.join("agents/notes/agent.yaml"), "").expect("manifest");
+        std::fs::write(home.join("agents/notes/agent.gpu.yaml"), "").expect("variant");
+        assert_eq!(found_manifests(home), [home.join("agents/notes/agent.yaml")]);
+        assert_eq!(
+            invalid(default_manifest(home)),
+            "no agent.yaml here; apply agents/notes/agent.yaml with `--filename agents/notes/agent.yaml`"
+        );
+
+        std::fs::create_dir_all(home.join("agents/work")).expect("second agent folder");
+        std::fs::write(home.join("agents/work/agent.yaml"), "").expect("second manifest");
+        assert_eq!(
+            invalid(default_manifest(home)),
+            "no agent.yaml here; name one of these with --filename: agents/notes/agent.yaml, agents/work/agent.yaml"
+        );
+
+        let repository = home.join("code/app");
+        std::fs::create_dir_all(repository.join(".git")).expect("repository");
+        std::fs::create_dir_all(repository.join("deploy/agent")).expect("agent folder");
+        assert!(invalid(default_manifest(&repository)).starts_with("no agent.yaml in this repository"));
+        std::fs::write(repository.join("deploy/agent/agent.yaml"), "").expect("manifest");
+        std::fs::create_dir_all(repository.join("src")).expect("subfolder");
+        assert_eq!(
+            found_manifests(&repository.join("src")),
+            [repository.join("deploy/agent/agent.yaml")],
+            "anywhere in the repository"
+        );
+    }
+
+    #[test]
     fn apply_defaults_to_agent_yaml_and_accepts_only_variant_names() {
         let default = Arguments::try_parse_from(["agentctl", "apply"]).expect("default apply");
         let Command::Apply { filename, variant, .. } = default.command else {
@@ -2563,8 +2693,10 @@ mod tests {
         };
         assert!(filename.is_none());
         assert!(variant.is_none());
+        let here = tempfile::tempdir().expect("directory");
+        std::fs::write(here.path().join("agent.yaml"), "").expect("manifest");
         assert_eq!(
-            apply_manifest_path(filename, variant).expect("default path"),
+            apply_manifest_path(filename, variant, here.path()).expect("default path"),
             Path::new("agent.yaml")
         );
 
@@ -2574,7 +2706,7 @@ mod tests {
             panic!("expected apply command");
         };
         assert_eq!(
-            apply_manifest_path(filename, variant).expect("variant path"),
+            apply_manifest_path(filename, variant, here.path()).expect("variant path"),
             Path::new("agent.nested-build.yaml")
         );
         assert!(Arguments::try_parse_from(["agentctl", "apply", "-f", "agent.yaml", "--variant", "nested"]).is_err());
@@ -2621,6 +2753,85 @@ mod tests {
     }
 
     #[test]
+    fn errors_are_printed_without_type_prefixes() {
+        let rpc = |code, message: &str| {
+            CommandError::Agent(Error::Rpc(agent::control_api::ResponseError {
+                code,
+                message: message.into(),
+            }))
+        };
+        assert_eq!(
+            error_text(&rpc(-32602, "spec.harnesses must not be empty")),
+            "agentctl: spec.harnesses must not be empty"
+        );
+        assert_eq!(
+            error_text(&rpc(-32603, "Agent Sandbox setup failed: no space left")),
+            "agentctl: Agent Sandbox setup failed: no space left",
+            "an internal error from agentd is shown as agentd wrote it"
+        );
+        assert_eq!(
+            error_text(&CommandError::Agent(Error::Invalid(
+                "at least one port mapping is required".into()
+            ))),
+            "agentctl: at least one port mapping is required"
+        );
+        assert_eq!(
+            error_text(&rpc(-32009, "Agent resource changed concurrently")),
+            "agentctl: Agent resource changed concurrently",
+            "a conflict shares the code but is not about an immutable field"
+        );
+        assert_eq!(
+            error_text(&CommandError::Agent(Error::NotFound)),
+            "agentctl: Agent not found"
+        );
+    }
+
+    #[test]
+    fn a_refused_apply_says_how_to_change_an_immutable_field_of_the_named_agent() {
+        let rpc = |message: &str| {
+            Error::Rpc(agent::control_api::ResponseError {
+                code: -32009,
+                message: message.into(),
+            })
+        };
+        let immutable = error_text(&apply_error(
+            rpc("immutable Agent field changed: spec.sandbox.image"),
+            "dev",
+        ));
+        assert_eq!(
+            immutable.lines().collect::<Vec<_>>(),
+            [
+                "agentctl: immutable Agent field changed: spec.sandbox.image",
+                "That changes only by creating the agent again, which starts its disk over: `agentctl delete agent/dev`, then apply.",
+            ]
+        );
+        assert_eq!(
+            error_text(&apply_error(
+                rpc("immutable Agent field changed: sourceDirectory"),
+                "dev"
+            )),
+            "agentctl: immutable Agent field changed: sourceDirectory",
+            "a name taken by another directory's agent, as an older agentd reports it, never suggests deleting it"
+        );
+        let clash = "an agent named \"dev\" was already applied from /work/other; choose another name in metadata.name or pass `--name`";
+        assert_eq!(
+            error_text(&apply_error(
+                Error::Rpc(agent::control_api::ResponseError {
+                    code: -32602,
+                    message: clash.into(),
+                }),
+                "dev"
+            )),
+            format!("agentctl: {clash}")
+        );
+        assert_eq!(
+            error_text(&apply_error(rpc("Agent resource changed concurrently"), "dev")),
+            "agentctl: Agent resource changed concurrently",
+            "a conflict shares the code but is not about an immutable field"
+        );
+    }
+
+    #[test]
     fn inference_errors_have_one_actionable_message() {
         let ambiguous = inference_error(Error::Rpc(agent::control_api::ResponseError {
             code: -32602,
@@ -2637,7 +2848,7 @@ mod tests {
         }));
         assert_eq!(
             missing.to_string(),
-            "no agent was applied from the current directory; specify --agent or --variant"
+            "no agent here; `agentctl apply` creates one, or pass --agent NAME"
         );
     }
 
