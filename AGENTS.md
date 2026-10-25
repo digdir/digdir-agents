@@ -17,8 +17,9 @@ This applies to docs, skills, pull request descriptions and comments, and commit
 - Write the way you would say it to a colleague. Use periods rather than semicolons or em dashes.
 - When you fix a problem in a text, check the rest of it for the same problem.
 - Write for the reader, not as a record of your work. Leave out the steps you took, what you tried first, who found
-  what and lists the diff already shows, such as every test you added. The reviewer has the diff, and every extra line
-  is one more to read before the part that matters.
+  what and lists the diff already shows, such as every test you added. The person prompting you has already seen
+  your process. The reviewer has the diff. What they need from you is what it can't show, such as why the change
+  looks like this. Notes on your process dilute that.
 - When more work changes a pull request, rewrite its description to describe the change as it now is, instead of
-  adding to it. Appended rounds turn it into a history the reviewer has to replay to learn the result. A commit
-  message or one short comment can say what changed since the last review.
+  appending to it. Appended rounds turn it into a history the reviewer has to replay to learn the result. A short
+  comment can say what changed since the last review.
