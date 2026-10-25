@@ -164,6 +164,13 @@ jobs:
           gh release create "${TAG}" --draft --prerelease --latest=false --target "${GITHUB_SHA}" \
             --title "agentctl ${VERSION}" --notes-file release-notes.md
           gh release upload "${TAG}" dist/*
+          # A tag pushed since the check would take the release in place of the commit this run built.
+          status=0
+          git ls-remote --exit-code origin "refs/tags/${TAG}" > /dev/null || status=$?
+          if [ "${status}" != 2 ]; then
+            echo "::error::${TAG} appeared since the check, or could not be checked. The draft stays unpublished"
+            exit 1
+          fi
           gh release edit "${TAG}" --draft=false
 
   image-tag:
