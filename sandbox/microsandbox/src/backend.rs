@@ -346,7 +346,7 @@ impl MicrosandboxProvider {
                 if running {
                     modification = modification.next_start();
                 }
-                modification.apply().await.map_err(error::microsandbox)?;
+                Box::pin(modification.apply()).await.map_err(error::microsandbox)?;
                 if running {
                     stop_runtime(&handle, &record.runtime_name).await?;
                 }
@@ -402,7 +402,7 @@ impl MicrosandboxProvider {
                 modification = modification.env(name, value);
             }
             let step = progress.start_step(UPDATE_RUNTIME_ENVIRONMENT).await;
-            modification.apply().await.map_err(error::microsandbox)?;
+            Box::pin(modification.apply()).await.map_err(error::microsandbox)?;
             step.complete().await;
         }
 
@@ -954,7 +954,7 @@ async fn converge_next_start(
         record.resources.nested_sandboxes(),
     );
     if changed {
-        modification.apply().await.map_err(error::microsandbox)?;
+        Box::pin(modification.apply()).await.map_err(error::microsandbox)?;
     }
     Ok(())
 }
