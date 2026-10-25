@@ -143,7 +143,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -154,7 +154,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -890,7 +890,7 @@ dependencies = [
  "maybe-owned",
  "rustix",
  "rustix-linux-procfs",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
  "winx",
 ]
 
@@ -1670,7 +1670,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1801,7 +1801,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3152,6 +3152,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lru"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a9f71e3591c7ec44d3e563e87bf14ddc2bada8519dca046e5b0e560cd004e2d"
+dependencies = [
+ "hashbrown 0.17.1",
+]
+
+[[package]]
 name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3237,8 +3246,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "astral-tokio-tar",
  "async-compression",
@@ -3280,7 +3289,7 @@ dependencies = [
  "serde_ignored",
  "serde_json",
  "sha2 0.11.0",
- "sqlx",
+ "socket2",
  "tar",
  "tempfile",
  "thiserror 2.0.20",
@@ -3294,8 +3303,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-agent-client"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "bytes",
  "ciborium",
@@ -3314,8 +3323,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-control-client"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "microsandbox-protocol",
  "microsandbox-protocol-client",
@@ -3330,8 +3339,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-db"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "async-trait",
  "microsandbox-types",
@@ -3345,8 +3354,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-filesystem"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "bincode",
  "crossbeam-channel",
@@ -3366,8 +3375,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-image"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "astral-tokio-tar",
  "async-compression",
@@ -3384,6 +3393,7 @@ dependencies = [
  "oci-spec",
  "rand 0.10.2",
  "rustls-pki-types",
+ "scc",
  "scopeguard",
  "serde",
  "serde_json",
@@ -3398,8 +3408,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-metrics"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "chrono",
  "libc",
@@ -3409,8 +3419,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-migration"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "microsandbox-db",
  "sea-orm-migration",
@@ -3419,8 +3429,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-network"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -3432,12 +3442,13 @@ dependencies = [
  "httparse",
  "ipnetwork",
  "libc",
- "lru",
+ "lru 0.19.0",
  "microsandbox-protocol",
  "microsandbox-types",
  "microsandbox-utils",
  "msb_krun",
  "msb_krun_utils",
+ "msb_smoltcp",
  "parking_lot",
  "pem",
  "percent-encoding",
@@ -3448,7 +3459,6 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
- "smoltcp",
  "socket2",
  "thiserror 2.0.20",
  "time",
@@ -3462,8 +3472,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-protocol"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "bytes",
  "chrono",
@@ -3479,8 +3489,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-protocol-client"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "microsandbox-protocol",
  "serde",
@@ -3491,8 +3501,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-runtime"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "base64 0.23.1",
  "cap-primitives",
@@ -3524,8 +3534,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-types"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "chrono",
  "hex",
@@ -3541,8 +3551,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-types-macros"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3551,8 +3561,8 @@ dependencies = [
 
 [[package]]
 name = "microsandbox-utils"
-version = "0.7.8-digdir.2"
-source = "git+https://github.com/digdir/microsandbox.git?rev=e9e826c0cf94d28efc6d93b196fdf468f9f15753#e9e826c0cf94d28efc6d93b196fdf468f9f15753"
+version = "0.7.11-digdir.1"
+source = "git+https://github.com/digdir/microsandbox.git?rev=fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5#fefba4f15fc1a7f4f84afd80b603ce084a6bb7e5"
 dependencies = [
  "dirs",
  "libc",
@@ -3710,7 +3720,7 @@ dependencies = [
  "libc",
  "libloading",
  "log",
- "lru",
+ "lru 0.19.0",
  "msb-imago",
  "msb-vm-memory",
  "msb_krun_arch",
@@ -3815,6 +3825,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "msb_smoltcp"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6e3b05b43a1011476dc573c30f6ae7d0b49af37d2a4d43252a86edbe14ee275"
+dependencies = [
+ "bitflags 1.3.2",
+ "byteorder",
+ "cfg-if",
+ "defmt",
+ "heapless",
+ "managed",
+]
+
+[[package]]
 name = "nix"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3896,7 +3920,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4656,7 +4680,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4799,7 +4823,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "itertools",
  "kasuari",
- "lru",
+ "lru 0.18.2",
  "palette",
  "serde",
  "strum 0.28.0",
@@ -5176,7 +5200,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5245,7 +5269,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5277,6 +5301,12 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "saa"
+version = "5.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd85992a680de788217d9c70b74aa7685b108cf1aba02f728fb27f1b27199ad1"
 
 [[package]]
 name = "same-file"
@@ -5350,6 +5380,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "scc"
+version = "3.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d5f8ca67c4f6208caf824037a6a9df0211b4e0937fccc4f543441f294d04511"
+dependencies = [
+ "saa",
+ "sdd",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5363,6 +5403,15 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "sdd"
+version = "4.8.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a31877eee03686b905845993b5d9809a220c9dd5a10e9d6021d7ca67384c9070"
+dependencies = [
+ "saa",
+]
 
 [[package]]
 name = "sea-bae"
@@ -5817,27 +5866,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "smoltcp"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6f8b28ad56c6e35524a37dd492af5d1a47e31e1a4d175cd12f89c075f01980f"
-dependencies = [
- "bitflags 1.3.2",
- "byteorder",
- "cfg-if",
- "defmt",
- "heapless",
- "managed",
-]
-
-[[package]]
 name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6275,7 +6310,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6288,7 +6323,7 @@ dependencies = [
  "parking_lot",
  "rustix",
  "signal-hook",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7180,7 +7215,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
