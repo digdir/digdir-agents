@@ -31,6 +31,10 @@ Update with `agentctl self update`. Agents and Sessions carry over.
 
 ## Your first Agent
 
+`agentctl status` shows whether agentd answers, which harness logins are stored, the current directory's Agent and a
+count of every Agent, with the commands to run next. `agentctl status --json` prints the same as a JSON object whose
+keys stay stable, for agents and scripts that check their own setup.
+
 Start from the [.NET example](../agents/examples/dotnet-dev/), an [Agent definition](../GLOSSARY.md) whose manifest
 and image explain each line. Let an agent make it yours: ask Claude Code or Codex to copy it and change it for the
 tools and repositories your work needs. An agent working in an Agent can apply what it writes as a nested Agent and
