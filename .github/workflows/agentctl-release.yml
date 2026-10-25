@@ -141,13 +141,28 @@ jobs:
           path: notices/THIRD_PARTY_NOTICES.md
           if-no-files-found: error
 
+  # The required check. A skipped check counts as passed, so this job runs when anything it needs failed, and fails.
+  # Pull requests that release nothing skip it.
   assemble:
     name: Assemble release
     needs: [version, notices, build, image]
+    if: >-
+      ${{ !cancelled() && github.event_name != 'push'
+      && (needs.version.result != 'success' || needs.version.outputs.release == 'true') }}
     runs-on: ubuntu-24.04
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
+      - name: Require every job this release needs to have passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed="$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key): \(.value.result)"' <<< "${NEEDS}")"
+          if [ -n "${failed}" ]; then
+            echo "::error::the release cannot be assembled: ${failed//$'\n'/, }"
+            exit 1
+          fi
+
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
