@@ -569,8 +569,8 @@ enum CodexCommand {
 enum GithubCommand {
     /// Store a GitHub token for agents of one user or organization, separate from any `gh` login.
     ///
-    /// At a terminal it asks how: signing in through the browser as an account with the GitHub
-    /// CLI, kept apart from your own `gh` login, or creating a fine-grained token in GitHub's form,
+    /// At a terminal it asks how: signing in through the browser as an account made for agents
+    /// with the GitHub CLI, kept apart from your own `gh` login, or creating a fine-grained token in GitHub's form,
     /// with everything but the repositories filled in, and pasting it; it is not shown. What
     /// GitHub says about the token is shown before anything is stored. Agents whose manifest has
     /// `accounts: [{type: github, owner: OWNER}]` use it, and those that failed for want of it

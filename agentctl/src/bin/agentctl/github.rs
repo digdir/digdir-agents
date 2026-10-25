@@ -114,8 +114,8 @@ enum SignIn {
 /// How agents can sign in: the first through the browser with the GitHub CLI, the second with a
 /// fine-grained token from GitHub's form.
 const SIGN_IN_OPTIONS: [&str; 2] = [
-    "Sign in through the browser as an account, such as the agents' own",
-    "Create a token for one owner's repositories",
+    "Sign in through the browser as a GitHub account made for agents, not your own",
+    "Create a token for one organization's repositories",
 ];
 
 /// `gh`, or when it is missing, `None` after saying that the browser sign-in needs it.

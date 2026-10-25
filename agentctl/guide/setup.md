@@ -47,10 +47,10 @@ Ask only what the person decides and you cannot find out. Usually:
   edits change their files directly)? Mount only the folders the work needs. Never mount a home directory itself
   or a folder holding credentials, such as `~/.ssh`, `~/.aws`, `~/.config` or `~/.agent`: the sandbox exists to keep
   those out.
-- Does it need to push to GitHub, open pull requests or clone private repositories? Then it needs a GitHub account:
-  ask whether it should act as its own GitHub account across organizations, or with a token for one organization's
-  repositories (`agentctl guide accounts`). An agent for a folder usually works across organizations, so propose its
-  own account there; propose a token when its work stays in one organization.
+- Does it need to push to GitHub, open pull requests or clone private repositories? Then it needs GitHub access:
+  ask whether they have a GitHub account made for agents. If so, the agent signs in as that account, which works
+  across organizations; if not, it uses a token for one organization's repositories (`agentctl guide accounts`).
+  Never propose their own account, and don't explain tokens or scopes unless they ask.
 - Which coding agent should it run? Propose the one you are (`claudeCode`, `codex` or `pi` in the manifest).
 - Does it need to run containers, test web apps in a browser, or use a desktop they can watch?
 - Anything it must not do, or anything they always want it to do?

@@ -8,8 +8,8 @@ has at most one account: never write a second `accounts` entry, which the manife
 
 Ask the person, in plain words, which of these they want:
 
-- **The agent acts as its own GitHub account**, such as `my-org-agent`, which works across organizations the way a
-  person does. They sign in through the browser as that account. The owner in the manifest is that account's login:
+- **The agent acts as a GitHub account made for agents**, such as `my-org-agent` or `alice-agent`, which works
+  across organizations the way a person does. They sign in through the browser as that account. The owner in the manifest is that account's login:
   `accounts: [{type: github, owner: my-org-agent}]`.
 - **The agent uses a token for one organization's repositories.** They create a fine-grained token in GitHub's form
   and pick the repositories there. The owner in the manifest is the organization: `owner: my-org`.
@@ -27,8 +27,9 @@ its owner, or with `--owner my-org`; an organization may have to approve the tok
 repositories. agentctl shows which account the token acts as, and warns when it cannot see the repository or expires
 soon, before it is stored. Never ask for the token or read it.
 
-Suggest a dedicated account, such as a bot, rather than the person's own: what the agent does on GitHub is then
-told apart from what they do, and the account reaches only what it is given. Which organizations and repositories
+Ask first whether they have an account made for agents; if not, the token is the way. Never propose the person's
+own account: what the agent does on GitHub should be told apart from what they do, and an account for agents reaches
+only what it is given. agentctl does not check which account they sign in as; that is up to them. Which organizations and repositories
 it reaches is up to that account or token, can change at any time, and you can't see it: don't write it in the
 agent's instructions.
 
