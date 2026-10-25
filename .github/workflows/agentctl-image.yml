@@ -1,8 +1,8 @@
 # Builds the agentctl image from images/agentctl: agentctl and agentd alone, for Agent images to copy in. Pull requests
 # that change the Rust workspace or the image only build it. Every push to main that does, and a manual run on main,
 # publishes it to ghcr.io/digdir/agentctl as `sha-<commit>`, and as `main` while no newer commit has started a run. The
-# release workflow calls this one to build a release's, and once the release is published, to publish it as
-# `<version>`, such as `v0.1.0-preview.13`.
+# release workflow calls this one on a release pull request to push the release's image by digest, and tags it as
+# `<version>`, such as `v0.1.0-preview.13`, once the release is published.
 name: agentctl image
 
 on:
@@ -45,18 +45,23 @@ on:
         type: string
         required: true
       publish:
-        description: Publish the image, rather than only build it as a release dry run does
+        description: >-
+          Push the image by digest for the release workflow to tag once the release is published, rather than only
+          build it as a release dry run does
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
   packages: write
 
 # A pull request's newer push cancels its older run. On main each commit has a group of its own: a group keeps only
-# one pending run, and a commit whose run were replaced would get no sha- tag.
+# one pending run, and a commit whose run were replaced would get no sha- tag. A release's build has its own group, so
+# that it and the same pull request's own image check cannot cancel each other.
 concurrency:
-  group: agentctl-image-${{ github.event.pull_request.number || inputs.version || github.sha }}
+  group: >-
+    agentctl-image-${{ inputs.version && format('release-{0}', inputs.version)
+    || github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -65,9 +70,9 @@ env:
 jobs:
   resolve:
     # Drafts are skipped unless labeled `ci`, from their next push, as in CI. Converting to a draft or closing starts a
-    # run that skips every job, which cancels the one in progress.
+    # run that skips every job, which cancels the one in progress. A release's build always runs.
     if: >-
-      ${{ github.event_name != 'pull_request' || (github.event.action != 'closed'
+      ${{ inputs.version != '' || github.event_name != 'pull_request' || (github.event.action != 'closed'
       && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'ci'))) }}
     name: Resolve version
     runs-on: ubuntu-24.04
@@ -75,8 +80,8 @@ jobs:
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       epoch: ${{ steps.resolve.outputs.epoch }}
-      # `build` pushes nothing, `main` publishes the sha- and main tags and writes the cache, and `release` publishes
-      # the version.
+      # `build` pushes nothing, `main` publishes the sha- and main tags and writes the cache, and `release` pushes the
+      # image by digest alone, for the release workflow to tag.
       mode: ${{ steps.resolve.outputs.mode }}
     steps:
       - name: Checkout code
@@ -152,7 +157,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
   # Each architecture builds on a native runner, as the other images do. When publishing, each pushes its image by
-  # digest, and the publish job joins them into the tagged multi-platform image.
+  # digest, to be joined into the tagged multi-platform image.
   build:
     name: Build image (${{ matrix.arch }})
     needs: resolve
@@ -194,7 +199,7 @@ jobs:
           cache="${REPOSITORY}:buildcache-${ARCH}"
           set -- --set "agentctl.platform=linux/${ARCH}" --set "agentctl.cache-from=type=registry,ref=${cache}"
           if [ "${MODE}" != build ]; then
-            # Without clearing the bake file's tags, buildx refuses to push by digest; the publish job tags.
+            # Without clearing the bake file's tags, buildx refuses to push by digest. The image is tagged later.
             set -- "$@" \
               --set "agentctl.tags=" \
               --set "agentctl.output=type=image,name=${REPOSITORY},push-by-digest=true,name-canonical=true,push=true,rewrite-timestamp=true"
@@ -224,10 +229,11 @@ jobs:
           name: agentctl-image-digest-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/
           if-no-files-found: error
-          retention-days: 1
+          # A release's are kept until its pull request has merged, which tags the image they name.
+          retention-days: ${{ needs.resolve.outputs.mode == 'release' && 90 || 1 }}
 
   publish:
-    if: needs.resolve.outputs.mode != 'build'
+    if: needs.resolve.outputs.mode == 'main'
     name: Publish image
     needs: [resolve, build]
     runs-on: ubuntu-24.04
@@ -260,30 +266,24 @@ jobs:
       - name: Tag multi-platform image
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.resolve.outputs.version }}
-          MODE: ${{ needs.resolve.outputs.mode }}
         run: |
           set -euo pipefail
 
-          if [ "${MODE}" = release ]; then
-            tags="${VERSION}"
-          else
-            tags="sha-${GITHUB_SHA::10}"
-            newer=""
-            for sha in $(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/agentctl-image.yml/runs?branch=main&per_page=20" \
-              --jq '[.workflow_runs[] | select(.event != "pull_request") | .head_sha] | unique | .[]'); do
-              # A commit since force-pushed off main cannot be compared, and is not newer.
-              status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${GITHUB_SHA}...${sha}" --jq .status || true)"
-              if [ "${status}" = ahead ]; then
-                newer="${sha}"
-                break
-              fi
-            done
-            if [ -z "${newer}" ]; then
-              tags="${tags} main"
-            else
-              echo "${newer} is newer and has a run; leaving the main tag to it"
+          tags="sha-${GITHUB_SHA::10}"
+          newer=""
+          for sha in $(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/agentctl-image.yml/runs?branch=main&per_page=20" \
+            --jq '[.workflow_runs[] | select(.event != "pull_request") | .head_sha] | unique | .[]'); do
+            # A commit since force-pushed off main cannot be compared, and is not newer.
+            status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${GITHUB_SHA}...${sha}" --jq .status || true)"
+            if [ "${status}" = ahead ]; then
+              newer="${sha}"
+              break
             fi
+          done
+          if [ -z "${newer}" ]; then
+            tags="${tags} main"
+          else
+            echo "${newer} is newer and has a run; leaving the main tag to it"
           fi
 
           set --

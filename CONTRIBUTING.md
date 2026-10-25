@@ -47,10 +47,21 @@ and `agentd` under the `agentctl/v*` tag. `make changelog-validate` checks it.
 To release:
 
 1. Open a pull request that renames `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and adds an empty
-   `## [Unreleased]` above it.
-2. Once it is merged, run the release workflow manually on `main` with the version, as a dry run.
-3. Push the tag `agentctl/vX.Y.Z`. The release workflow publishes that changelog section as the release notes. A tag
-   can never be moved or reused.
+   `## [Unreleased]` above it. The [release workflow](.github/workflows/agentctl-release.yml) runs on every pull
+   request, and treats one as the release when it dates a version that `main` does not and that has no tag yet. For
+   that pull request it builds and smoke-tests the archives for every host, builds the image, and assembles the
+   release, with that changelog section as the release notes. For any other pull request it stops in seconds.
+2. Merge it once its "Assemble release" check has passed. The release workflow then publishes exactly what the pull
+   request built, and creates the tag `agentctl/vX.Y.Z` as it does. Nothing is built after the merge, so a failure
+   there spends no version, since a tag can never be moved or reused. Never push the tag yourself.
+
+If the release fails, it has created no git tag or GitHub release, and the version is still free:
+
+- If it says no run built the merged tree, `main` moved between the pull request's run and its merge, so that run
+  built another tree. Run the release workflow on `main` by hand. It builds the release for `main` and publishes it in
+  the same run.
+- Otherwise, fix the cause and re-run the failed job in the run that the merge started, so that it publishes the
+  files the pull request built.
 
 ## Maintenance
 

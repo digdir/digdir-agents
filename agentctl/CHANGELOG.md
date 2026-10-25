@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Entries should describe only user-facing functionality in clear, user-friendly language; omit implementation details that do not affect how people use the product.
 Section ordering: Added, Changed, Fixed, Removed, Security, Deprecated.
 
-The version is the Agent release published by the `agentctl/v*` tag, covering `agentctl`, `agentd` and the example
+The version is the Agent release published under the `agentctl/v*` tag, covering `agentctl`, `agentd` and the example
 Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
