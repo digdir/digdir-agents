@@ -167,7 +167,7 @@ impl Provider for MemoryProvider {
                 .agent
                 .spec
                 .sandbox
-                .resolve_from(&record.source_directory, &self.default_architecture);
+                .resolve_from(&record.source_directory, &self.default_architecture)?;
             // Like Microsandbox, starting a stopped Sandbox restarts its runtime.
             let was_stopped = self
                 .service
@@ -617,6 +617,26 @@ async fn bind_mounts_resolve_from_the_manifest_and_drive_directory_inference_and
         .await
         .expect("materialized Sandbox");
     assert_eq!(materialized.mounts, record.agent.spec.sandbox.resolved_mounts());
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_bind_mount_source_starting_with_a_tilde_resolves_below_the_home_directory() {
+    let fixture = fixture();
+    let temporary = TempDirectory::new("tilde-mount");
+    let workspace = temporary.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace directory");
+    let mut request = apply_request("worker");
+    request.agent.spec.sandbox.mounts.push(MountSpec::Bind {
+        source: support::via_home(&workspace),
+        target: SandboxPath::new("/home/agent/code/workspace"),
+        read_only: false,
+    });
+
+    let applied = fixture.control_plane.apply(request).await.expect("apply");
+    let MountSpec::Bind { source, .. } = &applied.spec.sandbox.mounts[0] else {
+        panic!("expected bind Mount");
+    };
+    assert_eq!(source, &std::fs::canonicalize(&workspace).expect("canonical workspace"));
 }
 
 #[tokio::test(flavor = "local")]

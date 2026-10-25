@@ -97,3 +97,21 @@ impl TempDirectory {
         self.0.path()
     }
 }
+
+/// Spells an absolute `path` as `~/../…/path`.
+pub(crate) fn via_home(path: &std::path::Path) -> PathBuf {
+    use std::path::Component;
+
+    let home = agent::local::home::user_home_directory().expect("home directory");
+    let depth = home
+        .components()
+        .filter(|component| matches!(component, Component::Normal(_)))
+        .count();
+    let below_root = path
+        .components()
+        .filter(|component| matches!(component, Component::Normal(_)));
+    std::iter::once(Component::Normal("~".as_ref()))
+        .chain(std::iter::repeat_n(Component::ParentDir, depth))
+        .chain(below_root)
+        .collect()
+}

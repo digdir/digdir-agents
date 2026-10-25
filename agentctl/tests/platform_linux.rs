@@ -144,7 +144,8 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         .agent
         .spec
         .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
     // The optional gateway key was not configured, so preparation gave the Sandbox no placeholder.
     let sandbox = service
         .ensure(
@@ -249,7 +250,8 @@ async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns
         .agent
         .spec
         .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
     let sandbox = service
         .ensure(&EnsureSandboxRequest::new(
             record.sandbox_name().expect("Sandbox name"),
@@ -340,7 +342,8 @@ async fn linux_setup_approves_claude_bash_requests_in_bypass_mode_for_every_clau
         .agent
         .spec
         .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
     let sandbox = service
         .ensure(&EnsureSandboxRequest::new(
             record.sandbox_name().expect("Sandbox name"),
@@ -469,7 +472,8 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
         .agent
         .spec
         .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
     let sandbox = service
         .ensure(
             &EnsureSandboxRequest::new(record.sandbox_name().expect("Sandbox name"), spec)
@@ -568,7 +572,8 @@ async fn linux_setup_waits_for_systemd_and_restores_managed_podman_configuration
         .agent
         .spec
         .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
     let sandbox = service
         .ensure(&EnsureSandboxRequest::new(
             record.sandbox_name().expect("Sandbox name"),
@@ -651,7 +656,8 @@ async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
         .agent
         .spec
         .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
     let sandbox = service
         .ensure(&EnsureSandboxRequest::new(
             record.sandbox_name().expect("Sandbox name"),
@@ -703,7 +709,8 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
         .agent
         .spec
         .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
     let sandbox = service
         .ensure(&EnsureSandboxRequest::new(
             record.sandbox_name().expect("Sandbox name"),
@@ -766,7 +773,8 @@ async fn linux_setup_rejects_partial_git_identity() {
         .agent
         .spec
         .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
     let sandbox = service
         .ensure(
             &EnsureSandboxRequest::new(record.sandbox_name().expect("Sandbox name"), spec)
@@ -813,7 +821,8 @@ async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injectio
         .agent
         .spec
         .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
     let sandbox = service
         .ensure(&EnsureSandboxRequest::new(
             record.sandbox_name().expect("Sandbox name"),
@@ -839,6 +848,77 @@ async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injectio
             .trim_ascii_end(),
         PLATFORM_API_URL.as_bytes(),
         "a pass that fails later still points running harnesses at the current endpoint"
+    );
+}
+
+#[tokio::test(flavor = "local")]
+async fn linux_setup_reads_home_instructions_and_skills_below_the_home_directory_for_a_tilde() {
+    let directory = TempDir::new().expect("temporary directory");
+    let home = directory.path().join("home");
+    std::fs::create_dir_all(&home).expect("home directory");
+    std::fs::write(home.join("tilde-marker"), "home").expect("home file");
+    std::fs::write(directory.path().join("instructions.md"), "tilde instructions\n").expect("instruction file");
+    let skill = directory.path().join("skills").join("evidence");
+    std::fs::create_dir_all(&skill).expect("skill directory");
+    std::fs::write(skill.join("SKILL.md"), "capture").expect("skill file");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home.source = support::via_home(&home);
+    resource.spec.instructions = vec![agent::InstructionsSpec {
+        source: support::via_home(&directory.path().join("instructions.md")),
+    }];
+    resource.spec.skills = vec![agent::SkillSpec {
+        source: support::via_home(&skill),
+        name: None,
+    }];
+    let record = AgentRecord {
+        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
+        source_directory: directory.path().join("manifest"),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    };
+    let backend = Rc::new(memory::Provider::new());
+    backend.queue_execution_events_matching(
+        is_claude_version,
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
+            ExecutionEvent::Exited(ExitStatus { code: 0 }),
+        ],
+    );
+    backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    let service = SandboxService::new(backend);
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+
+    Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("setup");
+
+    let archive = read_file(&sandbox, "/tmp/agent-home.tar").await;
+    assert!(
+        archive
+            .windows(b"tilde-marker".len())
+            .any(|window| window == b"tilde-marker")
+    );
+    let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+    assert!(instructions.ends_with("\n\ntilde instructions\n"), "{instructions}");
+    assert_eq!(
+        read_file(&sandbox, "/home/agent/.claude/skills/evidence/SKILL.md").await,
+        b"capture"
     );
 }
 
@@ -888,7 +968,8 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
         .agent
         .spec
         .sandbox
-        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
     let sandbox = service
         .ensure(&EnsureSandboxRequest::new(
             record.sandbox_name().expect("Sandbox name"),

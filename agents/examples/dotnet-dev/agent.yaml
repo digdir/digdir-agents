@@ -2,7 +2,8 @@
 # Code, Codex and Pi, which clones your repositories at boot and works on GitHub without the token ever entering it.
 #
 # Copy this Agent definition, the directory this file is in, to start your own Agent. The values here are the ones we
-# recommend. Paths in a manifest resolve against the directory it is in.
+# recommend. Paths in a manifest resolve against the directory it is in, or against your home directory when they
+# start with `~/`.
 apiVersion: agents.platform/v1alpha1
 kind: Agent
 metadata:

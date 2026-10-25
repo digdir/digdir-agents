@@ -102,7 +102,7 @@ impl Adapter {
         format!("http://{HOST_ALIAS}:{}", self.platform_port)
     }
 
-    fn sandbox_spec(&self, record: &AgentRecord) -> ::sandbox::SandboxSpec {
+    fn sandbox_spec(&self, record: &AgentRecord) -> Result<::sandbox::SandboxSpec, Error> {
         record
             .agent
             .spec
@@ -113,7 +113,7 @@ impl Adapter {
     /// Reports whether the Provider offers nested Sandboxes for the Agent's platform, and why not
     /// when it does not.
     async fn nested_sandboxes_offered(&self, record: &AgentRecord) -> Result<Result<(), String>, Error> {
-        let capabilities = self.service.capabilities(&self.sandbox_spec(record).platform).await?;
+        let capabilities = self.service.capabilities(&self.sandbox_spec(record)?.platform).await?;
         if capabilities
             .features()
             .contains(::sandbox::SandboxFeature::NestedSandboxes)
@@ -137,7 +137,7 @@ impl Provider for Adapter {
 
     fn supports<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<bool, Error>> {
         Box::pin(async move {
-            match self.service.capabilities(&self.sandbox_spec(record).platform).await {
+            match self.service.capabilities(&self.sandbox_spec(record)?.platform).await {
                 Ok(capabilities) => Ok(Self::sandbox_mounts(record)
                     .iter()
                     .all(|mount| capabilities.mount_kinds().contains(mount.kind()))),
@@ -177,7 +177,7 @@ impl Provider for Adapter {
                 }
             }
             let sandbox_name = record.sandbox_name()?;
-            let mut spec = self.sandbox_spec(record);
+            let mut spec = self.sandbox_spec(record)?;
             spec.resources = spec
                 .resources
                 .with_nested_sandboxes(nested_sandboxes == Some(NestedSandboxesOutcome::Available));

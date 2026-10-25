@@ -621,11 +621,11 @@ async fn resolve_mount_sources(agent: &mut Agent, source_directory: &std::path::
         let MountSpec::Bind { source, .. } = mount else {
             continue;
         };
-        let unresolved = if source.is_absolute() {
-            source.clone()
-        } else {
-            source_directory.join(&*source)
-        };
+        let unresolved = crate::manifest::resolve_host_path(
+            source_directory,
+            source,
+            &format!("spec.sandbox.mounts[{index}].source"),
+        )?;
         let resolved = tokio::fs::canonicalize(&unresolved).await.map_err(|error| {
             Error::Invalid(format!(
                 "spec.sandbox.mounts[{index}].source {} cannot be resolved: {error}",
