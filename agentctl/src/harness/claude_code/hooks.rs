@@ -40,6 +40,15 @@ pub(super) fn script() -> Result<String, serde_json::Error> {
     SCRIPT.render()
 }
 
+/// The `PermissionRequest` entry that answers Bash requests without the operator. It needs no
+/// Session, so Claude Code processes the platform does not launch get it too.
+pub(super) fn bash_approval() -> serde_json::Value {
+    serde_json::json!({
+        "matcher": "^Bash$",
+        "hooks": [{ "type": "command", "command": BASH_APPROVAL_COMMAND }]
+    })
+}
+
 /// The `hooks` value of Claude Code's settings. Automatically approve Bash requests;
 /// notify agentd about other permission prompts and Session activity.
 pub(super) fn configuration(hook_path: &str) -> serde_json::Value {
@@ -51,10 +60,7 @@ pub(super) fn configuration(hook_path: &str) -> serde_json::Value {
                 return (
                     event.to_owned(),
                     serde_json::json!([
-                        {
-                            "matcher": "^Bash$",
-                            "hooks": [{ "type": "command", "command": BASH_APPROVAL_COMMAND }]
-                        },
+                        bash_approval(),
                         // Reporting an auto-approved call as WaitingForInput would end a
                         // prompt --wait before Claude has finished the turn.
                         { "matcher": "^(?!Bash$)", "hooks": [command] }
