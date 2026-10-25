@@ -24,7 +24,11 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 - At a terminal, `agentctl` on its own, `attach`, `exec` and `ssh` offer what the Agent here needs: ([Your first Agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#240](https://github.com/digdir/digdir-agents/issues/240))
   - to start it when it is stopped
   - to open it in `agentctl tui`, from `agentctl` on its own
+  - to set one up with `agentctl init` where there is none, or finish one written but never started
 - `agentctl attach` without a Session opens the Agent's only one, starts one when it has none, or asks which. ([Your first Agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#240](https://github.com/digdir/digdir-agents/issues/240))
+- `agentctl init` sets up an Agent with your coding agent, on your machine: ([Your first Agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#240](https://github.com/digdir/digdir-agents/issues/240))
+  - it starts Claude Code, Codex or Pi, or prints the request to paste when none is installed
+  - afterwards it offers a Session in the new Agent
 
 ### Changed
 

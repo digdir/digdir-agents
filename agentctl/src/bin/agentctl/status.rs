@@ -103,6 +103,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client, json: bool) ->
         Err(Error::Rpc(error)) if error.is_invalid_params() => Err(error.message),
         Err(error) => return Err(error.into()),
     };
+    let unapplied = crate::unapplied(&path);
     let daemon = Agentd {
         version: daemon.build_version,
         home: home.path().to_path_buf(),
@@ -116,7 +117,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client, json: bool) ->
         agents: &agents,
         sessions: &sessions,
     };
-    let status = Status::new(daemon, &found, path, OffsetDateTime::now_utc());
+    let status = Status::new(daemon, &found, path, &unapplied, OffsetDateTime::now_utc());
     if json {
         print_json(&status)
     } else {
@@ -135,7 +136,13 @@ struct Found<'a> {
 }
 
 impl Status {
-    fn new(daemon: Agentd, found: &Found<'_>, path: PathBuf, now: OffsetDateTime) -> Self {
+    fn new(
+        daemon: Agentd,
+        found: &Found<'_>,
+        path: PathBuf,
+        unapplied: &crate::Unapplied,
+        now: OffsetDateTime,
+    ) -> Self {
         let Found {
             logins,
             github,
@@ -198,7 +205,7 @@ impl Status {
                 expired: token.expired(now),
             })
             .collect();
-        let next = next_steps(logins, &github, resolution, &directory, &summary);
+        let next = next_steps(logins, &github, resolution, &directory, &summary, unapplied);
         Self {
             version: 1,
             agentd: daemon,
@@ -329,6 +336,7 @@ fn next_steps(
     resolution: &Resolution,
     directory: &Directory,
     agents: &Agents,
+    unapplied: &crate::Unapplied,
 ) -> Vec<NextStep> {
     let step = |command: String, purpose: String| NextStep { command, purpose };
     let mut next = Vec::new();
@@ -380,6 +388,15 @@ fn next_steps(
         next.push(step(format!("agentctl github login --owner {owner}"), purpose));
     }
     match (resolution, &directory.agent) {
+        (Ok(None), _) if *unapplied == crate::Unapplied::Here => next.push(step(
+            "agentctl apply".to_owned(),
+            "Create the agent from ./agent.yaml".to_owned(),
+        )),
+        (Ok(None), _) if let crate::Unapplied::Written(name) = unapplied => next.push(step(
+            "agentctl init".to_owned(),
+            format!("Finish setting up {name}, written in agents/{name} but never started"),
+        )),
+        (Ok(None), _) => next.push(step("agentctl init".to_owned(), "Set up an agent here".to_owned())),
         (Ok(Some(agent)), Some(here)) if agent.spec.is_stopped() => next.push(step(
             format!("agentctl start agent/{}", here.name),
             format!("Start {} again", here.name),
@@ -519,6 +536,7 @@ mod tests {
             daemon,
             &found,
             PathBuf::from("/work/repo"),
+            &crate::Unapplied::None,
             january() - time::Duration::days(1),
         )
     }
@@ -647,14 +665,17 @@ mod tests {
 
     #[test]
     fn next_steps_lead_with_a_missing_login_then_this_directory() {
-        assert_eq!(commands(&status(&[], &Ok(None), &[], &[])), ["agentctl claude login"]);
+        assert_eq!(
+            commands(&status(&[], &Ok(None), &[], &[])),
+            ["agentctl claude login", "agentctl init"]
+        );
         assert_eq!(
             status(&[], &Ok(None), &[], &[]).next[0].purpose,
             "Let agents use Claude Code, or Codex with `agentctl codex login`"
         );
         assert_eq!(
             commands(&status(&[Harness::Codex], &Ok(None), &[], &[])),
-            Vec::<String>::new()
+            ["agentctl init"]
         );
         // The agent here needs its own harness signed in, even when another one is.
         let worker = ready("worker");
@@ -705,7 +726,7 @@ mod tests {
         let waiting = [session("worker", "s1", true)];
         assert_eq!(
             commands(&status(&[Harness::ClaudeCode], &Ok(None), &[ready("worker")], &waiting)),
-            ["agentctl tui"]
+            ["agentctl init", "agentctl tui"]
         );
         // Several agents here: the problem says how to choose, and no command guesses.
         assert_eq!(
@@ -791,6 +812,48 @@ Next
         assert!(
             text.contains("This directory  no agent\nAll agents      no agents\n"),
             "{text}"
+        );
+        assert!(
+            text.ends_with("  agentctl init          Set up an agent here\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_manifest_here_without_its_agent_is_applied_rather_than_set_up() {
+        let found = Found {
+            logins: &logins(&[Harness::ClaudeCode]),
+            github: &[],
+            resolution: &Ok(None),
+            agents: &[],
+            sessions: &[],
+        };
+        let with_manifest = Status::new(
+            Agentd {
+                version: Some("1.2.3".into()),
+                home: PathBuf::from("/home/person/.agent"),
+            },
+            &found,
+            PathBuf::from("/work/repo/agents/dev"),
+            &crate::Unapplied::Here,
+            january() - time::Duration::days(1),
+        );
+        assert_eq!(commands(&with_manifest), ["agentctl apply"]);
+        assert_eq!(with_manifest.next[0].purpose, "Create the agent from ./agent.yaml");
+        let written = Status::new(
+            Agentd {
+                version: Some("1.2.3".into()),
+                home: PathBuf::from("/home/person/.agent"),
+            },
+            &found,
+            PathBuf::from("/home/person"),
+            &crate::Unapplied::Written("dev".into()),
+            january() - time::Duration::days(1),
+        );
+        assert_eq!(commands(&written), ["agentctl init"]);
+        assert_eq!(
+            written.next[0].purpose,
+            "Finish setting up dev, written in agents/dev but never started"
         );
     }
 }

@@ -31,9 +31,22 @@ Update with `agentctl self update`. Agents and Sessions carry over.
 
 ## Your first Agent
 
-At a terminal, `agentctl` on its own offers what you probably meant: starting
-the Agent here when it is stopped, or opening it in `agentctl tui`. `attach`, `exec` and `ssh` offer the same
-start when they find a stopped one, and `agentctl attach` without a Session opens the Agent's only
+Run `agentctl init` in the repository you want an Agent for:
+
+```sh
+cd ~/src/my-app
+agentctl init
+```
+
+`agentctl init` starts the coding agent you already use here, Claude Code, Codex or Pi, and asks it to set up an Agent
+with you: it asks what the Agent should work on, writes its folder, starts it and checks that it works. You approve
+its commands as usual. That session runs on your machine, outside any sandbox, so it is only for the setup: when you
+leave it, agentctl offers to open a Session in the new Agent. Without any of them installed, `agentctl init` prints
+the request to paste into the coding agent you use.
+
+At a terminal, `agentctl` on its own offers what you probably meant: setting up an Agent where there is none, starting
+the Agent here when it is stopped, or opening it in `agentctl tui`. `attach`, `exec` and `ssh` offer the same setup
+or start when they find no Agent here or a stopped one, and `agentctl attach` without a Session opens the Agent's only
 Session, starts one when it has none, or asks which.
 
 `agentctl status` shows whether agentd answers, which harness logins are stored, the current directory's Agent and a
@@ -43,11 +56,12 @@ keys stay stable, for agents and scripts that check their own setup.
 `agentctl guide` prints, from the installed version, what a coding agent needs to set up an Agent with you: how to
 go about it (`agentctl guide setup`), an annotated manifest, the image, instructions, GitHub accounts and the
 `status --json` object.
+`agentctl init` asks a coding agent to follow `agentctl guide setup`; a coding agent you are already talking to can
+run it too.
 
-Start from the [.NET example](../agents/examples/dotnet-dev/), an [Agent definition](../GLOSSARY.md) whose manifest
-and image explain each line. Let an agent make it yours: ask Claude Code or Codex to copy it and change it for the
-tools and repositories your work needs. An agent working in an Agent can apply what it writes as a nested Agent and
-try it before you do.
+The [.NET example](../agents/examples/dotnet-dev/) is a complete [Agent definition](../GLOSSARY.md) whose manifest and
+image explain each line. An agent working in an Agent can apply what it writes as a nested Agent and try it before you
+do.
 
 ## Documentation
 

@@ -1,6 +1,6 @@
 //! What agentctl offers at a terminal when it runs on its own, or when a command that uses the
-//! current directory's agent finds it stopped: opening it or starting it. Without a terminal,
-//! nothing is asked and the command behaves as it always has.
+//! current directory's agent finds none or finds it stopped: opening it, starting it or setting
+//! one up. Without a terminal, nothing is asked and the command behaves as it always has.
 
 use std::{process::ExitCode, time::Duration};
 
@@ -8,7 +8,7 @@ use agent::{
     Agent, AgentVariantName, Error, RunState, control_api::Client, local::home::ControlPlaneHome, sessions::Session,
 };
 
-use crate::{CommandError, CommandResult, prompt, tui};
+use crate::{CommandError, CommandResult, Unapplied, init, prompt, tui};
 
 /// How long a start offered here may take, as `agentctl start` waits by default.
 const START_TIMEOUT: Duration = Duration::from_mins(10);
@@ -20,19 +20,25 @@ enum Offer {
     Open(Option<String>),
     /// Start the stopped agent here.
     Start(String),
+    /// Set an agent up with `agentctl init`, or finish the one written in `agents/<name>`.
+    Init(Option<String>),
 }
 
 /// The offer for `resolved`, the current directory's agent, from bare `agentctl` (`bare`) or a
-/// command that uses it. Nothing is offered without a person at the terminal, nor for a
-/// command whose agent is running or ambiguous, nor for an error other than finding
+/// command that uses it, with what `unapplied` found here. Nothing is offered without a person at the terminal, nor for a
+/// command whose agent is running or ambiguous, nor for an error other than finding none or
 /// several, such as agentd not running.
-fn offer(resolved: &Result<Agent, Error>, bare: bool, interactive: bool) -> Option<Offer> {
+fn offer(resolved: &Result<Agent, Error>, bare: bool, interactive: bool, unapplied: &Unapplied) -> Option<Offer> {
     if !interactive {
         return None;
     }
     match resolved {
         Ok(agent) if agent.spec.is_stopped() => Some(Offer::Start(agent.metadata.name.clone())),
         Ok(agent) => bare.then(|| Offer::Open(Some(agent.metadata.name.clone()))),
+        Err(Error::Rpc(error)) if error.is_not_found() => Some(Offer::Init(match unapplied {
+            Unapplied::Written(name) => Some(name.clone()),
+            Unapplied::None | Unapplied::Here => None,
+        })),
         // Several agents tie for this directory.
         Err(Error::Rpc(error)) if error.is_invalid_params() => bare.then_some(Offer::Open(None)),
         Err(_) => None,
@@ -58,6 +64,14 @@ fn question(offer: &Offer, bare: bool) -> [String; 2] {
             format!("This directory has the agent {name}, which is stopped."),
             "Start it?".into(),
         ],
+        Offer::Init(None) => [
+            "No agent is set up for this directory.".into(),
+            "Set one up now with `agentctl init`?".into(),
+        ],
+        Offer::Init(Some(name)) => [
+            format!("The agent in agents/{name} is written but was never started."),
+            "Finish setting it up with `agentctl init`?".into(),
+        ],
     }
 }
 
@@ -67,7 +81,7 @@ fn accepted(offer: &Offer, bare: bool) -> CommandResult<bool> {
 }
 
 /// `agentctl` on its own at a terminal, once `daemon` says whether agentd answered: offers to
-/// open or start the current directory's agent, and prints the help when declined.
+/// open, start or set up the current directory's agent, and prints the help when declined.
 /// `None` when there is nothing to offer because agentd is not running or the directory could not
 /// be resolved: the caller then prints the help as bare `agentctl` always did.
 pub(crate) async fn bare(
@@ -85,7 +99,8 @@ pub(crate) async fn bare(
             Err(error)
         }
     };
-    let Some(offer) = offer(&resolved, true, true) else {
+    let unapplied = std::env::current_dir().map_or(Unapplied::None, |directory| crate::unapplied(&directory));
+    let Some(offer) = offer(&resolved, true, true, &unapplied) else {
         return Ok(None);
     };
     if !accepted(&offer, true)? {
@@ -99,26 +114,45 @@ pub(crate) async fn bare(
             start(client, &name).await?;
             tui::run(home, client).await
         }
+        Offer::Init(_) => init::run(home, client).await,
     }
     .map(Some)
 }
 
-/// The current directory's agent, for a command given no agent. At a terminal, offers to start
-/// it when it is stopped; declining gives the error the command gives without a terminal.
-pub(crate) async fn current_agent(client: &Client, variant: Option<AgentVariantName>) -> CommandResult<String> {
+/// The agent a command goes on with, or how it ended instead.
+pub(crate) enum Target {
+    Agent(String),
+    Done(ExitCode),
+}
+
+/// The current directory's agent, for a command given no agent. At a terminal, offers to set
+/// one up when there is none, which ends the command with init's exit code, and to start it when
+/// it is stopped; declining either gives the error the command gives without a terminal.
+pub(crate) async fn current_agent(
+    home: &ControlPlaneHome,
+    client: &Client,
+    variant: Option<AgentVariantName>,
+) -> CommandResult<Target> {
     let directory = std::env::current_dir().map_err(Error::from)?;
+    let unapplied = crate::unapplied(&directory);
     let resolved = client.resolve_agent_variant(directory, variant).await;
-    match (offer(&resolved, false, prompt::interactive()), resolved) {
+    match (offer(&resolved, false, prompt::interactive(), &unapplied), resolved) {
+        (Some(offer @ Offer::Init(_)), Err(error)) => {
+            if accepted(&offer, false)? {
+                return Box::pin(init::run(home, client)).await.map(Target::Done);
+            }
+            Err(crate::inference_error(error, &unapplied))
+        }
         (Some(offer @ Offer::Start(_)), Ok(agent)) => {
             let name = agent.metadata.name;
             if !accepted(&offer, false)? {
                 return Err(Error::Stopped(name).into());
             }
             start(client, &name).await?;
-            Ok(name)
+            Ok(Target::Agent(name))
         }
-        (_, Ok(agent)) => Ok(agent.metadata.name),
-        (_, Err(error)) => Err(crate::inference_error(error)),
+        (_, Ok(agent)) => Ok(Target::Agent(agent.metadata.name)),
+        (_, Err(error)) => Err(crate::inference_error(error, &unapplied)),
     }
 }
 
@@ -226,27 +260,37 @@ mod tests {
     }
 
     #[test]
-    fn bare_agentctl_offers_to_open_or_start_the_agent_here() {
+    fn bare_agentctl_offers_to_open_start_or_set_up_the_agent_here() {
         let not_found = rpc(NOT_FOUND);
         let several = rpc(INVALID_PARAMS);
         assert_eq!(
-            offer(&Ok(agent("worker", false)), true, true),
+            offer(&Ok(agent("worker", false)), true, true, &Unapplied::None),
             Some(Offer::Open(Some("worker".into())))
         );
         assert_eq!(
-            offer(&Ok(agent("worker", true)), true, true),
+            offer(&Ok(agent("worker", true)), true, true, &Unapplied::None),
             Some(Offer::Start("worker".into()))
         );
-        assert_eq!(offer(&not_found, true, true), None);
-        assert_eq!(offer(&several, true, true), Some(Offer::Open(None)));
-        assert_eq!(offer(&rpc(-32603), true, true), None);
+        assert_eq!(offer(&not_found, true, true, &Unapplied::None), Some(Offer::Init(None)));
+        assert_eq!(offer(&several, true, true, &Unapplied::None), Some(Offer::Open(None)));
+        assert_eq!(offer(&rpc(-32603), true, true, &Unapplied::None), None);
         // Without agentd, or without the directory, bare `agentctl` prints the help instead.
         assert_eq!(
-            offer(&Err(Error::Daemon("automatic startup exited".into())), true, true),
+            offer(
+                &Err(Error::Daemon("automatic startup exited".into())),
+                true,
+                true,
+                &Unapplied::None
+            ),
             None
         );
         assert_eq!(
-            offer(&Err(std::io::Error::other("no current directory").into()), true, true),
+            offer(
+                &Err(std::io::Error::other("no current directory").into()),
+                true,
+                true,
+                &Unapplied::None
+            ),
             None
         );
         assert_eq!(
@@ -256,16 +300,35 @@ mod tests {
     }
 
     #[test]
-    fn commands_offer_to_start_a_stopped_agent_and_nothing_else() {
+    fn commands_offer_to_set_up_a_missing_agent_or_start_a_stopped_one_and_nothing_else() {
         let not_found = rpc(NOT_FOUND);
         let several = rpc(INVALID_PARAMS);
-        assert_eq!(offer(&Ok(agent("worker", false)), false, true), None);
+        assert_eq!(offer(&Ok(agent("worker", false)), false, true, &Unapplied::None), None);
         assert_eq!(
-            offer(&Ok(agent("worker", true)), false, true),
+            offer(&Ok(agent("worker", true)), false, true, &Unapplied::None),
             Some(Offer::Start("worker".into()))
         );
-        assert_eq!(offer(&not_found, false, true), None);
-        assert_eq!(offer(&several, false, true), None);
+        assert_eq!(
+            offer(&not_found, false, true, &Unapplied::None),
+            Some(Offer::Init(None))
+        );
+        assert_eq!(offer(&several, false, true, &Unapplied::None), None);
+        assert_eq!(
+            offer(&not_found, false, true, &Unapplied::Written("dev".into())),
+            Some(Offer::Init(Some("dev".into())))
+        );
+        assert_eq!(
+            offer(&not_found, false, true, &Unapplied::Here),
+            Some(Offer::Init(None)),
+            "a manifest beside you is applied, not finished"
+        );
+        assert_eq!(
+            question(&Offer::Init(Some("dev".into())), false),
+            [
+                "The agent in agents/dev is written but was never started.".to_owned(),
+                "Finish setting it up with `agentctl init`?".to_owned()
+            ]
+        );
         assert_eq!(question(&Offer::Start("worker".into()), false)[1], "Start it?");
     }
 
@@ -278,7 +341,7 @@ mod tests {
                 rpc(NOT_FOUND),
                 rpc(INVALID_PARAMS),
             ] {
-                assert_eq!(offer(&resolved, bare, false), None, "{resolved:?}");
+                assert_eq!(offer(&resolved, bare, false, &Unapplied::None), None, "{resolved:?}");
             }
         }
     }
