@@ -855,7 +855,7 @@ fn manifest_candidates_blocking(current_directory: Option<&Path>, agents: &[Agen
 /// Returns the root of the git repository containing `directory`, if any.
 ///
 /// A linked worktree keeps `.git` as a file, so only presence is checked.
-fn repository_root(directory: &Path) -> Option<&Path> {
+pub(crate) fn repository_root(directory: &Path) -> Option<&Path> {
     directory.ancestors().find(|ancestor| ancestor.join(".git").exists())
 }
 
@@ -866,7 +866,7 @@ fn repository_root(directory: &Path) -> Option<&Path> {
 /// checked, so running from a home directory never walks it. Each Agent directory
 /// is then enumerated directly so checkout-local, ignored `agent.<variant>.yaml`
 /// siblings remain discoverable.
-fn working_tree_manifests(directory: &Path) -> Vec<PathBuf> {
+pub(crate) fn working_tree_manifests(directory: &Path) -> Vec<PathBuf> {
     let agents: Vec<PathBuf> = repository_root(directory).map_or_else(
         || {
             std::iter::once(directory.join(MANIFEST_FILE))
@@ -1551,7 +1551,7 @@ mod tests {
 
         assert!(forwards.push("desk".into(), forward(&second, 3000).await, std::slice::from_ref(&desk)));
         forwards.prune(&[]);
-        assert!(forwards.entries().is_empty(), "the Agent is gone");
+        assert!(forwards.entries().is_empty(), "the agent is gone");
     }
 
     #[tokio::test(flavor = "local")]

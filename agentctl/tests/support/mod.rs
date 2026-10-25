@@ -54,9 +54,9 @@ pub(crate) fn agent(name: &str) -> Agent {
                 retention_policy: Some(RetentionPolicy::Retain),
                 mounts: Vec::new(),
             },
-            home: HomeSpec {
+            home: Some(HomeSpec {
                 source: PathBuf::from("home"),
-            },
+            }),
             instructions: vec![InstructionsSpec {
                 source: PathBuf::from("instructions.md"),
                 optional: false,
