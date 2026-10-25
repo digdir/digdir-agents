@@ -301,6 +301,95 @@ async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns
     assert_eq!(skill, b"---\nname: agentctl\n---\nour own");
 }
 
+/// Claude Code that the platform does not launch, such as T3 Code's, approves Bash requests in bypass mode as Sessions
+/// do, and asks in the modes a person picks to be asked in. Sessions still report other permission prompts.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_approves_claude_bash_requests_in_bypass_mode_for_every_claude_process() {
+    use std::{io::Write as _, process::Stdio};
+
+    const MANAGED_SETTINGS: &str = "/etc/claude-code/managed-settings.d/10-agent-platform.json";
+    let directory = TempDir::new().expect("temporary directory");
+    let home = directory.path().join("home");
+    std::fs::create_dir_all(&home).expect("home directory");
+    std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home.source = home;
+    resource.spec.harnesses[0].version = None;
+    let record = AgentRecord {
+        id: "5d0c2f7a-93b1-4e8e-8c4f-1a6b2e9d7f30".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    };
+    let backend = Rc::new(memory::Provider::new());
+    for _ in 0..2 {
+        backend.queue_execution_events_matching(
+            is_claude_version,
+            vec![
+                ExecutionEvent::Started { process_id: None },
+                ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
+                ExecutionEvent::Exited(ExitStatus { code: 0 }),
+            ],
+        );
+        backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    }
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture);
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+    let platform = Linux::new(PLATFORM_API_URL);
+
+    platform
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("first setup");
+    let writes = backend.file_writes().len();
+    platform
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("second setup");
+
+    let settings = |bytes: Vec<u8>| serde_json::from_slice::<serde_json::Value>(&bytes).expect("settings JSON");
+    let input = serde_json::json!({
+        "session": settings(read_file(&sandbox, "/home/agent/.claude/agent-settings.json").await),
+        "managed": settings(read_file(&sandbox, MANAGED_SETTINGS).await),
+    });
+    let mut child = std::process::Command::new("node")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/claude_permission_hooks.mjs"
+        ))
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("Node.js answers permission requests");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(input.to_string().as_bytes())
+        .expect("write settings");
+    assert!(child.wait().expect("permission requests answered").success());
+    assert!(
+        !backend
+            .file_writes()
+            .iter()
+            .skip(writes)
+            .any(|path| path.as_str() == MANAGED_SETTINGS),
+        "an unchanged pass does not rewrite the managed settings"
+    );
+}
+
 fn secret(environment: &str, hosts: &[&str]) -> agent::SecretSpec {
     agent::SecretSpec {
         environment: environment.into(),
