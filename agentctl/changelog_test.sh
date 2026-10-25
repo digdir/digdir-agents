@@ -502,6 +502,24 @@ BODY
 assert_message 'extract rejects a dated section with no content' 1 'is empty' \
   "${CHANGELOG}" extract 1.0.0 "${dated_but_empty}"
 
+# ------------------------------------------------------------------ latest ---
+
+assert_output 'latest prints the newest released version with a leading v' 'v1.0.0' \
+  "${CHANGELOG}" latest "${good}"
+
+only_unreleased="$(fixture only-unreleased <<'BODY'
+
+## [Unreleased]
+
+### Added
+
+- Something.
+BODY
+)"
+assert_message 'latest fails without a released version' 1 'has no released version' \
+  "${CHANGELOG}" latest "${only_unreleased}"
+assert_status 'latest fails for an invalid changelog' 1 "${CHANGELOG}" latest "${crlf}"
+
 # -------------------------------------------------------- check-unreleased ---
 
 REPOSITORY="${WORK}/repository"

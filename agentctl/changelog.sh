@@ -21,6 +21,10 @@
 #       is missing, has no release date, or has no content. Used by the release workflow to build
 #       the GitHub release notes.
 #
+#   changelog.sh latest [path]
+#       Print the newest released version as `vX.Y.Z`, the version whose `agentctl/vX.Y.Z` tag the
+#       release workflow creates. Fails when the changelog is invalid or has no released version.
+#
 #   changelog.sh check-unreleased <base-ref> <head-ref> [path]
 #       Compare the `## [Unreleased]` section between two Git references and exit non-zero when it
 #       is unchanged. The comparison uses the commit where the two references diverged, not the tip
@@ -54,6 +58,7 @@ usage() {
 Usage:
   ${SCRIPT_NAME} validate [path]
   ${SCRIPT_NAME} extract <version> [path]
+  ${SCRIPT_NAME} latest [path]
   ${SCRIPT_NAME} check-unreleased <base-ref> <head-ref> [path]
 USAGE
   exit 2
@@ -358,6 +363,17 @@ command_extract() {
   esac
 }
 
+command_latest() {
+  path="${1:-${DEFAULT_CHANGELOG}}"
+  require_file "${path}"
+  versions="$(validate_structure "${path}" "$(basename -- "${path}")")" ||
+    fail "${path} is not a valid changelog"
+  # Released sections are in descending order, which validate enforces.
+  latest="$(printf '%s\n' "${versions}" | sed -n '/./{p;q;}')"
+  [ -n "${latest}" ] || fail "${path} has no released version"
+  printf 'v%s\n' "${latest}"
+}
+
 # Print the Unreleased section's body at one reference. Returns 1 when the file does not exist
 # there, which the caller reads as "nothing to compare against".
 unreleased_at_reference() {
@@ -428,6 +444,7 @@ shift
 case "${subcommand}" in
 validate) command_validate "$@" ;;
 extract) command_extract "$@" ;;
+latest) command_latest "$@" ;;
 check-unreleased) command_check_unreleased "$@" ;;
 -h | --help | help) usage ;;
 *) fail "unknown subcommand: ${subcommand}" ;;
