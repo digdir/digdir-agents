@@ -55,7 +55,7 @@ To release:
    request built, and creates the tag `agentctl/vX.Y.Z` as it does. Nothing is built after the merge, so a failure
    there spends no version, since a tag can never be moved or reused. Never push the tag yourself.
 
-If the release fails, it has created no tag or release, and the version is still free:
+If the release fails, it has created no git tag or GitHub release, and the version is still free:
 
 - If it says no run built the merged tree, `main` moved between the pull request's run and its merge, so that run
   built another tree. Run the release workflow on `main` by hand. It builds the release for `main` and publishes it in
