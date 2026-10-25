@@ -29,6 +29,7 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 - `agentctl init` sets up an Agent with your coding agent, on your machine: ([Your first Agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#240](https://github.com/digdir/digdir-agents/issues/240))
   - it starts Claude Code, Codex or Pi, or prints the request to paste when none is installed
   - afterwards it offers a Session in the new Agent
+  - where an Agent exists, it offers to change it, checking for unpushed work before creating it again
 
 ### Changed
 

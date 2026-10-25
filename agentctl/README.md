@@ -43,6 +43,9 @@ with you: it asks what the Agent should work on, writes its folder, starts it an
 its commands as usual. That session runs on your machine, outside any sandbox, so it is only for the setup: when you
 leave it, agentctl offers to open a Session in the new Agent. Without any of them installed, `agentctl init` prints
 the request to paste into the coding agent you use.
+Where the repository or folder already has an Agent, `agentctl init` asks whether to change it or set up another;
+changing it goes the same way, and your coding agent checks for work that is not pushed before creating the Agent
+again.
 
 At a terminal, `agentctl` on its own offers what you probably meant: setting up an Agent where there is none, starting
 the Agent here when it is stopped, or opening it in `agentctl tui`. `attach`, `exec` and `ssh` offer the same setup
