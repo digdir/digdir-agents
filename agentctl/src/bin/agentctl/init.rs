@@ -126,7 +126,8 @@ fn require_terminal(stdin: bool, stdout: bool) -> CommandResult<()> {
     ))
 }
 
-/// What the coding agent is asked: the goal, the directory and the guide, nothing more.
+/// What the coding agent is asked: the goal, the directory, the guide and that the session is for
+/// nothing else. The person's own words keep it to setup more firmly than the guide does.
 fn handover_prompt(directory: &Path, in_repository: bool) -> String {
     let directory = directory.display();
     let subject = if in_repository {
@@ -134,7 +135,9 @@ fn handover_prompt(directory: &Path, in_repository: bool) -> String {
     } else {
         format!("for this folder, {directory}")
     };
-    format!("Set up an agentctl agent {subject}. Run `agentctl guide setup` and follow it.")
+    format!(
+        "Set up an agentctl agent {subject}. Run `agentctl guide setup` and follow it; this session is only for that."
+    )
 }
 
 /// `names` as alternatives: `A`, `A or B`, `A, B or C`.
@@ -184,11 +187,11 @@ mod tests {
         let directory = Path::new("/work/app");
         assert_eq!(
             handover_prompt(directory, true),
-            "Set up an agentctl agent for this repository, /work/app. Run `agentctl guide setup` and follow it."
+            "Set up an agentctl agent for this repository, /work/app. Run `agentctl guide setup` and follow it; this session is only for that."
         );
         assert_eq!(
             handover_prompt(directory, false),
-            "Set up an agentctl agent for this folder, /work/app. Run `agentctl guide setup` and follow it."
+            "Set up an agentctl agent for this folder, /work/app. Run `agentctl guide setup` and follow it; this session is only for that."
         );
     }
 
