@@ -76,7 +76,8 @@ rm -rf "$scratch"
 # SSH access: agentd owns the server's policy, keys and unit, and needs systemd to run it.
 [ -x /usr/sbin/sshd ] || fail "/usr/sbin/sshd is missing; install openssh-server"
 [ -x /usr/bin/systemctl ] || fail "/usr/bin/systemctl is missing"
-for unit in ssh.service ssh.socket; do
+# The manifest owns optional tmpfs mounts. Letting systemd mount /tmp would hide the Sandbox disk's free space.
+for unit in ssh.service ssh.socket tmp.mount; do
     state="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
     case "$state" in masked | not-found | '') ;; *) fail "$unit is $state; it must be masked" ;; esac
 done

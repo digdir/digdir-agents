@@ -180,7 +180,9 @@ COPY --chown=agent:agent --chmod=0600 claude-state.json /home/agent/.claude/.cla
 # are masked so the image cannot expose its package-generated host keys. The guest has no udev to activate hvc0's
 # device unit, so its generated serial login would otherwise wait 90 seconds at boot. The Sandbox kernel has no
 # loadable modules and rejects Ubuntu's raised pid_max, which would otherwise leave the system degraded at every boot.
-RUN systemctl mask ssh.service ssh.socket serial-getty@hvc0.service systemd-modules-load.service \
+# Keep /tmp on the Sandbox disk so build scratch space uses its capacity rather than guest memory. A manifest can
+# still mount an explicit tmpfs there before systemd starts.
+RUN systemctl mask ssh.service ssh.socket serial-getty@hvc0.service systemd-modules-load.service tmp.mount \
     && ln -s /dev/null /etc/sysctl.d/50-pid-max.conf \
     && rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub \
     && systemctl enable agent-workspace-init.service \
