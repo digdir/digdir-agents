@@ -236,6 +236,9 @@ pub struct Spec {
     /// Ways the Agent's user reaches into the Sandbox besides Sessions and `exec`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub access: Vec<AccessSpec>,
+    /// Accounts the Agent acts as, each signed in once on the host with `agentctl`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<AccountSpec>,
     /// Sandbox egress mediation policy; mediated with every host allowed when omitted.
     #[serde(default)]
     pub network: NetworkSpec,
@@ -267,6 +270,21 @@ pub enum AccessSpec {
     Ssh {},
     /// VNC access to the desktop the image runs, reached through `agentctl vnc`.
     Vnc {},
+}
+
+/// One account the Agent acts as.
+///
+/// The platform owns the credential, its placeholder and the hosts it is substituted for; a
+/// manifest only says which account.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase", tag = "type")]
+pub enum AccountSpec {
+    /// The GitHub token `agentctl github login --owner <owner>` stored: a mediated `GITHUB_TOKEN`
+    /// for GitHub's hosts, and the token's account as Git identity.
+    Github {
+        /// The user or organization whose repositories the Agent works on.
+        owner: String,
+    },
 }
 
 /// Sandbox settings as supplied by an Agent manifest.
@@ -535,6 +553,15 @@ impl Spec {
         self.access.contains(&AccessSpec::Vnc {})
     }
 
+    /// Returns the owner whose GitHub token the Agent uses, when it has a GitHub account.
+    #[must_use]
+    pub fn github_owner(&self) -> Option<&str> {
+        self.accounts
+            .iter()
+            .map(|AccountSpec::Github { owner }| owner.as_str())
+            .next()
+    }
+
     fn validate(&self) -> Result<(), Error> {
         let mut mount_targets = std::collections::BTreeSet::new();
         for (index, mount) in self.sandbox.mounts.iter().enumerate() {
@@ -613,6 +640,7 @@ impl Spec {
                 harness.as_str()
             )));
         }
+        self.validate_accounts()?;
         self.validate_environment()?;
         self.validate_secrets()?;
         let mut access = std::collections::BTreeSet::new();
@@ -631,6 +659,21 @@ impl Spec {
 }
 
 impl Spec {
+    fn validate_accounts(&self) -> Result<(), Error> {
+        if self.accounts.len() > 1 {
+            return Err(Error::Invalid("spec.accounts[1] duplicates the GitHub account".into()));
+        }
+        if self
+            .github_owner()
+            .is_some_and(|owner| !crate::github::valid_owner(owner))
+        {
+            return Err(Error::Invalid(
+                "spec.accounts[0].owner must be a GitHub user or organization name".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_secrets(&self) -> Result<(), Error> {
         let mut environments = self
             .environment
@@ -663,6 +706,8 @@ impl Spec {
                         secret.placeholder.as_deref(),
                     )
                 })
+                || (self.github_owner().is_some()
+                    && crate::github::conflicts_with_managed_secret(&secret.environment, &placeholder))
                 || secret.allowed_hosts.is_empty()
                 || !environments.insert(&secret.environment)
                 || !placeholders.insert(placeholder)
@@ -688,10 +733,11 @@ impl Spec {
                     .harnesses
                     .iter()
                     .any(|installation| harness::manages_environment(installation.kind, &variable.name))
+                || (self.github_owner().is_some() && variable.name == crate::github::ACCESS_ENVIRONMENT)
                 || !names.insert(variable.name.as_str())
             {
                 return Err(Error::Invalid(format!(
-                    "spec.environment[{index}] is invalid, duplicated, or managed by a declared harness"
+                    "spec.environment[{index}] is invalid, duplicated, or managed by a declared harness or account"
                 )));
             }
         }

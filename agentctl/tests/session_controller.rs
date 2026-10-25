@@ -116,6 +116,7 @@ impl PlatformAdapter for NoopPlatform {
         _record: &'a AgentRecord,
         _sandbox: &'a SandboxHandle,
         _harnesses: &'a [agent::Harness],
+        _github_token: Option<&'a agent::github::GithubToken>,
         _steps: &'a sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<Vec<String>, Error>> {
         Box::pin(async { Ok(Vec::new()) })
@@ -165,6 +166,7 @@ impl Provider for MemoryProvider {
                     .iter()
                     .map(|installation| installation.kind)
                     .collect(),
+                github_token: None,
             })
         })
     }
