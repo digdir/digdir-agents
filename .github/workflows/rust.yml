@@ -100,6 +100,25 @@ jobs:
           shared-key: build-${{ hashFiles('Makefile', '.github/workflows/cache-warm.yml') }}
           save-if: false
 
+      # A Microsandbox pin update runs these tests before the fork releases its runtime, on the bundles the fork's
+      # checks built (see sandbox/docs/microsandbox-upgrade.md). The tag exists once the release does.
+      - name: Fetch the pinned Microsandbox runtime if it is not released yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(awk '/^name = "microsandbox"$/ { getline; sub(/^version = "/, ""); sub(/"$/, ""); print; exit }' Cargo.lock)"
+          test -n "${version}"
+          status=0
+          git ls-remote --exit-code https://github.com/digdir/microsandbox.git "refs/tags/v${version}" > /dev/null ||
+            status=$?
+          case "${status}" in
+            0) echo "Microsandbox v${version} is released"; exit 0 ;;
+            2) ;;
+            *) echo "::error::could not check whether Microsandbox v${version} is released"; exit 1 ;;
+          esac
+          sandbox/microsandbox/fetch-runtime.sh "${RUNNER_TEMP}/microsandbox-runtime"
+          echo "AGENT_MICROSANDBOX_RUNTIME_DIR=${RUNNER_TEMP}/microsandbox-runtime" >> "${GITHUB_ENV}"
+
       - name: Run end-to-end tests
         run: make test-e2e
 
