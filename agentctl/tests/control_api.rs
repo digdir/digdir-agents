@@ -28,11 +28,12 @@ use tokio::{
 use support::{IgnoreNotifications, agent};
 
 struct FakeAuthentication;
-/// Converges an Agent at once, except `stuck`, which never converges.
-/// Counts the hints to converge every Agent.
+/// Converges an Agent at once, except `stuck`, which never converges, counts the hints to converge
+/// every Agent, and records each Agent woken.
 #[derive(Default)]
 struct FakeConvergence {
-    woken: Rc<Cell<usize>>,
+    woken_all: Rc<Cell<usize>>,
+    woken: Rc<RefCell<Vec<String>>>,
 }
 struct FakeSshAccess;
 struct FakeVncAccess;
@@ -155,6 +156,48 @@ impl AuthenticationApi for FakeAuthentication {
                 stored: None,
             }])
         })
+    }
+
+    /// Accepts only `github_pat_FAKE_good`, as GitHub would reject anything else.
+    fn github_login<'a>(
+        &'a self,
+        token: &'a str,
+        owner: &'a str,
+    ) -> LocalFuture<'a, Result<agent::github::GithubLogin, Error>> {
+        Box::pin(async move {
+            if token != "github_pat_FAKE_good" {
+                return Err(Error::Invalid("GitHub rejected the token".into()));
+            }
+            Ok(agent::github::GithubLogin {
+                token: github_token(&owner.to_ascii_lowercase()),
+                missing_scopes: Vec::new(),
+            })
+        })
+    }
+
+    /// Has a token for `digdir` only.
+    fn github_logout<'a>(
+        &'a self,
+        owner: &'a str,
+    ) -> LocalFuture<'a, Result<Option<agent::github::GithubToken>, Error>> {
+        Box::pin(async move { Ok((owner == "digdir").then(|| github_token(owner))) })
+    }
+
+    fn github_accounts(&self) -> LocalFuture<'_, Result<Vec<agent::github::GithubToken>, Error>> {
+        Box::pin(async { Ok(vec![github_token("digdir")]) })
+    }
+}
+
+fn github_token(owner: &str) -> agent::github::GithubToken {
+    agent::github::GithubToken {
+        owner: owner.into(),
+        account: agent::github::GithubAccount {
+            login: format!("{owner}-bot"),
+            name: format!("{owner} bot"),
+            email: format!("1+{owner}-bot@users.noreply.github.com"),
+        },
+        kind: agent::github::TokenKind::FineGrained,
+        expires_at: None,
     }
 }
 
@@ -292,8 +335,15 @@ impl ConvergenceApi for FakeConvergence {
     }
 
     fn wake_all(&self) -> LocalFuture<'_, Result<(), Error>> {
-        self.woken.set(self.woken.get() + 1);
+        self.woken_all.set(self.woken_all.get() + 1);
         Box::pin(async { Ok(()) })
+    }
+
+    fn wake<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(async move {
+            self.woken.borrow_mut().push(name.into());
+            Ok(())
+        })
     }
 }
 
@@ -344,7 +394,7 @@ struct ApiFixture {
     /// Execution ensures still waiting in the server.
     waiting: Rc<Cell<usize>>,
     /// Hints to converge every Agent.
-    woken: Rc<Cell<usize>>,
+    woken_all: Rc<Cell<usize>>,
     ensured: Rc<RefCell<Vec<agent::sessions::SessionRequest>>>,
     sent: Rc<RefCell<Vec<SentMessage>>>,
     changes: Changes,
@@ -353,6 +403,7 @@ struct ApiFixture {
     upgrade_blockers: Rc<RefCell<Vec<String>>>,
     upgrade_warnings: Rc<RefCell<Vec<String>>>,
     upgrade_gates: Rc<UpgradeGates>,
+    woken: Rc<RefCell<Vec<String>>>,
 }
 
 impl Connector for InProcessConnector {
@@ -402,6 +453,7 @@ fn api() -> ApiFixture {
     let executions = Rc::new(FakeExecutions::default());
     let waiting = executions.waiting.clone();
     let convergence = FakeConvergence::default();
+    let woken_all = convergence.woken_all.clone();
     let woken = convergence.woken.clone();
     let server = Rc::new(Server::new(
         control_plane,
@@ -429,7 +481,7 @@ fn api() -> ApiFixture {
         client,
         conversation,
         waiting,
-        woken,
+        woken_all,
         ensured,
         sent,
         changes,
@@ -438,6 +490,7 @@ fn api() -> ApiFixture {
         upgrade_blockers,
         upgrade_warnings,
         upgrade_gates,
+        woken,
     }
 }
 
@@ -574,7 +627,7 @@ async fn a_login_wakes_every_agent() {
         .await
         .expect("login");
 
-    assert_eq!(fixture.woken.get(), 1);
+    assert_eq!(fixture.woken_all.get(), 1);
 }
 
 #[tokio::test(flavor = "local")]
@@ -734,6 +787,42 @@ async fn harness_logins_cross_the_wire_without_credentials() {
             stored: None,
         }]
     );
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_github_login_or_logout_wakes_the_agents_of_that_owner_only() {
+    let fixture = api();
+    let client = &fixture.client;
+    for (name, owner) in [("ours", Some("DigDir")), ("theirs", Some("altinn")), ("plain", None)] {
+        let mut request = request(name);
+        request.agent.spec.accounts = owner
+            .map(|owner| agent::AccountSpec::Github { owner: owner.into() })
+            .into_iter()
+            .collect();
+        client.apply(request).await.expect("apply");
+    }
+
+    let error = client
+        .github_login("ghp_FAKE_canary", "digdir")
+        .await
+        .expect_err("rejected");
+    assert!(!format!("{error} {error:?}").contains("FAKE_canary"), "{error:?}");
+    assert!(fixture.woken.borrow().is_empty(), "a failed login wakes nothing");
+
+    let login = client
+        .github_login("github_pat_FAKE_good", "Digdir")
+        .await
+        .expect("login");
+    assert_eq!(login.token.owner, "digdir");
+    assert_eq!(*fixture.woken.borrow(), ["ours"]);
+    let listed = client.github_accounts().await.expect("accounts");
+    assert_eq!(listed, [github_token("digdir")]);
+
+    assert_eq!(client.github_logout("altinn").await.expect("nothing to forget"), None);
+    assert_eq!(*fixture.woken.borrow(), ["ours"], "forgetting nothing wakes nothing");
+    let forgotten = client.github_logout("digdir").await.expect("logout");
+    assert_eq!(forgotten.map(|token| token.owner).as_deref(), Some("digdir"));
+    assert_eq!(*fixture.woken.borrow(), ["ours", "ours"]);
 }
 
 #[tokio::test(flavor = "local")]
