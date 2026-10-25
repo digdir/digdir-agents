@@ -103,7 +103,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client, json: bool) ->
         Err(Error::Rpc(error)) if error.is_invalid_params() => Err(error.message),
         Err(error) => return Err(error.into()),
     };
-    let manifest_here = path.join(agent::manifest::MANIFEST_FILE).is_file();
+    let unapplied = crate::unapplied(&path);
     let daemon = Agentd {
         version: daemon.build_version,
         home: home.path().to_path_buf(),
@@ -117,7 +117,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client, json: bool) ->
         agents: &agents,
         sessions: &sessions,
     };
-    let status = Status::new(daemon, &found, path, manifest_here, OffsetDateTime::now_utc());
+    let status = Status::new(daemon, &found, path, &unapplied, OffsetDateTime::now_utc());
     if json {
         print_json(&status)
     } else {
@@ -136,7 +136,13 @@ struct Found<'a> {
 }
 
 impl Status {
-    fn new(daemon: Agentd, found: &Found<'_>, path: PathBuf, manifest_here: bool, now: OffsetDateTime) -> Self {
+    fn new(
+        daemon: Agentd,
+        found: &Found<'_>,
+        path: PathBuf,
+        unapplied: &crate::Unapplied,
+        now: OffsetDateTime,
+    ) -> Self {
         let Found {
             logins,
             github,
@@ -197,7 +203,7 @@ impl Status {
                 expired: token.expired(now),
             })
             .collect();
-        let next = next_steps(logins, &github, resolution, &directory, &summary, manifest_here);
+        let next = next_steps(logins, &github, resolution, &directory, &summary, unapplied);
         Self {
             version: 1,
             agentd: daemon,
@@ -328,7 +334,7 @@ fn next_steps(
     resolution: &Resolution,
     directory: &Directory,
     agents: &Agents,
-    manifest_here: bool,
+    unapplied: &crate::Unapplied,
 ) -> Vec<NextStep> {
     let step = |command: String, purpose: String| NextStep { command, purpose };
     let mut next = Vec::new();
@@ -380,9 +386,13 @@ fn next_steps(
         next.push(step(format!("agentctl github login --owner {owner}"), purpose));
     }
     match (resolution, &directory.agent) {
-        (Ok(None), _) if manifest_here => next.push(step(
+        (Ok(None), _) if *unapplied == crate::Unapplied::Here => next.push(step(
             "agentctl apply".to_owned(),
             "Create the agent from ./agent.yaml".to_owned(),
+        )),
+        (Ok(None), _) if let crate::Unapplied::Written(name) = unapplied => next.push(step(
+            "agentctl init".to_owned(),
+            format!("Finish setting up {name}, written in agents/{name} but never started"),
         )),
         (Ok(None), _) => next.push(step("agentctl init".to_owned(), "Set up an agent here".to_owned())),
         (Ok(Some(agent)), Some(here)) if agent.spec.is_stopped() => next.push(step(
@@ -524,7 +534,7 @@ mod tests {
             daemon,
             &found,
             PathBuf::from("/work/repo"),
-            false,
+            &crate::Unapplied::None,
             january() - time::Duration::days(1),
         )
     }
@@ -824,10 +834,25 @@ Next
             },
             &found,
             PathBuf::from("/work/repo/agents/dev"),
-            true,
+            &crate::Unapplied::Here,
             january() - time::Duration::days(1),
         );
         assert_eq!(commands(&with_manifest), ["agentctl apply"]);
         assert_eq!(with_manifest.next[0].purpose, "Create the agent from ./agent.yaml");
+        let written = Status::new(
+            Agentd {
+                version: Some("1.2.3".into()),
+                home: PathBuf::from("/home/person/.agent"),
+            },
+            &found,
+            PathBuf::from("/home/person"),
+            &crate::Unapplied::Written("dev".into()),
+            january() - time::Duration::days(1),
+        );
+        assert_eq!(commands(&written), ["agentctl init"]);
+        assert_eq!(
+            written.next[0].purpose,
+            "Finish setting up dev, written in agents/dev but never started"
+        );
     }
 }

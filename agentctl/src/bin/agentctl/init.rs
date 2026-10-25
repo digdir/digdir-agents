@@ -51,7 +51,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
         Ok(()) => client.resolve_agent_variant(directory.to_path_buf(), None).await,
         Err(error) => Err(error),
     };
-    let onward = onward(&resolved);
+    let onward = onward(&resolved, &crate::unapplied(directory));
     if let Onward::Offer(name) = &onward
         && prompt::confirm_lines(&[&format!("Your agent {name} is set up."), "Open a session in it now?"])?
     {
@@ -71,13 +71,15 @@ enum Onward {
     Failed(String),
     /// No agent here.
     Nothing,
+    /// No agent here, but one written in `agents/<name>` that was never started.
+    Written(String),
     /// Several agents here.
     Several,
     /// agentd could not say, for this reason.
     Unknown(String),
 }
 
-fn onward(resolved: &Result<Agent, Error>) -> Onward {
+fn onward(resolved: &Result<Agent, Error>, unapplied: &crate::Unapplied) -> Onward {
     match resolved {
         Ok(agent) => {
             let name = agent.metadata.name.clone();
@@ -88,7 +90,10 @@ fn onward(resolved: &Result<Agent, Error>) -> Onward {
                 _ => Onward::Offer(name),
             }
         }
-        Err(Error::Rpc(error)) if error.is_not_found() => Onward::Nothing,
+        Err(Error::Rpc(error)) if error.is_not_found() => match unapplied {
+            crate::Unapplied::Written(name) => Onward::Written(name.clone()),
+            crate::Unapplied::None | crate::Unapplied::Here => Onward::Nothing,
+        },
         Err(Error::Rpc(error)) if error.is_invalid_params() => Onward::Several,
         Err(error) => Onward::Unknown(error.to_string()),
     }
@@ -107,6 +112,9 @@ fn next_step(onward: &Onward, in_repository: bool) -> String {
             format!("Your agent {name} is not running; `agentctl status` shows why and what to do next.")
         }
         Onward::Nothing => "Nothing was set up; run `agentctl init` again to continue.".into(),
+        Onward::Written(name) => {
+            format!("agents/{name} is written but not started; run `agentctl init` again to finish setting it up.")
+        }
         Onward::Several => "This directory has several agents; open one with `agentctl attach --agent NAME`, or \
                             all of them in `agentctl tui`."
             .into(),
@@ -224,9 +232,12 @@ mod tests {
     #[test]
     fn after_the_coding_agent_a_session_is_offered_in_an_agent_ready_or_on_its_way() {
         let ready = agent("dev", "SandboxReady", true, None);
-        assert_eq!(onward(&Ok(ready)), Onward::Offer("dev".into()));
+        assert_eq!(onward(&Ok(ready), &crate::Unapplied::None), Onward::Offer("dev".into()));
         let starting = agent("dev", agent::Condition::REASON_STARTING, false, None);
-        assert_eq!(onward(&Ok(starting)), Onward::Offer("dev".into()));
+        assert_eq!(
+            onward(&Ok(starting), &crate::Unapplied::None),
+            Onward::Offer("dev".into())
+        );
         assert_eq!(
             next_step(&Onward::Offer("dev".into()), true),
             "Open a session in it later with `agentctl attach` from anywhere in the repository."
@@ -241,7 +252,11 @@ mod tests {
     fn after_the_coding_agent_a_failed_agent_points_to_status() {
         for failure in [agent::FailureKind::Invalid, agent::FailureKind::Transient] {
             let failed = agent("dev", "ImageBuildFailed", false, Some(failure));
-            assert_eq!(onward(&Ok(failed)), Onward::Failed("dev".into()), "{failure:?}");
+            assert_eq!(
+                onward(&Ok(failed), &crate::Unapplied::None),
+                Onward::Failed("dev".into()),
+                "{failure:?}"
+            );
         }
         assert_eq!(
             next_step(&Onward::Failed("dev".into()), true),
@@ -252,9 +267,20 @@ mod tests {
     #[test]
     fn after_the_coding_agent_no_agent_several_or_no_agentd_say_where_to_go() {
         // agentd's codes for no agent here, and for several.
-        assert_eq!(onward(&rpc(-32004)), Onward::Nothing);
-        assert_eq!(onward(&rpc(-32602)), Onward::Several);
-        let unreachable = onward(&Err(Error::Daemon("automatic startup exited".into())));
+        assert_eq!(onward(&rpc(-32004), &crate::Unapplied::None), Onward::Nothing);
+        assert_eq!(
+            onward(&rpc(-32004), &crate::Unapplied::Written("dev".into())),
+            Onward::Written("dev".into())
+        );
+        assert_eq!(
+            next_step(&Onward::Written("dev".into()), true),
+            "agents/dev is written but not started; run `agentctl init` again to finish setting it up."
+        );
+        assert_eq!(onward(&rpc(-32602), &crate::Unapplied::None), Onward::Several);
+        let unreachable = onward(
+            &Err(Error::Daemon("automatic startup exited".into())),
+            &crate::Unapplied::None,
+        );
         assert!(
             matches!(&unreachable, Onward::Unknown(reason) if reason.contains("automatic startup exited")),
             "{unreachable:?}"

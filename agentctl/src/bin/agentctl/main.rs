@@ -1700,23 +1700,55 @@ async fn resolve_agent_name(
         return Ok(agent);
     }
     let directory = std::env::current_dir().map_err(Error::from)?;
-    let manifest_here = directory.join(agent::manifest::MANIFEST_FILE).is_file();
+    let unapplied = unapplied(&directory);
     match client.resolve_agent_variant(directory, variant).await {
         Ok(agent) => Ok(agent.metadata.name),
-        Err(error) => Err(inference_error(error, manifest_here)),
+        Err(error) => Err(inference_error(error, &unapplied)),
     }
 }
 
-/// Why no agent was found here, and what creates one: applying the manifest in this directory, or
-/// setting one up when there is none.
-fn inference_error(error: Error, manifest_here: bool) -> CommandError {
+/// A manifest for this directory, when agentd has no agent here: what creates the agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Unapplied {
+    /// No manifest: `agentctl init` sets an agent up.
+    None,
+    /// `agent.yaml` in this directory: `agentctl apply` creates the agent.
+    Here,
+    /// `agents/<name>/agent.yaml`, written by a setup that never started the agent: `agentctl
+    /// init` finishes it.
+    Written(String),
+}
+
+/// The manifest for `directory` that agentd may not know: `agent.yaml` in it, else the first
+/// `agents/<name>/agent.yaml` in its repository's root or, outside a repository, in it.
+pub(crate) fn unapplied(directory: &std::path::Path) -> Unapplied {
+    if directory.join(agent::manifest::MANIFEST_FILE).is_file() {
+        return Unapplied::Here;
+    }
+    let root = tui::repository_root(directory).unwrap_or(directory);
+    let mut names: Vec<String> = std::fs::read_dir(root.join("agents"))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().join(agent::manifest::MANIFEST_FILE).is_file())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    names.into_iter().next().map_or(Unapplied::None, Unapplied::Written)
+}
+
+/// Why no agent was found here, and what creates one: applying the manifest in this directory,
+/// finishing an agent a setup wrote, or setting one up when there is none.
+fn inference_error(error: Error, unapplied: &Unapplied) -> CommandError {
     match error {
-        Error::Rpc(error) if error.is_not_found() && manifest_here => {
-            CommandError::Message("no agent here; `agentctl apply` creates one, or pass --agent NAME".into())
-        }
-        Error::Rpc(error) if error.is_not_found() => {
-            CommandError::Message("no agent here; `agentctl init` sets one up, or pass --agent NAME".into())
-        }
+        Error::Rpc(error) if error.is_not_found() => CommandError::Message(match unapplied {
+            Unapplied::Here => "no agent here; `agentctl apply` creates one, or pass --agent NAME".into(),
+            Unapplied::Written(name) => format!(
+                "no agent here; agents/{name} is written but not started, and `agentctl init` finishes it, or pass \
+                 --agent NAME"
+            ),
+            Unapplied::None => "no agent here; `agentctl init` sets one up, or pass --agent NAME".into(),
+        }),
         Error::Rpc(error) => CommandError::Message(error.message),
         error => error.into(),
     }
@@ -2814,7 +2846,7 @@ mod tests {
                 code: -32602,
                 message: "multiple agents were applied from this directory; specify --agent or --variant".into(),
             }),
-            false,
+            &Unapplied::None,
         );
         assert_eq!(
             ambiguous.to_string(),
@@ -2828,13 +2860,47 @@ mod tests {
             })
         };
         assert_eq!(
-            inference_error(missing(), false).to_string(),
+            inference_error(missing(), &Unapplied::None).to_string(),
             "no agent here; `agentctl init` sets one up, or pass --agent NAME"
         );
         assert_eq!(
-            inference_error(missing(), true).to_string(),
+            inference_error(missing(), &Unapplied::Here).to_string(),
             "no agent here; `agentctl apply` creates one, or pass --agent NAME",
             "an agent.yaml here is applied rather than set up"
+        );
+        assert_eq!(
+            inference_error(missing(), &Unapplied::Written("dev".into())).to_string(),
+            "no agent here; agents/dev is written but not started, and `agentctl init` finishes it, or pass \
+             --agent NAME"
+        );
+    }
+
+    #[test]
+    fn a_manifest_agentd_may_not_know_is_found_here_or_in_agents_at_the_root() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path();
+        let below = root.join("projects/app");
+        std::fs::create_dir_all(&below).expect("directories");
+        assert_eq!(unapplied(root), Unapplied::None);
+
+        std::fs::create_dir_all(root.join("agents/web")).expect("agent without a manifest");
+        std::fs::create_dir_all(root.join("agents/dev")).expect("agent folder");
+        std::fs::write(root.join("agents/dev/agent.yaml"), "").expect("manifest");
+        std::fs::create_dir_all(root.join("agents/zed")).expect("agent folder");
+        std::fs::write(root.join("agents/zed/agent.yaml"), "").expect("manifest");
+        assert_eq!(unapplied(root), Unapplied::Written("dev".into()));
+        assert_eq!(unapplied(&root.join("agents/dev")), Unapplied::Here);
+        assert_eq!(
+            unapplied(&below),
+            Unapplied::None,
+            "outside a repository, only this directory"
+        );
+
+        std::fs::create_dir(root.join(".git")).expect("repository");
+        assert_eq!(
+            unapplied(&below),
+            Unapplied::Written("dev".into()),
+            "in a repository, its root's agents"
         );
     }
 
