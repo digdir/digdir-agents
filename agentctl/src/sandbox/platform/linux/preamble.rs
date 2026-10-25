@@ -2,16 +2,16 @@
 //!
 //! Every Agent runs on the same platform, so what a harness needs to know about it is generated
 //! here, from the Agent's manifest and what setup found in its Sandbox, rather than copied into
-//! each Agent's instruction file, where it drifts from the release that runs it. It states facts
-//! only, one labelled line each, with a sub-bullet per item where a line lists several; how to drive
-//! Agents, nested ones included, is the `agentctl` skill's.
+//! each Agent's instruction file, where it drifts from the release that runs it. It states facts,
+//! then the platform's ground rules, one labelled line each, with a sub-bullet per item where a
+//! line lists several; how to drive Agents, nested ones included, is the `agentctl` skill's.
 
 use std::{collections::BTreeMap, fmt::Write as _};
 
 use crate::{
     Harness,
     control_plane::AgentRecord,
-    manifest::{AccessSpec, Spec},
+    manifest::{AccessSpec, MountSpec, Spec},
 };
 
 use super::{HOME, USER, WORKING_DIRECTORY};
@@ -71,6 +71,7 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
         ),
         ("Resources", Some(resources(spec))),
         ("Harnesses", Some(harnesses(spec, observed.harnesses))),
+        ("Folders", folders(spec)),
         ("Secrets", secrets(spec, observed.environment)),
         (
             "Plain environment",
@@ -80,6 +81,9 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
         ("Network", Some(network(spec))),
         ("Access", access(spec, name)),
         ("Nested Agents", Some(nested_agents(spec, observed).to_owned())),
+        ("Changes", Some(CHANGES.to_owned())),
+        ("Cleanup", Some(CLEANUP.to_owned())),
+        ("Tools and repositories", Some(TOOLS_AND_REPOSITORIES.to_owned())),
     ];
     let mut section = format!(
         "{BEGIN}# Agent sandbox\n\n\
@@ -121,6 +125,46 @@ fn harnesses(spec: &Spec, installed: &[Harness]) -> String {
         }
     }))
 }
+
+/// One sub-bullet per folder mounted from the person's machine, read-only ones marked; nothing
+/// without any.
+fn folders(spec: &Spec) -> Option<String> {
+    let folders: Vec<String> = spec
+        .sandbox
+        .mounts
+        .iter()
+        .filter_map(|mount| match mount {
+            MountSpec::Bind { target, read_only, .. } => Some(if *read_only {
+                format!("`{}` (read-only)", target.as_str())
+            } else {
+                format!("`{}`", target.as_str())
+            }),
+            MountSpec::Tmpfs { .. } => None,
+        })
+        .collect();
+    (!folders.is_empty()).then(|| {
+        format!(
+            "the person's own files, mounted from their machine: changes happen at once and outlive this Agent, \
+             so don't switch branches, reset or push there unless asked.{}",
+            sub_bullets(folders.into_iter())
+        )
+    })
+}
+
+/// What the Agent may do without asking, what only when a task asks, and where it notes system changes.
+const CHANGES: &str = "inside this VM, apart from the person's folders, act freely; outside it, such as pushes, \
+                       pull requests and comments, act only when a task asks. Note what you change in the system, and \
+                       why, in `~/system-changes.md`, so it can be moved into the image.";
+
+/// What the Agent removes, so its disk keeps room for later tasks.
+const CLEANUP: &str = "stop the servers and containers you start. When a task is done, remove what you created for \
+                       it, such as one-off images, finished worktrees and build output, and nothing else.";
+
+/// What the Agent does with the tools and repositories its own instructions list.
+const TOOLS_AND_REPOSITORIES: &str = "at the start of a session, check for those your instructions list; install \
+                                      or clone what is missing, at the versions listed, and say what you installed. \
+                                      In clones, fetch first, branch from the default branch, never discard work you \
+                                      didn't make, and push what should outlive this Agent.";
 
 /// One sub-bullet per secret, with the hosts it is sent to or that it was left unconfigured.
 fn secrets(spec: &Spec, environment: &BTreeMap<String, String>) -> Option<String> {
@@ -196,4 +240,55 @@ fn code_list<'a>(items: impl IntoIterator<Item = &'a String>) -> String {
         .map(|item| format!("`{item}`"))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    fn spec(mounts: &str, extra: &str) -> Spec {
+        let manifest = format!(
+            "apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  name: worker
+spec:
+  sandbox:
+    image:
+      type: reference
+      reference: example.com/agent:latest
+    platform:
+      os: linux
+    resources:
+      cpu: \"1\"
+      memory: \"1Gi\"
+      rootFilesystem:
+        capacity: \"8Gi\"
+        mode: layered
+    mounts: {mounts}
+  harnesses: [{{type: pi}}]
+{extra}"
+        );
+        crate::manifest::decode(manifest.as_bytes()).expect("manifest").spec
+    }
+
+    #[test]
+    fn only_bind_mounts_are_folders_and_read_only_ones_are_marked() {
+        assert_eq!(
+            folders(&spec("[{type: tmpfs, target: /scratch, capacity: 1Gi}]", "")),
+            None
+        );
+        let text = folders(&spec(
+            "[{type: bind, source: /tmp, target: /home/agent/code/app, readOnly: false}, \
+             {type: bind, source: /tmp, target: /home/agent/code/reports, readOnly: true}]",
+            "",
+        ))
+        .expect("folders");
+        assert!(
+            text.ends_with("unless asked.\n  - `/home/agent/code/app`\n  - `/home/agent/code/reports` (read-only)"),
+            "{text}"
+        );
+    }
 }
