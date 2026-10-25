@@ -98,8 +98,7 @@ impl TempDirectory {
     }
 }
 
-/// Spells an existing absolute `path` as `~/../…/path`, so a test reaches its temporary directory through
-/// the user's home without writing there.
+/// Spells an absolute `path` as `~/../…/path`.
 pub(crate) fn via_home(path: &std::path::Path) -> PathBuf {
     use std::path::Component;
 

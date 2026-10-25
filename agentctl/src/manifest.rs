@@ -365,7 +365,7 @@ impl SandboxManifestSpec {
 pub enum MountSpec {
     /// A caller-host directory mapped into the Sandbox.
     Bind {
-        /// Host path, resolved relative to the manifest directory, or to the home directory for `~/`, at apply time.
+        /// Host path, resolved relative to the manifest directory at apply time.
         source: std::path::PathBuf,
         /// Absolute path inside the Sandbox.
         target: SandboxPath,
@@ -736,7 +736,7 @@ fn valid_sandbox_path(path: &str) -> bool {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct HomeSpec {
-    /// Host path, resolved relative to the manifest directory, or to the home directory for `~/`.
+    /// Host path, resolved relative to the manifest directory.
     pub source: std::path::PathBuf,
 }
 
@@ -744,7 +744,7 @@ pub struct HomeSpec {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct InstructionsSpec {
-    /// Host file, resolved relative to the manifest directory, or to the home directory for `~/`.
+    /// Host file, resolved relative to the manifest directory.
     pub source: std::path::PathBuf,
 }
 
@@ -752,8 +752,7 @@ pub struct InstructionsSpec {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SkillSpec {
-    /// Host directory holding `SKILL.md`, resolved relative to the manifest directory, or to the home directory
-    /// for `~/`.
+    /// Host directory holding `SKILL.md`, resolved relative to the manifest directory.
     pub source: std::path::PathBuf,
     /// Installed skill directory name; defaults to the source directory name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1340,13 +1339,8 @@ fn string_field(mapping: &serde_yaml_ng::Mapping, field: &str, path: &Path) -> R
         .ok_or_else(|| Error::Invalid(format!("{}: {field} must be a string", display_leaf(path))))
 }
 
-/// Resolves a host path named by the manifest `field`: absolute as written, `~` or `~/…` below the home
-/// directory of the user running `agentd`, and anything else, `~user` forms included, against the manifest's
+/// Resolves a manifest host path: `~` and `~/…` below the home directory, a relative path against the manifest's
 /// directory.
-///
-/// # Errors
-///
-/// Returns an error when the path starts with `~` and the home directory is unknown.
 pub(crate) fn resolve_host_path(source_directory: &Path, path: &Path, field: &str) -> Result<PathBuf, Error> {
     resolve_host_path_with(source_directory, path, field, crate::local::home::user_home_directory)
 }
