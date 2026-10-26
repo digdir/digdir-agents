@@ -16,6 +16,24 @@ pub fn configure_logging(command: &mut std::process::Command) {
     }
 }
 
+/// Finds the first of `names` in `path`, a `PATH`-style variable, trying every
+/// absolute directory for one name before the next.
+#[must_use]
+pub fn find_executable(path: Option<&std::ffi::OsStr>, names: &[&str]) -> Option<std::path::PathBuf> {
+    let directories = path
+        .map(std::env::split_paths)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    names.iter().find_map(|name| {
+        directories
+            .iter()
+            .filter(|directory| directory.is_absolute())
+            .map(|directory| directory.join(name))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
 /// Configures a child daemon to run independently of the invoking terminal.
 #[cfg(windows)]
 pub fn configure_detached(command: &mut std::process::Command) {
