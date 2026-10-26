@@ -395,7 +395,7 @@ const LOGIN_STORES: [(Harness, &login::LoginStore); 2] = [
     (Harness::Codex, &codex::LOGINS),
 ];
 
-/// Dispatches host-side authentication to the selected harness adapter.
+/// Dispatches host-side authentication to the selected harness adapter or the GitHub accounts.
 pub struct AuthenticationManager {
     database: persistence::Database,
     claude_code: claude_code::authentication::Authentication,
@@ -404,6 +404,7 @@ pub struct AuthenticationManager {
     /// went on to succeed; see [`Self::assign_login`].
     assignments:
         std::cell::RefCell<std::collections::BTreeMap<crate::AgentId, std::collections::BTreeMap<Harness, LoginName>>>,
+    github: crate::github::Authentication,
 }
 
 impl AuthenticationManager {
@@ -413,9 +414,43 @@ impl AuthenticationManager {
         Self {
             database: database.clone(),
             claude_code: claude_code::authentication::Authentication::new(database.clone()),
-            codex: codex::authentication::Authentication::new(database),
+            codex: codex::authentication::Authentication::new(database.clone()),
+            github: crate::github::Authentication::new(database),
             assignments: std::cell::RefCell::default(),
         }
+    }
+
+    /// Checks a GitHub token with GitHub and keeps it as `name`, replacing an earlier token of
+    /// that name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the token or name is invalid, the token has expired, GitHub rejects
+    /// it or cannot be reached, or it cannot be persisted.
+    pub async fn github_login(
+        &self,
+        token: Zeroizing<String>,
+        name: &str,
+    ) -> Result<crate::github::GithubLogin, Error> {
+        self.github.login(token, name).await
+    }
+
+    /// The stored GitHub tokens, by name, without the tokens.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database cannot be read.
+    pub async fn github_accounts(&self) -> Result<Vec<crate::github::GithubToken>, Error> {
+        self.github.tokens().await
+    }
+
+    /// Forgets the GitHub token named `name`, returning it, or `None` when there was none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database cannot be read or written.
+    pub async fn github_logout(&self, name: &str) -> Result<Option<crate::github::GithubToken>, Error> {
+        self.github.forget(name).await
     }
 
     /// Stores a credential for the selected harness as the login `login`, replacing an earlier

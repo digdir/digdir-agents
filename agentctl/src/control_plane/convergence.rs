@@ -105,6 +105,18 @@ impl Convergence {
         Ok(())
     }
 
+    /// Asks for a reconciliation pass of the named agent without waiting for it, as an unchanged
+    /// apply does.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::NotFound` when the agent does not exist, or a storage error.
+    pub async fn wake(&self, name: &str) -> Result<(), Error> {
+        let record = self.store.get_by_name(name).await?;
+        self.wakeup.notify(record.id);
+        Ok(())
+    }
+
     /// Reads the waited-on agent, which must still exist.
     async fn get(&self, id: AgentId) -> Result<super::AgentRecord, Error> {
         match self.store.get(id).await {
