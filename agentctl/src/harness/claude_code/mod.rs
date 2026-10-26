@@ -16,6 +16,12 @@ mod status_line;
 pub(super) mod transcript;
 
 const PROVIDER: &str = "claude";
+/// Claude Code keeps its settings and skills in `~/.claude`, and reads a repository's from its `.claude`.
+pub(super) const FOOTPRINT: super::Footprint = super::Footprint {
+    executable: "claude",
+    directory: ".claude",
+    skills_directory: ".claude/skills",
+};
 const ACCESS_SECRET: &str = "claude-access-token";
 pub(super) const ACCESS_ENVIRONMENT: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 const ACCESS_PLACEHOLDER: &str = "sk-ant-oat01-agent-mediated-placeholder-not-a-real-credential";

@@ -4,12 +4,9 @@ use std::{io::Cursor, path::Path};
 
 use ::sandbox::{SandboxHandle, SandboxPath};
 
-use crate::Error;
+use crate::{Error, local::files::walk_source};
 
-use super::{
-    HOME, run_checked,
-    sources::{resolve_source, walk_source},
-};
+use super::{HOME, run_checked, sources::resolve_source};
 
 const HOME_ARCHIVE: &str = "/tmp/agent-home.tar";
 

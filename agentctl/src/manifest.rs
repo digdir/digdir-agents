@@ -707,7 +707,7 @@ impl Spec {
                     "spec.skills[{index}] must declare a name or use a source ending in the skill's directory name"
                 )));
             };
-            if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+            if !crate::harness::valid_skill_name(name) {
                 return Err(Error::Invalid(format!("spec.skills[{index}].name is invalid")));
             }
             if !skill_names.insert(name) {

@@ -7,7 +7,7 @@ use crate::{
     sandbox::platform::{files::write_if_changed, run_checked},
 };
 
-use super::super::{extension, extension_path, instructions_path, platform_directory, skills_directory};
+use super::super::{FOOTPRINT, extension, extension_path, instructions_path, platform_directory};
 
 pub(super) async fn configure(
     sandbox: &SandboxHandle,
@@ -15,7 +15,7 @@ pub(super) async fn configure(
     instructions: &[u8],
     skills: &[crate::harness::Skill],
 ) -> Result<(), Error> {
-    let skills_path = skills_directory(home);
+    let skills_path = format!("{home}/{}", FOOTPRINT.skills_directory);
     // The extension lives outside Pi's own directories, which belong to the Agent; Pi does not
     // discover it there, so the launch loads it. Instructions go where Pi reads global context,
     // as the other harnesses' do.

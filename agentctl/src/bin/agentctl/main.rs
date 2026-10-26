@@ -22,6 +22,7 @@ mod launch;
 mod progress;
 mod prompt;
 mod self_update;
+mod skills;
 mod tui;
 
 use format::{condition_status, format_age, format_harnesses, session_state};
@@ -56,6 +57,11 @@ enum Command {
     Codex {
         #[command(subcommand)]
         command: CodexCommand,
+    },
+    /// Manage the skills of the harnesses on this machine, outside any Agent.
+    Skills {
+        #[command(subcommand)]
+        command: skills::SkillsCommand,
     },
     /// Create a Session and wait until its harness is ready, without attaching.
     Create {
@@ -559,7 +565,11 @@ fn run() -> CommandResult<ExitCode> {
         }
         if !matches!(
             arguments.command,
-            Command::Create { .. } | Command::Prompt { .. } | Command::Self_ { .. } | Command::SshConfig { .. }
+            Command::Create { .. }
+                | Command::Prompt { .. }
+                | Command::Self_ { .. }
+                | Command::Skills { .. }
+                | Command::SshConfig { .. }
         ) {
             ensure_daemon(&home, &client).await?;
         }
@@ -574,6 +584,7 @@ fn run() -> CommandResult<ExitCode> {
 async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> CommandResult<ExitCode> {
     match command {
         Command::Self_ { command } => self_update::execute(command, home).await?,
+        Command::Skills { command } => skills::execute(command)?,
         Command::Claude {
             command: ClaudeCommand::Login { from_stdin },
         } => {

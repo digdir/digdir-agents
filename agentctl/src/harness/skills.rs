@@ -1,24 +1,82 @@
-//! Skill installation shared by the Linux harness bootstraps.
+//! Skills, read on the host and placed where harnesses discover them.
 //!
-//! A skill is a directory holding `SKILL.md`, read on the host from `spec.skills`. Each harness
-//! discovers skills in its own user-level directory, so the adapter chooses the root and this
-//! module does the placement.
+//! A skill is a directory holding `SKILL.md`, read on the host from `spec.skills` or a folder
+//! given to `agentctl skills install`. Each harness discovers skills in a directory of its own
+//! below the user's home or a repository's root, which its adapter names, and this module does
+//! the placement.
+
+use std::path::Path;
 
 use sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
 
-use crate::{Error, sandbox::platform::files::write_if_changed};
+use crate::{Error, local::files::walk_source, sandbox::platform::files::write_if_changed};
 
 /// One skill directory read on the host, keyed by its directory name.
-pub(crate) struct Skill {
+#[derive(Debug, Eq, PartialEq)]
+pub struct Skill {
     pub(crate) name: String,
-    /// Regular files below the skill directory, as `/`-separated relative paths.
+    /// Regular files below the skill directory, as `/`-separated relative paths, sorted.
     pub(crate) files: Vec<SkillFile>,
 }
 
 /// One regular file of a skill.
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) struct SkillFile {
     pub(crate) relative_path: String,
     pub(crate) contents: Vec<u8>,
+}
+
+impl Skill {
+    /// Reads the skill in `source` to install as `name`. `field` names the source in errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `name` cannot be a directory name, `source` has no `SKILL.md`, or
+    /// holds a symbolic link or anything else that is not a regular file or a directory.
+    pub fn read(name: String, source: &Path, field: &str) -> Result<Self, Error> {
+        if !valid_name(&name) {
+            return Err(Error::Invalid(format!("{name:?} is not a valid skill name")));
+        }
+        if !source.join("SKILL.md").is_file() {
+            return Err(Error::Invalid(format!("{field} must contain SKILL.md")));
+        }
+        let mut files = Vec::new();
+        walk_source(source, field, |relative, path, is_dir| {
+            if is_dir {
+                return Ok(());
+            }
+            let relative_path = relative
+                .components()
+                .map(|component| component.as_os_str().to_str())
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| Error::Invalid(format!("{field} contains a non-UTF-8 file name")))?
+                .join("/");
+            files.push(SkillFile {
+                relative_path,
+                contents: std::fs::read(path)?,
+            });
+            Ok(())
+        })?;
+        files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        Ok(Self { name, files })
+    }
+
+    /// The skills built into `agentctl`.
+    #[must_use]
+    pub fn bundled() -> Vec<Self> {
+        vec![platform_skill()]
+    }
+
+    /// The directory name the skill is installed as.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Whether `name` can name a skill's directory: one path component.
+pub(crate) fn valid_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
 }
 
 /// The skill every Agent gets for driving Agents with `agentctl`, nested ones included, which the
