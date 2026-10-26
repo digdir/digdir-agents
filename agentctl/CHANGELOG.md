@@ -12,6 +12,10 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
 
+### Added
+
+- `agentctl skills install` puts a skill where the coding agents on your machine, such as Claude Code, Codex and Pi, find it, for you with `--user` or for a repository with `--repo`. `--bundled agentctl` gives them the skill for driving Agents. ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#340](https://github.com/digdir/digdir-agents/pull/340))
+
 ## [0.1.0-preview.13] - 2026-10-26
 
 ### Added
