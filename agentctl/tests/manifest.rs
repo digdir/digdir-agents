@@ -302,6 +302,7 @@ fn rejects_skills_without_a_directory_name_or_with_duplicate_names() {
     agent.spec.skills = vec![agent::SkillSpec {
         source: PathBuf::from("skills/.."),
         name: None,
+        optional: false,
     }];
     let error = agent.validate().expect_err("a source ending in .. has no skill name");
     assert!(matches!(error, agent::Error::Invalid(message) if message.starts_with("spec.skills[0]")));
@@ -310,10 +311,12 @@ fn rejects_skills_without_a_directory_name_or_with_duplicate_names() {
         agent::SkillSpec {
             source: PathBuf::from("skills/evidence"),
             name: None,
+            optional: false,
         },
         agent::SkillSpec {
             source: PathBuf::from("../shared/evidence/"),
             name: None,
+            optional: false,
         },
     ];
     let error = agent
@@ -499,6 +502,24 @@ fn decodes_each_part_of_a_manifest_and_serializes_only_what_it_sets() {
         let value = serde_json::to_value(&agent).expect("Agent JSON");
         check(&agent, &value);
     }
+}
+
+#[test]
+fn optional_instructions_and_skills_are_decoded_and_serialized_only_when_set() {
+    let bytes = manifest_with(&[(
+        NETWORK,
+        "  instructions:\n    - source: instructions.md\n    - source: ~/agent-instructions/everywhere.md\n      \
+         optional: true\n  skills:\n    - source: ~/skills/review\n      optional: true\n  network:\n",
+    )]);
+    let agent = manifest::decode(&bytes).expect("manifest with optional sources");
+    let value = serde_json::to_value(&agent).expect("Agent JSON");
+
+    let instructions = &agent.spec.instructions;
+    assert!(!instructions[0].optional && instructions[1].optional);
+    assert!(agent.spec.skills[0].optional);
+    assert!(value["spec"]["instructions"][0].get("optional").is_none());
+    assert_eq!(value["spec"]["instructions"][1]["optional"], true);
+    assert_eq!(value["spec"]["skills"][0]["optional"], true);
 }
 
 #[test]

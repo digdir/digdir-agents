@@ -12,6 +12,10 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
 
+### Added
+
+- `optional: true` in `spec.instructions` and `spec.skills` leaves out a source that does not exist, so a committed manifest can name your own files, such as `~/agent-instructions/everywhere.md`. `agentctl describe` names what was left out, and the Agent gets it once it exists. ([#331](https://github.com/digdir/digdir-agents/issues/331))
+
 ## [0.1.0-preview.13] - 2026-10-26
 
 ### Added

@@ -762,6 +762,9 @@ pub struct HomeSpec {
 pub struct InstructionsSpec {
     /// Host file, resolved relative to the manifest directory.
     pub source: std::path::PathBuf,
+    /// Whether a missing source is skipped rather than failing setup.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
 }
 
 /// One skill directory installed for every declared harness.
@@ -773,6 +776,10 @@ pub struct SkillSpec {
     /// Installed skill directory name; defaults to the source directory name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Whether a missing source directory is skipped rather than failing setup. A skill installed before its
+    /// source went missing stays in the Agent until it is recreated.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
 }
 
 impl SkillSpec {
@@ -1015,6 +1022,8 @@ impl Condition {
     pub const SANDBOX_RESPONSIVE: &'static str = "SandboxResponsive";
     /// Condition type for whether the Sandbox runs the nested Sandboxes its Agent asks for.
     pub const NESTED_SANDBOXES: &'static str = "NestedSandboxes";
+    /// Condition type for whether the optional instructions and skills an Agent declares exist.
+    pub const OPTIONAL_SOURCES: &'static str = "OptionalSources";
     /// Condition type for declared SSH access underneath `Ready`.
     pub const SSH_READY: &'static str = "SshReady";
     /// VNC access is reconciled and the bridge to the desktop is listening.
@@ -1370,6 +1379,23 @@ pub(crate) fn resolve_host_path(source_directory: &Path, path: &Path, field: &st
     resolve_host_path_with(source_directory, path, field, crate::local::home::user_home_directory)
 }
 
+/// Resolves a manifest host path as [`resolve_host_path`] does, or `None` when the source is optional and the path
+/// does not exist, which includes a symbolic link to nothing. Only a path that does not exist is forgiven: one that
+/// cannot be checked still fails, naming `field` and the path.
+pub(crate) fn resolve_present_host_path(
+    source_directory: &Path,
+    path: &Path,
+    optional: bool,
+    field: &str,
+) -> Result<Option<PathBuf>, Error> {
+    let path = resolve_host_path(source_directory, path, field)?;
+    let present = !optional
+        || path
+            .try_exists()
+            .map_err(|error| std::io::Error::new(error.kind(), format!("{field} {}: {error}", path.display())))?;
+    Ok(present.then_some(path))
+}
+
 fn resolve_host_path_with(
     source_directory: &Path,
     path: &Path,
@@ -1467,6 +1493,38 @@ mod tests {
             resolve(absolute.to_str().unwrap_or_default(), Some("/users/person")).ok(),
             Some(absolute)
         );
+    }
+
+    #[test]
+    fn only_an_optional_path_that_does_not_exist_is_left_out() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        std::fs::write(directory.path().join("present.md"), "present").expect("present file");
+        let present = |path: &str, optional| {
+            super::resolve_present_host_path(directory.path(), Path::new(path), optional, "spec.field")
+        };
+
+        for (path, optional, expected) in [
+            ("present.md", true, true),
+            ("present.md", false, true),
+            ("absent.md", false, true),
+            ("absent.md", true, false),
+        ] {
+            let resolved = present(path, optional).expect("checked");
+            assert_eq!(resolved.is_some(), expected, "{path} optional={optional}");
+        }
+
+        // Windows reports a path below a file as missing, and needs privileges for symbolic links.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(directory.path().join("absent.md"), directory.path().join("dangling.md"))
+                .expect("dangling link");
+            assert_eq!(present("dangling.md", true).expect("checked"), None);
+            let error = present("present.md/inner.md", true).expect_err("a path below a file cannot be checked");
+            assert!(
+                error.to_string().contains("spec.field ") && error.to_string().contains("present.md/inner.md"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

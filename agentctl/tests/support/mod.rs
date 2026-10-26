@@ -59,6 +59,7 @@ pub(crate) fn agent(name: &str) -> Agent {
             },
             instructions: vec![InstructionsSpec {
                 source: PathBuf::from("instructions.md"),
+                optional: false,
             }],
             skills: vec![],
             harnesses: vec![HarnessSpec {

@@ -101,21 +101,22 @@ impl PlatformAdapter for Linux {
         sandbox: &'a SandboxHandle,
         harnesses: &'a [crate::Harness],
         steps: &'a ::sandbox::SandboxProgress,
-    ) -> LocalFuture<'a, Result<(), Error>> {
+    ) -> LocalFuture<'a, Result<Vec<String>, Error>> {
         Box::pin(self.setup(record, sandbox, harnesses, steps))
     }
 }
 
 impl Linux {
     /// Sets up only the harnesses preparation reported installing, so setup and preparation
-    /// cannot disagree about an optional installation whose host login was absent.
+    /// cannot disagree about an optional installation whose host login was absent. Returns the
+    /// optional instructions and skills it left out because they do not exist.
     async fn setup(
         &self,
         record: &control_plane::AgentRecord,
         sandbox: &SandboxHandle,
         harnesses: &[crate::Harness],
         steps: &::sandbox::SandboxProgress,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<String>, Error> {
         let installations: Vec<&crate::HarnessSpec> = record
             .agent
             .spec
@@ -153,8 +154,9 @@ impl Linux {
             podman,
         };
         let section = preamble::render(record, &observed);
-        let own = read_instructions(record).await?;
-        let mut skills = read_skills(record).await?;
+        let mut missing = Vec::new();
+        let own = read_instructions(record, &mut missing).await?;
+        let mut skills = read_skills(record, &mut missing).await?;
         let platform_skill = harness::platform_skill();
         // An Agent's own skill of the same name replaces the platform's.
         if !skills.iter().any(|skill| skill.name == platform_skill.name) {
@@ -180,7 +182,7 @@ impl Linux {
             harness::bootstrap_linux(installation.kind, sandbox, HOME, &instructions, &skills).await?;
             step.complete().await;
         }
-        Ok(())
+        Ok(missing)
     }
 }
 

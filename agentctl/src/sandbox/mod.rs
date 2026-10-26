@@ -207,6 +207,8 @@ pub struct EnsureOutcome {
     pub harnesses: Vec<crate::Harness>,
     /// Whether the Sandbox got the nested Sandboxes the Agent asks for, when it asks for them.
     pub nested_sandboxes: Option<NestedSandboxesOutcome>,
+    /// The optional instructions and skills setup left out because they do not exist.
+    pub missing_sources: Vec<String>,
 }
 
 /// Runtime-selectable setup for an operating system reported by a materialized Sandbox.
@@ -215,14 +217,15 @@ pub trait PlatformAdapter {
     fn supports(&self, platform: &Platform) -> bool;
 
     /// Idempotently applies Agent and harness setup inside the Sandbox,
-    /// reporting its steps through `steps`.
+    /// reporting its steps through `steps`. Returns the optional instructions and skills it left
+    /// out because they do not exist.
     fn setup<'a>(
         &'a self,
         record: &'a AgentRecord,
         sandbox: &'a SandboxHandle,
         harnesses: &'a [crate::Harness],
         steps: &'a ::sandbox::SandboxProgress,
-    ) -> LocalFuture<'a, Result<(), Error>>;
+    ) -> LocalFuture<'a, Result<Vec<String>, Error>>;
 }
 
 /// Resolves Agent requirements against configured Providers and dispatches lifecycle effects.
@@ -312,12 +315,13 @@ impl Service {
         self.responsiveness
             .observe(sandbox.snapshot(), tokio::time::Instant::now());
         let phase = progress.start_phase(crate::progress::SETUP).await;
-        self.guard_guest(
-            record,
-            &sandbox.snapshot().id,
-            adapter.setup(record, &sandbox, &outcome.harnesses, &progress.steps()),
-        )
-        .await?;
+        let missing_sources = self
+            .guard_guest(
+                record,
+                &sandbox.snapshot().id,
+                adapter.setup(record, &sandbox, &outcome.harnesses, &progress.steps()),
+            )
+            .await?;
         phase.complete().await;
         Ok(EnsureOutcome {
             id: sandbox.snapshot().id.clone(),
@@ -325,6 +329,7 @@ impl Service {
             sandbox,
             harnesses: outcome.harnesses,
             nested_sandboxes: outcome.nested_sandboxes,
+            missing_sources,
         })
     }
 

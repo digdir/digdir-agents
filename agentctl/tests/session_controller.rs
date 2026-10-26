@@ -117,8 +117,8 @@ impl PlatformAdapter for NoopPlatform {
         _sandbox: &'a SandboxHandle,
         _harnesses: &'a [agent::Harness],
         _steps: &'a sandbox::SandboxProgress,
-    ) -> LocalFuture<'a, Result<(), Error>> {
-        Box::pin(async { Ok(()) })
+    ) -> LocalFuture<'a, Result<Vec<String>, Error>> {
+        Box::pin(async { Ok(Vec::new()) })
     }
 }
 
