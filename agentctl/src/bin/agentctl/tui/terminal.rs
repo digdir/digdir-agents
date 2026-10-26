@@ -8,7 +8,9 @@ use crossterm::{
     Command,
     cursor::Show,
     event::{DisableMouseCapture, EnableMouseCapture},
-    terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode,
+    },
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
@@ -179,9 +181,11 @@ fn deactivate() -> Result<(), Error> {
     raw.map_err(Error::from)
 }
 
+// The title replaces the one an attached Session left in the terminal's tab.
 fn enter_screen(output: &mut impl Write) -> std::io::Result<()> {
     crossterm::execute!(
         output,
+        SetTitle("agentctl"),
         EnterAlternateScreen,
         EnableMouseCapture,
         SetPointerShape(PointerShape::Default)
@@ -222,6 +226,7 @@ mod tests {
         enter_screen(&mut output).expect("screen activation");
 
         let output = String::from_utf8(output).expect("terminal commands are UTF-8");
+        assert!(output.contains("\x1b]0;agentctl\x07"), "names the tab agentctl again");
         let alternate = output.find("?1049h").expect("enter alternate screen");
         let mouse = output.find("?1000h").expect("enable mouse capture");
         let pointer = output.find("]22;default").expect("set default pointer shape");
