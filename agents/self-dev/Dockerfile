@@ -1,10 +1,10 @@
-# The self-development Agent's images, built on the agentctl base images in images/agentctl-base. FROM names the base
+# The self-development agent's images, built on the agentctl base images in images/agentctl-base. FROM names the base
 # tag without a digest, so that these images follow the platform they develop: CI builds them on the base built from
-# the same commit (docker-bake.hcl). A nested Agent's build pulls the published base, so to try a local base, build it
+# the same commit (docker-bake.hcl). A nested agent's build pulls the published base, so to try a local base, build it
 # under a localhost/ tag and point FROM at it while you test. renovate.json keeps Renovate from pinning it.
 FROM ghcr.io/digdir/agentctl-base:ubuntu-26.04 AS minimal
 
-# The base ends as the unprivileged Agent user; installing packages needs root again.
+# The base ends as the unprivileged agent user; installing packages needs root again.
 USER root
 
 # The repository's rust-toolchain.toml selects the toolchain inside a checkout, and Renovate moves
@@ -16,7 +16,7 @@ ENV RUSTUP_HOME=/usr/local/rustup
 
 # The toolchain the agent platform's own Rust workspace needs (libcap-ng-dev links the Microsandbox
 # runtime). bc, bison, flex, libelf-dev and python3-pyelftools check libkrunfw's kernel
-# configuration; sqlite3, socat and tcpdump inspect agentd's database, sockets and Sandbox traffic;
+# configuration; sqlite3, socat and tcpdump inspect agentd's database, sockets and sandbox traffic;
 # hyperfine measures performance changes.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
@@ -51,7 +51,7 @@ RUN apt-get update \
     && rustup component add clippy rustfmt \
     && chown -R agent:agent /usr/local/rustup
 
-# Podman, so that a nested agentd can build Agent images.
+# Podman, so that a nested agentd can build agent images.
 RUN agent-feature install containers
 
 # The workspace list names the repositories the base image's workspace unit clones at boot.
@@ -120,7 +120,7 @@ RUN case "${TARGETARCH}" in \
     && cargo-about --version \
     && cargo-machete --version
 
-# Keep Cargo's registry and build output on the Sandbox root filesystem so a worktree mount does
+# Keep Cargo's registry and build output on the sandbox root filesystem so a worktree mount does
 # not share target state with the host and a fresh checkout keeps reusable artifacts outside Git.
 ENV CARGO_HOME=/home/agent/.cargo
 ENV CARGO_TARGET_DIR=/home/agent/.cache/cargo-target
@@ -131,7 +131,7 @@ RUN agent-image-check
 USER agent
 
 # The minimal image plus a browser and a graphical desktop, for work that needs a real screen: browser captures for
-# pull request evidence, and the Agent platform's own VNC access, which only an image like this one offers.
+# pull request evidence, and the agent platform's own VNC access, which only an image like this one offers.
 FROM minimal AS full
 
 USER root

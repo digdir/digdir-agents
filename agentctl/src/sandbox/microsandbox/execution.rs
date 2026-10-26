@@ -18,7 +18,7 @@ pub(crate) async fn start_execution(
 ) -> Result<execution::StartedExecution, Error> {
     let provider = MicrosandboxProvider::open(home.join("microsandbox")).await?;
     let Assignment::Materialized { id, .. } = assignment else {
-        return Err(Error::Invalid("Execution target Sandbox is not materialized".into()));
+        return Err(Error::Invalid("Execution target sandbox is not materialized".into()));
     };
     provider.backend().inspect(id).await?;
     provider

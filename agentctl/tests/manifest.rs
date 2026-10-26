@@ -411,7 +411,7 @@ fn manifest_with_access(access: &str) -> Vec<u8> {
     manifest_with(&[(NETWORK, &format!("{access}{NETWORK}"))])
 }
 
-/// The Agent resource is stored and sent over the Control API in its serialized form, so a field
+/// The agent resource is stored and sent over the Control API in its serialized form, so a field
 /// left at its default stays out of it: a manifest that never sets the field is unchanged by it.
 #[test]
 fn decodes_each_part_of_a_manifest_and_serializes_only_what_it_sets() {
@@ -551,7 +551,7 @@ fn nested_sandboxes_are_decoded_and_serialized_only_when_asked_for() {
     let error = manifest::decode(&beside).expect_err("the setting should be refused beside resources");
     assert!(error.to_string().contains("unknown field `nestedSandboxes`"), "{error}");
 
-    // The manifest says how much the Agent needs them, not whether the Sandbox has them.
+    // The manifest says how much the agent needs them, not whether the sandbox has them.
     for value in ["true", "false", "bogus"] {
         let invalid = manifest_with(&[(
             ROOT_FILESYSTEM_MODE,
@@ -654,7 +654,7 @@ fn rejects_unknown_duplicate_and_configured_access_capabilities() {
         ),
         "SSH access exposes no tunables"
     );
-    // `access` belongs to the Agent, not the Sandbox.
+    // `access` belongs to the agent, not the sandbox.
     let nested = manifest_with(&[(
         ROOT_FILESYSTEM_MODE,
         "        mode: layered\n    access:\n      - type: ssh\n",

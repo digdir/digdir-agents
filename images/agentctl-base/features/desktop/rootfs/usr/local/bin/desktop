@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drives the Agent's X11 desktop: observe it, point at it, type into it.
+# Drives the agent's X11 desktop: observe it, point at it, type into it.
 #
 #   desktop <command> [arguments]
 #   desktop help
@@ -15,7 +15,7 @@ set -euo pipefail
 # reported with a path to a file that does not exist.
 shopt -s inherit_errexit
 
-# The image points DISPLAY at the Agent's own desktop; DESKTOP_DISPLAY overrides it for a second
+# The image points DISPLAY at the agent's own desktop; DESKTOP_DISPLAY overrides it for a second
 # screen or a test harness.
 display=${DESKTOP_DISPLAY:-${DISPLAY:-:1}}
 captures=${DESKTOP_CAPTURES:-/tmp/desktop}
@@ -41,8 +41,8 @@ jpeg_quality=${DESKTOP_JPEG_QUALITY:-7}
 settle_attempts=${DESKTOP_SETTLE_ATTEMPTS:-8}
 settle_interval=${DESKTOP_SETTLE_INTERVAL:-0.1}
 keep_captures=${DESKTOP_KEEP_CAPTURES:-200}
-# The geometry of the last screenshot or tree, which every coordinate refers to. One per Session,
-# since Sessions with different harnesses get screenshots at different sizes.
+# The geometry of the last screenshot or tree, which every coordinate refers to. One per session,
+# since sessions with different harnesses get screenshots at different sizes.
 observed_geometry=$captures/.screenshot-geometry${AGENT_SESSION_ID:+.$AGENT_SESSION_ID}
 
 export DISPLAY=$display

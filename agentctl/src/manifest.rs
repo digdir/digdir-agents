@@ -1,4 +1,4 @@
-//! Declarative Agent manifest and observed resource status.
+//! Declarative agent manifest and observed resource status.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -12,13 +12,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, HarnessSpec, harness};
 
-/// The first supported Agent manifest API version.
+/// The first supported agent manifest API version.
 pub const API_VERSION: &str = "agents.platform/v1alpha1";
 /// The manifest resource kind.
 pub const KIND: &str = "Agent";
-/// Manifest kind used for a partial Agent configuration.
+/// Manifest kind used for a partial agent configuration.
 pub const VARIANT_KIND: &str = "AgentVariant";
-/// Maximum number of manifests in one inheritance chain, including the complete Agent.
+/// Maximum number of manifests in one inheritance chain, including the complete agent.
 pub const MAX_VARIANT_CHAIN: usize = 16;
 
 /// Declarative resource accepted by the agent control plane.
@@ -38,10 +38,10 @@ pub struct Agent {
     pub status: Status,
 }
 
-/// A partial Agent manifest that inherits from a sibling manifest.
+/// A partial agent manifest that inherits from a sibling manifest.
 ///
 /// `metadata` and `spec` remain YAML values until they have been merged with a
-/// complete Agent. The expanded document is then decoded through [`Agent`], so
+/// complete agent. The expanded document is then decoded through [`Agent`], so
 /// nested unknown fields are rejected by the same strict contract.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -54,7 +54,7 @@ pub struct AgentVariant {
     pub extends: String,
     /// Partial resource metadata. `name` is required in every variant.
     pub metadata: serde_yaml_ng::Value,
-    /// Partial desired Agent configuration.
+    /// Partial desired agent configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec: Option<serde_yaml_ng::Value>,
 }
@@ -65,7 +65,7 @@ pub struct AgentVariant {
 pub struct AgentVariantName(String);
 
 impl AgentVariantName {
-    /// Creates a validated Agent variant name.
+    /// Creates a validated agent variant name.
     ///
     /// # Errors
     ///
@@ -132,12 +132,12 @@ impl AsRef<str> for AgentVariantName {
     }
 }
 
-/// A leaf manifest expanded to the complete Agent sent to the control plane.
+/// A leaf manifest expanded to the complete agent sent to the control plane.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedManifest {
-    /// Expanded and strictly validated Agent.
+    /// Expanded and strictly validated agent.
     pub agent: Agent,
-    /// Manifest paths from the leaf through to the complete base Agent.
+    /// Manifest paths from the leaf through to the complete base agent.
     pub chain: Vec<PathBuf>,
 }
 
@@ -195,7 +195,7 @@ pub struct Metadata {
     )]
     pub deletion_timestamp: Option<OffsetDateTime>,
     /// Time of the latest restart asked for with `agentctl restart`. The reconciler stops and
-    /// starts the Sandbox until its status has observed this restart.
+    /// starts the sandbox until its status has observed this restart.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -208,9 +208,9 @@ pub struct Metadata {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Spec {
-    /// Whether the Agent's Sandbox runs. `agentctl stop`, `agentctl start` and
+    /// Whether the agent's sandbox runs. `agentctl stop`, `agentctl start` and
     /// `agentctl restart` change it. A manifest may set it; when it is omitted, `apply` keeps the
-    /// Agent's current run state, and a new Agent runs. Stored only when not
+    /// agent's current run state, and a new agent runs. Stored only when not
     /// Running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_state: Option<RunState>,
@@ -224,35 +224,35 @@ pub struct Spec {
     /// Skill directories installed through every declared Harness Adapter.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillSpec>,
-    /// Harness installations available to Sessions in this Agent.
+    /// Harness installations available to sessions in this agent.
     pub harnesses: Vec<HarnessSpec>,
-    /// Deliberately selected non-secret values exposed in plaintext inside the Sandbox.
+    /// Deliberately selected non-secret values exposed in plaintext inside the sandbox.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment: Vec<EnvironmentSpec>,
     /// Host-owned values made available only through mediated requests.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretSpec>,
-    /// Ways the Agent's user reaches into the Sandbox besides Sessions and `exec`.
+    /// Ways the agent's user reaches into the sandbox besides sessions and `exec`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub access: Vec<AccessSpec>,
     /// Sandbox egress mediation policy.
     pub network: NetworkSpec,
 }
 
-/// Whether an Agent's Sandbox runs.
+/// Whether an agent's sandbox runs.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum RunState {
-    /// The Sandbox runs and serves Sessions and Executions.
+    /// The sandbox runs and serves sessions and Executions.
     #[default]
     Running,
-    /// The Sandbox's VM is stopped. Its root filesystem, Volumes and identity
-    /// are kept, so a start boots the same disk and Sessions resume.
+    /// The sandbox's VM is stopped. Its root filesystem, Volumes and identity
+    /// are kept, so a start boots the same disk and sessions resume.
     Stopped,
 }
 
-/// One access capability the platform provides to the Agent's user.
+/// One access capability the platform provides to the agent's user.
 ///
-/// Access is an Agent-level capability like `harnesses` and `secrets`: the
+/// Access is an agent-level capability like `harnesses` and `secrets`: the
 /// platform owns the guest user, the transport and the key material, so a
 /// variant carries no tunables.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -267,10 +267,10 @@ pub enum AccessSpec {
     Vnc {},
 }
 
-/// Sandbox settings as supplied by an Agent manifest.
+/// Sandbox settings as supplied by an agent manifest.
 ///
 /// Unlike the lower-layer [`sandbox::SandboxSpec`], this representation retains
-/// an omitted architecture until the Agent creates the concrete Sandbox request.
+/// an omitted architecture until the agent creates the concrete sandbox request.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SandboxManifestSpec {
@@ -280,37 +280,37 @@ pub struct SandboxManifestSpec {
     pub platform: PlatformManifestSpec,
     /// Desired mutable compute and writable root filesystem resources.
     pub resources: ResourcesManifestSpec,
-    /// Process responsible for initializing the Sandbox after backend setup.
+    /// Process responsible for initializing the sandbox after backend setup.
     #[serde(default)]
     pub init_system: InitSystem,
-    /// Whether the Agent retains the Sandbox when releasing it.
+    /// Whether the agent retains the sandbox when releasing it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_policy: Option<RetentionPolicy>,
-    /// Host filesystem and in-memory attachments materialized with the Sandbox.
+    /// Host filesystem and in-memory attachments materialized with the sandbox.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<MountSpec>,
 }
 
-/// Sandbox resources as supplied by an Agent manifest.
+/// Sandbox resources as supplied by an agent manifest.
 ///
-/// Unlike the lower-layer [`SandboxResources`], which turns nested Sandboxes on or off, this
-/// representation keeps how much the Agent needs them; the Agent decides from that and the host.
+/// Unlike the lower-layer [`SandboxResources`], which turns nested sandboxes on or off, this
+/// representation keeps how much the agent needs them; the agent decides from that and the host.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ResourcesManifestSpec {
     /// Desired CPU quantity.
     pub cpu: CpuQuantity,
-    /// Desired Sandbox memory quantity.
+    /// Desired sandbox memory quantity.
     pub memory: ByteQuantity,
     /// Desired writable root filesystem capacity and mode.
     pub root_filesystem: RootFilesystem,
-    /// Whether the Sandbox runs Sandboxes of its own, such as nested Agents. Absent, it does not.
+    /// Whether the sandbox runs sandboxes of its own, such as nested agents. Absent, it does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nested_sandboxes: Option<NestedSandboxes>,
 }
 
 impl ResourcesManifestSpec {
-    /// Returns the Sandbox resources without nested Sandboxes, which the Agent adds when it has
+    /// Returns the sandbox resources without nested sandboxes, which the agent adds when it has
     /// decided them.
     #[must_use]
     pub const fn sandbox_resources(self) -> SandboxResources {
@@ -318,13 +318,13 @@ impl ResourcesManifestSpec {
     }
 }
 
-/// How much an Agent needs its Sandbox to run Sandboxes of its own.
+/// How much an agent needs its sandbox to run sandboxes of its own.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NestedSandboxes {
-    /// The Agent cannot do without them: it fails on a host that cannot provide them.
+    /// The agent cannot do without them: it fails on a host that cannot provide them.
     Required,
-    /// The Agent uses them where the host provides them, and runs without them elsewhere.
+    /// The agent uses them where the host provides them, and runs without them elsewhere.
     Preferred,
 }
 
@@ -357,20 +357,20 @@ impl SandboxManifestSpec {
         })
     }
 
-    /// Returns the Agent-layer retention default used when the manifest omits it.
+    /// Returns the agent-layer retention default used when the manifest omits it.
     #[must_use]
     pub fn resolved_retention_policy(&self) -> RetentionPolicy {
         self.retention_policy.unwrap_or(RetentionPolicy::Delete)
     }
 
-    /// Converts validated, absolute Agent Mount inputs to the generic Sandbox SDK representation.
+    /// Converts validated, absolute agent Mount inputs to the generic Sandbox SDK representation.
     #[must_use]
     pub fn resolved_mounts(&self) -> Vec<Mount> {
         self.mounts.iter().map(MountSpec::to_sandbox_mount).collect()
     }
 }
 
-/// One filesystem attachment declared by an Agent builder.
+/// One filesystem attachment declared by an agent builder.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     deny_unknown_fields,
@@ -379,18 +379,18 @@ impl SandboxManifestSpec {
     tag = "type"
 )]
 pub enum MountSpec {
-    /// A caller-host directory mapped into the Sandbox.
+    /// A caller-host directory mapped into the sandbox.
     Bind {
         /// Host path, resolved relative to the manifest directory at apply time.
         source: std::path::PathBuf,
-        /// Absolute path inside the Sandbox.
+        /// Absolute path inside the sandbox.
         target: SandboxPath,
-        /// Whether the Sandbox may modify the host directory.
+        /// Whether the sandbox may modify the host directory.
         read_only: bool,
     },
     /// Anonymous in-memory storage with an explicit capacity.
     Tmpfs {
-        /// Absolute path inside the Sandbox.
+        /// Absolute path inside the sandbox.
         target: SandboxPath,
         /// Maximum storage capacity.
         capacity: ByteQuantity,
@@ -423,7 +423,7 @@ impl MountSpec {
     }
 }
 
-/// Platform constraints retained exactly as supplied by an Agent manifest.
+/// Platform constraints retained exactly as supplied by an agent manifest.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PlatformManifestSpec {
@@ -493,7 +493,7 @@ impl Spec {
         self.run_state.unwrap_or_default()
     }
 
-    /// Returns whether the Agent's Sandbox is meant to be stopped.
+    /// Returns whether the agent's sandbox is meant to be stopped.
     #[must_use]
     pub fn is_stopped(&self) -> bool {
         self.run_state() == RunState::Stopped
@@ -511,7 +511,7 @@ impl Spec {
         self.harnesses.iter().find(|harness| harness.kind == kind)
     }
 
-    /// Returns the installation selected for a new Session without an explicit harness.
+    /// Returns the installation selected for a new session without an explicit harness.
     #[must_use]
     pub fn default_harness(&self) -> Option<&HarnessSpec> {
         if self.harnesses.len() == 1 {
@@ -521,13 +521,13 @@ impl Spec {
         }
     }
 
-    /// Returns whether the Agent declares SSH access.
+    /// Returns whether the agent declares SSH access.
     #[must_use]
     pub fn ssh_access(&self) -> bool {
         self.access.contains(&AccessSpec::Ssh {})
     }
 
-    /// Returns whether the Agent declares VNC access.
+    /// Returns whether the agent declares VNC access.
     #[must_use]
     pub fn vnc_access(&self) -> bool {
         self.access.contains(&AccessSpec::Vnc {})
@@ -546,7 +546,7 @@ impl Spec {
             let target = mount.target().as_str();
             if !valid_sandbox_path(target) || !mount_targets.insert(target) {
                 return Err(Error::Invalid(format!(
-                    "spec.sandbox.mounts[{index}].target must be a unique absolute normalized Sandbox path"
+                    "spec.sandbox.mounts[{index}].target must be a unique absolute normalized sandbox path"
                 )));
             }
         }
@@ -720,13 +720,13 @@ impl Spec {
     }
 }
 
-/// One explicitly selected non-secret value copied from the Agent environment file.
+/// One explicitly selected non-secret value copied from the agent environment file.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct EnvironmentSpec {
-    /// Environment variable exposed inside the Sandbox.
+    /// Environment variable exposed inside the sandbox.
     pub name: String,
-    /// Optional variable name in the Agent environment file; defaults to `name`.
+    /// Optional variable name in the agent environment file; defaults to `name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 }
@@ -777,7 +777,7 @@ pub struct SkillSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Whether a missing source directory is skipped rather than failing setup. A skill installed before its
-    /// source went missing stays in the Agent until it is recreated.
+    /// source went missing stays in the agent until it is recreated.
     #[serde(default, skip_serializing_if = "is_false")]
     pub optional: bool,
 }
@@ -795,7 +795,7 @@ impl SkillSpec {
     }
 }
 
-/// One host-owned value exposed to Sandbox processes only as an inert environment placeholder.
+/// One host-owned value exposed to sandbox processes only as an inert environment placeholder.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SecretSpec {
@@ -826,7 +826,7 @@ impl SecretSpec {
         self.source.as_deref().unwrap_or(&self.environment)
     }
 
-    /// Returns the explicit or provider-neutral generated value exposed inside the Sandbox.
+    /// Returns the explicit or provider-neutral generated value exposed inside the sandbox.
     #[must_use]
     pub fn inert_value(&self) -> String {
         self.placeholder
@@ -882,7 +882,7 @@ fn valid_environment_variable(value: &str) -> bool {
             .all(|(index, byte)| byte == b'_' || byte.is_ascii_alphabetic() || (index > 0 && byte.is_ascii_digit()))
 }
 
-/// Most recently observed Agent state.
+/// Most recently observed agent state.
 ///
 /// Unlike the rest of the manifest, unknown fields are tolerated so an older
 /// client can read responses from a newer control plane; status is
@@ -900,7 +900,7 @@ pub struct Status {
         with = "time::serde::rfc3339::option"
     )]
     pub observed_restart_timestamp: Option<OffsetDateTime>,
-    /// Sticky selected Provider and optional materialized Sandbox identity.
+    /// Sticky selected Provider and optional materialized sandbox identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<crate::sandbox::Assignment>,
     /// Normalized readiness conditions.
@@ -916,7 +916,7 @@ pub struct Status {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<crate::progress::Provisioning>,
     /// Local origin of the desired state. Projected onto API responses from
-    /// the stored Agent record; stores scrub it, so it is never persisted.
+    /// the stored agent record; stores scrub it, so it is never persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Provenance>,
 }
@@ -983,14 +983,14 @@ impl Status {
         Condition::any_ready(&self.conditions)
     }
 
-    /// Returns whether a pass recorded the Agent's Sandbox as stopped.
+    /// Returns whether a pass recorded the agent's sandbox as stopped.
     #[must_use]
     pub fn is_stopped(&self) -> bool {
         self.ready_condition()
             .is_some_and(|ready| ready.reason == Condition::REASON_STOPPED)
     }
 
-    /// Returns the `SandboxResponsive=False` condition when the Agent's guest
+    /// Returns the `SandboxResponsive=False` condition when the agent's guest
     /// is recorded as unresponsive.
     #[must_use]
     pub fn unresponsive(&self) -> Option<&Condition> {
@@ -1013,27 +1013,27 @@ impl Status {
 }
 
 impl Condition {
-    /// Condition type summarizing whether the Agent can serve Sessions and Executions.
+    /// Condition type summarizing whether the agent can serve sessions and Executions.
     pub const READY: &'static str = "Ready";
-    /// Condition type for the Sandbox lifecycle underneath `Ready`.
+    /// Condition type for the sandbox lifecycle underneath `Ready`.
     pub const SANDBOX_READY: &'static str = "SandboxReady";
-    /// Condition type for whether the running Sandbox's guest still makes
+    /// Condition type for whether the running sandbox's guest still makes
     /// progress, observed by the host without a round trip to the guest.
     pub const SANDBOX_RESPONSIVE: &'static str = "SandboxResponsive";
-    /// Condition type for whether the Sandbox runs the nested Sandboxes its Agent asks for.
+    /// Condition type for whether the sandbox runs the nested sandboxes its agent asks for.
     pub const NESTED_SANDBOXES: &'static str = "NestedSandboxes";
-    /// Condition type for whether the optional instructions and skills an Agent declares exist.
+    /// Condition type for whether the optional instructions and skills an agent declares exist.
     pub const OPTIONAL_SOURCES: &'static str = "OptionalSources";
     /// Condition type for declared SSH access underneath `Ready`.
     pub const SSH_READY: &'static str = "SshReady";
     /// VNC access is reconciled and the bridge to the desktop is listening.
     pub const VNC_READY: &'static str = "VncReady";
 
-    /// `Ready` reason while a pass stops the Agent's Sandbox, and after a stop failed.
+    /// `Ready` reason while a pass stops the agent's sandbox, and after a stop failed.
     pub const REASON_STOPPING: &'static str = "Stopping";
-    /// `Ready` and `SandboxReady` reason once the Agent's Sandbox is stopped.
+    /// `Ready` and `SandboxReady` reason once the agent's sandbox is stopped.
     pub const REASON_STOPPED: &'static str = "Stopped";
-    /// `Ready` reason while a pass starts a stopped Sandbox.
+    /// `Ready` reason while a pass starts a stopped sandbox.
     pub const REASON_STARTING: &'static str = "Starting";
 
     /// Finds the `Ready` condition in a condition list.
@@ -1070,10 +1070,10 @@ impl Condition {
     }
 }
 
-/// Conventional Agent manifest filename, used when a record predates path recording.
+/// Conventional agent manifest filename, used when a record predates path recording.
 pub const MANIFEST_FILE: &str = "agent.yaml";
 
-/// Local origin of an Agent's desired state.
+/// Local origin of an agent's desired state.
 ///
 /// Part of [`Status`], so unknown fields are tolerated for the same reason.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1100,7 +1100,7 @@ impl Provenance {
     }
 }
 
-/// One aspect of observed Agent state.
+/// One aspect of observed agent state.
 ///
 /// Like [`Status`], unknown fields are tolerated, so a client or store reader
 /// can read conditions written by a newer control plane.
@@ -1129,7 +1129,7 @@ pub struct Condition {
     pub last_transition_time: Option<OffsetDateTime>,
 }
 
-/// Truth value of an Agent condition.
+/// Truth value of an agent condition.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ConditionStatus {
     /// The condition is satisfied.
@@ -1145,7 +1145,7 @@ const fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
-/// Decodes and validates a YAML or JSON Agent manifest.
+/// Decodes and validates a YAML or JSON agent manifest.
 ///
 /// # Errors
 ///
@@ -1156,7 +1156,7 @@ pub fn decode(bytes: &[u8]) -> Result<Agent, Error> {
     Ok(agent)
 }
 
-/// Expands a complete Agent or chained Agent variant from `path`.
+/// Expands a complete agent or chained agent variant from `path`.
 ///
 /// Variant bases are restricted to conventional sibling filenames. Mappings
 /// merge recursively, arrays and scalars replace inherited values, and `null`
@@ -1165,14 +1165,14 @@ pub fn decode(bytes: &[u8]) -> Result<Agent, Error> {
 /// # Errors
 ///
 /// Returns an error when a manifest cannot be read, a variant chain is invalid,
-/// or the expanded Agent does not satisfy the strict Agent contract.
+/// or the expanded agent does not satisfy the strict agent contract.
 pub fn resolve(path: &Path) -> Result<ResolvedManifest, Error> {
     let leaf = absolute_lexical(path)?;
     let mut chain = Vec::new();
     let mut versions = Vec::new();
     let value = resolve_value(&leaf, &mut chain, &mut versions).map_err(|error| with_chain(error, &chain))?;
     let bytes = serde_yaml_ng::to_string(&value).map_err(Error::Yaml)?;
-    let agent = decode(bytes.as_bytes()).map_err(|error| manifest_error(&leaf, "expanded Agent", &error))?;
+    let agent = decode(bytes.as_bytes()).map_err(|error| manifest_error(&leaf, "expanded agent", &error))?;
     Ok(ResolvedManifest { agent, chain })
 }
 
@@ -1184,7 +1184,7 @@ pub fn variant_from_filename(path: &Path) -> Option<AgentVariantName> {
     variant.parse().ok()
 }
 
-/// Returns whether a filename is a conventional Agent or Agent variant manifest.
+/// Returns whether a filename is a conventional agent or agent variant manifest.
 #[must_use]
 pub fn is_manifest_filename(path: &Path) -> bool {
     path.file_name().is_some_and(|name| name == MANIFEST_FILE) || variant_from_filename(path).is_some()
@@ -1235,7 +1235,7 @@ fn resolve_value(
     versions.push((path.to_path_buf(), version));
     match kind.as_str() {
         KIND => {
-            decode(&bytes).map_err(|error| manifest_error(path, "complete Agent", &error))?;
+            decode(&bytes).map_err(|error| manifest_error(path, "complete agent", &error))?;
             Ok(value)
         }
         VARIANT_KIND => {

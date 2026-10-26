@@ -29,7 +29,7 @@ use crate::{
     state::{SandboxRecord, StateStore},
 };
 
-const RECORD_SANDBOX: &str = "Record Sandbox state";
+const RECORD_SANDBOX: &str = "Record sandbox state";
 const INSTALL_RUNTIME: &str = "Install Microsandbox runtime";
 const RESOLVE_RUNTIME_INPUTS: &str = "Resolve Microsandbox runtime inputs";
 const MATERIALIZE_DIRECT_ROOT_IMAGE: &str = "Materialize direct root image";
@@ -40,10 +40,10 @@ const UPDATE_RUNTIME_ENVIRONMENT: &str = "Update Microsandbox environment";
 
 /// How long a stopping runtime may take to shut its guest down before it is
 /// killed. Microsandbox's own `stop` waits indefinitely, so a wedged guest
-/// would otherwise block stopping and deleting the Sandbox.
+/// would otherwise block stopping and deleting the sandbox.
 const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Microsandbox Provider pairing its Sandbox Backend with its Image Backend.
+/// Microsandbox Provider pairing its sandbox Backend with its Image Backend.
 pub struct MicrosandboxProvider {
     pub(crate) client: Client,
     images: ImageCache,
@@ -113,7 +113,7 @@ impl MicrosandboxProvider {
             if retention < crate::image_cache::MINIMUM_RETENTION {
                 return Err(Error::invalid(
                     "provider.unusedImageRetention",
-                    "must be at least an hour, to cover the time between resolving an image and creating its Sandbox",
+                    "must be at least an hour, to cover the time between resolving an image and creating its sandbox",
                 ));
             }
         }
@@ -151,11 +151,11 @@ impl MicrosandboxProvider {
         Ok(provider)
     }
 
-    /// Migrates a catalog recorded before Sandboxes held their images, while the Provider opens
-    /// and before anything else runs. Every Sandbox holds its image; one with a runtime whose
+    /// Migrates a catalog recorded before sandboxes held their images, while the Provider opens
+    /// and before anything else runs. Every sandbox holds its image; one with a runtime whose
     /// image the old catalog lost fetches it again by digest. Image versions nothing holds are
-    /// then removed, but only once every Sandbox's image is protected from that removal, which
-    /// a Sandbox that never started, or whose first start was interrupted, is not. Until then
+    /// then removed, but only once every sandbox's image is protected from that removal, which
+    /// a sandbox that never started, or whose first start was interrupted, is not. Until then
     /// each open tries again.
     async fn migrate_images(&self) -> Result<(), Error> {
         if !self.images.migration_pending().await {
@@ -167,7 +167,7 @@ impl MicrosandboxProvider {
                 match self.hold_image(&record).await {
                     Ok(_) => true,
                     Err(error) => {
-                        tracing::warn!(sandbox = %record.id, %error, "failed to hold a Sandbox's image");
+                        tracing::warn!(sandbox = %record.id, %error, "failed to hold a sandbox's image");
                         false
                     }
                 }
@@ -177,13 +177,13 @@ impl MicrosandboxProvider {
             every_image_pinned &= held && self.images.is_pinned(&record).await?;
         }
         if !every_image_pinned {
-            tracing::info!("keeping image versions from before this release until every Sandbox's image is protected");
+            tracing::info!("keeping image versions from before this release until every sandbox's image is protected");
             return Ok(());
         }
         self.images.finish_migration().await
     }
 
-    /// Makes a Sandbox hold its image and returns the name to create its runtime from. An image
+    /// Makes a sandbox hold its image and returns the name to create its runtime from. An image
     /// no longer in the cache is fetched again from its registry by digest.
     pub(crate) async fn hold_image(&self, record: &SandboxRecord) -> Result<String, Error> {
         use sandbox::image::ImageBackend as _;
@@ -220,7 +220,7 @@ impl MicrosandboxProvider {
     }
 
     /// Removes unused images now, as the Provider also does when it opens, after each image is
-    /// resolved or imported and after each Sandbox is deleted. Only a Provider opened with
+    /// resolved or imported and after each sandbox is deleted. Only a Provider opened with
     /// [`MicrosandboxProviderBuilder::remove_unused_images_after`] removes any.
     pub async fn remove_unused_images(&self) {
         self.images.remove_unused().await;
@@ -243,10 +243,10 @@ impl MicrosandboxProvider {
         let record = SandboxRecord::new(request);
         self.state.save_sandbox(&record).await?;
         // The record comes first, so an image entry without a record is always a deleted
-        // Sandbox's, which removal passes clean up.
+        // sandbox's, which removal passes clean up.
         if let Err(error) = self.hold_image(&record).await {
             if let Err(cleanup) = self.state.remove_sandbox(&record).await {
-                tracing::warn!(sandbox = %record.id, error = %cleanup, "failed to remove the record of a Sandbox without its image");
+                tracing::warn!(sandbox = %record.id, error = %cleanup, "failed to remove the record of a sandbox without its image");
             }
             return Err(error);
         }
@@ -602,8 +602,8 @@ impl MicrosandboxProviderBuilder {
         self
     }
 
-    /// Removes cached images no Sandbox uses once `retention`, at least an hour, has passed
-    /// since each was last resolved, imported or released by a deleted Sandbox. A Sandbox keeps
+    /// Removes cached images no sandbox uses once `retention`, at least an hour, has passed
+    /// since each was last resolved, imported or released by a deleted sandbox. A sandbox keeps
     /// its image until it is deleted, running or not.
     ///
     /// Enable this only for the Provider that owns its home. It cannot be combined with
@@ -750,7 +750,7 @@ impl SandboxBackend for MicrosandboxProvider {
             {
                 handle.kill().await.map_err(error::microsandbox)?;
             }
-            // As after a stop, nothing the Sandbox ran is still running.
+            // As after a stop, nothing the sandbox ran is still running.
             self.executions
                 .borrow_mut()
                 .retain(|(sandbox_id, _), _| sandbox_id != id);
@@ -907,7 +907,7 @@ impl RuntimeMount {
 }
 
 /// Adds to `modification` the boot settings in which `desired` and `nested_sandboxes` differ
-/// from `from`: cpus, memory and nested Sandboxes. `stored` is the runtime's stored
+/// from `from`: cpus, memory and nested sandboxes. `stored` is the runtime's stored
 /// configuration, whose maximums only grow. Returns whether it added any.
 fn boot_changes(
     mut modification: SandboxModificationBuilder,
@@ -984,7 +984,7 @@ const fn map_state(status: SandboxStatus) -> SandboxState {
     }
 }
 
-/// How a runtime's network is wired, decided once from the Sandbox's immutable
+/// How a runtime's network is wired, decided once from the sandbox's immutable
 /// Network attachment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeNetwork {
@@ -1030,8 +1030,8 @@ pub(crate) mod test_records {
 
     pub(crate) fn record_with_network(id: &str, endpoint: NetworkEndpointSelection) -> SandboxRecord {
         SandboxRecord::new(CreateSandboxRequest {
-            id: id.parse::<SandboxId>().expect("test Sandbox ID should be a UUID"),
-            name: SandboxName::new("worker").expect("test Sandbox name should be valid"),
+            id: id.parse::<SandboxId>().expect("test sandbox ID should be a UUID"),
+            name: SandboxName::new("worker").expect("test sandbox name should be valid"),
             hostname: Hostname::new("worker").expect("test hostname should be valid"),
             image: image::ResolvedImage {
                 source: image::ImageSource::Reference {
@@ -1111,7 +1111,7 @@ mod tests {
         for (index, endpoint) in endpoints.into_iter().enumerate() {
             let mut record =
                 record_with_network(&format!("00000000-0000-4000-8000-00000000000{}", index + 1), endpoint);
-            record.name = SandboxName::new(format!("worker-{index}")).expect("test Sandbox name should be valid");
+            record.name = SandboxName::new(format!("worker-{index}")).expect("test sandbox name should be valid");
             provider
                 .state
                 .save_sandbox(&record)
@@ -1127,7 +1127,7 @@ mod tests {
                 .endpoint;
             assert!(
                 matches!(&result, Err(Error::UnsupportedNetworkEndpoint(actual)) if actual == expected),
-                "starting a Sandbox recorded with {expected:?} should be refused, got {result:?}"
+                "starting a sandbox recorded with {expected:?} should be refused, got {result:?}"
             );
         }
         drop(provider);
@@ -1150,7 +1150,7 @@ mod tests {
         }
         let service = SandboxService::new(provider.clone());
         let request = EnsureSandboxRequest::new(
-            SandboxName::new("interrupted").expect("test Sandbox name should be valid"),
+            SandboxName::new("interrupted").expect("test sandbox name should be valid"),
             SandboxSpec {
                 image: ImageSource::Reference {
                     reference: "docker.io/library/alpine:3.22".to_string(),
@@ -1172,12 +1172,12 @@ mod tests {
                 retention_policy: RetentionPolicy::Delete,
             },
         );
-        let sandbox = service.ensure(&request).await.expect("a nested Sandbox should start");
+        let sandbox = service.ensure(&request).await.expect("a nested sandbox should start");
         let record = provider
             .state
             .sandbox_by_id(&sandbox.snapshot().id)
             .await
-            .expect("the Sandbox should be recorded");
+            .expect("the sandbox should be recorded");
         provider
             .runtime_handle(&record.runtime_name)
             .await
@@ -1189,9 +1189,9 @@ mod tests {
             .apply()
             .await
             .expect("the change should be persisted for the next start");
-        provider.stop(&record.id).await.expect("the Sandbox should stop");
+        provider.stop(&record.id).await.expect("the sandbox should stop");
 
-        let sandbox = service.ensure(&request).await.expect("the Sandbox should start");
+        let sandbox = service.ensure(&request).await.expect("the sandbox should start");
         let output = sandbox
             .run_execution(ExecutionSpec::command(
                 sandbox::SandboxPath::new("/bin/sh"),
@@ -1221,7 +1221,7 @@ mod tests {
             RootFilesystem::layered("1Gi".parse::<ByteQuantity>().expect("test disk should be valid")),
         )
         .with_nested_sandboxes(true);
-        let sandbox = service.ensure(&request).await.expect("the Sandbox should restart");
+        let sandbox = service.ensure(&request).await.expect("the sandbox should restart");
         let output = sandbox
             .run_execution(ExecutionSpec::command(
                 sandbox::SandboxPath::new("/bin/sh"),
@@ -1233,7 +1233,7 @@ mod tests {
         provider
             .delete(&record.id)
             .await
-            .expect("the Sandbox should be deleted");
+            .expect("the sandbox should be deleted");
         drop(provider);
     }
 

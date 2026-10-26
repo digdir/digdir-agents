@@ -1,4 +1,4 @@
-//! Explicit non-secret environment imported from an Agent's environment file.
+//! Explicit non-secret environment imported from an agent's environment file.
 
 use std::collections::BTreeMap;
 

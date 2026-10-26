@@ -34,18 +34,18 @@ const WATCH_SETTLE: Duration = Duration::from_millis(150);
 /// watcher the daemon is still there.
 const WATCH_KEEPALIVE: Duration = Duration::from_secs(30);
 
-/// Agent operations exposed through the Agent Control API.
+/// Agent operations exposed through the agent Control API.
 pub trait AgentApi {
-    /// Creates or updates desired Agent state.
+    /// Creates or updates desired agent state.
     fn apply(&self, request: control_plane::ApplyRequest) -> LocalFuture<'_, Result<Agent, Error>>;
 
-    /// Gets an Agent by name.
+    /// Gets an agent by name.
     fn get<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Agent, Error>>;
 
-    /// Lists every active Agent.
+    /// Lists every active agent.
     fn list(&self) -> LocalFuture<'_, Result<Vec<Agent>, Error>>;
 
-    /// Resolves an Agent from its persisted source directory.
+    /// Resolves an agent from its persisted source directory.
     fn resolve_directory<'a>(
         &'a self,
         directory: &'a std::path::Path,
@@ -55,17 +55,17 @@ pub trait AgentApi {
     /// Requests asynchronous deletion.
     fn delete<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>>;
 
-    /// Records whether an Agent's Sandbox runs; see [`control_plane::ControlPlane::set_run_state`].
+    /// Records whether an agent's sandbox runs; see [`control_plane::ControlPlane::set_run_state`].
     fn set_run_state<'a>(&'a self, name: &'a str, state: crate::RunState) -> LocalFuture<'a, Result<Agent, Error>>;
 
-    /// Stops an Agent without letting its guest shut down; see
+    /// Stops an agent without letting its guest shut down; see
     /// [`control_plane::ControlPlane::stop_now`].
     fn stop_now<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Agent, Error>>;
 
-    /// Records a restart of an Agent; see [`control_plane::ControlPlane::restart`].
+    /// Records a restart of an agent; see [`control_plane::ControlPlane::restart`].
     fn restart<'a>(&'a self, name: &'a str, now: bool) -> LocalFuture<'a, Result<Agent, Error>>;
 
-    /// Reads an Agent's stored status and its latest pass's progress, with
+    /// Reads an agent's stored status and its latest pass's progress, with
     /// only the output after `output` when it names the same pass.
     fn progress<'a>(
         &'a self,
@@ -157,17 +157,17 @@ pub trait SessionApi {
         wait: WaitPolicy,
     ) -> LocalFuture<'a, Result<sessions::AttachTarget, Error>>;
 
-    /// Gets one named Session scoped to an Agent.
+    /// Gets one named session scoped to an agent.
     fn get<'a>(
         &'a self,
         agent: &'a str,
         name: &'a sessions::SessionName,
     ) -> LocalFuture<'a, Result<sessions::Session, Error>>;
 
-    /// Lists tracked Sessions, optionally scoped to one Agent.
+    /// Lists tracked sessions, optionally scoped to one agent.
     fn list<'a>(&'a self, agent: Option<&'a str>) -> LocalFuture<'a, Result<Vec<sessions::Session>, Error>>;
 
-    /// Delivers a prompt to a running Session's harness, optionally waiting for
+    /// Delivers a prompt to a running session's harness, optionally waiting for
     /// a completed turn and settled activity; see [`sessions::Service::prompt`].
     fn prompt<'a>(
         &'a self,
@@ -178,7 +178,7 @@ pub trait SessionApi {
         timeout: Option<std::time::Duration>,
     ) -> LocalFuture<'a, Result<(), Error>>;
 
-    /// Reads the harness transcript of a Session as ordered turns.
+    /// Reads the harness transcript of a session as ordered turns.
     fn turns<'a>(
         &'a self,
         agent: &'a str,
@@ -186,10 +186,10 @@ pub trait SessionApi {
         last: Option<usize>,
     ) -> LocalFuture<'a, Result<Vec<sessions::Turn>, Error>>;
 
-    /// Requests release of one Session; see [`sessions::Service::delete`].
+    /// Requests release of one session; see [`sessions::Service::delete`].
     fn delete<'a>(&'a self, agent: &'a str, name: &'a sessions::SessionName) -> LocalFuture<'a, Result<(), Error>>;
 
-    /// Archives or unarchives one Session; see [`sessions::Service::set_archived`].
+    /// Archives or unarchives one session; see [`sessions::Service::set_archived`].
     fn set_archived<'a>(
         &'a self,
         agent: &'a str,
@@ -197,7 +197,7 @@ pub trait SessionApi {
         archived: bool,
     ) -> LocalFuture<'a, Result<sessions::Session, Error>>;
 
-    /// Lists Sessions whose work or terminal attachment prevents an upgrade.
+    /// Lists sessions whose work or terminal attachment prevents an upgrade.
     fn upgrade_readiness(&self) -> LocalFuture<'_, Result<sessions::UpgradeReadiness, Error>>;
 }
 
@@ -262,13 +262,13 @@ impl SessionApi for sessions::Service {
     }
 }
 
-/// Waiting for an Agent to converge, exposed through the local control API.
+/// Waiting for an agent to converge, exposed through the local control API.
 pub trait ConvergenceApi {
-    /// Waits until an Agent has its desired run state; see
+    /// Waits until an agent has its desired run state; see
     /// [`control_plane::Convergence::converge`].
     fn converge<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>>;
 
-    /// Hints convergence of every Agent; see [`control_plane::Convergence::wake_all`].
+    /// Hints convergence of every agent; see [`control_plane::Convergence::wake_all`].
     fn wake_all(&self) -> LocalFuture<'_, Result<(), Error>>;
 }
 
@@ -282,9 +282,9 @@ impl ConvergenceApi for control_plane::Convergence {
     }
 }
 
-/// Transient Agent Execution target resolution exposed through the local control API.
+/// Transient agent Execution target resolution exposed through the local control API.
 pub trait ExecutionApi {
-    /// Converges an Agent and returns its exact ready Sandbox assignment.
+    /// Converges an agent and returns its exact ready sandbox assignment.
     fn ensure<'a>(
         &'a self,
         name: &'a str,
@@ -304,7 +304,7 @@ impl ExecutionApi for crate::sandbox::ExecutionService {
 
 /// SSH access descriptors exposed through the local control API.
 pub trait SshAccessApi {
-    /// Describes the SSH access of a named Agent.
+    /// Describes the SSH access of a named agent.
     fn describe<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<crate::ssh::AccessInfo, Error>>;
 }
 
@@ -316,7 +316,7 @@ impl SshAccessApi for crate::ssh::Access {
 
 /// VNC access descriptors exposed through the local control API.
 pub trait VncAccessApi {
-    /// Describes the VNC access of a named Agent.
+    /// Describes the VNC access of a named agent.
     fn describe<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<crate::vnc::AccessInfo, Error>>;
 }
 
@@ -400,7 +400,7 @@ impl Drop for ShutdownCheck<'_> {
     }
 }
 
-/// Serves the Agent Control API.
+/// Serves the agent Control API.
 pub struct Server {
     agents: Rc<dyn AgentApi>,
     authentication: Rc<dyn AuthenticationApi>,
@@ -415,7 +415,7 @@ pub struct Server {
 }
 
 impl Server {
-    /// Creates an Agent Control API server.
+    /// Creates an agent Control API server.
     #[must_use]
     #[allow(
         clippy::too_many_arguments,
@@ -615,7 +615,7 @@ impl Server {
             Ok(Ok(readiness)) => error_response(
                 id,
                 CODE_INVALID_PARAMS,
-                format!("active Sessions block the upgrade: {}", readiness.blockers.join(", ")),
+                format!("active sessions block the upgrade: {}", readiness.blockers.join(", ")),
             ),
             Ok(Err(error)) => result_response::<serde_json::Value>(id, Err(error)),
             Err(_) => error_response(id, CODE_UPDATING, "Agent did not finish preparing for an upgrade"),
@@ -660,7 +660,7 @@ impl Server {
         )
     }
 
-    /// Waits until the Agent has its desired run state, then returns it as
+    /// Waits until the agent has its desired run state, then returns it as
     /// `agents.v1.get` does. Draining ends the wait, so an upgrade is never held
     /// by a waiter; the desired state is stored, so nothing is lost.
     async fn handle_converge(&self, id: u64, value: Value) -> Response {
@@ -720,7 +720,7 @@ impl Server {
     }
 
     /// Long-polls for a change after the caller's revision, then returns the
-    /// Agent's status and progress. Draining returns at once so an upgrade is
+    /// agent's status and progress. Draining returns at once so an upgrade is
     /// never held by a follower.
     async fn handle_progress(&self, id: u64, value: Value) -> Response {
         let Ok(params) = serde_json::from_value::<ProgressParams>(value) else {
@@ -748,7 +748,7 @@ impl Server {
     }
 
     /// Long-polls for a resource change after the caller's revision, then
-    /// returns every Agent and Session. Draining returns at once so an upgrade
+    /// returns every agent and session. Draining returns at once so an upgrade
     /// is never held by a watcher.
     async fn handle_resources_watch(&self, id: u64, value: Value) -> Response {
         let Ok(params) = serde_json::from_value::<ResourcesWatchParams>(value) else {
@@ -799,7 +799,7 @@ impl Server {
             .login(params.harness, &params.credential, params.imported)
             .await;
         if stored.is_ok() {
-            // An Agent may be waiting on this login, such as one whose optional installation of
+            // An agent may be waiting on this login, such as one whose optional installation of
             // the harness was left out, so it need not wait for its next periodic pass.
             if let Err(error) = self.convergence.wake_all().await {
                 (self.on_error)(&error);
@@ -885,7 +885,7 @@ impl Server {
 
     async fn handle_session_list(&self, id: u64, value: Value) -> Response {
         let Ok(params) = serde_json::from_value::<SessionListParams>(value) else {
-            return error_response(id, CODE_INVALID_PARAMS, "invalid Session list parameters");
+            return error_response(id, CODE_INVALID_PARAMS, "invalid session list parameters");
         };
         result_response(id, self.sessions.list(params.agent.as_deref()).await)
     }

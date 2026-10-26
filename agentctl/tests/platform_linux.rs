@@ -75,7 +75,7 @@ async fn read_file(sandbox: &sandbox::SandboxHandle, path: &str) -> Vec<u8> {
     bytes
 }
 
-/// Every harness the Agent declares, as preparation would report when all host logins are present.
+/// Every harness the agent declares, as preparation would report when all host logins are present.
 fn declared(record: &AgentRecord) -> Vec<agent::Harness> {
     record
         .agent
@@ -86,7 +86,7 @@ fn declared(record: &AgentRecord) -> Vec<agent::Harness> {
         .collect()
 }
 
-/// Setup acts on the installed set preparation reported, not on everything the Agent declares.
+/// Setup acts on the installed set preparation reported, not on everything the agent declares.
 ///
 /// The two run in the same convergence pass and must agree about an optional installation whose
 /// host login was absent. Preparation decides and reports; setup is told. An omitted harness is
@@ -146,7 +146,7 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         .sandbox
         .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
         .expect("Sandbox spec");
-    // The optional gateway key was not configured, so preparation gave the Sandbox no placeholder.
+    // The optional gateway key was not configured, so preparation gave the sandbox no placeholder.
     let sandbox = service
         .ensure(
             &EnsureSandboxRequest::new(record.sandbox_name().expect("Sandbox name"), spec)
@@ -180,9 +180,9 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         "<!-- agentd: Agent sandbox section, rewritten on every pass -->
 # Agent sandbox
 
-Written by agentd {}. Instructions after this section are the Agent's own and take precedence.
+Written by agentd {}. Instructions after this section are the agent's own and take precedence.
 
-- **Computer:** Agent `worker`, a Linux Sandbox VM that is yours to manage. User `agent` with passwordless `sudo`, \
+- **Computer:** agent `worker`, a Linux sandbox VM that is yours to manage. User `agent` with passwordless `sudo`, \
 home `/home/agent`, work in `/home/agent/code`.
 - **Resources:** cpu 2, memory 1Gi, disk 4Gi; `df -h /` shows how much is free.
 - **Harnesses:**
@@ -196,7 +196,7 @@ persist real values.
 - **Network:** all traffic passes through the host, which intercepts TLS with a CA that the system store and \
 `NODE_EXTRA_CA_CERTS` trust. Denied: `metadata.google.internal`.
 - **Access:** people on the host reach this computer with `agentctl ssh worker`.
-- **Nested Agents:** available (`/dev/kvm`, no Podman, so only manifests with an image `reference`); see the \
+- **Nested agents:** available (`/dev/kvm`, no Podman, so only manifests with an image `reference`); see the \
 `agentctl` skill.
 <!-- agentd: end of Agent sandbox section -->
 
@@ -207,8 +207,8 @@ test instructions
     assert_eq!(instructions, expected);
 }
 
-/// Without `spec.instructions` the Agent's image or home overlay may own the harness's instruction file: the Agent
-/// sandbox section goes above what the file holds, and a later pass replaces only the section. A skill of the Agent's
+/// Without `spec.instructions` the agent's image or home overlay may own the harness's instruction file: the agent
+/// sandbox section goes above what the file holds, and a later pass replaces only the section. A skill of the agent's
 /// own named `agentctl` replaces the platform's.
 #[tokio::test(flavor = "local")]
 async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns() {
@@ -304,7 +304,7 @@ async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns
     assert_eq!(skill, b"---\nname: agentctl\n---\nour own");
 }
 
-/// Claude Code that the platform does not launch, such as T3 Code's, approves Bash requests in bypass mode as Sessions
+/// Claude Code that the platform does not launch, such as T3 Code's, approves Bash requests in bypass mode as sessions
 /// do, and asks in the modes a person picks to be asked in. Sessions still report other permission prompts.
 #[tokio::test(flavor = "local")]
 async fn linux_setup_approves_claude_bash_requests_in_bypass_mode_for_every_claude_process() {
@@ -526,7 +526,7 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     assert!(instructions.contains("\n# Agent sandbox\n"), "{instructions}");
     assert!(
         instructions.ends_with("\n\ntest instructions\n\n# Environment\n\nhas a browser\n"),
-        "the Agent's own instructions follow the Agent sandbox section: {instructions}"
+        "the agent's own instructions follow the agent sandbox section: {instructions}"
     );
     let codex_instructions = read_file(&sandbox, "/home/agent/.codex/AGENTS.md").await;
     assert_eq!(codex_instructions, instructions.as_bytes());
@@ -927,7 +927,7 @@ async fn linux_setup_reads_home_instructions_and_skills_below_the_home_directory
     );
 }
 
-// The host is what holds the FIFO; Windows has no mkfifo, and the Linux Sandbox setup runs the same
+// The host is what holds the FIFO; Windows has no mkfifo, and the Linux sandbox setup runs the same
 // walker on every host, so one Unix host exercising it is enough.
 #[cfg(unix)]
 #[tokio::test(flavor = "local")]
@@ -995,7 +995,7 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
     );
 }
 
-/// A Sandbox for `record` whose Claude Code version check answers `passes` setups.
+/// A sandbox for `record` whose Claude Code version check answers `passes` setups.
 async fn claude_sandbox(record: &AgentRecord, passes: usize) -> sandbox::SandboxHandle {
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..passes {
@@ -1051,7 +1051,7 @@ fn optional_sources_record(directory: &std::path::Path, instructions: &str, skil
 }
 
 /// Optional sources that do not exist are left out and reported, and the next pass installs them
-/// once they exist, with no change to the Agent.
+/// once they exist, with no change to the agent.
 #[tokio::test(flavor = "local")]
 async fn linux_setup_leaves_out_missing_optional_sources_until_they_exist() {
     let directory = TempDir::new().expect("temporary directory");

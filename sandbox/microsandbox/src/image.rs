@@ -573,7 +573,7 @@ fn reference_pull_policy(reference: &microsandbox_image::Reference) -> microsand
     if reference.digest().is_some() {
         microsandbox_image::PullPolicy::IfMissing
     } else {
-        // A tag is mutable. Refresh its manifest when creating a Sandbox while
+        // A tag is mutable. Refresh its manifest when creating a sandbox while
         // retaining content-addressed layers and rootfs artifacts in the cache.
         microsandbox_image::PullPolicy::Always
     }

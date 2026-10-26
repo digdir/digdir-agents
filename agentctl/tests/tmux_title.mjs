@@ -41,11 +41,11 @@ try {
   const command = ["tmux", "-S", socket, ...attachment.arguments].map(quote).join(" ");
   client = spawn("script", ["-q", "-f", "-c", command, typescript], { env: clientEnv, stdio: ["pipe", "ignore", "ignore"] });
   await untilTitled(`${agent}/s1`);
-  console.log("PASS: attaching names the host terminal after the Agent and Session");
+  console.log("PASS: attaching names the host terminal after the agent and session");
 
   tmux("switch-client", "-n");
   await untilTitled(`${agent}/s2`);
-  console.log("PASS: moving to the next Session renames the host terminal");
+  console.log("PASS: moving to the next session renames the host terminal");
 } finally {
   client?.kill();
   try { tmux("kill-server"); } finally { await rm(directory, { recursive: true, force: true }); }

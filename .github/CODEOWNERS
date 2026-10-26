@@ -18,7 +18,7 @@
 *                             @olebhansen
 
 # 2. Safe paths: documentation that is neither built into images, read as
-#    Agent instructions nor changes dependencies
+#    agent instructions nor changes dependencies
 /README.md
 /LICENSE
 /docs/
@@ -30,7 +30,7 @@
 package.json                  @olebhansen
 package-lock.json             @olebhansen
 
-# 4. The Agent layer moved in from altinn-studio (ki-lab) is owned by its team.
+# 4. The agent layer moved in from altinn-studio (ki-lab) is owned by its team.
 #    Listed last so these paths do not need the default owner, and vice versa.
 /agentctl/                    @martinothamar
 /sandbox/                     @martinothamar
@@ -48,5 +48,5 @@ package-lock.json             @olebhansen
 /.editorconfig                @martinothamar
 /.github/workflows/rust.yml   @martinothamar
 /.github/workflows/agentctl-*.yml @martinothamar
-# The agentctl Agent that develops the platform itself
+# The agentctl agent that develops the platform itself
 /agents/self-dev/             @martinothamar

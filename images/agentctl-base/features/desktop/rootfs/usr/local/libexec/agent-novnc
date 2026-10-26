@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Serves noVNC and bridges its WebSocket to the desktop's Unix socket, so a person can open the
-// Agent's screen in a browser with nothing installed.
+// agent's screen in a browser with nothing installed.
 //
-// The image ships this program's unit disabled. agentd enables it when the Agent declares
-// `access: [{type: vnc}]` and disables it when the Agent stops declaring it.
+// The image ships this program's unit disabled. agentd enables it when the agent declares
+// `access: [{type: vnc}]` and disables it when the agent stops declaring it.
 'use strict';
 
 const http = require('node:http');
@@ -28,7 +28,7 @@ const host = process.env.AGENT_NOVNC_HOST || '127.0.0.1';
 const port = Number(required('AGENT_NOVNC_PORT'));
 
 // resize=scale keeps the scaling in the viewer. resize=remote would ask the X server to match the
-// browser window, which would move the Agent's own display off the geometry its screenshots and
+// browser window, which would move the agent's own display off the geometry its screenshots and
 // coordinates are sized for.
 const VIEWER = '/vnc.html?autoconnect=1&resize=scale&reconnect=1&path=websockify';
 
@@ -107,7 +107,7 @@ function serve(request, response) {
     response.writeHead(200, {
       'content-type': CONTENT_TYPES.get(path.extname(file)) || 'application/octet-stream',
       'content-length': stats.size,
-      // The viewer is the Agent's live screen; a cached copy of it is never right.
+      // The viewer is the agent's live screen; a cached copy of it is never right.
       'cache-control': 'no-store',
     });
     if (request.method === 'HEAD') {

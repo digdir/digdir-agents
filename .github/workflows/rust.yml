@@ -1,4 +1,4 @@
-# Builds, lints and tests the Rust workspace: agentctl and the Sandbox crates. Called from ci.yml when the workspace
+# Builds, lints and tests the Rust workspace: agentctl and the sandbox crates. Called from ci.yml when the workspace
 # changes.
 name: rust
 

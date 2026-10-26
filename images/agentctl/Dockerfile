@@ -1,9 +1,9 @@
-# agentctl and agentd, published as ghcr.io/digdir/agentctl for Agent images to copy in, such as an Agent that runs
-# nested Agents. Build it from the repository root, as docker-bake.hcl does; AGENT_VERSION is the version they report.
+# agentctl and agentd, published as ghcr.io/digdir/agentctl for agent images to copy in, such as an agent that runs
+# nested agents. Build it from the repository root, as docker-bake.hcl does; AGENT_VERSION is the version they report.
 #
 #   COPY --from=ghcr.io/digdir/agentctl:v0.1.0-preview.12@sha256:… /agentctl /agentd /usr/local/bin/
 
-# Bookworm's glibc is older than the distributions Agent images build on, so the binaries run on all of them. The
+# Bookworm's glibc is older than the distributions agent images build on, so the binaries run on all of them. The
 # toolchain itself is the one rust-toolchain.toml names, which rustup installs when this image's differs.
 FROM docker.io/library/rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS chef
 

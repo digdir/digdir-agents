@@ -1,7 +1,7 @@
 # agentctl base images
 
-Images to build Agent images on. They meet `agentd`'s [image contract](../../agentctl/docs/image-contract.md) and
-carry the harness versions its adapters are tested with, so an Agent's Dockerfile only adds the tools its work needs.
+Images to build agent images on. They meet `agentd`'s [image contract](../../agentctl/docs/image-contract.md) and
+carry the harness versions its adapters are tested with, so an agent's Dockerfile only adds the tools its work needs.
 
 | Image | Contents |
 | --- | --- |
@@ -39,24 +39,24 @@ USER agent
 
 - `HOME` is `/home/agent` in every stage, so remove caches a root build step writes there, such as npm's.
   `agent-image-check` reports what is left.
-- When an Agent builds the image, a build step that downloads through Node must trust the Agent's mediated CA. Start
+- When an agent builds the image, a build step that downloads through Node must trust the agent's mediated CA. Start
   it with `if [ -r /run/agent/tls/ca-bundle.pem ]; then export NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem; fi`,
   and do not set that with `ENV`.
 - At boot, the image clones the repositories listed in `/etc/agent-workspace.d/*.list`, one `OWNER/NAME [DESTINATION]`
-  per line, into `/home/agent/code` with the Agent's `GITHUB_TOKEN`.
+  per line, into `/home/agent/code` with the agent's `GITHUB_TOKEN`.
 - Skills an image ships go in `~/.claude/skills` for Claude Code and `~/.agents/skills` for Codex and Pi.
 
 ## Temporary files
 
-`/tmp` shares the Sandbox's root disk, so build scratch files use the capacity set by
+`/tmp` shares the sandbox's root disk, so build scratch files use the capacity set by
 `spec.sandbox.resources.rootFilesystem.capacity`. It is cleared at boot and receives periodic cleanup of old files,
 as [tmp.conf](headless/etc/tmpfiles.d/tmp.conf) defines. Keep work that must survive a restart under `/home/agent/code`.
 
-An Agent that needs RAM-backed temporary files can explicitly mount a `tmpfs` at `/tmp` through
+An agent that needs RAM-backed temporary files can explicitly mount a `tmpfs` at `/tmp` through
 `spec.sandbox.mounts`. Its contents then consume guest memory.
 
-Existing Agents keep their image and mounts. To adopt this default, rebuild your image on the updated base, remove
-any `/tmp` tmpfs mount from the manifest, and recreate the Agent after saving work you need to keep.
+Existing agents keep their image and mounts. To adopt this default, rebuild your image on the updated base, remove
+any `/tmp` tmpfs mount from the manifest, and recreate the agent after saving work you need to keep.
 
 ## Features
 
@@ -78,17 +78,17 @@ A script cannot set an image's environment, so add the `ENV` lines `agent-featur
 
 | Feature | Adds |
 | --- | --- |
-| `browser` | Chromium with `playwright-cli` and its skill, ffmpeg, and the `video-to-gif` and `media-preview` helpers. Chromium trusts the Agent's mediated CA once `$XDG_RUNTIME_DIR/chromium-ca-ready` exists, shortly after boot. |
+| `browser` | Chromium with `playwright-cli` and its skill, ffmpeg, and the `video-to-gif` and `media-preview` helpers. Chromium trusts the agent's mediated CA once `$XDG_RUNTIME_DIR/chromium-ca-ready` exists, shortly after boot. |
 | `containers` | Podman, with bridge networks and container name resolution. `agentd` sets up Podman's socket for the agent user, and Docker API clients reach it at the default `/run/docker.sock`. The `docker` command runs Podman, so do not install Docker's own CLI beside it. `docker compose` and `podman compose` run Docker Compose. |
-| `desktop` | `browser`, plus an X11 desktop on display `:1` with VNC access and a Secret Service, the `desktop`, `desktop-terminal` and `chromium` commands, and the `computer-use` skill. Provides `/etc/agent-access.d/vnc.conf`, so an Agent on it can declare `access: [{type: vnc}]`. |
+| `desktop` | `browser`, plus an X11 desktop on display `:1` with VNC access and a Secret Service, the `desktop`, `desktop-terminal` and `chromium` commands, and the `computer-use` skill. Provides `/etc/agent-access.d/vnc.conf`, so an agent on it can declare `access: [{type: vnc}]`. |
 
 `agent-feature list` shows what an image has. The [self-dev images](../../agents/self-dev/Dockerfile) are built this
-way. What to tell the harness about the browser and the desktop belongs in the Agent's instructions, as in the self-dev
-Agent's [desktop.md](../../agents/self-dev/full/desktop.md).
+way. What to tell the harness about the browser and the desktop belongs in the agent's instructions, as in the self-dev
+agent's [desktop.md](../../agents/self-dev/full/desktop.md).
 
 ## Adding agentctl
 
-The base images do not include `agentctl` and `agentd`. An image that runs nested Agents copies them from the
+The base images do not include `agentctl` and `agentd`. An image that runs nested agents copies them from the
 [agentctl image](../agentctl/README.md).
 
 ## Changing them
@@ -103,7 +103,7 @@ podman build --target headless --tag localhost/agentctl-base:ubuntu-26.04 images
 podman build --target desktop --tag localhost/agentctl-base:ubuntu-26.04-desktop images/agentctl-base
 ```
 
-Do not tag them with the published names: when `agentd` builds an Agent's image, Podman pulls the published image over
+Do not tag them with the published names: when `agentd` builds an agent's image, Podman pulls the published image over
 a local one with the same name.
 
 CI builds both from [docker-bake.hcl](../../docker-bake.hcl).

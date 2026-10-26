@@ -112,7 +112,7 @@ exec sleep 120
   client = undefined;
   console.log("PASS: wheel events reach a fullscreen application that requests mouse input");
 
-  // The runtime's attach environment renders UTF-8, and its detach keys end the client, not the Session.
+  // The runtime's attach environment renders UTF-8, and its detach keys end the client, not the session.
   const text = "blåbærsyltetøy ✓";
   tmux("new-session", "-d", "-x", "80", "-y", "10", "-s", "utf8", `printf '%s\\n' '${text}'; exec sleep 120`);
   await until(() => tmux("capture-pane", "-p", "-t", "=utf8:").includes(text));
@@ -128,8 +128,8 @@ exec sleep 120
   assert.equal(await Promise.race([detached, timedOut]), 0, "the detach keys end the client");
   client = undefined;
   assert.equal(format("=utf8:", "session_attached"), "0");
-  assert.ok(tmux("capture-pane", "-p", "-t", "=utf8:").includes(text), "the Session survives detaching");
-  console.log("PASS: the attach environment renders UTF-8; the detach keys detach and the Session survives");
+  assert.ok(tmux("capture-pane", "-p", "-t", "=utf8:").includes(text), "the session survives detaching");
+  console.log("PASS: the attach environment renders UTF-8; the detach keys detach and the session survives");
 
 } finally {
   client?.kill();

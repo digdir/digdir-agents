@@ -1,10 +1,10 @@
-//! The Agent sandbox section `agentd` writes ahead of an Agent's own instructions.
+//! The agent sandbox section `agentd` writes ahead of an agent's own instructions.
 //!
-//! Every Agent runs on the same platform, so what a harness needs to know about it is generated
-//! here, from the Agent's manifest and what setup found in its Sandbox, rather than copied into
-//! each Agent's instruction file, where it drifts from the release that runs it. It states facts
+//! Every agent runs on the same platform, so what a harness needs to know about it is generated
+//! here, from the agent's manifest and what setup found in its sandbox, rather than copied into
+//! each agent's instruction file, where it drifts from the release that runs it. It states facts
 //! only, one labelled line each, with a sub-bullet per item where a line lists several; how to drive
-//! Agents, nested ones included, is the `agentctl` skill's.
+//! agents, nested ones included, is the `agentctl` skill's.
 
 use std::{collections::BTreeMap, fmt::Write as _};
 
@@ -16,15 +16,15 @@ use crate::{
 
 use super::{HOME, USER, WORKING_DIRECTORY};
 
-/// What setup found in the Sandbox, beyond the manifest.
+/// What setup found in the sandbox, beyond the manifest.
 pub(super) struct Observed<'a> {
     /// The harnesses preparation installed, which leaves out an optional one without a host login.
     pub(super) harnesses: &'a [Harness],
-    /// The Sandbox's environment, holding the configured secrets' placeholders.
+    /// The sandbox's environment, holding the configured secrets' placeholders.
     pub(super) environment: &'a BTreeMap<String, String>,
-    /// Whether the guest has `/dev/kvm`, which nested Sandboxes need.
+    /// Whether the guest has `/dev/kvm`, which nested sandboxes need.
     pub(super) kvm: bool,
-    /// Whether the image has Podman, which builds the images of nested Agents.
+    /// Whether the image has Podman, which builds the images of nested agents.
     pub(super) podman: bool,
 }
 
@@ -65,7 +65,7 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
         (
             "Computer",
             Some(format!(
-                "Agent `{name}`, a Linux Sandbox VM that is yours to manage. User `{USER}` with passwordless \
+                "agent `{name}`, a Linux sandbox VM that is yours to manage. User `{USER}` with passwordless \
                  `sudo`, home `{HOME}`, work in `{WORKING_DIRECTORY}`."
             )),
         ),
@@ -79,11 +79,11 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
         ),
         ("Network", Some(network(spec))),
         ("Access", access(spec, name)),
-        ("Nested Agents", Some(nested_agents(spec, observed).to_owned())),
+        ("Nested agents", Some(nested_agents(spec, observed).to_owned())),
     ];
     let mut section = format!(
         "{BEGIN}# Agent sandbox\n\n\
-         Written by agentd {}. Instructions after this section are the Agent's own and take precedence.\n\n",
+         Written by agentd {}. Instructions after this section are the agent's own and take precedence.\n\n",
         crate::build_version()
     );
     for (label, text) in lines {
@@ -97,7 +97,7 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
     section
 }
 
-/// What the manifest gives the Sandbox. Disk is what nested Agents and image builds run out of first.
+/// What the manifest gives the sandbox. Disk is what nested agents and image builds run out of first.
 fn resources(spec: &Spec) -> String {
     let resources = &spec.sandbox.resources;
     format!(
@@ -186,7 +186,7 @@ const fn nested_agents(spec: &Spec, observed: &Observed<'_>) -> &'static str {
         (false, _) if spec.sandbox.resources.nested_sandboxes.is_some() => {
             "unavailable: the host cannot provide `/dev/kvm`."
         }
-        (false, _) => "unavailable: the manifest does not request nested Sandboxes.",
+        (false, _) => "unavailable: the manifest does not request nested sandboxes.",
     }
 }
 

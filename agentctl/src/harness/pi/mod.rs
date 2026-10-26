@@ -1,6 +1,6 @@
 //! Pi (`@earendil-works/pi-coding-agent`) harness adapter.
 //!
-//! The adapter knows nothing about providers, gateways or models: an Agent configures those
+//! The adapter knows nothing about providers, gateways or models: an agent configures those
 //! itself, through Pi's own files under `~/.pi/agent/` (its home overlay or image), environment
 //! variables and `spec.secrets`. The platform contributes only what every Pi user needs: the
 //! activity extension, the manifest's instructions in `~/.pi/agent/AGENTS.md`, skills and the launch.
@@ -17,14 +17,14 @@ mod extension;
 pub(super) mod transcript;
 
 /// Where bootstrap installs what the platform adds to Pi, away from `~/.pi/agent/`, which
-/// belongs to the Agent: nothing there is written, and Pi does not discover anything here on
+/// belongs to the agent: nothing there is written, and Pi does not discover anything here on
 /// its own. The launch loads the extension.
 fn platform_directory(home: &str) -> String {
     format!("{home}/.local/share/agent-platform/pi")
 }
 
 /// Where bootstrap installs skills: the Agent Skills directory Codex installs into, which Pi also
-/// reads, so an Agent with both harnesses loads each skill once.
+/// reads, so an agent with both harnesses loads each skill once.
 fn skills_directory(home: &str) -> String {
     format!("{home}/.agents/skills")
 }
@@ -78,10 +78,10 @@ pub(super) async fn verify_linux(
     Ok(())
 }
 
-/// The environment defaults the platform gives Pi. Each applies only when the Session's
-/// environment does not set the name, so an Agent's `spec.environment` decides: the launch
+/// The environment defaults the platform gives Pi. Each applies only when the session's
+/// environment does not set the name, so an agent's `spec.environment` decides: the launch
 /// command spells them with `${NAME-default}`. Pi runs on Node, which ignores the system trust
-/// store, but every Session in an Agent already names the mediation CA in `NODE_EXTRA_CA_CERTS`.
+/// store, but every session in an agent already names the mediation CA in `NODE_EXTRA_CA_CERTS`.
 const ENVIRONMENT_DEFAULTS: [(&str, &str); 2] = [("PI_TELEMETRY", "0"), ("PI_SKIP_VERSION_CHECK", "1")];
 
 pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
@@ -90,7 +90,7 @@ pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
         let _infallible = write!(command, "export {name}=\"${{{name}-{value}}}\"; ");
     }
     // `--approve` trusts the working directory's own `.pi` resources without a dialog that
-    // nothing could answer; the Sandbox is the boundary, as it is for the other harnesses.
+    // nothing could answer; the sandbox is the boundary, as it is for the other harnesses.
     // `--tui-mode regular` keeps the conversation in tmux's scrollback instead of an
     // alternate screen.
     let mut base = format!(
@@ -98,7 +98,7 @@ pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
         shell_single_quoted(&extension_path(request.home))
     );
     // Both are opaque here: Pi takes `<provider>/<id>` and its own thinking levels, which the
-    // Agent's configuration defines. They apply to fresh and resumed conversations alike.
+    // agent's configuration defines. They apply to fresh and resumed conversations alike.
     if let Some(model) = &request.model_selection.model {
         let _infallible = write!(base, " --model {}", shell_single_quoted(model.as_str()));
     }
@@ -117,9 +117,9 @@ pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
         },
     );
     // The transcript the extension reported is the authority for resumability, wherever the
-    // Agent's Pi configuration (`sessionDir`, `PI_CODING_AGENT_DIR`, ...) keeps its sessions:
-    // SessionStart reports a conversation before Pi writes it, so an untouched Session can still
-    // wake from Idle as a fresh one. Pi cannot open an empty file, which a Sandbox that stopped
+    // agent's Pi configuration (`sessionDir`, `PI_CODING_AGENT_DIR`, ...) keeps its sessions:
+    // SessionStart reports a conversation before Pi writes it, so an untouched session can still
+    // wake from Idle as a fresh one. Pi cannot open an empty file, which a sandbox that stopped
     // abruptly leaves behind, so that case starts fresh too. `--session` takes the path.
     match request.resume.and(request.resume_transcript) {
         Some(transcript) => {
@@ -155,7 +155,7 @@ mod tests {
         TempDir::new().expect("temporary home")
     }
 
-    /// A transcript file with `content`, in a session directory the Agent's own Pi configuration
+    /// A transcript file with `content`, in a session directory the agent's own Pi configuration
     /// could have put anywhere.
     fn transcript(content: &str) -> (TempDir, String) {
         let directory = TempDir::new().expect("session directory");
@@ -218,7 +218,7 @@ mod tests {
         assert!(has_pair(&arguments, "--tui-mode", "regular"), "{arguments:?}");
         let extension = home.path().join(".local/share/agent-platform/pi/activity.ts");
         assert!(has_pair(&arguments, "-e", extension.to_str().expect("UTF-8")));
-        // Nothing the launch names lives where Pi or the Agent keeps its own files.
+        // Nothing the launch names lives where Pi or the agent keeps its own files.
         assert!(
             arguments.iter().all(|argument| !argument.contains(".pi/agent")),
             "{arguments:?}"
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn the_launch_leaves_the_system_prompt_to_pi_and_the_agent() {
-        // `--append-system-prompt` would make Pi skip the Agent's own `APPEND_SYSTEM.md`.
+        // `--append-system-prompt` would make Pi skip the agent's own `APPEND_SYSTEM.md`.
         let arguments = launched(&home(), &test_launch_request(None, None));
         assert!(
             arguments.iter().all(|argument| !argument.contains("system-prompt")),
@@ -254,7 +254,7 @@ mod tests {
         assert!(!defaults.contains_key("NODE_EXTRA_CA_CERTS"));
         assert_eq!(defaults.get("PI_TELEMETRY").map(String::as_str), Some("0"));
         assert_eq!(defaults.get("PI_SKIP_VERSION_CHECK").map(String::as_str), Some("1"));
-        // The Agent's directory is Pi's own default; the platform never moves it, and it does not
+        // The agent's directory is Pi's own default; the platform never moves it, and it does not
         // switch Pi offline, which would also stop its model catalog refresh.
         assert!(!defaults.contains_key("PI_CODING_AGENT_DIR"));
         assert!(!defaults.contains_key("PI_OFFLINE"));

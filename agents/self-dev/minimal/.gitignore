@@ -1,4 +1,4 @@
-# Checkout-local Agent variants are private by default.
+# Checkout-local agent variants are private by default.
 agent.*.yaml
 
 # Repository-owned variants.

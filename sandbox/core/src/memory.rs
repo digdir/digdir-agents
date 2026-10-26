@@ -39,7 +39,7 @@ impl SandboxProvider for Provider {
     }
 }
 
-/// In-memory Sandbox Provider for tests and early wiring.
+/// In-memory sandbox Provider for tests and early wiring.
 pub struct Provider {
     state: Rc<RefCell<BackendState>>,
     supported_platforms: BTreeSet<Platform>,
@@ -132,11 +132,11 @@ impl Provider {
     }
 
     /// Reports `heartbeat` as the guest's latest heartbeat until it is set
-    /// again or the Sandbox stops.
+    /// again or the sandbox stops.
     ///
     /// # Errors
     ///
-    /// Returns an error when the Sandbox does not exist.
+    /// Returns an error when the sandbox does not exist.
     pub fn set_guest_heartbeat(&self, id: &SandboxId, heartbeat: Option<GuestHeartbeat>) -> Result<(), Error> {
         let mut storage = self.state.borrow_mut();
         let sandbox = storage
@@ -446,7 +446,7 @@ impl SandboxBackend for Provider {
         })
     }
 
-    /// Memory Sandboxes have no guest to wait for, so a kill ends one as a stop does.
+    /// Memory sandboxes have no guest to wait for, so a kill ends one as a stop does.
     fn kill<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), Error>> {
         self.stop(id)
     }
@@ -623,7 +623,7 @@ impl SandboxBackend for Provider {
             self.ensure_running(sandbox_id)?;
             let mut bytes = Vec::new();
             contents.read_to_end(&mut bytes).await.map_err(|source| Error::Io {
-                operation: "read Sandbox file-transfer input",
+                operation: "read sandbox file-transfer input",
                 source,
             })?;
             self.ensure_running(sandbox_id)?;
@@ -687,7 +687,7 @@ struct PacketPeer {
     _to_sandbox: mpsc::Receiver<network::NetworkPacket>,
 }
 
-/// Creates a bounded in-memory packet endpoint and its Sandbox-facing peer.
+/// Creates a bounded in-memory packet endpoint and its sandbox-facing peer.
 fn packet_endpoint_pair(
     capacity: NonZeroUsize,
     properties: network::PacketEndpointProperties,
@@ -862,7 +862,7 @@ impl NetworkBackend {
         }
     }
 
-    /// Reports whether one Sandbox retains Network Backend state.
+    /// Reports whether one sandbox retains Network Backend state.
     #[must_use]
     pub fn is_attached(&self, sandbox_id: &SandboxId) -> bool {
         self.state.borrow().attached.contains(sandbox_id)

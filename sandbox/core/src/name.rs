@@ -3,10 +3,10 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
-/// Maximum length of a portable Sandbox name.
+/// Maximum length of a portable sandbox name.
 pub const MAX_SANDBOX_NAME_BYTES: usize = 63;
 
-/// A portable, user-visible Sandbox name.
+/// A portable, user-visible sandbox name.
 ///
 /// Names use the Kubernetes DNS-1123 label form: lowercase ASCII letters,
 /// digits, and hyphens, with an alphanumeric character at both ends. This is
@@ -16,7 +16,7 @@ pub const MAX_SANDBOX_NAME_BYTES: usize = 63;
 pub struct SandboxName(String);
 
 impl SandboxName {
-    /// Validates and creates a Sandbox name.
+    /// Validates and creates a sandbox name.
     ///
     /// # Errors
     ///
@@ -28,7 +28,7 @@ impl SandboxName {
         Ok(Self(value))
     }
 
-    /// Returns whether `character` may appear anywhere in a Sandbox name.
+    /// Returns whether `character` may appear anywhere in a sandbox name.
     ///
     /// This is the per-keystroke filter for interactive input; the positional
     /// rules (alphanumeric first and last byte) still apply at validation.
@@ -90,18 +90,18 @@ impl<'de> Deserialize<'de> for SandboxName {
     }
 }
 
-/// The hostname a Sandbox reports to its guest.
+/// The hostname a sandbox reports to its guest.
 ///
 /// Hostnames share the portable DNS-1123 label form of [`SandboxName`], which
-/// keeps them within the Linux UTS limit and usable as a DNS label. A Sandbox
+/// keeps them within the Linux UTS limit and usable as a DNS label. A sandbox
 /// defaults to its own name as hostname; a caller supplies a different value
-/// when the user-facing identity differs from the Sandbox name.
+/// when the user-facing identity differs from the sandbox name.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct Hostname(SandboxName);
 
 impl Hostname {
-    /// Validates and creates a Sandbox hostname.
+    /// Validates and creates a sandbox hostname.
     ///
     /// # Errors
     ///
@@ -144,7 +144,7 @@ impl FromStr for Hostname {
     }
 }
 
-/// Why a value cannot be used as a Sandbox hostname.
+/// Why a value cannot be used as a sandbox hostname.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InvalidHostname(InvalidSandboxName);
 
@@ -156,7 +156,7 @@ impl fmt::Display for InvalidHostname {
 
 impl std::error::Error for InvalidHostname {}
 
-/// Why a value cannot be used as a portable Sandbox name.
+/// Why a value cannot be used as a portable sandbox name.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum InvalidSandboxName {
     /// The value was empty.

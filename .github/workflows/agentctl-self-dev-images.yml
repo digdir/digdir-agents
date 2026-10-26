@@ -1,4 +1,4 @@
-# Builds the self-development Agent's images from agents/self-dev, on the agentctl base images built from the same
+# Builds the self-development agent's images from agents/self-dev, on the agentctl base images built from the same
 # commit. Pull requests only build them; main, including a manual run on main, also publishes them to GHCR as `latest`
 # and `sha-<commit>`.
 name: agentctl self-dev images
@@ -11,7 +11,7 @@ on:
       - images/agentctl-base/**
       - docker-bake.hcl
       - .github/workflows/agentctl-self-dev-images.yml
-      # Neither this image's .dockerignore nor the base's admits this Markdown. agentctl applies the self-dev Agent's from its manifest.
+      # Neither this image's .dockerignore nor the base's admits this Markdown. agentctl applies the self-dev agent's from its manifest.
       - '!agents/self-dev/**/*.md'
       - '!images/agentctl-base/*.md'
   push:
@@ -22,7 +22,7 @@ on:
       - images/agentctl-base/**
       - docker-bake.hcl
       - .github/workflows/agentctl-self-dev-images.yml
-      # Neither this image's .dockerignore nor the base's admits this Markdown. agentctl applies the self-dev Agent's from its manifest.
+      # Neither this image's .dockerignore nor the base's admits this Markdown. agentctl applies the self-dev agent's from its manifest.
       - '!agents/self-dev/**/*.md'
       - '!images/agentctl-base/*.md'
   workflow_dispatch:

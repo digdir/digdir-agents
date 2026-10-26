@@ -24,7 +24,7 @@ const LAUNCH_GRACE: Duration = Duration::from_secs(2);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// An editor that opens an Agent's working directory over SSH.
+/// An editor that opens an agent's working directory over SSH.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Editor {
     VsCode,
@@ -57,7 +57,7 @@ impl Editor {
         host::find_executable(path, self.executables())
     }
 
-    /// How to open `directory` in the Agent reached as the OpenSSH `alias`, given the launcher
+    /// How to open `directory` in the agent reached as the OpenSSH `alias`, given the launcher
     /// found on `PATH`. VS Code falls back to its URL handler; Zed has none to fall back to.
     pub(crate) fn launch(self, launcher: Option<&Path>, alias: &str, directory: &str) -> Option<Launch> {
         match (self, launcher) {

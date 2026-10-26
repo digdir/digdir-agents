@@ -1,7 +1,7 @@
 //! Microsandbox implementation of the backend-neutral Sandbox SDK.
 //!
-//! The integration deliberately contains no Agent automation. It uses an
-//! explicit Microsandbox home, materializes stopped Sandboxes in adapter-owned
+//! The integration deliberately contains no agent automation. It uses an
+//! explicit Microsandbox home, materializes stopped sandboxes in adapter-owned
 //! state, and boots the underlying microVM only when the generic Backend is
 //! started.
 
@@ -23,10 +23,10 @@ mod volumes;
 
 pub use backend::{MicrosandboxProvider, MicrosandboxProviderBuilder};
 
-/// Checks whether this host can let a Sandbox run Sandboxes of its own.
+/// Checks whether this host can let a sandbox run sandboxes of its own.
 ///
 /// [`SandboxFeature::NestedSandboxes`](sandbox::SandboxFeature) reports the same. A Microsandbox
-/// Sandbox does so with hardware virtualization: the guest gets `/dev/kvm`.
+/// sandbox does so with hardware virtualization: the guest gets `/dev/kvm`.
 ///
 /// # Errors
 ///

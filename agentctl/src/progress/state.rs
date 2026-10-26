@@ -1,14 +1,14 @@
-//! Provisioning progress of each Agent's latest provisioning pass.
+//! Provisioning progress of each agent's latest provisioning pass.
 //!
-//! The reconciler folds every Sandbox and Agent progress event into the
-//! Agent's [`Provisioning`]. It lives in memory only: after a daemon restart no
-//! pass is running, and the durable outcome of the last pass is the Agent's
+//! The reconciler folds every sandbox and agent progress event into the
+//! agent's [`Provisioning`]. It lives in memory only: after a daemon restart no
+//! pass is running, and the durable outcome of the last pass is the agent's
 //! conditions and failure class.
 //!
-//! A resync, a pass that only reconfirms a Ready Agent at its current
+//! A resync, a pass that only reconfirms a Ready agent at its current
 //! generation, is folded out of sight and published only if it fails. The
-//! periodic resync would otherwise replace the pass that provisioned the Agent
-//! within seconds, and show a healthy Agent as provisioning while it runs.
+//! periodic resync would otherwise replace the pass that provisioned the agent
+//! within seconds, and show a healthy agent as provisioning while it runs.
 
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
@@ -19,11 +19,11 @@ use crate::{
     resources::{Changes, Revision},
 };
 
-/// Output lines kept in the summary projected onto an Agent whose pass failed.
+/// Output lines kept in the summary projected onto an agent whose pass failed.
 const FAILURE_OUTPUT_LINES: usize = 40;
 
-/// Progress of one Agent's latest pass that created, changed or retried its
-/// Sandbox, or of a resync that failed.
+/// Progress of one agent's latest pass that created, changed or retried its
+/// sandbox, or of a resync that failed.
 #[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Provisioning {
@@ -35,7 +35,7 @@ pub struct Provisioning {
     pub progress: Progress,
 }
 
-/// Latest provisioning of every Agent, shared by the reconciler and readers.
+/// Latest provisioning of every agent, shared by the reconciler and readers.
 #[derive(Clone, Default)]
 pub struct ProvisioningState {
     agents: Rc<RefCell<HashMap<AgentId, Provisioning>>>,
@@ -53,7 +53,7 @@ impl ProvisioningState {
         }
     }
 
-    /// Returns the complete progress of the Agent's latest pass.
+    /// Returns the complete progress of the agent's latest pass.
     #[must_use]
     pub fn get(&self, id: AgentId) -> Option<Provisioning> {
         self.agents.borrow().get(&id).cloned()
@@ -61,7 +61,7 @@ impl ProvisioningState {
 
     /// Returns a summary of a pass that is running or failed, for listings.
     ///
-    /// A succeeded pass is omitted: the Agent's conditions report it.
+    /// A succeeded pass is omitted: the agent's conditions report it.
     #[must_use]
     pub fn summary(&self, id: AgentId) -> Option<Provisioning> {
         let agents = self.agents.borrow();
@@ -113,7 +113,7 @@ impl ProvisioningState {
         self.update(id, |provisioning| provisioning.progress.fail(detail));
     }
 
-    /// Drops a deleted Agent's state.
+    /// Drops a deleted agent's state.
     pub(crate) fn forget(&self, id: AgentId) {
         self.resyncs.borrow_mut().remove(&id);
         if self.agents.borrow_mut().remove(&id).is_some() {

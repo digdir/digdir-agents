@@ -34,7 +34,7 @@ pub(super) fn get_by_name(connection: &Connection, name: &str) -> Result<AgentRe
         Ok(record)
     } else {
         Err(Error::Database(
-            "stored Agent name does not match its active-name index".into(),
+            "stored agent name does not match its active-name index".into(),
         ))
     }
 }

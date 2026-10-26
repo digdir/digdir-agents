@@ -19,7 +19,7 @@ pub struct ApplyRequest {
     /// manifest; omitted on an update keeps the recorded path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_file: Option<PathBuf>,
-    /// Fail instead of updating when the name already identifies an Agent.
+    /// Fail instead of updating when the name already identifies an agent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub create_only: bool,
     /// Agent manifest to store.
@@ -46,7 +46,7 @@ pub struct ControlPlane {
     immediate_stops: ImmediateStops,
 }
 
-/// Agents whose stop ends their Sandbox at once, without letting the guest shut down.
+/// Agents whose stop ends their sandbox at once, without letting the guest shut down.
 ///
 /// The Control Plane records the request and the reconciler carries it out, also by cutting
 /// short a graceful stop already under way. Each request belongs to the generation that stored
@@ -58,7 +58,7 @@ pub struct ImmediateStops {
 }
 
 impl ImmediateStops {
-    /// Asks for the Agent's stop stored at `generation` to be immediate, waking a graceful stop
+    /// Asks for the agent's stop stored at `generation` to be immediate, waking a graceful stop
     /// under way.
     pub(crate) fn request(&self, id: AgentId, generation: u64) {
         self.requested.borrow_mut().insert(id, generation);
@@ -71,7 +71,7 @@ impl ImmediateStops {
     }
 
     /// Forgets a request that a start stored at `generation` superseded. A pass that read the
-    /// Agent before its stop was stored sees an older generation and keeps the request.
+    /// agent before its stop was stored sees an older generation and keeps the request.
     pub(crate) fn supersede(&self, id: AgentId, generation: u64) {
         let mut requested = self.requested.borrow_mut();
         if requested.get(&id).is_some_and(|stop| *stop < generation) {
@@ -79,7 +79,7 @@ impl ImmediateStops {
         }
     }
 
-    /// Completes, forgetting the request, once the Agent's stop is asked to be immediate, and
+    /// Completes, forgetting the request, once the agent's stop is asked to be immediate, and
     /// returns the generation of that stop.
     pub(crate) async fn requested(&self, id: AgentId) -> u64 {
         loop {
@@ -96,7 +96,7 @@ impl ImmediateStops {
 }
 
 impl ControlPlane {
-    /// Creates an Agent Control Plane facade.
+    /// Creates an agent Control Plane facade.
     #[must_use]
     pub fn new(store: SharedAgentStore, notifier: Rc<dyn Notifier>) -> Self {
         Self {
@@ -114,7 +114,7 @@ impl ControlPlane {
         self
     }
 
-    /// Projects the reconciler's in-memory provisioning state onto returned Agents.
+    /// Projects the reconciler's in-memory provisioning state onto returned agents.
     #[must_use]
     pub fn with_provisioning(mut self, provisioning: ProvisioningState) -> Self {
         self.provisioning = provisioning;
@@ -146,7 +146,7 @@ impl ControlPlane {
                 Ok(current) => {
                     if request.create_only {
                         return Err(Error::Invalid(format!(
-                            "an Agent named {:?} already exists",
+                            "an agent named {:?} already exists",
                             desired.metadata.name
                         )));
                     }
@@ -237,11 +237,11 @@ impl ControlPlane {
         }
     }
 
-    /// Rejects desired state that would expose a selected secret file inside a Sandbox.
+    /// Rejects desired state that would expose a selected secret file inside a sandbox.
     ///
-    /// Secret files hold the real values that mediation exists to keep out of Sandboxes. A bind
-    /// mount whose source contains this Agent's selected non-default secret file or another active
-    /// Agent's selected secret file would hand those values to the guest, so the combination is
+    /// Secret files hold the real values that mediation exists to keep out of sandboxes. A bind
+    /// mount whose source contains this agent's selected non-default secret file or another active
+    /// agent's selected secret file would hand those values to the guest, so the combination is
     /// refused at apply time. Default `.env` files are covered by the bind-source scan above. Bind
     /// mount sources are canonical by this point.
     async fn reject_exposed_secret_files(
@@ -281,8 +281,8 @@ impl ControlPlane {
             for (mount, source) in &mounts {
                 if secret_file.starts_with(source) {
                     return Err(Error::Invalid(format!(
-                        "{mount} bind-mounts {} which contains the secret file {} of Agent {owner:?}; \
-                         the Sandbox would see its real values. Keep secret files outside mounted directories, \
+                        "{mount} bind-mounts {} which contains the secret file {} of agent {owner:?}; \
+                         the sandbox would see its real values. Keep secret files outside mounted directories, \
                          for example with `agentctl apply --env-file`",
                         source.display(),
                         secret_file.display(),
@@ -297,12 +297,12 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// Returns an error when the Agent does not exist or storage fails.
+    /// Returns an error when the agent does not exist or storage fails.
     pub async fn get(&self, name: &str) -> Result<Agent, Error> {
         self.store.get_by_name(name).await.map(|record| self.resource(record))
     }
 
-    /// Lists every active Agent ordered by name.
+    /// Lists every active agent ordered by name.
     ///
     /// # Errors
     ///
@@ -314,12 +314,12 @@ impl ControlPlane {
             .map(|records| records.into_iter().map(|record| self.resource(record)).collect())
     }
 
-    /// Reads an Agent's stored status and the complete progress of its latest
+    /// Reads an agent's stored status and the complete progress of its latest
     /// pass. When `output` names that pass, only later output is included.
     ///
     /// # Errors
     ///
-    /// Returns an error when the Agent does not exist or storage fails.
+    /// Returns an error when the agent does not exist or storage fails.
     pub async fn progress(
         &self,
         name: &str,
@@ -335,25 +335,25 @@ impl ControlPlane {
         Ok((record.agent.status, provisioning))
     }
 
-    /// Resolves the closest Agent source directory containing `directory`.
+    /// Resolves the closest agent source directory containing `directory`.
     ///
     /// # Errors
     ///
-    /// Returns an error when no Agent matches, multiple Agents share the closest
+    /// Returns an error when no agent matches, multiple agents share the closest
     /// source directory, or storage cannot be read.
     pub async fn resolve_directory(&self, directory: &std::path::Path) -> Result<Agent, Error> {
         self.resolve_directory_variant(directory, None).await
     }
 
-    /// Resolves the closest Agent associated with `directory`, optionally by
+    /// Resolves the closest agent associated with `directory`, optionally by
     /// the variant encoded in its recorded leaf manifest filename.
     ///
-    /// When several closest Agents tie without an explicit variant, exactly one
-    /// Agent originating from the default `agent.yaml` manifest is preferred.
+    /// When several closest agents tie without an explicit variant, exactly one
+    /// agent originating from the default `agent.yaml` manifest is preferred.
     ///
     /// # Errors
     ///
-    /// Returns an error when no Agent matches, selection remains ambiguous, or
+    /// Returns an error when no agent matches, selection remains ambiguous, or
     /// storage cannot be read.
     pub async fn resolve_directory_variant(
         &self,
@@ -392,7 +392,7 @@ impl ControlPlane {
             });
             if matches.is_empty() {
                 return Err(Error::Invalid(format!(
-                    "no Agent associated with this directory was applied from {filename}"
+                    "no agent associated with this directory was applied from {filename}"
                 )));
             }
         } else if matches.len() > 1 {
@@ -419,7 +419,7 @@ impl ControlPlane {
                 .collect::<Vec<_>>();
             names.sort();
             return Err(Error::Invalid(format!(
-                "multiple Agents were applied from this directory ({}); specify --agent or --variant",
+                "multiple agents were applied from this directory ({}); specify --agent or --variant",
                 names.join(", ")
             )));
         }
@@ -429,13 +429,13 @@ impl ControlPlane {
             .ok_or(Error::NotFound)
     }
 
-    /// Records whether an Agent's Sandbox runs and returns the Agent as stored,
+    /// Records whether an agent's sandbox runs and returns the agent as stored,
     /// without waiting for the reconciler to stop or start it. A change is a new
-    /// generation; setting the run state the Agent already has changes nothing.
+    /// generation; setting the run state the agent already has changes nothing.
     ///
     /// # Errors
     ///
-    /// Returns an error when the Agent does not exist, is being deleted, or
+    /// Returns an error when the agent does not exist, is being deleted, or
     /// cannot be stored.
     pub async fn set_run_state(&self, name: &str, state: crate::RunState) -> Result<Agent, Error> {
         let record = self
@@ -448,12 +448,12 @@ impl ControlPlane {
         Ok(self.resource(record))
     }
 
-    /// Records an Agent as stopped, as [`Self::set_run_state`] does, and has the reconciler end
-    /// its Sandbox at once instead of letting the guest shut down.
+    /// Records an agent as stopped, as [`Self::set_run_state`] does, and has the reconciler end
+    /// its sandbox at once instead of letting the guest shut down.
     ///
     /// # Errors
     ///
-    /// Returns an error when the Agent does not exist, is being deleted, or cannot be stored.
+    /// Returns an error when the agent does not exist, is being deleted, or cannot be stored.
     pub async fn stop_now(&self, name: &str) -> Result<Agent, Error> {
         let id = self.store.get_by_name(name).await?.id;
         let stopping = self.set_run_state(name, crate::RunState::Stopped).await?;
@@ -463,17 +463,17 @@ impl ControlPlane {
         Ok(stopping)
     }
 
-    /// Records a restart of an Agent as a new generation and returns the Agent as stored, without
-    /// waiting for the reconciler to carry it out. The reconciler stops the Sandbox as a stop
-    /// does, then starts it on the same disk; a stopped Agent is started. With `now`, the stop
-    /// ends the Sandbox at once, as [`Self::stop_now`] does.
+    /// Records a restart of an agent as a new generation and returns the agent as stored, without
+    /// waiting for the reconciler to carry it out. The reconciler stops the sandbox as a stop
+    /// does, then starts it on the same disk; a stopped agent is started. With `now`, the stop
+    /// ends the sandbox at once, as [`Self::stop_now`] does.
     ///
     /// The restart is stored with the run state, so no other write can come between its stop and
     /// its start, and the reconciler finishes it even when the client goes away.
     ///
     /// # Errors
     ///
-    /// Returns an error when the Agent does not exist, is being deleted, or cannot be stored.
+    /// Returns an error when the agent does not exist, is being deleted, or cannot be stored.
     pub async fn restart(&self, name: &str, now: bool) -> Result<Agent, Error> {
         let requested = time::OffsetDateTime::now_utc();
         let record = self
@@ -490,8 +490,8 @@ impl ControlPlane {
         Ok(self.resource(record))
     }
 
-    /// Stores `change` to an Agent's desired state as a new generation, retrying it on a
-    /// concurrent write, wakes the reconciler and returns the Agent as stored. When `change`
+    /// Stores `change` to an agent's desired state as a new generation, retrying it on a
+    /// concurrent write, wakes the reconciler and returns the agent as stored. When `change`
     /// reports that it changed nothing, nothing is stored and the reconciler is only woken.
     async fn change_desired(&self, name: &str, change: impl Fn(&mut Agent) -> bool) -> Result<AgentRecord, Error> {
         loop {
@@ -513,7 +513,7 @@ impl ControlPlane {
         }
     }
 
-    /// Marks an Agent for asynchronous release. Repeated deletion is safe.
+    /// Marks an agent for asynchronous release. Repeated deletion is safe.
     ///
     /// # Errors
     ///
@@ -562,7 +562,7 @@ async fn reject_dot_env_in_bind_mounts(agent: &Agent) -> Result<(), Error> {
                     .eq_ignore_ascii_case(super::resource::ENV_FILE.as_bytes());
                 if !is_directory && is_env_file {
                     return Err(Error::Invalid(format!(
-                        "{field} bind-mounts {} which contains .env at {}; the Sandbox would see its real values. \
+                        "{field} bind-mounts {} which contains .env at {}; the sandbox would see its real values. \
                          Remove the file or keep it outside mounted directories",
                         source.display(),
                         entry.path().display(),
@@ -591,8 +591,8 @@ impl ControlPlane {
     }
 }
 
-/// The run state an apply stores: the manifest's, else the Agent's own, so
-/// applying a manifest that omits it never stops or starts the Agent.
+/// The run state an apply stores: the manifest's, else the agent's own, so
+/// applying a manifest that omits it never stops or starts the agent.
 fn applied_run_state(requested: Option<crate::RunState>, current: Option<&AgentRecord>) -> crate::RunState {
     requested
         .or_else(|| current.map(|current| current.agent.spec.run_state()))

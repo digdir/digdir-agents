@@ -21,11 +21,11 @@ pub(super) const ACCESS_ENVIRONMENT: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 const ACCESS_PLACEHOLDER: &str = "sk-ant-oat01-agent-mediated-placeholder-not-a-real-credential";
 /// Second binding on the same credential, under a name the harness does not
 /// scrub. Claude Code removes `CLAUDE_CODE_OAUTH_TOKEN` from every process it
-/// spawns, so a Session cannot read its own placeholder to hand to a nested
+/// spawns, so a session cannot read its own placeholder to hand to a nested
 /// `agentd`; this name survives, as the Codex one already does.
 const NESTED_ENVIRONMENT: &str = "AGENT_CLAUDE_ACCESS_TOKEN";
 /// A binding needs its own placeholder, and one placeholder may not contain
-/// another, so this is not a spelling of `ACCESS_PLACEHOLDER`. A nested Agent
+/// another, so this is not a spelling of `ACCESS_PLACEHOLDER`. A nested agent
 /// therefore sends this value outward and the outer mediation resolves it to
 /// the same stored credential.
 const NESTED_PLACEHOLDER: &str = "sk-ant-oat01-agent-mediated-nested-placeholder-not-a-real-credential";
@@ -33,16 +33,16 @@ const API_HOST: &str = "api.anthropic.com";
 /// Fullscreen Claude owns an alternate-screen viewport whose redraws can corrupt under tmux;
 /// normal-screen output remains stable and gives tmux durable scrollback.
 const DISABLE_ALTERNATE_SCREEN_ENVIRONMENT: &str = "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN";
-/// The model recorded for Sessions that predate recorded selections. The adapter
-/// launched every Session on this alias from preview 2 until selections arrived,
+/// The model recorded for sessions that predate recorded selections. The adapter
+/// launched every session on this alias from preview 2 until selections arrived,
 /// because the mediated setup token cannot enumerate models and Fable never
-/// appeared in the `/model` picker. Preview 1 Sessions ran on Claude Code's own
+/// appeared in the `/model` picker. Preview 1 sessions ran on Claude Code's own
 /// default; recording the alias for them too keeps every earlier conversation on
 /// one known model instead of whatever the harness defaults to next. Manifests
-/// now declare the default for new Sessions.
+/// now declare the default for new sessions.
 pub(super) const MODEL_LAUNCHED_BEFORE_SELECTION: &str = "fable";
 
-/// Claude Code's user instruction file, which holds the Agent's instructions.
+/// Claude Code's user instruction file, which holds the agent's instructions.
 pub(super) fn instructions_path(home: &str) -> String {
     format!("{home}/.claude/CLAUDE.md")
 }
@@ -73,7 +73,7 @@ pub(super) async fn prepare(database: &persistence::Database) -> Result<Vec<Medi
     ])
 }
 
-/// The nested placeholder a Session in an Agent with Claude Code holds.
+/// The nested placeholder a session in an agent with Claude Code holds.
 pub(super) fn agent_credential(
     environment: impl Fn(&str) -> Option<std::ffi::OsString>,
 ) -> Result<zeroize::Zeroizing<String>, Error> {
@@ -331,12 +331,12 @@ pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
         |message| format!("{base} -- {}", shell_single_quoted(message)),
     );
     // Claude Code currently reports UUID conversation IDs. Keep that
-    // harness-specific constraint out of the generic Session reconciler.
+    // harness-specific constraint out of the generic session reconciler.
     let resume = request.resume.and_then(|native| native.parse::<uuid::Uuid>().ok());
     let command = match resume {
         // SessionStart can report an ID before Claude creates its JSONL. Treat
         // the harness-owned transcript as the authority for resumability so
-        // an untouched Session can still wake from Idle as a fresh Session.
+        // an untouched session can still wake from Idle as a fresh session.
         Some(native) => format!(
             "if /usr/bin/find {config}/projects -type f -name '{native}.jsonl' -print -quit 2>/dev/null \
              | /usr/bin/grep -q .; then exec {base} --resume {native}; else exec {fresh}; fi"

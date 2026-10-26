@@ -54,15 +54,15 @@ pub(super) fn ensure(
     if let Some(session) = query_named(&transaction, agent_id, name)? {
         // The name is free again only once the reconciler has released the
         // harness and removed the row, so recreating it now would revive a
-        // Session that is already going away.
+        // session that is already going away.
         if session.is_deleting() {
             return Err(Error::Invalid(format!(
                 "Session \"{name}\" is being deleted; its name is free once its harness has stopped"
             )));
         }
-        // Two callers may both find no Session and both resolve one; the first
+        // Two callers may both find no session and both resolve one; the first
         // recorded selections bind, so a loser that explicitly chose differently
-        // learns about it, while one that chose nothing gets the Session as is.
+        // learns about it, while one that chose nothing gets the session as is.
         if session.harness != new.harness {
             return Err(Error::Invalid(format!(
                 "Session \"{name}\" already uses harness {:?}, not {:?}",
@@ -163,8 +163,8 @@ pub(super) fn activate(connection: &Connection, id: SessionId) -> Result<u64, Er
         .map_err(database_error)
 }
 
-/// Records the first release request for one named Session; repeating it
-/// returns the Session already marked.
+/// Records the first release request for one named session; repeating it
+/// returns the session already marked.
 pub(super) fn mark_deleting(connection: &mut Connection, agent: &str, name: &SessionName) -> Result<Session, Error> {
     let transaction = connection.transaction().map_err(database_error)?;
     let owner = agents::get_by_name(&transaction, agent)?;
@@ -180,15 +180,15 @@ pub(super) fn mark_deleting(connection: &mut Connection, agent: &str, name: &Ses
             return Err(Error::Conflict);
         }
         // Read the marker back so callers see the stored second, not a
-        // higher-precision value this Session would never report again.
+        // higher-precision value this session would never report again.
         session = query_named(&transaction, owner.id, name)?.ok_or(Error::NotFound)?;
     }
     transaction.commit().map_err(database_error)?;
     Ok(session)
 }
 
-/// Records whether one named Session is archived. Archiving an archived
-/// Session keeps its original time; unarchiving clears it.
+/// Records whether one named session is archived. Archiving an archived
+/// session keeps its original time; unarchiving clears it.
 pub(super) fn set_archived(
     connection: &mut Connection,
     agent: &str,
@@ -215,7 +215,7 @@ pub(super) fn set_archived(
     Ok(session)
 }
 
-/// Removes a released Session. Rows keyed to it, such as its activity reports,
+/// Removes a released session. Rows keyed to it, such as its activity reports,
 /// cascade with it.
 pub(super) fn finalize_deletion(connection: &Connection, id: SessionId) -> Result<(), Error> {
     let changed = connection
@@ -276,9 +276,9 @@ pub(super) fn clear_report(connection: &Connection, id: SessionId) -> Result<(),
     if changed == 1 { Ok(()) } else { Err(Error::NotFound) }
 }
 
-/// Folds one activity event into the Session, guarded by the current launch token.
+/// Folds one activity event into the session, guarded by the current launch token.
 ///
-/// A stale token (an earlier launch, or a deleted Agent) matches no row and is a
+/// A stale token (an earlier launch, or a deleted agent) matches no row and is a
 /// silent no-op returning `None`, so the harness hook does not retry a report it
 /// can never land.
 pub(super) fn apply_activity_for_launch(

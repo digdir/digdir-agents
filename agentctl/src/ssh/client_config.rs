@@ -1,6 +1,6 @@
 //! OpenSSH client configuration files owned by the platform.
 //!
-//! `agentd` rewrites `<home>/ssh/config` and `<home>/ssh/known_hosts` as Agents
+//! `agentd` rewrites `<home>/ssh/config` and `<home>/ssh/known_hosts` as agents
 //! are applied and deleted; `agentctl ssh-config install` inserts one `Include`
 //! of that config at the top of the user's own `~/.ssh/config` and touches
 //! nothing else in it.
@@ -29,7 +29,7 @@ pub struct HostEntry {
     pub known_hosts_file: PathBuf,
 }
 
-/// Renders the platform-owned client configuration for every SSH-enabled Agent.
+/// Renders the platform-owned client configuration for every SSH-enabled agent.
 #[must_use]
 pub fn render_config(entries: &[HostEntry], user_home: Option<&Path>) -> String {
     let mut text = String::from(
@@ -98,7 +98,7 @@ impl CommandShell {
     }
 }
 
-/// Renders the `ProxyCommand` value dialing one Agent through `agentctl`.
+/// Renders the `ProxyCommand` value dialing one agent through `agentctl`.
 ///
 /// The executable is always absolute: the shell running the command on Unix
 /// would expand `~`, Win32-OpenSSH would not, and neither has `agentctl` on a
@@ -130,13 +130,13 @@ pub fn render_proxy_command(agentctl: &Path, agent: &str, shell: CommandShell) -
     Ok(format!("{} {}", quoted.replace('%', "%%"), proxy_arguments(agent)))
 }
 
-/// The arguments every Agent's `ProxyCommand` ends with, whatever the executable.
+/// The arguments every agent's `ProxyCommand` ends with, whatever the executable.
 fn proxy_arguments(agent: &str) -> String {
     format!("ssh-proxy agent/{agent}")
 }
 
-/// Returns whether OpenSSH's resolved configuration for an Agent's alias, as
-/// `ssh -G` prints it, dials the Agent through `agentctl`.
+/// Returns whether OpenSSH's resolved configuration for an agent's alias, as
+/// `ssh -G` prints it, dials the agent through `agentctl`.
 ///
 /// This is how the user's own client configuration is known to reach the
 /// generated one: OpenSSH applies its own `Include`, `Host` and `Match`
@@ -454,7 +454,7 @@ mod tests {
             IncludeOutcome::AlreadyInstalled
         );
 
-        // A copy scoped to a Host block does not apply to the Agent aliases, so the
+        // A copy scoped to a Host block does not apply to the agent aliases, so the
         // global line is still added; the scoped copy is kept verbatim.
         let scoped = "Host x\n  Include ~/.agent/ssh/config\n";
         std::fs::write(&config, scoped).expect("scoped include");

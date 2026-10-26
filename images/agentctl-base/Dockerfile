@@ -1,15 +1,15 @@
 # The agentctl base images, published as ghcr.io/digdir/agentctl-base:ubuntu-26.04 (the headless stage) and
 # :ubuntu-26.04-desktop. They meet agentd's image contract (agentctl/docs/image-contract.md) and carry the harness
-# pins agentd's adapters are tested with, so an Agent image only adds its own tools. README.md beside this file
+# pins agentd's adapters are tested with, so an agent image only adds its own tools. README.md beside this file
 # describes them.
 FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS headless
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # What agentd needs in the guest (tmux, sudo, systemd, openssh-server, ca-certificates, iproute2 for `ss`) and the
-# everyday tools an Agent expects to find. dbus provides the system bus `systemctl` needs when not run as root. fd-find provides `fdfind`, which Pi searches files with; tzdata lets an
+# everyday tools an agent expects to find. dbus provides the system bus `systemctl` needs when not run as root. fd-find provides `fdfind`, which Pi searches files with; tzdata lets an
 # image select another time zone than UTC with one symlink. agg renders terminal recordings with fonts-jetbrains-mono.
-# file, make, patch, shellcheck, unzip, wget and zip are the build and inspection tools Agents reach for in any repository.
+# file, make, patch, shellcheck, unzip, wget and zip are the build and inspection tools agents reach for in any repository.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         btop \
@@ -149,12 +149,12 @@ RUN git config --system credential.https://github.com.helper '!/usr/local/bin/gh
     && git config --system credential.https://gist.github.com.helper '!/usr/local/bin/gh auth git-credential'
 
 # The harness pins agentd's adapters are tested with (agentctl/docs/harness-upgrades.md). agentd verifies and
-# configures the harnesses an Agent declares, but never installs one.
+# configures the harnesses an agent declares, but never installs one.
 ARG CLAUDE_CODE_VERSION=2.1.309
 ARG CODEX_VERSION=0.164.0
 ARG PI_VERSION=1.4.0
 
-# Agent Sandboxes mount their CA bundle here; this step's Node downloads trust it.
+# Agent sandboxes mount their CA bundle here; this step's Node downloads trust it.
 RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
       export NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem; \
     fi; \
@@ -172,15 +172,15 @@ COPY headless/ /
 # The optional parts `agent-feature install` adds to an image built on this one.
 COPY features/ /usr/local/share/agentctl-base/features/
 # Claude Code's onboarding and workspace trust, which agentd does not write. Seeded here rather than through an
-# Agent's home overlay, which is applied again on every pass and would undo what Claude Code records in the file.
+# agent's home overlay, which is applied again on every pass and would undo what Claude Code records in the file.
 # The directory exists already: BuildKit would give a parent directory COPY creates the file's mode, 0600.
 COPY --chown=agent:agent --chmod=0600 claude-state.json /home/agent/.claude/.claude.json
 
-# agentd owns the loopback SSH server policy, unit and per-Agent state. The distribution's own ssh.service and socket
+# agentd owns the loopback SSH server policy, unit and per-agent state. The distribution's own ssh.service and socket
 # are masked so the image cannot expose its package-generated host keys. The guest has no udev to activate hvc0's
-# device unit, so its generated serial login would otherwise wait 90 seconds at boot. The Sandbox kernel has no
+# device unit, so its generated serial login would otherwise wait 90 seconds at boot. The sandbox kernel has no
 # loadable modules and rejects Ubuntu's raised pid_max, which would otherwise leave the system degraded at every boot.
-# Keep /tmp on the Sandbox disk so build scratch space uses its capacity rather than guest memory. A manifest can
+# Keep /tmp on the sandbox disk so build scratch space uses its capacity rather than guest memory. A manifest can
 # still mount an explicit tmpfs there before systemd starts.
 RUN systemctl mask ssh.service ssh.socket serial-getty@hvc0.service systemd-modules-load.service tmp.mount \
     && ln -s /dev/null /etc/sysctl.d/50-pid-max.conf \
@@ -194,8 +194,8 @@ ENV GH_NO_EXTENSION_UPDATE_NOTIFIER=1
 ENV HOME=/home/agent
 ENV LANG=C.UTF-8
 ENV PATH=/home/agent/.local/bin:${PATH}
-# Nothing else creates a per-user runtime directory: systemd-logind owns that job and a Session is a tmux process
-# rather than a login. Without one, tools such as skopeo and buildah fall back to a directory the Agent cannot use.
+# Nothing else creates a per-user runtime directory: systemd-logind owns that job and a session is a tmux process
+# rather than a login. Without one, tools such as skopeo and buildah fall back to a directory the agent cannot use.
 ENV XDG_RUNTIME_DIR=/run/user/1000
 
 USER agent
@@ -208,7 +208,7 @@ ENTRYPOINT ["/usr/lib/systemd/systemd"]
 # agent-feature, exactly as an image built on the headless one would.
 FROM headless AS desktop
 
-# The headless stage ends as the unprivileged Agent user; installing packages needs root again.
+# The headless stage ends as the unprivileged agent user; installing packages needs root again.
 USER root
 
 RUN agent-feature install desktop

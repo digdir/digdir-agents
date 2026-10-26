@@ -1,6 +1,6 @@
-//! Whether each running Sandbox's guest still makes progress.
+//! Whether each running sandbox's guest still makes progress.
 //!
-//! A Sandbox whose guest has stalled keeps its VM process, so its lifecycle
+//! A sandbox whose guest has stalled keeps its VM process, so its lifecycle
 //! state stays running while every Execution into it waits forever. The
 //! Backend reports the guest's heartbeat without a round trip to the guest;
 //! this tracker records when each heartbeat last changed on the host clock and
@@ -18,10 +18,10 @@ use tokio::time::Instant;
 /// its vCPUs are saturated.
 pub const UNRESPONSIVE_AFTER: Duration = Duration::from_secs(15);
 
-/// How often guest-touching work inspects its Sandbox's heartbeat.
+/// How often guest-touching work inspects its sandbox's heartbeat.
 pub const OBSERVATION_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Describes the stalled guest of the Agent named `agent` for conditions and errors.
+/// Describes the stalled guest of the agent named `agent` for conditions and errors.
 #[must_use]
 pub fn stall_detail(agent: &str) -> String {
     format!(
@@ -30,13 +30,13 @@ pub fn stall_detail(agent: &str) -> String {
     )
 }
 
-/// The error that ends guest-touching work once the guest of the Agent named `agent` has stalled.
+/// The error that ends guest-touching work once the guest of the agent named `agent` has stalled.
 #[must_use]
 pub fn stalled(agent: &str) -> crate::Error {
     crate::Error::SandboxUnresponsive(stall_detail(agent))
 }
 
-/// When each running Sandbox's heartbeat last changed, keyed by Sandbox.
+/// When each running sandbox's heartbeat last changed, keyed by sandbox.
 #[derive(Default)]
 pub struct Tracker {
     sandboxes: RefCell<HashMap<SandboxId, Tracked>>,
@@ -49,7 +49,7 @@ struct Tracked {
 }
 
 impl Tracker {
-    /// Records one inspection of a Sandbox. A Sandbox that is not running, or
+    /// Records one inspection of a sandbox. A sandbox that is not running, or
     /// reports no heartbeat, has no evidence and is forgotten.
     pub fn observe(&self, sandbox: &Sandbox, now: Instant) {
         let mut sandboxes = self.sandboxes.borrow_mut();
@@ -68,13 +68,13 @@ impl Tracker {
         }
     }
 
-    /// The Sandbox's last observed heartbeat, if it reports one.
+    /// The sandbox's last observed heartbeat, if it reports one.
     #[must_use]
     pub fn heartbeat(&self, id: &SandboxId) -> Option<GuestHeartbeat> {
         self.sandboxes.borrow().get(id).map(|tracked| tracked.heartbeat)
     }
 
-    /// Whether the Sandbox's heartbeat has not changed for [`UNRESPONSIVE_AFTER`].
+    /// Whether the sandbox's heartbeat has not changed for [`UNRESPONSIVE_AFTER`].
     /// Only a changed heartbeat clears a stall, so a pause in observation can
     /// delay, but never hide, one.
     #[must_use]
@@ -85,7 +85,7 @@ impl Tracker {
             .is_some_and(|tracked| now.saturating_duration_since(tracked.since) >= UNRESPONSIVE_AFTER)
     }
 
-    /// Forgets a released Sandbox.
+    /// Forgets a released sandbox.
     pub fn forget(&self, id: &SandboxId) {
         self.sandboxes.borrow_mut().remove(id);
     }
@@ -113,8 +113,8 @@ mod tests {
                 platform: Platform::new("linux", "amd64"),
                 manifest_digest: "sha256:1234".into(),
             },
-            id: "00000000-0000-4000-8000-000000000001".parse().expect("test Sandbox ID"),
-            name: SandboxName::new("worker").expect("test Sandbox name"),
+            id: "00000000-0000-4000-8000-000000000001".parse().expect("test sandbox ID"),
+            name: SandboxName::new("worker").expect("test sandbox name"),
             hostname: Hostname::new("worker").expect("test hostname"),
             resources: SandboxResources::new(
                 "1".parse::<CpuQuantity>().expect("test CPU"),

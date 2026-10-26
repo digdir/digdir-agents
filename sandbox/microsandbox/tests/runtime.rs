@@ -39,7 +39,7 @@ async fn retained_lifecycle_execution_files_and_volumes() {
         .expect("retained volume should be created");
     let service = SandboxService::new(backend.clone());
     let mut request = EnsureSandboxRequest::new(
-        SandboxName::new("integration-worker").expect("test Sandbox name should be valid"),
+        SandboxName::new("integration-worker").expect("test sandbox name should be valid"),
         SandboxSpec {
             image: ImageSource::Build {
                 context: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/runtime-image"),
@@ -81,7 +81,7 @@ async fn retained_lifecycle_execution_files_and_volumes() {
             Box::pin(Cursor::new(b"retained".to_vec())),
         )
         .await
-        .expect("file should stream into the Sandbox");
+        .expect("file should stream into the sandbox");
     assert_atomic_replacement(backend.as_ref(), &sandbox).await;
     backend.stop(&sandbox.id).await.expect("Sandbox should stop");
 
@@ -110,7 +110,7 @@ async fn retained_lifecycle_execution_files_and_volumes() {
 }
 
 /// A direct root filesystem pulled from a registry is prepared without Microsandbox's layered
-/// image artifacts, so a restart must boot from the Sandbox's own root disk without them.
+/// image artifacts, so a restart must boot from the sandbox's own root disk without them.
 #[tokio::test(flavor = "local")]
 #[ignore = "requires a Microsandbox host runtime, hardware virtualization and registry access"]
 async fn direct_reference_sandbox_restarts_on_its_root_filesystem() {
@@ -119,7 +119,7 @@ async fn direct_reference_sandbox_restarts_on_its_root_filesystem() {
     let backend = Rc::new(MicrosandboxProvider::open(&home).await.expect("Backend should open"));
     let service = SandboxService::new(backend.clone());
     let request = EnsureSandboxRequest::new(
-        SandboxName::new("direct-reference-worker").expect("test Sandbox name should be valid"),
+        SandboxName::new("direct-reference-worker").expect("test sandbox name should be valid"),
         SandboxSpec {
             image: ImageSource::Reference {
                 reference: "docker.io/library/alpine:3.22".to_string(),
@@ -142,18 +142,18 @@ async fn direct_reference_sandbox_restarts_on_its_root_filesystem() {
             Box::pin(Cursor::new(b"retained".to_vec())),
         )
         .await
-        .expect("file should stream into the Sandbox");
+        .expect("file should stream into the sandbox");
 
     backend.stop(&sandbox.id).await.expect("Sandbox should stop");
     let stopped = backend
         .inspect(&sandbox.id)
         .await
-        .expect("stopped Sandbox should be inspected");
+        .expect("stopped sandbox should be inspected");
     assert_eq!(stopped.guest_heartbeat, None, "a stopped guest reports no heartbeat");
     backend
         .start(&sandbox.id)
         .await
-        .expect("stopped direct Sandbox should restart");
+        .expect("stopped direct sandbox should restart");
     assert_direct_root_filesystem(backend.as_ref(), &sandbox).await;
     assert_guest_heartbeat_advances(backend.as_ref(), &sandbox.id).await;
     assert_eq!(read(&backend, &sandbox.id, "/root/retained.txt").await, b"retained");
@@ -193,7 +193,7 @@ async fn nested_sandboxes_follow_the_resource_across_updates() {
         .contains(SandboxFeature::NestedSandboxes);
     let nested = resources("1", "512Mi", "1Gi").with_nested_sandboxes(true);
     let mut request = EnsureSandboxRequest::new(
-        SandboxName::new("nested-worker").expect("test Sandbox name should be valid"),
+        SandboxName::new("nested-worker").expect("test sandbox name should be valid"),
         SandboxSpec {
             image: ImageSource::Reference {
                 reference: "docker.io/library/alpine:3.22".to_string(),
@@ -218,7 +218,7 @@ async fn nested_sandboxes_follow_the_resource_across_updates() {
 
     let (sandbox, _) = collect_progress(service.ensure(&request))
         .await
-        .expect("a nested Sandbox should start");
+        .expect("a nested sandbox should start");
     assert!(has_kvm(&backend, &sandbox).await, "the guest should have /dev/kvm");
     request.spec_mut().resources = resources("1", "512Mi", "1Gi");
     let (sandbox, _) = collect_progress(service.ensure(&request))
@@ -228,7 +228,7 @@ async fn nested_sandboxes_follow_the_resource_across_updates() {
         !has_kvm(&backend, &sandbox).await,
         "the restarted guest should have no /dev/kvm"
     );
-    // Turned on while stopped, it applies when the Sandbox starts again.
+    // Turned on while stopped, it applies when the sandbox starts again.
     backend.stop(&sandbox.id).await.expect("Sandbox should stop");
     request.spec_mut().resources = nested;
     let (sandbox, _) = collect_progress(service.ensure(&request))
@@ -252,7 +252,7 @@ async fn has_kvm(backend: &MicrosandboxProvider, sandbox: &Sandbox) -> bool {
     output.stdout.as_ref() == b"yes\n"
 }
 
-/// Disrupts the running Sandbox's runtime with `disrupt`, then checks that a
+/// Disrupts the running sandbox's runtime with `disrupt`, then checks that a
 /// stop ends its VM process within a bound and that it starts again on its root disk.
 async fn assert_stop_ends_the_vm(
     backend: &MicrosandboxProvider,
@@ -264,7 +264,7 @@ async fn assert_stop_ends_the_vm(
     let runtime = format!("sandbox-{}", sandbox.id.as_uuid().simple());
     assert!(
         !runtime_processes(&runtime).is_empty(),
-        "the running Sandbox should have a runtime process"
+        "the running sandbox should have a runtime process"
     );
     disrupt(&runtime);
     let started = tokio::time::Instant::now();
@@ -273,24 +273,24 @@ async fn assert_stop_ends_the_vm(
     // An exited process has an empty command line, so only a live runtime is left here.
     let survivors = runtime_processes(&runtime);
     signal(&survivors, "KILL");
-    stopped.expect("a disrupted Sandbox should stop");
+    stopped.expect("a disrupted sandbox should stop");
     assert!(
         survivors.is_empty(),
         "runtime processes {survivors:?} outlived the stop"
     );
     assert!(
         elapsed < std::time::Duration::from_secs(30),
-        "stopping a disrupted Sandbox should be bounded, took {elapsed:?}"
+        "stopping a disrupted sandbox should be bounded, took {elapsed:?}"
     );
     let (restarted, _) = collect_progress(service.ensure(request))
         .await
-        .expect("a stopped direct Sandbox should start again");
+        .expect("a stopped direct sandbox should start again");
     assert_eq!(restarted.id, sandbox.id);
     assert_eq!(restarted.state, SandboxState::Running);
     assert_eq!(read(backend, &sandbox.id, "/root/retained.txt").await, b"retained");
 }
 
-/// Host processes whose command line names the Sandbox's runtime.
+/// Host processes whose command line names the sandbox's runtime.
 fn runtime_processes(runtime: &str) -> Vec<u32> {
     std::fs::read_dir("/proc")
         .expect("/proc should be readable")
@@ -336,7 +336,7 @@ async fn assert_guest_heartbeat_advances(backend: &MicrosandboxProvider, id: &sa
         let heartbeat = backend
             .inspect(id)
             .await
-            .expect("running Sandbox should be inspected")
+            .expect("running sandbox should be inspected")
             .guest_heartbeat;
         match (first, heartbeat) {
             (None, Some(heartbeat)) => first = Some(heartbeat),
@@ -365,7 +365,7 @@ async fn assert_atomic_replacement(backend: &MicrosandboxProvider, sandbox: &San
             Box::pin(Cursor::new(old.clone())),
         )
         .await
-        .expect("initial file should stream into the Sandbox");
+        .expect("initial file should stream into the sandbox");
     let mode = run(
         backend,
         &sandbox.id,
@@ -405,7 +405,7 @@ async fn assert_atomic_replacement(backend: &MicrosandboxProvider, sandbox: &San
             Box::pin(Cursor::new(new.clone())),
         )
         .await
-        .expect("replacement should stream into the Sandbox");
+        .expect("replacement should stream into the sandbox");
     let observed = reader.collect().await.expect("reader should exit");
     let lines = String::from_utf8(observed.stdout.to_vec()).expect("reader output should be UTF-8");
     assert!(!lines.is_empty(), "reader observed nothing");
@@ -534,7 +534,7 @@ async fn assert_reference_image_resolves(backend_home: PathBuf) {
     );
     let service = SandboxService::new(backend.clone());
     let request = EnsureSandboxRequest::new(
-        SandboxName::new("reference-worker").expect("test Sandbox name should be valid"),
+        SandboxName::new("reference-worker").expect("test sandbox name should be valid"),
         SandboxSpec {
             image: ImageSource::Reference {
                 reference: "docker.io/library/alpine:3.22".to_string(),
@@ -562,7 +562,7 @@ async fn assert_reference_image_resolves(backend_home: PathBuf) {
     service
         .release(request.name(), request.spec().retention_policy)
         .await
-        .expect("reference Sandbox should be deleted");
+        .expect("reference sandbox should be deleted");
 }
 
 async fn assert_immediate_restart_and_delete(
@@ -575,7 +575,7 @@ async fn assert_immediate_restart_and_delete(
         backend
             .find(request.name())
             .await
-            .expect("stopped Sandbox should remain discoverable")
+            .expect("stopped sandbox should remain discoverable")
             .state,
         SandboxState::Stopped
     );
@@ -617,7 +617,7 @@ async fn assert_build_cache_reused(
     backend
         .delete(&sandbox.id)
         .await
-        .expect("rebuilt Sandbox should be deleted");
+        .expect("rebuilt sandbox should be deleted");
     backend
         .delete_volume(home_id)
         .await

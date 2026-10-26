@@ -1,8 +1,8 @@
 #!/bin/sh
-# Changelog tooling for the Agent platform.
+# Changelog tooling for the agent platform.
 #
 # One changelog, agentctl/CHANGELOG.md, covers the whole stack: the `agentctl` and `agentd`
-# binaries released under the `agentctl/v*` tag, and the Agent images they work with. It
+# binaries released under the `agentctl/v*` tag, and the agent images they work with. It
 # follows Keep a Changelog 1.1.0 and Semantic Versioning 2.0.0. The script has no dependencies
 # beyond a POSIX shell, coreutils, awk and git.
 #

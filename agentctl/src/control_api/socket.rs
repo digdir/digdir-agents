@@ -20,7 +20,7 @@ async fn drain_connections(connections: &mut FuturesUnordered<ConnectionFuture>,
     }
 }
 
-/// Connector for the fixed per-user Agent Control API socket path.
+/// Connector for the fixed per-user agent Control API socket path.
 pub(super) struct PathConnector {
     path: PathBuf,
 }

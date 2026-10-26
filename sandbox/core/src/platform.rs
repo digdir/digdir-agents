@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
-/// OCI-aligned operating-system and architecture requirements for a Sandbox.
+/// OCI-aligned operating-system and architecture requirements for a sandbox.
 ///
 /// Values remain open strings so the generic SDK does not need a release for
-/// every platform value introduced by an image or Sandbox Backend.
+/// every platform value introduced by an image or sandbox Backend.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Platform {
@@ -43,7 +43,7 @@ impl Platform {
     /// guest operating system.
     ///
     /// Architecture names use their OCI spelling so the result can be used
-    /// directly for image and Sandbox selection.
+    /// directly for image and sandbox selection.
     #[must_use]
     pub fn native(os: impl Into<String>) -> Self {
         let architecture = match std::env::consts::ARCH {

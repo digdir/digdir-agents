@@ -20,7 +20,7 @@ pub(crate) struct SandboxRecord {
     pub(crate) runtime_name: String,
     pub(crate) name: SandboxName,
     /// Absent in records written before hostnames were persisted; those
-    /// Sandboxes report their name once their runtime is recreated.
+    /// sandboxes report their name once their runtime is recreated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hostname: Option<Hostname>,
     pub(crate) image: ResolvedImage,
@@ -50,7 +50,7 @@ impl SandboxRecord {
         }
     }
 
-    /// Returns the hostname the guest reports, defaulting to the Sandbox name.
+    /// Returns the hostname the guest reports, defaulting to the sandbox name.
     pub(crate) fn hostname(&self) -> Hostname {
         self.hostname.clone().unwrap_or_else(|| self.name.clone().into())
     }
@@ -110,7 +110,7 @@ impl StateStore {
     pub(crate) async fn sandbox_by_name(&self, name: &SandboxName) -> Result<SandboxRecord, sandbox::Error> {
         let record: SandboxRecord = read_record(
             self.sandbox_path(name),
-            "read Microsandbox Sandbox state",
+            "read Microsandbox sandbox state",
             sandbox::ResourceKind::Sandbox,
             name.to_string(),
         )
@@ -131,7 +131,7 @@ impl StateStore {
         Ok(record)
     }
 
-    /// Returns every Sandbox record, whether or not its runtime exists.
+    /// Returns every sandbox record, whether or not its runtime exists.
     pub(crate) async fn sandbox_records(&self) -> Result<Vec<SandboxRecord>, sandbox::Error> {
         let records: Vec<SandboxRecord> = read_records(&self.sandboxes, sandbox::ResourceKind::Sandbox).await?;
         for record in &records {
@@ -141,7 +141,7 @@ impl StateStore {
     }
 
     pub(crate) async fn remove_sandbox(&self, record: &SandboxRecord) -> Result<(), sandbox::Error> {
-        remove_file(self.sandbox_path(&record.name), "remove Microsandbox Sandbox state").await
+        remove_file(self.sandbox_path(&record.name), "remove Microsandbox sandbox state").await
     }
 
     pub(crate) async fn save_volume(&self, record: &VolumeRecord) -> Result<(), sandbox::Error> {
@@ -335,7 +335,7 @@ mod tests {
     use super::{SandboxRecord, StateStore, VolumeRecord};
 
     fn sandbox_id(value: &str) -> sandbox::SandboxId {
-        value.parse().expect("test Sandbox ID should be a UUID")
+        value.parse().expect("test sandbox ID should be a UUID")
     }
 
     fn image() -> image::ResolvedImage {
@@ -351,7 +351,7 @@ mod tests {
     }
 
     fn sandbox_name() -> SandboxName {
-        SandboxName::new("worker").expect("test Sandbox name should be valid")
+        SandboxName::new("worker").expect("test sandbox name should be valid")
     }
 
     fn resources() -> SandboxResources {

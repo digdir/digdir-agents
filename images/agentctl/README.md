@@ -1,7 +1,7 @@
 # agentctl image
 
-`ghcr.io/digdir/agentctl` holds only `/agentctl` and `/agentd`, for Agent images that need them, such as one running
-nested Agents. It is published for `linux/amd64` and `linux/arm64`. The binaries need glibc 2.36 (Debian 12) or newer.
+`ghcr.io/digdir/agentctl` holds only `/agentctl` and `/agentd`, for agent images that need them, such as one running
+nested agents. It is published for `linux/amd64` and `linux/arm64`. The binaries need glibc 2.36 (Debian 12) or newer.
 
 | Tag | Contents |
 | --- | --- |

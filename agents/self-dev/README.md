@@ -1,20 +1,20 @@
-# Agent platform self-development Agent
+# Agent platform self-development agent
 
-This Agent develops the Agent platform itself: `agentctl/`, `sandbox/` and the Rust workspace in digdir-agents. Each
-Agent clones `digdir/digdir-agents`, `digdir/microsandbox` and `digdir/libkrunfw` at boot.
+This agent develops the agent platform itself: `agentctl/`, `sandbox/` and the Rust workspace in digdir-agents. Each
+agent clones `digdir/digdir-agents`, `digdir/microsandbox` and `digdir/libkrunfw` at boot.
 
 | Agent | Image |
 | --- | --- |
 | `minimal` | `agentctl-self-dev-minimal`, published |
 | `full` | `agentctl-self-dev-full`, published: `minimal` plus Chromium and a graphical desktop |
 
-Each has a `nested` variant that builds the same image from this checkout and is sized to fit inside another Agent.
-Both Agents are named `agentctl-dev`, and their nested variants `agentctl-dev-nested`, since you typically use one or
+Each has a `nested` variant that builds the same image from this checkout and is sized to fit inside another agent.
+Both agents are named `agentctl-dev`, and their nested variants `agentctl-dev-nested`, since you typically use one or
 the other. Pass `--name` to run both at once.
 
-Nested Agents and the end-to-end tests need nested Sandboxes, which a Linux x86_64 host with nested KVM or an Apple M3
+Nested agents and the end-to-end tests need nested sandboxes, which a Linux x86_64 host with nested KVM or an Apple M3
 or newer on macOS 15 or newer can provide. The manifests ask for them (`nestedSandboxes: preferred`), and on other
-hosts the Agent starts without them.
+hosts the agent starts without them.
 
 The images are built from this directory's `Dockerfile` on the
 [agentctl base images](../../images/agentctl-base/README.md) and published to `ghcr.io/digdir/digdir-agents` whenever
@@ -35,8 +35,8 @@ agentctl attach session/s1
 ```
 
 Use `agents/self-dev/full` instead for a browser and a desktop. `agentctl vnc --web` prints an address for viewing
-that desktop in your browser. `agentctl tui`, run from anywhere in this checkout, offers both Agents and their variants
-when it creates an Agent.
+that desktop in your browser. `agentctl tui`, run from anywhere in this checkout, offers both agents and their variants
+when it creates an agent.
 
 To try a change to the image, apply the `nested` variant, which builds it from this checkout:
 
@@ -59,8 +59,8 @@ starts but rejects every prompt, so `agentctl prompt --wait` times out.
 ## Pi
 
 Pi's provider and models come from [`home/.pi/agent/models.json`](home/.pi/agent/models.json), in the shared home
-overlay. `agentd` writes the overlay into the Sandbox every time it reconciles the Agent, so edit it here rather than
-in the Sandbox.
+overlay. `agentd` writes the overlay into the sandbox every time it reconciles the agent, so edit it here rather than
+in the sandbox.
 
 Before adding a model, ask the gateway what it offers. Its model list has only the IDs:
 
@@ -76,9 +76,9 @@ Then add the model and try it in Pi with a prompt that runs a shell command, at 
 answers do not show whether a model calls tools, accepts Pi's requests or supports every thinking level. Map the
 levels it rejects onto ones it accepts with `thinkingLevelMap`, and leave out a model that cannot call tools.
 
-## Inside the Agent
+## Inside the agent
 
-[`instructions.md`](instructions.md), plus [`full/desktop.md`](full/desktop.md) on `full`, are the Agent's own
+[`instructions.md`](instructions.md), plus [`full/desktop.md`](full/desktop.md) on `full`, are the agent's own
 instructions. Its skills are [`pr-evidence`](skills/pr-evidence/SKILL.md), for showing a change to reviewers, and
 [`changelog`](skills/changelog/SKILL.md), for changelog entries. The `full` image also ships the base image's
 `computer-use` skill for its desktop.

@@ -1,6 +1,6 @@
 ---
 name: pr-evidence
-description: Help pull request reviewers understand changes to the agentctl and agentd developer experience through terminal recordings and, on the full Agent, browser captures. Use when a change can be seen, such as in CLI output, the TUI or a page in a browser.
+description: Help pull request reviewers understand changes to the agentctl and agentd developer experience through terminal recordings and, on the full agent, browser captures. Use when a change can be seen, such as in CLI output, the TUI or a page in a browser.
 ---
 
 # Show the change to reviewers
@@ -13,7 +13,7 @@ running it locally. Explain the premise and starting state in the recording or i
   demonstrations into clips.
 - Capture actual behavior from the tested revision, using test data without secrets.
 
-On the `full` Agent you can also capture a browser, as [browser.md](references/browser.md) describes.
+On the `full` agent you can also capture a browser, as [browser.md](references/browser.md) describes.
 
 ## Record
 

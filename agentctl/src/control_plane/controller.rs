@@ -6,10 +6,10 @@ use crate::{Error, control_plane::AgentId, controller};
 
 use super::SharedAgentStore;
 
-/// Observes recoverable Agent reconciliation errors without stopping the controller.
+/// Observes recoverable agent reconciliation errors without stopping the controller.
 pub type ErrorHandler = controller::ErrorHandler<AgentId>;
 
-/// A handle for requesting immediate Agent convergence.
+/// A handle for requesting immediate agent convergence.
 pub type Wakeup = controller::Wakeup<AgentId>;
 
 struct Source(SharedAgentStore);
@@ -25,11 +25,11 @@ impl controller::Source<AgentId> for Source {
     }
 }
 
-/// Generic keyed reconciliation specialized for durable Agents.
+/// Generic keyed reconciliation specialized for durable agents.
 pub struct Controller(controller::Controller<AgentId>);
 
 impl Controller {
-    /// Creates an Agent controller and its independently shareable wake-up handle.
+    /// Creates an agent controller and its independently shareable wake-up handle.
     #[must_use]
     pub fn new(
         store: SharedAgentStore,
@@ -42,7 +42,7 @@ impl Controller {
         (Self(controller), wakeup)
     }
 
-    /// Reconciles existing Agents immediately and then continuously.
+    /// Reconciles existing agents immediately and then continuously.
     pub async fn run(self) {
         self.0.run().await;
     }

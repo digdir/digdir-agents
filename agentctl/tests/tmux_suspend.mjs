@@ -51,7 +51,7 @@ async function detach(name) {
   client = undefined;
 }
 try {
-  // 1. The Session's own harness pane: Ctrl-Z is swallowed and the harness keeps reading input.
+  // 1. The session's own harness pane: Ctrl-Z is swallowed and the harness keeps reading input.
   tmux(...options, "new-session", "-d", "-x", "80", "-y", "10", "-s", session, HARNESS);
   const pane = `=${session}:`;
   assert.notEqual(format(pane, "pane_start_command"), "", "a harness pane starts with a command");
@@ -86,7 +86,7 @@ try {
   tmux("select-window", "-t", `=${session}:0`);
   console.log("PASS: Ctrl-Z still suspends a foreground job in a shell window");
 
-  // 3. The binding is server-wide but scoped by session name, so a non-Agent session with a
+  // 3. The binding is server-wide but scoped by session name, so a non-agent session with a
   //    command-started pane still receives Ctrl-Z (proves the swallow above is not global).
   const other = "user-shell-x";
   tmux("new-session", "-d", "-x", "80", "-y", "10", "-s", other, HARNESS);
@@ -98,7 +98,7 @@ try {
   await until(() => otherOut().includes("third-line"));
   assert.ok(otherOut().includes("^Z"), `Ctrl-Z must reach a non-Agent pane:\n${otherOut()}`);
   await detach(other);
-  console.log("PASS: Ctrl-Z reaches a command pane in a non-Agent session (binding is scoped)");
+  console.log("PASS: Ctrl-Z reaches a command pane in a non-agent session (binding is scoped)");
 } finally {
   client?.kill();
   try { tmux("kill-server"); } finally { await rm(directory, { recursive: true, force: true }); }

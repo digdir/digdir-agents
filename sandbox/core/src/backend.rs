@@ -1,4 +1,4 @@
-//! Interfaces implemented by Sandbox Providers.
+//! Interfaces implemented by sandbox Providers.
 //!
 //! Application code normally provisions through [`crate::SandboxService`] and
 //! operates the resulting [`crate::SandboxHandle`].
@@ -25,7 +25,7 @@ pub type LocalFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 /// Identifies one materialization independently of backend-specific identifiers.
 ///
-/// The Sandbox lifecycle service assigns a fresh ID before calling a Backend's
+/// The sandbox lifecycle service assigns a fresh ID before calling a Backend's
 /// create operation. Deleting and recreating the same [`SandboxName`] produces
 /// a different ID.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -61,9 +61,9 @@ impl std::str::FromStr for SandboxId {
 /// The lifecycle state reported by a sandbox backend.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SandboxState {
-    /// The Sandbox exists but is not running.
+    /// The sandbox exists but is not running.
     Stopped,
-    /// The Sandbox is running.
+    /// The sandbox is running.
     Running,
 }
 
@@ -71,7 +71,7 @@ pub enum SandboxState {
 ///
 /// A Backend reports it without a round trip to the guest, so a guest that no
 /// longer responds still reports its last heartbeat. Only a change of the
-/// sequence is meaningful: it restarts whenever the Sandbox starts.
+/// sequence is meaningful: it restarts whenever the sandbox starts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GuestHeartbeat(u64);
 
@@ -89,7 +89,7 @@ impl GuestHeartbeat {
     }
 }
 
-/// Desired compute and writable root filesystem resources assigned to one Sandbox.
+/// Desired compute and writable root filesystem resources assigned to one sandbox.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SandboxResources {
@@ -112,7 +112,7 @@ impl SandboxResources {
         }
     }
 
-    /// Lets the Sandbox run Sandboxes of its own, or not. Requires
+    /// Lets the sandbox run sandboxes of its own, or not. Requires
     /// [`SandboxFeature::NestedSandboxes`](crate::SandboxFeature) when enabled.
     #[must_use]
     pub const fn with_nested_sandboxes(mut self, enabled: bool) -> Self {
@@ -126,7 +126,7 @@ impl SandboxResources {
         self.cpu
     }
 
-    /// Returns the desired Sandbox memory quantity.
+    /// Returns the desired sandbox memory quantity.
     #[must_use]
     pub const fn memory(self) -> ByteQuantity {
         self.memory
@@ -138,7 +138,7 @@ impl SandboxResources {
         self.root_filesystem
     }
 
-    /// Reports whether the Sandbox can run Sandboxes of its own.
+    /// Reports whether the sandbox can run sandboxes of its own.
     #[must_use]
     pub const fn nested_sandboxes(self) -> bool {
         self.nested_sandboxes
@@ -159,15 +159,15 @@ pub struct CreateSandboxRequest {
     pub image: image::ResolvedImage,
     /// The stable caller-provided name.
     pub name: SandboxName,
-    /// Hostname reported inside the Sandbox, resolved by the lifecycle owner.
+    /// Hostname reported inside the sandbox, resolved by the lifecycle owner.
     pub hostname: Hostname,
     /// Desired mutable compute and writable root filesystem resources.
     pub resources: SandboxResources,
-    /// Process responsible for initializing the Sandbox after backend setup.
+    /// Process responsible for initializing the sandbox after backend setup.
     pub init_system: InitSystem,
-    /// Filesystem attachments materialized when the Sandbox is created.
+    /// Filesystem attachments materialized when the sandbox is created.
     pub mounts: Vec<Mount>,
-    /// Non-secret environment inherited by image init and Sandbox Executions.
+    /// Non-secret environment inherited by image init and sandbox Executions.
     pub environment: BTreeMap<String, String>,
     /// Immutable Network attachment selected by the caller.
     pub network: Option<network::NetworkAttachment>,
@@ -176,32 +176,32 @@ pub struct CreateSandboxRequest {
 /// A backend-neutral view of a materialized sandbox.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Sandbox {
-    /// The image used to create this Sandbox.
+    /// The image used to create this sandbox.
     pub image: image::ResolvedImage,
     /// The stable backend-neutral identifier.
     pub id: SandboxId,
     /// The caller-provided name.
     pub name: SandboxName,
-    /// Hostname the Sandbox reports to its guest.
+    /// Hostname the sandbox reports to its guest.
     pub hostname: Hostname,
     /// Current desired compute and writable root filesystem resources.
     pub resources: SandboxResources,
-    /// Process responsible for initializing the Sandbox after backend setup.
+    /// Process responsible for initializing the sandbox after backend setup.
     pub init_system: InitSystem,
     /// The current lifecycle state.
     pub state: SandboxState,
     /// The latest guest heartbeat, when the Backend observes one for a running
-    /// Sandbox. Absent while the guest boots and when the Backend cannot tell.
+    /// sandbox. Absent while the guest boots and when the Backend cannot tell.
     pub guest_heartbeat: Option<GuestHeartbeat>,
-    /// Filesystem attachments materialized in the Sandbox.
+    /// Filesystem attachments materialized in the sandbox.
     pub mounts: Vec<Mount>,
-    /// Non-secret environment inherited by image init and Sandbox Executions.
+    /// Non-secret environment inherited by image init and sandbox Executions.
     pub environment: BTreeMap<String, String>,
-    /// Immutable Network attachment materialized with the Sandbox.
+    /// Immutable Network attachment materialized with the sandbox.
     pub network: Option<network::NetworkAttachment>,
 }
 
-/// Provides core Sandbox lifecycle, execution, runtime file transfer, storage,
+/// Provides core sandbox lifecycle, execution, runtime file transfer, storage,
 /// and mount behavior.
 ///
 /// Network enforcement and agent automation intentionally remain outside this
@@ -210,45 +210,45 @@ pub struct Sandbox {
 pub trait SandboxBackend {
     /// Reports functionality implemented for a supported Platform.
     ///
-    /// An offered endpoint must be the exclusive path for Sandbox egress. The
+    /// An offered endpoint must be the exclusive path for sandbox egress. The
     /// Backend blocks traffic not represented by the selected endpoint rather
     /// than allowing it to bypass the Network Backend.
     fn capabilities<'a>(&'a self, platform: &'a Platform)
     -> LocalFuture<'a, Result<SandboxBackendCapabilities, Error>>;
 
-    /// Creates a stopped Sandbox.
+    /// Creates a stopped sandbox.
     fn create(&self, request: CreateSandboxRequest) -> PendingOperation<'_, Sandbox>;
 
-    /// Reconciles the mutable resource assignment of an existing Sandbox.
+    /// Reconciles the mutable resource assignment of an existing sandbox.
     fn update_resources<'a>(&'a self, id: &'a SandboxId, resources: SandboxResources) -> PendingOperation<'a, Sandbox>;
 
-    /// Replaces the non-secret environment of a stopped Sandbox.
+    /// Replaces the non-secret environment of a stopped sandbox.
     fn update_environment<'a>(
         &'a self,
         id: &'a SandboxId,
         environment: BTreeMap<String, String>,
     ) -> PendingOperation<'a, Sandbox>;
 
-    /// Finds a Sandbox by its stable caller-provided name.
+    /// Finds a sandbox by its stable caller-provided name.
     fn find<'a>(&'a self, name: &'a SandboxName) -> LocalFuture<'a, Result<Sandbox, Error>>;
 
-    /// Inspects a Sandbox by identifier.
+    /// Inspects a sandbox by identifier.
     fn inspect<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<Sandbox, Error>>;
 
-    /// Starts a Sandbox.
+    /// Starts a sandbox.
     fn start<'a>(&'a self, id: &'a SandboxId) -> PendingOperation<'a, ()>;
 
-    /// Stops a Sandbox.
+    /// Stops a sandbox.
     fn stop<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), Error>>;
 
-    /// Ends a running Sandbox at once, without asking the guest to shut down. A backend
+    /// Ends a running sandbox at once, without asking the guest to shut down. A backend
     /// without a faster way stops it as [`Self::stop`] does, and says so.
     fn kill<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), Error>>;
 
-    /// Deletes a Sandbox.
+    /// Deletes a sandbox.
     fn delete<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), Error>>;
 
-    /// Opens the data-plane endpoint for the Sandbox's immutable Network attachment.
+    /// Opens the data-plane endpoint for the sandbox's immutable Network attachment.
     fn open_network_endpoint<'a>(
         &'a self,
         id: &'a SandboxId,
@@ -289,16 +289,16 @@ pub trait SandboxBackend {
         execution_id: &'a execution::ExecutionId,
     ) -> LocalFuture<'a, Result<(), Error>>;
 
-    /// Opens one regular file in a running Sandbox for streamed reading.
+    /// Opens one regular file in a running sandbox for streamed reading.
     fn read_file<'a>(
         &'a self,
         sandbox_id: &'a SandboxId,
         path: &'a SandboxPath,
     ) -> LocalFuture<'a, Result<file_transfer::ByteReader, Error>>;
 
-    /// Creates or replaces one regular file in a running Sandbox from a byte stream.
+    /// Creates or replaces one regular file in a running sandbox from a byte stream.
     ///
-    /// The replacement is atomic: a concurrent reader in the Sandbox observes either the previous
+    /// The replacement is atomic: a concurrent reader in the sandbox observes either the previous
     /// file or the complete new one, never a truncated or partially written file. A replaced
     /// regular file keeps its mode and ownership.
     fn write_file<'a>(

@@ -1,4 +1,4 @@
-//! Image materialization is separate from Sandbox lifecycle backends.
+//! Image materialization is separate from sandbox lifecycle backends.
 
 use std::{
     collections::BTreeSet,
@@ -156,7 +156,7 @@ pub enum ImageSource {
     /// Resolve an image from an OCI registry reference.
     Reference {
         /// OCI image reference, optionally pinned by digest. Tags are resolved
-        /// once when the Sandbox is created and do not update it in place.
+        /// once when the sandbox is created and do not update it in place.
         reference: String,
     },
 }
@@ -223,14 +223,14 @@ impl ImageSource {
     }
 }
 
-/// Inputs for resolving an image for one Sandbox Platform.
+/// Inputs for resolving an image for one sandbox Platform.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolveRequest {
     /// Source description for the image.
     pub source: ImageSource,
     /// Platform the resulting image must support.
     pub platform: Platform,
-    /// Filesystem representation required by the Sandbox consuming the image.
+    /// Filesystem representation required by the sandbox consuming the image.
     pub root_filesystem_mode: RootFilesystemMode,
 }
 
@@ -325,7 +325,7 @@ impl ResolvedImage {
     }
 }
 
-/// Owns image materialization for a paired Sandbox Backend.
+/// Owns image materialization for a paired sandbox Backend.
 ///
 /// Every operation is capability-discovered per [`Platform`]. Implementations
 /// must define all operations explicitly, including providers for which prepared

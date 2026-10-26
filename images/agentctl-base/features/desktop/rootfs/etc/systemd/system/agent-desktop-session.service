@@ -1,5 +1,5 @@
 [Unit]
-Description=Window manager and panel for the Agent desktop
+Description=Window manager and panel for the agent desktop
 Before=multi-user.target
 After=agent-desktop-display.service
 Requires=agent-desktop-display.service

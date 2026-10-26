@@ -17,7 +17,7 @@ use super::protocol::{
     SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
 };
 
-/// A byte stream usable by the Agent Control API client.
+/// A byte stream usable by the agent Control API client.
 pub trait Connection: AsyncRead + AsyncWrite + Unpin {}
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection for T {}
@@ -28,7 +28,7 @@ pub trait Connector {
     fn connect(&self) -> LocalFuture<'_, Result<Box<dyn Connection>, Error>>;
 }
 
-/// Calls an Agent control plane over a local stream transport.
+/// Calls an agent control plane over a local stream transport.
 pub struct Client {
     connector: Rc<dyn Connector>,
     next_id: Cell<u64>,
@@ -74,7 +74,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns an error when active Sessions block the transition or the daemon
+    /// Returns an error when active sessions block the transition or the daemon
     /// cannot drain its listeners and in-flight calls.
     pub async fn shutdown_for_upgrade(&self) -> Result<Vec<String>, Error> {
         let result: ShutdownResult = self
@@ -88,7 +88,7 @@ impl Client {
         Ok(result.warnings)
     }
 
-    /// Creates or updates an Agent resource.
+    /// Creates or updates an agent resource.
     ///
     /// # Errors
     ///
@@ -97,7 +97,7 @@ impl Client {
         self.call(METHOD_APPLY, request).await
     }
 
-    /// Gets an Agent resource by name.
+    /// Gets an agent resource by name.
     ///
     /// # Errors
     ///
@@ -106,7 +106,7 @@ impl Client {
         self.call(METHOD_GET, NameParams { name: name.into() }).await
     }
 
-    /// Lists every active Agent.
+    /// Lists every active agent.
     ///
     /// # Errors
     ///
@@ -115,20 +115,20 @@ impl Client {
         self.call(METHOD_LIST, serde_json::json!({})).await
     }
 
-    /// Resolves the closest persisted Agent source directory containing `directory`.
+    /// Resolves the closest persisted agent source directory containing `directory`.
     ///
     /// # Errors
     ///
-    /// Returns an error when no unique Agent matches or the API call fails.
+    /// Returns an error when no unique agent matches or the API call fails.
     pub async fn resolve_agent(&self, directory: std::path::PathBuf) -> Result<Agent, Error> {
         self.resolve_agent_variant(directory, None).await
     }
 
-    /// Resolves the closest persisted Agent by directory and optional leaf variant.
+    /// Resolves the closest persisted agent by directory and optional leaf variant.
     ///
     /// # Errors
     ///
-    /// Returns an error when no unique Agent matches or the API call fails.
+    /// Returns an error when no unique agent matches or the API call fails.
     pub async fn resolve_agent_variant(
         &self,
         directory: std::path::PathBuf,
@@ -138,7 +138,7 @@ impl Client {
             .await
     }
 
-    /// Converges an Agent and resolves its exact transient Execution target.
+    /// Converges an agent and resolves its exact transient Execution target.
     ///
     /// `wait` decides whether the call returns after one reconciliation pass or
     /// waits through background retries until Ready. Follow progress alongside
@@ -146,8 +146,8 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns an error when the Agent is missing, deleting, invalid, or fails to
-    /// reach a ready materialized Sandbox.
+    /// Returns an error when the agent is missing, deleting, invalid, or fails to
+    /// reach a ready materialized sandbox.
     pub async fn ensure_execution(
         &self,
         name: &str,
@@ -163,7 +163,7 @@ impl Client {
         .await
     }
 
-    /// Waits for a change after `after`, then returns the Agent's stored status
+    /// Waits for a change after `after`, then returns the agent's stored status
     /// and the progress of its latest pass. Without a revision, or with one
     /// from an earlier daemon process, it returns at once; with a current one
     /// it may return the unchanged state after a keepalive interval. When
@@ -171,7 +171,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns an error when the Agent is missing or the call fails.
+    /// Returns an error when the agent is missing or the call fails.
     pub async fn agent_progress(
         &self,
         name: &str,
@@ -189,8 +189,8 @@ impl Client {
         .await
     }
 
-    /// Waits for an Agent or Session to change after `after`, then returns
-    /// every Agent and Session. Without a revision, or with one from an earlier
+    /// Waits for an agent or session to change after `after`, then returns
+    /// every agent and session. Without a revision, or with one from an earlier
     /// daemon process, it returns the current state at once; with a current
     /// revision it may return the unchanged state after a keepalive interval.
     ///
@@ -204,25 +204,25 @@ impl Client {
         self.call(METHOD_RESOURCES_WATCH, ResourcesWatchParams { after }).await
     }
 
-    /// Describes how to reach an Agent over SSH.
+    /// Describes how to reach an agent over SSH.
     ///
     /// # Errors
     ///
-    /// Returns an error when the Agent is unknown, deleting, or declares no SSH access.
+    /// Returns an error when the agent is unknown, deleting, or declares no SSH access.
     pub async fn ssh_access(&self, name: &str) -> Result<crate::ssh::AccessInfo, Error> {
         self.call(METHOD_SSH_ACCESS, NameParams { name: name.into() }).await
     }
 
-    /// Describes how to reach an Agent's desktop over VNC.
+    /// Describes how to reach an agent's desktop over VNC.
     ///
     /// # Errors
     ///
-    /// Returns an error when the Agent is unknown, deleting, or declares no VNC access.
+    /// Returns an error when the agent is unknown, deleting, or declares no VNC access.
     pub async fn vnc_access(&self, name: &str) -> Result<crate::vnc::AccessInfo, Error> {
         self.call(METHOD_VNC_ACCESS, NameParams { name: name.into() }).await
     }
 
-    /// Requests deletion of an Agent and its owned sandbox.
+    /// Requests deletion of an agent and its owned sandbox.
     ///
     /// # Errors
     ///
@@ -232,18 +232,18 @@ impl Client {
         Ok(())
     }
 
-    /// Waits until an Agent has its desired run state, Ready or stopped, and
+    /// Waits until an agent has its desired run state, Ready or stopped, and
     /// returns it as stored then; transient failures are waited through.
     ///
     /// # Errors
     ///
-    /// Returns an error when the Agent is missing, deleted, invalid or
+    /// Returns an error when the agent is missing, deleted, invalid or
     /// unresponsive, or the call fails.
     pub async fn converge(&self, name: &str) -> Result<Agent, Error> {
         self.call(METHOD_CONVERGE, NameParams { name: name.into() }).await
     }
 
-    /// Records whether an Agent's Sandbox runs and returns the Agent as stored;
+    /// Records whether an agent's sandbox runs and returns the agent as stored;
     /// the reconciler stops or starts it.
     ///
     /// # Errors
@@ -257,8 +257,8 @@ impl Client {
         self.call(method, NameParams { name: name.into() }).await
     }
 
-    /// Records an Agent as stopped and has its Sandbox ended at once, without letting the guest
-    /// shut down; returns the Agent as stored.
+    /// Records an agent as stopped and has its sandbox ended at once, without letting the guest
+    /// shut down; returns the agent as stored.
     ///
     /// # Errors
     ///
@@ -267,9 +267,9 @@ impl Client {
         self.call(METHOD_STOP_NOW, NameParams { name: name.into() }).await
     }
 
-    /// Records a restart of an Agent, which agentd carries out by stopping its Sandbox and
-    /// starting it on the same disk; `now` ends the Sandbox at once instead of letting its guest
-    /// shut down. Returns the Agent as stored.
+    /// Records a restart of an agent, which agentd carries out by stopping its sandbox and
+    /// starting it on the same disk; `now` ends the sandbox at once instead of letting its guest
+    /// shut down. Returns the agent as stored.
     ///
     /// # Errors
     ///
@@ -304,15 +304,15 @@ impl Client {
     /// Creates or resolves one named session attach target.
     ///
     /// `request` selects the harness, model, effort and first prompt of a
-    /// Session this call creates; see [`sessions::Service::ensure`] for the
+    /// session this call creates; see [`sessions::Service::ensure`] for the
     /// precedence against manifest defaults. `wait` decides whether the call
-    /// returns after one Agent reconciliation pass or waits through background
+    /// returns after one agent reconciliation pass or waits through background
     /// retries until Ready. Follow progress alongside with [`Self::agent_progress`].
     ///
     /// # Errors
     ///
-    /// Returns an error when the Agent is not ready, a selection conflicts with
-    /// an existing Session, or the registry cannot persist the session.
+    /// Returns an error when the agent is not ready, a selection conflicts with
+    /// an existing session, or the registry cannot persist the session.
     pub async fn ensure_session(
         &self,
         agent: &str,
@@ -334,7 +334,7 @@ impl Client {
         .await
     }
 
-    /// Delivers a prompt to a running Session's harness. With `wait`, waits for
+    /// Delivers a prompt to a running session's harness. With `wait`, waits for
     /// its completed-turn counter to advance with identical waiting activity in
     /// two consecutive polls, 250 ms apart.
     /// Work observed during settling requires another completion.
@@ -343,7 +343,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns an error when the Session is not running or the input cannot be delivered.
+    /// Returns an error when the session is not running or the input cannot be delivered.
     pub async fn prompt_session(
         &self,
         agent: &str,
@@ -367,11 +367,11 @@ impl Client {
         Ok(())
     }
 
-    /// Reads the harness transcript of a Session as ordered turns.
+    /// Reads the harness transcript of a session as ordered turns.
     ///
     /// # Errors
     ///
-    /// Returns an error when the Session or its transcript cannot be read.
+    /// Returns an error when the session or its transcript cannot be read.
     pub async fn session_turns(
         &self,
         agent: &str,
@@ -389,7 +389,7 @@ impl Client {
         .await
     }
 
-    /// Gets one named Session scoped to an Agent.
+    /// Gets one named session scoped to an agent.
     ///
     /// # Errors
     ///
@@ -406,7 +406,7 @@ impl Client {
         .await
     }
 
-    /// Requests release of one Session: its harness is stopped and the Session
+    /// Requests release of one session: its harness is stopped and the session
     /// is removed, freeing its name.
     ///
     /// # Errors
@@ -426,8 +426,8 @@ impl Client {
         Ok(())
     }
 
-    /// Archives or unarchives one Session and returns it as recorded. Archiving
-    /// stops its harness until it is unarchived; the Session keeps its name and
+    /// Archives or unarchives one session and returns it as recorded. Archiving
+    /// stops its harness until it is unarchived; the session keeps its name and
     /// conversation.
     ///
     /// # Errors
@@ -454,11 +454,11 @@ impl Client {
         .await
     }
 
-    /// Lists tracked Sessions, optionally scoped to one Agent.
+    /// Lists tracked sessions, optionally scoped to one agent.
     ///
     /// # Errors
     ///
-    /// Returns an error when the scoped Agent is missing or the registry cannot be read.
+    /// Returns an error when the scoped agent is missing or the registry cannot be read.
     pub async fn list_sessions(&self, agent: Option<&str>) -> Result<Vec<sessions::Session>, Error> {
         self.call(
             METHOD_SESSION_LIST,
@@ -491,12 +491,12 @@ impl Client {
                 return Err(Error::Invalid("Agent Control API response exceeds 64 MiB".into()));
             }
             ReadMessage::EndOfStream => {
-                return Err(Error::Invalid("invalid Agent Control API response".into()));
+                return Err(Error::Invalid("invalid agent Control API response".into()));
             }
         };
         let response: Response = serde_json::from_slice(&line)?;
         if response.jsonrpc != JSON_RPC_VERSION || response.id != id {
-            return Err(Error::Invalid("invalid Agent Control API response".into()));
+            return Err(Error::Invalid("invalid agent Control API response".into()));
         }
         if let Some(error) = response.error {
             return Err(Error::Rpc(error));

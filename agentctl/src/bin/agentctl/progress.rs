@@ -1,6 +1,6 @@
-//! Following an Agent's provisioning from a plain terminal.
+//! Following an agent's provisioning from a plain terminal.
 //!
-//! [`Wait`] runs one Control API call while it follows the Agent's progress
+//! [`Wait`] runs one Control API call while it follows the agent's progress
 //! with `agents.v1.progress` and renders it to stderr. On a terminal the
 //! current phase and step live on one updating line and only work that took
 //! noticeable time leaves a permanent line, so a warm ensure prints nothing.
@@ -70,7 +70,7 @@ impl Wait {
             let follow = async {
                 let progress = client.agent_progress(agent, after, output).await.ok();
                 if progress.is_none() {
-                    // The Agent may not be stored yet, or the daemon is restarting.
+                    // The agent may not be stored yet, or the daemon is restarting.
                     tokio::time::sleep(RETRY_INTERVAL).await;
                 }
                 progress
@@ -240,10 +240,10 @@ impl<W: Write> Renderer<W> {
                     .finished()
                     .iter()
                     .rfind(|phase| phase.outcome == Outcome::Failed)
-                    .map_or(("Provision Sandbox", 0), |phase| {
+                    .map_or(("Provision sandbox", 0), |phase| {
                         (phase.phase.label.as_ref(), phase.elapsed_ms)
                     });
-                // A stalled guest ends the wait like an invalid Agent does; the
+                // A stalled guest ends the wait like an invalid agent does; the
                 // command reports both itself.
                 let retried = progress.status.failure.unwrap_or(FailureKind::Transient) == FailureKind::Transient
                     && progress.status.unresponsive().is_none();
@@ -272,7 +272,7 @@ impl<W: Write> Renderer<W> {
         }
     }
 
-    /// Reports a transient failure recorded outside a Sandbox pass, including
+    /// Reports a transient failure recorded outside a sandbox pass, including
     /// one that already stood when following started. Readiness itself is the
     /// command's outcome and reported by the command.
     fn condition(&mut self, progress: &AgentProgress) -> io::Result<()> {
@@ -480,7 +480,7 @@ mod tests {
 
     use super::*;
 
-    /// Builds successive snapshots of one Agent's progress, as the daemon reports them.
+    /// Builds successive snapshots of one agent's progress, as the daemon reports them.
     struct Daemon {
         changes: Changes,
         pass: Revision,
@@ -640,7 +640,7 @@ mod tests {
         renderer.finish();
         assert_eq!(
             lines(renderer),
-            vec!["→ Look up Sandbox", "→ Inspect Sandbox"],
+            vec!["→ Look up sandbox", "→ Inspect sandbox"],
             "only transient redraws"
         );
     }
@@ -674,14 +674,14 @@ mod tests {
             permanent,
             vec![
                 "  ✓ Build Docker image (1m 14s)",
-                "✓ Resolve Sandbox Image (1m 27s)",
-                "✗ Start Sandbox (0ms)",
+                "✓ Resolve sandbox Image (1m 27s)",
+                "✗ Start sandbox (0ms)",
                 "error: VMDK missing",
                 "    opening disk",
                 "    no such file",
                 "  agentd keeps retrying in the background; press Ctrl-C to stop waiting",
-                "✗ Start Sandbox failed 1× (last 0ms); waiting for the next retry",
-                "✗ Start Sandbox failed 2× (last 0ms); waiting for the next retry",
+                "✗ Start sandbox failed 1× (last 0ms); waiting for the next retry",
+                "✗ Start sandbox failed 2× (last 0ms); waiting for the next retry",
             ]
         );
     }
@@ -706,10 +706,10 @@ mod tests {
         assert_eq!(
             lines(renderer),
             vec![
-                "✓ Look up Sandbox (reused)",
+                "✓ Look up sandbox (reused)",
                 "created",
                 "  ✓ Create Microsandbox VM (366ms)",
-                "✓ Start Sandbox (367ms)",
+                "✓ Start sandbox (367ms)",
             ]
         );
     }
@@ -737,7 +737,7 @@ mod tests {
         renderer.finish();
         assert_eq!(
             lines(renderer),
-            vec!["  ✓ Create Microsandbox VM (12ms)", "✓ Start Sandbox (13ms)"],
+            vec!["  ✓ Create Microsandbox VM (12ms)", "✓ Start sandbox (13ms)"],
             "only the pass that ran while following is printed"
         );
     }
@@ -758,7 +758,7 @@ mod tests {
         assert!(!lines.iter().any(|line| line == "error: VMDK missing"), "{lines:#?}");
         assert_eq!(
             lines.first().map(String::as_str),
-            Some("✗ Start Sandbox (0ms)"),
+            Some("✗ Start sandbox (0ms)"),
             "the command's own pass reports its failure: {lines:#?}"
         );
     }
@@ -781,7 +781,7 @@ mod tests {
         });
         renderer.render(&daemon.snapshot());
         renderer.finish();
-        assert_eq!(lines(renderer), ["✗ Start Sandbox (0ms)"]);
+        assert_eq!(lines(renderer), ["✗ Start sandbox (0ms)"]);
     }
 
     #[test]
@@ -803,7 +803,7 @@ mod tests {
         daemon.phase(SandboxPhase::ImageResolve).step("Build Docker image");
         renderer.render(&daemon.snapshot());
         let lines = lines(renderer);
-        assert_eq!(lines.last().map(String::as_str), Some("→ Resolve Sandbox Imag…"));
+        assert_eq!(lines.last().map(String::as_str), Some("→ Resolve sandbox Imag…"));
     }
 
     #[test]

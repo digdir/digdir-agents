@@ -14,7 +14,7 @@ function send(event: string, fields: Record<string, string>): Promise<void> {
 
 export default function (pi: any): void {
   // Whether a turn start was reported and the run has not settled yet. Only then does settling
-  // report a completion, so a run an extension started cannot advance the Session's turns.
+  // report a completion, so a run an extension started cannot advance the session's turns.
   let running = false;
 
   pi.on("session_start", async (event: any, ctx: any) => {

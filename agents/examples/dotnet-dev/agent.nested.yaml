@@ -1,15 +1,15 @@
-# A variant of agent.yaml for an agent that runs this Agent inside its own, such as to try a change to it. The
+# A variant of agent.yaml for an agent that runs this agent inside its own, such as to try a change to it. The
 # agentctl skill tells agents to apply it with `agentctl apply --variant nested`. A variant names the manifest it
 # extends and changes only what differs.
 apiVersion: agents.platform/v1alpha1
 kind: AgentVariant
 extends: agent.yaml
 
-# Its own name, so it can run beside the Agent agent.yaml creates.
+# Its own name, so it can run beside the agent agent.yaml creates.
 metadata:
   name: dotnet-dev-nested
 
-# Smaller, to fit inside the other Agent beside its own work.
+# Smaller, to fit inside the other agent beside its own work.
 spec:
   sandbox:
     resources:

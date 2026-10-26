@@ -21,8 +21,8 @@ pub(crate) struct SkillFile {
     pub(crate) contents: Vec<u8>,
 }
 
-/// The skill every Agent gets for driving Agents with `agentctl`, nested ones included, which the
-/// Agent sandbox section of its instructions points to.
+/// The skill every agent gets for driving agents with `agentctl`, nested ones included, which the
+/// agent sandbox section of its instructions points to.
 pub(crate) fn platform_skill() -> Skill {
     Skill {
         name: "agentctl".into(),
@@ -39,7 +39,7 @@ pub(crate) fn platform_skill() -> Skill {
 ///
 /// Harnesses watch their skill directories live, so a file whose contents are already in place
 /// is left alone rather than rewritten. Directories are created as the image user. Runtime file
-/// transfer writes as the Sandbox supervisor, so exactly the managed files are chowned
+/// transfer writes as the sandbox supervisor, so exactly the managed files are chowned
 /// afterwards: no recursive ownership walk.
 pub(super) async fn install_linux(sandbox: &SandboxHandle, root: &str, skills: &[Skill]) -> Result<(), Error> {
     for skill in skills {

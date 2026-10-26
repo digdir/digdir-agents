@@ -1,4 +1,4 @@
-//! Authorization for operations originating inside Agent Sandboxes.
+//! Authorization for operations originating inside agent sandboxes.
 
 mod agent_policy;
 

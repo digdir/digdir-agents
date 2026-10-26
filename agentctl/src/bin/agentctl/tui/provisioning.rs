@@ -1,4 +1,4 @@
-//! The provisioning detail: one Agent's latest pass, followed while it is open.
+//! The provisioning detail: one agent's latest pass, followed while it is open.
 
 use std::collections::VecDeque;
 
@@ -13,7 +13,7 @@ use crate::format;
 /// Output lines of the pass the detail keeps.
 const OUTPUT_LINES: usize = 20;
 
-/// What the detail knows of one Agent's provisioning. A reply carries each
+/// What the detail knows of one agent's provisioning. A reply carries each
 /// output line once, so the most recent lines of the pass are kept here.
 #[derive(Default)]
 pub(crate) struct Followed {
@@ -55,7 +55,7 @@ impl Followed {
         self.latest = Some(progress);
     }
 
-    /// The Agent's readiness and failure class, then its latest pass.
+    /// The agent's readiness and failure class, then its latest pass.
     pub(crate) fn lines(&self) -> Vec<String> {
         let Some(latest) = &self.latest else {
             return vec!["Waiting for agentd…".to_owned()];
@@ -150,7 +150,7 @@ mod tests {
         followed.apply(trimmed);
         let lines = followed.lines();
         assert!(
-            lines.contains(&"  → Resolve Sandbox Image (0s)".to_owned()),
+            lines.contains(&"  → Resolve sandbox Image (0s)".to_owned()),
             "{lines:#?}"
         );
         assert!(lines.contains(&"    Build Docker image".to_owned()));

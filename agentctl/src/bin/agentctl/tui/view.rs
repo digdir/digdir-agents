@@ -23,7 +23,7 @@ const WIDE_TREE: u16 = 70;
 const SIDE_PANEL: u16 = 110;
 /// Narrowest and widest name column of a wide tree.
 const NAME_WIDTH: (usize, usize) = (12, 32);
-/// Width of every form but create-Agent, whose pickers also show manifest paths.
+/// Width of every form but create-agent, whose pickers also show manifest paths.
 const FORM_WIDTH: u16 = 64;
 const CREATE_AGENT_FORM_WIDTH: u16 = 96;
 /// Width of the help overlay: two columns inside its border and padding.
@@ -50,7 +50,7 @@ const HINT_OVERFLOW: &str = "…";
 
 #[derive(Default)]
 pub(crate) struct ViewState {
-    /// First tree row below the column header, pinned Agent aside.
+    /// First tree row below the column header, pinned agent aside.
     tree_offset: usize,
     forwards: ListState,
     /// Draw without color; glyphs and modifiers still tell states apart.
@@ -365,7 +365,7 @@ fn render_tree(frame: &mut Frame, area: Rect, app: &App, state: &mut ViewState, 
 }
 
 /// Chooses the first row shown so the selection stays in view, and pins the
-/// Agent above it when the view starts among that Agent's Sessions.
+/// agent above it when the view starts among that agent's sessions.
 fn tree_viewport(app: &App, offset: usize, height: usize) -> (usize, Option<usize>) {
     let selected = app.selected_index().unwrap_or_default();
     let mut offset = offset.min(selected).min(app.rows.len().saturating_sub(height));
@@ -384,7 +384,7 @@ fn tree_viewport(app: &App, offset: usize, height: usize) -> (usize, Option<usiz
     }
 }
 
-/// The selected Session's recent turns, wrapped to the panel, the newest at the bottom.
+/// The selected session's recent turns, wrapped to the panel, the newest at the bottom.
 fn render_transcript(frame: &mut Frame, area: Rect, transcript: &super::app::Transcript) {
     let block = Block::bordered()
         .title(format!(" {} · recent turns ", transcript.session.as_str()))
@@ -446,7 +446,7 @@ fn wrap(line: &str, width: usize) -> Vec<String> {
     rows
 }
 
-/// A tree row's name cell: Sessions are indented under their Agent.
+/// A tree row's name cell: sessions are indented under their agent.
 fn name_cell(row: &RowView) -> Line<'static> {
     let tone = Style::new().fg(tone_color(row.tone));
     let (indent, name) = if row.agent {
@@ -561,7 +561,7 @@ fn render_detail(frame: &mut Frame, area: Rect, detail: &super::app::Detail, hit
     hit_map.wheel(inner, WheelTarget::Detail);
 }
 
-/// The selected Agent's status beside the tree, wrapped to the panel.
+/// The selected agent's status beside the tree, wrapped to the panel.
 fn render_agent_panel(frame: &mut Frame, area: Rect, agent: &str, lines: &[String]) {
     let block = Block::bordered()
         .title(format!(" {agent} · status "))
@@ -814,7 +814,7 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal, hit_map
                 .row(Line::from(format!("Stop agent {agent}?")))
                 .row(note_line("Running harnesses stop with its VM."))
                 .row(note_line(
-                    "Its disk is kept; attaching after a start resumes a Session.",
+                    "Its disk is kept; attaching after a start resumes a session.",
                 ))
                 .render(frame, area, FORM_WIDTH, hit_map);
         }
@@ -822,7 +822,7 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal, hit_map
             Form::new(" restart ", Color::Yellow, &CONFIRM_HINTS)
                 .row(Line::from(format!("Restart agent {agent}?")))
                 .row(note_line("Its VM shuts down, or is ended if it cannot."))
-                .row(note_line("It boots on the same disk; attaching resumes a Session."))
+                .row(note_line("It boots on the same disk; attaching resumes a session."))
                 .render(frame, area, FORM_WIDTH, hit_map);
         }
         Modal::ConfirmStopAll { agents } => {
@@ -839,7 +839,7 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal, hit_map
         Modal::ConfirmDeleteSession { agent, session } => {
             Form::new(" delete ", Color::Red, &CONFIRM_HINTS)
                 .row(Line::from(format!("Delete session {agent}/{session}?")))
-                .row(note_line("Its harness is stopped and the Session is removed."))
+                .row(note_line("Its harness is stopped and the session is removed."))
                 .render(frame, area, FORM_WIDTH, hit_map);
         }
         Modal::NewSession(form) => render_new_session(frame, area, form, hit_map),
@@ -851,12 +851,12 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal, hit_map
         Modal::ConfirmSshSetup { include, then, .. } => {
             render_confirm_ssh_setup(frame, area, include, *then, hit_map);
         }
-        // Typed in the footer, so the tree and the Session's turns stay in view.
+        // Typed in the footer, so the tree and the session's turns stay in view.
         Modal::Filter | Modal::Prompt(_) => {}
     }
 }
 
-/// The ways into one Agent, one per row; unavailable ones are dimmed, and why is listed below them.
+/// The ways into one agent, one per row; unavailable ones are dimmed, and why is listed below them.
 fn render_open(frame: &mut Frame, area: Rect, menu: &OpenMenu, hit_map: &mut HitMap) {
     const REASON_ROWS: usize = 3;
     let title = format!(" open {} ", menu.agent);
@@ -959,7 +959,7 @@ fn render_confirm_ssh_setup(
         &CONFIRM_SSH_SETUP_HINTS
     };
     let mut form = Form::new(" set up SSH ", Color::Cyan, hints)
-        .row(Line::from("Editors reach Agents through your OpenSSH config."))
+        .row(Line::from("Editors reach agents through your OpenSSH config."))
         .row(Line::from(format!("Add this line at the top of {file}?")))
         .row(Line::default())
         .row(Line::from(Span::styled(
@@ -968,7 +968,7 @@ fn render_confirm_ssh_setup(
         )))
         .row(Line::default())
         .row(note_line("Existing lines are kept. It is added once for every"))
-        .row(note_line("Agent, and new Agents need nothing more."));
+        .row(note_line("agent, and new agents need nothing more."));
     if let Some(target) = then {
         form = form
             .row(Line::default())
@@ -1511,14 +1511,14 @@ mod tests {
         let top = text
             .lines()
             .position(|line| line.contains("create agent"))
-            .expect("create Agent modal top");
-        let border = text.lines().nth(top).expect("create Agent modal border").to_owned();
+            .expect("create agent modal top");
+        let border = text.lines().nth(top).expect("create agent modal border").to_owned();
         let bottom = text
             .lines()
             .enumerate()
             .skip(top + 1)
             .find_map(|(row, line)| line.contains('└').then_some(row))
-            .expect("create Agent modal bottom");
+            .expect("create agent modal bottom");
         (border, top, bottom)
     }
 
@@ -1675,7 +1675,7 @@ mod tests {
             kind: agent::Condition::READY.into(),
             status: agent::ConditionStatus::False,
             reason: "SandboxReconcileFailed".into(),
-            message: "Sandbox operation failed: resolve Sandbox Image: cache error at /home/user/.agent/cache/tmp/load-4.blob: No space left on device (os error 28)".into(),
+            message: "Sandbox operation failed: resolve sandbox Image: cache error at /home/user/.agent/cache/tmp/load-4.blob: No space left on device (os error 28)".into(),
             last_transition_time: None,
         });
         agents[1].status.failure = Some(agent::FailureKind::Transient);
@@ -1696,7 +1696,7 @@ mod tests {
         let failed = lines
             .iter()
             .find(|line| line.contains("agent-01") && line.contains("Retrying"))
-            .expect("failed Agent row");
+            .expect("failed agent row");
         assert!(failed.contains("Retrying"), "{failed}");
         assert!(
             failed.contains("…") && failed.contains("(os error 28)"),
@@ -1704,7 +1704,7 @@ mod tests {
         );
         assert!(
             text.contains("agent-01 · status"),
-            "the panel shows the selected Agent:\n{text}"
+            "the panel shows the selected agent:\n{text}"
         );
         assert!(text.contains("Failure:    Transient"), "{text}");
         let panel = lines
@@ -1718,13 +1718,13 @@ mod tests {
 
         let state = text_column(lines[1], "STATE");
         app.select_index(2);
-        app.transcript_request().expect("the selected Session's turns");
+        app.transcript_request().expect("the selected session's turns");
         draw(&mut terminal, &app);
         let text = buffer_text(&terminal);
         assert_eq!(
             text_column(text.lines().nth(1).expect("column header"), "STATE"),
             state,
-            "selecting a Session leaves the columns where they were"
+            "selecting a session leaves the columns where they were"
         );
         assert!(text.contains("review · recent turns"), "{text}");
     }
@@ -1790,8 +1790,8 @@ mod tests {
         for expected in [
             "keys",
             "Fleet",
-            "Selected Agent",
-            "Selected Session",
+            "Selected agent",
+            "Selected session",
             "follow provisioning",
             "esc close",
         ] {
@@ -1993,7 +1993,7 @@ mod tests {
         assert_eq!(
             terminal.backend().buffer()[(10, 5)].bg,
             SELECTION,
-            "the selected Session stays in view below the pinned Agent"
+            "the selected session stays in view below the pinned agent"
         );
     }
 
@@ -2400,7 +2400,7 @@ mod tests {
         let text = buffer_text(&terminal);
         assert!(text.contains("Desktop in the browser"), "{text}");
         assert!(
-            text.contains("re-apply the Agent…"),
+            text.contains("re-apply the agent…"),
             "a long reason is cut short:\n{text}"
         );
         assert!(text.contains("you are asked before it is added."), "{text}");

@@ -1,4 +1,4 @@
-//! Observable progress for Sandbox operations.
+//! Observable progress for sandbox operations.
 //!
 //! Implementations report through phase spans and step tokens, and consumers
 //! read the events folded into a [`Progress`]. A step belongs to the phase in
@@ -33,13 +33,13 @@ pub use fold::{
 
 const EVENT_CAPACITY: usize = 64;
 
-/// One stable phase of ensuring that a Sandbox is ready.
+/// One stable phase of ensuring that a sandbox is ready.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub enum SandboxPhase {
     /// Validate the backend-neutral request.
     Validate,
-    /// Look up an existing Sandbox with the requested name.
+    /// Look up an existing sandbox with the requested name.
     Lookup,
     /// Discover and verify required Backend Features.
     FeatureDiscovery,
@@ -47,15 +47,15 @@ pub enum SandboxPhase {
     ImageResolve,
     /// Export or import a prepared Image.
     ImagePrepare,
-    /// Materialize the Sandbox around the resolved Image.
+    /// Materialize the sandbox around the resolved Image.
     SandboxCreate,
-    /// Reconcile mutable Sandbox configuration.
+    /// Reconcile mutable sandbox configuration.
     SandboxUpdate,
     /// Start or reconnect the independently selected Network Backend.
     NetworkStart,
-    /// Start the Sandbox.
+    /// Start the sandbox.
     SandboxStart,
-    /// Inspect the resulting Sandbox state.
+    /// Inspect the resulting sandbox state.
     Inspect,
 }
 
@@ -64,16 +64,16 @@ impl SandboxPhase {
     #[must_use]
     pub const fn phase(self) -> Phase {
         let (id, label) = match self {
-            Self::Validate => ("validate", "Validate Sandbox request"),
-            Self::Lookup => ("lookup", "Look up Sandbox"),
-            Self::FeatureDiscovery => ("featureDiscovery", "Discover Sandbox Capabilities"),
-            Self::ImageResolve => ("imageResolve", "Resolve Sandbox Image"),
-            Self::ImagePrepare => ("imagePrepare", "Prepare Sandbox Image"),
-            Self::SandboxCreate => ("sandboxCreate", "Create Sandbox"),
-            Self::SandboxUpdate => ("sandboxUpdate", "Update Sandbox"),
-            Self::NetworkStart => ("networkStart", "Start Sandbox Network"),
-            Self::SandboxStart => ("sandboxStart", "Start Sandbox"),
-            Self::Inspect => ("inspect", "Inspect Sandbox"),
+            Self::Validate => ("validate", "Validate sandbox request"),
+            Self::Lookup => ("lookup", "Look up sandbox"),
+            Self::FeatureDiscovery => ("featureDiscovery", "Discover sandbox Capabilities"),
+            Self::ImageResolve => ("imageResolve", "Resolve sandbox Image"),
+            Self::ImagePrepare => ("imagePrepare", "Prepare sandbox Image"),
+            Self::SandboxCreate => ("sandboxCreate", "Create sandbox"),
+            Self::SandboxUpdate => ("sandboxUpdate", "Update sandbox"),
+            Self::NetworkStart => ("networkStart", "Start sandbox Network"),
+            Self::SandboxStart => ("sandboxStart", "Start sandbox"),
+            Self::Inspect => ("inspect", "Inspect sandbox"),
         };
         Phase::new(id, label)
     }
@@ -388,7 +388,7 @@ pub struct PendingOperation<'a, T> {
     terminated: bool,
 }
 
-/// An operation that terminates with a ready, operable Sandbox handle.
+/// An operation that terminates with a ready, operable sandbox handle.
 pub type PendingSandbox<'a> = PendingOperation<'a, SandboxHandle>;
 
 impl<'a, T> PendingOperation<'a, T> {

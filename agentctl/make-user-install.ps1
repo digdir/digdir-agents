@@ -54,7 +54,7 @@ try {
     foreach ($Binary in @("agentctl.exe", "agentd.exe")) {
         $BinaryPath = Join-Path $BinDirectory $Binary
         if (-not (Test-Path -LiteralPath $BinaryPath -PathType Leaf)) {
-            throw "Missing Agent binary: $BinaryPath"
+            throw "Missing agent binary: $BinaryPath"
         }
     }
 

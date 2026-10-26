@@ -130,7 +130,7 @@ const ctx = {{ sessionManager: {{ getSessionId: () => "native-1", getSessionFile
             .env("AGENT_SESSION_TOKEN", "token")
             .env("AGENT_SESSION_ID", "session-1")
             .output()
-            .expect("Node.js runs the extension, as it does in every Sandbox and CI host");
+            .expect("Node.js runs the extension, as it does in every sandbox and CI host");
         assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
         // Unblock the accept loop.
         let mut stop = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
@@ -165,7 +165,7 @@ const ctx = {{ sessionManager: {{ getSessionId: () => "native-1", getSessionFile
         assert_eq!(reports[0]["nativeSessionId"], "native-1");
         assert_eq!(reports[0]["transcriptPath"], "/sessions/native-1.jsonl");
         assert_eq!(reports[0]["sessionId"], "session-1");
-        // Pi waits for input until a prompt starts a run, so a Session nobody prompts is not Working.
+        // Pi waits for input until a prompt starts a run, so a session nobody prompts is not Working.
         assert_eq!(summary(&reports[1..]), pairs(&[("waitingForInput", "idle")]));
     }
 

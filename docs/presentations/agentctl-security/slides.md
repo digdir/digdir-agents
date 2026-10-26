@@ -245,7 +245,7 @@ class: tight
 </div>
 
 <div class="flex flex-col gap-2" v-click>
-  <div class="flex items-center justify-between"><span class="title">Microsandbox</span><span class="tag green">every Agent and runner</span></div>
+  <div class="flex items-center justify-between"><span class="title">Microsandbox</span><span class="tag green">every agent and runner</span></div>
   <div class="box amber"><div class="title text-xs">Guest virtio-net</div><div class="sub">same frame, same header</div></div>
   <div class="text-center muted text-xs">↓ VMM in user space</div>
   <div class="box blue"><div class="title text-xs">Network backend · header <strong>stripped</strong></div><div class="sub">the checksum metadata is thrown away</div></div>
@@ -266,7 +266,7 @@ AWS: "self-managed KVM hosts using virtio-net/TAP networking can be affected." M
 
 <div class="kicker">Secrets and egress</div>
 
-# Secrets never enter the Sandbox
+# Secrets never enter the sandbox
 
 ```mermaid {scale: 0.55}
 sequenceDiagram
@@ -305,7 +305,7 @@ Every layer ends on the host · <code>sandbox-authorization</code> for every che
 <div class="grid grid-cols-2 gap-5 mt-6">
   <div class="card" v-click>
     <h3 class="c-coral">Bypass after an agentd restart</h3>
-    <p>Changing a running Agent's resources after a restart gave it network access around authorization and secret mediation.</p>
+    <p>Changing a running agent's resources after a restart gave it network access around authorization and secret mediation.</p>
   </div>
   <div class="card" v-click>
     <h3 class="c-coral">Tunnelling through an allowed host</h3>
@@ -313,7 +313,7 @@ Every layer ends on the host · <code>sandbox-authorization</code> for every che
   </div>
   <div class="card" v-click>
     <h3 class="c-amber"><code>.env</code> in bind mounts</h3>
-    <p>Applying an Agent rejects bind mounts that contain <code>.env</code> files, case-insensitively and regardless of ignore rules.</p>
+    <p>Applying an agent rejects bind mounts that contain <code>.env</code> files, case-insensitively and regardless of ignore rules.</p>
   </div>
   <div class="card" v-click>
     <h3 class="c-amber">TLS dependencies</h3>
@@ -349,7 +349,7 @@ class: tight
   "Design for the assumption that a guest will eventually escape its <span class="c-coral">first boundary</span>."
   </div>
   <div class="text-xs muted">Cloud Security Alliance, research note on PwnEscape</div>
-  <div class="card mt-2"><h3>Next layer to add</h3><p>Confine the VMM: a seccomp allowlist, Landlock limited to the Agent's own state and mounts, and dropped capabilities. It is cheap compared to a host compromise.</p></div>
+  <div class="card mt-2"><h3>Next layer to add</h3><p>Confine the VMM: a seccomp allowlist, Landlock limited to the agent's own state and mounts, and dropped capabilities. It is cheap compared to a host compromise.</p></div>
 </div>
 
 </div>
@@ -360,7 +360,7 @@ class: tight
 
 <div class="kicker">Honest limits · inside the boundary</div>
 
-# What the Sandbox doesn't protect against
+# What the sandbox doesn't protect against
 
 <div class="grid grid-cols-2 gap-8 mt-4">
 
@@ -377,8 +377,8 @@ class: tight
   <div class="box coral"><div class="title text-sm">Misuse of a token on its own hosts</div><div class="sub">anything the PAT allows on github.com, including a public gist</div></div>
   <div class="box coral"><div class="title text-sm">Data leaving without secrets</div><div class="sub">with <code>allow: all</code>, code can be posted to any host</div></div>
   <div class="box coral"><div class="title text-sm">Prompt injection</div><div class="sub">issues, web pages and dependencies can steer the agent</div></div>
-  <div class="box coral"><div class="title text-sm">Bad code</div><div class="sub">review is still the gate, not the Sandbox</div></div>
-  <div class="box coral"><div class="title text-sm">Sessions in one Sandbox</div><div class="sub">same user and tmux server, so one trust boundary</div></div>
+  <div class="box coral"><div class="title text-sm">Bad code</div><div class="sub">review is still the gate, not the sandbox</div></div>
+  <div class="box coral"><div class="title text-sm">Sessions in one sandbox</div><div class="sub">same user and tmux server, so one trust boundary</div></div>
 </div>
 
 </div>
@@ -431,7 +431,7 @@ The Sandbox SDK has no agent concepts. Any workload that runs untrusted code can
   <div class="card" v-click>
     <div class="text-3xl mb-3">🧩</div>
     <h3 class="c-amber">Plugin architecture</h3>
-    <p>New capabilities as host plugins behind a Platform API. They run on the trusted side with their own authorization, so the Sandbox gets a capability without getting the credentials behind it.</p>
+    <p>New capabilities as host plugins behind a Platform API. They run on the trusted side with their own authorization, so the sandbox gets a capability without getting the credentials behind it.</p>
   </div>
   <div class="card" v-click>
     <div class="text-3xl mb-3">🏭</div>

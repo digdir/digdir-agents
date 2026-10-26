@@ -1,4 +1,4 @@
-# The agentctl base image already has Claude Code, Codex, Git, the GitHub CLI and what agentd needs, so an Agent's
+# The agentctl base image already has Claude Code, Codex, Git, the GitHub CLI and what agentd needs, so an agent's
 # image adds only the tools its work needs. images/agentctl-base/README.md describes what the base offers. The
 # desktop variant adds Chromium and the desktop for the VNC access in agent.yaml. Without that, build on
 # ghcr.io/digdir/agentctl-base:ubuntu-26.04 instead.
@@ -17,7 +17,7 @@ ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
 ENV DOTNET_NOLOGO=1
 
 # Podman, with the `docker` command and Docker Compose, for Testcontainers and `docker compose`, and for building the
-# images of the Agents this Agent runs.
+# images of the agents this agent runs.
 RUN agent-feature install containers
 
 # The repositories to clone into /home/agent/code at boot.

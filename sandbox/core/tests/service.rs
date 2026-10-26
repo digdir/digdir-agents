@@ -33,7 +33,7 @@ fn request() -> EnsureSandboxRequest {
 }
 
 fn sandbox_name() -> SandboxName {
-    SandboxName::new("worker").expect("test Sandbox name should be valid")
+    SandboxName::new("worker").expect("test sandbox name should be valid")
 }
 
 fn resources(cpu: &str, memory: &str, root_filesystem: &str) -> SandboxResources {
@@ -93,7 +93,7 @@ async fn ensure_is_idempotent_and_runs_one_sandbox() {
 #[tokio::test(flavor = "local")]
 async fn component_errors_preserve_stable_kind_and_resource_identity() {
     let service = SandboxService::new(Rc::new(memory::Provider::new()));
-    let name = SandboxName::new("missing").expect("test Sandbox name should be valid");
+    let name = SandboxName::new("missing").expect("test sandbox name should be valid");
 
     let error = service.inspect(&name).await.expect_err("Sandbox should be absent");
 
@@ -347,9 +347,9 @@ async fn independent_network_backend_follows_the_sandbox_lifecycle() {
     service
         .stop(request.name())
         .await
-        .expect("stopping a missing Sandbox has no effect");
+        .expect("stopping a missing sandbox has no effect");
 
-    let sandbox = service.ensure(&request).await.expect("create attached Sandbox");
+    let sandbox = service.ensure(&request).await.expect("create attached sandbox");
     assert_eq!(
         sandbox.snapshot().network,
         Some(NetworkAttachment {
@@ -360,9 +360,9 @@ async fn independent_network_backend_follows_the_sandbox_lifecycle() {
     assert!(network_backend.is_attached(sandbox.id()));
     assert!(network_backend.is_running(sandbox.id()));
 
-    service.stop(request.name()).await.expect("stop attached Sandbox");
+    service.stop(request.name()).await.expect("stop attached sandbox");
     service.stop(request.name()).await.expect("repeated stop");
-    let stopped = service.inspect(request.name()).await.expect("inspect stopped Sandbox");
+    let stopped = service.inspect(request.name()).await.expect("inspect stopped sandbox");
     assert_eq!(stopped.state, sandbox::SandboxState::Stopped);
     assert!(network_backend.is_attached(sandbox.id()));
     assert!(!network_backend.is_running(sandbox.id()));
@@ -382,7 +382,7 @@ async fn independent_network_backend_follows_the_sandbox_lifecycle() {
         .expect_err("Network Backend attachment should be immutable");
     assert!(matches!(error, Error::Immutable("network")));
 
-    service.delete(request.name()).await.expect("delete attached Sandbox");
+    service.delete(request.name()).await.expect("delete attached sandbox");
     assert!(!network_backend.is_attached(sandbox.id()));
     assert!(!network_backend.is_running(sandbox.id()));
 }
@@ -399,7 +399,7 @@ async fn endpoint_negotiation_rejects_an_incompatible_network_backend() {
     let error = service
         .ensure(&request())
         .await
-        .expect_err("memory Sandbox Backend offers only packet endpoints");
+        .expect_err("memory sandbox Backend offers only packet endpoints");
 
     assert!(matches!(error, Error::NetworkEndpointUnavailable(_)));
 }
@@ -496,7 +496,7 @@ async fn nested_sandboxes_need_a_backend_that_offers_them() {
     );
 
     request.spec_mut().resources = resources("2", "1Gi", "4Gi");
-    let _sandbox = service.ensure(&request).await.expect("a Sandbox without it is created");
+    let _sandbox = service.ensure(&request).await.expect("a sandbox without it is created");
     request.spec_mut().resources = nested;
     let error = service
         .ensure(&request)
@@ -604,7 +604,7 @@ async fn a_stale_handle_cannot_delete_a_new_materialization_with_the_same_name()
         service
             .inspect(request.name())
             .await
-            .expect("current Sandbox should remain")
+            .expect("current sandbox should remain")
             .id,
         current.id().clone()
     );

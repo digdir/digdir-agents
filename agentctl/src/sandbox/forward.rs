@@ -1,7 +1,7 @@
-//! Client-owned connections into Agent Sandboxes.
+//! Client-owned connections into agent sandboxes.
 //!
 //! Port forwards follow the k9s model: they live in the client process, accept
-//! connections on a local listener, and dial the guest through the Sandbox
+//! connections on a local listener, and dial the guest through the sandbox
 //! agent relay. They end when the process exits or the forward is stopped.
 //! [`relay_guest_port`] is the single-connection form behind
 //! `agentctl ssh-proxy`: one fresh dial, relayed over an arbitrary byte
@@ -108,7 +108,7 @@ impl PortForward {
         &self.spec
     }
 
-    /// Returns the Sandbox assignment the forward dials.
+    /// Returns the sandbox assignment the forward dials.
     #[must_use]
     pub const fn assignment(&self) -> &Assignment {
         &self.assignment
@@ -152,7 +152,7 @@ async fn accept_loop(
     status: Rc<RefCell<Option<String>>>,
 ) {
     // The dialer multiplexes streams over one agent connection; it is replaced
-    // when a connect fails, which re-reaches a Sandbox whose runtime restarted.
+    // when a connect fails, which re-reaches a sandbox whose runtime restarted.
     let mut dialer: Option<Rc<GuestDialer>> = None;
     // Relays live in the accept task's JoinSet, so aborting the accept task
     // drops the set and aborts every in-flight connection with it.
@@ -197,12 +197,12 @@ async fn accept_loop(
 /// Dials one guest loopback port and relays it over `reader` and `writer`
 /// until both directions close.
 ///
-/// Every call dials fresh through the recorded Sandbox Provider, so a
-/// connection made after a Sandbox runtime restart needs no recovery logic.
+/// Every call dials fresh through the recorded sandbox Provider, so a
+/// connection made after a sandbox runtime restart needs no recovery logic.
 ///
 /// # Errors
 ///
-/// Returns an error when the Sandbox cannot be reached, the guest refuses the
+/// Returns an error when the sandbox cannot be reached, the guest refuses the
 /// connection, or the relay fails.
 pub async fn relay_guest_port<R, W>(
     home: &std::path::Path,

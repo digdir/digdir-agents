@@ -1,5 +1,5 @@
 [Unit]
-Description=X11 display and VNC server for the Agent desktop
+Description=X11 display and VNC server for the agent desktop
 Before=multi-user.target
 
 [Service]
@@ -9,7 +9,7 @@ Before=multi-user.target
 # It listens on a Unix socket and on no TCP port at all, which is what `-rfbport -1` means: the
 # default is not "no listener" but port 5900 plus the display number, on every interface. The
 # desktop is therefore always running and reachable only through the image's access units, which
-# agentd enables when the Agent declares `access: [{type: vnc}]` and disables when it stops.
+# agentd enables when the agent declares `access: [{type: vnc}]` and disables when it stops.
 #
 # `-AcceptSetDesktopSize=0` refuses a viewer's request to resize the display to its window, so that
 # viewers scale instead: the `desktop` helper's screenshots are sized for the configured geometry,

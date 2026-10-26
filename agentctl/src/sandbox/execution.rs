@@ -1,4 +1,4 @@
-//! Transient command execution against an Agent-owned Sandbox.
+//! Transient command execution against an agent-owned sandbox.
 
 use std::{path::Path, rc::Rc};
 
@@ -9,38 +9,38 @@ use crate::{Error, control_plane, control_plane::WaitPolicy};
 
 use super::Assignment;
 
-/// Exact materialized Sandbox selected after Agent convergence.
+/// Exact materialized sandbox selected after agent convergence.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ExecutionTarget {
-    /// Sticky Provider and immutable Sandbox identity.
+    /// Sticky Provider and immutable sandbox identity.
     pub sandbox: Assignment,
     /// Sandbox operating system used to construct the Execution.
     pub operating_system: String,
 }
 
-/// Resolves transient executions without taking ownership of Sandbox lifecycle effects.
+/// Resolves transient executions without taking ownership of sandbox lifecycle effects.
 pub struct ExecutionService {
     agents: Rc<dyn control_plane::AgentStore>,
     convergence: control_plane::Convergence,
 }
 
 impl ExecutionService {
-    /// Creates an execution-target resolver over the Agent controller.
+    /// Creates an execution-target resolver over the agent controller.
     #[must_use]
     pub const fn new(agents: Rc<dyn control_plane::AgentStore>, convergence: control_plane::Convergence) -> Self {
         Self { agents, convergence }
     }
 
-    /// Wakes Agent convergence and returns its exact ready Sandbox assignment.
+    /// Wakes agent convergence and returns its exact ready sandbox assignment.
     ///
     /// # Errors
     ///
-    /// Returns an error when the Agent is missing, deleting, or invalid; with
+    /// Returns an error when the agent is missing, deleting, or invalid; with
     /// [`WaitPolicy::FirstPass`] also when the single pass fails or leaves the
-    /// Agent without a ready materialized Sandbox.
+    /// agent without a ready materialized sandbox.
     pub async fn ensure(&self, name: &str, wait: WaitPolicy) -> Result<ExecutionTarget, Error> {
-        // A stopped Agent runs nothing, so it is refused before anything is woken.
+        // A stopped agent runs nothing, so it is refused before anything is woken.
         let record = self.agents.get_by_name(name).await?;
         if record.agent.metadata.deletion_timestamp.is_some() {
             return Err(Error::Conflict);
@@ -66,22 +66,22 @@ fn target(record: control_plane::AgentRecord, name: &str) -> Result<ExecutionTar
         .status
         .sandbox
         .filter(|assignment| assignment.id().is_some())
-        .ok_or_else(|| Error::Invalid(format!("Agent {name:?} has no materialized Sandbox")))?;
+        .ok_or_else(|| Error::Invalid(format!("Agent {name:?} has no materialized sandbox")))?;
     Ok(ExecutionTarget {
         sandbox,
         operating_system: record.agent.spec.sandbox.platform.os,
     })
 }
 
-/// Starts a non-interactive Execution through the recorded Sandbox Provider.
+/// Starts a non-interactive Execution through the recorded sandbox Provider.
 ///
-/// The returned stream belongs to the exact Sandbox lifecycle ID in `target`;
-/// this function does not create, start, or otherwise reconcile a Sandbox.
+/// The returned stream belongs to the exact sandbox lifecycle ID in `target`;
+/// this function does not create, start, or otherwise reconcile a sandbox.
 ///
 /// # Errors
 ///
 /// Returns an error when the Provider is unsupported by this client or the
-/// exact Sandbox cannot start the Execution.
+/// exact sandbox cannot start the Execution.
 pub async fn start_execution(
     home: &Path,
     target: &ExecutionTarget,
@@ -90,7 +90,7 @@ pub async fn start_execution(
     match target.sandbox.provider().as_str() {
         super::microsandbox::PROVIDER_ID => super::microsandbox::start_execution(home, &target.sandbox, spec).await,
         provider => Err(Error::Invalid(format!(
-            "command execution is not supported through Sandbox Provider {provider:?}"
+            "command execution is not supported through sandbox Provider {provider:?}"
         ))),
     }
 }

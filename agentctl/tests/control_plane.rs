@@ -93,11 +93,11 @@ struct MemoryProvider {
     failing_stops: Rc<Cell<usize>>,
     /// Stops that let the guest shut down.
     stops: Rc<Cell<usize>>,
-    /// Stops that ended the Sandbox at once.
+    /// Stops that ended the sandbox at once.
     kills: Rc<Cell<usize>>,
     /// Graceful stops never finish, as for a guest that ignores the shutdown; kills still do.
     hanging_stops: Rc<Cell<bool>>,
-    /// Whether nested Sandboxes are offered, or why not.
+    /// Whether nested sandboxes are offered, or why not.
     nested_sandboxes_offered: Rc<RefCell<Result<(), String>>>,
 }
 
@@ -171,7 +171,7 @@ impl Provider for MemoryProvider {
                 .spec
                 .sandbox
                 .resolve_from(&record.source_directory, &self.default_architecture)?;
-            // Like Microsandbox, starting a stopped Sandbox restarts its runtime.
+            // Like Microsandbox, starting a stopped sandbox restarts its runtime.
             let was_stopped = self
                 .service
                 .inspect(&record.sandbox_name()?)
@@ -247,7 +247,7 @@ struct UnsupportedProvider {
     id: ProviderId,
 }
 
-/// A planned Sandbox ensure failure.
+/// A planned sandbox ensure failure.
 ///
 /// A permanent failure fails every pass, as agentd's Providers do until the
 /// manifest or `.env` changes. A transient failure fails only the pass that
@@ -255,7 +255,7 @@ struct UnsupportedProvider {
 #[derive(Clone)]
 enum PlannedFailure {
     Invalid(String),
-    /// The Sandbox Provider rejects the request itself (an SDK `InvalidRequest`).
+    /// The sandbox Provider rejects the request itself (an SDK `InvalidRequest`).
     Rejected,
     /// Floods telemetry past the lossy channel's capacity, then fails as invalid.
     InvalidAfterFlood(String),
@@ -446,11 +446,11 @@ fn apply_request_in(name: &str, source_directory: PathBuf) -> agent::control_pla
 }
 
 fn sandbox_name(record: &AgentRecord) -> SandboxName {
-    SandboxName::new(format!("agent-{}", record.id)).expect("Agent ID should form a valid Sandbox name")
+    SandboxName::new(format!("agent-{}", record.id)).expect("Agent ID should form a valid sandbox name")
 }
 
 async fn stored(fixture: &Fixture, name: &str) -> AgentRecord {
-    fixture.store.get_by_name(name).await.expect("stored Agent")
+    fixture.store.get_by_name(name).await.expect("stored agent")
 }
 
 async fn reconcile(fixture: &Fixture, name: &str) {
@@ -481,11 +481,11 @@ async fn lists_agents_and_resolves_the_nearest_unique_source_directory() {
     let fixture = fixture();
     let root = std::env::temp_dir().join("agent-platform-sources");
     let outer = apply_request_in("outer", root.clone());
-    fixture.control_plane.apply(outer).await.expect("outer Agent");
+    fixture.control_plane.apply(outer).await.expect("outer agent");
     let inner = apply_request_in("inner", root.join("nested"));
-    fixture.control_plane.apply(inner).await.expect("inner Agent");
+    fixture.control_plane.apply(inner).await.expect("inner agent");
 
-    let listed = fixture.control_plane.list().await.expect("list Agents");
+    let listed = fixture.control_plane.list().await.expect("list agents");
     assert_eq!(
         listed
             .iter()
@@ -497,7 +497,7 @@ async fn lists_agents_and_resolves_the_nearest_unique_source_directory() {
         .control_plane
         .resolve_directory(&root.join("nested/worktree"))
         .await
-        .expect("nearest Agent source");
+        .expect("nearest agent source");
     assert_eq!(resolved.metadata.name, "inner");
 }
 
@@ -506,11 +506,11 @@ async fn directory_resolution_selects_leaf_variants_and_prefers_the_default_mani
     let fixture = fixture();
     let root = std::env::temp_dir().join("agent-platform-variant-sources");
     let default = apply_request_in("default", root.clone());
-    fixture.control_plane.apply(default).await.expect("default Agent");
+    fixture.control_plane.apply(default).await.expect("default agent");
 
     let mut nested = apply_request_in("nested", root.clone());
     nested.manifest_path = Some(root.join("agent.nested.yaml"));
-    fixture.control_plane.apply(nested).await.expect("nested Agent");
+    fixture.control_plane.apply(nested).await.expect("nested agent");
 
     assert_eq!(
         fixture
@@ -535,7 +535,7 @@ async fn directory_resolution_selects_leaf_variants_and_prefers_the_default_mani
 
     let mut local = apply_request_in("local", root.clone());
     local.manifest_path = Some(root.join("agent.mine.yaml"));
-    fixture.control_plane.apply(local).await.expect("local Agent");
+    fixture.control_plane.apply(local).await.expect("local agent");
     assert_eq!(
         fixture
             .control_plane
@@ -562,7 +562,7 @@ async fn directory_resolution_remains_ambiguous_without_one_default_manifest() {
     for (name, variant) in [("nested", "nested"), ("worktree", "worktree")] {
         let mut request = apply_request_in(name, root.clone());
         request.manifest_path = Some(root.join(format!("agent.{variant}.yaml")));
-        fixture.control_plane.apply(request).await.expect("variant Agent");
+        fixture.control_plane.apply(request).await.expect("variant agent");
     }
     let error = fixture
         .control_plane
@@ -607,7 +607,7 @@ async fn bind_mounts_resolve_from_the_manifest_and_drive_directory_inference_and
             .control_plane
             .resolve_directory(&nested)
             .await
-            .expect("infer Agent")
+            .expect("infer agent")
             .metadata
             .name,
         "worker"
@@ -619,7 +619,7 @@ async fn bind_mounts_resolve_from_the_manifest_and_drive_directory_inference_and
         .backend
         .find(&sandbox_name(&record))
         .await
-        .expect("materialized Sandbox");
+        .expect("materialized sandbox");
     assert_eq!(materialized.mounts, record.agent.spec.sandbox.resolved_mounts());
 }
 
@@ -801,19 +801,19 @@ async fn directory_resolution_rejects_shared_sources_instead_of_guessing() {
         .control_plane
         .apply(apply_request("first"))
         .await
-        .expect("first Agent");
+        .expect("first agent");
     fixture
         .control_plane
         .apply(apply_request("second"))
         .await
-        .expect("second Agent");
+        .expect("second agent");
 
     let error = fixture
         .control_plane
         .resolve_directory(&std::env::temp_dir().join("agent-platform-source/worktree"))
         .await
         .expect_err("shared source must be ambiguous");
-    assert!(matches!(error, Error::Invalid(message) if message.contains("multiple Agents")));
+    assert!(matches!(error, Error::Invalid(message) if message.contains("multiple agents")));
 }
 
 #[tokio::test(flavor = "local")]
@@ -966,7 +966,7 @@ async fn nested_sandboxes_are_reported_in_a_condition_and_an_unmet_requirement_f
         request.agent.spec.sandbox.resources.nested_sandboxes = nested_sandboxes;
         control_plane.apply(request).await.expect("apply");
         let id = store.get_by_name("worker").await.expect("Agent").id;
-        // A pass that records an invalid Agent also returns why.
+        // A pass that records an invalid agent also returns why.
         if let Err(error) = reconciler.reconcile(id).await {
             assert!(matches!(error, Error::Invalid(_)), "{error}");
         }
@@ -991,7 +991,7 @@ async fn nested_sandboxes_are_reported_in_a_condition_and_an_unmet_requirement_f
     let status = apply(Some(NestedSandboxes::Preferred)).await;
     assert!(
         status.is_ready(),
-        "a preference the host cannot meet still runs the Agent"
+        "a preference the host cannot meet still runs the agent"
     );
     assert_eq!(
         nested(&status),
@@ -1014,7 +1014,7 @@ async fn nested_sandboxes_are_reported_in_a_condition_and_an_unmet_requirement_f
 
     let status = apply(None).await;
     assert!(status.is_ready());
-    assert_eq!(nested(&status), None, "an Agent that asks for none reports none");
+    assert_eq!(nested(&status), None, "an agent that asks for none reports none");
 }
 
 /// Reports `missing` as the optional sources setup left out.
@@ -1053,7 +1053,7 @@ async fn missing_optional_sources_are_reported_in_a_condition_of_a_ready_agent()
         let status = store.get_by_name(name).await.expect("Agent").agent.status;
         assert!(
             status.is_ready(),
-            "a missing optional source does not keep the Agent from running"
+            "a missing optional source does not keep the agent from running"
         );
         status
             .conditions
@@ -1066,7 +1066,7 @@ async fn missing_optional_sources_are_reported_in_a_condition_of_a_ready_agent()
     assert_eq!(
         optional_sources("worker").await,
         None,
-        "an Agent that declares no optional source reports none"
+        "an agent that declares no optional source reports none"
     );
 
     let mut request = apply_request("reviewer");
@@ -1111,7 +1111,7 @@ async fn releasing_a_deleted_agent_notifies_its_sessions() {
 
     assert!(
         notifications.0.get() > before,
-        "Sessions must learn that their Agent is gone, so they stop"
+        "Sessions must learn that their agent is gone, so they stop"
     );
 }
 
@@ -1466,7 +1466,7 @@ async fn bind_mount_exposing_another_agents_secret_file_is_rejected() {
     let fixture = fixture();
     let root = tempfile::tempdir().expect("temporary checkout");
     let with_secrets = root.path().join("agents/full");
-    std::fs::create_dir_all(&with_secrets).expect("secret Agent source directory");
+    std::fs::create_dir_all(&with_secrets).expect("secret agent source directory");
     let mut secret_agent = apply_request_in("full", with_secrets);
     let selected_secret_file = root.path().join("credentials.txt");
     std::fs::write(&selected_secret_file, "GITHUB_TOKEN=private\n").expect("selected environment file");
@@ -1478,10 +1478,10 @@ async fn bind_mount_exposing_another_agents_secret_file_is_rejected() {
         allowed_hosts: vec!["github.com".into()],
         source: None,
     });
-    fixture.control_plane.apply(secret_agent).await.expect("secret Agent");
+    fixture.control_plane.apply(secret_agent).await.expect("secret agent");
 
     let mounted = root.path().join("agents/worktree");
-    std::fs::create_dir_all(&mounted).expect("mounted Agent source directory");
+    std::fs::create_dir_all(&mounted).expect("mounted agent source directory");
     let mut worktree = apply_request_in("worktree", mounted);
     worktree.agent.spec.sandbox.mounts.push(agent::MountSpec::Bind {
         source: root.path().to_path_buf(),
@@ -1493,9 +1493,9 @@ async fn bind_mount_exposing_another_agents_secret_file_is_rejected() {
         .control_plane
         .apply(worktree)
         .await
-        .expect_err("the mount would expose the other Agent's selected environment file");
+        .expect_err("the mount would expose the other agent's selected environment file");
     assert!(
-        matches!(&error, Error::Invalid(message) if message.contains("Agent \"full\"")),
+        matches!(&error, Error::Invalid(message) if message.contains("agent \"full\"")),
         "{error}"
     );
 }
@@ -1692,7 +1692,7 @@ async fn omitted_retention_deletes_the_sandbox() {
     assert_eq!(fixture.backend.count(), 0);
 }
 
-/// An Agent `worker` whose Sandbox ensures fail as planned, reconciled by a
+/// An agent `worker` whose sandbox ensures fail as planned, reconciled by a
 /// running controller, with a waiter over the same change history.
 struct Waiting {
     store: Rc<memory::InMemoryAgentStore>,
@@ -1740,7 +1740,7 @@ async fn waiting(failures: impl IntoIterator<Item = PlannedFailure>, interval: D
 
 impl Waiting {
     async fn id(&self) -> AgentId {
-        self.store.get_by_name("worker").await.expect("stored Agent").id
+        self.store.get_by_name("worker").await.expect("stored agent").id
     }
 }
 
@@ -1778,7 +1778,7 @@ async fn an_invalid_failure_fails_the_wait_immediately() {
         .expect_err("invalid preparation must fail fast");
 
     assert!(matches!(error, Error::Invalid(message) if message.contains("GITHUB_TOKEN")));
-    let stored = fixture.store.get(fixture.id().await).await.expect("stored Agent");
+    let stored = fixture.store.get(fixture.id().await).await.expect("stored agent");
     assert_eq!(stored.agent.status.failure, Some(FailureKind::Invalid));
     let provisioning = fixture.provisioning.get(stored.id).expect("failed pass");
     assert!(matches!(
@@ -1866,10 +1866,10 @@ async fn provisioning_is_projected_but_not_stored_and_omitted_after_success() {
         .with_provisioning(provisioning.clone());
     let reconciler = Reconciler::new(store.clone(), sandbox_service(provider), provisioning.clone());
     control_plane.apply(apply_request("worker")).await.expect("apply");
-    let id = store.get_by_name("worker").await.expect("stored Agent").id;
+    let id = store.get_by_name("worker").await.expect("stored agent").id;
 
     reconciler.reconcile(id).await.expect_err("planned transient failure");
-    let failed = control_plane.get("worker").await.expect("failed Agent");
+    let failed = control_plane.get("worker").await.expect("failed agent");
     assert_eq!(failed.status.failure, Some(FailureKind::Transient));
     let summary = failed.status.progress.expect("failed provisioning");
     assert!(matches!(
@@ -1877,13 +1877,13 @@ async fn provisioning_is_projected_but_not_stored_and_omitted_after_success() {
         sandbox::progress::OperationStatus::Failed { detail } if detail.contains("temporary runtime failure")
     ));
     assert_eq!(
-        store.get(id).await.expect("stored Agent").agent.status.progress,
+        store.get(id).await.expect("stored agent").agent.status.progress,
         None,
         "provisioning is projected, never stored"
     );
 
     reconciler.reconcile(id).await.expect("retry succeeds");
-    let ready = control_plane.get("worker").await.expect("ready Agent");
+    let ready = control_plane.get("worker").await.expect("ready agent");
     assert!(ready.status.is_ready());
     assert_eq!(ready.status.failure, None);
     assert_eq!(ready.status.progress, None, "a succeeded pass is not listed");
@@ -1903,13 +1903,13 @@ async fn provisioning_is_projected_but_not_stored_and_omitted_after_success() {
     );
 
     let revision = changes.revision();
-    reconciler.reconcile(id).await.expect("resync of a Ready Agent");
+    reconciler.reconcile(id).await.expect("resync of a Ready agent");
     assert_eq!(
         provisioning.get(id),
         Some(finished),
-        "a resync that succeeds leaves the pass that provisioned the Agent"
+        "a resync that succeeds leaves the pass that provisioned the agent"
     );
-    let resynced = control_plane.get("worker").await.expect("resynced Agent");
+    let resynced = control_plane.get("worker").await.expect("resynced agent");
     assert_eq!(resynced.status.progress, None);
     assert!(resynced.status.is_ready());
     assert_eq!(
@@ -1926,7 +1926,7 @@ async fn progress_trims_only_the_output_of_the_pass_the_follower_has_seen() {
     let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()))
         .with_provisioning(provisioning.clone());
     control_plane.apply(apply_request("worker")).await.expect("apply");
-    let id = store.get_by_name("worker").await.expect("stored Agent").id;
+    let id = store.get_by_name("worker").await.expect("stored agent").id;
     let texts = |provisioning: &agent::progress::Provisioning| {
         provisioning
             .progress
@@ -2040,8 +2040,8 @@ async fn dropping_a_wait_does_not_stop_background_reconciliation() {
 async fn controller_runs_agents_concurrently_and_serializes_reruns_per_id() {
     let store = Rc::new(memory::InMemoryAgentStore::new());
     let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
-    control_plane.apply(apply_request("slow")).await.expect("slow Agent");
-    control_plane.apply(apply_request("fast")).await.expect("fast Agent");
+    control_plane.apply(apply_request("slow")).await.expect("slow agent");
+    control_plane.apply(apply_request("fast")).await.expect("fast agent");
     let slow = store.get_by_name("slow").await.expect("slow record").id;
 
     let backend = Rc::new(sandbox_memory::Provider::new());
@@ -2061,7 +2061,7 @@ async fn controller_runs_agents_concurrently_and_serializes_reruns_per_id() {
     tokio::time::timeout(Duration::from_secs(1), started.notified())
         .await
         .expect("slow reconciliation should start");
-    let selected = store.get(slow).await.expect("selected slow Agent");
+    let selected = store.get(slow).await.expect("selected slow agent");
     assert!(matches!(
         selected.agent.status.sandbox,
         Some(agent::sandbox::Assignment::Selected { .. })
@@ -2075,7 +2075,7 @@ async fn controller_runs_agents_concurrently_and_serializes_reruns_per_id() {
         }
     })
     .await
-    .expect("fast Agent should finish while the slow Agent is blocked");
+    .expect("fast agent should finish while the slow agent is blocked");
 
     release.notify_one();
     tokio::time::timeout(Duration::from_secs(1), async {
@@ -2138,7 +2138,7 @@ async fn ssh_access_is_reported_underneath_ready_and_cleaned_up_on_deletion() {
     control_plane.apply(request).await.expect("apply");
     let id = store.get_by_name("worker").await.expect("stored").id;
 
-    // The image lacks a server: the Agent is not Ready and the failure is permanent.
+    // The image lacks a server: the agent is not Ready and the failure is permanent.
     backend.queue_execution_events_matching(is_ssh_server_check, exited(1));
     let error = reconciler
         .reconcile(id)
@@ -2165,7 +2165,7 @@ async fn ssh_access_is_reported_underneath_ready_and_cleaned_up_on_deletion() {
     );
     assert!(!keys.contains(id));
 
-    // A server is present: the Agent is Ready and SshReady is reported alongside SandboxReady.
+    // A server is present: the agent is Ready and SshReady is reported alongside SandboxReady.
     backend.queue_execution_events_matching(is_ssh_server_check, exited(0));
     backend.queue_execution_events_matching(
         is_ssh_policy_check,
@@ -2236,7 +2236,7 @@ impl PlatformAdapter for StallingPlatform {
     }
 }
 
-/// An Agent `worker` whose guest heartbeat and setup the test controls.
+/// An agent `worker` whose guest heartbeat and setup the test controls.
 struct Stalling {
     store: Rc<memory::InMemoryAgentStore>,
     backend: Rc<sandbox_memory::Provider>,
@@ -2257,7 +2257,7 @@ async fn stalling(changes: Changes) -> Stalling {
         .apply(apply_request("worker"))
         .await
         .expect("apply");
-    let id = store.get_by_name("worker").await.expect("stored Agent").id;
+    let id = store.get_by_name("worker").await.expect("stored agent").id;
     Stalling {
         store,
         backend,
@@ -2269,7 +2269,7 @@ async fn stalling(changes: Changes) -> Stalling {
 
 impl Stalling {
     async fn record(&self) -> AgentRecord {
-        self.store.get(self.id).await.expect("stored Agent")
+        self.store.get(self.id).await.expect("stored agent")
     }
 
     /// Reports `sequence` as the guest's heartbeat.
@@ -2281,7 +2281,7 @@ impl Stalling {
             .sandbox
             .as_ref()
             .and_then(agent::sandbox::Assignment::id)
-            .expect("materialized Sandbox");
+            .expect("materialized sandbox");
         self.backend
             .set_guest_heartbeat(sandbox, Some(GuestHeartbeat::new(sequence)))
             .expect("heartbeat should be set");
@@ -2338,7 +2338,7 @@ async fn a_stalled_guest_ends_setup_and_its_agent_reports_it_unresponsive() {
     assert_eq!(
         condition(&status, agent::Condition::SANDBOX_READY).status,
         ConditionStatus::True,
-        "the Sandbox lifecycle is unchanged"
+        "the sandbox lifecycle is unchanged"
     );
     assert_eq!(status.failure, Some(FailureKind::Transient));
 
@@ -2348,7 +2348,7 @@ async fn a_stalled_guest_ends_setup_and_its_agent_reports_it_unresponsive() {
     assert!(matches!(result, Err(Error::SandboxUnresponsive(_))), "{result:?}");
     assert_eq!(fixture.platform.setups.get(), setups);
 
-    // A heartbeat that advances again makes the Agent Ready.
+    // A heartbeat that advances again makes the agent Ready.
     fixture.platform.stall.set(false);
     fixture.beat(3).await;
     fixture.reconciler.reconcile(fixture.id).await.expect("recovered pass");
@@ -2428,7 +2428,7 @@ async fn an_agent_with_a_stalled_guest_can_still_be_deleted() {
     fixture.reconciler.reconcile(fixture.id).await.expect("release");
 
     assert!(matches!(fixture.store.get(fixture.id).await, Err(Error::NotFound)));
-    let retained = fixture.backend.find(&sandbox).await.expect("retained Sandbox");
+    let retained = fixture.backend.find(&sandbox).await.expect("retained sandbox");
     assert_eq!(retained.state, sandbox::SandboxState::Stopped);
 }
 
@@ -2447,7 +2447,7 @@ async fn waiting_until_ready_ends_once_the_guest_is_recorded_unresponsive() {
     convergence
         .converge("worker", WaitPolicy::UntilConverged)
         .await
-        .expect("the healthy Agent should become Ready");
+        .expect("the healthy agent should become Ready");
     fixture.beat(1).await;
     fixture.platform.stall.set(true);
 
@@ -2464,7 +2464,7 @@ async fn waiting_until_ready_ends_once_the_guest_is_recorded_unresponsive() {
 }
 
 async fn assert_stopped(store: &memory::InMemoryAgentStore, backend: &sandbox_memory::Provider, id: AgentId) {
-    let record = store.get(id).await.expect("stored Agent");
+    let record = store.get(id).await.expect("stored agent");
     let status = &record.agent.status;
     assert!(status.is_stopped(), "{status:?}");
     assert_eq!(status.observed_generation, record.agent.metadata.generation);
@@ -2480,9 +2480,9 @@ async fn assert_stopped(store: &memory::InMemoryAgentStore, backend: &sandbox_me
             .conditions
             .iter()
             .all(|condition| condition.kind != agent::Condition::SANDBOX_RESPONSIVE),
-        "a stopped Sandbox has no guest to be responsive or not: {status:?}"
+        "a stopped sandbox has no guest to be responsive or not: {status:?}"
     );
-    let sandbox = backend.find(&sandbox_name(&record)).await.expect("kept Sandbox");
+    let sandbox = backend.find(&sandbox_name(&record)).await.expect("kept sandbox");
     assert_eq!(sandbox.state, sandbox::SandboxState::Stopped);
 }
 
@@ -2496,7 +2496,7 @@ async fn a_stopped_agent_keeps_its_sandbox_stopped_across_passes_and_reapplies()
         .expect("apply");
     reconcile(&fixture, "worker").await;
     let ready = stored(&fixture, "worker").await;
-    let sandbox = ready.agent.status.sandbox.clone().expect("materialized Sandbox");
+    let sandbox = ready.agent.status.sandbox.clone().expect("materialized sandbox");
 
     let stopping = fixture
         .control_plane
@@ -2511,7 +2511,7 @@ async fn a_stopped_agent_keeps_its_sandbox_stopped_across_passes_and_reapplies()
     assert_eq!(
         stopped.agent.status.sandbox,
         Some(sandbox),
-        "the Sandbox keeps its identity"
+        "the sandbox keeps its identity"
     );
 
     // A periodic pass and a repeated stop change nothing.
@@ -2524,7 +2524,7 @@ async fn a_stopped_agent_keeps_its_sandbox_stopped_across_passes_and_reapplies()
     assert_eq!(again.metadata.generation, stopped.agent.metadata.generation);
     assert_stopped(&fixture.store, &fixture.backend, ready.id).await;
 
-    // Applying a manifest that does not set a run state keeps the Agent stopped.
+    // Applying a manifest that does not set a run state keeps the agent stopped.
     let reapplied = fixture
         .control_plane
         .apply(apply_request("worker"))
@@ -2592,7 +2592,7 @@ async fn an_immediate_stop_kills_the_sandbox_once_and_later_stops_shut_down() {
     assert_stopped(&store, &backend, id).await;
 }
 
-/// A Control Plane and reconciler sharing immediate stops over one materialized Agent `worker`,
+/// A Control Plane and reconciler sharing immediate stops over one materialized agent `worker`,
 /// with the test provider's kill counter and hanging switch.
 async fn immediate_stop_fixture() -> (
     ControlPlane,
@@ -2655,9 +2655,9 @@ async fn an_immediate_stop_abandons_a_setup_under_way() {
         .expect("the kill abandons the setup under way")
         .expect("task")
         .expect("the abandoned pass");
-    reconciler.reconcile(id).await.expect("the next pass stops the Agent");
+    reconciler.reconcile(id).await.expect("the next pass stops the agent");
     assert_eq!(kills.get(), 1, "the next pass kills rather than stops");
-    let status = store.get(id).await.expect("stored Agent").agent.status;
+    let status = store.get(id).await.expect("stored agent").agent.status;
     assert!(status.is_stopped(), "{status:?}");
 }
 
@@ -2668,7 +2668,7 @@ async fn a_delete_after_an_immediate_stop_kills_and_leaves_no_request() {
     control_plane.delete("worker").await.expect("delete");
     reconciler.reconcile(id).await.expect("release");
     assert_eq!(kills.get(), 1, "the kill asked for first still kills");
-    assert!(matches!(store.get(id).await, Err(Error::NotFound)), "the Agent is gone");
+    assert!(matches!(store.get(id).await, Err(Error::NotFound)), "the agent is gone");
 }
 
 #[tokio::test(flavor = "local")]
@@ -2732,8 +2732,8 @@ async fn a_start_before_an_immediate_stop_was_carried_out_leaves_later_stops_gra
     assert_stopped(&store, &backend, id).await;
 }
 
-/// Records, each time an Agent's Sessions are settled, whether the Agent was recorded stopped with
-/// its Sandbox stopped.
+/// Records, each time an agent's sessions are settled, whether the agent was recorded stopped with
+/// its sandbox stopped.
 struct StopSettlements {
     store: Rc<memory::InMemoryAgentStore>,
     backend: Rc<sandbox_memory::Provider>,
@@ -2745,8 +2745,8 @@ impl agent::control_plane::SessionNotifier for StopSettlements {
 
     fn settle(&self, id: AgentId) -> LocalFuture<'_, ()> {
         Box::pin(async move {
-            let record = self.store.get(id).await.expect("stored Agent");
-            let sandbox = self.backend.find(&sandbox_name(&record)).await.expect("kept Sandbox");
+            let record = self.store.get(id).await.expect("stored agent");
+            let sandbox = self.backend.find(&sandbox_name(&record)).await.expect("kept sandbox");
             self.settled
                 .borrow_mut()
                 .push(record.agent.status.is_stopped() && sandbox.state == sandbox::SandboxState::Stopped);
@@ -2776,27 +2776,27 @@ async fn a_restart_stops_the_sandbox_and_starts_it_on_the_same_disk_in_one_pass(
     );
     let id = store.get_by_name("worker").await.expect("Agent").id;
     reconciler.reconcile(id).await.expect("materialize");
-    let ready = store.get(id).await.expect("stored Agent");
+    let ready = store.get(id).await.expect("stored agent");
 
     let restarting = control_plane.restart("worker", false).await.expect("restart");
     assert_eq!(restarting.metadata.generation, ready.agent.metadata.generation + 1);
     assert!(restarting.restart_pending());
     reconciler.reconcile(id).await.expect("restart");
-    let restarted = store.get(id).await.expect("stored Agent");
+    let restarted = store.get(id).await.expect("stored agent");
     let status = &restarted.agent.status;
     assert!(status.is_ready(), "{status:?}");
     assert_eq!(status.observed_generation, restarted.agent.metadata.generation);
     assert!(!restarted.agent.restart_pending());
     assert_eq!(
         status.sandbox, ready.agent.status.sandbox,
-        "the Sandbox keeps its identity"
+        "the sandbox keeps its identity"
     );
     assert_eq!(backend.count(), 1);
     assert_eq!(stops.get(), 1);
     assert_eq!(
         *sessions.settled.borrow(),
         [true],
-        "Sessions see the Agent stopped before its Sandbox starts again"
+        "Sessions see the agent stopped before its sandbox starts again"
     );
 
     // Neither a later pass nor an apply restarts it again.
@@ -2810,7 +2810,7 @@ async fn a_restart_stops_the_sandbox_and_starts_it_on_the_same_disk_in_one_pass(
     );
     reconciler.reconcile(id).await.expect("apply pass");
     assert_eq!(stops.get(), 1);
-    assert!(store.get(id).await.expect("stored Agent").agent.status.is_ready());
+    assert!(store.get(id).await.expect("stored agent").agent.status.is_ready());
 }
 
 #[tokio::test(flavor = "local")]
@@ -2860,15 +2860,15 @@ async fn a_start_that_fails_after_a_restart_is_retried_without_stopping_again() 
     reconciler
         .reconcile(id)
         .await
-        .expect_err("setup fails after the restart stopped the Sandbox");
+        .expect_err("setup fails after the restart stopped the sandbox");
     assert!(
-        !store.get(id).await.expect("stored Agent").agent.restart_pending(),
+        !store.get(id).await.expect("stored agent").agent.restart_pending(),
         "the stop carried the restart out"
     );
     platform.fail.set(false);
     reconciler.reconcile(id).await.expect("retry");
-    assert_eq!(stops.get(), 1, "the retry only starts the Agent");
-    assert!(store.get(id).await.expect("stored Agent").agent.status.is_ready());
+    assert_eq!(stops.get(), 1, "the retry only starts the agent");
+    assert!(store.get(id).await.expect("stored agent").agent.status.is_ready());
 }
 
 #[tokio::test(flavor = "local")]
@@ -2881,7 +2881,7 @@ async fn a_stop_before_a_restart_was_carried_out_carries_it_out() {
         .expect("stop");
     reconciler.reconcile(id).await.expect("stop");
     assert_stopped(&store, &backend, id).await;
-    assert!(!store.get(id).await.expect("stored Agent").agent.restart_pending());
+    assert!(!store.get(id).await.expect("stored agent").agent.restart_pending());
 }
 
 #[tokio::test(flavor = "local")]
@@ -2890,12 +2890,12 @@ async fn an_immediate_restart_kills_the_sandbox_and_a_later_one_shuts_it_down() 
     control_plane.restart("worker", true).await.expect("restart now");
     reconciler.reconcile(id).await.expect("restart");
     assert_eq!(kills.get(), 1);
-    assert!(store.get(id).await.expect("stored Agent").agent.status.is_ready());
+    assert!(store.get(id).await.expect("stored agent").agent.status.is_ready());
 
     control_plane.restart("worker", false).await.expect("restart");
     reconciler.reconcile(id).await.expect("restart");
     assert_eq!(kills.get(), 1, "the request was used up");
-    assert!(store.get(id).await.expect("stored Agent").agent.status.is_ready());
+    assert!(store.get(id).await.expect("stored agent").agent.status.is_ready());
 }
 
 #[tokio::test(flavor = "local", start_paused = true)]
@@ -2913,7 +2913,7 @@ async fn a_restart_makes_an_unresponsive_agent_ready_again() {
     convergence
         .converge("worker", WaitPolicy::UntilConverged)
         .await
-        .expect("the healthy Agent should become Ready");
+        .expect("the healthy agent should become Ready");
     fixture.beat(1).await;
     fixture.platform.stall.set(true);
     let result = convergence.converge("worker", WaitPolicy::UntilConverged).await;
@@ -2928,13 +2928,13 @@ async fn a_restart_makes_an_unresponsive_agent_ready_again() {
     convergence
         .converge("worker", WaitPolicy::UntilConverged)
         .await
-        .expect("the wait follows the restart until the Agent is Ready");
+        .expect("the wait follows the restart until the agent is Ready");
     assert!(fixture.record().await.agent.status.is_ready());
     task.abort();
 }
 
-/// An Agent store whose next `get` reads the record and then waits to return it, as a pass does
-/// that read the Agent just before a request changed it.
+/// An agent store whose next `get` reads the record and then waits to return it, as a pass does
+/// that read the agent just before a request changed it.
 struct HeldStore {
     inner: Rc<memory::InMemoryAgentStore>,
     hold: Cell<bool>,
@@ -3007,7 +3007,7 @@ async fn an_immediate_stop_outlives_a_pass_that_read_the_agent_running_before_it
     });
     tokio::time::timeout(Duration::from_secs(1), held.read.notified())
         .await
-        .expect("the pass reads the Agent running");
+        .expect("the pass reads the agent running");
     control_plane.stop_now("worker").await.expect("stop now");
     held.release.notify_one();
     // The pass works from a snapshot the stop replaced, so how it ends does not matter.
@@ -3087,9 +3087,9 @@ async fn an_immediate_stop_abandons_access_setup_under_way() {
         .expect("the kill abandons the access setup under way")
         .expect("task")
         .expect("the abandoned pass");
-    reconciler.reconcile(id).await.expect("the next pass stops the Agent");
+    reconciler.reconcile(id).await.expect("the next pass stops the agent");
     assert_eq!(kills.get(), 1, "the next pass kills rather than stops");
-    let status = store.get(id).await.expect("stored Agent").agent.status;
+    let status = store.get(id).await.expect("stored agent").agent.status;
     assert!(status.is_stopped(), "{status:?}");
 }
 
@@ -3113,7 +3113,7 @@ async fn a_start_boots_the_same_sandbox_and_wakes_sessions() {
     reconciler.reconcile(id).await.expect("stop pass");
     assert_stopped(&store, &backend, id).await;
     let after_stop = notifications.0.get();
-    assert!(after_stop > 1, "Sessions are told their Agent is no longer Ready");
+    assert!(after_stop > 1, "Sessions are told their agent is no longer Ready");
 
     control_plane
         .set_run_state("worker", agent::RunState::Running)
@@ -3122,7 +3122,7 @@ async fn a_start_boots_the_same_sandbox_and_wakes_sessions() {
     reconciler.reconcile(id).await.expect("start pass");
     let record = store.get(id).await.expect("Agent");
     assert!(record.agent.status.is_ready());
-    assert_eq!(record.agent.status.sandbox, sandbox, "the same Sandbox starts again");
+    assert_eq!(record.agent.status.sandbox, sandbox, "the same sandbox starts again");
     let running = backend.find(&sandbox_name(&record)).await.expect("Sandbox");
     assert_eq!(running.state, sandbox::SandboxState::Running);
     assert!(notifications.0.get() > after_stop, "Sessions wake");
@@ -3164,7 +3164,7 @@ async fn a_restarted_daemon_keeps_a_stopped_agent_stopped_and_starts_a_running_o
         .await
         .expect("stop");
     reconcile(&fixture, "stopped").await;
-    // The host went down: every VM is gone, and a new daemon reconciles the stored Agents.
+    // The host went down: every VM is gone, and a new daemon reconciles the stored agents.
     let running = stored(&fixture, "running").await;
     fixture
         .backend
@@ -3216,18 +3216,18 @@ async fn a_stopped_agent_can_be_deleted() {
     fixture.reconciler.reconcile(record.id).await.expect("release");
 
     assert!(matches!(fixture.store.get(record.id).await, Err(Error::NotFound)));
-    // The test manifest retains its Sandbox on release.
+    // The test manifest retains its sandbox on release.
     let retained = fixture
         .backend
         .find(&sandbox_name(&record))
         .await
-        .expect("retained Sandbox");
+        .expect("retained sandbox");
     assert_eq!(retained.state, sandbox::SandboxState::Stopped);
     let error = fixture
         .control_plane
         .set_run_state("worker", agent::RunState::Running)
         .await
-        .expect_err("a deleted Agent cannot start");
+        .expect_err("a deleted agent cannot start");
     assert!(matches!(error, Error::NotFound));
 }
 
@@ -3283,7 +3283,7 @@ async fn commands_on_a_stopped_agent_fail_at_once_and_a_wait_ends_when_it_stops(
     .await;
     let control_plane = ControlPlane::new(fixture.store.clone(), Rc::new(fixture.wakeup.clone()));
 
-    // A wait through an outage ends once the Agent is stopped.
+    // A wait through an outage ends once the agent is stopped.
     let waited = tokio::task::spawn_local({
         let execution = fixture.execution.clone();
         async move { execution.ensure("worker", WaitPolicy::UntilConverged).await }
@@ -3297,7 +3297,7 @@ async fn commands_on_a_stopped_agent_fail_at_once_and_a_wait_ends_when_it_stops(
         .await
         .expect("the wait ends with the stop")
         .expect("the wait does not panic")
-        .expect_err("a stopped Agent never becomes Ready");
+        .expect_err("a stopped agent never becomes Ready");
     assert!(matches!(&error, Error::Stopped(name) if name == "worker"), "{error:?}");
     assert_eq!(
         error.to_string(),
@@ -3310,7 +3310,7 @@ async fn commands_on_a_stopped_agent_fail_at_once_and_a_wait_ends_when_it_stops(
         let error = tokio::time::timeout(Duration::from_millis(100), fixture.execution.ensure("worker", wait))
             .await
             .expect("refused without waiting")
-            .expect_err("a stopped Agent runs nothing");
+            .expect_err("a stopped agent runs nothing");
         assert!(matches!(error, Error::Stopped(_)), "{error:?}");
     }
     fixture.task.abort();
@@ -3342,7 +3342,7 @@ async fn a_stop_recorded_while_an_execution_waits_refuses_it() {
     let task = tokio::task::spawn_local(controller.run());
     started.notified().await;
 
-    // The wait is admitted while the Agent runs, and its pass is the one after the stop.
+    // The wait is admitted while the agent runs, and its pass is the one after the stop.
     let execution = Rc::new(ExecutionService::new(
         store.clone(),
         Convergence::new(wakeup, store.clone(), changes),
@@ -3373,7 +3373,7 @@ async fn converging_the_run_state_waits_for_a_stop_and_for_a_start() {
         convergence.converge("worker", WaitPolicy::UntilConverged),
     )
     .await
-    .expect("a new Agent converges")
+    .expect("a new agent converges")
     .expect("Ready");
     assert!(converged.agent.status.is_ready());
 
@@ -3410,7 +3410,7 @@ async fn converging_the_run_state_waits_for_a_stop_and_for_a_start() {
     let error = convergence
         .converge("missing", WaitPolicy::UntilConverged)
         .await
-        .expect_err("missing Agent");
+        .expect_err("missing agent");
     assert!(matches!(error, Error::NotFound), "{error:?}");
     fixture.task.abort();
 }
@@ -3436,7 +3436,7 @@ async fn converging_a_stopped_agent_is_not_ended_by_the_stall_it_was_stopped_for
     let error = convergence
         .converge("worker", WaitPolicy::UntilConverged)
         .await
-        .expect_err("a running Agent with a stalled guest cannot converge");
+        .expect_err("a running agent with a stalled guest cannot converge");
     assert!(matches!(error, Error::SandboxUnresponsive(_)), "{error:?}");
 
     ControlPlane::new(fixture.store.clone(), Rc::new(NotificationCounter::default()))
@@ -3474,14 +3474,14 @@ async fn stopping_an_agent_with_a_stalled_guest_tells_its_sessions() {
         .status
         .sandbox
         .and_then(|assignment| assignment.id().cloned())
-        .expect("materialized Sandbox");
+        .expect("materialized sandbox");
     backend
         .set_guest_heartbeat(&sandbox, Some(GuestHeartbeat::new(1)))
         .expect("heartbeat should be set");
     platform.stall.set(true);
     let result = reconciler.reconcile(id).await;
     assert!(matches!(result, Err(Error::SandboxUnresponsive(_))), "{result:?}");
-    // Not Ready already, so only the stop itself can tell the held Sessions.
+    // Not Ready already, so only the stop itself can tell the held sessions.
     let before = notifications.0.get();
 
     control_plane
@@ -3491,7 +3491,7 @@ async fn stopping_an_agent_with_a_stalled_guest_tells_its_sessions() {
     reconciler.reconcile(id).await.expect("stop pass");
     assert!(
         notifications.0.get() > before,
-        "Sessions held by the stalled guest must learn the Agent stopped, so they go Idle"
+        "Sessions held by the stalled guest must learn the agent stopped, so they go Idle"
     );
 }
 
@@ -3543,7 +3543,7 @@ async fn a_failed_stop_reads_as_stopping_and_converges_once_a_retry_stops_it() {
     task.abort();
 }
 
-/// Deletes the Agent `worker` while its Sessions settle, as a delete during a restart's stop does.
+/// Deletes the agent `worker` while its sessions settle, as a delete during a restart's stop does.
 struct DeleteAtSettlement {
     store: Rc<memory::InMemoryAgentStore>,
 }
@@ -3578,7 +3578,7 @@ async fn a_delete_while_a_restart_stops_the_agent_keeps_it_from_booting_again() 
     );
 }
 
-/// An Agent store that deletes the Agent `worker`, once armed, just before the restart's Starting
+/// An agent store that deletes the agent `worker`, once armed, just before the restart's Starting
 /// status is written, as a delete can between a pass's reads and its writes.
 struct DeleteBeforeStarting {
     inner: Rc<memory::InMemoryAgentStore>,

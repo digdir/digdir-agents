@@ -1,6 +1,6 @@
-//! Level-triggered change notification for the Agent and Session resources.
+//! Level-triggered change notification for the agent and session resources.
 //!
-//! Every durable Agent or Session write and every provisioning update advances
+//! Every durable agent or session write and every provisioning update advances
 //! one daemon-wide revision. Watchers never receive the changes themselves:
 //! they wait for the revision to move past the one they last saw and then read
 //! the current state, so a slow watcher can skip intermediate states but never miss the
@@ -10,7 +10,7 @@ use std::{fmt, str::FromStr, time::Duration};
 
 use tokio::sync::watch;
 
-/// Daemon-wide change history of the Agent and Session resources.
+/// Daemon-wide change history of the agent and session resources.
 #[derive(Clone)]
 pub struct Changes {
     epoch: uuid::Uuid,
@@ -117,7 +117,7 @@ impl<'de> serde::Deserialize<'de> for Revision {
     }
 }
 
-/// Every Agent and Session as of one revision.
+/// Every agent and session as of one revision.
 ///
 /// The revision is taken before the state is read, so a change made while it
 /// is read is also reported by the next watch from this revision.
@@ -126,9 +126,9 @@ impl<'de> serde::Deserialize<'de> for Revision {
 pub struct Resources {
     /// Revision to watch from next.
     pub revision: Revision,
-    /// Active Agents ordered by name, with provisioning progress projected.
+    /// Active agents ordered by name, with provisioning progress projected.
     pub agents: Vec<crate::Agent>,
-    /// Durable Sessions of those Agents.
+    /// Durable sessions of those agents.
     pub sessions: Vec<crate::sessions::Session>,
 }
 

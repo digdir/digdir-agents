@@ -1,6 +1,6 @@
 # Agents with their own computer
 
-A [Slidev](https://sli.dev) presentation of `agentctl` and the Sandbox SDK: the architecture, what an Agent definition
+A [Slidev](https://sli.dev) presentation of `agentctl` and the Sandbox SDK: the architecture, what an agent definition
 is, the productivity it brings, the other workloads on the same SDK and onboarding from zero to a running prompt. It
 is written for Digdir's DevOps teams, with Altinn Studio as the example.
 
@@ -14,7 +14,7 @@ npm run dev
 Open <http://localhost:3030>. `f` toggles fullscreen, `o` shows an overview and the arrow keys step through each
 slide's clicks. The presenter view is at <http://localhost:3030/presenter/>.
 
-The dev server listens on `127.0.0.1` only. From inside an Agent, forward the port to your machine:
+The dev server listens on `127.0.0.1` only. From inside an agent, forward the port to your machine:
 
 ```sh
 agentctl port-forward <agent> 3030:3030

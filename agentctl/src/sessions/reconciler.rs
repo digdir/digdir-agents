@@ -1,4 +1,4 @@
-//! At-least-once convergence of one durable Session.
+//! At-least-once convergence of one durable session.
 
 use std::{rc::Rc, time::Duration};
 
@@ -29,7 +29,7 @@ const ARCHIVE_TURN_QUIET_SECONDS: u64 = 60;
 const RESUME_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const RESUME_READY_POLL: Duration = Duration::from_millis(100);
 
-/// Converges persistent Sessions onto the tmux runtime in their Agent's Sandbox.
+/// Converges persistent sessions onto the tmux runtime in their agent's sandbox.
 pub struct Reconciler {
     sessions: SharedStore,
     sandboxes: Rc<AgentSandboxes>,
@@ -40,9 +40,9 @@ pub struct Reconciler {
 }
 
 impl Reconciler {
-    /// Creates a Session reconciler over durable state and the Agent Sandbox service.
+    /// Creates a session reconciler over durable state and the agent sandbox service.
     ///
-    /// `platform_api_url` is the Sandbox-reachable Platform API base URL handed
+    /// `platform_api_url` is the sandbox-reachable Platform API base URL handed
     /// to every harness launch.
     #[must_use]
     pub fn new(
@@ -60,11 +60,11 @@ impl Reconciler {
         }
     }
 
-    /// Stops the harness of a Session marked for release and then removes it.
+    /// Stops the harness of a session marked for release and then removes it.
     ///
-    /// A Sandbox that is gone, unmaterialized or stopped took the harness
+    /// A sandbox that is gone, unmaterialized or stopped took the harness
     /// process with it, so there is nothing left to stop; anything else is an
-    /// error, and the Session stays marked until a later pass can release it.
+    /// error, and the session stays marked until a later pass can release it.
     async fn release(&self, session: &Session) -> Result<(), Error> {
         if let Some(sandbox) = self.release_sandbox(session).await? {
             self.runtime.stop(session, &sandbox).await?;
@@ -72,7 +72,7 @@ impl Reconciler {
         self.sessions.finalize_session_deletion(session.id).await
     }
 
-    /// The Sandbox still holding this Session's harness, if one does.
+    /// The sandbox still holding this session's harness, if one does.
     async fn release_sandbox(&self, session: &Session) -> Result<Option<::sandbox::SandboxHandle>, Error> {
         let agent = match self.sandboxes.agent(session.agent_id).await {
             Ok(agent) => agent,
@@ -98,11 +98,11 @@ impl Reconciler {
         Ok(Some(sandbox))
     }
 
-    /// Stops the harness of an archived Session and keeps it stopped.
+    /// Stops the harness of an archived session and keeps it stopped.
     ///
     /// A turn in progress is waited for, so archiving never cuts one short; a
     /// later pass retries. A turn waiting for approval is not waited for, as
-    /// nobody answers an archived Session. A Sandbox that is gone, stopped or
+    /// nobody answers an archived session. A sandbox that is gone, stopped or
     /// unmaterialized has no harness left to stop.
     async fn converge_archive(&self, session: &Session) -> Result<Lifecycle, Error> {
         if session.status.lifecycle.state == LifecycleState::Archived && session.status.lifecycle.failure.is_none() {
@@ -135,8 +135,8 @@ impl Reconciler {
         Ok(effective_idle_seconds(&session.status.reported.activity, idle_seconds, now) < ARCHIVE_TURN_QUIET_SECONDS)
     }
 
-    /// Settles a Session unarchived before its archive could stop the harness:
-    /// a harness still running is adopted, otherwise the Session is Idle.
+    /// Settles a session unarchived before its archive could stop the harness:
+    /// a harness still running is adopted, otherwise the session is Idle.
     /// Nothing is launched until the next attach.
     async fn settle_unarchived(&self, session: &Session) -> Result<Lifecycle, Error> {
         if let Some(sandbox) = self.release_sandbox(session).await?
@@ -152,7 +152,7 @@ impl Reconciler {
 
     async fn converge(&self, session: &Session) -> Result<Lifecycle, Error> {
         if session.activation_generation == session.observed_activation_generation {
-            // An unarchived Session stays stopped, like an Idle one, until it is attached.
+            // An unarchived session stays stopped, like an Idle one, until it is attached.
             match (&session.status.lifecycle.state, &session.status.lifecycle.failure) {
                 (LifecycleState::Idle, _) | (LifecycleState::Archived, None) => return Ok(Lifecycle::idle()),
                 (LifecycleState::Archived, Some(_)) => return self.settle_unarchived(session).await,
@@ -160,10 +160,10 @@ impl Reconciler {
             }
         }
         let agent = self.sandboxes.agent(session.agent_id).await?;
-        // A stopped Agent's harnesses stop with its VM. The Session is Idle, as after
+        // A stopped agent's harnesses stop with its VM. The session is Idle, as after
         // inactivity, so the next attach after a start resumes its conversation.
         // A recorded stop counts too: a start may already be asked for while the
-        // stop waits for its Sessions to see it.
+        // stop waits for its sessions to see it.
         if agent.agent.spec.is_stopped() || agent.agent.status.is_stopped() {
             self.sessions.reset_session_launch_attempts(session.id).await?;
             return Ok(Lifecycle::idle());
@@ -173,10 +173,10 @@ impl Reconciler {
         }
         let sandbox = self.sandboxes.open(&agent).await?;
         let platform = &sandbox.snapshot().image.platform;
-        // TODO: Generalize the Session runtime when a concrete non-Linux driver establishes its required contract.
+        // TODO: Generalize the session runtime when a concrete non-Linux driver establishes its required contract.
         if platform.os != "linux" {
             return Err(Error::Session(format!(
-                "tmux Sessions require a Linux Sandbox, but the materialized platform is {:?}",
+                "tmux sessions require a Linux sandbox, but the materialized platform is {:?}",
                 platform.os
             )));
         }
@@ -203,7 +203,7 @@ impl Reconciler {
                     .as_ref()
                     .ok_or_else(|| Error::Session("resumed harness has no launch record".into()))?;
                 if state.sandbox != sandbox_id {
-                    return Err(Error::Session("resumed harness belongs to a replaced Sandbox".into()));
+                    return Err(Error::Session("resumed harness belongs to a replaced sandbox".into()));
                 }
                 self.wait_for_resumed_input(session, &sandbox, &state.token).await?;
             }
@@ -222,7 +222,7 @@ impl Reconciler {
                     )));
                 }
             } else {
-                // The Sandbox was replaced, and the harness conversation state
+                // The sandbox was replaced, and the harness conversation state
                 // lived inside it. Start a fresh conversation instead of
                 // resuming an ID whose files no longer exist.
                 resume = None;
@@ -377,7 +377,7 @@ impl crate::controller::Reconcile<SessionId> for Reconciler {
     }
 }
 
-/// Seconds a Session has been inactive, taking the smaller of runtime
+/// Seconds a session has been inactive, taking the smaller of runtime
 /// inactivity (terminal or transcript) and time since the last reported event.
 fn effective_idle_seconds(activity: &Activity, runtime_idle_seconds: u64, now: i64) -> u64 {
     activity.last_event_at.map_or(runtime_idle_seconds, |at| {
@@ -412,10 +412,10 @@ fn host_name() -> String {
     }
 }
 
-/// Holds a Session short of launching while its Agent cannot run it.
+/// Holds a session short of launching while its agent cannot run it.
 ///
 /// The image ships every harness binary, so launching one convergence never installed starts a
-/// process that sits at a login prompt nobody can answer and reports the Session as running.
+/// process that sits at a login prompt nobody can answer and reports the session as running.
 fn launch_blocked(agent: &crate::control_plane::AgentRecord, session: &Session) -> Option<Lifecycle> {
     let installed = agent
         .agent
@@ -434,7 +434,7 @@ fn launch_blocked(agent: &crate::control_plane::AgentRecord, session: &Session) 
         )
     } else if !installed.is_some_and(|installed| installed.contains(&session.harness)) {
         format!(
-            "Agent {:?} does not carry harness {:?}; sign in on the host and the next Agent \
+            "Agent {:?} does not carry harness {:?}; sign in on the host and the next agent \
              convergence installs it",
             agent.agent.metadata.name,
             session.harness.as_str()

@@ -1,4 +1,4 @@
-//! Idempotent Agent setup for Linux Sandboxes.
+//! Idempotent agent setup for Linux sandboxes.
 
 mod command;
 mod home;
@@ -26,35 +26,35 @@ use podman::{configure_podman, point_podman_at_socket};
 use sources::{read_instructions, read_skills};
 use systemd::{SYSTEMCTL, SYSTEMD_RUNNING, systemd_available, wait_for_systemd};
 
-/// The platform-owned Sandbox user every Session, Execution and SSH login runs as.
+/// The platform-owned sandbox user every session, Execution and SSH login runs as.
 pub(crate) const USER: &str = "agent";
 pub(crate) const HOME: &str = "/home/agent";
 pub(crate) const WORKING_DIRECTORY: &str = "/home/agent/code";
-/// Holds the Platform API base URL reachable from the Sandbox, read by harness hooks on every
-/// report. `agentd` binds a new host port on every start; Agent setup rewrites the file first
+/// Holds the Platform API base URL reachable from the sandbox, read by harness hooks on every
+/// report. `agentd` binds a new host port on every start; agent setup rewrites the file first
 /// thing on every pass, so harnesses that outlive a daemon restart follow it as soon as the
-/// restarted daemon starts the Sandbox's network.
+/// restarted daemon starts the sandbox's network.
 ///
-/// Its presence is also how `agentctl` knows it runs inside an Agent, in a Session, an Execution or
+/// Its presence is also how `agentctl` knows it runs inside an agent, in a session, an Execution or
 /// an SSH login alike: [`crate::harness::inside_agent`] checks for this path, so moving the file
-/// or writing it anywhere but in an Agent's Sandbox changes what harness logins with `agentctl`
+/// or writing it anywhere but in an agent's sandbox changes what harness logins with `agentctl`
 /// do there.
 pub(crate) const PLATFORM_API_URL_FILE: &str = "/etc/agent-platform-api-url";
-/// Locale every Sandbox process runs with; the image ships it, so UTF-8 output
+/// Locale every sandbox process runs with; the image ships it, so UTF-8 output
 /// renders regardless of the host's locale.
 pub(crate) const UTF8_LOCALE: &str = "C.UTF-8";
-/// Terminal type every Sandbox terminal runs with. Host-specific TERM names are
-/// not necessarily installed in the Sandbox image; this baseline is.
+/// Terminal type every sandbox terminal runs with. Host-specific TERM names are
+/// not necessarily installed in the sandbox image; this baseline is.
 pub(crate) const PORTABLE_TERMINAL: &str = "xterm-256color";
 
-/// Agent setup for Linux Sandboxes.
+/// Agent setup for Linux sandboxes.
 pub struct Linux {
     platform_api_url: String,
 }
 
 impl Linux {
     /// Creates the adapter that points harnesses at `platform_api_url`, the Platform API base
-    /// URL reachable from the Sandbox.
+    /// URL reachable from the sandbox.
     #[must_use]
     pub fn new(platform_api_url: impl Into<String>) -> Self {
         Self {
@@ -63,7 +63,7 @@ impl Linux {
     }
 }
 
-/// Points harness hooks in the Sandbox at `platform_api_url`.
+/// Points harness hooks in the sandbox at `platform_api_url`.
 async fn install_platform_api_url(sandbox: &SandboxHandle, platform_api_url: &str) -> Result<(), Error> {
     write_if_changed(
         sandbox,
@@ -142,7 +142,7 @@ impl Linux {
         let archive = archive_home(record.source_directory.clone(), record.agent.spec.home.source.clone()).await?;
         sync_home(sandbox, archive).await?;
         if podman {
-            // After the home sync, so a file of the same name in the Agent's home cannot replace it.
+            // After the home sync, so a file of the same name in the agent's home cannot replace it.
             point_podman_at_socket(sandbox).await?;
         }
         configure_git_identity(sandbox).await?;
@@ -158,7 +158,7 @@ impl Linux {
         let own = read_instructions(record, &mut missing).await?;
         let mut skills = read_skills(record, &mut missing).await?;
         let platform_skill = harness::platform_skill();
-        // An Agent's own skill of the same name replaces the platform's.
+        // An agent's own skill of the same name replaces the platform's.
         if !skills.iter().any(|skill| skill.name == platform_skill.name) {
             skills.push(platform_skill);
         }
@@ -172,7 +172,7 @@ impl Linux {
             let instructions = if let Some(own) = &own {
                 preamble::place(&section, own)
             } else {
-                // Without instructions of its own, the Agent's image or home overlay may own the file: the section
+                // Without instructions of its own, the agent's image or home overlay may own the file: the section
                 // goes above what it holds. The home sync restores an overlay's file on every pass, so for a
                 // moment before this rewrite it lacks the section.
                 let path = harness::instructions_path(installation.kind, HOME);
@@ -190,7 +190,7 @@ impl Linux {
 const MAX_OWNED_INSTRUCTIONS: usize = 1024 * 1024;
 
 /// What the image or home overlay put in a harness's instruction file: nothing when it does not
-/// exist. The Sandbox user can replace the file, so it must be a regular file and is read only up
+/// exist. The sandbox user can replace the file, so it must be a regular file and is read only up
 /// to a bound; anything else fails setup rather than losing the file's text.
 async fn read_owned_instructions(sandbox: &SandboxHandle, path: &str) -> Result<Vec<u8>, Error> {
     if !path_exists(sandbox, "-e", path).await? {
@@ -198,12 +198,12 @@ async fn read_owned_instructions(sandbox: &SandboxHandle, path: &str) -> Result<
     }
     if !path_exists(sandbox, "-f", path).await? {
         return Err(Error::SandboxSetup(format!(
-            "{path} is not a regular file, so the Agent sandbox section cannot be placed above it"
+            "{path} is not a regular file, so the agent sandbox section cannot be placed above it"
         )));
     }
     read_existing(sandbox, path, MAX_OWNED_INSTRUCTIONS).await.ok_or_else(|| {
         Error::SandboxSetup(format!(
-            "{path} is unreadable or larger than {MAX_OWNED_INSTRUCTIONS} bytes, so the Agent sandbox section cannot be \
+            "{path} is unreadable or larger than {MAX_OWNED_INSTRUCTIONS} bytes, so the agent sandbox section cannot be \
              placed above it"
         ))
     })

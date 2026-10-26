@@ -9,11 +9,11 @@
 # --password-store=basic after these, so the browsers it starts keep the basic store.
 set -eu
 
-# Chromium's trust in the Agent CA is imported in the background after boot. Wait a little for it,
+# Chromium's trust in the agent CA is imported in the background after boot. Wait a little for it,
 # then start regardless: an untrusted page is better than no browser.
 ready=${AGENT_BROWSER_CA_READY_FILE:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/chromium-ca-ready}
 if [ ! -e "$ready" ]; then
-    echo "chromium: waiting for the Agent CA bundle to be imported" >&2
+    echo "chromium: waiting for the agent CA bundle to be imported" >&2
     attempts=0
     while [ ! -e "$ready" ] && [ "$attempts" -lt 600 ]; do
         sleep 0.1

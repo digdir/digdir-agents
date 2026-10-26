@@ -1,5 +1,5 @@
 [Unit]
-Description=Clone the Agent workspace repositories
+Description=Clone the agent workspace repositories
 Wants=network-online.target
 After=network-online.target
 ConditionDirectoryNotEmpty=/etc/agent-workspace.d

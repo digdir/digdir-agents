@@ -2,8 +2,8 @@
 <!--
   Deterministic window placement for an agent-driven desktop: one desktop, no animations, and
   every window maximized, so a screenshot taken now and one taken after a restart put the same
-  interface at the same coordinates. System-wide rather than under the Agent's home directory,
-  which the platform resynchronizes from the host on every Sandbox setup.
+  interface at the same coordinates. System-wide rather than under the agent's home directory,
+  which the platform resynchronizes from the host on every sandbox setup.
 -->
 <openbox_config xmlns="http://openbox.org/3.4/rc">
   <resistance>

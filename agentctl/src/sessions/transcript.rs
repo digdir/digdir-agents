@@ -1,4 +1,4 @@
-//! Runtime-neutral conversation turns read from a Session.
+//! Runtime-neutral conversation turns read from a session.
 
 use serde::{Deserialize, Serialize};
 

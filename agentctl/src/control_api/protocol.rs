@@ -105,7 +105,7 @@ pub(crate) struct NameParams {
 #[serde(deny_unknown_fields)]
 pub(crate) struct RestartParams {
     pub name: String,
-    /// Ends the Sandbox at once instead of letting its guest shut down.
+    /// Ends the sandbox at once instead of letting its guest shut down.
     #[serde(default, skip_serializing_if = "is_false")]
     pub now: bool,
 }

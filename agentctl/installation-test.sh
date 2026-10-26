@@ -19,7 +19,7 @@ fi
 # as the target version, until the next build without AGENT_VERSION.
 binary_directory="${target_directory}/debug"
 # Binaries, archives and installations are kept beside the target directory:
-# CI runners and Sandboxes may keep /tmp on a small tmpfs, and the copies of the
+# CI runners and sandboxes may keep /tmp on a small tmpfs, and the copies of the
 # dev-profile binaries do not fit there.
 files_root="${target_directory}/installation-test-${AGENT_SMOKE_ID}"
 target_binaries="${files_root}/target-binaries"

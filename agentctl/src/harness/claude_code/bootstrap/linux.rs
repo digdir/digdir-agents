@@ -1,4 +1,4 @@
-//! Linux Sandbox configuration for mediated Claude Code authentication.
+//! Linux sandbox configuration for mediated Claude Code authentication.
 
 use sandbox::SandboxHandle;
 
@@ -13,7 +13,7 @@ use super::super::ACCESS_PLACEHOLDER;
 const TRANSCRIPT_RETENTION_DAYS: u32 = 36_500;
 
 /// Claude Code reads managed settings in every process, including ones an interface such as T3 Code
-/// or a login shell starts, which never see the Session launch settings. A drop-in leaves an image's
+/// or a login shell starts, which never see the session launch settings. A drop-in leaves an image's
 /// own `managed-settings.json` in place.
 const MANAGED_SETTINGS_DIRECTORY: &str = "/etc/claude-code/managed-settings.d";
 const MANAGED_SETTINGS_PATH: &str = "/etc/claude-code/managed-settings.d/10-agent-platform.json";
@@ -49,15 +49,15 @@ pub(super) async fn configure(
     let mut settings = sandbox_settings();
     // Sessions also report activity. Their hooks include the Bash approval.
     settings.insert("hooks".into(), super::super::hooks::configuration(&hook_path));
-    // The platform launches every Session in bypass mode. Keep its acknowledgement in
-    // these launch settings: an Agent's home overlay can replace Claude's user settings.
+    // The platform launches every session in bypass mode. Keep its acknowledgement in
+    // these launch settings: an agent's home overlay can replace Claude's user settings.
     settings.insert("skipDangerousModePermissionPrompt".into(), true.into());
     settings.insert(
         "statusLine".into(),
         super::super::status_line::configuration(&status_line_path),
     );
     write_if_changed(sandbox, &settings_path, &serde_json::to_vec(&settings)?).await?;
-    // The launch settings above repeat these for Sessions: when an organization delivers managed
+    // The launch settings above repeat these for sessions: when an organization delivers managed
     // settings, Claude Code takes from a managed settings file only what restricts.
     run_checked(
         sandbox,
@@ -78,7 +78,7 @@ pub(super) async fn configure(
         ["/usr/bin/chmod", "644", MANAGED_SETTINGS_PATH],
     )
     .await?;
-    // Runtime file transfer writes as the Sandbox supervisor (root), while
+    // Runtime file transfer writes as the sandbox supervisor (root), while
     // executions run as the image user. Correct only the directories and files
     // managed above: recursive ownership walks would traverse the growing
     // harness state tree on every reconciliation pass.
@@ -108,7 +108,7 @@ pub(super) async fn configure(
     crate::harness::skills::install_linux(sandbox, &skills_path, skills).await
 }
 
-/// Settings for every Claude Code process in the Sandbox, whoever starts it.
+/// Settings for every Claude Code process in the sandbox, whoever starts it.
 fn sandbox_settings() -> serde_json::Map<String, serde_json::Value> {
     serde_json::Map::from_iter([
         // HACK: the mediated setup token is inference-only, so Claude Code cannot read the
@@ -125,7 +125,7 @@ fn sandbox_settings() -> serde_json::Map<String, serde_json::Value> {
                 "CLAUDE_CODE_RATE_LIMIT_TIER": "default_claude_max_5x"
             }),
         ),
-        // Claude Code deletes transcripts untouched for 30 days by default, so an Idle Session
+        // Claude Code deletes transcripts untouched for 30 days by default, so an Idle session
         // would resume into a fresh conversation. Discarding a conversation is the platform's call.
         ("cleanupPeriodDays".to_owned(), TRANSCRIPT_RETENTION_DAYS.into()),
         (

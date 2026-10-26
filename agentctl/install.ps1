@@ -20,11 +20,11 @@ function Invoke-Completion($Journal) {
     $Target = $Journal.targetRelease
     $TargetVersion = $Journal.targetVersion
     if (-not $Target -or -not $TargetVersion) {
-        throw "The Agent update journal does not name a usable staged release: $JournalPath"
+        throw "The agent update journal does not name a usable staged release: $JournalPath"
     }
     $Agentctl = Join-Path $Target "agentctl.exe"
     if (-not (Test-Path $Agentctl -PathType Leaf)) {
-        throw "The Agent update journal does not name a usable staged release: $JournalPath"
+        throw "The agent update journal does not name a usable staged release: $JournalPath"
     }
     $Arguments = @(
         "--home", $AgentHome, "self", "__complete-update",
@@ -34,7 +34,7 @@ function Invoke-Completion($Journal) {
     )
     if ($Journal.previousRelease) { $Arguments += @("--previous-release", $Journal.previousRelease) }
     & $Agentctl @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "Target Agent updater exited with code $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0) { throw "Target agent updater exited with code $LASTEXITCODE" }
 }
 
 if ($InstallMode -eq "managed" -and (Test-Path $JournalPath -PathType Leaf)) {
@@ -90,7 +90,7 @@ try {
         Push-Location $SourceRelease
         try {
             tar -xzf "../$Archive"
-            if ($LASTEXITCODE -ne 0) { throw "Failed to extract Agent archive" }
+            if ($LASTEXITCODE -ne 0) { throw "Failed to extract agent archive" }
         } finally {
             Pop-Location
         }
@@ -104,7 +104,7 @@ try {
         & (Join-Path $SourceRelease "agentctl.exe") --home $AgentHome self __publish-release `
             --install-root $InstallRoot --bin-directory $BinDirectory `
             --source-release $SourceRelease --target-version $Version
-        if ($LASTEXITCODE -ne 0) { throw "Target Agent publisher exited with code $LASTEXITCODE" }
+        if ($LASTEXITCODE -ne 0) { throw "Target agent publisher exited with code $LASTEXITCODE" }
     }
 
     $Previous = $null

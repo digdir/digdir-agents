@@ -1,4 +1,4 @@
-//! What the open menu offers for one Agent, and why an item is unavailable.
+//! What the open menu offers for one agent, and why an item is unavailable.
 //!
 //! The side panel's Connect section follows the same rules, so the panel never
 //! promises something the menu then refuses.
@@ -13,7 +13,7 @@ use agent::{Agent, Condition, ConditionStatus};
 
 use crate::launch::Editor;
 
-/// Where the Agent's desktop is shown.
+/// Where the agent's desktop is shown.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DesktopViewer {
     /// The browser-based viewer the image serves.
@@ -32,14 +32,14 @@ impl DesktopViewer {
     }
 }
 
-/// One way into an Agent.
+/// One way into an agent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OpenTarget {
-    /// A login shell in the Sandbox, in this terminal.
+    /// A login shell in the sandbox, in this terminal.
     Shell,
     /// An editor on this machine, connected over SSH.
     Editor(Editor),
-    /// The Agent's desktop, forwarded to this machine.
+    /// The agent's desktop, forwarded to this machine.
     Desktop(DesktopViewer),
     /// An OpenSSH login, in this terminal.
     SshShell,
@@ -50,7 +50,7 @@ pub(crate) enum OpenTarget {
 impl OpenTarget {
     pub(crate) fn label(self) -> String {
         match self {
-            Self::Shell => "Shell in the Sandbox".into(),
+            Self::Shell => "Shell in the sandbox".into(),
             Self::Editor(Editor::VsCode) => "VS Code, Remote-SSH".into(),
             Self::Editor(editor) => editor.label().into(),
             Self::Desktop(DesktopViewer::Browser) => "Desktop in the browser".into(),
@@ -81,14 +81,14 @@ impl OpenTarget {
         }
     }
 
-    /// Whether the target reaches the Agent through the user's own OpenSSH
+    /// Whether the target reaches the agent through the user's own OpenSSH
     /// configuration, which then needs the generated one included.
     pub(crate) const fn needs_include(self) -> bool {
         matches!(self, Self::Editor(_) | Self::CopyAlias)
     }
 }
 
-/// One row of the open menu: a way into the Agent, or the SSH setup editors need.
+/// One row of the open menu: a way into the agent, or the SSH setup editors need.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MenuEntry {
     Open(OpenTarget),
@@ -116,7 +116,7 @@ impl MenuEntry {
 /// configuration runs commands of theirs, which must not hold the check forever.
 const SSH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Whether the user's OpenSSH configuration reaches Agents through the generated one.
+/// Whether the user's OpenSSH configuration reaches agents through the generated one.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum SshSetup {
     /// Not checked yet, or OpenSSH could not tell: it is missing, timed out
@@ -196,7 +196,7 @@ pub(crate) struct OpenItem {
     pub(crate) unavailable: Option<String>,
 }
 
-/// The open menu for one Agent, with its selected row.
+/// The open menu for one agent, with its selected row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OpenMenu {
     pub(crate) agent: String,
@@ -293,7 +293,7 @@ pub(crate) fn items(agent: &Agent, environment: &Environment, setup: SshSetup) -
     items
 }
 
-/// The Agent's Connect section for the side panel: what the menu offers and
+/// The agent's Connect section for the side panel: what the menu offers and
 /// what stands in the way, without the rows' keys. `desktop` is the address
 /// that opens a desktop forward this TUI holds open, if any.
 pub(crate) fn connect_lines(

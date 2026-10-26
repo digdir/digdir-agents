@@ -1,6 +1,6 @@
 ---
 name: changelog
-description: Write and edit agentctl/CHANGELOG.md entries as release notes for the people who use agentctl and its Agents. Use when adding or changing a changelog entry, when a pull request needs one, or when preparing a release's changelog.
+description: Write and edit agentctl/CHANGELOG.md entries as release notes for the people who use agentctl and its agents. Use when adding or changing a changelog entry, when a pull request needs one, or when preparing a release's changelog.
 ---
 
 # Changelog entries

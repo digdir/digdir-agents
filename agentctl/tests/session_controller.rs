@@ -66,7 +66,7 @@ impl Reconcile<AgentId> for BlockingAgentReady {
                             provider: ProviderId::new("memory")?,
                             id: "3f978c33-4d43-4ea4-b58d-10b90ef166af"
                                 .parse()
-                                .map_err(|error| Error::Database(format!("test Sandbox ID: {error}")))?,
+                                .map_err(|error| Error::Database(format!("test sandbox ID: {error}")))?,
                             harnesses: record.agent.spec.harnesses.iter().map(|i| i.kind).collect(),
                         }),
                         vec![Condition {
@@ -248,7 +248,7 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
     }
 }
 
-/// A throwaway Sandbox service and tmux runtime for Session Service tests that
+/// A throwaway sandbox service and tmux runtime for session Service tests that
 /// never reach the runtime (they resolve with `WaitPolicy::FirstPass`).
 fn unused_sandboxes() -> Rc<agent::sandbox::Service> {
     let backend = Rc::new(sandbox_memory::Provider::new());
@@ -258,7 +258,7 @@ fn unused_sandboxes() -> Rc<agent::sandbox::Service> {
     });
     Rc::new(
         agent::sandbox::Service::new([provider], [Rc::new(NoopPlatform) as Rc<dyn PlatformAdapter>])
-            .expect("Agent Sandbox service"),
+            .expect("Agent sandbox service"),
     )
 }
 
@@ -266,7 +266,7 @@ fn tmux_runtime() -> Rc<dyn agent::sessions::SessionRuntime> {
     Rc::new(agent::sessions::Tmux)
 }
 
-/// A scripted Session runtime: records deliveries and launches, serves a
+/// A scripted session runtime: records deliveries and launches, serves a
 /// conversation the test appends to.
 struct FakeRuntime {
     /// Whether the harness process is present; a launch is expected when it is not.
@@ -465,13 +465,13 @@ impl agent::sessions::SessionRuntime for FakeRuntime {
     }
 }
 
-/// A database, a materialized memory Sandbox for Agent `worker`, and one
-/// Running Session `s1` launched with `token`; with `started`, its harness has
+/// A database, a materialized memory sandbox for agent `worker`, and one
+/// Running session `s1` launched with `token`; with `started`, its harness has
 /// already reported its start (native ID and conversation location).
-/// The Agent's materialized assignment, observing exactly these harnesses.
+/// The agent's materialized assignment, observing exactly these harnesses.
 fn observing(record: &AgentRecord, harnesses: &[agent::Harness]) -> SandboxAssignment {
     let Some(SandboxAssignment::Materialized { provider, id, .. }) = &record.agent.status.sandbox else {
-        panic!("the fixture Agent has a materialized Sandbox");
+        panic!("the fixture agent has a materialized sandbox");
     };
     SandboxAssignment::Materialized {
         provider: provider.clone(),
@@ -524,7 +524,7 @@ async fn running_session(
             spec,
         ))
         .await
-        .expect("materialized Sandbox");
+        .expect("materialized sandbox");
     record.agent.status.sandbox = Some(SandboxAssignment::Materialized {
         provider: ProviderId::new("memory").expect("Provider ID"),
         id: sandbox.id().clone(),
@@ -538,7 +538,7 @@ async fn running_session(
     });
     let sandboxes = Rc::new(
         agent::sandbox::Service::new([provider], [Rc::new(NoopPlatform) as Rc<dyn PlatformAdapter>])
-            .expect("Agent Sandbox service"),
+            .expect("Agent sandbox service"),
     );
     let session = database
         .ensure_session(
@@ -657,13 +657,13 @@ async fn prompt_waits_for_completion_and_turns_are_read_separately() {
         agent_store.clone(),
         Rc::new(NoopAgentReconcile),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Agent reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected agent reconciliation error: {error}")),
     );
     let (session_controller, session_wakeup) = agent::sessions::Controller::new(
         session_store.clone(),
         Rc::new(MarkSessionReady(database.clone())),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Session reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected session reconciliation error: {error}")),
     );
     let agent_task = tokio::task::spawn_local(agent_controller.run());
     let session_task = tokio::task::spawn_local(session_controller.run());
@@ -756,13 +756,13 @@ async fn prompt_wait_reports_a_failed_session_instead_of_hanging() {
         agent_store.clone(),
         Rc::new(NoopAgentReconcile),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Agent reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected agent reconciliation error: {error}")),
     );
     let (session_controller, session_wakeup) = agent::sessions::Controller::new(
         session_store.clone(),
         Rc::new(MarkSessionReady(database.clone())),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Session reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected session reconciliation error: {error}")),
     );
     let agent_task = tokio::task::spawn_local(agent_controller.run());
     let session_task = tokio::task::spawn_local(session_controller.run());
@@ -798,7 +798,7 @@ async fn prompt_wait_reports_a_failed_session_instead_of_hanging() {
     let error = send
         .await
         .expect("send task")
-        .expect_err("a failed Session ends the wait");
+        .expect_err("a failed session ends the wait");
     assert!(error.to_string().contains("harness exited"), "{error}");
     agent_task.abort();
     session_task.abort();
@@ -817,13 +817,13 @@ async fn prompt_wait_handles_mid_turn_input_after_a_late_start_report() {
         agent_store.clone(),
         Rc::new(NoopAgentReconcile),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Agent reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected agent reconciliation error: {error}")),
     );
     let (session_controller, session_wakeup) = agent::sessions::Controller::new(
         session_store.clone(),
         Rc::new(MarkSessionReady(database.clone())),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Session reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected session reconciliation error: {error}")),
     );
     let agent_task = tokio::task::spawn_local(agent_controller.run());
     let session_task = tokio::task::spawn_local(session_controller.run());
@@ -837,7 +837,7 @@ async fn prompt_wait_handles_mid_turn_input_after_a_late_start_report() {
     let name = SessionName::new("s1").expect("name");
     let token: agent::sessions::LaunchToken = TOKEN.parse().expect("token");
 
-    // The Session has launched but its harness has not reported its start:
+    // The session has launched but its harness has not reported its start:
     // nothing is delivered until it does.
     let sending_service = service.clone();
     let sending_name = name.clone();
@@ -920,7 +920,7 @@ async fn prompt_wait_handles_mid_turn_input_after_a_late_start_report() {
     session_task.abort();
 }
 
-/// A Session service over a started `s1` with a fake runtime, with a database
+/// A session service over a started `s1` with a fake runtime, with a database
 /// the test writes harness reports through.
 struct ServiceHarness {
     database: persistence::Database,
@@ -945,13 +945,13 @@ impl ServiceHarness {
             agent_store.clone(),
             Rc::new(NoopAgentReconcile),
             Duration::from_mins(1),
-            Rc::new(|_, error| panic!("unexpected Agent reconciliation error: {error}")),
+            Rc::new(|_, error| panic!("unexpected agent reconciliation error: {error}")),
         );
         let (session_controller, session_wakeup) = agent::sessions::Controller::new(
             session_store.clone(),
             Rc::new(MarkSessionReady(database.clone())),
             Duration::from_mins(1),
-            Rc::new(|_, error| panic!("unexpected Session reconciliation error: {error}")),
+            Rc::new(|_, error| panic!("unexpected session reconciliation error: {error}")),
         );
         let tasks = vec![
             tokio::task::spawn_local(agent_controller.run()),
@@ -962,7 +962,7 @@ impl ServiceHarness {
         session_wakeup
             .reconcile(session.id)
             .await
-            .expect("startup Session reconciliation");
+            .expect("startup session reconciliation");
         let service = Rc::new(agent::sessions::Service::new(
             session_store,
             Rc::new(agent::sessions::AgentSandboxes::new(agent_store.clone(), sandboxes)),
@@ -1124,7 +1124,7 @@ async fn daemon_owned_relaunch_marker_is_retryable_and_removed_after_success() {
             matched_generation,
         )
         .await
-        .expect("Idle Session");
+        .expect("Idle session");
     let marker = home.pending_session_relaunch_path();
     std::fs::write(&marker, br#"{"buildVersion":"another-build"}"#).expect("write mismatched marker");
     let mismatch = agent::upgrade::consume_pending_session_relaunch(&home, &harness.service)
@@ -1155,7 +1155,7 @@ async fn daemon_owned_relaunch_marker_is_retryable_and_removed_after_success() {
         .database
         .get_session(harness.session.id)
         .await
-        .expect("reactivated Session");
+        .expect("reactivated session");
     assert_eq!(
         reactivated.status.lifecycle.state,
         agent::sessions::LifecycleState::Idle
@@ -1208,7 +1208,7 @@ async fn upgrade_reactivates_an_idle_session_whose_runtime_is_already_missing() 
             matched_generation,
         )
         .await
-        .expect("Idle Session");
+        .expect("Idle session");
     harness.runtime.present.set(false);
 
     harness
@@ -1392,13 +1392,13 @@ async fn a_prompt_without_wait_still_waits_for_the_harness_to_report_in() {
         agent_store.clone(),
         Rc::new(NoopAgentReconcile),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Agent reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected agent reconciliation error: {error}")),
     );
     let (session_controller, session_wakeup) = agent::sessions::Controller::new(
         session_store.clone(),
         Rc::new(MarkSessionReady(database.clone())),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Session reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected session reconciliation error: {error}")),
     );
     let agent_task = tokio::task::spawn_local(agent_controller.run());
     let session_task = tokio::task::spawn_local(session_controller.run());
@@ -1547,7 +1547,7 @@ async fn a_fresh_launch_carries_the_first_prompt_and_a_resume_does_not() {
     assert_eq!(
         runtime.launches.borrow().last().expect("second launch"),
         &(None, None),
-        "a Sandbox replacement does not replay the task"
+        "a sandbox replacement does not replay the task"
     );
 
     // Once the harness has reported a conversation, a relaunch resumes it and
@@ -1587,7 +1587,7 @@ async fn a_fresh_launch_carries_the_first_prompt_and_a_resume_does_not() {
     assert_eq!(
         relaunched.status.reported.harness_transcript_path.as_deref(),
         Some("/home/agent/t.jsonl"),
-        "a relaunch in the same Sandbox keeps the reported conversation"
+        "a relaunch in the same sandbox keeps the reported conversation"
     );
     assert_eq!(
         relaunched.status.state,
@@ -1710,8 +1710,8 @@ async fn temporarily_unready_agent_preserves_pending_resume_readiness() {
     database
         .update_status(session.agent_id, owner.agent.metadata.generation, Status::default())
         .await
-        .expect("temporarily unready Agent");
-    reconciler.reconcile(session.id).await.expect("observe unready Agent");
+        .expect("temporarily unready agent");
+    reconciler.reconcile(session.id).await.expect("observe unready agent");
     assert_eq!(
         database
             .get_session(session.id)
@@ -1725,7 +1725,7 @@ async fn temporarily_unready_agent_preserves_pending_resume_readiness() {
     database
         .update_status(session.agent_id, owner.agent.metadata.generation, owner.agent.status)
         .await
-        .expect("restore ready Agent");
+        .expect("restore ready agent");
     runtime.ready_without_report.set(true);
     reconciler.reconcile(session.id).await.expect("retry readiness");
 
@@ -1750,7 +1750,7 @@ async fn transient_resume_readiness_failure_is_retried() {
     );
 }
 
-/// A Session service over a two-harness Agent whose installations declare
+/// A session service over a two-harness agent whose installations declare
 /// manifest defaults: Claude Code (default) selects `fable`, Codex `high` effort.
 struct SelectionFixture {
     database: persistence::Database,
@@ -1785,13 +1785,13 @@ async fn selection_fixture(directory: &TempDir) -> SelectionFixture {
         agent_store.clone(),
         Rc::new(NoopAgentReconcile),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Agent reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected agent reconciliation error: {error}")),
     );
     let (session_controller, session_wakeup) = agent::sessions::Controller::new(
         session_store.clone(),
         Rc::new(MarkSessionReady(database.clone())),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Session reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected session reconciliation error: {error}")),
     );
     let agent_task = tokio::task::spawn_local(agent_controller.run());
     let session_task = tokio::task::spawn_local(session_controller.run());
@@ -1815,11 +1815,11 @@ async fn selection_fixture(directory: &TempDir) -> SelectionFixture {
     }
 }
 
-/// The original race: a Session admitted before its Agent had ever converged.
+/// The original race: a session admitted before its agent had ever converged.
 ///
 /// Admission cannot know whether an optional harness will be installed, because nothing has been
-/// observed yet, so the Session is persisted and activated. Convergence then omits Codex. The
-/// reconciler must park the Session rather than launch a harness the image ships but nothing
+/// observed yet, so the session is persisted and activated. Convergence then omits Codex. The
+/// reconciler must park the session rather than launch a harness the image ships but nothing
 /// authenticated — and must start it once a later convergence installs Codex.
 #[tokio::test(flavor = "local")]
 async fn a_session_admitted_before_convergence_is_parked_until_its_optional_harness_is_installed() {
@@ -1853,7 +1853,7 @@ async fn a_session_admitted_before_convergence_is_parked_until_its_optional_harn
             spec,
         ))
         .await
-        .expect("materialized Sandbox");
+        .expect("materialized sandbox");
     // Convergence found no Codex host login, so it installed and observed only Claude Code.
     record.agent.status.sandbox = Some(SandboxAssignment::Materialized {
         provider: ProviderId::new("memory").expect("Provider ID"),
@@ -1867,10 +1867,10 @@ async fn a_session_admitted_before_convergence_is_parked_until_its_optional_harn
     });
     let sandboxes = Rc::new(
         agent::sandbox::Service::new([provider], [Rc::new(NoopPlatform) as Rc<dyn PlatformAdapter>])
-            .expect("Agent Sandbox service"),
+            .expect("Agent sandbox service"),
     );
 
-    // The Session was admitted on Codex before the Agent had observed anything.
+    // The session was admitted on Codex before the agent had observed anything.
     let session = database
         .ensure_session(
             "worker",
@@ -1914,7 +1914,7 @@ async fn a_session_admitted_before_convergence_is_parked_until_its_optional_harn
         "an uninstalled harness must not be launched"
     );
 
-    // `agentctl codex login`, and the next Agent convergence installs and observes it.
+    // `agentctl codex login`, and the next agent convergence installs and observes it.
     observe_all_harnesses(&mut record);
     database
         .update_status(agent_id, record.agent.metadata.generation, record.agent.status.clone())
@@ -1924,14 +1924,14 @@ async fn a_session_admitted_before_convergence_is_parked_until_its_optional_harn
     reconciler.reconcile(session.id).await.expect("starts once installed");
     assert!(
         !runtime.launch_tokens.borrow().is_empty(),
-        "the Session starts once its harness is installed"
+        "the session starts once its harness is installed"
     );
 }
 
-/// A Session on a harness the Agent's Sandbox does not carry is refused, Ready or not.
+/// A session on a harness the agent's sandbox does not carry is refused, Ready or not.
 ///
-/// A failed convergence pass keeps a valid observation, so the refusal must still apply: the Agent
-/// materialized its Sandbox and observed only Claude Code, then a later pass failed and cleared
+/// A failed convergence pass keeps a valid observation, so the refusal must still apply: the agent
+/// materialized its sandbox and observed only Claude Code, then a later pass failed and cleared
 /// readiness while preserving that observation. Gating on readiness would defer there, bind the
 /// name to Codex, and then skip the post-convergence check when `converge` returns the failure.
 #[tokio::test(flavor = "local")]
@@ -2036,7 +2036,7 @@ async fn session_ensure_resolves_explicit_and_implicit_harnesses() {
             WaitPolicy::FirstPass,
         )
         .await
-        .expect("explicit harness Session");
+        .expect("explicit harness session");
     let implicit = service
         .ensure(
             "worker",
@@ -2045,7 +2045,7 @@ async fn session_ensure_resolves_explicit_and_implicit_harnesses() {
             WaitPolicy::FirstPass,
         )
         .await
-        .expect("implicit default Session");
+        .expect("implicit default session");
 
     assert_eq!(explicit.session.harness, agent::Harness::Codex);
     assert_eq!(implicit.session.harness, agent::Harness::ClaudeCode);
@@ -2061,7 +2061,7 @@ async fn session_ensure_resolves_explicit_and_implicit_harnesses() {
             WaitPolicy::FirstPass,
         )
         .await
-        .expect_err("an existing Session keeps its harness");
+        .expect_err("an existing session keeps its harness");
     assert!(conflict.to_string().contains("already uses harness \"codex\""));
 
     agent_task.abort();
@@ -2104,7 +2104,7 @@ async fn session_ensure_resolves_model_and_effort_with_manifest_defaults() {
     let implicit = fixture
         .ensure("implicit", SessionRequest::default())
         .await
-        .expect("implicit default Session");
+        .expect("implicit default session");
     assert_eq!(recorded(&implicit), (Some("fable"), None));
     let codex = fixture
         .ensure(
@@ -2115,13 +2115,13 @@ async fn session_ensure_resolves_model_and_effort_with_manifest_defaults() {
             },
         )
         .await
-        .expect("Codex Session");
+        .expect("Codex session");
     assert_eq!(recorded(&codex), (None, Some("high")));
 
     let chosen = fixture
         .ensure("chosen", selection(Some("claude-opus-5"), Some("low")))
         .await
-        .expect("explicit selections Session");
+        .expect("explicit selections session");
     assert_eq!(chosen.harness, agent::Harness::ClaudeCode);
     assert_eq!(recorded(&chosen), (Some("claude-opus-5"), Some("low")));
 
@@ -2133,7 +2133,7 @@ async fn session_ensure_resolves_model_and_effort_with_manifest_defaults() {
     let model_conflict = fixture
         .ensure("chosen", selection(Some("fable"), None))
         .await
-        .expect_err("an existing Session keeps its model");
+        .expect_err("an existing session keeps its model");
     assert!(
         model_conflict
             .to_string()
@@ -2143,7 +2143,7 @@ async fn session_ensure_resolves_model_and_effort_with_manifest_defaults() {
     let effort_conflict = fixture
         .ensure("implicit", selection(None, Some("max")))
         .await
-        .expect_err("an existing Session keeps the harness default effort");
+        .expect_err("an existing session keeps the harness default effort");
     assert!(
         effort_conflict
             .to_string()
@@ -2151,7 +2151,7 @@ async fn session_ensure_resolves_model_and_effort_with_manifest_defaults() {
         "{effort_conflict}"
     );
 
-    // A changed manifest default never reaches an existing Session.
+    // A changed manifest default never reaches an existing session.
     let mut changed = fixture.record.clone();
     changed.agent.spec.harnesses[0].defaults.model = Some(agent::Model::new("claude-sonnet-5").expect("model"));
     fixture
@@ -2162,12 +2162,12 @@ async fn session_ensure_resolves_model_and_effort_with_manifest_defaults() {
     let relaunched = fixture
         .ensure("implicit", SessionRequest::default())
         .await
-        .expect("existing Session under changed defaults");
+        .expect("existing session under changed defaults");
     assert_eq!(recorded(&relaunched), (Some("fable"), None));
     let fresh = fixture
         .ensure("fresh", SessionRequest::default())
         .await
-        .expect("new Session under changed defaults");
+        .expect("new session under changed defaults");
     assert_eq!(recorded(&fresh), (Some("claude-sonnet-5"), None));
     fixture.agent_task.abort();
     fixture.session_task.abort();
@@ -2199,7 +2199,7 @@ async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() 
             spec,
         ))
         .await
-        .expect("materialized Sandbox");
+        .expect("materialized sandbox");
     record.agent.status.sandbox = Some(SandboxAssignment::Materialized {
         provider: ProviderId::new("memory").expect("Provider ID"),
         id: sandbox.id().clone(),
@@ -2215,7 +2215,7 @@ async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() 
         )
         .await
         .expect("Session");
-    let activation = database.activate_session(session.id).await.expect("activate Session");
+    let activation = database.activate_session(session.id).await.expect("activate session");
     database
         .update_session_lifecycle(session.id, agent::sessions::Lifecycle::running(), activation)
         .await
@@ -2247,7 +2247,7 @@ async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() 
     });
     let sandboxes = Rc::new(
         agent::sandbox::Service::new([provider], [Rc::new(NoopPlatform) as Rc<dyn PlatformAdapter>])
-            .expect("Agent Sandbox service"),
+            .expect("Agent sandbox service"),
     );
     let sessions: Rc<dyn agent::sessions::SessionStore> = Rc::new(database.clone());
     let agents: Rc<dyn agent::control_plane::AgentStore> = Rc::new(database.clone());
@@ -2259,7 +2259,7 @@ async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() 
     );
 
     reconciler.reconcile(session.id).await.expect("idle reconciliation");
-    let idle = database.get_session(session.id).await.expect("Idle Session");
+    let idle = database.get_session(session.id).await.expect("Idle session");
     assert_eq!(idle.status.lifecycle.state, agent::sessions::LifecycleState::Idle);
     assert_eq!(
         database
@@ -2279,12 +2279,12 @@ async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() 
         database
             .get_session(session.id)
             .await
-            .expect("Idle Session")
+            .expect("Idle session")
             .status
             .lifecycle
             .state,
         agent::sessions::LifecycleState::Idle,
-        "periodic passes must leave Idle Sessions stopped"
+        "periodic passes must leave Idle sessions stopped"
     );
 
     database
@@ -2306,7 +2306,7 @@ async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() 
         database
             .get_session(session.id)
             .await
-            .expect("running Session")
+            .expect("running session")
             .status
             .lifecycle
             .state,
@@ -2332,13 +2332,13 @@ async fn session_ensure_persists_intent_before_waiting_for_agent_convergence() {
         agent_store.clone(),
         agent_reconciler,
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Agent reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected agent reconciliation error: {error}")),
     );
     let (session_controller, session_wakeup) = agent::sessions::Controller::new(
         session_store.clone(),
         session_reconciler,
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Session reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected session reconciliation error: {error}")),
     );
     let agent_task = tokio::task::spawn_local(agent_controller.run());
     let session_task = tokio::task::spawn_local(session_controller.run());
@@ -2391,7 +2391,7 @@ async fn session_ensure_persists_intent_before_waiting_for_agent_convergence() {
         agent::sessions::LifecycleState::Starting
     );
     release.notify_one();
-    let target = ensure.await.expect("ensure task").expect("ready Session");
+    let target = ensure.await.expect("ensure task").expect("ready session");
 
     assert_eq!(target.session.name.as_str(), "s1");
     assert_eq!(
@@ -2417,7 +2417,7 @@ async fn controller_is_concurrent_across_sessions_and_serial_per_session() {
             NewSession::for_harness(agent::Harness::ClaudeCode),
         )
         .await
-        .expect("slow Session");
+        .expect("slow session");
     let slow_calls = Rc::new(Cell::new(0));
     let started = Rc::new(Notify::new());
     let release = Rc::new(Notify::new());
@@ -2450,10 +2450,10 @@ async fn controller_is_concurrent_across_sessions_and_serial_per_session() {
             NewSession::for_harness(agent::Harness::ClaudeCode),
         )
         .await
-        .expect("fast Session");
+        .expect("fast session");
     tokio::time::timeout(Duration::from_secs(1), wakeup.reconcile(fast.id))
         .await
-        .expect("fast Session should not wait for slow Session")
+        .expect("fast session should not wait for slow session")
         .expect("fast reconciliation");
 
     release.notify_one();
@@ -2505,9 +2505,9 @@ async fn prompt_wait_does_not_follow_a_replacement_session_with_the_same_name() 
         .expect("running");
     let error = tokio::time::timeout(Duration::from_secs(1), waiting)
         .await
-        .expect("original Session removal ends wait")
+        .expect("original session removal ends wait")
         .expect("task")
-        .expect_err("original Session disappeared");
+        .expect_err("original session disappeared");
     assert!(matches!(error, Error::NotFound));
     harness.finish();
 }
@@ -2586,8 +2586,8 @@ async fn queued_deliveries_do_not_expire_and_remain_serialized() {
     harness.finish();
 }
 
-/// A Session marked for deletion is released by the Session controller: the
-/// harness is stopped first, and only a successful stop removes the Session.
+/// A session marked for deletion is released by the session controller: the
+/// harness is stopped first, and only a successful stop removes the session.
 #[tokio::test(flavor = "local")]
 async fn deleting_a_session_stops_its_harness_before_the_session_is_removed() {
     const TOKEN: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
@@ -2619,7 +2619,7 @@ async fn deleting_a_session_stops_its_harness_before_the_session_is_removed() {
         database
             .get_session(session.id)
             .await
-            .expect("the Session survives a failed release")
+            .expect("the session survives a failed release")
             .is_deleting(),
         "the request survives so a later pass retries it"
     );
@@ -2632,12 +2632,12 @@ async fn deleting_a_session_stops_its_harness_before_the_session_is_removed() {
     reconciler
         .reconcile(session.id)
         .await
-        .expect("reconciling a removed Session is a no-op");
-    assert_eq!(runtime.stop_calls.get(), stops, "a removed Session stops nothing");
+        .expect("reconciling a removed session is a no-op");
+    assert_eq!(runtime.stop_calls.get(), stops, "a removed session stops nothing");
 }
 
-/// Nothing is left to stop when the Sandbox that held the harness is gone, so
-/// the Session is removed without touching a Sandbox.
+/// Nothing is left to stop when the sandbox that held the harness is gone, so
+/// the session is removed without touching a sandbox.
 #[tokio::test(flavor = "local")]
 async fn deleting_a_session_whose_sandbox_is_gone_still_removes_it() {
     const TOKEN: &str = "ffffffff-ffff-4fff-8fff-ffffffffffff";
@@ -2647,7 +2647,7 @@ async fn deleting_a_session_whose_sandbox_is_gone_still_removes_it() {
     database
         .update_status(session.agent_id, owner.agent.metadata.generation, Status::default())
         .await
-        .expect("Agent without a materialized Sandbox");
+        .expect("Agent without a materialized sandbox");
     let runtime = Rc::new(FakeRuntime::default());
     let reconciler = agent::sessions::Reconciler::new(
         Rc::new(database.clone()),
@@ -2669,8 +2669,8 @@ async fn deleting_a_session_whose_sandbox_is_gone_still_removes_it() {
     assert!(matches!(database.get_session(session.id).await, Err(Error::NotFound)));
 }
 
-/// `delete` hides the Session immediately and returns once the controller has
-/// released it, and the operations that address a Session by name stop finding it.
+/// `delete` hides the session immediately and returns once the controller has
+/// released it, and the operations that address a session by name stop finding it.
 #[tokio::test(flavor = "local")]
 async fn deleting_a_session_through_the_service_releases_it_and_hides_it_at_once() {
     const TOKEN: &str = "abababab-abab-4bab-8bab-abababababab";
@@ -2683,7 +2683,7 @@ async fn deleting_a_session_through_the_service_releases_it_and_hides_it_at_once
         agent_store.clone(),
         Rc::new(NoopAgentReconcile),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Agent reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected agent reconciliation error: {error}")),
     );
     let sandboxes = Rc::new(agent::sessions::AgentSandboxes::new(agent_store.clone(), sandboxes));
     let (session_controller, session_wakeup) = agent::sessions::Controller::new(
@@ -2695,7 +2695,7 @@ async fn deleting_a_session_through_the_service_releases_it_and_hides_it_at_once
             "http://platform-api".into(),
         )),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Session reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected session reconciliation error: {error}")),
     );
     let agent_task = tokio::task::spawn_local(agent_controller.run());
     let session_task = tokio::task::spawn_local(session_controller.run());
@@ -2709,7 +2709,7 @@ async fn deleting_a_session_through_the_service_releases_it_and_hides_it_at_once
     let name = SessionName::new("s1").expect("name");
 
     assert_eq!(service.list(None).await.expect("sessions").len(), 1);
-    service.delete("worker", &name).await.expect("delete Session");
+    service.delete("worker", &name).await.expect("delete session");
 
     assert!(!runtime.present.get(), "the harness is stopped, not left running");
     assert!(matches!(service.get("worker", &name).await, Err(Error::NotFound)));
@@ -2740,7 +2740,7 @@ async fn a_delete_that_cannot_stop_the_harness_yet_reports_that_it_is_pending() 
         agent_store.clone(),
         Rc::new(NoopAgentReconcile),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Agent reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected agent reconciliation error: {error}")),
     );
     let sandboxes = Rc::new(agent::sessions::AgentSandboxes::new(agent_store.clone(), sandboxes));
     let (session_controller, session_wakeup) = agent::sessions::Controller::new(
@@ -2836,7 +2836,7 @@ async fn archiving_waits_for_the_turn_and_keeps_the_harness_stopped_until_attach
     assert_eq!(state().await, agent::sessions::State::Archived);
     let stops = runtime.stop_calls.get();
     reconciler.reconcile(session.id).await.expect("periodic pass");
-    assert_eq!(runtime.stop_calls.get(), stops, "an archived Session is left alone");
+    assert_eq!(runtime.stop_calls.get(), stops, "an archived session is left alone");
 
     database
         .set_session_archived("worker", &name, false)
@@ -2934,12 +2934,12 @@ async fn unarchiving_after_a_failed_archive_does_not_relaunch_the_harness() {
     assert_eq!(
         database.get_session(session.id).await.expect("Session").status.state,
         agent::sessions::State::Idle,
-        "with the harness gone, the Session is Idle"
+        "with the harness gone, the session is Idle"
     );
     assert!(runtime.launches.borrow().is_empty());
 }
 
-/// A Session that only looks mid-turn is archived at once: its harness has
+/// A session that only looks mid-turn is archived at once: its harness has
 /// exited, or it has been quiet too long to be working.
 #[tokio::test(flavor = "local")]
 async fn archiving_does_not_wait_for_a_turn_that_is_not_happening() {
@@ -2958,7 +2958,7 @@ async fn archiving_does_not_wait_for_a_turn_that_is_not_happening() {
     );
     let name = SessionName::new("s1").expect("name");
     let state = || async { database.get_session(session.id).await.expect("Session").status.state };
-    // Working, as a never-prompted Claude Code Session reads after its start report.
+    // Working, as a never-prompted Claude Code session reads after its start report.
     database
         .apply_session_activity_for_launch(
             session.id,
@@ -2981,7 +2981,7 @@ async fn archiving_does_not_wait_for_a_turn_that_is_not_happening() {
     assert_eq!(state().await, agent::sessions::State::Archived);
 }
 
-/// Through the service, an archived Session cannot be attached until it is
+/// Through the service, an archived session cannot be attached until it is
 /// unarchived, and the first attach after that works.
 #[tokio::test(flavor = "local")]
 async fn an_archived_session_is_attached_again_only_after_unarchiving() {
@@ -2996,7 +2996,7 @@ async fn an_archived_session_is_attached_again_only_after_unarchiving() {
         agent_store.clone(),
         Rc::new(NoopAgentReconcile),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Agent reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected agent reconciliation error: {error}")),
     );
     let sandboxes = Rc::new(agent::sessions::AgentSandboxes::new(agent_store.clone(), sandboxes));
     let (session_controller, session_wakeup) = agent::sessions::Controller::new(
@@ -3008,7 +3008,7 @@ async fn an_archived_session_is_attached_again_only_after_unarchiving() {
             "http://platform-api".into(),
         )),
         Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected Session reconciliation error: {error}")),
+        Rc::new(|_, error| panic!("unexpected session reconciliation error: {error}")),
     );
     let agent_task = tokio::task::spawn_local(agent_controller.run());
     let session_task = tokio::task::spawn_local(session_controller.run());
@@ -3031,7 +3031,7 @@ async fn an_archived_session_is_attached_again_only_after_unarchiving() {
 
     let archived = service.set_archived("worker", &name, true).await.expect("archive");
     assert_eq!(archived.status.state, agent::sessions::State::Archived);
-    let refused = attach().await.expect_err("archived Sessions are not attached");
+    let refused = attach().await.expect_err("archived sessions are not attached");
     assert!(refused.to_string().contains("is archived"), "{refused}");
     service
         .set_archived("worker", &name, true)
@@ -3047,7 +3047,7 @@ async fn an_archived_session_is_attached_again_only_after_unarchiving() {
     session_task.abort();
 }
 
-/// A failed archive pass records the Session as archived, but a retry still
+/// A failed archive pass records the session as archived, but a retry still
 /// waits for the harness's turn rather than reading that as the turn's end.
 #[tokio::test(flavor = "local")]
 async fn a_retried_archive_pass_still_waits_for_the_turn() {
@@ -3131,7 +3131,7 @@ async fn a_prompt_wait_outlasts_an_archive_that_has_not_stopped_the_harness() {
     harness.finish();
 }
 
-/// Records the run state of the Agent `worker` as `agentctl stop` and `start` do.
+/// Records the run state of the agent `worker` as `agentctl stop` and `start` do.
 async fn set_worker_run_state(database: &persistence::Database, state: agent::RunState) {
     agent::control_plane::ControlPlane::new(Rc::new(database.clone()), Rc::new(support::IgnoreNotifications))
         .set_run_state("worker", state)
@@ -3199,10 +3199,10 @@ async fn a_session_of_a_stopped_agent_goes_idle_and_the_next_attach_resumes_it()
     assert_eq!(state(database.clone()).await, agent::sessions::State::Idle);
     assert!(
         runtime.launch_tokens.borrow().is_empty(),
-        "no harness launches in a stopped Agent"
+        "no harness launches in a stopped agent"
     );
 
-    // A start alone launches nothing; the Session waits for its next attach.
+    // A start alone launches nothing; the session waits for its next attach.
     set_worker_run_state(&database, agent::RunState::Running).await;
     reconciler.reconcile(session.id).await.expect("still idle");
     assert_eq!(state(database.clone()).await, agent::sessions::State::Idle);
@@ -3222,7 +3222,7 @@ async fn a_session_of_a_stopped_agent_goes_idle_and_the_next_attach_resumes_it()
     );
 }
 
-/// A Session controller over `runtime` and an Agent reconciler that settles its Sessions, wired as
+/// A session controller over `runtime` and an agent reconciler that settles its sessions, wired as
 /// agentd wires them.
 fn controllers(
     database: &persistence::Database,
@@ -3271,7 +3271,7 @@ async fn a_session_pass_in_flight_across_a_stop_and_start_launches_no_harness() 
     let task = tokio::task::spawn_local(session_controller.run());
     session_wakeup.reconcile(session.id).await.expect("startup pass");
 
-    // A pass observing the running harness is held while the Agent stops.
+    // A pass observing the running harness is held while the agent stops.
     runtime.hold_observe.set(true);
     session_wakeup.notify(session.id);
     runtime.observe_started.notified().await;
@@ -3294,7 +3294,7 @@ async fn a_session_pass_in_flight_across_a_stop_and_start_launches_no_harness() 
     // The VM took the harness with it, and nothing launches into a stopped VM.
     runtime.present.set(false);
     runtime.fail_start.set(true);
-    // A start is asked for while the stop still waits for its Sessions.
+    // A start is asked for while the stop still waits for its sessions.
     set_worker_run_state(&database, agent::RunState::Running).await;
     runtime.release_observe.notify_one();
     stopping.await.expect("stop task").expect("stop pass");
@@ -3326,9 +3326,9 @@ async fn a_daemon_that_crashes_while_a_restart_settles_sessions_launches_no_harn
     let runtime = Rc::new(FakeRuntime::default());
     let (controller, wakeup, agents) = controllers(&database, &sandboxes, &runtime);
     let task = tokio::task::spawn_local(controller.run());
-    wakeup.reconcile(session.id).await.expect("startup Session pass");
+    wakeup.reconcile(session.id).await.expect("startup session pass");
 
-    // A pass observing the running harness is held while the restart stops the Agent.
+    // A pass observing the running harness is held while the restart stops the agent.
     runtime.hold_observe.set(true);
     wakeup.notify(session.id);
     runtime.observe_started.notified().await;
@@ -3367,10 +3367,10 @@ async fn a_daemon_that_crashes_while_a_restart_settles_sessions_launches_no_harn
             .lifecycle
             .state,
         agent::sessions::LifecycleState::Running,
-        "the Session missed the stop"
+        "the session missed the stop"
     );
 
-    // agentd starts again, and the Agent's pass may run before the Session's.
+    // agentd starts again, and the agent's pass may run before the session's.
     let (new_controller, new_wakeup, restarted_agents) = controllers(&database, &sandboxes, &runtime);
     let new_sessions = tokio::task::spawn_local(async move {
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -3388,7 +3388,7 @@ async fn a_daemon_that_crashes_while_a_restart_settles_sessions_launches_no_harn
     new_sessions.abort();
     assert!(
         runtime.launch_tokens.borrow().is_empty(),
-        "the restart settles the Session before it starts the Agent, so it stays Idle until attached"
+        "the restart settles the session before it starts the agent, so it stays Idle until attached"
     );
     assert_eq!(
         database.get_session(session.id).await.expect("Session").status.state,

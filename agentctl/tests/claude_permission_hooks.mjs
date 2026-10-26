@@ -39,7 +39,7 @@ for (const settings of [session, managed]) {
     assert.equal(decide(approval, mode), undefined, mode);
   }
 }
-// Sessions report other permission prompts to agentd. Other processes have no Session to report to.
+// Sessions report other permission prompts to agentd. Other processes have no session to report to.
 for (const tool of ["Write", "AskUserQuestion", "ExitPlanMode", "mcp__test__Bash"]) {
   assert.deepEqual(matching(session, tool), session.hooks.UserPromptSubmit[0].hooks, tool);
   assert.deepEqual(matching(managed, tool), [], tool);

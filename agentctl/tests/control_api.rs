@@ -28,8 +28,8 @@ use tokio::{
 use support::{IgnoreNotifications, agent};
 
 struct FakeAuthentication;
-/// Converges an Agent at once, except `stuck`, which never converges.
-/// Counts the hints to converge every Agent.
+/// Converges an agent at once, except `stuck`, which never converges.
+/// Counts the hints to converge every agent.
 #[derive(Default)]
 struct FakeConvergence {
     woken: Rc<Cell<usize>>,
@@ -76,7 +76,7 @@ impl VncAccessApi for FakeVncAccess {
         })
     }
 }
-/// Executions of Agent `worker`; an ensure for `stuck` waits until dropped.
+/// Executions of agent `worker`; an ensure for `stuck` waits until dropped.
 #[derive(Default)]
 struct FakeExecutions {
     waiting: Rc<Cell<usize>>,
@@ -238,7 +238,7 @@ impl SessionApi for FakeSessions {
                 "createdAt": "2026-09-25T00:00:00Z",
                 "archivedAt": archived.then_some("2026-09-25T00:00:01Z"),
             });
-            Ok(serde_json::from_value(session).expect("archived Session"))
+            Ok(serde_json::from_value(session).expect("archived session"))
         })
     }
 
@@ -311,7 +311,7 @@ impl ExecutionApi for FakeExecutions {
                     provider: agent::sandbox::ProviderId::new("memory")?,
                     id: "ca4e2f21-91d9-43f1-97c6-13f0f350fbe7"
                         .parse()
-                        .map_err(|error| Error::Invalid(format!("invalid test Sandbox ID: {error}")))?,
+                        .map_err(|error| Error::Invalid(format!("invalid test sandbox ID: {error}")))?,
                     harnesses: Vec::new(),
                 },
                 operating_system: "linux".into(),
@@ -334,7 +334,7 @@ struct ApiFixture {
     conversation: Rc<RefCell<Vec<agent::sessions::Turn>>>,
     /// Execution ensures still waiting in the server.
     waiting: Rc<Cell<usize>>,
-    /// Hints to converge every Agent.
+    /// Hints to converge every agent.
     woken: Rc<Cell<usize>>,
     ensured: Rc<RefCell<Vec<agent::sessions::SessionRequest>>>,
     sent: Rc<RefCell<Vec<SentMessage>>>,
@@ -496,13 +496,13 @@ async fn session_operations_carry_their_parameters_across_the_wire() {
         .client
         .set_session_archived("worker", name.clone(), true)
         .await
-        .expect("archive Session");
+        .expect("archive session");
     assert!(archived.is_archived());
     let unarchived = fixture
         .client
         .set_session_archived("worker", name.clone(), false)
         .await
-        .expect("unarchive Session");
+        .expect("unarchive session");
     assert!(!unarchived.is_archived());
     assert_eq!(
         fixture.archived.borrow().as_slice(),
@@ -516,7 +516,7 @@ async fn session_operations_carry_their_parameters_across_the_wire() {
         .client
         .delete_session("worker", name.clone())
         .await
-        .expect("delete Session");
+        .expect("delete session");
     assert_eq!(fixture.deleted.borrow().as_slice(), [("worker".to_owned(), name)]);
 
     let request = agent::sessions::SessionRequest {
@@ -536,7 +536,7 @@ async fn session_operations_carry_their_parameters_across_the_wire() {
             WaitPolicy::FirstPass,
         )
         .await
-        .expect_err("fake Session ensure should fail after decoding parameters");
+        .expect_err("fake session ensure should fail after decoding parameters");
     fixture
         .client
         .ensure_session(
@@ -546,7 +546,7 @@ async fn session_operations_carry_their_parameters_across_the_wire() {
             WaitPolicy::FirstPass,
         )
         .await
-        .expect_err("fake Session ensure should fail after decoding parameters");
+        .expect_err("fake session ensure should fail after decoding parameters");
     assert_eq!(
         fixture.ensured.borrow().as_slice(),
         &[request, agent::sessions::SessionRequest::default()],
@@ -554,7 +554,7 @@ async fn session_operations_carry_their_parameters_across_the_wire() {
     );
 }
 
-/// An Agent whose optional harness waits for this login installs it at once, not at its next pass.
+/// An agent whose optional harness waits for this login installs it at once, not at its next pass.
 #[tokio::test(flavor = "local")]
 async fn a_login_wakes_every_agent() {
     let fixture = api();
@@ -759,7 +759,7 @@ async fn shutdown_reports_blocking_sessions_without_draining() {
         .client
         .shutdown_for_upgrade()
         .await
-        .expect_err("working Session blocks shutdown");
+        .expect_err("working session blocks shutdown");
     assert!(matches!(error, Error::Rpc(error) if error.is_invalid_params()));
     fixture.client.health().await.expect("daemon remains available");
 }
@@ -950,11 +950,11 @@ async fn client_and_server_exchange_versioned_agent_operations() {
         .expect("execution target");
     assert_eq!(execution.operating_system, "linux");
     assert_eq!(execution.sandbox.provider().as_str(), "memory");
-    assert_eq!(client.list_sessions(None).await.expect("list all Sessions"), []);
+    assert_eq!(client.list_sessions(None).await.expect("list all sessions"), []);
     let session_error = client
         .get_session("worker", agent::sessions::SessionName::new("s1").expect("Session name"))
         .await
-        .expect_err("missing Session");
+        .expect_err("missing session");
     assert!(matches!(session_error, Error::Rpc(error) if error.code == -32004));
 
     client.delete("worker").await.expect("delete request");
@@ -1065,7 +1065,7 @@ async fn agent_progress_returns_the_status_then_waits_for_the_next_change() {
         .client
         .agent_progress("missing", None, None)
         .await
-        .expect_err("unknown Agent");
+        .expect_err("unknown agent");
     assert!(matches!(missing, Error::Rpc(error) if error.is_not_found()));
 }
 
@@ -1112,7 +1112,7 @@ async fn stop_and_start_record_the_run_state_as_a_new_generation() {
     let error = client
         .set_run_state("missing", agent::RunState::Stopped)
         .await
-        .expect_err("missing Agent");
+        .expect_err("missing agent");
     assert!(matches!(error, Error::Rpc(error) if error.is_not_found()));
 }
 
@@ -1123,7 +1123,7 @@ async fn work_in_a_stopped_agent_is_refused_with_how_to_start_it() {
         .client
         .ensure_execution("stopped", WaitPolicy::UntilConverged)
         .await
-        .expect_err("a stopped Agent runs nothing");
+        .expect_err("a stopped agent runs nothing");
     match error {
         Error::Rpc(error) => {
             assert!(error.is_invalid_params(), "agentctl prints it as the whole story");

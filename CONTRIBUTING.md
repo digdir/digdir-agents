@@ -26,7 +26,7 @@ prompting them.
 
 - Titles follow Conventional Commits with the area as scope, such as `feat(agentctl): ...` or `fix(agentd): ...`. Mark
   breaking changes with `!`.
-- A change users of `agentctl` or its Agents will notice gets an entry under `## [Unreleased]` in
+- A change users of `agentctl` or its agents will notice gets an entry under `## [Unreleased]` in
   [agentctl/CHANGELOG.md](agentctl/CHANGELOG.md), written as the
   [changelog skill](agents/self-dev/skills/changelog/SKILL.md) describes.
 - Write the description for the reviewer, following the [pull request template](.github/pull_request_template.md).
@@ -41,7 +41,7 @@ Follow the [documentation guidelines](docs/documentation.md).
 
 ## Changelog and releases
 
-[agentctl/CHANGELOG.md](agentctl/CHANGELOG.md) is the release notes for the Agent platform, released as `agentctl`
+[agentctl/CHANGELOG.md](agentctl/CHANGELOG.md) is the release notes for the agent platform, released as `agentctl`
 and `agentd` under the `agentctl/v*` tag. `make changelog-validate` checks it.
 
 To release:

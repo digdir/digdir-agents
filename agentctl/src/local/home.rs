@@ -10,7 +10,7 @@ use crate::Error;
 
 const ENVIRONMENT_VARIABLE: &str = "AGENT_HOME";
 
-/// Root of one local Agent Control Plane.
+/// Root of one local agent Control Plane.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ControlPlaneHome(PathBuf);
 
@@ -58,7 +58,7 @@ impl ControlPlaneHome {
         self.0.join("ssh")
     }
 
-    /// Returns the durable marker requesting one post-upgrade Session relaunch pass.
+    /// Returns the durable marker requesting one post-upgrade session relaunch pass.
     #[must_use]
     pub fn pending_session_relaunch_path(&self) -> PathBuf {
         self.0.join("pending-session-relaunch.json")

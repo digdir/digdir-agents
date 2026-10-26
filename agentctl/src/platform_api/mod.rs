@@ -1,14 +1,14 @@
 //! Sandbox-facing Platform API endpoint.
 //!
-//! Harness processes inside a Sandbox reach the host through the mediated
+//! Harness processes inside a sandbox reach the host through the mediated
 //! Network Backend's host alias, which rewrites to host loopback. This module
 //! owns the loopback listener and its session-report route: per-launch reports
 //! carrying the harness-native conversation ID and transcript location (on
-//! start) and activity signals folded into Session status. The same listener
+//! start) and activity signals folded into session status. The same listener
 //! is the growth point for later platform tools (MCP), so nothing here assumes
 //! the report route is the only one.
 //!
-//! Requests originate inside Sandboxes and are untrusted: parsing is bounded,
+//! Requests originate inside sandboxes and are untrusted: parsing is bounded,
 //! authentication is a per-launch bearer token, and failures return nothing
 //! but a status code.
 
@@ -35,13 +35,13 @@ const MAX_NATIVE_SESSION_ID_BYTES: usize = 1_024;
 const MAX_TRANSCRIPT_PATH_BYTES: usize = 4_096;
 type ConnectionFuture = futures_util::future::LocalBoxFuture<'static, ()>;
 
-/// Route harness hooks report Session activity to.
+/// Route harness hooks report session activity to.
 pub const SESSION_HOOKS_PATH: &str = "/v1/session/hooks";
 
 /// Binds the Platform API listener on a loopback port the operating system selects.
 ///
-/// The port is not stable across daemon starts: Sandboxes read the current
-/// endpoint from a file Agent setup rewrites on every pass, so a port reserved
+/// The port is not stable across daemon starts: sandboxes read the current
+/// endpoint from a file agent setup rewrites on every pass, so a port reserved
 /// or taken while `agentd` was down never prevents startup.
 ///
 /// # Errors
@@ -51,7 +51,7 @@ pub async fn bind() -> Result<TcpListener, Error> {
     Ok(TcpListener::bind(("127.0.0.1", 0)).await?)
 }
 
-/// Serves Platform API requests from Sandboxes until the listener fails.
+/// Serves Platform API requests from sandboxes until the listener fails.
 pub struct Server {
     sessions: Rc<dyn sessions::SessionReports>,
     on_error: Rc<dyn Fn(&Error)>,
@@ -59,7 +59,7 @@ pub struct Server {
 
 impl Server {
     /// Creates a Platform API server that records what harnesses report; it
-    /// holds no other Session capability.
+    /// holds no other session capability.
     #[must_use]
     pub fn new(sessions: Rc<dyn sessions::SessionReports>, on_error: Rc<dyn Fn(&Error)>) -> Self {
         Self { sessions, on_error }
@@ -125,7 +125,7 @@ impl Server {
     /// ID and transcript location on start and folds the reported activity event.
     ///
     /// The per-launch token rejects reports from earlier harness incarnations.
-    /// Sessions in one Agent share a Unix identity and are not mutually
+    /// Sessions in one agent share a Unix identity and are not mutually
     /// isolated security principals. A stale token on an activity-only report is
     /// a silent no-op; a stale token on a start report is rejected so the ID is
     /// never attributed to the wrong launch.
@@ -135,7 +135,7 @@ impl Server {
             if report.native_session_id.is_empty() || report.native_session_id.len() > MAX_NATIVE_SESSION_ID_BYTES {
                 return 400;
             }
-            // A transcript is read inside the reporting Sandbox and must be an absolute path.
+            // A transcript is read inside the reporting sandbox and must be an absolute path.
             let transcript_path = report.transcript_path.as_deref().filter(|path| !path.is_empty());
             if transcript_path.is_some_and(|path| !path.starts_with('/') || path.len() > MAX_TRANSCRIPT_PATH_BYTES) {
                 return 400;

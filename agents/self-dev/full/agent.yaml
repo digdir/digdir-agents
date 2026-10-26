@@ -15,8 +15,8 @@ spec:
       rootFilesystem:
         capacity: "100Gi"
         mode: direct
-      # For the Microsandbox runtime that runs nested Agents and the end-to-end tests. A host that
-      # cannot provide them leaves the Agent without them, as its NestedSandboxes condition says.
+      # For the Microsandbox runtime that runs nested agents and the end-to-end tests. A host that
+      # cannot provide them leaves the agent without them, as its NestedSandboxes condition says.
       nestedSandboxes: preferred
     initSystem: image
   home:
@@ -34,7 +34,7 @@ spec:
       default: true
       defaults:
         model: opus
-    # Optional: the Agent is created without Codex when the host has no Codex login, so nobody who only uses
+    # Optional: the agent is created without Codex when the host has no Codex login, so nobody who only uses
     # Claude Code is blocked. Run `agentctl codex login` and the next convergence installs it.
     - type: codex
       auth: mediated

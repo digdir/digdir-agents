@@ -1,6 +1,6 @@
 //! Agent automation and the local declarative control plane.
 //!
-//! This crate depends on the generic Sandbox crates. The reverse dependency is
+//! This crate depends on the generic sandbox crates. The reverse dependency is
 //! deliberately impossible in the workspace graph.
 
 pub mod authorization;
@@ -48,18 +48,18 @@ pub const fn release_version() -> Option<&'static str> {
 
 use thiserror::Error;
 
-/// Errors exposed by the Agent control plane.
+/// Errors exposed by the agent control plane.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// The Agent resource is invalid: desired state must change before another
+    /// The agent resource is invalid: desired state must change before another
     /// reconciliation pass can succeed, so waiters fail fast and nothing retries.
-    #[error("invalid Agent: {0}")]
+    #[error("invalid agent: {0}")]
     Invalid(String),
-    /// The requested Agent does not exist.
+    /// The requested agent does not exist.
     #[error("Agent not found")]
     NotFound,
     /// An immutable desired-state field changed.
-    #[error("immutable Agent field changed: {0}")]
+    #[error("immutable agent field changed: {0}")]
     Immutable(&'static str),
     /// A compare-and-swap operation observed a newer generation.
     #[error("Agent resource changed concurrently")]
@@ -67,20 +67,20 @@ pub enum Error {
     /// Persistent control-plane state could not be read or written.
     #[error("control-plane database failed: {0}")]
     Database(String),
-    /// Immutable Agent setup failed inside a running Sandbox. Treated as transient:
+    /// Immutable agent setup failed inside a running sandbox. Treated as transient:
     /// the background controller retries and waiters keep following.
-    #[error("Agent Sandbox setup failed: {0}")]
+    #[error("Agent sandbox setup failed: {0}")]
     SandboxSetup(String),
-    /// The Sandbox's guest stopped making progress while its VM kept running.
+    /// The sandbox's guest stopped making progress while its VM kept running.
     /// Treated as transient: the guest may recover, and the background
     /// controller keeps observing it.
-    #[error("Agent Sandbox is not responding: {0}")]
+    #[error("Agent sandbox is not responding: {0}")]
     SandboxUnresponsive(String),
-    /// The named Agent is stopped, so nothing runs in its Sandbox until it is
+    /// The named agent is stopped, so nothing runs in its sandbox until it is
     /// started. Desired state must change, so waiters fail fast.
     #[error("Agent {0:?} is stopped; run `agentctl start agent/{0}`")]
     Stopped(String),
-    /// A generic Sandbox operation failed.
+    /// A generic sandbox operation failed.
     #[error("Sandbox operation failed: {0}")]
     Sandbox(#[from] ::sandbox::Error),
     /// Session lifecycle or attachment failed.
@@ -98,7 +98,7 @@ pub enum Error {
     /// A YAML manifest was invalid.
     #[error("invalid YAML: {0}")]
     Yaml(#[from] serde_yaml_ng::Error),
-    /// The Agent Control API returned a protocol-level error.
+    /// The agent Control API returned a protocol-level error.
     #[error("Agent Control API error: {0}")]
     Rpc(#[from] control_api::ResponseError),
 }

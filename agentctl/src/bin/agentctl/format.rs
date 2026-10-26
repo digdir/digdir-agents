@@ -40,7 +40,7 @@ pub(crate) fn vnc_access_lines(access: &agent::vnc::AccessInfo) -> Vec<String> {
         format!("Agent ID:    {}", access.agent_id),
         format!("Guest port:  {}", access.guest_port),
         access.web_guest_port.map_or_else(
-            || "Web port:    - (none, or unknown until the Agent is next reconciled)".to_owned(),
+            || "Web port:    - (none, or unknown until the agent is next reconciled)".to_owned(),
             |port| format!("Web port:    {port}  (agentctl vnc --web {})", access.agent),
         ),
         format!("Forward:     {}", access.forward_command),
@@ -133,7 +133,7 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
     lines
 }
 
-/// An Agent's readiness and, after a failed pass, whether it is retried.
+/// An agent's readiness and, after a failed pass, whether it is retried.
 pub(crate) fn readiness_lines(status: &agent::Status) -> Vec<String> {
     let ready = status.ready_condition().map_or_else(
         || "Unknown".to_owned(),
@@ -213,7 +213,7 @@ fn measurement(measurement: Option<sandbox::progress::Measurement>) -> String {
 
 pub(crate) const fn failure_kind(kind: agent::FailureKind) -> &'static str {
     match kind {
-        agent::FailureKind::Invalid => "Invalid (change the Agent to continue)",
+        agent::FailureKind::Invalid => "Invalid (change the agent to continue)",
         agent::FailureKind::Transient => "Transient (retrying in the background)",
     }
 }
@@ -384,7 +384,7 @@ mod tests {
                 "missing {expected:?} in {lines:#?}"
             );
         }
-        assert!(lines.iter().any(|line| line.starts_with("  ✗ Resolve Sandbox Image (")));
+        assert!(lines.iter().any(|line| line.starts_with("  ✗ Resolve sandbox Image (")));
         assert!(lines.iter().any(|line| line.contains(" AGE ")));
         assert!(
             lines

@@ -17,7 +17,7 @@ const REFRESH_AHEAD_SECONDS: i64 = 5 * 60;
 const TRANSIENT_FAILURE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Owns a `ChatGPT` OAuth grant used only by the Agent stack.
+/// Owns a `ChatGPT` OAuth grant used only by the agent stack.
 pub(in crate::harness) struct Authentication {
     database: persistence::Database,
     client: reqwest::Client,
@@ -40,9 +40,9 @@ impl Authentication {
 
     /// Imports the independent `ChatGPT` grant produced in agentctl's private Codex home.
     ///
-    /// An `auth.json` carrying the platform's own placeholders is the credential an Agent
-    /// Sandbox already holds. Importing it makes this `agentd` a nested one: the tokens are
-    /// stored verbatim, never refreshed, and the enclosing Sandbox's mediator substitutes the
+    /// An `auth.json` carrying the platform's own placeholders is the credential an agent
+    /// sandbox already holds. Importing it makes this `agentd` a nested one: the tokens are
+    /// stored verbatim, never refreshed, and the enclosing sandbox's mediator substitutes the
     /// real grant. No real credential exists at this level. An `imported` credential must be
     /// such a placeholder file: importing a user's real `auth.json` would let this `agentd` and
     /// the user's own Codex CLI rotate the same refresh token against each other.
@@ -74,7 +74,7 @@ impl Authentication {
             CredentialKind::Mediated
         } else if imported {
             return Err(Error::Invalid(
-                "only an Agent's mediated Codex credential file can be imported; run `agentctl codex login` on the host to sign in".into(),
+                "only an agent's mediated Codex credential file can be imported; run `agentctl codex login` on the host to sign in".into(),
             ));
         } else {
             CredentialKind::ChatgptOauth
@@ -324,7 +324,7 @@ struct LoginTokens {
 enum CredentialKind {
     /// A real `ChatGPT` OAuth grant, refreshed by this `agentd`.
     ChatgptOauth,
-    /// Placeholders from an enclosing Sandbox; an outer mediator holds the real grant.
+    /// Placeholders from an enclosing sandbox; an outer mediator holds the real grant.
     Mediated,
 }
 

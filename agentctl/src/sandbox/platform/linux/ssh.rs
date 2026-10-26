@@ -1,4 +1,4 @@
-//! OpenSSH server state written into Linux Sandboxes for SSH access.
+//! OpenSSH server state written into Linux sandboxes for SSH access.
 //!
 //! The image provides OpenSSH, systemd and the platform user. This module owns
 //! the complete server policy, unit, keys, client authorization and SSH login
@@ -29,9 +29,9 @@ pub(crate) const AUTHORIZED_KEYS: &str = "/var/lib/agent/ssh/authorized_keys";
 pub(crate) const SERVER_CONFIG: &str = "/var/lib/agent/ssh/sshd_config";
 /// OpenSSH privilege-separation directory, needed even when only evaluating policy.
 const SERVER_RUNTIME_DIRECTORY: &str = "/run/sshd";
-/// Directory OpenSSH reads the Agent user's login environment from.
+/// Directory OpenSSH reads the agent user's login environment from.
 const USER_SSH_DIRECTORY: &str = "/home/agent/.ssh";
-/// Effective Sandbox environment inherited by every new SSH shell or command.
+/// Effective sandbox environment inherited by every new SSH shell or command.
 pub(crate) const USER_ENVIRONMENT: &str = "/home/agent/.ssh/environment";
 /// The server executable the image must provide.
 pub(crate) const SERVER: &str = "/usr/sbin/sshd";
@@ -49,7 +49,7 @@ const MAX_ENVIRONMENT_ENTRIES: usize = 1000;
 /// Confirms the image has the server and systemd runtime needed by the
 /// platform-owned configuration and unit.
 ///
-/// systemd is one init system among several a Sandbox could boot; nothing here
+/// systemd is one init system among several a sandbox could boot; nothing here
 /// assumes it beyond checking for it, and an image without it cannot run the
 /// platform-managed unit.
 ///
@@ -238,7 +238,7 @@ fn render_server_config() -> String {
 fn render_unit() -> String {
     format!(
         "[Unit]\n\
-         Description=OpenSSH server for Agent access on the guest loopback\n\
+         Description=OpenSSH server for agent access on the guest loopback\n\
          Documentation=https://github.com/digdir/digdir-agents/tree/main/agentctl\n\
          ConditionPathExists={HOST_KEY}\n\
          After=network.target\n\
@@ -264,7 +264,7 @@ fn render_oom_drop_in() -> String {
     "[Service]\nOOMPolicy=continue\n".to_owned()
 }
 
-/// Asks OpenSSH for the policy it will apply to the Agent's loopback connection.
+/// Asks OpenSSH for the policy it will apply to the agent's loopback connection.
 ///
 /// The actual host key is installed before this check because `sshd -T` refuses
 /// to evaluate a configuration without at least one readable host key. Login
@@ -367,10 +367,10 @@ pub(crate) async fn remove_server_state(sandbox: &SandboxHandle) -> Result<(), E
     Ok(())
 }
 
-/// Captures the environment an ordinary Sandbox Execution inherits and renders
+/// Captures the environment an ordinary sandbox Execution inherits and renders
 /// it in OpenSSH's `~/.ssh/environment` format. SSH supplies identity and
 /// terminal variables itself; platform defaults fill the only values added by
-/// `agentctl exec` and Session launch rather than the Sandbox runtime.
+/// `agentctl exec` and session launch rather than the sandbox runtime.
 async fn capture_login_environment(sandbox: &SandboxHandle) -> Result<Vec<u8>, Error> {
     let output = sandbox
         .run_execution(ExecutionSpec::command(
@@ -394,13 +394,13 @@ fn parse_environment(bytes: &[u8]) -> Result<BTreeMap<String, String>, Error> {
     let mut environment = BTreeMap::new();
     for entry in bytes.split(|byte| *byte == 0).filter(|entry| !entry.is_empty()) {
         let text = std::str::from_utf8(entry)
-            .map_err(|_| Error::Invalid("the Sandbox environment contains a non-UTF-8 value".into()))?;
+            .map_err(|_| Error::Invalid("the sandbox environment contains a non-UTF-8 value".into()))?;
         let (name, value) = text
             .split_once('=')
-            .ok_or_else(|| Error::Invalid(format!("the Sandbox environment contains an invalid entry {text:?}")))?;
+            .ok_or_else(|| Error::Invalid(format!("the sandbox environment contains an invalid entry {text:?}")))?;
         if !portable_name(name) {
             return Err(Error::Invalid(format!(
-                "the Sandbox environment contains an invalid variable name {name:?}"
+                "the sandbox environment contains an invalid variable name {name:?}"
             )));
         }
         if !ssh_supplies(name) {
@@ -413,7 +413,7 @@ fn parse_environment(bytes: &[u8]) -> Result<BTreeMap<String, String>, Error> {
 fn render_environment(environment: &BTreeMap<String, String>) -> Result<Vec<u8>, Error> {
     if environment.len() > MAX_ENVIRONMENT_ENTRIES {
         return Err(Error::Invalid(format!(
-            "the Sandbox environment has {} entries; OpenSSH accepts at most {MAX_ENVIRONMENT_ENTRIES}",
+            "the sandbox environment has {} entries; OpenSSH accepts at most {MAX_ENVIRONMENT_ENTRIES}",
             environment.len()
         )));
     }

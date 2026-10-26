@@ -45,14 +45,14 @@ done
 
 # Clones one repository beside its destination and moves it into place only once it is complete,
 # so that an interrupted clone never leaves a destination with `.git`, which every later boot
-# would skip. A clone a Session made at the destination in the meantime is kept instead.
+# would skip. A clone a session made at the destination in the meantime is kept instead.
 clone() {
     repository=$1
     destination=$2
     partial=$destination.partial
     rm -rf "$partial"
     # When the repository is a fork, gh adds its parent as `upstream`, and `gh pr create` and
-    # `gh issue` then target the parent. The listed repository is the one the Agent works in.
+    # `gh issue` then target the parent. The listed repository is the one the agent works in.
     if ! /usr/local/bin/gh repo clone "$repository" "$partial" \
         || ! (cd "$partial" && /usr/local/bin/gh repo set-default "$repository"); then
         rm -rf "$partial"
