@@ -11,6 +11,7 @@ use std::{collections::BTreeMap, fmt::Write as _};
 use crate::{
     Harness,
     control_plane::AgentRecord,
+    github::GithubToken,
     manifest::{AccessSpec, Spec},
 };
 
@@ -26,6 +27,8 @@ pub(super) struct Observed<'a> {
     pub(super) kvm: bool,
     /// Whether the image has Podman, which builds the images of nested agents.
     pub(super) podman: bool,
+    /// The GitHub token stored under the name the Agent's account asks for, without the token.
+    pub(super) github_token: Option<&'a GithubToken>,
 }
 
 /// Opens the section, so that a later pass can find and replace it in a file the image or the home
@@ -93,6 +96,7 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
                 .then(|| format!("{}.", code_list(spec.environment.iter().map(|variable| &variable.name)))),
         ),
         ("Network", Some(network(spec))),
+        ("GitHub", github(spec, observed.github_token)),
         ("Access", access(spec, name)),
         ("Nested agents", Some(nested_agents(spec, observed).to_owned())),
     ];
@@ -135,6 +139,23 @@ fn harnesses(spec: &Spec, installed: &[Harness]) -> String {
             label.to_owned()
         }
     }))
+}
+
+/// How GitHub works for an Agent with an account: as the account itself when its token reaches
+/// all the account can, else for the repositories the token was created for, as a fine-grained
+/// token is.
+fn github(spec: &Spec, token: Option<&GithubToken>) -> Option<String> {
+    let name = spec.github_account()?;
+    let reach = match token {
+        Some(token) if !token.kind.single_owner() => {
+            format!("as `{}`, for whatever that account can reach", token.account.login)
+        }
+        _ => format!("for the repositories the `{name}` token was created for"),
+    };
+    Some(format!(
+        "`gh` and `git` over HTTPS work {reach}, and SSH remotes on github.com go over HTTPS; \
+         `gh api user --jq .login` shows the account. Don't run `gh auth login` or replace `GITHUB_TOKEN`."
+    ))
 }
 
 /// One sub-bullet per secret, with the hosts it is sent to or that it was left unconfigured.
@@ -211,4 +232,66 @@ fn code_list<'a>(items: impl IntoIterator<Item = &'a String>) -> String {
         .map(|item| format!("`{item}`"))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    fn spec(mounts: &str, extra: &str) -> Spec {
+        let manifest = format!(
+            "apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  name: worker
+spec:
+  sandbox:
+    image:
+      type: reference
+      reference: example.com/agent:latest
+    platform:
+      os: linux
+    resources:
+      cpu: \"1\"
+      memory: \"1Gi\"
+      rootFilesystem:
+        capacity: \"8Gi\"
+        mode: layered
+    mounts: {mounts}
+  harnesses: [{{type: pi}}]
+{extra}"
+        );
+        crate::manifest::decode(manifest.as_bytes()).expect("manifest").spec
+    }
+
+    #[test]
+    fn github_works_as_the_account_unless_the_token_is_for_one_owner() {
+        assert_eq!(github(&spec("[]", ""), None), None);
+        let spec = spec("[]", "  accounts: [{type: github, name: altinn-studio}]\n");
+        let token = |kind| GithubToken {
+            name: "altinn-studio".into(),
+            account: crate::github::GithubAccount {
+                login: "digdir-agent".into(),
+                name: "Digdir Agent".into(),
+                email: "1+digdir-agent@users.noreply.github.com".into(),
+            },
+            kind,
+            expires_at: None,
+        };
+        let repositories =
+            "`gh` and `git` over HTTPS work for the repositories the `altinn-studio` token was created for,";
+        let account = "`gh` and `git` over HTTPS work as `digdir-agent`, for whatever that account can reach,";
+        for (token, expected) in [
+            (None, repositories),
+            (Some(token(crate::github::TokenKind::FineGrained)), repositories),
+            (Some(token(crate::github::TokenKind::Oauth)), account),
+            (Some(token(crate::github::TokenKind::Classic)), account),
+        ] {
+            let text = github(&spec, token.as_ref()).expect("a GitHub line");
+            assert!(text.starts_with(expected), "{expected} in {text}");
+            assert!(text.contains("`gh api user --jq .login`"), "{text}");
+        }
+    }
 }
