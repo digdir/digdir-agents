@@ -48,6 +48,36 @@ fn a_manifest_may_set_the_run_state_and_omits_it_by_default() {
 }
 
 #[test]
+fn a_manifest_may_declare_a_prelaunch_script() {
+    let minimal = include_str!("fixtures/agent.yaml");
+    assert_eq!(
+        manifest::decode(minimal.as_bytes()).expect("decode").spec.prelaunch,
+        None
+    );
+
+    let declared = minimal.replacen(
+        "  harnesses:\n",
+        "  prelaunch:\n    source: ~/prelaunch.sh\n    optional: true\n  harnesses:\n",
+        1,
+    );
+    let agent = manifest::decode(declared.as_bytes()).expect("a prelaunch script should decode");
+    assert_eq!(
+        agent.spec.prelaunch,
+        Some(agent::PrelaunchSpec {
+            source: PathBuf::from("~/prelaunch.sh"),
+            optional: true,
+        })
+    );
+
+    let empty = minimal.replacen("  harnesses:\n", "  prelaunch:\n    source: \"\"\n  harnesses:\n", 1);
+    let error = manifest::decode(empty.as_bytes()).expect_err("an empty source names no script");
+    assert!(
+        matches!(&error, agent::Error::Invalid(message) if message == "spec.prelaunch.source must not be empty"),
+        "{error}"
+    );
+}
+
+#[test]
 fn decodes_explicit_non_secret_environment_with_an_optional_source() {
     let mut agent = support::agent("worker");
     agent.spec.environment = vec![

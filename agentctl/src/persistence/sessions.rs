@@ -8,7 +8,7 @@ use crate::{
     sandbox::Assignment,
     sessions::{
         Activity, ActivityEvent, AttachTarget, LaunchState, LaunchToken, Lifecycle, LifecycleState, NewSession,
-        Reported, Session, SessionId, SessionName, Status,
+        Prelaunch, Reported, Session, SessionId, SessionName, Status,
     },
 };
 
@@ -19,8 +19,8 @@ const SESSION_COLUMNS: &str = "sessions.id, sessions.agent_id, agents.active_nam
     sessions.harness_native_id, sessions.harness_transcript_path, sessions.activity_json, \
     sessions.model, sessions.effort, sessions.deletion_timestamp, sessions.archived_at";
 
-/// Reconciler-owned column: the lifecycle half of the status plus the
-/// activation revision it was observed at.
+/// Reconciler-owned column: the lifecycle half of the status, the activation
+/// revision it was observed at, and the current launch's prelaunch outcome.
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct LifecycleRow {
@@ -37,6 +37,9 @@ struct LifecycleRow {
         with = "time::serde::rfc3339::option"
     )]
     since: Option<time::OffsetDateTime>,
+    /// Kept by lifecycle updates; replaced by the next launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prelaunch: Option<Prelaunch>,
 }
 
 pub(super) fn ensure(
@@ -233,16 +236,7 @@ pub(super) fn update_lifecycle(
     lifecycle: Lifecycle,
     observed_activation_generation: u64,
 ) -> Result<(), Error> {
-    let current = connection
-        .query_row(
-            "SELECT lifecycle_json FROM sessions WHERE id = ?1",
-            params![id.to_string()],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(database_error)?
-        .ok_or(Error::NotFound)?;
-    let current = serde_json::from_str::<LifecycleRow>(&current)?;
+    let current = lifecycle_row(connection, id)?;
     let since = if current.state == lifecycle.state {
         current.since
     } else {
@@ -253,11 +247,36 @@ pub(super) fn update_lifecycle(
         failure: lifecycle.failure,
         observed_activation_generation,
         since,
+        prelaunch: current.prelaunch,
     };
+    write_lifecycle_row(connection, id, &row)
+}
+
+/// Records what the prelaunch script did before the current launch.
+pub(super) fn record_prelaunch(connection: &Connection, id: SessionId, prelaunch: Prelaunch) -> Result<(), Error> {
+    let mut row = lifecycle_row(connection, id)?;
+    row.prelaunch = Some(prelaunch);
+    write_lifecycle_row(connection, id, &row)
+}
+
+fn lifecycle_row(connection: &Connection, id: SessionId) -> Result<LifecycleRow, Error> {
+    let current = connection
+        .query_row(
+            "SELECT lifecycle_json FROM sessions WHERE id = ?1",
+            params![id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(database_error)?
+        .ok_or(Error::NotFound)?;
+    Ok(serde_json::from_str(&current)?)
+}
+
+fn write_lifecycle_row(connection: &Connection, id: SessionId, row: &LifecycleRow) -> Result<(), Error> {
     let changed = connection
         .execute(
             "UPDATE sessions SET lifecycle_json = ?1 WHERE id = ?2",
-            params![serde_json::to_string(&row)?, id.to_string()],
+            params![serde_json::to_string(row)?, id.to_string()],
         )
         .map_err(database_error)?;
     if changed == 1 { Ok(()) } else { Err(Error::NotFound) }
@@ -384,6 +403,11 @@ pub(super) fn record_launch(
         .optional()
         .map_err(database_error)?
         .ok_or(Error::NotFound)?;
+    // An earlier launch's prelaunch outcome says nothing about this one, which may run no script.
+    let mut lifecycle = lifecycle_row(&transaction, id)?;
+    if lifecycle.prelaunch.take().is_some() {
+        write_lifecycle_row(&transaction, id, &lifecycle)?;
+    }
     transaction
         .execute(
             "UPDATE sessions SET launch_token = ?1, launch_sandbox = ?2, launched_at = ?3, launch_attempts = ?4, \
@@ -532,19 +556,22 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
         created_at,
         deletion_timestamp,
         archived_at,
-        status: Status::observed(
-            Lifecycle {
-                state: lifecycle.state,
-                failure: lifecycle.failure,
-            },
-            Reported {
-                harness_session_id,
-                harness_transcript_path,
-                activity,
-            },
-            lifecycle.since,
-            archived_at,
-        ),
+        status: Status {
+            prelaunch: lifecycle.prelaunch,
+            ..Status::observed(
+                Lifecycle {
+                    state: lifecycle.state,
+                    failure: lifecycle.failure,
+                },
+                Reported {
+                    harness_session_id,
+                    harness_transcript_path,
+                    activity,
+                },
+                lifecycle.since,
+                archived_at,
+            )
+        },
         activation_generation,
         observed_activation_generation: lifecycle.observed_activation_generation,
     })

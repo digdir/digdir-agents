@@ -326,6 +326,21 @@ impl crate::sessions::SessionStore for Database {
         })
     }
 
+    fn record_session_prelaunch(
+        &self,
+        id: crate::sessions::SessionId,
+        prelaunch: crate::sessions::Prelaunch,
+    ) -> sandbox::LocalFuture<'_, Result<(), Error>> {
+        Box::pin(async move {
+            self.request(|response| Command::RecordSessionPrelaunch {
+                id,
+                prelaunch,
+                response,
+            })
+            .await
+        })
+    }
+
     fn session_launch_state(
         &self,
         id: crate::sessions::SessionId,
@@ -634,6 +649,11 @@ enum Command {
         attempts: u32,
         response: oneshot::Sender<Result<Option<String>, Error>>,
     },
+    RecordSessionPrelaunch {
+        id: crate::sessions::SessionId,
+        prelaunch: crate::sessions::Prelaunch,
+        response: oneshot::Sender<Result<(), Error>>,
+    },
     GetSessionLaunchState {
         id: crate::sessions::SessionId,
         response: oneshot::Sender<Result<Option<crate::sessions::LaunchState>, Error>>,
@@ -661,7 +681,8 @@ impl Command {
             | Self::ClearSessionReport { .. }
             | Self::RecordSessionStartForLaunch { .. }
             | Self::ApplySessionActivityForLaunch { .. }
-            | Self::RecordSessionLaunch { .. } => true,
+            | Self::RecordSessionLaunch { .. }
+            | Self::RecordSessionPrelaunch { .. } => true,
             Self::Get { .. }
             | Self::GetByName { .. }
             | Self::List { .. }
@@ -912,6 +933,13 @@ fn execute_session(connection: &mut Connection, command: Command) {
                 launched_at,
                 attempts,
             ));
+        }
+        Command::RecordSessionPrelaunch {
+            id,
+            prelaunch,
+            response,
+        } => {
+            let _ = response.send(sessions::record_prelaunch(connection, id, prelaunch));
         }
         Command::GetSessionLaunchState { id, response } => {
             let _ = response.send(sessions::launch_state(connection, id));
