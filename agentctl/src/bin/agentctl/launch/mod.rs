@@ -54,7 +54,7 @@ impl Editor {
 
     /// Finds the editor's launcher on `path`, a `PATH`-style variable.
     pub(crate) fn locate(self, path: Option<&OsStr>) -> Option<PathBuf> {
-        host::find_executable(path, self.executables())
+        agent::local::process::find_executable(path, self.executables())
     }
 
     /// How to open `directory` in the Agent reached as the OpenSSH `alias`, given the launcher

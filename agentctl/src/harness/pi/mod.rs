@@ -23,11 +23,13 @@ fn platform_directory(home: &str) -> String {
     format!("{home}/.local/share/agent-platform/pi")
 }
 
-/// Where bootstrap installs skills: the Agent Skills directory Codex installs into, which Pi also
-/// reads, so an Agent with both harnesses loads each skill once.
-fn skills_directory(home: &str) -> String {
-    format!("{home}/.agents/skills")
-}
+/// Pi keeps its settings in `~/.pi`. Skills go in the Agent Skills directory Codex reads, which
+/// Pi also reads, so an Agent with both harnesses loads each skill once.
+pub(super) const FOOTPRINT: super::Footprint = super::Footprint {
+    executable: "pi",
+    directory: ".pi",
+    skills_directory: ".agents/skills",
+};
 
 /// The activity extension, loaded with `-e`.
 fn extension_path(home: &str) -> String {
@@ -232,7 +234,7 @@ mod tests {
         for path in [
             super::platform_directory(home),
             super::extension_path(home),
-            super::skills_directory(home),
+            format!("{home}/{}", super::FOOTPRINT.skills_directory),
         ] {
             assert!(!path.contains("/.pi"), "{path}");
         }

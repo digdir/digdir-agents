@@ -15,7 +15,8 @@ const VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 const MAX_INITIAL_PROMPT_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_SELECTION_CHARACTERS: usize = 128;
 
-pub(crate) use skills::{Skill, SkillFile, platform_skill};
+pub use skills::Skill;
+pub(crate) use skills::{platform_skill, valid_name as valid_skill_name};
 
 /// Supported harnesses.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -30,6 +31,9 @@ pub enum Harness {
 }
 
 impl Harness {
+    /// Every supported harness.
+    pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Pi];
+
     /// The only authentication mode the harness accepts in a manifest.
     #[must_use]
     pub const fn auth_mode(self) -> HarnessAuthMode {
@@ -51,6 +55,38 @@ impl Harness {
 }
 
 impl Harness {
+    /// The directory the harness discovers skills in, relative to the user's home or a
+    /// repository's root. Harnesses that follow Agent Skills share one.
+    #[must_use]
+    pub const fn skills_directory(self) -> &'static str {
+        self.footprint().skills_directory
+    }
+
+    /// Whether the harness is on this machine: its command is on `path`, a `PATH`-style
+    /// variable, or its own directory is in `home`, as when only an editor extension or a
+    /// desktop app runs it.
+    #[must_use]
+    pub fn found(self, path: Option<&std::ffi::OsStr>, home: &std::path::Path) -> bool {
+        let Footprint {
+            executable, directory, ..
+        } = self.footprint();
+        let names = if cfg!(windows) {
+            vec![format!("{executable}.exe"), format!("{executable}.cmd")]
+        } else {
+            vec![executable.to_owned()]
+        };
+        let names = names.iter().map(String::as_str).collect::<Vec<_>>();
+        home.join(directory).is_dir() || crate::local::process::find_executable(path, &names).is_some()
+    }
+
+    const fn footprint(self) -> Footprint {
+        match self {
+            Self::ClaudeCode => claude_code::FOOTPRINT,
+            Self::Codex => codex::FOOTPRINT,
+            Self::Pi => pi::FOOTPRINT,
+        }
+    }
+
     /// The harness's product name, as people know it.
     #[must_use]
     pub const fn display_name(self) -> &'static str {
@@ -79,6 +115,16 @@ impl std::str::FromStr for Harness {
             _ => Err(Error::Invalid(format!("unsupported harness {value:?}"))),
         }
     }
+}
+
+/// What shows that a harness is on a machine, and where it discovers skills.
+struct Footprint {
+    /// The command it is started with, without an extension.
+    executable: &'static str,
+    /// Its own directory in the user's home.
+    directory: &'static str,
+    /// Its skills directory, relative to the user's home or a repository's root.
+    skills_directory: &'static str,
 }
 
 /// Supported harness authentication modes.
@@ -771,6 +817,28 @@ pub(crate) fn run_launch(program: &str, launch: &ProcessLaunch) -> Option<Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_harness_is_found_by_its_command_on_the_path_or_its_own_directory() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let (commands, home) = (temporary.path().join("bin"), temporary.path().join("home"));
+        std::fs::create_dir_all(&commands).expect("command directory");
+        let executable = Harness::Codex.footprint().executable;
+        let command = if cfg!(windows) {
+            format!("{executable}.cmd")
+        } else {
+            executable.to_owned()
+        };
+        std::fs::write(commands.join(command), "").expect("command");
+        std::fs::create_dir_all(home.join(Harness::ClaudeCode.footprint().directory)).expect("own directory");
+
+        let found = Harness::ALL
+            .into_iter()
+            .filter(|harness| harness.found(Some(commands.as_os_str()), &home))
+            .collect::<Vec<_>>();
+
+        assert_eq!(found, [Harness::ClaudeCode, Harness::Codex]);
+    }
 
     #[test]
     fn harness_names_match_the_desktop_helpers_screenshot_budget_table() {

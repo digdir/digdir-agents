@@ -16,6 +16,12 @@ mod hooks;
 pub(super) mod transcript;
 
 const PROVIDER: &str = "codex";
+/// Codex keeps its settings in `~/.codex` and reads skills from the Agent Skills directory.
+pub(super) const FOOTPRINT: super::Footprint = super::Footprint {
+    executable: "codex",
+    directory: ".codex",
+    skills_directory: ".agents/skills",
+};
 const ACCESS_SECRET: &str = "codex-access-token";
 const REFRESH_SECRET: &str = "codex-refresh-token";
 const ACCOUNT_SECRET: &str = "codex-account-id";

@@ -27,6 +27,14 @@ agentctl claude login
 agentctl codex login
 ```
 
+Give the coding agents on your machine, such as Claude Code, Codex and Pi, the skill for driving Agents:
+
+```sh
+agentctl skills install --bundled agentctl --user
+```
+
+`agentctl skills install --help` shows how to install your own skills for yourself or a repository.
+
 Update with `agentctl self update`. Agents and Sessions carry over.
 
 ## Your first Agent
