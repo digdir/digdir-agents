@@ -70,6 +70,7 @@ impl PlatformAdapter for NoopPlatform {
         _record: &'a AgentRecord,
         _sandbox: &'a SandboxHandle,
         _harnesses: &'a [agent::Harness],
+        _github_token: Option<&'a agent::github::GithubToken>,
         _steps: &'a sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<PlatformSetup, Error>> {
         Box::pin(async { Ok(PlatformSetup::default()) })
@@ -199,6 +200,7 @@ impl Provider for MemoryProvider {
                     .iter()
                     .map(|installation| installation.kind)
                     .collect(),
+                github_token: None,
             })
         })
     }
@@ -1358,6 +1360,7 @@ impl PlatformAdapter for ReportingPlatform {
         _record: &'a AgentRecord,
         _sandbox: &'a SandboxHandle,
         _harnesses: &'a [agent::Harness],
+        _github_token: Option<&'a agent::github::GithubToken>,
         _steps: &'a sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<PlatformSetup, Error>> {
         Box::pin(async { Ok(self.set_up.borrow().clone()) })
@@ -2597,6 +2600,7 @@ impl PlatformAdapter for StallingPlatform {
         _record: &'a AgentRecord,
         _sandbox: &'a SandboxHandle,
         _harnesses: &'a [agent::Harness],
+        _github_token: Option<&'a agent::github::GithubToken>,
         _steps: &'a sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<PlatformSetup, Error>> {
         Box::pin(async move {
