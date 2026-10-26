@@ -378,6 +378,24 @@ async fn attach_terminal(home: &std::path::Path, target: &AttachTarget) -> Resul
 
 fn attach_arguments(session: &Session) -> Vec<String> {
     let mut arguments = terminal_options();
+    // The host terminal's tab names the Agent and the Session it shows. The tmux server belongs
+    // to this Agent's Sandbox, so the title is global and follows Ctrl-b n to the next Session.
+    // An Agent name is a hostname, so it holds no `#` for tmux to expand.
+    arguments.extend([
+        "set-option".into(),
+        "-g".into(),
+        "set-titles".into(),
+        "on".into(),
+        ";".into(),
+        "set-option".into(),
+        "-g".into(),
+        "set-titles-string".into(),
+        format!(
+            "{}/#{{?@agent_session_name,#{{@agent_session_name}},#S}}",
+            session.agent
+        ),
+        ";".into(),
+    ]);
     // A session-local override can shadow the global default on older sessions.
     arguments.extend([
         "set-option".into(),
@@ -945,6 +963,26 @@ mod tests {
                 .arg(serde_json::to_string(&terminal_options()).expect("options"))
                 .arg(attachment(&session))
                 .arg(session_name(&session))
+                .output()
+                .expect("Node.js");
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        #[test]
+        #[ignore = "requires Node.js, tmux and script; exercises the host terminal's title in an isolated terminal server"]
+        fn title_names_the_agent_and_session_in_a_real_terminal() {
+            let session = test_session(crate::ModelSelection::default());
+            let output = std::process::Command::new("node")
+                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/tmux_title.mjs"))
+                .arg(serde_json::to_string(&terminal_options()).expect("options"))
+                .arg(attachment(&session))
+                .arg(session_name(&session))
+                .arg(&session.agent)
                 .output()
                 .expect("Node.js");
             assert!(
