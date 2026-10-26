@@ -1499,8 +1499,6 @@ mod tests {
     fn only_an_optional_path_that_does_not_exist_is_left_out() {
         let directory = tempfile::TempDir::new().expect("temporary directory");
         std::fs::write(directory.path().join("present.md"), "present").expect("present file");
-        std::os::unix::fs::symlink(directory.path().join("absent.md"), directory.path().join("dangling.md"))
-            .expect("dangling link");
         let present = |path: &str, optional| {
             super::resolve_present_host_path(directory.path(), Path::new(path), optional, "spec.field")
         };
@@ -1510,16 +1508,23 @@ mod tests {
             ("present.md", false, true),
             ("absent.md", false, true),
             ("absent.md", true, false),
-            ("dangling.md", true, false),
         ] {
             let resolved = present(path, optional).expect("checked");
             assert_eq!(resolved.is_some(), expected, "{path} optional={optional}");
         }
-        let error = present("present.md/inner.md", true).expect_err("a path below a file cannot be checked");
-        assert!(
-            error.to_string().contains("spec.field ") && error.to_string().contains("present.md/inner.md"),
-            "{error}"
-        );
+
+        // Windows reports a path below a file as missing, and needs privileges for symbolic links.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(directory.path().join("absent.md"), directory.path().join("dangling.md"))
+                .expect("dangling link");
+            assert_eq!(present("dangling.md", true).expect("checked"), None);
+            let error = present("present.md/inner.md", true).expect_err("a path below a file cannot be checked");
+            assert!(
+                error.to_string().contains("spec.field ") && error.to_string().contains("present.md/inner.md"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
