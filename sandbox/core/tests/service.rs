@@ -399,7 +399,7 @@ async fn endpoint_negotiation_rejects_an_incompatible_network_backend() {
     let error = service
         .ensure(&request())
         .await
-        .expect_err("memory sandbox Backend offers only packet endpoints");
+        .expect_err("memory sandbox backend offers only packet endpoints");
 
     assert!(matches!(error, Error::NetworkEndpointUnavailable(_)));
 }

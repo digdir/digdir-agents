@@ -1675,7 +1675,7 @@ mod tests {
             kind: agent::Condition::READY.into(),
             status: agent::ConditionStatus::False,
             reason: "SandboxReconcileFailed".into(),
-            message: "Sandbox operation failed: resolve sandbox Image: cache error at /home/user/.agent/cache/tmp/load-4.blob: No space left on device (os error 28)".into(),
+            message: "Sandbox operation failed: resolve sandbox image: cache error at /home/user/.agent/cache/tmp/load-4.blob: No space left on device (os error 28)".into(),
             last_transition_time: None,
         });
         agents[1].status.failure = Some(agent::FailureKind::Transient);

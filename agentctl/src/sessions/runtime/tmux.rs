@@ -356,7 +356,7 @@ async fn launch(
 ///
 /// # Errors
 ///
-/// Returns an error unless the session is ready and the sandbox Provider
+/// Returns an error unless the session is ready and the sandbox provider
 /// supports direct terminal attachment.
 async fn attach_terminal(home: &std::path::Path, target: &AttachTarget) -> Result<(), Error> {
     if target.session.status.lifecycle.state != LifecycleState::Running {

@@ -17,7 +17,7 @@ use super::protocol::{
     SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
 };
 
-/// A byte stream usable by the agent Control API client.
+/// A byte stream usable by the Control API client.
 pub trait Connection: AsyncRead + AsyncWrite + Unpin {}
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection for T {}
@@ -491,12 +491,12 @@ impl Client {
                 return Err(Error::Invalid("Agent Control API response exceeds 64 MiB".into()));
             }
             ReadMessage::EndOfStream => {
-                return Err(Error::Invalid("invalid agent Control API response".into()));
+                return Err(Error::Invalid("invalid Control API response".into()));
             }
         };
         let response: Response = serde_json::from_slice(&line)?;
         if response.jsonrpc != JSON_RPC_VERSION || response.id != id {
-            return Err(Error::Invalid("invalid agent Control API response".into()));
+            return Err(Error::Invalid("invalid Control API response".into()));
         }
         if let Some(error) = response.error {
             return Err(Error::Rpc(error));

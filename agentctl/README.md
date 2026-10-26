@@ -33,8 +33,8 @@ Update with `agentctl self update`. Agents and sessions carry over.
 
 Start from the [.NET example](../agents/examples/dotnet-dev/), an [agent definition](../GLOSSARY.md) whose manifest
 and image explain each line. Let an agent make it yours: ask Claude Code or Codex to copy it and change it for the
-tools and repositories your work needs. An agent working in an agent can apply what it writes as a nested agent and
-try it before you do.
+tools and repositories your work needs. A coding agent working in an agent can apply what it writes as a nested agent
+and try it before you do.
 
 ## Documentation
 

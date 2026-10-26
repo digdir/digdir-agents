@@ -428,7 +428,7 @@ command_check_unreleased() {
     cat >&2 <<MESSAGE
 ${SCRIPT_NAME}: the "## [Unreleased]" section of ${tracked} is unchanged since ${fork_point}.
 
-Add an entry describing what a user of the Agent will notice, under Added, Changed, Fixed,
+Add an entry describing what a user of agentctl or its agents will notice, under Added, Changed, Fixed,
 Removed, Security or Deprecated. If this change is a refactor, is test-only or CI-only, or is
 already described by an Unreleased entry with its issue linked, apply the "skip-changelog" label
 to the pull request instead.

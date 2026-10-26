@@ -18,7 +18,7 @@ pub enum SandboxFeature {
     Execution,
     /// Run bidirectional terminal Executions inside a sandbox.
     TerminalExecution,
-    /// Attach the caller's terminal to an interactive sandbox Execution.
+    /// Attach the caller's terminal to an interactive sandbox execution.
     TerminalAttach,
     /// Stream regular files to and from a running sandbox.
     FileTransfer,
@@ -32,7 +32,7 @@ pub enum SandboxFeature {
     NestedSandboxes,
 }
 
-/// A deterministic set of sandbox Features.
+/// A deterministic set of sandbox features.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct SandboxFeatureSet(BTreeSet<SandboxFeature>);
@@ -72,7 +72,7 @@ impl<const N: usize> From<[SandboxFeature; N]> for SandboxFeatureSet {
     }
 }
 
-/// Platform-specific functionality reported by a sandbox Backend.
+/// Platform-specific functionality reported by a sandbox backend.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SandboxBackendCapabilities {
     /// Optional sandbox operations implemented by the Backend.
@@ -85,7 +85,7 @@ pub struct SandboxBackendCapabilities {
     pub network: NetworkEndpointCapabilities,
 }
 
-/// Consumer-visible functionality available from a configured sandbox Service.
+/// Consumer-visible functionality available from a configured sandbox service.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxCapabilities {
     features: SandboxFeatureSet,
@@ -127,7 +127,7 @@ impl SandboxCapabilities {
         &self.mount_kinds
     }
 
-    /// Returns root-filesystem modes accepted by both the sandbox Backend and
+    /// Returns root-filesystem modes accepted by both the sandbox backend and
     /// the Image Backend's resolve operation.
     #[must_use]
     pub const fn root_filesystem_modes(&self) -> &RootFilesystemModeSet {

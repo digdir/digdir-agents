@@ -190,7 +190,7 @@ impl Reconciler {
             .status
             .sandbox
             .as_ref()
-            .ok_or_else(|| Error::Database("persisted sandbox Provider assignment disappeared".into()))?
+            .ok_or_else(|| Error::Database("persisted sandbox provider assignment disappeared".into()))?
             .provider()
             .clone();
 

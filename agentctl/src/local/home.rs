@@ -10,7 +10,7 @@ use crate::Error;
 
 const ENVIRONMENT_VARIABLE: &str = "AGENT_HOME";
 
-/// Root of one local agent Control Plane.
+/// Root of one local agent control plane.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ControlPlaneHome(PathBuf);
 

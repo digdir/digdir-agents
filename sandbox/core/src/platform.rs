@@ -7,7 +7,7 @@ use crate::Error;
 /// OCI-aligned operating-system and architecture requirements for a sandbox.
 ///
 /// Values remain open strings so the generic SDK does not need a release for
-/// every platform value introduced by an image or sandbox Backend.
+/// every platform value introduced by an image or sandbox backend.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Platform {

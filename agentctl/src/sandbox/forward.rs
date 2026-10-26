@@ -197,7 +197,7 @@ async fn accept_loop(
 /// Dials one guest loopback port and relays it over `reader` and `writer`
 /// until both directions close.
 ///
-/// Every call dials fresh through the recorded sandbox Provider, so a
+/// Every call dials fresh through the recorded sandbox provider, so a
 /// connection made after a sandbox runtime restart needs no recovery logic.
 ///
 /// # Errors

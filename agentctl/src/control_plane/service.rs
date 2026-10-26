@@ -96,7 +96,7 @@ impl ImmediateStops {
 }
 
 impl ControlPlane {
-    /// Creates an agent Control Plane facade.
+    /// Creates an agent control plane facade.
     #[must_use]
     pub fn new(store: SharedAgentStore, notifier: Rc<dyn Notifier>) -> Self {
         Self {

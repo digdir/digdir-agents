@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ByteQuantity, SandboxPath, volume::VolumeId};
 
-/// One form of filesystem attachment supported by a sandbox Backend.
+/// One form of filesystem attachment supported by a sandbox backend.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]

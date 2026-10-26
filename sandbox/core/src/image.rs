@@ -223,7 +223,7 @@ impl ImageSource {
     }
 }
 
-/// Inputs for resolving an image for one sandbox Platform.
+/// Inputs for resolving an image for one sandbox platform.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolveRequest {
     /// Source description for the image.
@@ -325,7 +325,7 @@ impl ResolvedImage {
     }
 }
 
-/// Owns image materialization for a paired sandbox Backend.
+/// Owns image materialization for a paired sandbox backend.
 ///
 /// Every operation is capability-discovered per [`Platform`]. Implementations
 /// must define all operations explicitly, including providers for which prepared

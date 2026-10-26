@@ -23,7 +23,7 @@ enum Heartbeat {
     Advanced,
 }
 
-/// Stable identity of one configured sandbox Provider.
+/// Stable identity of one configured sandbox provider.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ProviderId(String);
@@ -42,7 +42,7 @@ impl ProviderId {
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
         {
             return Err(Error::Invalid(
-                "Sandbox Provider ID must contain lowercase ASCII letters, digits, or '-'".into(),
+                "Sandbox provider ID must contain lowercase ASCII letters, digits, or '-'".into(),
             ));
         }
         Ok(Self(value))
@@ -249,12 +249,12 @@ impl Service {
         let mut configured = Vec::new();
         for provider in providers {
             if !identities.insert(provider.id().clone()) {
-                return Err(Error::Invalid("duplicate sandbox Provider identity".into()));
+                return Err(Error::Invalid("duplicate sandbox provider identity".into()));
             }
             configured.push(provider);
         }
         if configured.is_empty() {
-            return Err(Error::Invalid("at least one sandbox Provider is required".into()));
+            return Err(Error::Invalid("at least one sandbox provider is required".into()));
         }
         let platforms = platforms.into_iter().collect::<Vec<_>>();
         if platforms.is_empty() {
@@ -281,7 +281,7 @@ impl Service {
             }
         }
         Err(Error::Invalid(format!(
-            "no configured sandbox Provider supports platform {:?}",
+            "no configured sandbox provider supports platform {:?}",
             record.agent.spec.sandbox.platform
         )))
     }
@@ -462,7 +462,7 @@ impl Service {
             .status
             .sandbox
             .as_ref()
-            .ok_or_else(|| Error::Invalid("Agent has no sandbox Provider assignment".into()))?;
+            .ok_or_else(|| Error::Invalid("Agent has no sandbox provider assignment".into()))?;
         self.provider(assignment.provider())
     }
 
@@ -471,11 +471,11 @@ impl Service {
             .iter()
             .find(|provider| provider.id() == id)
             .map(Rc::as_ref)
-            .ok_or_else(|| Error::Invalid(format!("assigned sandbox Provider {id:?} is not configured")))
+            .ok_or_else(|| Error::Invalid(format!("assigned sandbox provider {id:?} is not configured")))
     }
 }
 
-/// Connects a guest TCP dialer through the recorded sandbox Provider.
+/// Connects a guest TCP dialer through the recorded sandbox provider.
 ///
 /// # Errors
 ///
@@ -485,12 +485,12 @@ pub async fn guest_tcp_dialer(home: &Path, assignment: &Assignment) -> Result<Gu
     match assignment.provider().as_str() {
         microsandbox::PROVIDER_ID => microsandbox::guest_tcp_dialer(home, assignment).await,
         provider => Err(Error::Invalid(format!(
-            "guest TCP forwarding is not supported through sandbox Provider {provider:?}"
+            "guest TCP forwarding is not supported through sandbox provider {provider:?}"
         ))),
     }
 }
 
-/// Attaches a terminal through the recorded sandbox Provider.
+/// Attaches a terminal through the recorded sandbox provider.
 ///
 /// # Errors
 ///
@@ -503,7 +503,7 @@ pub async fn attach_terminal(
     match assignment.provider().as_str() {
         microsandbox::PROVIDER_ID => microsandbox::attach_terminal(home, assignment, request).await,
         provider => Err(Error::Invalid(format!(
-            "terminal attachment is not supported through sandbox Provider {provider:?}"
+            "terminal attachment is not supported through sandbox provider {provider:?}"
         ))),
     }
 }

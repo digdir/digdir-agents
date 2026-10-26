@@ -1,4 +1,4 @@
-//! Single-threaded in-memory agent Control Plane components.
+//! Single-threaded in-memory agent control plane components.
 
 use std::{cell::RefCell, collections::BTreeMap};
 

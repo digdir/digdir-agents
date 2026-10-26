@@ -363,7 +363,7 @@ impl SandboxManifestSpec {
         self.retention_policy.unwrap_or(RetentionPolicy::Delete)
     }
 
-    /// Converts validated, absolute agent Mount inputs to the generic Sandbox SDK representation.
+    /// Converts validated, absolute agent mount inputs to the generic Sandbox SDK representation.
     #[must_use]
     pub fn resolved_mounts(&self) -> Vec<Mount> {
         self.mounts.iter().map(MountSpec::to_sandbox_mount).collect()

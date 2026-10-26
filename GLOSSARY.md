@@ -1,5 +1,8 @@
 # Glossary
 
+The terms are ordinary nouns, written in lowercase like any other word, except at the start of a sentence and in
+identifiers and code, such as `kind: Agent` or a Rust type.
+
 | Term | Meaning |
 | --- | --- |
 | Agent | A computer that runs coding work for you: what its manifest declares, the sandbox that runs it and the sessions in it. It lives on until you delete it. |

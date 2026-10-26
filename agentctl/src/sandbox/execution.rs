@@ -73,7 +73,7 @@ fn target(record: control_plane::AgentRecord, name: &str) -> Result<ExecutionTar
     })
 }
 
-/// Starts a non-interactive Execution through the recorded sandbox Provider.
+/// Starts a non-interactive Execution through the recorded sandbox provider.
 ///
 /// The returned stream belongs to the exact sandbox lifecycle ID in `target`;
 /// this function does not create, start, or otherwise reconcile a sandbox.
@@ -90,7 +90,7 @@ pub async fn start_execution(
     match target.sandbox.provider().as_str() {
         super::microsandbox::PROVIDER_ID => super::microsandbox::start_execution(home, &target.sandbox, spec).await,
         provider => Err(Error::Invalid(format!(
-            "command execution is not supported through sandbox Provider {provider:?}"
+            "command execution is not supported through sandbox provider {provider:?}"
         ))),
     }
 }

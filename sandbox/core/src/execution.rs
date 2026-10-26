@@ -166,7 +166,7 @@ impl StartExecutionRequest {
     }
 }
 
-/// Process exit status reported by a sandbox Backend.
+/// Process exit status reported by a sandbox backend.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ExitStatus {

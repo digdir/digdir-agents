@@ -384,7 +384,7 @@ mod tests {
                 "missing {expected:?} in {lines:#?}"
             );
         }
-        assert!(lines.iter().any(|line| line.starts_with("  ✗ Resolve sandbox Image (")));
+        assert!(lines.iter().any(|line| line.starts_with("  ✗ Resolve sandbox image (")));
         assert!(lines.iter().any(|line| line.contains(" AGE ")));
         assert!(
             lines

@@ -43,7 +43,7 @@ impl std::fmt::Display for NetworkBackendId {
     }
 }
 
-/// Packet representation exposed by a sandbox Backend.
+/// Packet representation exposed by a sandbox backend.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PacketMedium {
@@ -53,7 +53,7 @@ pub enum PacketMedium {
     Ip,
 }
 
-/// Stable identity of a versioned control protocol implemented by a sandbox Backend.
+/// Stable identity of a versioned control protocol implemented by a sandbox backend.
 ///
 /// The protocol remains opaque to the generic Sandbox SDK. Its concrete
 /// sandbox and Network Backend implementations jointly define the messages and
@@ -82,7 +82,7 @@ impl std::fmt::Display for NetworkControlProtocolId {
     }
 }
 
-/// Network endpoint forms a sandbox Backend can expose.
+/// Network endpoint forms a sandbox backend can expose.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NetworkEndpointCapabilities {
     packet_media: BTreeSet<PacketMedium>,
@@ -128,7 +128,7 @@ impl NetworkEndpointCapabilities {
         self.packet_media.is_empty() && !self.intercepted && self.control_protocols.is_empty()
     }
 
-    /// Reports whether the sandbox Backend can materialize a selection.
+    /// Reports whether the sandbox backend can materialize a selection.
     #[must_use]
     pub fn supports(&self, selection: &NetworkEndpointSelection) -> bool {
         match selection {
@@ -155,7 +155,7 @@ impl NetworkEndpointCapabilities {
     }
 }
 
-/// Immutable endpoint contract selected for one sandbox Network.
+/// Immutable endpoint contract selected for one sandbox network.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NetworkEndpointSelection {
@@ -411,7 +411,7 @@ pub struct InvalidPrefixLength {
     prefix_length: u8,
 }
 
-/// Immutable network configuration assigned by a sandbox Backend.
+/// Immutable network configuration assigned by a sandbox backend.
 ///
 /// This is the small, backend-neutral equivalent of a CNI result. The sandbox
 /// Backend persists it with the materialization and every compatible packet
@@ -545,7 +545,7 @@ pub enum NetworkEndpointError {
         maximum: usize,
     },
     /// The sandbox-facing endpoint closed during an operation.
-    #[error("Sandbox Network endpoint is closed")]
+    #[error("Sandbox network endpoint is closed")]
     Closed,
     /// A platform I/O operation failed.
     #[error("{operation}: {source}")]
@@ -614,7 +614,7 @@ pub struct PacketEndpointParts {
     pub to_sandbox: Pin<Box<dyn BatchSender<NetworkPacket> + Send>>,
 }
 
-/// Owned, bidirectional raw-packet endpoint exposed by a sandbox Backend.
+/// Owned, bidirectional raw-packet endpoint exposed by a sandbox backend.
 pub struct PacketEndpoint {
     parts: PacketEndpointParts,
 }
@@ -749,7 +749,7 @@ impl NetworkControlEndpointProperties {
 pub struct NetworkControlEndpointParts {
     /// Properties applying to both directions.
     pub properties: NetworkControlEndpointProperties,
-    /// Messages emitted by the sandbox Backend's trusted runtime.
+    /// Messages emitted by the sandbox backend's trusted runtime.
     pub from_sandbox: Pin<Box<dyn BatchReceiver<NetworkControlMessage> + Send>>,
     /// Messages returned by the Network Backend to the trusted runtime.
     pub to_sandbox: Pin<Box<dyn BatchSender<NetworkControlMessage> + Send>>,
@@ -815,7 +815,7 @@ impl<T> NetworkByteStream for T where T: AsyncRead + AsyncWrite + ?Sized {}
 
 /// One outbound stream accepted from a sandbox.
 pub struct OutboundStream {
-    /// Source address when the sandbox Backend can report it.
+    /// Source address when the sandbox backend can report it.
     pub source: Option<SocketAddr>,
     /// Original destination requested by the sandbox.
     pub destination: NetworkDestination,
@@ -840,7 +840,7 @@ impl DatagramFlowId {
 pub struct OutboundDatagram {
     /// Opaque route used to deliver a response to the originating flow.
     pub flow: DatagramFlowId,
-    /// Source address when the sandbox Backend can report it.
+    /// Source address when the sandbox backend can report it.
     pub source: Option<SocketAddr>,
     /// Original destination requested by the sandbox.
     pub destination: NetworkDestination,
@@ -946,7 +946,7 @@ impl InterceptedEndpoint {
     }
 }
 
-/// Owned Network data plane opened by a sandbox Backend.
+/// Owned Network data plane opened by a sandbox backend.
 pub enum NetworkEndpoint {
     /// Raw Ethernet or IP packet exchange.
     Packet(PacketEndpoint),
@@ -980,11 +980,11 @@ pub struct StartNetworkRequest {
     pub sandbox_id: SandboxId,
     /// Stable name used for caller-owned Network Backend configuration.
     pub sandbox_name: SandboxName,
-    /// Fresh data-plane endpoint opened by the sandbox Backend.
+    /// Fresh data-plane endpoint opened by the sandbox backend.
     pub endpoint: NetworkEndpoint,
 }
 
-/// Implements network processing and enforcement independently of a sandbox Backend.
+/// Implements network processing and enforcement independently of a sandbox backend.
 ///
 /// Implementations may use `sandbox-authorization`, a Secret Store, and their
 /// own protocol-specific policy enforcement without adding those concerns to
@@ -1000,7 +1000,7 @@ pub trait NetworkBackend {
     /// plane returns `false` and re-establishes the retained attachment.
     fn is_running(&self, sandbox_id: &SandboxId) -> bool;
 
-    /// Selects one endpoint contract from those offered by a sandbox Backend.
+    /// Selects one endpoint contract from those offered by a sandbox backend.
     ///
     /// The implementation owns preference and completeness requirements. For
     /// example, one implementation may require Ethernet packets while another

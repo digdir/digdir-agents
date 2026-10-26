@@ -69,7 +69,7 @@ impl Completion {
 
 #[derive(clap::Subcommand)]
 pub(super) enum SelfCommand {
-    /// Check for or install a released agent update.
+    /// Check for or install a released agentctl update.
     Update {
         /// Install this exact release version.
         #[arg(long)]
@@ -223,7 +223,7 @@ async fn complete(completion: Completion, home: &ControlPlaneHome) -> CommandRes
             || journal.target_version != target_version
             || journal.previous_release != previous_release
         {
-            return Err(Error::Invalid("arguments do not match the unfinished agent update".into()).into());
+            return Err(Error::Invalid("arguments do not match the unfinished agentctl update".into()).into());
         }
         (journal, false)
     } else {
@@ -402,7 +402,7 @@ fn compare_versions(current: &str, target: &str) -> Result<(), Error> {
         && target < *current
     {
         return Err(Error::Invalid(format!(
-            "downgrading agent from v{current} to v{target} is not supported"
+            "downgrading agentctl from v{current} to v{target} is not supported"
         )));
     }
     Ok(())

@@ -674,7 +674,7 @@ mod tests {
             permanent,
             vec![
                 "  ✓ Build Docker image (1m 14s)",
-                "✓ Resolve sandbox Image (1m 27s)",
+                "✓ Resolve sandbox image (1m 27s)",
                 "✗ Start sandbox (0ms)",
                 "error: VMDK missing",
                 "    opening disk",
@@ -803,7 +803,7 @@ mod tests {
         daemon.phase(SandboxPhase::ImageResolve).step("Build Docker image");
         renderer.render(&daemon.snapshot());
         let lines = lines(renderer);
-        assert_eq!(lines.last().map(String::as_str), Some("→ Resolve sandbox Imag…"));
+        assert_eq!(lines.last().map(String::as_str), Some("→ Resolve sandbox imag…"));
     }
 
     #[test]

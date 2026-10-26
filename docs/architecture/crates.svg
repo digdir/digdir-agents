@@ -266,12 +266,12 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
   <circle class="badge" cx="1182" cy="418" r="11"/><text class="step" x="1182" y="422" text-anchor="middle">4</text>
   <text x="1204" y="415"><tspan class="h-sm">Network is chosen separately.</tspan></text>
   <text x="1204" y="435">A Network Backend is selected independently</text>
-  <text x="1204" y="452">of the sandbox Backend, and the attachment</text>
+  <text x="1204" y="452">of the sandbox backend, and the attachment</text>
   <text x="1204" y="469">is fixed for the sandbox's lifetime.</text>
 
   <circle class="badge" cx="1182" cy="509" r="11"/><text class="step" x="1182" y="513" text-anchor="middle">5</text>
   <text x="1204" y="506"><tspan class="h-sm">No unobserved egress.</tspan></text>
-  <text x="1204" y="526">A sandbox Backend blocks all traffic its</text>
+  <text x="1204" y="526">A sandbox backend blocks all traffic its</text>
   <text x="1204" y="543">selected endpoint does not represent.</text>
 
   <circle class="badge" cx="1182" cy="583" r="11"/><text class="step" x="1182" y="587" text-anchor="middle">6</text>

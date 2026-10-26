@@ -34,7 +34,7 @@ const WATCH_SETTLE: Duration = Duration::from_millis(150);
 /// watcher the daemon is still there.
 const WATCH_KEEPALIVE: Duration = Duration::from_secs(30);
 
-/// Agent operations exposed through the agent Control API.
+/// Agent operations exposed through the Control API.
 pub trait AgentApi {
     /// Creates or updates desired agent state.
     fn apply(&self, request: control_plane::ApplyRequest) -> LocalFuture<'_, Result<Agent, Error>>;
@@ -282,7 +282,7 @@ impl ConvergenceApi for control_plane::Convergence {
     }
 }
 
-/// Transient agent Execution target resolution exposed through the local control API.
+/// Transient agent execution target resolution exposed through the local control API.
 pub trait ExecutionApi {
     /// Converges an agent and returns its exact ready sandbox assignment.
     fn ensure<'a>(
@@ -400,7 +400,7 @@ impl Drop for ShutdownCheck<'_> {
     }
 }
 
-/// Serves the agent Control API.
+/// Serves the Control API.
 pub struct Server {
     agents: Rc<dyn AgentApi>,
     authentication: Rc<dyn AuthenticationApi>,
@@ -415,7 +415,7 @@ pub struct Server {
 }
 
 impl Server {
-    /// Creates an agent Control API server.
+    /// Creates a Control API server.
     #[must_use]
     #[allow(
         clippy::too_many_arguments,

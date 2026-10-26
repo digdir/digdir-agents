@@ -44,7 +44,7 @@ impl std::fmt::Display for ResourceKind {
             Self::Volume => "Volume",
             Self::Image => "Image",
             Self::File => "file",
-            Self::Network => "Sandbox Network",
+            Self::Network => "Sandbox network",
             Self::Secret => "secret",
         })
     }
@@ -92,11 +92,11 @@ pub enum Error {
         /// Human-readable invariant that was violated.
         reason: &'static str,
     },
-    /// A requested sandbox Feature is unavailable.
-    #[error("unsupported sandbox Feature: {0:?}")]
+    /// A requested sandbox feature is unavailable.
+    #[error("unsupported sandbox feature: {0:?}")]
     UnsupportedFeature(SandboxFeature),
     /// A requested Mount form is unavailable.
-    #[error("unsupported sandbox Mount kind: {0:?}")]
+    #[error("unsupported sandbox mount kind: {0:?}")]
     UnsupportedMountKind(MountKind),
     /// A requested root filesystem mode is unavailable.
     #[error("unsupported sandbox root filesystem mode: {0:?}")]
@@ -120,10 +120,10 @@ pub enum Error {
         /// Root filesystem mode rejected by the Image Backend.
         mode: crate::RootFilesystemMode,
     },
-    /// A sandbox Backend cannot materialize the requested Platform.
-    #[error("unsupported sandbox Platform: {0}")]
+    /// A sandbox backend cannot materialize the requested Platform.
+    #[error("unsupported sandbox platform: {0}")]
     UnsupportedPlatform(Platform),
-    /// A sandbox Backend cannot represent a resource value exactly.
+    /// A sandbox backend cannot represent a resource value exactly.
     #[error("unsupported sandbox resource value for {resource}: {value} ({reason})")]
     UnsupportedResourceValue {
         /// Stable field name in [`SandboxResources`].
@@ -133,7 +133,7 @@ pub enum Error {
         /// Backend-specific representation constraint.
         reason: &'static str,
     },
-    /// A sandbox Backend cannot apply a requested resource transition.
+    /// A sandbox backend cannot apply a requested resource transition.
     #[error("unsupported sandbox resource change for {resource}: {current} -> {requested} ({reason})")]
     UnsupportedResourceChange {
         /// Stable field name in [`SandboxResources`].
@@ -145,33 +145,33 @@ pub enum Error {
         /// Backend-specific transition constraint.
         reason: &'static str,
     },
-    /// A sandbox Backend returned an identity different from the create request.
-    #[error("Sandbox Backend returned ID {actual}; expected lifecycle-assigned ID {expected}")]
+    /// A sandbox backend returned an identity different from the create request.
+    #[error("Sandbox backend returned ID {actual}; expected lifecycle-assigned ID {expected}")]
     SandboxIdMismatch {
         /// ID assigned before the create call.
         expected: crate::SandboxId,
-        /// ID returned by the sandbox Backend.
+        /// ID returned by the sandbox backend.
         actual: crate::SandboxId,
     },
     /// The service does not contain the Network Backend attached to a sandbox.
     #[error("configured service cannot operate sandbox Network Backend {0}")]
     NetworkBackendUnavailable(network::NetworkBackendId),
-    /// The Network Backend cannot use any endpoint offered by the sandbox Backend.
-    #[error("Network Backend {0} has no compatible sandbox Network endpoint")]
+    /// The Network Backend cannot use any endpoint offered by the sandbox backend.
+    #[error("Network Backend {0} has no compatible sandbox network endpoint")]
     NetworkEndpointUnavailable(network::NetworkBackendId),
-    /// A Network Backend selected an endpoint not offered by the sandbox Backend.
-    #[error("Sandbox Backend does not support selected Network endpoint {0:?}")]
+    /// A Network Backend selected an endpoint not offered by the sandbox backend.
+    #[error("Sandbox backend does not support selected Network endpoint {0:?}")]
     UnsupportedNetworkEndpoint(network::NetworkEndpointSelection),
-    /// A sandbox Backend opened a different endpoint than the immutable attachment.
-    #[error("Sandbox Backend opened Network endpoint {actual:?}; expected {expected:?}")]
+    /// A sandbox backend opened a different endpoint than the immutable attachment.
+    #[error("Sandbox backend opened Network endpoint {actual:?}; expected {expected:?}")]
     NetworkEndpointMismatch {
         /// Endpoint recorded when the sandbox was created.
         expected: network::NetworkEndpointSelection,
-        /// Endpoint returned by the sandbox Backend.
+        /// Endpoint returned by the sandbox backend.
         actual: network::NetworkEndpointSelection,
     },
-    /// A resolved Image does not support the requested sandbox Platform.
-    #[error("Image Platform {actual} does not satisfy requested sandbox Platform {requested}")]
+    /// A resolved Image does not support the requested sandbox platform.
+    #[error("Image Platform {actual} does not satisfy requested sandbox platform {requested}")]
     ImagePlatformMismatch {
         /// Platform requested by the sandbox specification.
         requested: Box<Platform>,
@@ -302,7 +302,7 @@ pub enum RetentionPolicy {
 pub struct SandboxSpec {
     /// Source of the immutable Image.
     pub image: image::ImageSource,
-    /// Desired sandbox Platform.
+    /// Desired sandbox platform.
     pub platform: Platform,
     /// Desired mutable compute and writable root filesystem resources.
     pub resources: SandboxResources,
@@ -349,7 +349,7 @@ pub struct EnsureSandboxRequest {
     mounts: Vec<Mount>,
     /// Non-secret environment contributed by the caller or a higher platform layer.
     environment: std::collections::BTreeMap<String, String>,
-    /// Optional functionality required from the selected sandbox Backend.
+    /// Optional functionality required from the selected sandbox backend.
     required_features: SandboxFeatureSet,
 }
 
@@ -384,7 +384,7 @@ impl EnsureSandboxRequest {
         self
     }
 
-    /// Adds non-secret environment inherited by image init and sandbox Executions.
+    /// Adds non-secret environment inherited by image init and sandbox executions.
     #[must_use]
     pub fn with_environment(mut self, environment: impl IntoIterator<Item = (String, String)>) -> Self {
         self.environment.extend(environment);
@@ -479,7 +479,7 @@ impl SandboxService {
         self.provider.backend()
     }
 
-    /// Reports consumer-visible functionality for one sandbox Platform.
+    /// Reports consumer-visible functionality for one sandbox platform.
     ///
     /// # Errors
     ///
@@ -710,7 +710,7 @@ impl SandboxService {
             })
             .forward(events)
             .await
-            .map_err(|error| Error::component("resolve sandbox Image", error))?;
+            .map_err(|error| Error::component("resolve sandbox image", error))?;
         image.validate()?;
         if !image.platform.satisfies(&request.spec.platform) {
             return Err(Error::ImagePlatformMismatch {
@@ -787,7 +787,7 @@ impl SandboxService {
                 network_backend
                     .stop(&sandbox.id)
                     .await
-                    .map_err(|error| Error::component("stop sandbox Network for environment update", error))?;
+                    .map_err(|error| Error::component("stop sandbox network for environment update", error))?;
             }
         }
         let sandbox = self
@@ -997,14 +997,14 @@ impl SandboxService {
             network_backend
                 .stop(&sandbox.id)
                 .await
-                .map_err(|error| Error::component("stop sandbox Network", error))?;
+                .map_err(|error| Error::component("stop sandbox network", error))?;
         }
         if retention == RetentionPolicy::Delete {
             if let Some(network_backend) = network_backend {
                 network_backend
                     .delete(&sandbox.id)
                     .await
-                    .map_err(|error| Error::component("delete sandbox Network", error))?;
+                    .map_err(|error| Error::component("delete sandbox network", error))?;
             }
             self.backend()
                 .delete(&sandbox.id)
@@ -1023,7 +1023,7 @@ impl SandboxService {
                 .backend()
                 .open_network_endpoint(&sandbox.id)
                 .await
-                .map_err(|error| Error::component("open sandbox Network endpoint", error))?;
+                .map_err(|error| Error::component("open sandbox network endpoint", error))?;
             let expected = sandbox
                 .network
                 .as_ref()
@@ -1041,7 +1041,7 @@ impl SandboxService {
                     endpoint,
                 })
                 .await
-                .map_err(|error| Error::component("start sandbox Network", error))?;
+                .map_err(|error| Error::component("start sandbox network", error))?;
             span.end(Outcome::Completed).await;
         }
         let span = events.start_phase(SandboxPhase::SandboxStart).await;
@@ -1130,7 +1130,7 @@ fn validate_environment(environment: &std::collections::BTreeMap<String, String>
 /// it performs no asynchronous cleanup. Call [`Self::release`] or
 /// [`Self::delete`] explicitly. Its observed sandbox snapshot may become stale
 /// and changes only when [`Self::refresh`] succeeds.
-#[must_use = "release or delete the sandbox Handle explicitly when its work is complete"]
+#[must_use = "release or delete the sandbox handle explicitly when its work is complete"]
 pub struct SandboxHandle {
     service: SandboxService,
     sandbox: Sandbox,

@@ -30,7 +30,7 @@ spec:
         # `direct` copies the whole image onto the agent's own disk. `layered` instead shares the image and stores
         # only what the agent writes on top of it.
         mode: direct
-      # Lets the agents in this agent run agents of their own, such as one to try a change to an agent before you
+      # Lets the coding agents in this agent run agents of their own, such as one to try a change to an agent before you
       # do. It needs a Linux x86_64 host with nested KVM, or an Apple M3 or newer on macOS 15 or newer. `preferred`
       # starts the agent without them on other hosts, and `required` fails there instead.
       nestedSandboxes: preferred

@@ -19,7 +19,7 @@ Host
 - **Local first.** Agents run on people's own machines, on Linux, macOS and Windows, and those machines all differ.
   Supporting them keeps every layer flexible enough to run elsewhere too: `agentd` should fit in a Kubernetes pod given
   nothing more than nested virtualization and `/dev/kvm`, with its configuration and manifests injected.
-- **Externals behind adapters.** What we do not own, such as the sandbox Provider, the operating system in the
+- **Externals behind adapters.** What we do not own, such as the sandbox provider, the operating system in the
   sandbox, the harnesses and tmux, sits behind an adapter, so we can add, replace or drop it. A new deployment target
   is a new adapter, not a change to the core.
 - **Logic in the core.** The core, meaning agents, sessions, reconciliation and policy, is where we have leverage and

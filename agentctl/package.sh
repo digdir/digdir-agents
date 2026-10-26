@@ -15,7 +15,7 @@ fi
 
 for binary in agentctl agentd; do
   if [ ! -f "${binary_directory}/${binary}${executable_suffix}" ]; then
-    echo "Missing agent binary: ${binary_directory}/${binary}${executable_suffix}" >&2
+    echo "Missing agentctl binary: ${binary_directory}/${binary}${executable_suffix}" >&2
     exit 1
   fi
 done

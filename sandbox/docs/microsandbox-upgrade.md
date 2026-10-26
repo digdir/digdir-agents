@@ -45,7 +45,7 @@ test, and its release later publishes exactly those files, so their digests are 
    sandbox/microsandbox/fetch-runtime.sh <directory>
    ```
 
-3. Set `AGENT_MICROSANDBOX_RUNTIME_DIR=<directory>` wherever the tests or `agentctl` run. A sandbox Provider then
+3. Set `AGENT_MICROSANDBOX_RUNTIME_DIR=<directory>` wherever the tests or `agentctl` run. A sandbox provider then
    installs the runtime from that directory instead of downloading the release, and only a bundle with the pinned
    digest is accepted. The pull request's end-to-end tests do this themselves while the pinned version has no
    release.

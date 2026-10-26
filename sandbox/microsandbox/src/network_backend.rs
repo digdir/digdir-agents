@@ -81,7 +81,7 @@ impl MicrosandboxNetworkBackend {
         self
     }
 
-    /// Replaces the secret bindings applied when this named sandbox's Network starts.
+    /// Replaces the secret bindings applied when this named sandbox's network starts.
     ///
     /// Returns whether the binding definition changed. Existing connections
     /// keep their handshake configuration until the caller restarts the Network.
@@ -111,7 +111,7 @@ impl MicrosandboxNetworkBackend {
     /// # Errors
     ///
     /// Returns [`Error::NotFound`] when this process does not drive the
-    /// sandbox's Network endpoint.
+    /// sandbox's network endpoint.
     pub async fn revoke_all(&self, sandbox_id: &SandboxId) -> Result<(), Error> {
         let commands = self
             .drivers

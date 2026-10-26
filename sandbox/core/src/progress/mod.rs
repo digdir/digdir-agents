@@ -66,12 +66,12 @@ impl SandboxPhase {
         let (id, label) = match self {
             Self::Validate => ("validate", "Validate sandbox request"),
             Self::Lookup => ("lookup", "Look up sandbox"),
-            Self::FeatureDiscovery => ("featureDiscovery", "Discover sandbox Capabilities"),
-            Self::ImageResolve => ("imageResolve", "Resolve sandbox Image"),
-            Self::ImagePrepare => ("imagePrepare", "Prepare sandbox Image"),
+            Self::FeatureDiscovery => ("featureDiscovery", "Discover sandbox capabilities"),
+            Self::ImageResolve => ("imageResolve", "Resolve sandbox image"),
+            Self::ImagePrepare => ("imagePrepare", "Prepare sandbox image"),
             Self::SandboxCreate => ("sandboxCreate", "Create sandbox"),
             Self::SandboxUpdate => ("sandboxUpdate", "Update sandbox"),
-            Self::NetworkStart => ("networkStart", "Start sandbox Network"),
+            Self::NetworkStart => ("networkStart", "Start sandbox network"),
             Self::SandboxStart => ("sandboxStart", "Start sandbox"),
             Self::Inspect => ("inspect", "Inspect sandbox"),
         };

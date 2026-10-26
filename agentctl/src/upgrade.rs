@@ -27,7 +27,7 @@ const INSTALL_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 const RELEASE_RENAME_TIMEOUT: Duration = Duration::from_secs(15);
 const BINARY_STEMS: [&str; 2] = ["agentctl", "agentd"];
 
-/// Filesystem locations for one managed agent installation.
+/// Filesystem locations for one managed agentctl installation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstallPaths {
     root: PathBuf,
@@ -125,7 +125,7 @@ impl InstallPaths {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
                 Err(std::fs::TryLockError::WouldBlock) => {
-                    return Err(Error::Daemon("another agent update is already running".into()));
+                    return Err(Error::Daemon("another agentctl update is already running".into()));
                 }
                 Err(std::fs::TryLockError::Error(error)) => return Err(Error::Io(error)),
             }
@@ -190,7 +190,7 @@ impl InstallMetadata {
             || !metadata.bin_directory.is_absolute()
         {
             return Err(Error::Invalid(
-                "managed agent installation has an incompatible format or target".into(),
+                "managed agentctl installation has an incompatible format or target".into(),
             ));
         }
         Ok(metadata)
@@ -330,7 +330,7 @@ pub async fn publish_release(paths: &InstallPaths, source: &Path, version: &str)
         std::io::Error::new(
             error.kind(),
             format!(
-                "publish agent release {} to {}: {error}",
+                "publish agentctl release {} to {}: {error}",
                 staging.path().display(),
                 final_path.display()
             ),
@@ -402,7 +402,7 @@ impl UpdateJournal {
         };
         let journal: Self = serde_json::from_slice(&bytes)?;
         if journal.format_version != JOURNAL_FORMAT {
-            return Err(Error::Invalid("unsupported agent update journal format".into()));
+            return Err(Error::Invalid("unsupported agentctl update journal format".into()));
         }
         if journal.phase == UpdatePhase::Complete {
             return Ok(None);
@@ -432,7 +432,7 @@ impl UpdateJournal {
     pub fn discard_before_migration(&self, paths: &InstallPaths) -> Result<(), Error> {
         if self.phase != UpdatePhase::Prepared {
             return Err(Error::Invalid(
-                "an agent update journal can only be discarded before migration".into(),
+                "an agentctl update journal can only be discarded before migration".into(),
             ));
         }
         fs::remove_file(paths.journal())?;
@@ -486,7 +486,7 @@ pub fn current_release(paths: &InstallPaths) -> Result<Option<PathBuf>, Error> {
     match fs::metadata(&release) {
         Ok(metadata) if metadata.is_dir() => Ok(Some(release)),
         Ok(_) => Err(Error::Invalid(format!(
-            "current agent release is not a directory: {}",
+            "current agentctl release is not a directory: {}",
             release.display()
         ))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -677,12 +677,12 @@ async fn latest_release(repository: &str) -> Result<String, Error> {
             .header(reqwest::header::USER_AGENT, "agentctl-updater")
             .send()
             .await
-            .map_err(|error| Error::Daemon(format!("resolve agent release: {error}")))?
+            .map_err(|error| Error::Daemon(format!("resolve agentctl release: {error}")))?
             .error_for_status()
-            .map_err(|error| Error::Daemon(format!("resolve agent release: {error}")))?
+            .map_err(|error| Error::Daemon(format!("resolve agentctl release: {error}")))?
             .json::<Vec<GithubRelease>>()
             .await
-            .map_err(|error| Error::Daemon(format!("decode agent releases: {error}")))?;
+            .map_err(|error| Error::Daemon(format!("decode agentctl releases: {error}")))?;
         if let Some(version) = releases
             .iter()
             .find_map(|release| release.tag_name.strip_prefix("agentctl/"))
@@ -702,12 +702,12 @@ async fn download(url: &str, path: &Path) -> Result<(), Error> {
         .header(reqwest::header::USER_AGENT, "agentctl-updater")
         .send()
         .await
-        .map_err(|error| Error::Daemon(format!("download agent package: {error}")))?
+        .map_err(|error| Error::Daemon(format!("download agentctl package: {error}")))?
         .error_for_status()
-        .map_err(|error| Error::Daemon(format!("download agent package: {error}")))?
+        .map_err(|error| Error::Daemon(format!("download agentctl package: {error}")))?
         .bytes()
         .await
-        .map_err(|error| Error::Daemon(format!("read agent package: {error}")))?;
+        .map_err(|error| Error::Daemon(format!("read agentctl package: {error}")))?;
     fs::write(path, bytes)?;
     Ok(())
 }
@@ -723,13 +723,14 @@ fn http_client() -> Result<&'static reqwest::Client, Error> {
                 .map_err(|error| error.to_string())
         })
         .as_ref()
-        .map_err(|error| Error::Daemon(format!("create agent update HTTP client: {error}")))
+        .map_err(|error| Error::Daemon(format!("create agentctl update HTTP client: {error}")))
 }
 
 fn normalize_version(version: &str) -> Result<String, Error> {
     let trimmed = version.trim();
     let bare = trimmed.strip_prefix('v').unwrap_or(trimmed);
-    semver::Version::parse(bare).map_err(|error| Error::Invalid(format!("invalid agent release version: {error}")))?;
+    semver::Version::parse(bare)
+        .map_err(|error| Error::Invalid(format!("invalid agentctl release version: {error}")))?;
     Ok(format!("v{bare}"))
 }
 
@@ -771,12 +772,12 @@ fn extract_archive(archive: &Path, destination: &Path) -> Result<(), Error> {
     let mut found = BTreeSet::new();
     for entry in package
         .entries()
-        .map_err(|error| Error::Invalid(format!("invalid agent archive: {error}")))?
+        .map_err(|error| Error::Invalid(format!("invalid agentctl archive: {error}")))?
     {
-        let mut entry = entry.map_err(|error| Error::Invalid(format!("invalid agent archive: {error}")))?;
+        let mut entry = entry.map_err(|error| Error::Invalid(format!("invalid agentctl archive: {error}")))?;
         let path = entry
             .path()
-            .map_err(|error| Error::Invalid(format!("invalid agent archive: {error}")))?;
+            .map_err(|error| Error::Invalid(format!("invalid agentctl archive: {error}")))?;
         let mut components = path.components();
         let Some(Component::Normal(name)) = components.next() else {
             return Err(Error::Invalid("Agent archive contains an invalid path".into()));
@@ -790,11 +791,11 @@ fn extract_archive(archive: &Path, destination: &Path) -> Result<(), Error> {
             .to_str()
             .ok_or_else(|| Error::Invalid("Agent archive contains a non-UTF-8 path".into()))?;
         if !expected.contains(name) || !found.insert(name.to_owned()) || !entry.header().entry_type().is_file() {
-            return Err(Error::Invalid(format!("unexpected agent archive entry {name:?}")));
+            return Err(Error::Invalid(format!("unexpected agentctl archive entry {name:?}")));
         }
         entry
             .unpack(destination.join(name))
-            .map_err(|error| Error::Invalid(format!("invalid agent archive: {error}")))?;
+            .map_err(|error| Error::Invalid(format!("invalid agentctl archive: {error}")))?;
     }
     if found != expected {
         return Err(Error::Invalid(
@@ -847,10 +848,10 @@ pub fn managed_release_version(path: &Path) -> Result<String, Error> {
     let name = path
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
-        .ok_or_else(|| Error::Invalid("managed agent release has an invalid directory name".into()))?;
+        .ok_or_else(|| Error::Invalid("managed agentctl release has an invalid directory name".into()))?;
     let version = name
         .strip_suffix(&format!("-{}", package_target()))
-        .ok_or_else(|| Error::Invalid("managed agent release does not match this platform".into()))?;
+        .ok_or_else(|| Error::Invalid("managed agentctl release does not match this platform".into()))?;
     let version = normalize_version(version)?;
     validate_release_directory(path, &version)?;
     Ok(version)
@@ -1080,7 +1081,7 @@ mod tests {
 
         let error = UpdateJournal::read_unfinished(&paths).expect_err("unsupported format");
         assert!(
-            error.to_string().contains("unsupported agent update journal format"),
+            error.to_string().contains("unsupported agentctl update journal format"),
             "{error}"
         );
     }
@@ -1281,7 +1282,7 @@ mod tests {
 
         let error = paths.lock().await.expect_err("second lock");
 
-        assert!(error.to_string().contains("another agent update is already running"));
+        assert!(error.to_string().contains("another agentctl update is already running"));
     }
 
     #[test]

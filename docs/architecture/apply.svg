@@ -132,7 +132,7 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
 <text class="h-sm" x="880" y="167" text-anchor="middle">Session controller</text>
 <text class="s-sm" x="880" y="183" text-anchor="middle">reconciles sessions</text>
 <rect class="box box-host" x="990" y="148" width="170" height="44" rx="8"/>
-<text class="h-sm" x="1075" y="167" text-anchor="middle">Sandbox Provider</text>
+<text class="h-sm" x="1075" y="167" text-anchor="middle">Sandbox provider</text>
 <text class="s-sm" x="1075" y="183" text-anchor="middle">sandbox-microsandbox</text>
 <rect class="box box-ext" x="1185" y="148" width="170" height="44" rx="8"/>
 <text class="h-sm" x="1270" y="167" text-anchor="middle">Image source</text>

@@ -1,4 +1,4 @@
-//! Interfaces implemented by sandbox Providers.
+//! Interfaces implemented by sandbox providers.
 //!
 //! Application code normally provisions through [`crate::SandboxService`] and
 //! operates the resulting [`crate::SandboxHandle`].
@@ -167,7 +167,7 @@ pub struct CreateSandboxRequest {
     pub init_system: InitSystem,
     /// Filesystem attachments materialized when the sandbox is created.
     pub mounts: Vec<Mount>,
-    /// Non-secret environment inherited by image init and sandbox Executions.
+    /// Non-secret environment inherited by image init and sandbox executions.
     pub environment: BTreeMap<String, String>,
     /// Immutable Network attachment selected by the caller.
     pub network: Option<network::NetworkAttachment>,
@@ -195,7 +195,7 @@ pub struct Sandbox {
     pub guest_heartbeat: Option<GuestHeartbeat>,
     /// Filesystem attachments materialized in the sandbox.
     pub mounts: Vec<Mount>,
-    /// Non-secret environment inherited by image init and sandbox Executions.
+    /// Non-secret environment inherited by image init and sandbox executions.
     pub environment: BTreeMap<String, String>,
     /// Immutable Network attachment materialized with the sandbox.
     pub network: Option<network::NetworkAttachment>,

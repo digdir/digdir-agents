@@ -150,7 +150,7 @@ mod tests {
         followed.apply(trimmed);
         let lines = followed.lines();
         assert!(
-            lines.contains(&"  → Resolve sandbox Image (0s)".to_owned()),
+            lines.contains(&"  → Resolve sandbox image (0s)".to_owned()),
             "{lines:#?}"
         );
         assert!(lines.contains(&"    Build Docker image".to_owned()));

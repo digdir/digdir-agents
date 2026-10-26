@@ -255,7 +255,7 @@ struct UnsupportedProvider {
 #[derive(Clone)]
 enum PlannedFailure {
     Invalid(String),
-    /// The sandbox Provider rejects the request itself (an SDK `InvalidRequest`).
+    /// The sandbox provider rejects the request itself (an SDK `InvalidRequest`).
     Rejected,
     /// Floods telemetry past the lossy channel's capacity, then fails as invalid.
     InvalidAfterFlood(String),
@@ -1171,7 +1171,7 @@ async fn repeated_apply_is_idempotent_and_immutable_fields_are_rejected() {
         .control_plane
         .apply(immutable_change)
         .await
-        .expect_err("Sandbox Platform should be immutable");
+        .expect_err("Sandbox platform should be immutable");
     assert!(matches!(error, Error::Immutable("spec.sandbox.platform")));
 
     let mut init_system_change = updated_request.clone();

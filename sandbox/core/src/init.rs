@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum InitSystem {
-    /// Keep the sandbox Backend's built-in init process.
+    /// Keep the sandbox backend's built-in init process.
     #[default]
     Backend,
     /// Hand initialization to the init system supplied by the Image.

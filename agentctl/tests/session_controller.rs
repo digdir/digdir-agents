@@ -248,7 +248,7 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
     }
 }
 
-/// A throwaway sandbox service and tmux runtime for session Service tests that
+/// A throwaway sandbox service and tmux runtime for session service tests that
 /// never reach the runtime (they resolve with `WaitPolicy::FirstPass`).
 fn unused_sandboxes() -> Rc<agent::sandbox::Service> {
     let backend = Rc::new(sandbox_memory::Provider::new());

@@ -367,7 +367,7 @@ pub(crate) async fn remove_server_state(sandbox: &SandboxHandle) -> Result<(), E
     Ok(())
 }
 
-/// Captures the environment an ordinary sandbox Execution inherits and renders
+/// Captures the environment an ordinary sandbox execution inherits and renders
 /// it in OpenSSH's `~/.ssh/environment` format. SSH supplies identity and
 /// terminal variables itself; platform defaults fill the only values added by
 /// `agentctl exec` and session launch rather than the sandbox runtime.

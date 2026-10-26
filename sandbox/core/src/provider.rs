@@ -1,4 +1,4 @@
-//! Cohesive sandbox Backend and Image Backend composition.
+//! Cohesive sandbox backend and Image Backend composition.
 
 use crate::{backend::SandboxBackend, image};
 
@@ -8,9 +8,9 @@ use crate::{backend::SandboxBackend, image};
 /// its shared image materialization domain. Consumers compose a provider with
 /// an optional Network Backend instead of pairing these components independently.
 pub trait SandboxProvider {
-    /// Returns the sandbox Backend owned by this provider.
+    /// Returns the sandbox backend owned by this provider.
     fn backend(&self) -> &dyn SandboxBackend;
 
-    /// Returns the Image Backend whose materialized images the sandbox Backend consumes.
+    /// Returns the Image Backend whose materialized images the sandbox backend consumes.
     fn image_backend(&self) -> &dyn image::ImageBackend;
 }

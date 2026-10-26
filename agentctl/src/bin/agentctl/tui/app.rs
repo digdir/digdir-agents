@@ -4117,19 +4117,19 @@ mod tests {
                     "pulling".into(),
                     "Provisioning",
                     Tone::Cyan,
-                    "Resolve sandbox Image · Pull OCI image: 1.0 KiB / 2.0 KiB".into()
+                    "Resolve sandbox image · Pull OCI image: 1.0 KiB / 2.0 KiB".into()
                 ),
                 (
                     "retrying".into(),
                     "Retrying",
                     Tone::Yellow,
-                    "Resolve sandbox Image · Pull OCI image: 1.0 KiB / 2.0 KiB".into()
+                    "Resolve sandbox image · Pull OCI image: 1.0 KiB / 2.0 KiB".into()
                 ),
                 (
                     "updating".into(),
                     "Provisioning",
                     Tone::Cyan,
-                    "Resolve sandbox Image · Pull OCI image: 1.0 KiB / 2.0 KiB".into()
+                    "Resolve sandbox image · Pull OCI image: 1.0 KiB / 2.0 KiB".into()
                 ),
             ]
         );

@@ -43,7 +43,7 @@ const UPDATE_RUNTIME_ENVIRONMENT: &str = "Update Microsandbox environment";
 /// would otherwise block stopping and deleting the sandbox.
 const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Microsandbox Provider pairing its sandbox Backend with its Image Backend.
+/// Microsandbox Provider pairing its sandbox backend with its Image Backend.
 pub struct MicrosandboxProvider {
     pub(crate) client: Client,
     images: ImageCache,

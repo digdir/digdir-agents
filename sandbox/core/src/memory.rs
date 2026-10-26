@@ -39,7 +39,7 @@ impl SandboxProvider for Provider {
     }
 }
 
-/// In-memory sandbox Provider for tests and early wiring.
+/// In-memory sandbox provider for tests and early wiring.
 pub struct Provider {
     state: Rc<RefCell<BackendState>>,
     supported_platforms: BTreeSet<Platform>,
