@@ -18,6 +18,7 @@ use agent::{
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod format;
+mod github;
 mod launch;
 mod progress;
 mod prompt;
@@ -114,6 +115,11 @@ enum Command {
     Codex {
         #[command(subcommand)]
         command: CodexCommand,
+    },
+    /// Give agents a GitHub account, one token per user or organization they work for.
+    Github {
+        #[command(subcommand)]
+        command: GithubCommand,
     },
     /// Run a command in an agent.
     Exec {
@@ -545,6 +551,30 @@ enum CodexCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum GithubCommand {
+    /// Store a GitHub token under a name, separate from any `gh` login.
+    ///
+    /// Agents whose manifest has `accounts: [{type: github, name: NAME}]` use it, and those that
+    /// failed for want of it start again.
+    Login {
+        /// The name manifests ask for the token by; by default this repository's name.
+        name: Option<String>,
+        /// Read the token from standard input instead, and store it without asking.
+        #[arg(long)]
+        from_stdin: bool,
+    },
+    /// List the stored tokens: name, account, kind and expiry.
+    List,
+    /// Forget a stored token; agents asking for it lose GitHub access at once, and nothing else.
+    ///
+    /// The token keeps working on GitHub until it expires or you revoke it there.
+    Logout {
+        /// The token's name, as `agentctl github list` shows it.
+        name: String,
+    },
+}
+
 fn main() -> ExitCode {
     if launch::as_browser(|name| std::env::var_os(name)) {
         return launch::open_argument();
@@ -628,6 +658,13 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         } => {
             login(client, home, agent::Harness::Codex, from_stdin.then(read_stdin_to_end)).await?;
         }
+        Command::Github { command } => match command {
+            GithubCommand::Login { name, from_stdin } => {
+                github::login(client, name.as_deref(), from_stdin).await?;
+            }
+            GithubCommand::List => github::list(client).await?,
+            GithubCommand::Logout { name } => github::logout(client, &name).await?,
+        },
         Command::Apply {
             filename,
             variant,
@@ -2078,6 +2115,43 @@ mod tests {
         };
         assert!(!parse(&["agentctl", "status"]));
         assert!(parse(&["agentctl", "status", "--json"]));
+    }
+
+    #[test]
+    fn github_takes_a_name_and_never_a_token_argument() {
+        let parse = |arguments: &[&str]| Arguments::try_parse_from(arguments).map(|arguments| arguments.command);
+        assert!(matches!(
+            parse(&["agentctl", "github", "login", "altinn-studio", "--from-stdin"]),
+            Ok(Command::Github {
+                command: GithubCommand::Login { name, from_stdin: true }
+            }) if name.as_deref() == Some("altinn-studio")
+        ));
+        assert!(matches!(
+            parse(&["agentctl", "github", "logout", "altinn-studio"]),
+            Ok(Command::Github {
+                command: GithubCommand::Logout { name }
+            }) if name == "altinn-studio"
+        ));
+        assert!(
+            matches!(
+                parse(&["agentctl", "github", "login"]),
+                Ok(Command::Github {
+                    command: GithubCommand::Login {
+                        name: None,
+                        from_stdin: false
+                    }
+                })
+            ),
+            "the name defaults to this repository's"
+        );
+        for arguments in [
+            &["agentctl", "github", "login", "digdir", "--token", "ghp_FAKE_canary"][..],
+            &["agentctl", "github", "login", "digdir", "ghp_FAKE_canary"],
+            &["agentctl", "github", "login", "digdir", "--token=ghp_FAKE_canary"],
+            &["agentctl", "github", "list", "ghp_FAKE_canary"],
+        ] {
+            assert!(parse(arguments).is_err(), "{arguments:?}");
+        }
     }
 
     #[test]
