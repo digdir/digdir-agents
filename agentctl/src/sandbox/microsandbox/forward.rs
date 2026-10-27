@@ -1,45 +1,40 @@
 //! Guest TCP dialing transport for the Microsandbox Backend.
 
-use sandbox_microsandbox::{GuestTcpDialer, GuestTcpStream, MicrosandboxProvider};
+use sandbox_microsandbox::{GuestTcpDialer, GuestTcpStream};
 
-use crate::{Error, sandbox::Assignment};
+use crate::Error;
 
-/// Dials TCP connections from inside one agent sandbox.
-///
-/// The dialer multiplexes streams over a single sandbox connection, so opening
-/// many concurrent connections through one dialer is cheap. It stops working
-/// when the sandbox runtime restarts; create a replacement when a connect fails.
-pub struct GuestDialer(GuestTcpDialer);
+/// A connection to one running agent sandbox that dials a TCP connection from
+/// inside its guest.
+pub struct GuestDialer(pub(super) GuestTcpDialer);
 
 /// One open TCP stream dialed from inside an agent sandbox.
-pub struct GuestConnection(GuestTcpStream);
+pub struct GuestConnection {
+    stream: GuestTcpStream,
+    // The sandbox connection the stream runs over.
+    _dialer: GuestTcpDialer,
+}
 
 impl GuestDialer {
-    /// Opens one TCP connection dialed from inside the guest.
+    /// Opens one TCP connection dialed from inside the guest, which keeps the
+    /// dialer's sandbox connection to itself.
     ///
     /// # Errors
     ///
     /// Returns an error when the stream cannot be opened or the guest dial is
     /// rejected.
-    pub async fn connect(&self, host: &str, port: u16) -> Result<GuestConnection, Error> {
-        Ok(GuestConnection(self.0.connect(host, port).await?))
+    pub async fn connect(self, host: &str, port: u16) -> Result<GuestConnection, Error> {
+        let stream = self.0.connect(host, port).await?;
+        Ok(GuestConnection {
+            stream,
+            _dialer: self.0,
+        })
     }
 }
 
 impl GuestConnection {
-    /// Pipes bytes between a host socket and the guest connection until either
-    /// side closes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when either side of the relay fails.
-    pub async fn relay(self, stream: tokio::net::TcpStream) -> Result<(), Error> {
-        self.0.relay(stream).await.map_err(Error::from)
-    }
-
-    /// Pipes bytes between a host reader/writer pair, such as this process's
-    /// standard input and output, and the guest connection until both sides
-    /// close.
+    /// Pipes bytes between a host reader/writer pair and the guest connection
+    /// until both sides close.
     ///
     /// # Errors
     ///
@@ -49,24 +44,6 @@ impl GuestConnection {
         R: tokio::io::AsyncRead + Unpin,
         W: tokio::io::AsyncWrite + Unpin,
     {
-        self.0.relay_io(reader, writer).await.map_err(Error::from)
+        self.stream.relay_io(reader, writer).await.map_err(Error::from)
     }
-}
-
-/// Connects a TCP dialer to an already-materialized Microsandbox.
-///
-/// # Errors
-///
-/// Returns an error when the assignment is not materialized or the exact
-/// Microsandbox is not running.
-pub(crate) async fn guest_tcp_dialer(home: &std::path::Path, assignment: &Assignment) -> Result<GuestDialer, Error> {
-    let provider = MicrosandboxProvider::open(home.join("microsandbox")).await?;
-    let Assignment::Materialized { id, .. } = assignment else {
-        return Err(Error::Invalid("forward target sandbox is not materialized".into()));
-    };
-    provider
-        .guest_tcp_dialer(id)
-        .await
-        .map(GuestDialer)
-        .map_err(Error::from)
 }

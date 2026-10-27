@@ -18,6 +18,10 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 - Your terminal tab is named after the agent and session you are attached to, such as `builder/b1`, and reads `agentctl` again when you return to `agentctl tui`. ([#343](https://github.com/digdir/digdir-agents/pull/343))
 - `agentctl get agents --watch -o json` prints the agents as one JSON line, then again each time they change, so a tool can follow them without polling. It exits once an `agentd` upgrade makes it incompatible. `get sessions --watch` works the same way. ([#349](https://github.com/digdir/digdir-agents/issues/349))
 
+### Changed
+
+- SSH, `agentctl port-forward` and `agentctl vnc` now connect through `agentd`, so `agentctl self update` closes open SSH sessions and forwarded connections, and says how many. ([#273](https://github.com/digdir/digdir-agents/issues/273))
+
 ## [0.1.0-preview.13] - 2026-10-26
 
 ### Added

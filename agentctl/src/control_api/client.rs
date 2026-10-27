@@ -7,14 +7,15 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, sessions};
 
 use super::protocol::{
-    DaemonInfo, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, MAX_RESPONSE_BYTES,
-    METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET,
-    METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
-    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, ProgressParams, ReadMessage, Request,
-    ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams,
-    SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
+    DaemonInfo, DirectoryParams, ExecutionEnsureParams, GuestTcpParams, JSON_RPC_VERSION, LoginParams,
+    MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE,
+    METHOD_GET, METHOD_GUEST_TCP, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
+    METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE,
+    METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE,
+    METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams,
+    ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams,
+    SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult,
+    StreamKind, StreamResult, read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -469,7 +470,45 @@ impl Client {
         .await
     }
 
+    /// Connects to `port` on the loopback interface of an agent's sandbox,
+    /// through agentd. The connection carries the guest connection's bytes
+    /// both ways, and shutting down its write side ends the guest's input.
+    /// The guest connection closes when both directions have, or when the
+    /// connection is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the agent is missing, stopped or has no running
+    /// sandbox, or when nothing in the guest accepts the connection.
+    pub async fn guest_tcp(&self, name: &str, port: u16) -> Result<Box<dyn Connection>, Error> {
+        let (result, connection) = self
+            .exchange(
+                METHOD_GUEST_TCP,
+                GuestTcpParams {
+                    name: name.into(),
+                    port,
+                },
+            )
+            .await?;
+        match serde_json::from_value::<StreamResult>(result)? {
+            StreamResult {
+                stream: StreamKind::Bytes,
+            } => Ok(Box::new(connection)),
+        }
+    }
+
     async fn call<P: Serialize, R: DeserializeOwned>(&self, method: &str, params: P) -> Result<R, Error> {
+        let (result, _connection) = self.exchange(method, params).await?;
+        serde_json::from_value(result).map_err(Error::from)
+    }
+
+    /// Sends one request and reads its response, returning the result and the
+    /// connection, whose reader holds anything the daemon sent after the response.
+    async fn exchange<P: Serialize>(
+        &self,
+        method: &str,
+        params: P,
+    ) -> Result<(serde_json::Value, BufReader<Box<dyn Connection>>), Error> {
         let id = self.next_id.get().wrapping_add(1);
         self.next_id.set(id);
         let request = Request {
@@ -501,11 +540,9 @@ impl Client {
         if let Some(error) = response.error {
             return Err(Error::Rpc(error));
         }
-        serde_json::from_value(
-            response
-                .result
-                .ok_or_else(|| Error::Invalid("Control API response has no result".into()))?,
-        )
-        .map_err(Error::from)
+        let result = response
+            .result
+            .ok_or_else(|| Error::Invalid("Control API response has no result".into()))?;
+        Ok((result, stream))
     }
 }

@@ -8,12 +8,13 @@ use serde::{Deserialize, Serialize};
 use crate::{Error, control_plane::AgentRecord};
 
 mod execution;
-pub mod forward;
+mod guest_tcp;
 pub mod microsandbox;
 pub mod platform;
 pub mod responsiveness;
 
 pub use execution::{ExecutionService, ExecutionTarget, start_execution};
+pub use guest_tcp::GuestTcp;
 pub use microsandbox::{GuestConnection, GuestDialer};
 pub use responsiveness::UNRESPONSIVE_AFTER;
 
@@ -153,6 +154,16 @@ pub trait Provider {
 
     /// Idempotently releases the sandbox and its Provider-specific host integration.
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>>;
+
+    /// Connects a dialer for TCP connections made inside the exact running sandbox.
+    fn guest_tcp_dialer<'a>(&'a self, _id: &'a SandboxId) -> LocalFuture<'a, Result<GuestDialer, Error>> {
+        Box::pin(async move {
+            Err(Error::Invalid(format!(
+                "guest TCP connections are not supported through sandbox provider {:?}",
+                self.id().as_str()
+            )))
+        })
+    }
 }
 
 /// Provider result retaining lifecycle information needed by dependent sessions.
@@ -368,6 +379,22 @@ impl Service {
         self.provider(provider)?.open(record, id).await
     }
 
+    /// Connects a dialer for TCP connections made inside the persisted materialized sandbox.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the assignment is materialized through a configured provider that
+    /// supports guest TCP, and its sandbox is running.
+    pub async fn guest_tcp_dialer(&self, record: &AgentRecord) -> Result<GuestDialer, Error> {
+        let Some(Assignment::Materialized { provider, id, .. }) = &record.agent.status.sandbox else {
+            return Err(Error::Invalid(format!(
+                "Agent {:?} has no materialized sandbox",
+                record.agent.metadata.name
+            )));
+        };
+        self.provider(provider)?.guest_tcp_dialer(id).await
+    }
+
     /// Whether the sandbox's guest reported a heartbeat when last inspected.
     #[must_use]
     pub fn reports_heartbeat(&self, sandbox: &SandboxId) -> bool {
@@ -472,21 +499,6 @@ impl Service {
             .find(|provider| provider.id() == id)
             .map(Rc::as_ref)
             .ok_or_else(|| Error::Invalid(format!("assigned sandbox provider {id:?} is not configured")))
-    }
-}
-
-/// Connects a guest TCP dialer through the recorded sandbox provider.
-///
-/// # Errors
-///
-/// Returns an error when the Provider is unsupported by this client or the
-/// sandbox is not running.
-pub async fn guest_tcp_dialer(home: &Path, assignment: &Assignment) -> Result<GuestDialer, Error> {
-    match assignment.provider().as_str() {
-        microsandbox::PROVIDER_ID => microsandbox::guest_tcp_dialer(home, assignment).await,
-        provider => Err(Error::Invalid(format!(
-            "guest TCP forwarding is not supported through sandbox provider {provider:?}"
-        ))),
     }
 }
 

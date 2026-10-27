@@ -6,7 +6,7 @@ use agent::{
     control_plane::{ControlPlane, Controller, Reconciler},
     local::home::ControlPlaneHome,
     persistence,
-    sandbox::ExecutionService,
+    sandbox::{ExecutionService, GuestTcp},
     sessions::Service as SessionService,
 };
 use clap::Parser;
@@ -98,6 +98,10 @@ fn reconciliation_errors<Key: std::fmt::Display + 'static>(resource: &'static st
     })
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the Adapter moves into the provider list, which clippy takes for a drop at the end"
+)]
 async fn open_sandboxes(
     home: &ControlPlaneHome,
     database: &persistence::Database,
@@ -191,6 +195,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     );
     let convergence = agent::control_plane::Convergence::new(wakeup, store.clone(), changes.clone());
     let executions = Rc::new(ExecutionService::new(store.clone(), convergence.clone()));
+    let guest_tcp = Rc::new(GuestTcp::new(store.clone(), sandboxes));
     let sessions = Rc::new(SessionService::new(
         session_store,
         agent_sandboxes,
@@ -204,6 +209,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
         credentials.clone(),
         Rc::new(convergence.clone()),
         executions,
+        guest_tcp,
         sessions,
         ssh,
         vnc,

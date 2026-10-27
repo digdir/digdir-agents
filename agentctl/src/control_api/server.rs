@@ -13,15 +13,15 @@ use crate::{
 
 use super::protocol::{
     CODE_IMMUTABLE, CODE_INTERNAL, CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND,
-    CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams,
-    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_CONVERGE, METHOD_DELETE,
-    METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
-    METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE,
-    METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE,
-    METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams,
-    PROTOCOL_VERSION, ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams,
-    SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams,
-    error_response, read_message,
+    CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, GuestTcpParams, JSON_RPC_VERSION,
+    LoginParams, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_CONVERGE,
+    METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_GUEST_TCP, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS,
+    METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
+    METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
+    METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
+    METHOD_VNC_ACCESS, NameParams, PROTOCOL_VERSION, ProgressParams, ReadMessage, Request, ResourcesWatchParams,
+    Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
+    SessionTurnsParams, ShutdownParams, StreamKind, StreamResult, error_response, read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -33,6 +33,10 @@ const WATCH_SETTLE: Duration = Duration::from_millis(150);
 /// Longest a watch waits without a change; the unchanged reply tells the
 /// watcher the daemon is still there.
 const WATCH_KEEPALIVE: Duration = Duration::from_secs(30);
+/// Most connections switched to streams at once. A stream lasts as long as
+/// what it carries, such as an SSH session, so streams have a budget of their
+/// own rather than taking the connections that calls need.
+const MAX_OPEN_STREAMS: usize = 1024;
 
 /// Agent operations exposed through the Control API.
 pub trait AgentApi {
@@ -326,6 +330,50 @@ impl VncAccessApi for crate::vnc::Access {
     }
 }
 
+/// Connections into agent sandboxes exposed through the local control API.
+pub trait GuestTcpApi {
+    /// Dials `port` on the loopback interface of the named agent's sandbox.
+    fn connect<'a>(
+        &'a self,
+        name: &'a str,
+        port: std::num::NonZeroU16,
+    ) -> LocalFuture<'a, Result<Box<dyn ByteStream>, Error>>;
+}
+
+impl GuestTcpApi for crate::sandbox::GuestTcp {
+    fn connect<'a>(
+        &'a self,
+        name: &'a str,
+        port: std::num::NonZeroU16,
+    ) -> LocalFuture<'a, Result<Box<dyn ByteStream>, Error>> {
+        Box::pin(async move {
+            let connection = Self::connect(self, name, port).await?;
+            Ok(Box::new(connection) as Box<dyn ByteStream>)
+        })
+    }
+}
+
+/// Bytes a call carries both ways over its connection once it has answered,
+/// such as a connection dialed into a sandbox.
+pub trait ByteStream {
+    /// Relays the stream over `reader` and `writer` until both directions have closed.
+    fn relay<'a>(
+        self: Box<Self>,
+        reader: &'a mut (dyn AsyncRead + Unpin),
+        writer: &'a mut (dyn AsyncWrite + Unpin),
+    ) -> LocalFuture<'a, Result<(), Error>>;
+}
+
+impl ByteStream for crate::sandbox::GuestConnection {
+    fn relay<'a>(
+        self: Box<Self>,
+        reader: &'a mut (dyn AsyncRead + Unpin),
+        writer: &'a mut (dyn AsyncWrite + Unpin),
+    ) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(self.relay_io(reader, writer))
+    }
+}
+
 /// Observes an isolated connection error without terminating the daemon.
 pub type ErrorHandler = Rc<dyn Fn(&Error)>;
 
@@ -400,18 +448,80 @@ impl Drop for ShutdownCheck<'_> {
     }
 }
 
+/// Connections that calls have switched to streams.
+#[derive(Default)]
+struct Streams {
+    open: Cell<usize>,
+    opened: Notify,
+}
+
+impl Streams {
+    fn open(&self) -> StreamGuard<'_> {
+        self.open.set(self.open.get() + 1);
+        // One permit is enough, since the accept loop reads the count again whenever it wakes.
+        self.opened.notify_one();
+        StreamGuard { streams: self }
+    }
+}
+
+struct StreamGuard<'a> {
+    streams: &'a Streams,
+}
+
+impl Drop for StreamGuard<'_> {
+    fn drop(&mut self) {
+        self.streams.open.set(self.streams.open.get() - 1);
+    }
+}
+
+/// What a call switches its connection to once it has answered.
+enum Stream {
+    Bytes(Box<dyn ByteStream>),
+}
+
+impl Stream {
+    const fn kind(&self) -> StreamKind {
+        match self {
+            Self::Bytes(_) => StreamKind::Bytes,
+        }
+    }
+}
+
+/// A call's response, and the stream that follows it on the connection, if any.
+struct Reply {
+    response: Response,
+    stream: Option<Stream>,
+}
+
+impl From<Response> for Reply {
+    fn from(response: Response) -> Self {
+        Self { response, stream: None }
+    }
+}
+
+impl Reply {
+    fn switch(id: u64, stream: Stream) -> Self {
+        Self {
+            response: result_response(id, Ok(StreamResult { stream: stream.kind() })),
+            stream: Some(stream),
+        }
+    }
+}
+
 /// Serves the Control API.
 pub struct Server {
     agents: Rc<dyn AgentApi>,
     authentication: Rc<dyn AuthenticationApi>,
     convergence: Rc<dyn ConvergenceApi>,
     executions: Rc<dyn ExecutionApi>,
+    guest_tcp: Rc<dyn GuestTcpApi>,
     sessions: Rc<dyn SessionApi>,
     ssh: Rc<dyn SshAccessApi>,
     vnc: Rc<dyn VncAccessApi>,
     changes: Changes,
     on_error: ErrorHandler,
     lifecycle: Lifecycle,
+    streams: Streams,
 }
 
 impl Server {
@@ -426,6 +536,7 @@ impl Server {
         authentication: Rc<dyn AuthenticationApi>,
         convergence: Rc<dyn ConvergenceApi>,
         executions: Rc<dyn ExecutionApi>,
+        guest_tcp: Rc<dyn GuestTcpApi>,
         sessions: Rc<dyn SessionApi>,
         ssh: Rc<dyn SshAccessApi>,
         vnc: Rc<dyn VncAccessApi>,
@@ -437,12 +548,14 @@ impl Server {
             authentication,
             convergence,
             executions,
+            guest_tcp,
             sessions,
             ssh,
             vnc,
             changes,
             on_error,
             lifecycle: Lifecycle::default(),
+            streams: Streams::default(),
         }
     }
 
@@ -455,11 +568,13 @@ impl Server {
         super::socket::serve(self, path).await
     }
 
-    /// Serves one JSON object per line until the client closes its stream.
+    /// Serves one JSON object per line until the client closes its stream, or
+    /// until a call switches the connection to a stream of its own.
     ///
     /// # Errors
     ///
-    /// Returns an error when a message is malformed, exceeds the limit, or cannot be read or written.
+    /// Returns an error when a message is malformed, exceeds the limit, or cannot be read or written,
+    /// or when the stream a call switched to fails.
     pub async fn serve_connection<S>(&self, stream: S) -> Result<(), Error>
     where
         S: AsyncRead + AsyncWrite + Unpin,
@@ -500,17 +615,41 @@ impl Server {
                 }
             };
             let method = request.method.clone();
-            let response = if ends_with_its_client(&request.method) {
+            let reply = if ends_with_its_client(&request.method) {
                 // A reply that is ready wins over a client that has half-closed.
                 tokio::select! {
                     biased;
-                    response = self.handle(request) => response,
+                    reply = self.handle(request) => reply,
                     () = disconnected(&mut stream) => return Ok(()),
                 }
             } else {
                 self.handle(request).await
             };
-            write_response(stream.get_mut(), &response, Some(&method)).await?;
+            write_response(stream.get_mut(), &reply.response, Some(&method)).await?;
+            if let Some(switched) = reply.stream {
+                // The reader may already hold the first bytes of the stream, so it carries them.
+                return self.carry(switched, stream).await;
+            }
+        }
+    }
+
+    /// Carries a stream until it ends or the daemon drains. Draining closes
+    /// open streams rather than waiting for them, since an SSH session or a
+    /// forwarded connection may last for days; the upgrade warns about them first.
+    async fn carry<S>(&self, switched: Stream, connection: BufReader<S>) -> Result<(), Error>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let _open = self.streams.open();
+        let (mut reader, mut writer) = tokio::io::split(connection);
+        let carried = async {
+            match switched {
+                Stream::Bytes(guest) => guest.relay(&mut reader, &mut writer).await,
+            }
+        };
+        tokio::select! {
+            result = carried => result,
+            () = self.shutdown_requested() => Ok(()),
         }
     }
 
@@ -528,10 +667,27 @@ impl Server {
         }
     }
 
-    async fn handle(&self, request: Request) -> Response {
+    /// How many connections carry streams, which do not count against the connections left for calls.
+    pub(crate) const fn open_streams(&self) -> usize {
+        self.streams.open.get()
+    }
+
+    /// Completes once a call has switched its connection to a stream since the last time it completed.
+    pub(crate) async fn stream_opened(&self) {
+        self.streams.opened.notified().await;
+    }
+
+    async fn handle(&self, request: Request) -> Reply {
         if request.jsonrpc != JSON_RPC_VERSION || request.method.is_empty() {
-            return error_response(request.id, CODE_INVALID_REQUEST, "invalid JSON-RPC 2.0 request");
+            return error_response(request.id, CODE_INVALID_REQUEST, "invalid JSON-RPC 2.0 request").into();
         }
+        if request.method == METHOD_GUEST_TCP {
+            return self.open_guest_tcp(request.id, request.params).await;
+        }
+        self.respond(request).await.into()
+    }
+
+    async fn respond(&self, request: Request) -> Response {
         let _mutation = if is_mutating(&request.method) {
             let Some(mutation) = self.lifecycle.admit_mutation() else {
                 return error_response(request.id, CODE_UPDATING, "Agent daemon is preparing for an upgrade");
@@ -608,7 +764,14 @@ impl Server {
         })
         .await;
         match readiness {
-            Ok(Ok(readiness)) if readiness.blockers.is_empty() => {
+            Ok(Ok(mut readiness)) if readiness.blockers.is_empty() => {
+                let open = self.streams.open.get();
+                if open > 0 {
+                    let connections = if open == 1 { "connection" } else { "connections" };
+                    readiness.warnings.push(format!(
+                        "{open} open {connections} into agents, such as SSH sessions and forwarded ports, will close"
+                    ));
+                }
                 check.commit();
                 result_response(id, Ok(serde_json::json!({"warnings": readiness.warnings})))
             }
@@ -777,6 +940,28 @@ impl Server {
         result_response(id, self.vnc.describe(&params.name).await)
     }
 
+    async fn open_guest_tcp(&self, id: u64, value: Value) -> Reply {
+        let Some((name, port)) = serde_json::from_value::<GuestTcpParams>(value)
+            .ok()
+            .filter(|params| !params.name.is_empty())
+            .and_then(|params| Some((params.name, std::num::NonZeroU16::new(params.port)?)))
+        else {
+            return error_response(id, CODE_INVALID_PARAMS, "name and a port from 1 to 65535 are required").into();
+        };
+        if self.streams.open.get() >= MAX_OPEN_STREAMS {
+            return error_response(
+                id,
+                CODE_INTERNAL,
+                format!("agentd already carries {MAX_OPEN_STREAMS} streams, the most it carries at once"),
+            )
+            .into();
+        }
+        match self.guest_tcp.connect(&name, port).await {
+            Ok(guest) => Reply::switch(id, Stream::Bytes(guest)),
+            Err(error) => result_response::<()>(id, Err(error)).into(),
+        }
+    }
+
     async fn handle_execution_ensure(&self, id: u64, value: Value) -> Response {
         let Ok(params) = serde_json::from_value::<ExecutionEnsureParams>(value) else {
             return error_response(id, CODE_INVALID_PARAMS, "name is required");
@@ -910,6 +1095,7 @@ fn ends_with_its_client(method: &str) -> bool {
             | METHOD_RESOURCES_WATCH
             | METHOD_CONVERGE
             | METHOD_EXECUTION_ENSURE
+            | METHOD_GUEST_TCP
             | METHOD_SESSION_ENSURE
             | METHOD_SESSION_TURNS
     )

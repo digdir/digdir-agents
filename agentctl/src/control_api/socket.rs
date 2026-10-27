@@ -7,6 +7,7 @@ use crate::Error;
 
 use super::{Connector, Server, client::Connection};
 
+/// Most calls served at once. Connections switched to streams do not count; the server limits those.
 const MAX_CONCURRENT_CONNECTIONS: usize = 128;
 const CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_mins(1);
 type ConnectionFuture = futures_util::future::LocalBoxFuture<'static, ()>;
@@ -49,7 +50,7 @@ impl Connector for PathConnector {
             use tokio_util::compat::FuturesAsyncReadCompatExt as _;
 
             let stream = win_uds::net::AsyncStream::connect(&self.path).await?.compat();
-            Ok(Box::new(stream) as Box<dyn Connection>)
+            Ok(Box::new(HalfClosing(stream)) as Box<dyn Connection>)
         })
     }
 }
@@ -78,7 +79,7 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
             break;
         }
         tokio::select! {
-            accepted = listener.accept(), if connections.len() < MAX_CONCURRENT_CONNECTIONS => {
+            accepted = listener.accept(), if connections.len() < MAX_CONCURRENT_CONNECTIONS + server.open_streams() => {
                 let (stream, _) = accepted?;
                 let connection_server = server.clone();
                 connections.push(async move {
@@ -88,6 +89,8 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
                 }.boxed_local());
             }
             Some(()) = connections.next(), if !connections.is_empty() => {}
+            // A connection that became a stream frees its place for calls.
+            () = server.stream_opened() => {}
             () = server.shutdown_requested() => break,
         }
     }
@@ -137,21 +140,66 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
             break;
         }
         tokio::select! {
-            accepted = listener.accept(), if connections.len() < MAX_CONCURRENT_CONNECTIONS => {
+            accepted = listener.accept(), if connections.len() < MAX_CONCURRENT_CONNECTIONS + server.open_streams() => {
                 let (stream, _) = accepted?;
                 let connection_server = server.clone();
                 connections.push(async move {
-                    if let Err(error) = connection_server.serve_connection(stream.compat()).await {
+                    if let Err(error) = connection_server.serve_connection(HalfClosing(stream.compat())).await {
                         connection_server.report(&error);
                     }
                 }.boxed_local());
             }
             Some(()) = connections.next(), if !connections.is_empty() => {}
+            // A connection that became a stream frees its place for calls.
+            () = server.stream_opened() => {}
             () = server.shutdown_requested() => break,
         }
     }
     drain_connections(&mut connections, CONNECTION_DRAIN_TIMEOUT).await;
     Ok(())
+}
+
+/// A Windows `AF_UNIX` connection whose shutdown ends its write direction, as
+/// it does on Unix, where the socket type's own close only flushes. A stream
+/// carries the end of one direction of a guest connection that way.
+#[cfg(target_os = "windows")]
+struct HalfClosing(tokio_util::compat::Compat<win_uds::net::AsyncStream>);
+
+#[cfg(target_os = "windows")]
+impl tokio::io::AsyncRead for HalfClosing {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_read(context, buffer)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl tokio::io::AsyncWrite for HalfClosing {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.0).poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::ready!(std::pin::Pin::new(&mut self.0).poll_flush(context))?;
+        std::task::Poll::Ready(self.0.get_ref().get_ref().shutdown(std::net::Shutdown::Write))
+    }
 }
 
 #[cfg(target_os = "windows")]

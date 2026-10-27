@@ -11,8 +11,8 @@ use std::{
 use agent::{
     Error,
     control_api::{
-        AuthenticationApi, Client, Connection, Connector, ConvergenceApi, ExecutionApi, Server, SessionApi,
-        SshAccessApi, VncAccessApi,
+        AuthenticationApi, ByteStream, Client, Connection, Connector, ConvergenceApi, ExecutionApi, GuestTcpApi,
+        Server, SessionApi, SshAccessApi, VncAccessApi,
     },
     control_plane::WaitPolicy,
     control_plane::{ApplyRequest, ControlPlane, memory::InMemoryAgentStore},
@@ -21,7 +21,7 @@ use agent::{
 };
 use sandbox::LocalFuture;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     sync::Notify,
 };
 
@@ -320,6 +320,51 @@ impl ExecutionApi for FakeExecutions {
     }
 }
 
+/// Dials the guest port 22 of the agent `worker`, where a server greets, then
+/// answers everything it read once its client has finished, in upper case.
+struct FakeGuestTcp;
+
+const GUEST_GREETING: &[u8] = b"SSH-2.0-fake\r\n";
+
+impl GuestTcpApi for FakeGuestTcp {
+    fn connect<'a>(
+        &'a self,
+        name: &'a str,
+        port: std::num::NonZeroU16,
+    ) -> LocalFuture<'a, Result<Box<dyn ByteStream>, Error>> {
+        Box::pin(async move {
+            match (name, port.get()) {
+                ("worker", 22) => Ok(Box::new(ShoutingGuest) as Box<dyn ByteStream>),
+                ("worker", port) => Err(Error::Invalid(format!(
+                    "guest TCP connect to 127.0.0.1:{port} failed: connection refused"
+                ))),
+                ("stopped", _) => Err(Error::Stopped(name.into())),
+                _ => Err(Error::NotFound),
+            }
+        })
+    }
+}
+
+struct ShoutingGuest;
+
+impl ByteStream for ShoutingGuest {
+    fn relay<'a>(
+        self: Box<Self>,
+        reader: &'a mut (dyn AsyncRead + Unpin),
+        writer: &'a mut (dyn AsyncWrite + Unpin),
+    ) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(async move {
+            writer.write_all(GUEST_GREETING).await?;
+            writer.flush().await?;
+            let mut received = Vec::new();
+            reader.read_to_end(&mut received).await?;
+            writer.write_all(&received.to_ascii_uppercase()).await?;
+            writer.shutdown().await?;
+            Ok(())
+        })
+    }
+}
+
 struct InProcessConnector {
     server: Rc<Server>,
 }
@@ -399,6 +444,7 @@ fn api() -> ApiFixture {
         Rc::new(FakeAuthentication),
         Rc::new(convergence),
         executions,
+        Rc::new(FakeGuestTcp),
         Rc::new(FakeSessions {
             conversation: conversation.clone(),
             ensured: ensured.clone(),
@@ -719,14 +765,14 @@ async fn an_interrupted_prompt_is_still_delivered() {
 async fn health_reports_a_compatible_daemon() {
     let fixture = api();
     let daemon = fixture.client.require_compatible_daemon().await.expect("health check");
-    assert_eq!(daemon.protocol_version.as_deref(), Some("v4"));
+    assert_eq!(daemon.protocol_version.as_deref(), Some("v5"));
     assert_eq!(daemon.build_version.as_deref(), Some(agent::build_version()));
 }
 
 #[test]
 fn daemon_identity_rejects_preview_1_and_mixed_builds() {
     let extended: agent::control_api::DaemonInfo = serde_json::from_value(serde_json::json!({
-        "protocolVersion": "v4",
+        "protocolVersion": "v5",
         "buildVersion": agent::build_version(),
         "futureCapability": true
     }))
@@ -739,7 +785,7 @@ fn daemon_identity_rejects_preview_1_and_mixed_builds() {
             build_version: None,
         },
         agent::control_api::DaemonInfo {
-            protocol_version: Some("v4".into()),
+            protocol_version: Some("v5".into()),
             build_version: Some("another-build".into()),
         },
     ] {
@@ -1230,6 +1276,127 @@ async fn session_ensure_rejects_invalid_selections_before_reaching_the_service()
         );
     }
     assert!(fixture.ensured.borrow().is_empty());
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_guest_tcp_call_switches_its_connection_to_the_guest_bytes() {
+    let fixture = api();
+    let mut stream = fixture.client.guest_tcp("worker", 22).await.expect("guest stream");
+    let mut greeting = vec![0; GUEST_GREETING.len()];
+    stream.read_exact(&mut greeting).await.expect("greeting");
+    assert_eq!(greeting, GUEST_GREETING, "the guest speaks first");
+
+    stream.write_all(b"hello").await.expect("send");
+    stream.shutdown().await.expect("end the guest's input");
+    let mut answer = Vec::new();
+    stream.read_to_end(&mut answer).await.expect("answer");
+    assert_eq!(answer, b"HELLO", "the guest still answers after its input has ended");
+}
+
+#[tokio::test(flavor = "local")]
+async fn bytes_sent_with_the_request_reach_the_guest() {
+    let fixture = api();
+    let (mut raw_client, raw_server) = tokio::io::duplex(4096);
+    let api = fixture.server.clone();
+    tokio::task::spawn_local(async move {
+        let _ignored = api.serve_connection(raw_server).await;
+    });
+    let request = r#"{"jsonrpc":"2.0","id":7,"method":"streams.v1.guestTcp","params":{"name":"worker","port":22}}"#;
+    raw_client
+        .write_all(format!("{request}\nearly").as_bytes())
+        .await
+        .expect("request and stream bytes in one write");
+    raw_client.shutdown().await.expect("end the guest's input");
+
+    let mut received = Vec::new();
+    raw_client
+        .read_to_end(&mut received)
+        .await
+        .expect("response and stream");
+    let newline = received.iter().position(|byte| *byte == b'\n').expect("response line");
+    let response: serde_json::Value = serde_json::from_slice(&received[..newline]).expect("JSON-RPC response");
+    assert_eq!(response["id"], 7);
+    assert_eq!(response["result"], serde_json::json!({"stream": "bytes"}));
+    assert_eq!(&received[newline + 1..], [GUEST_GREETING, b"EARLY"].concat());
+}
+
+#[tokio::test(flavor = "local")]
+async fn guest_tcp_failures_are_answered_before_any_stream() {
+    let fixture = api();
+    for (name, port, not_found) in [
+        ("worker", 2222, false),
+        ("stopped", 22, false),
+        ("worker", 0, false),
+        ("gone", 22, true),
+    ] {
+        let Err(Error::Rpc(error)) = fixture.client.guest_tcp(name, port).await else {
+            panic!("{name}:{port} should be refused with a JSON-RPC error");
+        };
+        assert_eq!(error.is_not_found(), not_found, "{name}:{port}: {error:?}");
+        assert_eq!(error.is_invalid_params(), !not_found, "{name}:{port}: {error:?}");
+    }
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_upgrade_warns_about_open_streams_and_closes_them() {
+    let fixture = api();
+    let mut stream = fixture.client.guest_tcp("worker", 22).await.expect("guest stream");
+    let mut greeting = vec![0; GUEST_GREETING.len()];
+    stream.read_exact(&mut greeting).await.expect("greeting");
+
+    let warnings = fixture
+        .client
+        .shutdown_for_upgrade()
+        .await
+        .expect("an open stream does not block an upgrade");
+    assert_eq!(warnings.len(), 1, "the open stream is named: {warnings:?}");
+    let mut rest = Vec::new();
+    tokio::time::timeout(Duration::from_secs(1), stream.read_to_end(&mut rest))
+        .await
+        .expect("the drain closes the stream")
+        .expect("closed stream");
+    assert_eq!(rest, b"");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "local")]
+async fn open_streams_leave_room_for_calls() {
+    let temporary = tempfile::Builder::new()
+        .prefix("agent-api-")
+        .tempdir()
+        .expect("temporary API directory");
+    let socket_path = temporary.path().join("agentd.sock");
+    let server = api().server;
+    let served_path = socket_path.clone();
+    tokio::task::spawn_local(async move { server.serve_path(&served_path).await });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !socket_path.exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("socket should be created");
+
+    let client = Client::for_path(socket_path);
+    let mut streams = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        // More than the daemon serves calls at once.
+        for _ in 0..200 {
+            let mut stream = client.guest_tcp("worker", 22).await.expect("guest stream");
+            let mut greeting = vec![0; GUEST_GREETING.len()];
+            stream.read_exact(&mut greeting).await.expect("greeting");
+            streams.push(stream);
+        }
+        client.health().await.expect("health");
+        let first = streams.first_mut().expect("first stream");
+        first.write_all(b"still open").await.expect("send");
+        first.shutdown().await.expect("end the guest's input");
+        let mut answer = Vec::new();
+        first.read_to_end(&mut answer).await.expect("answer");
+        assert_eq!(answer, b"STILL OPEN");
+    })
+    .await
+    .expect("calls are still served");
 }
 
 #[cfg(unix)]

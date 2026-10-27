@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt as _};
 
 /// Control API version, independent of the JSON-RPC envelope.
-pub const PROTOCOL_VERSION: &str = "v4";
+pub const PROTOCOL_VERSION: &str = "v5";
 pub(crate) const JSON_RPC_VERSION: &str = "2.0";
 
 pub(crate) const METHOD_APPLY: &str = "agents.v1.apply";
@@ -31,6 +31,7 @@ pub(crate) const METHOD_SESSION_TURNS: &str = "sessions.v1.turns";
 pub(crate) const METHOD_SESSION_DELETE: &str = "sessions.v1.delete";
 pub(crate) const METHOD_SESSION_ARCHIVE: &str = "sessions.v1.archive";
 pub(crate) const METHOD_SESSION_UNARCHIVE: &str = "sessions.v1.unarchive";
+pub(crate) const METHOD_GUEST_TCP: &str = "streams.v1.guestTcp";
 
 pub(crate) const CODE_PARSE_ERROR: i32 = -32700;
 pub(crate) const CODE_INVALID_REQUEST: i32 = -32600;
@@ -99,6 +100,32 @@ impl ResponseError {
 #[serde(deny_unknown_fields)]
 pub(crate) struct NameParams {
     pub name: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GuestTcpParams {
+    pub name: String,
+    pub port: u16,
+}
+
+/// What a connection carries after a call has answered by switching it to a stream.
+///
+/// The call's result names the kind, so a client knows how to read the bytes
+/// that follow the response line. Nothing but the stream follows it, and the
+/// stream ends with the connection.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum StreamKind {
+    /// Raw bytes both ways, such as a guest TCP connection's. Shutting down the
+    /// write side of the connection is that direction's end of stream.
+    Bytes,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StreamResult {
+    pub stream: StreamKind,
 }
 
 #[derive(Deserialize, Serialize)]

@@ -9,6 +9,7 @@ use std::{
     io::IsTerminal as _,
     path::{Path, PathBuf},
     process::ExitCode,
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -597,10 +598,9 @@ fn spawn_open(
     outside: Outside,
     copy: bool,
 ) {
-    let home_path = home.path().to_path_buf();
     let socket_path = home.socket_path();
     tokio::task::spawn_local(async move {
-        let client = Client::for_path(socket_path);
+        let client = Rc::new(Client::for_path(socket_path));
         let outcome = async {
             let (launch, what, forward) = match outside {
                 Outside::Editor {
@@ -621,7 +621,7 @@ fn spawn_open(
                     (launch, format!("{} on {agent}", editor.label()), None)
                 }
                 Outside::Desktop { agent, viewer } => {
-                    let forward = desktop_forward(&client, home_path, &agent, viewer).await?;
+                    let forward = desktop_forward(client, &agent, viewer).await?;
                     let url = crate::launch::forward_url(forward.local_address(), forward.spec().guest_port);
                     (crate::launch::Launch::Url(url.clone()), url, Some((agent, forward)))
                 }
@@ -707,12 +707,7 @@ fn open_finished(
 /// Forwards the agent's desktop to a free local port once it is Ready. The
 /// browser viewer's port is known only after a pass has seen what the image
 /// declares, so it is read after converging.
-async fn desktop_forward(
-    client: &Client,
-    home: PathBuf,
-    agent: &str,
-    viewer: DesktopViewer,
-) -> Result<PortForward, String> {
+async fn desktop_forward(client: Rc<Client>, agent: &str, viewer: DesktopViewer) -> Result<PortForward, String> {
     let target = client
         .ensure_execution(agent, WaitPolicy::UntilConverged)
         .await
@@ -729,7 +724,7 @@ async fn desktop_forward(
         local_port: 0,
         guest_port,
     };
-    PortForward::start(home, target.sandbox, spec)
+    PortForward::start(client, agent, target.sandbox, spec)
         .await
         .map_err(|error| error.to_string())
 }
@@ -783,15 +778,14 @@ fn spawn_session_archive(socket_path: PathBuf, inputs: Inputs, agent: String, se
 
 /// Creates a forward off the event loop so provisioning never freezes the UI.
 fn spawn_create(home: &ControlPlaneHome, inputs: Inputs, agent: String, spec: ForwardSpec, replace: Option<u64>) {
-    let home_path = home.path().to_path_buf();
     let socket_path = home.socket_path();
     tokio::task::spawn_local(async move {
-        let client = Client::for_path(socket_path);
+        let client = Rc::new(Client::for_path(socket_path));
         let result = async {
             // The TUI has no place to render progress while on screen, so a failing
             // first pass is reported instead of waited through.
             let target = client.ensure_execution(&agent, WaitPolicy::FirstPass).await?;
-            PortForward::start(home_path, target.sandbox, spec.clone()).await
+            PortForward::start(client.clone(), &agent, target.sandbox, spec.clone()).await
         }
         .await;
         let _ = inputs.send(Input::ForwardCreated((agent, spec, replace, result)));
@@ -1452,7 +1446,8 @@ mod tests {
     async fn forward(assignment: &agent::sandbox::Assignment, guest_port: u16) -> PortForward {
         let spec = ForwardSpec::parse(&format!("127.0.0.1:0:{guest_port}")).expect("spec");
         let home = tempfile::tempdir().expect("home");
-        PortForward::start(home.path().to_path_buf(), assignment.clone(), spec)
+        let client = Rc::new(Client::for_path(home.path().join("agentd.sock")));
+        PortForward::start(client, "desk", assignment.clone(), spec)
             .await
             .expect("forward binds")
     }
