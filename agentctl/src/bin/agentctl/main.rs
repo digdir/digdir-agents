@@ -743,12 +743,31 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
     Ok(ExitCode::SUCCESS)
 }
 
-/// The `get` flags that select Sessions.
+/// The `get` flags that select sessions.
 struct SessionScope {
     agent: Option<String>,
     variant: Option<AgentVariantName>,
     all_agents: bool,
     archived: bool,
+}
+
+/// The sessions `get` shows, once the owning agent is resolved.
+struct SessionFilter {
+    /// The owning agent, or none for every agent.
+    agent: Option<String>,
+    name: Option<SessionName>,
+    archived: bool,
+}
+
+impl SessionFilter {
+    /// A named session is shown even when archived. A listing shows archived ones only when asked.
+    fn matches(&self, session: &Session) -> bool {
+        self.agent.as_ref().is_none_or(|agent| session.agent == *agent)
+            && self
+                .name
+                .as_ref()
+                .map_or_else(|| self.archived || !session.is_archived(), |name| session.name == *name)
+    }
 }
 
 async fn get_resources(
@@ -760,29 +779,30 @@ async fn get_resources(
     output: OutputFormat,
 ) -> CommandResult<()> {
     let (resource, name) = resource_reference(resource, name)?;
+    // A watch first reads as `get` does, so that it fails the same way, such as on a misspelled name.
     match resource {
         Resource::Agent => {
             reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
+            let agents = if let Some(name) = &name {
+                vec![client.get(name).await?]
+            } else {
+                client.list_agents().await?
+            };
             if watch {
                 return watch::follow(
                     client,
                     |resources| {
                         let mut agents = resources.agents;
                         agents.retain(|agent| name.as_ref().is_none_or(|name| agent.metadata.name == *name));
-                        agents
+                        render_watched(output, &agents, agents_table)
                     },
-                    |agents| print_watched(output, agents, print_agents),
+                    &mut std::io::stdout(),
                 )
                 .await;
             }
-            let agents = if let Some(name) = name {
-                vec![client.get(&name).await?]
-            } else {
-                client.list_agents().await?
-            };
             match output {
                 OutputFormat::Json => print_json(&agents)?,
-                OutputFormat::Table => print_agents(&agents),
+                OutputFormat::Table => print_table(&agents_table(&agents)),
             }
         }
         Resource::Session => {
@@ -797,55 +817,57 @@ async fn get_resources(
             } else {
                 Some(resolve_agent_name(client, scope.agent, scope.variant).await?)
             };
-            // A named Session is shown even when archived, as `get` shows it.
-            let selects = |session: &Session| {
-                agent.as_ref().is_none_or(|agent| session.agent == *agent)
-                    && match &name {
-                        Some(name) => session.name == *name,
-                        None => scope.archived || !session.is_archived(),
-                    }
+            let filter = SessionFilter {
+                agent,
+                name,
+                archived: scope.archived,
             };
+            let sessions = if let (Some(agent), Some(name)) = (&filter.agent, &filter.name) {
+                vec![client.get_session(agent, name.clone()).await?]
+            } else {
+                let mut sessions = client.list_sessions(filter.agent.as_deref()).await?;
+                sessions.retain(|session| filter.matches(session));
+                sessions
+            };
+            let table = |sessions: &[Session]| sessions_table(sessions, filter.agent.is_none());
             if watch {
                 return watch::follow(
                     client,
-                    |resources| resources.sessions.into_iter().filter(selects).collect(),
-                    |sessions| print_watched(output, sessions, |sessions| print_sessions(sessions, scope.all_agents)),
+                    |resources| {
+                        let mut sessions = resources.sessions;
+                        sessions.retain(|session| filter.matches(session));
+                        render_watched(output, &sessions, table)
+                    },
+                    &mut std::io::stdout(),
                 )
                 .await;
             }
-            let sessions = if let (Some(agent), Some(name)) = (&agent, &name) {
-                vec![client.get_session(agent, name.clone()).await?]
-            } else {
-                let mut sessions = client.list_sessions(agent.as_deref()).await?;
-                sessions.retain(selects);
-                sessions
-            };
             match output {
                 OutputFormat::Json => print_json(&sessions)?,
-                OutputFormat::Table => print_sessions(&sessions, scope.all_agents),
+                OutputFormat::Table => print_table(&table(&sessions)),
             }
         }
     }
     Ok(())
 }
 
-/// Prints one state of a watch: a line in the shape `-o json` prints, or a table and a blank line.
-fn print_watched<T: serde::Serialize>(output: OutputFormat, items: &[T], table: impl Fn(&[T])) -> CommandResult<()> {
-    use std::io::Write as _;
-    match output {
-        // Written rather than printed, so the watch ends when its reader goes away.
-        OutputFormat::Json => writeln!(
-            std::io::stdout(),
-            "{}",
-            serde_json::to_string(items).map_err(Error::from)?
-        )
-        .map_err(Error::from)?,
+/// One state of a watch: a line in the shape `-o json` prints, or a table and a blank line.
+fn render_watched<T: serde::Serialize>(
+    output: OutputFormat,
+    items: &[T],
+    table: impl Fn(&[T]) -> Vec<String>,
+) -> CommandResult<String> {
+    Ok(match output {
+        OutputFormat::Json => format!("{}\n", serde_json::to_string(items).map_err(Error::from)?),
         OutputFormat::Table => {
-            table(items);
-            println!();
+            let lines = table(items);
+            if lines.is_empty() {
+                "No resources found.\n\n".into()
+            } else {
+                format!("{}\n\n", lines.join("\n"))
+            }
         }
-    }
-    Ok(())
+    })
 }
 
 fn print_json<T: serde::Serialize>(value: &T) -> CommandResult<()> {
@@ -1796,7 +1818,7 @@ fn parse_variant_name(value: &str) -> Result<AgentVariantName, String> {
     value.parse().map_err(|error: Error| error.to_string())
 }
 
-fn print_agents(agents: &[Agent]) {
+fn agents_table(agents: &[Agent]) -> Vec<String> {
     let rows = agents
         .iter()
         .map(|agent| {
@@ -1822,7 +1844,7 @@ fn print_agents(agents: &[Agent]) {
             ]
         })
         .collect::<Vec<_>>();
-    print_table(&["NAME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows);
+    table_lines(&["NAME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows)
 }
 
 fn print_agent_description(agent: &Agent) {
@@ -1831,7 +1853,7 @@ fn print_agent_description(agent: &Agent) {
     }
 }
 
-fn print_sessions(sessions: &[Session], show_agent: bool) {
+fn sessions_table(sessions: &[Session], show_agent: bool) -> Vec<String> {
     let rows = sessions
         .iter()
         .map(|session| {
@@ -1855,15 +1877,23 @@ fn print_sessions(sessions: &[Session], show_agent: bool) {
     } else {
         vec!["NAME", "HARNESS", "MODEL", "EFFORT", "STATE", "AGE"]
     };
-    print_table(&headers, &rows);
+    table_lines(&headers, &rows)
 }
 
-fn print_table(headers: &[&str], rows: &[Vec<String>]) {
+/// The lines of a table, or none without rows.
+fn table_lines(headers: &[&str], rows: &[Vec<String>]) -> Vec<String> {
     if rows.is_empty() {
-        eprintln!("No resources found.");
-        return;
+        Vec::new()
+    } else {
+        format::table_lines(headers, rows)
     }
-    for line in format::table_lines(headers, rows) {
+}
+
+fn print_table(lines: &[String]) {
+    if lines.is_empty() {
+        eprintln!("No resources found.");
+    }
+    for line in lines {
         println!("{line}");
     }
 }
@@ -2291,6 +2321,48 @@ mod tests {
             assert!(error.to_string().contains("model must be 1-128"), "{error}");
             assert!(Arguments::try_parse_from(["agentctl", verb, "session/s1", "--effort", "very high"]).is_err());
         }
+    }
+
+    fn session(agent: &str, name: &str, archived: bool) -> Session {
+        let mut session = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "agentId": "00000000-0000-0000-0000-000000000002",
+            "agent": agent,
+            "name": name,
+            "harness": "claudeCode",
+            "createdAt": "2026-08-25T00:00:00Z",
+        });
+        if archived {
+            session["archivedAt"] = "2026-08-26T00:00:00Z".into();
+        }
+        serde_json::from_value(session).expect("test session should deserialize")
+    }
+
+    #[test]
+    fn session_filter_follows_the_get_flags() {
+        let sessions = [
+            session("worker", "s1", false),
+            session("worker", "old", true),
+            session("builder", "b1", false),
+        ];
+        let shown = |agent: Option<&str>, name: Option<&str>, archived: bool| {
+            let filter = SessionFilter {
+                agent: agent.map(str::to_owned),
+                name: name.map(|name| SessionName::new(name.to_owned()).expect("name")),
+                archived,
+            };
+            sessions
+                .iter()
+                .filter(|session| filter.matches(session))
+                .map(|session| session.name.to_string())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(shown(Some("worker"), None, false), ["s1"]);
+        assert_eq!(shown(Some("worker"), None, true), ["s1", "old"]);
+        assert_eq!(shown(Some("worker"), Some("old"), false), ["old"]);
+        assert_eq!(shown(Some("builder"), Some("s1"), false), Vec::<String>::new());
+        assert_eq!(shown(None, None, false), ["s1", "b1"]);
     }
 
     #[test]

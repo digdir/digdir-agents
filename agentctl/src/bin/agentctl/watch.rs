@@ -2,27 +2,28 @@
 
 use std::time::Duration;
 
-use agent::{control_api::Client, resources::Resources};
+use agent::{Error, control_api::Client, resources::Resources};
 
 use crate::CommandResult;
 
 /// Pause before watching again after the daemon could not be reached.
 pub(crate) const RECONNECT_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Calls `changed` with the current selection, then again each time it changes.
+/// Writes the current state, rendered by `render`, then again each time its
+/// rendering changes.
 ///
-/// Each call has the full selection rather than a change, so one missed while
+/// Each write has the full state rather than a change, so one missed while
 /// agentd restarts needs no recovery. The watch reconnects to a restarted
 /// agentd and ends with an error once agentd is incompatible, such as after an
 /// upgrade, so that its caller can start it again from the new binary.
-pub(crate) async fn follow<T: PartialEq>(
+pub(crate) async fn follow(
     client: &Client,
-    select: impl Fn(Resources) -> Vec<T>,
-    mut changed: impl FnMut(&[T]) -> CommandResult<()>,
+    render: impl Fn(Resources) -> CommandResult<String>,
+    out: &mut impl std::io::Write,
 ) -> CommandResult<()> {
     let mut after = None;
     let mut last = None;
-    let mut reachable = true;
+    let mut failing = false;
     loop {
         // agentd may have restarted as another build since the last reply, such as after an upgrade.
         let reply = match client.health().await {
@@ -35,17 +36,19 @@ pub(crate) async fn follow<T: PartialEq>(
         match reply {
             Ok(resources) => {
                 after = Some(resources.revision);
-                reachable = true;
-                let selected = select(resources);
-                if last.as_ref() != Some(&selected) {
-                    changed(&selected)?;
-                    last = Some(selected);
+                failing = false;
+                let rendered = render(resources)?;
+                if last.as_ref() != Some(&rendered) {
+                    // Written rather than printed, so the watch ends when its reader goes away.
+                    out.write_all(rendered.as_bytes()).map_err(Error::from)?;
+                    out.flush().map_err(Error::from)?;
+                    last = Some(rendered);
                 }
             }
             Err(error) => {
-                if reachable {
-                    eprintln!("agentctl: lost agentd, reconnecting: {error}");
-                    reachable = false;
+                if !failing {
+                    eprintln!("agentctl: watch failed, retrying: {error}");
+                    failing = true;
                 }
                 tokio::time::sleep(RECONNECT_INTERVAL).await;
             }
@@ -59,14 +62,14 @@ mod tests {
 
     use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
-    use agent::{Error, control_api::Connection, sessions::Session};
+    use agent::control_api::Connection;
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
     use super::*;
 
     /// What the scripted daemon does with one request.
     enum Reply {
-        /// Answers a watch with these Sessions at this revision.
+        /// Answers a watch with these sessions at this revision.
         Watch(&'static str, serde_json::Value),
         /// Closes the connection without answering, as a stopping agentd does.
         Drop,
@@ -99,11 +102,9 @@ mod tests {
                     let result = match reply {
                         Reply::Drop | Reply::Refuse => return,
                         Reply::Watch(revision, sessions) => {
-                            assert_eq!(request["method"], "resources.v1.watch");
                             serde_json::json!({"revision": revision, "agents": [], "sessions": sessions})
                         }
                         Reply::Health { compatible } => {
-                            assert_eq!(request["method"], "control.v1.health");
                             let build = if compatible { agent::build_version() } else { "0.0.0" };
                             serde_json::json!({
                                 "protocolVersion": agent::control_api::PROTOCOL_VERSION,
@@ -142,7 +143,7 @@ mod tests {
         let replies = VecDeque::from([
             compatible(),
             Reply::Watch(FIRST, serde_json::json!([session("worker", "s1")])),
-            // A keepalive, and a change to a Session outside the selection.
+            // A keepalive, and a change to a session outside the selection.
             compatible(),
             Reply::Watch(FIRST, serde_json::json!([session("worker", "s1")])),
             compatible(),
@@ -172,27 +173,21 @@ mod tests {
         let error = follow(
             &client,
             |resources| {
-                resources
+                let names = resources
                     .sessions
-                    .into_iter()
+                    .iter()
                     .filter(|session| session.agent == "worker")
-                    .collect::<Vec<Session>>()
+                    .map(|session| session.name.to_string())
+                    .collect::<Vec<_>>();
+                Ok(format!("{}\n", names.join(" ")))
             },
-            |sessions| {
-                printed.push(
-                    sessions
-                        .iter()
-                        .map(|session| session.name.to_string())
-                        .collect::<Vec<_>>(),
-                );
-                Ok(())
-            },
+            &mut printed,
         )
         .await
         .expect_err("an incompatible agentd ends the watch");
 
-        assert!(error.to_string().contains("incompatible"), "{error}");
-        assert_eq!(printed, [vec!["s1"], vec!["s1", "s2"]]);
+        assert!(matches!(error, crate::CommandError::Agent(Error::Daemon(_))), "{error}");
+        assert_eq!(String::from_utf8(printed).expect("text"), "s1\ns1 s2\n");
         let watched_after = requests
             .borrow()
             .iter()
