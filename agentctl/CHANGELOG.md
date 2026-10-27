@@ -22,6 +22,10 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
   - without a token the Agent runs without GitHub access, and `agentctl status` names the login
   - at a terminal, `agentctl github login` suggests a name, then offers a browser sign-in or a pre-filled token form ([#317](https://github.com/digdir/digdir-agents/pull/317), [#252](https://github.com/digdir/digdir-agents/issues/252))
 - `agentctl guide` tells a coding agent how to set up an Agent with you, from the installed version: `agentctl guide setup` first, then topics such as the manifest, the image and GitHub accounts. ([Your first Agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#240](https://github.com/digdir/digdir-agents/issues/240))
+- At a terminal, `attach`, `exec` and `ssh` offer what the Agent here needs: ([Your first Agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#240](https://github.com/digdir/digdir-agents/issues/240))
+  - to start it when it is stopped
+- `agentctl attach` without a Session opens the Agent's only one, starts one named after its harness, such as `claude-1`, when it has none, or asks which. ([Your first Agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#240](https://github.com/digdir/digdir-agents/issues/240))
+- At a terminal, `agentctl apply` without `-f` or an `agent.yaml` here asks before applying the manifest it finds, or which of several. ([#319](https://github.com/digdir/digdir-agents/pull/319))
 
 ### Changed
 

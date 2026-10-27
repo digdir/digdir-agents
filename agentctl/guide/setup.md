@@ -128,3 +128,10 @@ lists it, and apply again. The agent's disk starts over, so ask the person first
 When `apply` says an agent with that name was already applied from another directory, the name belongs to another
 agent, such as one in another checkout of the repository: choose another name in `metadata.name`, or apply with
 `--name`. Never delete that agent.
+
+## 5. Hand over
+
+Tell the person, in two or three lines, what you set up and how to start working with it: `agentctl attach` opens the
+agent's session, starting one if it has none (detach with Ctrl-b d), from anywhere in the repository, or outside one
+from the folder holding `agents/`; `agentctl tui` shows every agent and session. In a repository, suggest they commit
+`agents/<name>/`, without `.env`, so others in the repository get the same agent.
