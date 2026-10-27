@@ -8,10 +8,17 @@ use agent::{
     github::{GithubLogin, GithubToken, Repository},
 };
 use time::OffsetDateTime;
+use zeroize::Zeroizing;
 
-use crate::{CommandResult, prompt};
+use crate::{CommandError, CommandResult, prompt};
 
-/// Has agentd keep a GitHub token as `name`, by default this repository's name.
+/// Has agentd keep a GitHub token as `name`. At the terminal the person names it, offered the
+/// name the agent here asks for and this repository's, then signs in through the browser as an
+/// account, or walks through GitHub's pre-filled token form for one owner, by default the owner of
+/// this repository's GitHub remote. What GitHub says about the token, with warnings, is shown for
+/// the person to confirm before anything is stored; a rejected or declined token can be replaced.
+/// From standard input it stores at once, by default as this repository's name, and shows the same
+/// after.
 ///
 /// # Errors
 ///
@@ -48,7 +55,76 @@ pub(crate) async fn login(client: &Client, name: Option<&str>, from_stdin: bool)
         )
         .into());
     }
-    Err(Error::Invalid("pipe the token to `agentctl github login NAME --from-stdin`".into()).into())
+    let name = match name {
+        Some(name) => name,
+        None => ask_name(&suggestions(client, repository.as_ref()).await)?,
+    };
+    let browser = prompt::choose("How should agents sign in to GitHub?", &SIGN_IN_OPTIONS)? == 0;
+    let gh = browser
+        .then(|| {
+            gh_or_explain(crate::launch::find_program(
+                &["gh"],
+                std::env::var_os("PATH").as_deref(),
+            ))
+        })
+        .flatten();
+    let way = match gh {
+        Some(gh) => SignIn::Browser { gh },
+        None => SignIn::Form {
+            owner: ask_owner(repository.as_ref())?,
+        },
+    };
+    // A token from the form is for one owner, so only that owner's repository can tell.
+    let repository = match &way {
+        SignIn::Form { owner } => repository.filter(|repository| repository.owner == *owner),
+        SignIn::Browser { .. } => repository,
+    };
+    loop {
+        let token = match &way {
+            SignIn::Browser { gh } => agent::github::sign_in(gh),
+            SignIn::Form { owner } => Ok(paste_from_form(owner, &name, repository.as_ref()).await?),
+        };
+        let browser = matches!(way, SignIn::Browser { .. });
+        match review(token, &name, repository.as_ref(), browser).await {
+            Ok(Some((token, checked))) => {
+                let stored = client.github_login(&token, &checked.token.name).await?;
+                println!("{}", stored_line(&stored));
+                println!("{}", manifest_line(&stored.token.name));
+                return Ok(());
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("{}", crate::error_text(&error)),
+        }
+        if !prompt::confirm_lines(&["Try again?"])? {
+            return Err(CommandError::Message("no GitHub token was stored".into()));
+        }
+    }
+}
+
+/// How the person gets agents a token.
+enum SignIn {
+    /// Signing in through the browser with the GitHub CLI `gh`.
+    Browser { gh: std::path::PathBuf },
+    /// Creating a fine-grained token for `owner` with GitHub's form.
+    Form { owner: String },
+}
+
+/// How agents can sign in: the first through the browser with the GitHub CLI, the second with a
+/// fine-grained token from GitHub's form.
+const SIGN_IN_OPTIONS: [&str; 2] = [
+    "Sign in through the browser as a GitHub account made for agents, not your own",
+    "Create a token for one organization's repositories",
+];
+
+/// `gh`, or when it is missing, `None` after saying that the browser sign-in needs it.
+fn gh_or_explain(gh: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    if gh.is_none() {
+        eprintln!(
+            "Signing in through the browser needs the GitHub CLI, `gh`, from https://cli.github.com. \
+             Install it and run this again, or create a token now."
+        );
+    }
+    gh
 }
 
 fn stored_line(stored: &GithubLogin) -> String {
@@ -56,6 +132,164 @@ fn stored_line(stored: &GithubLogin) -> String {
         "Agents asking for {} now use GitHub as {}.",
         stored.token.name, stored.token.account.login
     )
+}
+
+/// What a manifest names to use the token stored as `name`.
+fn manifest_line(name: &str) -> String {
+    format!("Agents use it with `accounts: [{{type: github, name: {name}}}]` in their manifest.")
+}
+
+/// The names to offer for a new token, first the one the agent here asks for when no unexpired
+/// token has it, then `repository`'s, then the name of the folder here: the repository's root, or
+/// the current directory outside one, though never the home directory.
+async fn suggestions(client: &Client, repository: Option<&Repository>) -> Vec<String> {
+    let current = std::env::current_dir().ok();
+    let here = match &current {
+        Some(directory) => client.resolve_agent_variant(directory.clone(), None).await.ok(),
+        None => None,
+    };
+    let wanted = here.and_then(|agent| agent.spec.github_account().map(str::to_ascii_lowercase));
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let folder = current
+        .as_deref()
+        .map(|directory| crate::tui::repository_root(directory).unwrap_or(directory))
+        .filter(|folder| Some(*folder) != home.as_deref())
+        .and_then(std::path::Path::file_name)
+        .map(|name| name.to_string_lossy().into_owned());
+    let stored = client.github_accounts().await.unwrap_or_default();
+    suggested(
+        wanted,
+        &stored,
+        repository,
+        folder.as_deref(),
+        OffsetDateTime::now_utc(),
+    )
+}
+
+/// `wanted`, the name the agent here asks for, unless `stored` has an unexpired token of that name
+/// at `now`, then `repository`'s name, then one after `folder`.
+fn suggested(
+    wanted: Option<String>,
+    stored: &[GithubToken],
+    repository: Option<&Repository>,
+    folder: Option<&str>,
+    now: OffsetDateTime,
+) -> Vec<String> {
+    let wanted = wanted.filter(|wanted| !stored.iter().any(|token| token.name == *wanted && !token.expired(now)));
+    let mut names: Vec<String> = wanted.into_iter().collect();
+    for name in [
+        repository.and_then(Repository::token_name),
+        folder.and_then(agent::github::name_after),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// The name the person gives the token, offering `suggestions`, the first as the default.
+fn ask_name(suggestions: &[String]) -> Result<String, Error> {
+    let offered = (suggestions.len() > 1).then(|| format!("Suggested: {}.", suggestions.join(", ")));
+    let mut lines = vec!["What name should agents' manifests use for this token?"];
+    lines.extend(offered.as_deref());
+    lines.push("Name");
+    let default = suggestions.first().map(String::as_str);
+    let mut answer = prompt::ask(&lines, default)?;
+    loop {
+        // Never repeated: the answer may be a token pasted in the wrong place.
+        match token_name(&answer) {
+            Ok(name) => return Ok(name),
+            Err(_) if answer.is_empty() => {}
+            Err(_) => eprintln!("A name is letters, digits and inner hyphens."),
+        }
+        answer = prompt::ask(&["Name"], default)?;
+    }
+}
+
+/// The owner the person names, offering the owner of this repository's GitHub remote.
+fn ask_owner(repository: Option<&Repository>) -> Result<String, Error> {
+    let context = repository.map(|repository| format!("This repository is {repository} on GitHub."));
+    let mut lines = vec!["Which GitHub user or organization's repositories will the token reach?"];
+    lines.extend(context.as_deref());
+    lines.push("Owner");
+    let default = repository.map(|repository| repository.owner.as_str());
+    let mut answer = prompt::ask(&lines, default)?;
+    loop {
+        // Never repeated: the answer may be a token pasted in the wrong place.
+        if agent::github::valid_owner(&answer) {
+            return Ok(answer.to_ascii_lowercase());
+        }
+        if !answer.is_empty() {
+            eprintln!("That is not a GitHub user or organization name: letters, digits and inner hyphens.");
+        }
+        answer = prompt::ask(&["Owner"], default)?;
+    }
+}
+
+/// Shows the steps to create a fine-grained token for `owner`, opens GitHub's pre-filled form,
+/// and reads the token the person pastes.
+async fn paste_from_form(owner: &str, name: &str, repository: Option<&Repository>) -> Result<Zeroizing<String>, Error> {
+    let host = whoami::hostname().unwrap_or_else(|_| "this host".into());
+    // The token's name on GitHub is short, so it takes the host's first label; the description has all of it.
+    let short_host = host.split('.').next().unwrap_or(&host);
+    let url = agent::github::token_form_url(
+        owner,
+        &format!("agentctl {name} on {short_host}"),
+        &format!("Agents asking for {name} on {host}, stored by agentctl"),
+    );
+    let pick = repository.map_or_else(
+        || "the repositories the agents need".to_owned(),
+        |repository| format!("{repository} and any others the agents need"),
+    );
+    eprint!(
+        "\nCreate a fine-grained GitHub token for {owner}:\n\n  \
+         1. Sign in to github.com as the account the agents should act as, such as a bot account.\n  \
+         2. In the form below, the name, owner, a {days}-day lifetime and the permissions are filled in.\n  \
+         3. Under Repository access, choose \"Only select repositories\" and pick {pick}.\n     \
+         The form cannot be given the repositories.\n  \
+         4. Generate the token, copy it and paste it here.\n\n  {url}\n",
+        days = agent::github::TOKEN_LIFETIME_DAYS,
+    );
+    if crate::launch::launch_blocked(|name| std::env::var_os(name)).is_none()
+        && let Err(error) = crate::launch::open_url(&url).await
+    {
+        eprintln!("Could not open the browser ({error}); open the address above instead.");
+    }
+    prompt::secret(&format!("Paste the GitHub token for {name} (it is not shown)"))
+}
+
+/// Asks GitHub what `token` is and whether it sees `repository`, shows it with any warnings, and
+/// asks whether to store it as `name`. `browser` says the person signed in as the token's
+/// account, so it reaching all the account can is expected.
+async fn review(
+    token: Result<Zeroizing<String>, Error>,
+    name: &str,
+    repository: Option<&Repository>,
+    browser: bool,
+) -> CommandResult<Option<(Zeroizing<String>, GithubLogin)>> {
+    let token = token?;
+    // Checked here so nothing is stored before the person agrees; agentd checks it again.
+    let checked = agent::github::check(&token, name).await?;
+    let visible = match repository {
+        Some(repository) => Some((repository, agent::github::can_see(&token, repository).await?)),
+        None => None,
+    };
+    let now = OffsetDateTime::now_utc();
+    eprint!("{}", summary(&checked, &warnings(&checked, visible, browser, now), now));
+    let reach = if browser && !checked.token.kind.single_owner() {
+        ", in every repository it can reach"
+    } else {
+        ""
+    };
+    let question = format!(
+        "Agents asking for {} will use GitHub as {}{reach}. Store this token?",
+        checked.token.name, checked.token.account.login
+    );
+    Ok(prompt::confirm_lines(&[&question])?.then_some((token, checked)))
 }
 
 /// The GitHub repository of this directory's Git remote: `origin` when it is on GitHub, else the
@@ -349,6 +583,56 @@ mod tests {
                 "the token lacks read:org, so some `gh` and Git commands will fail",
             ]
         );
+    }
+
+    #[test]
+    fn signing_in_as_an_account_reaches_all_it_can_without_a_warning() {
+        let case_web = repository("digdir", "case-web");
+        // A classic token stands in for the browser sign-in's: neither is limited to one owner.
+        let broad = checked("digdir-bot", TokenKind::Classic, None, &[]);
+        assert_eq!(
+            warnings(&broad, Some((&case_web, false)), true, january()),
+            ["digdir-bot-bot cannot see digdir/case-web; give the account access to it"]
+        );
+        assert_eq!(
+            warnings(&broad, None, false, january()),
+            ["this classic token reaches every repository digdir-bot-bot can"]
+        );
+        assert!(SIGN_IN_OPTIONS[0].starts_with("Sign in through the browser"));
+        assert_eq!(
+            manifest_line("digdir-agent"),
+            "Agents use it with `accounts: [{type: github, name: digdir-agent}]` in their manifest."
+        );
+    }
+
+    #[test]
+    fn the_name_the_agent_here_asks_for_is_offered_until_it_has_a_token_then_the_repositorys_and_folders() {
+        let studio = repository("digdir", "altinn-studio");
+        let wanted = || Some("app-lib".to_owned());
+        assert_eq!(
+            suggested(wanted(), &[], Some(&studio), Some("altinn-studio"), january()),
+            ["app-lib", "altinn-studio"]
+        );
+        let expired = token("app-lib", TokenKind::FineGrained, Some(january()));
+        assert_eq!(
+            suggested(wanted(), std::slice::from_ref(&expired), Some(&studio), None, january()),
+            ["app-lib", "altinn-studio"]
+        );
+        let current = token("app-lib", TokenKind::FineGrained, None);
+        assert_eq!(
+            suggested(wanted(), &[current], Some(&studio), None, january()),
+            ["altinn-studio"]
+        );
+        assert_eq!(
+            suggested(Some("altinn-studio".into()), &[expired], Some(&studio), None, january()),
+            ["altinn-studio"]
+        );
+        // Without a GitHub remote, the folder's name.
+        assert_eq!(
+            suggested(None, &[], None, Some("Test_Test.test"), january()),
+            ["test-test-test"]
+        );
+        assert_eq!(suggested(None, &[], None, None, january()), Vec::<String>::new());
     }
 
     #[test]
