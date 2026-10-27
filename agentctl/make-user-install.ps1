@@ -33,7 +33,7 @@ $TargetRoot = if ($env:CARGO_TARGET_DIR) {
 } else {
     Resolve-PathFromRoot "target" $Root
 }
-$ReleaseBinDirectory = Join-Path $TargetRoot "release"
+$BinDirectory = Join-Path $TargetRoot "user-install"
 $ArchiveDirectory = Join-Path $Root "build/user-install"
 $ArchiveName = "agent-$Version.tar.gz"
 $Archive = Join-Path $ArchiveDirectory $ArchiveName
@@ -46,13 +46,13 @@ Push-Location $Root
 try {
     Write-Host "Building agentctl $Version..."
     $env:AGENT_VERSION = $Version
-    & cargo build --release --locked -p agent --bins
+    & cargo build --profile user-install --locked -p agent --bins
     if ($LASTEXITCODE -ne 0) {
         throw "Cargo build exited with code $LASTEXITCODE"
     }
 
     foreach ($Binary in @("agentctl.exe", "agentd.exe")) {
-        $BinaryPath = Join-Path $ReleaseBinDirectory $Binary
+        $BinaryPath = Join-Path $BinDirectory $Binary
         if (-not (Test-Path -LiteralPath $BinaryPath -PathType Leaf)) {
             throw "Missing Agent binary: $BinaryPath"
         }
@@ -62,7 +62,8 @@ try {
     if (Test-Path -LiteralPath $Archive) {
         Remove-Item -LiteralPath $Archive -Force
     }
-    & tar.exe -czf $Archive -C $ReleaseBinDirectory agentctl.exe agentd.exe
+    # The fastest gzip level, for the reason package.sh gives for `make user-install`.
+    & tar.exe -czf $Archive --options gzip:compression-level=1 -C $BinDirectory agentctl.exe agentd.exe
     if ($LASTEXITCODE -ne 0) {
         throw "Agent packaging exited with code $LASTEXITCODE"
     }
