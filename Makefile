@@ -4,7 +4,7 @@
 
 USER_INSTALL_VERSION := v0.0.1-dev.$(shell date -u +%Y%m%d%H%M%S)
 USER_INSTALL_ARCHIVE := $(abspath build/user-install/agent-$(USER_INSTALL_VERSION).tar.gz)
-RELEASE_BIN_DIR := $(abspath $(or $(CARGO_TARGET_DIR),target)/release)
+USER_INSTALL_BIN_DIR := $(abspath $(or $(CARGO_TARGET_DIR),target)/user-install)
 
 PACKAGES := \
 	-p agent \
@@ -34,8 +34,8 @@ ifeq ($(OS),Windows_NT)
 	@powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(abspath agentctl/make-user-install.ps1)"
 else
 	@echo "Building agentctl $(USER_INSTALL_VERSION)..."
-	@AGENT_VERSION=$(USER_INSTALL_VERSION) cargo build --release --locked -p agent --bins
-	@./agentctl/package.sh "$(USER_INSTALL_ARCHIVE)" "$(RELEASE_BIN_DIR)"
+	@AGENT_VERSION=$(USER_INSTALL_VERSION) cargo build --profile user-install --locked -p agent --bins
+	@AGENT_PACKAGE_COMPRESSION_LEVEL=1 ./agentctl/package.sh "$(USER_INSTALL_ARCHIVE)" "$(USER_INSTALL_BIN_DIR)"
 	@AGENT_VERSION=$(USER_INSTALL_VERSION) AGENT_LOCAL_ARCHIVE="$(USER_INSTALL_ARCHIVE)" ./agentctl/install.sh
 endif
 

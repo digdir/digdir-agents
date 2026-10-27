@@ -27,7 +27,15 @@ temporary="$(mktemp -d -t agentctl-package.XXXXXXXX)"
 trap 'rm -rf "${temporary}"' EXIT HUP INT TERM
 
 cp "${binary_directory}/agentctl${executable_suffix}" "${binary_directory}/agentd${executable_suffix}" "${temporary}/"
-tar -czf "${archive}" -C "${temporary}" "agentctl${executable_suffix}" "agentd${executable_suffix}"
+# gzip's level. Releases keep its default. `make user-install` passes 1, since the installer unpacks the archive at
+# once: it packages in about a third of the time, for an archive about a tenth larger.
+compression_level="${AGENT_PACKAGE_COMPRESSION_LEVEL:-6}"
+case "${compression_level}" in
+  [1-9]) ;;
+  *) echo "AGENT_PACKAGE_COMPRESSION_LEVEL must be a gzip level from 1 to 9" >&2; exit 1 ;;
+esac
+tar -cf "${temporary}/agent.tar" -C "${temporary}" "agentctl${executable_suffix}" "agentd${executable_suffix}"
+gzip "-${compression_level}" -c "${temporary}/agent.tar" > "${archive}"
 if command -v sha256sum >/dev/null 2>&1; then
   digest="$(sha256sum "${archive}" | awk '{ print $1 }')"
 else

@@ -78,3 +78,11 @@ unwrap_used = "deny"
 # Keeps file and line numbers in backtraces. With full debuginfo, every test binary carries its own copy of every
 # dependency's, which made the workspace's about 12 GB and slowed every link.
 debug = "line-tables-only"
+
+[profile.user-install]
+# `make user-install` builds with this profile, so that trying a change rebuilds in seconds rather than the half
+# minute a release build takes. Incremental compilation splits the code into more units, which costs a little runtime
+# speed and binary size that a local build can spare. Its first build compiles the dependencies once more, in about
+# the time a release build takes. Published releases keep the release profile.
+inherits = "release"
+incremental = true
