@@ -15,6 +15,8 @@ mod bootstrap;
 mod hooks;
 pub(super) mod transcript;
 
+/// The program Codex runs as, on the host and in an Agent.
+pub(super) const PROGRAM: &str = "codex";
 const PROVIDER: &str = "codex";
 /// Codex keeps its settings in `~/.codex` and reads skills from the Agent Skills directory.
 pub(super) const FOOTPRINT: super::Footprint = super::Footprint {
@@ -136,7 +138,7 @@ pub(super) fn acquire_host_credential(
     let home = tempfile::Builder::new()
         .prefix("codex-login-")
         .tempdir_in(temporary_root)?;
-    let status = std::process::Command::new("codex")
+    let status = std::process::Command::new(PROGRAM)
         .env("CODEX_HOME", home.path())
         .env_remove("CODEX_ACCESS_TOKEN")
         .env_remove("CODEX_API_KEY")
@@ -197,7 +199,7 @@ pub(super) async fn verify_linux(
     sandbox: &sandbox::SandboxHandle,
     expected_version: Option<&str>,
 ) -> Result<(), Error> {
-    let output = super::version_output(sandbox, "codex").await?;
+    let output = super::version_output(sandbox, PROGRAM).await?;
     if !output.status.success() {
         let message = format!("`codex --version` exited with code {}", output.status.code);
         // 126/127 mean the image does not provide the harness; retrying cannot change that.

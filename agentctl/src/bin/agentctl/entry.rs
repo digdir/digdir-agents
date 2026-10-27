@@ -1,15 +1,20 @@
 //! What agentctl offers at a terminal when a command that uses the current directory's agent
-//! finds it stopped: starting it; and the manifest `apply` finds here when not given one. Without a
-//! terminal, nothing is asked and the command behaves as it always has.
+//! finds none or finds it stopped: setting one up, starting it from its files or starting it; and
+//! the manifest `apply` finds here when not given one. Without a terminal, nothing is asked and the
+//! command behaves as it always has.
 
 use std::{
     path::{Path, PathBuf},
+    process::ExitCode,
     time::Duration,
 };
 
-use agent::{Agent, AgentVariantName, Error, Harness, RunState, control_api::Client, sessions::Session};
+use agent::{
+    Agent, AgentVariantName, Error, Harness, RunState, control_api::Client, local::home::ControlPlaneHome,
+    sessions::Session,
+};
 
-use crate::{CommandError, CommandResult, prompt};
+use crate::{CommandError, CommandResult, Unapplied, init, prompt};
 
 /// How long a start offered here may take, as `agentctl start` waits by default.
 const START_TIMEOUT: Duration = Duration::from_mins(10);
@@ -19,16 +24,27 @@ const START_TIMEOUT: Duration = Duration::from_mins(10);
 enum Offer {
     /// Start the stopped agent here.
     Start(String),
+    /// Set an agent up with `agentctl init`.
+    Init,
+    /// Start the agent whose manifest is here, in `agent.yaml` or `agents/<name>/agent.yaml`, but
+    /// which agentd does not run; the manifest as found from the current directory.
+    Apply(PathBuf),
 }
 
-/// The offer for `resolved`, the current directory's agent, to a command that uses it. Nothing is
-/// offered without a person at the terminal, nor for an agent that is running, nor for an error.
-fn offer(resolved: &Result<Agent, Error>, interactive: bool) -> Option<Offer> {
+/// The offer for `resolved`, the current directory's agent, to a command that uses it, with what
+/// `unapplied` found here. Nothing is offered without a person at the terminal, nor for an agent
+/// that is running, nor for an error other than finding none.
+fn offer(resolved: &Result<Agent, Error>, interactive: bool, unapplied: &Unapplied) -> Option<Offer> {
     if !interactive {
         return None;
     }
     match resolved {
         Ok(agent) if agent.spec.is_stopped() => Some(Offer::Start(agent.metadata.name.clone())),
+        Err(Error::Rpc(error)) if error.is_not_found() => Some(match unapplied {
+            Unapplied::Written { manifest, .. } => Offer::Apply(manifest.clone()),
+            Unapplied::Here => Offer::Apply(PathBuf::from(agent::manifest::MANIFEST_FILE)),
+            Unapplied::None => Offer::Init,
+        }),
         Ok(_) | Err(_) => None,
     }
 }
@@ -40,6 +56,14 @@ fn question(offer: &Offer) -> [String; 2] {
             format!("This directory has the agent {name:?}, which is stopped."),
             "Start it?".into(),
         ],
+        Offer::Init => [
+            "No agent is set up for this directory.".into(),
+            "Set one up now with `agentctl init`?".into(),
+        ],
+        Offer::Apply(manifest) => [
+            format!("The agent in {} isn't running.", manifest.display()),
+            "Start it from its files?".into(),
+        ],
     }
 }
 
@@ -48,23 +72,72 @@ fn accepted(offer: &Offer) -> CommandResult<bool> {
     Ok(prompt::confirm_lines(&[&about, &ask])?)
 }
 
-/// The current directory's agent, for a command given no agent. At a terminal, offers to start
-/// it when it is stopped; declining gives the error the command gives without a terminal.
-pub(crate) async fn current_agent(client: &Client, variant: Option<AgentVariantName>) -> CommandResult<String> {
+/// The agent a command goes on with, or how it ended instead.
+pub(crate) enum Target {
+    Agent(String),
+    Done(ExitCode),
+}
+
+/// The current directory's agent, for a command given no agent. At a terminal, offers to set
+/// one up when there is none, which ends the command with init's exit code, to start it from its
+/// files when agentd does not run it, and to start it when it is stopped; declining any gives the
+/// error the command gives without a terminal.
+pub(crate) async fn current_agent(
+    home: &ControlPlaneHome,
+    client: &Client,
+    variant: Option<AgentVariantName>,
+) -> CommandResult<Target> {
     let directory = std::env::current_dir().map_err(Error::from)?;
-    let resolved = client.resolve_agent_variant(directory, variant).await;
-    match (offer(&resolved, prompt::interactive()), resolved) {
+    let unapplied = crate::unapplied(&directory);
+    let resolved = client.resolve_agent_variant(directory.clone(), variant).await;
+    match (offer(&resolved, prompt::interactive(), &unapplied), resolved) {
+        (Some(offer @ Offer::Init), Err(error)) => {
+            if accepted(&offer)? {
+                return Box::pin(init::run(home, client)).await.map(Target::Done);
+            }
+            Err(crate::inference_error(error, &unapplied))
+        }
+        (Some(Offer::Apply(manifest)), Err(error)) => {
+            if !accepted(&Offer::Apply(manifest.clone()))? {
+                return Err(crate::inference_error(error, &unapplied));
+            }
+            match start_from_files(client, &directory.join(&manifest)).await {
+                Ok(name) => Ok(Target::Agent(name)),
+                Err(error) => {
+                    eprintln!("{}", crate::error_text(&error));
+                    Err(CommandError::Message(format!(
+                        "the agent in {} was not started; `agentctl init` has your coding agent change it first",
+                        manifest.display()
+                    )))
+                }
+            }
+        }
         (Some(offer @ Offer::Start(_)), Ok(agent)) => {
             let name = agent.metadata.name;
             if !accepted(&offer)? {
                 return Err(Error::Stopped(name).into());
             }
             start(client, &name).await?;
-            Ok(name)
+            Ok(Target::Agent(name))
         }
-        (_, Ok(agent)) => Ok(agent.metadata.name),
-        (_, Err(error)) => Err(crate::inference_error(error)),
+        (_, Ok(agent)) => Ok(Target::Agent(agent.metadata.name)),
+        (_, Err(error)) => Err(crate::inference_error(error, &unapplied)),
     }
+}
+
+/// Applies `manifest` and waits for the agent as `agentctl apply --wait` does, returning its name.
+pub(crate) async fn start_from_files(client: &Client, manifest: &Path) -> CommandResult<String> {
+    let request = crate::read_apply_request(manifest.to_path_buf(), None)?;
+    let name = request.agent.metadata.name.clone();
+    let applied = client
+        .apply(request)
+        .await
+        .map_err(|error| crate::apply_error(error, &name))?;
+    let name = applied.metadata.name;
+    eprintln!("agent/{name} applied");
+    crate::wait_until_converged(client, &name, START_TIMEOUT).await?;
+    eprintln!("agent/{name} started");
+    Ok(name)
 }
 
 async fn start(client: &Client, name: &str) -> CommandResult<()> {
@@ -241,16 +314,39 @@ mod tests {
     }
 
     #[test]
-    fn commands_offer_to_start_a_stopped_agent_and_nothing_else() {
+    fn commands_offer_to_set_up_a_missing_agent_or_start_a_stopped_one_and_nothing_else() {
         let not_found = rpc(NOT_FOUND);
         let several = rpc(INVALID_PARAMS);
-        assert_eq!(offer(&Ok(agent("worker", false)), true), None);
+        assert_eq!(offer(&Ok(agent("worker", false)), true, &Unapplied::None), None);
         assert_eq!(
-            offer(&Ok(agent("worker", true)), true),
+            offer(&Ok(agent("worker", true)), true, &Unapplied::None),
             Some(Offer::Start("worker".into()))
         );
-        assert_eq!(offer(&not_found, true), None);
-        assert_eq!(offer(&several, true), None);
+        assert_eq!(offer(&not_found, true, &Unapplied::None), Some(Offer::Init));
+        assert_eq!(offer(&several, true, &Unapplied::None), None);
+        assert_eq!(
+            offer(
+                &not_found,
+                true,
+                &Unapplied::Written {
+                    name: "dev".into(),
+                    manifest: "agents/dev/agent.yaml".into()
+                }
+            ),
+            Some(Offer::Apply("agents/dev/agent.yaml".into()))
+        );
+        assert_eq!(
+            offer(&not_found, true, &Unapplied::Here),
+            Some(Offer::Apply("agent.yaml".into())),
+            "a manifest beside you is started from too"
+        );
+        assert_eq!(
+            question(&Offer::Apply("agents/dev/agent.yaml".into())),
+            [
+                "The agent in agents/dev/agent.yaml isn't running.".to_owned(),
+                "Start it from its files?".to_owned()
+            ]
+        );
         assert_eq!(question(&Offer::Start("worker".into()))[1], "Start it?");
     }
 
@@ -262,7 +358,7 @@ mod tests {
             rpc(NOT_FOUND),
             rpc(INVALID_PARAMS),
         ] {
-            assert_eq!(offer(&resolved, false), None, "{resolved:?}");
+            assert_eq!(offer(&resolved, false, &Unapplied::None), None, "{resolved:?}");
         }
     }
 
