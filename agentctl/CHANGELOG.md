@@ -24,8 +24,14 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 - `agentctl guide` tells a coding agent how to set up an Agent with you, from the installed version: `agentctl guide setup` first, then topics such as the manifest, the image and GitHub accounts. ([Your first Agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#240](https://github.com/digdir/digdir-agents/issues/240))
 - At a terminal, `attach`, `exec` and `ssh` offer what the Agent here needs: ([Your first Agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#240](https://github.com/digdir/digdir-agents/issues/240))
   - to start it when it is stopped
+  - to set one up with `agentctl init` where there is none, or start one from its files in `agents/<name>`
 - `agentctl attach` without a Session opens the Agent's only one, starts one named after its harness, such as `claude-1`, when it has none, or asks which. ([Your first Agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#240](https://github.com/digdir/digdir-agents/issues/240))
 - At a terminal, `agentctl apply` without `-f` or an `agent.yaml` here asks before applying the manifest it finds, or which of several. ([#319](https://github.com/digdir/digdir-agents/pull/319))
+- `agentctl init` sets up an Agent with your coding agent, on your machine: ([Your first Agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#240](https://github.com/digdir/digdir-agents/issues/240))
+  - it starts Claude Code, Codex or Pi, or prints the request to paste when none is installed
+  - afterwards it offers a Session in the new Agent
+  - where an Agent exists, it offers to change it, checking for unpushed work before creating it again
+  - where an Agent's folder is there but agentd does not run it, it offers to start it from its files
 
 ### Changed
 

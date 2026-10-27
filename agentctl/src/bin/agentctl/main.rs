@@ -21,6 +21,7 @@ mod entry;
 mod format;
 mod github;
 mod guide;
+mod init;
 mod launch;
 mod progress;
 mod prompt;
@@ -38,7 +39,7 @@ use tokio::runtime::LocalRuntime;
 #[command(
     name = "agentctl",
     about = "Run coding agents in sandboxes on this machine",
-    after_help = "To stop every agent at once: agentctl kill --all",
+    after_help = "To set up an agent with the coding agent you use: agentctl init\nTo stop every agent at once: agentctl kill --all",
     version = agent::build_version()
 )]
 struct Arguments {
@@ -51,6 +52,13 @@ struct Arguments {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Set up an agent for this repository or folder, with the coding agent you already use here.
+    ///
+    /// Starts Claude Code, Codex or Pi in the repository's root, asking which when several are
+    /// installed, on a short prompt that has it follow `agentctl guide setup` with you. When it
+    /// exits, offers to open a session in the agent it set up. Without any of them, prints that
+    /// prompt to paste into the coding agent you use.
+    Init,
     /// Show agentd, the harness logins and this directory's agent, with what to run next.
     Status {
         /// Print a JSON object whose keys stay stable, for agents and scripts.
@@ -639,7 +647,8 @@ fn run() -> CommandResult<ExitCode> {
         }
         if !matches!(
             arguments.command,
-            Command::Create { .. }
+            Command::Init
+                | Command::Create { .. }
                 | Command::Prompt { .. }
                 | Command::Self_ { .. }
                 | Command::SshConfig { .. }
@@ -657,6 +666,7 @@ fn run() -> CommandResult<ExitCode> {
 )]
 async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> CommandResult<ExitCode> {
     match command {
+        Command::Init => return Box::pin(init::run(home, client)).await,
         Command::Self_ { command } => self_update::execute(command, home).await?,
         Command::Claude {
             command: ClaudeCommand::Login { from_stdin },
@@ -791,7 +801,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             variant,
             resource,
             command,
-        } => return Box::pin(ssh(client, resource, agent, variant, &command)).await,
+        } => return Box::pin(ssh(home, client, resource, agent, variant, &command)).await,
         Command::SshProxy { resource } => return ssh_proxy(home, client, resource).await,
         Command::SshConfig {
             command: SshConfigCommand::Install,
@@ -934,7 +944,10 @@ async fn attach(
     };
     let agent = match agent {
         Some(agent) => agent,
-        None => entry::current_agent(client, variant).await?,
+        None => match entry::current_agent(home, client, variant).await? {
+            entry::Target::Agent(agent) => agent,
+            entry::Target::Done(code) => return Ok(code),
+        },
     };
     let session = match named {
         Some(session) => session,
@@ -966,7 +979,10 @@ async fn exec_command(
     stdin: bool,
     tty: bool,
 ) -> CommandResult<ExitCode> {
-    let agent = execution_agent(client, resource, agent, variant).await?;
+    let agent = match execution_agent(home, client, resource, agent, variant).await? {
+        entry::Target::Agent(agent) => agent,
+        entry::Target::Done(code) => return Ok(code),
+    };
     if tty && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal()) {
         return Err(Error::Invalid("-it requires an interactive local terminal".into()).into());
     }
@@ -1091,13 +1107,17 @@ async fn hold_forwards(forwards: &[forward::PortForward]) -> CommandResult<ExitC
 /// The Agent is converged first, so the server and the key material exist by
 /// the time `ssh` runs the `ProxyCommand`.
 async fn ssh(
+    home: &ControlPlaneHome,
     client: &Client,
     resource: Option<String>,
     agent: Option<String>,
     variant: Option<AgentVariantName>,
     command: &[String],
 ) -> CommandResult<ExitCode> {
-    let agent = execution_agent(client, resource, agent, variant).await?;
+    let agent = match execution_agent(home, client, resource, agent, variant).await? {
+        entry::Target::Agent(agent) => agent,
+        entry::Target::Done(code) => return Ok(code),
+    };
     let wait = progress::Wait::start();
     wait.until(
         client,
@@ -1120,17 +1140,40 @@ fn ssh_client_arguments(access: &agent::ssh::AccessInfo) -> [&std::ffi::OsStr; 3
     ["-F".as_ref(), access.config_file.as_os_str(), access.alias.as_ref()]
 }
 
+fn run_ssh_client(ssh: ProcessCommand) -> CommandResult<ExitCode> {
+    run_in_place(ssh).map_err(|error| ssh_client_error(&error))
+}
+
+/// Runs `command` in agentctl's place, on its terminal, for agentctl's exit code: on Unix
+/// agentctl becomes it, elsewhere waits for it.
 #[cfg(unix)]
-fn run_ssh_client(mut ssh: ProcessCommand) -> CommandResult<ExitCode> {
+fn run_in_place(mut command: ProcessCommand) -> std::io::Result<ExitCode> {
     use std::os::unix::process::CommandExt as _;
 
-    Err(ssh_client_error(&ssh.exec()))
+    Err(command.exec())
 }
 
 #[cfg(not(unix))]
-fn run_ssh_client(mut ssh: ProcessCommand) -> CommandResult<ExitCode> {
-    let status = ssh.status().map_err(|error| ssh_client_error(&error))?;
+fn run_in_place(mut command: ProcessCommand) -> std::io::Result<ExitCode> {
+    let status = command.status()?;
     Ok(status.code().map_or(ExitCode::FAILURE, exit_code))
+}
+
+/// Runs `command` on agentctl's terminal and waits for its exit code. Until it exits, Ctrl-C is
+/// left to it: agentctl, which the terminal interrupts too, carries on, and ends on Ctrl-C again
+/// once it has exited.
+fn run_and_wait(mut command: ProcessCommand) -> std::io::Result<ExitCode> {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    // signal-hook's handler shares the flag; a handled signal is reset to its default in the child.
+    let interrupt_ends = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register_conditional_default(signal_hook::consts::SIGINT, Arc::clone(&interrupt_ends))?;
+    let status = command.status();
+    interrupt_ends.store(true, Ordering::SeqCst);
+    Ok(status?.code().map_or(ExitCode::FAILURE, exit_code))
 }
 
 fn ssh_client_error(error: &std::io::Error) -> CommandError {
@@ -1456,18 +1499,21 @@ fn print_turns(turns: &[agent::sessions::Turn]) {
     }
 }
 
-/// The agent `exec` and `ssh` use: the one named, or the current directory's, offering to start
-/// it at a terminal.
+/// The agent `exec` and `ssh` use: the one named, or the current directory's, offering to set
+/// it up or start it at a terminal.
 async fn execution_agent(
+    home: &ControlPlaneHome,
     client: &Client,
     resource: Option<String>,
     explicit: Option<String>,
     variant: Option<AgentVariantName>,
-) -> CommandResult<String> {
+) -> CommandResult<entry::Target> {
     if resource.is_none() && explicit.is_none() {
-        return entry::current_agent(client, variant).await;
+        return entry::current_agent(home, client, variant).await;
     }
-    resolve_execution_agent(client, resource, explicit, variant).await
+    resolve_execution_agent(client, resource, explicit, variant)
+        .await
+        .map(entry::Target::Agent)
 }
 
 async fn resolve_execution_agent(
@@ -1617,17 +1663,69 @@ async fn resolve_agent_name(
         return Ok(agent);
     }
     let directory = std::env::current_dir().map_err(Error::from)?;
+    let unapplied = unapplied(&directory);
     match client.resolve_agent_variant(directory, variant).await {
         Ok(agent) => Ok(agent.metadata.name),
-        Err(error) => Err(inference_error(error)),
+        Err(error) => Err(inference_error(error, &unapplied)),
     }
 }
 
-fn inference_error(error: Error) -> CommandError {
+/// A manifest for this directory, when agentd has no agent here: what creates the agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Unapplied {
+    /// No manifest: `agentctl init` sets an agent up.
+    None,
+    /// `agent.yaml` in this directory: `agentctl apply` creates the agent.
+    Here,
+    /// `agents/<name>/agent.yaml` that agentd does not run, such as one a setup wrote or one deleted
+    /// since: `agentctl apply` starts it from its files, or `agentctl init` changes it first.
+    Written {
+        name: String,
+        /// The manifest's path from the directory it was looked for in.
+        manifest: PathBuf,
+    },
+}
+
+/// The manifest for `directory` that agentd may not know: `agent.yaml` in it, else the first
+/// `agents/<name>/agent.yaml` in its repository's root or, outside a repository, in it.
+pub(crate) fn unapplied(directory: &std::path::Path) -> Unapplied {
+    if directory.join(agent::manifest::MANIFEST_FILE).is_file() {
+        return Unapplied::Here;
+    }
+    let root = tui::repository_root(directory).unwrap_or(directory);
+    let mut names: Vec<String> = std::fs::read_dir(root.join("agents"))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().join(agent::manifest::MANIFEST_FILE).is_file())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    // The root holds `directory`, so its manifests are this many folders up.
+    let up = directory.components().count().saturating_sub(root.components().count());
+    names.into_iter().next().map_or(Unapplied::None, |name| {
+        let manifest = std::iter::repeat_n("..", up)
+            .collect::<PathBuf>()
+            .join("agents")
+            .join(&name)
+            .join(agent::manifest::MANIFEST_FILE);
+        Unapplied::Written { name, manifest }
+    })
+}
+
+/// Why no agent was found here, and what creates one: applying the manifest in this directory,
+/// finishing an agent a setup wrote, or setting one up when there is none.
+fn inference_error(error: Error, unapplied: &Unapplied) -> CommandError {
     match error {
-        Error::Rpc(error) if error.is_not_found() => {
-            CommandError::Message("no agent here; `agentctl apply` creates one, or pass --agent NAME".into())
-        }
+        Error::Rpc(error) if error.is_not_found() => CommandError::Message(match unapplied {
+            Unapplied::Here => "no agent here; `agentctl apply` creates one, or pass --agent NAME".into(),
+            Unapplied::Written { name, manifest } => format!(
+                "no agent here; agents/{name} has an agent that isn't running: `agentctl apply -f {}` starts it, \
+                 `agentctl init` changes it first, or pass --agent NAME",
+                manifest.display()
+            ),
+            Unapplied::None => "no agent here; `agentctl init` sets one up, or pass --agent NAME".into(),
+        }),
         Error::Rpc(error) => CommandError::Message(error.message),
         error => error.into(),
     }
@@ -2157,8 +2255,8 @@ mod tests {
             .filter_map(|line| line.split_whitespace().next())
             .collect::<Vec<_>>();
         assert_eq!(
-            commands[..6],
-            ["status", "tui", "attach", "stop", "kill", "start"],
+            commands[..7],
+            ["init", "status", "tui", "attach", "stop", "kill", "start"],
             "{help}"
         );
         for hidden in ["ssh-proxy", "vnc-proxy"] {
@@ -2770,22 +2868,82 @@ mod tests {
 
     #[test]
     fn inference_errors_have_one_actionable_message() {
-        let ambiguous = inference_error(Error::Rpc(agent::control_api::ResponseError {
-            code: -32602,
-            message: "multiple agents were applied from this directory; specify --agent or --variant".into(),
-        }));
+        let ambiguous = inference_error(
+            Error::Rpc(agent::control_api::ResponseError {
+                code: -32602,
+                message: "multiple agents were applied from this directory; specify --agent or --variant".into(),
+            }),
+            &Unapplied::None,
+        );
         assert_eq!(
             ambiguous.to_string(),
             "multiple agents were applied from this directory; specify --agent or --variant"
         );
 
-        let missing = inference_error(Error::Rpc(agent::control_api::ResponseError {
-            code: -32004,
-            message: "Agent not found".into(),
-        }));
+        let missing = || {
+            Error::Rpc(agent::control_api::ResponseError {
+                code: -32004,
+                message: "Agent not found".into(),
+            })
+        };
         assert_eq!(
-            missing.to_string(),
-            "no agent here; `agentctl apply` creates one, or pass --agent NAME"
+            inference_error(missing(), &Unapplied::None).to_string(),
+            "no agent here; `agentctl init` sets one up, or pass --agent NAME"
+        );
+        assert_eq!(
+            inference_error(missing(), &Unapplied::Here).to_string(),
+            "no agent here; `agentctl apply` creates one, or pass --agent NAME",
+            "an agent.yaml here is applied rather than set up"
+        );
+        assert_eq!(
+            inference_error(
+                missing(),
+                &Unapplied::Written {
+                    name: "dev".into(),
+                    manifest: "agents/dev/agent.yaml".into()
+                }
+            )
+            .to_string(),
+            "no agent here; agents/dev has an agent that isn't running: `agentctl apply -f agents/dev/agent.yaml` starts it, \
+             `agentctl init` changes it first, or pass --agent NAME"
+        );
+    }
+
+    #[test]
+    fn a_manifest_agentd_may_not_know_is_found_here_or_in_agents_at_the_root() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path();
+        let below = root.join("projects/app");
+        std::fs::create_dir_all(&below).expect("directories");
+        assert_eq!(unapplied(root), Unapplied::None);
+
+        std::fs::create_dir_all(root.join("agents/app")).expect("a folder without a manifest, sorting first");
+        std::fs::create_dir_all(root.join("agents/dev")).expect("agent folder");
+        std::fs::write(root.join("agents/dev/agent.yaml"), "").expect("manifest");
+        std::fs::create_dir_all(root.join("agents/zed")).expect("agent folder");
+        std::fs::write(root.join("agents/zed/agent.yaml"), "").expect("manifest");
+        assert_eq!(
+            unapplied(root),
+            Unapplied::Written {
+                name: "dev".into(),
+                manifest: "agents/dev/agent.yaml".into()
+            }
+        );
+        assert_eq!(unapplied(&root.join("agents/dev")), Unapplied::Here);
+        assert_eq!(
+            unapplied(&below),
+            Unapplied::None,
+            "outside a repository, only this directory"
+        );
+
+        std::fs::create_dir(root.join(".git")).expect("repository");
+        assert_eq!(
+            unapplied(&below),
+            Unapplied::Written {
+                name: "dev".into(),
+                manifest: "../../agents/dev/agent.yaml".into()
+            },
+            "in a repository, its root's agents"
         );
     }
 
