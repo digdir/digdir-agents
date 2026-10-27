@@ -3,7 +3,7 @@
 
 use std::{
     ffi::{OsStr, OsString},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 /// The opener under WSL, a Windows program reached through the Windows `PATH`.
@@ -86,7 +86,7 @@ pub(crate) fn launch_blocked(variable: impl Fn(&str) -> Option<OsString>) -> Opt
         if set("SSH_CONNECTION") || set("SSH_TTY") {
             return Some("this terminal is reached over SSH, so it would open on that machine".into());
         }
-        (wsl && find_executable(variable("PATH").as_deref(), &[WSL_OPENER]).is_none())
+        (wsl && find_program(&[WSL_OPENER], variable("PATH").as_deref()).is_none())
             .then(|| format!("{WSL_OPENER} is not on PATH, so nothing here reaches the Windows desktop"))
     } else {
         (!set("DISPLAY") && !set("WAYLAND_DISPLAY")).then(|| "this terminal has no display to open windows on".into())
@@ -103,21 +103,40 @@ pub(super) fn set(variable: &impl Fn(&str) -> Option<OsString>, name: &str) -> b
     variable(name).is_some_and(|value| !value.is_empty())
 }
 
-/// Finds the first of `names` in `path`, a `PATH`-style variable, trying every
-/// absolute directory for one name before the next.
-pub(super) fn find_executable(path: Option<&OsStr>, names: &[&str]) -> Option<PathBuf> {
+/// Finds the first of `names` that is a file in an absolute directory of `path`, a `PATH`-style
+/// variable. On Windows a name without an extension is looked for with each of `PATHEXT`'s.
+pub(crate) fn find_program(names: &[&str], path: Option<&OsStr>) -> Option<PathBuf> {
     let directories = path
         .map(std::env::split_paths)
         .into_iter()
         .flatten()
+        .filter(|directory| directory.is_absolute())
         .collect::<Vec<_>>();
+    let extensions = std::env::var_os("PATHEXT");
     names.iter().find_map(|name| {
-        directories
-            .iter()
-            .filter(|directory| directory.is_absolute())
-            .map(|directory| directory.join(name))
-            .find(|candidate| candidate.is_file())
+        let file_names = program_file_names(name, cfg!(windows), extensions.as_deref());
+        directories.iter().find_map(|directory| {
+            file_names
+                .iter()
+                .map(|file_name| directory.join(file_name))
+                .find(|candidate| candidate.is_file())
+        })
     })
+}
+
+/// The file names `name` may be installed as: itself, or on Windows, when it has no extension of
+/// its own, it with each of `extensions`, from `PATHEXT`.
+fn program_file_names(name: &str, windows: bool, extensions: Option<&OsStr>) -> Vec<String> {
+    if !windows || Path::new(name).extension().is_some() {
+        return vec![name.to_owned()];
+    }
+    extensions
+        .and_then(OsStr::to_str)
+        .unwrap_or(".COM;.EXE;.BAT;.CMD")
+        .split(';')
+        .filter(|extension| !extension.is_empty())
+        .map(|extension| format!("{name}{}", extension.to_ascii_lowercase()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -183,5 +202,20 @@ mod tests {
     fn elsewhere_a_terminal_reached_over_ssh_is_somewhere_else() {
         assert!(launch_blocked(only(&[("SSH_CONNECTION", "10.0.0.1 5000 10.0.0.2 22")])).is_some());
         assert_eq!(launch_blocked(only(&[])), None);
+    }
+
+    #[test]
+    fn on_windows_a_program_is_found_with_the_extensions_pathext_names() {
+        let pathext = Some(OsStr::new(".EXE;.CMD;"));
+        assert_eq!(program_file_names("claude", false, pathext), ["claude"]);
+        assert_eq!(
+            program_file_names("claude", true, pathext),
+            ["claude.exe", "claude.cmd"]
+        );
+        assert_eq!(
+            program_file_names("claude", true, None),
+            ["claude.com", "claude.exe", "claude.bat", "claude.cmd"]
+        );
+        assert_eq!(program_file_names("code.cmd", true, None), ["code.cmd"]);
     }
 }
