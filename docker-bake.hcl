@@ -29,7 +29,7 @@ target "base-headless" {
   tags     = ["${BASE_REPOSITORY}:${BASE_DISTRIBUTION}"]
   labels = {
     "org.opencontainers.image.title"       = "agentctl-base"
-    "org.opencontainers.image.description" = "Headless base image for agentctl Agents, with Claude Code, Codex and Pi"
+    "org.opencontainers.image.description" = "Headless base image for agentctl agents, with Claude Code, Codex and Pi"
   }
 }
 
@@ -38,7 +38,7 @@ target "base-desktop" {
   target   = "desktop"
   tags     = ["${BASE_REPOSITORY}:${BASE_DISTRIBUTION}-desktop"]
   labels = {
-    "org.opencontainers.image.description" = "Desktop base image for agentctl Agents: the headless image plus Chromium and a VNC desktop"
+    "org.opencontainers.image.description" = "Desktop base image for agentctl agents: the headless image plus Chromium and a VNC desktop"
   }
 }
 
@@ -58,7 +58,7 @@ target "self-dev-minimal" {
   tags = ["ghcr.io/digdir/digdir-agents/agentctl-self-dev-minimal:latest"]
   labels = {
     "org.opencontainers.image.title"       = "agentctl-self-dev-minimal"
-    "org.opencontainers.image.description" = "The agentctl self-development Agent's image"
+    "org.opencontainers.image.description" = "The agentctl self-development agent's image"
   }
 }
 
@@ -68,7 +68,7 @@ target "self-dev-full" {
   tags     = ["ghcr.io/digdir/digdir-agents/agentctl-self-dev-full:latest"]
   labels = {
     "org.opencontainers.image.title"       = "agentctl-self-dev-full"
-    "org.opencontainers.image.description" = "The agentctl self-development Agent's image, with a browser and a desktop"
+    "org.opencontainers.image.description" = "The agentctl self-development agent's image, with a browser and a desktop"
   }
 }
 
@@ -77,7 +77,7 @@ variable "AGENT_VERSION" {
   default = "v0.0.1-dev"
 }
 
-# agentctl and agentd alone, for Agent images to copy in. Built from the repository root; locally under a localhost/
+# agentctl and agentd alone, for agent images to copy in. Built from the repository root; locally under a localhost/
 # tag, since Podman pulls a published name over a local image when agentd builds for a platform.
 target "agentctl" {
   inherits   = ["_source"]
@@ -89,7 +89,7 @@ target "agentctl" {
   tags = ["localhost/agentctl:dev"]
   labels = {
     "org.opencontainers.image.title"       = "agentctl"
-    "org.opencontainers.image.description" = "agentctl and agentd, for Agent images to copy in"
+    "org.opencontainers.image.description" = "agentctl and agentd, for agent images to copy in"
     "org.opencontainers.image.version"     = AGENT_VERSION
   }
 }

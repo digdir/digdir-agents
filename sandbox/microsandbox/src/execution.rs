@@ -163,9 +163,9 @@ impl MicrosandboxProvider {
 /// guest agent.
 ///
 /// When it intercepts TLS, Microsandbox's guest init points `NODE_EXTRA_CA_CERTS` at its copy of
-/// the CA on the runtime share, which the guest user may not be able to read. A value the Agent
-/// declares (not an image `ENV`) already replaces it in every Execution, so only a Sandbox whose
-/// Agent declares none gets the guest's own readable copy here, which also replaces an image `ENV`
+/// the CA on the runtime share, which the guest user may not be able to read. A value the agent
+/// declares (not an image `ENV`) already replaces it in every Execution, so only a sandbox whose
+/// agent declares none gets the guest's own readable copy here, which also replaces an image `ENV`
 /// value. The Execution's own environment still overrides that default.
 fn execution_environment(sandbox: &SandboxRecord, spec: &execution::ExecutionSpec) -> BTreeMap<String, String> {
     let mut environment = BTreeMap::new();

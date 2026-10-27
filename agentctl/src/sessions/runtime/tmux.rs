@@ -1,6 +1,6 @@
-//! Linux tmux Session runtime and terminal capability.
+//! Linux tmux session runtime and terminal capability.
 //!
-//! Tmux is the M0 Unix Sandbox implementation detail behind Sessions: it owns
+//! Tmux is the M0 Unix sandbox implementation detail behind sessions: it owns
 //! the harness PTY, retained terminal state, normal-screen scrollback and client
 //! attachment. Nothing tmux-native is persisted; the tmux session name is
 //! derived from the platform `SessionId`. The conversation record is the
@@ -25,7 +25,7 @@ use crate::sessions::{Activity, AttachTarget, LaunchToken, LifecycleState, Phase
 /// harness TUI's input loop is up, and a paste that lands in that gap is lost;
 /// tmux has no readiness signal of its own, so recent hook activity stands in.
 const INPUT_READY_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
-/// Bound on every Session runtime execution in the guest, so a stalled guest
+/// Bound on every session runtime execution in the guest, so a stalled guest
 /// fails the operation instead of holding it.
 const LIFECYCLE_EXECUTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const LIFECYCLE_EXECUTION_KILL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -34,7 +34,7 @@ const DETACH_KEYS: &str = "ctrl-b,d";
 // Set history-limit before pane creation; reapply on attach for existing servers.
 // Mouse mode routes wheels to copy mode or the application: https://man.openbsd.org/tmux.1#mouse
 // Reserve index 99: appending would grow terminal-features on every attach.
-// Ctrl-Z would stop the harness with no shell to resume it, so swallow it in a Session's
+// Ctrl-Z would stop the harness with no shell to resume it, so swallow it in a session's
 // own harness pane (a pane started with a command). It is bound on the shared tmux server,
 // so the guard is scoped to agent-session-* names; every other pane, including a shell
 // opened with Ctrl-b c, keeps normal job control and has Ctrl-Z forwarded.
@@ -124,11 +124,11 @@ fn pane_target(session: &Session) -> String {
     format!("={}:", session_name(session))
 }
 
-// Both timestamps come from the Sandbox. A missing transcript is normal before
+// Both timestamps come from the sandbox. A missing transcript is normal before
 // the harness creates its conversation; its contents are not needed here.
 const OBSERVE_SCRIPT: &str = include_str!("observe.sh");
 
-// Stopping is repeated after an interrupted release, so a Session that is
+// Stopping is repeated after an interrupted release, so a session that is
 // already gone counts as stopped.
 const STOP_SCRIPT: &str = include_str!("stop.sh");
 
@@ -194,7 +194,7 @@ fn parse_observation(output: &str) -> Result<Observation, Error> {
     })
 }
 
-/// Stops a tmux Session, succeeding when it is already gone.
+/// Stops a tmux session, succeeding when it is already gone.
 async fn stop(session: &Session, sandbox: &SandboxHandle) -> Result<(), Error> {
     let stopped = run_lifecycle_execution(
         sandbox,
@@ -214,7 +214,7 @@ async fn stop(session: &Session, sandbox: &SandboxHandle) -> Result<(), Error> {
         Ok(())
     } else {
         Err(Error::Session(format!(
-            "tmux failed to stop Session {} with exit code {}",
+            "tmux failed to stop session {} with exit code {}",
             session.id, stopped.status.code
         )))
     }
@@ -237,9 +237,9 @@ async fn run_lifecycle_execution(
         match tokio::time::timeout(LIFECYCLE_EXECUTION_KILL_TIMEOUT, sandbox.kill_execution(&execution_id)).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                tracing::warn!(%error, %execution_id, "failed to kill timed-out Session runtime execution");
+                tracing::warn!(%error, %execution_id, "failed to kill timed-out session runtime execution");
             }
-            Err(_) => tracing::warn!(%execution_id, "timed out killing Session runtime execution"),
+            Err(_) => tracing::warn!(%execution_id, "timed out killing session runtime execution"),
         }
         Err(Error::Session(format!("{operation} timed out")))
     }
@@ -250,8 +250,8 @@ async fn run_lifecycle_execution(
 /// Per-launch values travel as tmux session environment (`-e`) rather than
 /// becoming defaults for subsequently created sessions. Sessions share one
 /// Unix identity and tmux server, so this is not a security boundary between
-/// sibling Sessions; the token only rejects stale or accidental reports. The
-/// Session's recorded model selection is part of every launch, resumed or not.
+/// sibling sessions; the token only rejects stale or accidental reports. The
+/// session's recorded model selection is part of every launch, resumed or not.
 /// The harness also learns its agent, session name, host and source directory,
 /// so it can say where it runs, and which harness it is.
 fn launch_arguments(
@@ -332,31 +332,31 @@ async fn launch(
                 ("HOME".into(), crate::sandbox::platform::HOME.into()),
                 ("LANG".into(), UTF8_LOCALE.into()),
             ]),
-        "tmux Session launch",
+        "tmux session launch",
     )
     .await?;
     if created.status.success() {
         return Ok(());
     }
-    // Concurrent creation is excluded by per-Session serialization, but an
+    // Concurrent creation is excluded by per-session serialization, but an
     // "already exists" result from a raced earlier pass still converges.
     if matches!(observe(session, sandbox).await?, Observation::Alive { .. }) {
         return Ok(());
     }
     Err(Error::Session(format!(
-        "tmux failed to create Session {} with exit code {}",
+        "tmux failed to create session {} with exit code {}",
         session.id, created.status.code
     )))
 }
 
-/// Attaches a local terminal to an existing tmux-backed Session.
+/// Attaches a local terminal to an existing tmux-backed session.
 ///
 /// This client capability is separate from daemon-owned lifecycle
-/// convergence. It never creates or resumes a Session.
+/// convergence. It never creates or resumes a session.
 ///
 /// # Errors
 ///
-/// Returns an error unless the Session is ready and the Sandbox Provider
+/// Returns an error unless the session is ready and the sandbox provider
 /// supports direct terminal attachment.
 async fn attach_terminal(home: &std::path::Path, target: &AttachTarget) -> Result<(), Error> {
     if target.session.status.lifecycle.state != LifecycleState::Running {
@@ -378,9 +378,9 @@ async fn attach_terminal(home: &std::path::Path, target: &AttachTarget) -> Resul
 
 fn attach_arguments(session: &Session) -> Vec<String> {
     let mut arguments = terminal_options();
-    // The host terminal's tab names the Agent and the Session it shows. The tmux server belongs
-    // to this Agent's Sandbox, so the title is global and follows Ctrl-b n to the next Session.
-    // An Agent name is a hostname, so it holds no `#` for tmux to expand.
+    // The host terminal's tab names the agent and the session it shows. The tmux server belongs
+    // to this agent's sandbox, so the title is global and follows Ctrl-b n to the next session.
+    // An agent name is a hostname, so it holds no `#` for tmux to expand.
     arguments.extend([
         "set-option".into(),
         "-g".into(),
@@ -425,7 +425,7 @@ fn attach_request(session: &Session) -> AttachTerminalRequest {
     AttachTerminalRequest::new(attach_spec(session)).with_detach_keys(DETACH_KEYS)
 }
 
-/// The M0 Unix Session runtime backed by tmux.
+/// The M0 Unix session runtime backed by tmux.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Tmux;
 
@@ -537,19 +537,19 @@ fn ready_input(screen: &str) -> Option<(&str, &str)> {
     lines.nth(row).map(|line| (line, title))
 }
 
-/// Delivers operator input to a running tmux Session.
+/// Delivers operator input to a running tmux session.
 ///
 /// Input is held for [`INPUT_READY_GRACE`] after the latest reported hook
 /// event unless the harness is waiting for input (see [`input_ready_in`]). The
-/// prompt is then written to a Sandbox file and loaded into a private tmux
-/// buffer, pasted into the Session's pane with bracketed paste so newlines
+/// prompt is then written to a sandbox file and loaded into a private tmux
+/// buffer, pasted into the session's pane with bracketed paste so newlines
 /// stay literal input, then submitted with a trailing Enter after a short settling
 /// interval so the TUI can consume the paste before handling submission. Bracketed paste
 /// is why a multi-line prompt is not submitted line by line by the harness TUI.
 ///
 /// File and buffer carry a per-delivery name, so two deliveries in flight for
-/// the same Session cannot overwrite each other's payload; the Session service
-/// additionally serializes deliveries per Session.
+/// the same session cannot overwrite each other's payload; the session service
+/// additionally serializes deliveries per session.
 async fn deliver(session: &Session, sandbox: &SandboxHandle, prompt: &str) -> Result<(), Error> {
     use std::io::Cursor;
 
@@ -566,7 +566,7 @@ async fn deliver(session: &Session, sandbox: &SandboxHandle, prompt: &str) -> Re
         ),
     )
     .await
-    .map_err(|_| Error::Session("writing the prompt into the Sandbox timed out".into()))??;
+    .map_err(|_| Error::Session("writing the prompt into the sandbox timed out".into()))??;
     let delivered = run_lifecycle_execution(
         sandbox,
         ExecutionSpec::command(
@@ -593,7 +593,7 @@ async fn deliver(session: &Session, sandbox: &SandboxHandle, prompt: &str) -> Re
         Ok(())
     } else {
         Err(Error::Session(format!(
-            "tmux failed to deliver input to Session {} with exit code {}",
+            "tmux failed to deliver input to session {} with exit code {}",
             session.id, delivered.status.code
         )))
     }
@@ -617,7 +617,7 @@ fn input_ready_in(activity: &Activity, now: time::OffsetDateTime) -> Option<std:
     }
 }
 
-/// Reads the harness transcript the Session reported and parses it into turns.
+/// Reads the harness transcript the session reported and parses it into turns.
 ///
 /// The path travels as a positional argument, never interpolated into shell
 /// text. A harness that has not reported a transcript yet, or has reported one
@@ -643,12 +643,12 @@ async fn turns(session: &Session, sandbox: &SandboxHandle, last: Option<usize>) 
                 (MAX_TRANSCRIPT_BYTES + 1).to_string(),
             ],
         ),
-        "reading the Session conversation",
+        "reading the session conversation",
     )
     .await?;
     if !read.status.success() {
         return Err(Error::Session(format!(
-            "reading the conversation of Session {} failed with exit code {}",
+            "reading the conversation of session {} failed with exit code {}",
             session.id, read.status.code
         )));
     }
@@ -894,7 +894,7 @@ mod tests {
         let Observation::Alive { attached, idle_seconds } =
             super::parse_observation("0 301\n").expect("valid observation")
         else {
-            panic!("expected a live Session");
+            panic!("expected a live session");
         };
         assert!(!attached);
         assert_eq!(idle_seconds, 301);
@@ -908,7 +908,7 @@ mod tests {
         ));
 
         let Err(error) = super::classify_observation(ExitStatus { code: 2 }, &[]) else {
-            panic!("tmux failure must not look like a missing Session");
+            panic!("tmux failure must not look like a missing session");
         };
         assert!(error.to_string().contains("exit code 2"));
     }

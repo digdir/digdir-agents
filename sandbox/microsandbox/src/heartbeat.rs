@@ -33,7 +33,7 @@ struct HeartbeatFile {
 /// Reads the latest guest heartbeat, or none before the guest's first one.
 ///
 /// A missing or unreadable file reports no heartbeat rather than failing
-/// inspection: it is evidence about the guest, not about the Sandbox.
+/// inspection: it is evidence about the guest, not about the sandbox.
 pub(crate) async fn read(runtime_directory: &Path) -> Option<GuestHeartbeat> {
     let path = runtime_directory.join(HEARTBEAT_FILE);
     let read = tokio::time::timeout(READ_TIMEOUT, read_bounded(&path))

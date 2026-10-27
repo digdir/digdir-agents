@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt as _};
 
-/// Agent Control API version, independent of the JSON-RPC envelope.
+/// Control API version, independent of the JSON-RPC envelope.
 pub const PROTOCOL_VERSION: &str = "v4";
 pub(crate) const JSON_RPC_VERSION: &str = "2.0";
 
@@ -105,7 +105,7 @@ pub(crate) struct NameParams {
 #[serde(deny_unknown_fields)]
 pub(crate) struct RestartParams {
     pub name: String,
-    /// Ends the Sandbox at once instead of letting its guest shut down.
+    /// Ends the sandbox at once instead of letting its guest shut down.
     #[serde(default, skip_serializing_if = "is_false")]
     pub now: bool,
 }

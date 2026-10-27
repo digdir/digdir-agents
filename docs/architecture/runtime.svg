@@ -106,7 +106,7 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
 
 <text class="kicker" x="40" y="48">AGENT PLATFORM · RUNTIME</text>
 <text class="title" x="40" y="82">What runs where</text>
-<text class="subtitle" x="40" y="106">agentctl talks to one agentd per user. agentd keeps the desired state and runs one msb process per Sandbox; the guest only ever reaches the network through it.</text>
+<text class="subtitle" x="40" y="106">agentctl talks to one agentd per user. agentd keeps the desired state and runs one msb process per sandbox; the guest only ever reaches the network through it.</text>
 
 <!-- Zones -->
 <rect class="zone zone-host" x="40" y="125" width="1100" height="845" rx="16"/>
@@ -132,13 +132,13 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
 
 <rect class="box box-host" x="665" y="205" width="200" height="78" rx="10"/>
 <text class="h" x="683" y="232">Agent controller</text>
-<text class="s" x="683" y="251">image, Sandbox, network,</text>
+<text class="s" x="683" y="251">image, sandbox, network,</text>
 <text class="s" x="683" y="268">setup and release</text>
 
 <rect class="box box-host" x="885" y="205" width="200" height="78" rx="10"/>
 <text class="h" x="903" y="232">Session controller</text>
 <text class="s" x="903" y="251">tmux and the harness</text>
-<text class="s" x="903" y="268">for each Session</text>
+<text class="s" x="903" y="268">for each session</text>
 
 <rect class="box store" x="445" y="315" width="200" height="78" rx="10"/>
 <g transform="translate(463 329)">
@@ -146,11 +146,11 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
   <path d="M0,4 C0,9 18,9 18,4" fill="none" stroke="#0062ba" stroke-width="1.2"/>
 </g>
 <text class="h" x="490" y="342">agent.db</text>
-<text class="s" x="463" y="364">desired state, Sessions and</text>
+<text class="s" x="463" y="364">desired state, sessions and</text>
 <text class="s" x="463" y="381">secrets · SQLite, owner only</text>
 
 <rect class="box box-host" x="665" y="315" width="200" height="78" rx="10"/>
-<text class="h" x="683" y="342">Sandbox Provider</text>
+<text class="h" x="683" y="342">Sandbox provider</text>
 <text class="code-sm" x="683" y="361">sandbox-microsandbox</text>
 <text class="s" x="683" y="381">Sandbox SDK backend</text>
 
@@ -310,7 +310,7 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
   <rect class="zone zone-host" x="0" y="-11" width="22" height="14" rx="3"/>
   <text class="legend" x="30" y="0">trusted host</text>
   <rect class="zone zone-sandbox" x="130" y="-11" width="22" height="14" rx="3"/>
-  <text class="legend" x="160" y="0">untrusted Sandbox</text>
+  <text class="legend" x="160" y="0">untrusted sandbox</text>
   <rect class="zone zone-proc" x="295" y="-11" width="22" height="14" rx="3"/>
   <text class="legend" x="325" y="0">host process</text>
   <path class="edge" d="M430,-4 H462" marker-end="url(#arrow)"/>

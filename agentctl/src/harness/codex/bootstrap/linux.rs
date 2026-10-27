@@ -1,4 +1,4 @@
-//! Linux Sandbox configuration for mediated Codex CLI authentication.
+//! Linux sandbox configuration for mediated Codex CLI authentication.
 
 use sandbox::SandboxHandle;
 
@@ -32,7 +32,7 @@ pub(super) async fn configure(
         .environment
         .get(ACCOUNT_ENVIRONMENT)
         .cloned()
-        .ok_or_else(|| Error::SandboxSetup("Codex account ID was not prepared for this Sandbox".into()))?;
+        .ok_or_else(|| Error::SandboxSetup("Codex account ID was not prepared for this sandbox".into()))?;
     // Codex must believe it owns a normal ChatGPT login while the real,
     // rotating grant remains host-only. The fake JWT expiry and fresh refresh
     // timestamp suppress proactive guest refresh; a 401 can only attempt the
@@ -91,7 +91,7 @@ pub(super) async fn configure(
 /// Codex only refreshes proactively once the timestamp is much older than this, and a
 /// rewrite every reconciliation pass would make the file churn for no reason.
 const AUTH_REFRESH_MAX_AGE: time::Duration = time::Duration::hours(24);
-/// Longest login file setup parses; the Sandbox user can write the file, so a larger one is
+/// Longest login file setup parses; the sandbox user can write the file, so a larger one is
 /// replaced rather than read.
 const AUTH_MAX_BYTES: usize = 1024 * 1024;
 

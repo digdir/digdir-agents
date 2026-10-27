@@ -6,17 +6,17 @@ use super::{AgentRecord, SharedAgentStore};
 use crate::progress::{ProvisioningState, SandboxObserver};
 use crate::sandbox::responsiveness::stall_detail;
 
-/// Receives low-latency hints when an Agent transition affects its Sessions.
+/// Receives low-latency hints when an agent transition affects its sessions.
 pub trait SessionNotifier {
-    /// Wakes every durable Session owned by the Agent incarnation.
+    /// Wakes every durable session owned by the agent incarnation.
     fn notify(&self, id: crate::AgentId);
 
-    /// Reconciles every durable Session owned by the Agent incarnation and
+    /// Reconciles every durable session owned by the agent incarnation and
     /// completes once each has finished a pass that began after this call.
     fn settle(&self, id: crate::AgentId) -> ::sandbox::LocalFuture<'_, ()>;
 }
 
-/// Converges one stored Agent generation without owning an API request.
+/// Converges one stored agent generation without owning an API request.
 pub struct Reconciler {
     store: SharedAgentStore,
     sandboxes: Rc<crate::sandbox::Service>,
@@ -28,7 +28,7 @@ pub struct Reconciler {
 }
 
 impl Reconciler {
-    /// Creates an Agent reconciler over persistent resources and runtime-resolved Sandboxes.
+    /// Creates an agent reconciler over persistent resources and runtime-resolved sandboxes.
     #[must_use]
     pub fn new(
         store: SharedAgentStore,
@@ -53,28 +53,28 @@ impl Reconciler {
         self
     }
 
-    /// Reconciles declared SSH access after the Sandbox is set up.
+    /// Reconciles declared SSH access after the sandbox is set up.
     #[must_use]
     pub fn with_ssh_access(mut self, ssh: Rc<crate::ssh::Access>) -> Self {
         self.ssh = Some(ssh);
         self
     }
 
-    /// Reconciles declared VNC access after the Sandbox is set up.
+    /// Reconciles declared VNC access after the sandbox is set up.
     #[must_use]
     pub fn with_vnc_access(mut self, vnc: Rc<crate::vnc::Access>) -> Self {
         self.vnc = Some(vnc);
         self
     }
 
-    /// Wakes dependent Sessions when readiness or Sandbox identity changes.
+    /// Wakes dependent sessions when readiness or sandbox identity changes.
     #[must_use]
     pub fn with_session_notifier(mut self, sessions: Rc<dyn SessionNotifier>) -> Self {
         self.sessions = Some(sessions);
         self
     }
 
-    /// Converges the latest generation of one Agent and records what it observed.
+    /// Converges the latest generation of one agent and records what it observed.
     ///
     /// # Errors
     ///
@@ -86,7 +86,7 @@ impl Reconciler {
             Err(error) => return Err(error),
         };
         if record.agent.metadata.deletion_timestamp.is_some() {
-            // A kill asked for before the delete still ends the Sandbox at once.
+            // A kill asked for before the delete still ends the sandbox at once.
             if let Some(generation) = self.immediate_stops.take(id)
                 && let Err(error) = self.sandboxes.stop(&record, true).await
             {
@@ -96,7 +96,7 @@ impl Reconciler {
             return self.release(&record).await;
         }
         let stopped = record.agent.spec.is_stopped();
-        // A restart stops the Sandbox as a stop does, so its Sessions go Idle, and then starts it
+        // A restart stops the sandbox as a stop does, so its sessions go Idle, and then starts it
         // in the same pass, whose progress shows both.
         let mut restarting = None;
         if stopped || record.agent.restart_pending() {
@@ -107,14 +107,14 @@ impl Reconciler {
                 observer.succeeded();
                 return Ok(());
             }
-            // Its Sessions have settled, so the restart is carried out; a crash before this
+            // Its sessions have settled, so the restart is carried out; a crash before this
             // stops and settles again.
             record.agent.status = status;
             let mut starting = not_ready(&record, Condition::REASON_STARTING, "");
             starting.observed_restart_timestamp = record.agent.metadata.restart_timestamp;
             record.agent.status = match self.update_status(&record, starting, None).await {
                 Ok(stored) => stored,
-                // As in the stop, so a deleted Agent does not boot again.
+                // As in the stop, so a deleted agent does not boot again.
                 Err(Error::Conflict | Error::NotFound) => {
                     observer.succeeded();
                     return Ok(());
@@ -162,8 +162,8 @@ impl Reconciler {
         } else {
             SandboxObserver::new(record.id, self.provisioning.clone())
         };
-        // An immediate stop asked for while the Sandbox or its access is set up abandons the
-        // setup: the stop was stored first, so the controller's next pass finds the Agent stopped
+        // An immediate stop asked for while the sandbox or its access is set up abandons the
+        // setup: the stop was stored first, so the controller's next pass finds the agent stopped
         // and kills it.
         tokio::select! {
             set_up = self.set_up(&record, &observer) => set_up,
@@ -174,7 +174,7 @@ impl Reconciler {
         }
     }
 
-    /// Ensures the Sandbox of a running Agent, reconciles its declared access and records it Ready.
+    /// Ensures the sandbox of a running agent, reconciles its declared access and records it Ready.
     async fn set_up(&self, record: &AgentRecord, observer: &SandboxObserver) -> Result<(), Error> {
         let ensured = match self.sandboxes.ensure(record, observer.reporter()).await {
             Ok(ensured) => ensured,
@@ -190,7 +190,7 @@ impl Reconciler {
             .status
             .sandbox
             .as_ref()
-            .ok_or_else(|| Error::Database("persisted Sandbox Provider assignment disappeared".into()))?
+            .ok_or_else(|| Error::Database("persisted sandbox provider assignment disappeared".into()))?
             .provider()
             .clone();
 
@@ -248,7 +248,7 @@ impl Reconciler {
     }
 
     /// Runs one access capability's pass and appends its condition. A failure
-    /// is recorded as the Agent's `Ready=False` before it is returned.
+    /// is recorded as the agent's `Ready=False` before it is returned.
     async fn reconcile_access(
         &self,
         kind: AccessKind,
@@ -304,7 +304,7 @@ impl Reconciler {
         }
     }
 
-    /// Records a failed Sandbox ensure or setup as the Agent's `Ready=False` and returns `error`.
+    /// Records a failed sandbox ensure or setup as the agent's `Ready=False` and returns `error`.
     async fn record_ensure_failure(
         &self,
         record: &AgentRecord,
@@ -338,9 +338,9 @@ impl Reconciler {
         Err(error)
     }
 
-    /// Records that the Sandbox's guest stopped responding and returns `error`.
+    /// Records that the sandbox's guest stopped responding and returns `error`.
     ///
-    /// A stall is only found in work after the Sandbox started, so the Sandbox
+    /// A stall is only found in work after the sandbox started, so the sandbox
     /// itself is running; only the guest inside it has stopped.
     async fn record_unresponsive(
         &self,
@@ -385,19 +385,19 @@ impl Reconciler {
         self.immediate_stops.request(id, generation);
     }
 
-    /// Stops the Sandbox of an Agent whose run state is Stopped, or that is to be restarted, and
-    /// records it as stopped; a stop also carries out a restart it won over. The Sandbox keeps its
+    /// Stops the sandbox of an agent whose run state is Stopped, or that is to be restarted, and
+    /// records it as stopped; a stop also carries out a restart it won over. The sandbox keeps its
     /// identity, storage and assignment, so a start boots the same disk. Nothing reaches into the
     /// guest, so a guest that stopped responding cannot hold the stop up.
     ///
     /// Returns the status as stored and the pass's progress, which the caller ends; nothing when
-    /// the Agent was deleted or changed since the pass read it, leaving it to the pass that change
+    /// the agent was deleted or changed since the pass read it, leaving it to the pass that change
     /// woke.
     async fn stop(&self, record: &AgentRecord) -> Result<Option<(Status, SandboxObserver)>, Error> {
         let current = record.agent.status.observed_generation == record.agent.metadata.generation;
         let already_stopped = current && record.agent.status.is_stopped();
         if !(current && recorded_by_stop(&record.agent.status)) {
-            // Not Ready before the VM goes away, so Sessions are told and go Idle first.
+            // Not Ready before the VM goes away, so sessions are told and go Idle first.
             let stopping = not_ready(record, Condition::REASON_STOPPING, "");
             match self.update_status(record, stopping, None).await {
                 Ok(_) => {}
@@ -474,8 +474,8 @@ impl Reconciler {
         if (restarting || !already_stopped)
             && let Some(sessions) = &self.sessions
         {
-            // The start, in this pass or a later one, waits until every Session
-            // has seen the stop, so a Session pass that began before it cannot
+            // The start, in this pass or a later one, waits until every session
+            // has seen the stop, so a session pass that began before it cannot
             // relaunch its harness in the started VM.
             sessions.settle(record.id).await;
         }
@@ -592,7 +592,7 @@ fn condition(kind: &str, status: ConditionStatus, reason: &str, message: &str) -
     }
 }
 
-/// Reports whether the Sandbox got the nested Sandboxes its Agent asks for; nothing when it asks
+/// Reports whether the sandbox got the nested sandboxes its agent asks for; nothing when it asks
 /// for none.
 fn nested_sandboxes_condition(outcome: Option<&crate::sandbox::NestedSandboxesOutcome>) -> Option<Condition> {
     Some(match outcome? {
@@ -608,7 +608,7 @@ fn nested_sandboxes_condition(outcome: Option<&crate::sandbox::NestedSandboxesOu
     })
 }
 
-/// Reports whether the Agent's optional instructions and skills exist, naming those setup left out;
+/// Reports whether the agent's optional instructions and skills exist, naming those setup left out;
 /// nothing when it declares none.
 fn optional_sources_condition(spec: &crate::Spec, missing: &[String]) -> Option<Condition> {
     let declares = spec.instructions.iter().any(|instructions| instructions.optional)
@@ -629,7 +629,7 @@ fn optional_sources_condition(spec: &crate::Spec, missing: &[String]) -> Option<
 }
 
 /// Reports the guest's heartbeat after a pass whose guest work finished. A
-/// Sandbox that reports no heartbeat gives no evidence either way.
+/// sandbox that reports no heartbeat gives no evidence either way.
 fn responsive_condition(reports_heartbeat: bool) -> Condition {
     if reports_heartbeat {
         condition(
@@ -648,7 +648,7 @@ fn responsive_condition(reports_heartbeat: bool) -> Condition {
     }
 }
 
-/// A status with only `Ready=False` for `reason`, keeping the record's Sandbox assignment.
+/// A status with only `Ready=False` for `reason`, keeping the record's sandbox assignment.
 fn not_ready(record: &AgentRecord, reason: &str, message: &str) -> Status {
     Status::observed(
         record.agent.metadata.generation,
@@ -657,7 +657,7 @@ fn not_ready(record: &AgentRecord, reason: &str, message: &str) -> Status {
     )
 }
 
-/// Whether `status` was recorded by a pass that stopped, or tried to stop, the Sandbox.
+/// Whether `status` was recorded by a pass that stopped, or tried to stop, the sandbox.
 fn recorded_by_stop(status: &Status) -> bool {
     status
         .ready_condition()

@@ -58,7 +58,7 @@ pub struct ReconcileFailure {
 impl ReconcileFailure {
     /// Classifies a reconciliation error by its variant, never by its message.
     ///
-    /// Invalid desired state, an immutable field that changed, and a Sandbox
+    /// Invalid desired state, an immutable field that changed, and a sandbox
     /// request the Provider rejects or cannot support are permanent until the
     /// operator changes something; everything else is retried.
     #[must_use]

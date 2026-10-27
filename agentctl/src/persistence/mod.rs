@@ -13,9 +13,9 @@ mod schema;
 mod secrets;
 mod sessions;
 
-/// Persistent Agent store backed by the shared control-plane database owner.
+/// Persistent agent store backed by the shared control-plane database owner.
 ///
-/// Every successful write to Agents or Sessions advances [`Database::changes`].
+/// Every successful write to agents or sessions advances [`Database::changes`].
 #[derive(Clone)]
 pub struct Database {
     sender: tokio::sync::mpsc::Sender<Command>,
@@ -59,7 +59,7 @@ impl Database {
         })
     }
 
-    /// Returns the change history advanced by every Agent and Session write.
+    /// Returns the change history advanced by every agent and session write.
     #[must_use]
     pub fn changes(&self) -> crate::resources::Changes {
         self.changes.clone()
@@ -645,7 +645,7 @@ enum Command {
 }
 
 impl Command {
-    /// Returns whether a successful execution changes an Agent or Session resource.
+    /// Returns whether a successful execution changes an agent or session resource.
     const fn changes_resources(&self) -> bool {
         match self {
             Self::Put { .. }
@@ -919,12 +919,12 @@ fn execute_session(connection: &mut Connection, command: Command) {
         Command::ResetSessionLaunchAttempts { id, response } => {
             let _ = response.send(sessions::reset_launch_attempts(connection, id));
         }
-        // Every non-Session command is matched exhaustively by `execute`.
-        _ => unreachable!("non-Session command routed to the Session executor"),
+        // Every non-session command is matched exhaustively by `execute`.
+        _ => unreachable!("non-session command routed to the session executor"),
     }
 }
 
-/// Executes the hook-route commands that write the reported half of a Session.
+/// Executes the hook-route commands that write the reported half of a session.
 fn execute_session_report(connection: &mut Connection, command: Command) {
     match command {
         Command::ClearSessionReport { id, response } => {
@@ -962,7 +962,7 @@ fn execute_session_report(connection: &mut Connection, command: Command) {
             ));
         }
         // Only report commands are routed here by `execute_session`.
-        _ => unreachable!("non-report command routed to the Session report executor"),
+        _ => unreachable!("non-report command routed to the session report executor"),
     }
 }
 
@@ -1079,7 +1079,7 @@ mod tests {
                 ],
             )
             .await
-            .expect("initial Agent secrets");
+            .expect("initial agent secrets");
         database
             .replace_agent_secrets(
                 agent_id,
@@ -1089,7 +1089,7 @@ mod tests {
                 }],
             )
             .await
-            .expect("replacement Agent secrets");
+            .expect("replacement agent secrets");
 
         assert!(database.resolve(&github).await.is_err());
         assert_eq!(

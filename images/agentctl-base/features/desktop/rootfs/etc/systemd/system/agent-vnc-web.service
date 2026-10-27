@@ -1,5 +1,5 @@
 [Unit]
-Description=Browser-based viewer for the Agent desktop
+Description=Browser-based viewer for the agent desktop
 Documentation=https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base
 After=network.target
 

@@ -1,7 +1,7 @@
-//! VNC access granted and withdrawn in Linux Sandboxes: the units the image lists in
+//! VNC access granted and withdrawn in Linux sandboxes: the units the image lists in
 //! `/etc/agent-access.d/vnc.conf` are enabled or disabled, then the result is checked. A grant
 //! waits for the declared ports to listen; a withdrawal checks that the units are inactive. The
-//! ports themselves are not checked on withdrawal, because the Agent may use them.
+//! ports themselves are not checked on withdrawal, because the agent may use them.
 
 use ::sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
 

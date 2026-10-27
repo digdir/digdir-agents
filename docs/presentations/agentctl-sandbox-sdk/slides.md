@@ -94,7 +94,7 @@ layout: section
 <div class="flex flex-col gap-3">
   <div class="box blue">
     <div class="title">Agent layer · <code>agentctl</code> + <code>agentd</code></div>
-    <div class="sub">Agents, Sessions, harness adapters, control API, TUI, secret store</div>
+    <div class="sub">Agents, sessions, harness adapters, control API, TUI, secret store</div>
   </div>
   <div class="text-center muted text-xs">builds on ↓</div>
   <div class="box amber">
@@ -120,7 +120,7 @@ layout: section
 <div class="text-[0.95rem] leading-relaxed">
 
 - Written in **Rust**, **local first** on Linux, macOS and Windows
-- Every Sandbox is a **real VM** with its own kernel, not a container
+- Every sandbox is a **real VM** with its own kernel, not a container
 - The SDK is **generic** and reused outside agentctl:
 
 <div class="flex flex-col gap-2 mt-3 ml-4">
@@ -184,7 +184,7 @@ securityContext:
 
 <div class="kicker">Architecture</div>
 
-# Host, Agent, Sandbox, Session
+# Host, agent, sandbox, session
 
 <div class="grid grid-cols-[1.25fr_1fr] gap-10 mt-4 items-start">
 
@@ -220,7 +220,7 @@ securityContext:
 <v-clicks>
 
 - **agentd** owns desired state and reconciles it, like a tiny Kubernetes controller
-- An **Agent** owns one retained **Sandbox**: disk, volumes and identity survive restarts
+- An **agent** owns one retained **sandbox**: disk, volumes and identity survive restarts
 - **Sessions** are durable harness processes in tmux. Detach, go idle, resume the conversation later
 
 </v-clicks>
@@ -257,7 +257,7 @@ flowchart LR
 
 <div class="kicker">Architecture · Security</div>
 
-# Secrets never enter the Sandbox
+# Secrets never enter the sandbox
 
 ```mermaid {scale: 0.62}
 sequenceDiagram
@@ -298,7 +298,7 @@ Fails closed · Rotate the token without touching the VM · Per-secret <code>all
 <div class="box amber flex flex-col gap-2" style="padding: 0.8rem">
   <div class="flex items-center justify-between"><span class="title">Sandbox</span><span class="tag amber">untrusted</span></div>
   <div class="box"><div class="title text-xs">gh · git · curl · npm</div><div class="sub">sees a placeholder token</div></div>
-  <div class="box"><div class="title text-xs">TLS client</div><div class="sub">trusts the Sandbox CA</div></div>
+  <div class="box"><div class="title text-xs">TLS client</div><div class="sub">trusts the sandbox CA</div></div>
   <div class="box"><div class="title text-xs">Guest kernel TCP/IP</div><div class="sub">its own stack, its own IP</div></div>
   <div class="box"><div class="title text-xs">virtio-net</div><div class="sub">the only network device</div></div>
 </div>
@@ -323,7 +323,7 @@ Fails closed · Rotate the token without touching the VM · Per-secret <code>all
     <div><span class="title text-xs">DNS interception</span> <span class="sub">· names and record types</span></div>
     <code class="text-xs">dns.query</code>
     <span class="tag">L7</span>
-    <div><span class="title text-xs">TLS terminated</span> <span class="sub">· per-domain cert from the Sandbox CA</span></div>
+    <div><span class="title text-xs">TLS terminated</span> <span class="sub">· per-domain cert from the sandbox CA</span></div>
     <code class="text-xs">http.request</code>
     <span class="tag coral">secret</span>
     <div><span class="title text-xs">Placeholder → real value</span> <span class="sub">· only for allowed hosts</span></div>
@@ -378,7 +378,7 @@ class: tight
 
 <div class="kicker">Architecture · Security · honest limits</div>
 
-# What the Sandbox doesn't protect against
+# What the sandbox doesn't protect against
 
 <div class="grid grid-cols-2 gap-8 mt-4">
 
@@ -395,8 +395,8 @@ class: tight
   <div class="box coral"><div class="title text-sm">Misuse of a token on its own hosts</div><div class="sub">anything the PAT allows on github.com, including a public gist</div></div>
   <div class="box coral"><div class="title text-sm">Data leaving without secrets</div><div class="sub">with <code>allow: all</code>, code can be posted to any host</div></div>
   <div class="box coral"><div class="title text-sm">Prompt injection</div><div class="sub">issues, web pages and dependencies can steer the agent</div></div>
-  <div class="box coral"><div class="title text-sm">Bad code</div><div class="sub">review is still the gate, not the Sandbox</div></div>
-  <div class="box coral"><div class="title text-sm">Sessions in one Sandbox</div><div class="sub">same user and tmux server, so one trust boundary</div></div>
+  <div class="box coral"><div class="title text-sm">Bad code</div><div class="sub">review is still the gate, not the sandbox</div></div>
+  <div class="box coral"><div class="title text-sm">Sessions in one sandbox</div><div class="sub">same user and tmux server, so one trust boundary</div></div>
 </div>
 
 </div>
@@ -669,7 +669,7 @@ spec:
   </div>
   <div class="card">
     <h3>Shows up everywhere</h3>
-    <p><code>agentctl apply --variant mine</code>, the TUI's create form and T3 Code's New Sandbox all find it.</p>
+    <p><code>agentctl apply --variant mine</code>, the TUI's create form and T3 Code's New sandbox all find it.</p>
   </div>
 </div>
 
@@ -713,7 +713,7 @@ flowchart LR
 - **Show you**:
   - screenshots and recordings attached to the PR
   - review in VS Code or another IDE over SSH
-  - T3 Code's browser preview: open a page in the Sandbox, or watch the VNC desktop while it works
+  - T3 Code's browser preview: open a page in the sandbox, or watch the VNC desktop while it works
 
 </v-clicks>
 
@@ -775,7 +775,7 @@ flowchart LR
         <div class="box" style="flex: 0 0 9.5rem"><div class="title text-xs">Edits its definition</div><div class="sub">instructions, skills, Dockerfile</div></div>
         <div class="flex flex-col items-center text-xs muted"><span class="c-amber">→</span><span>apply</span><span class="c-amber">←</span><span>not yet</span></div>
         <div class="box coral flex-1" style="padding: 0.5rem">
-          <div class="flex items-center justify-between mb-1"><span class="title text-xs">Nested Sandbox · <code>nested-build</code></span><span class="tag coral">VM in a VM</span></div>
+          <div class="flex items-center justify-between mb-1"><span class="title text-xs">Nested sandbox · <code>nested-build</code></span><span class="tag coral">VM in a VM</span></div>
           <div class="sub">the new image, instructions and skills, booted and used for real</div>
         </div>
       </div>
@@ -791,7 +791,7 @@ flowchart LR
 
 <div class="grid grid-cols-2 gap-3 mt-4">
   <div class="card" v-click style="padding: 0.55rem 1rem"><h3>Context and harness engineering</h3><p>So far the main use of nested agents: the agent works on its own definition.</p></div>
-  <div class="card" v-click style="padding: 0.55rem 1rem"><h3>Tested for real</h3><p>It boots the changed image, instructions and skills in a nested Sandbox and uses them.</p></div>
+  <div class="card" v-click style="padding: 0.55rem 1rem"><h3>Tested for real</h3><p>It boots the changed image, instructions and skills in a nested sandbox and uses them.</p></div>
   <div class="card" v-click style="padding: 0.55rem 1rem"><h3>Reviewed like code</h3><p>You approve a PR with evidence, not a prompt someone tweaked by hand.</p></div>
   <div class="card" v-click style="padding: 0.55rem 1rem"><h3>Nested virtualization</h3><p>Tested on Linux hosts. macOS support is possible.</p></div>
 </div>
@@ -876,24 +876,24 @@ flowchart LR
 <div class="grid grid-cols-2 gap-8 mt-6">
 
 <div class="box amber" style="padding: 1rem">
-  <div class="flex items-center justify-between mb-3"><span class="title">Step 1 · Sandbox as a tool</span><span class="tag amber">middle step</span></div>
+  <div class="flex items-center justify-between mb-3"><span class="title">Step 1 · sandbox as a tool</span><span class="tag amber">middle step</span></div>
   <div class="flex flex-col gap-2">
     <div class="box"><div class="title text-xs">Assistant (Python / LangGraph)</div><div class="sub">decides to upgrade the app</div></div>
     <div class="text-center muted text-xs">↓ HTTP tool call, a copy of the app in the request (multipart)</div>
-    <div class="box"><div class="title text-xs">Coordinator-like service</div><div class="sub">spawns a Sandbox and unpacks the app in it</div></div>
+    <div class="box"><div class="title text-xs">Coordinator-like service</div><div class="sub">spawns a sandbox and unpacks the app in it</div></div>
     <div class="text-center muted text-xs">↓</div>
-    <div class="box"><div class="title text-xs"><code>studioctl app upgrade v9</code></div><div class="sub">runs as the tool, inside the Sandbox</div></div>
+    <div class="box"><div class="title text-xs"><code>studioctl app upgrade v9</code></div><div class="sub">runs as the tool, inside the sandbox</div></div>
     <div class="text-center muted text-xs">↓</div>
     <div class="box green"><div class="title text-xs">git patch</div><div class="sub">returned to the assistant and the user</div></div>
   </div>
 </div>
 
 <div class="box blue" v-click style="padding: 1rem">
-  <div class="flex items-center justify-between mb-3"><span class="title">Later · the agent in the Sandbox</span><span class="tag blue">long term</span></div>
+  <div class="flex items-center justify-between mb-3"><span class="title">Later · the agent in the sandbox</span><span class="tag blue">long term</span></div>
   <div class="flex flex-col gap-2">
     <div class="box"><div class="title text-xs">Studio Designer</div><div class="sub">a general assistant experience</div></div>
     <div class="text-center muted text-xs">↓</div>
-    <div class="box"><div class="title text-xs">Pi / Pi-durable in the Sandbox</div><div class="sub">instead of Python / LangGraph</div></div>
+    <div class="box"><div class="title text-xs">Pi / Pi-durable in the sandbox</div><div class="sub">instead of Python / LangGraph</div></div>
     <div class="text-center muted text-xs">↓</div>
     <div class="box"><div class="title text-xs">Same building blocks</div><div class="sub">images, skills, mediated secrets, network policy</div></div>
   </div>
@@ -1042,7 +1042,7 @@ layout: section
 <div class="grid grid-cols-3 gap-4 mt-10 text-sm">
   <div class="card" v-click><h3>One-time</h3><p>Steps 1–4: install, log in, clone and add tokens. A few minutes.</p></div>
   <div class="card" v-after><h3>Per agent</h3><p>Step 5: the first image pull takes a while. Later agents reuse the cached image.</p></div>
-  <div class="card" v-after><h3>Per task</h3><p>Step 6: a new Session, or a new thread in T3 Code. Detach with <code>Ctrl-b d</code>.</p></div>
+  <div class="card" v-after><h3>Per task</h3><p>Step 6: a new session, or a new thread in T3 Code. Detach with <code>Ctrl-b d</code>.</p></div>
 </div>
 
 ---
@@ -1082,7 +1082,7 @@ layout: center
 </div>
 
 <div class="grid grid-cols-3 gap-4 mt-12 max-w-3xl mx-auto text-sm">
-  <div class="card"><h3>TUI</h3><p>Create an agent, start a Session, open it in VS Code or the desktop, port-forward</p></div>
+  <div class="card"><h3>TUI</h3><p>Create an agent, start a session, open it in VS Code or the desktop, port-forward</p></div>
   <div class="card"><h3>T3 Code fork</h3><p>Sandboxes as environments: new thread, PR watching, previews</p></div>
   <div class="card"><h3>Parallel</h3><p>Several agents on several tasks, reviewed as PRs</p></div>
 </div>
@@ -1128,7 +1128,7 @@ layout: center
 - `0.1.0-preview.11`, with `agentctl self update`
 - Linux, macOS and Windows hosts
 - Claude Code and Codex, mediated logins
-- Durable Sessions: idle, resume, archive
+- Durable sessions: idle, resume, archive
 - TUI, SSH, VS Code/Zed, VNC desktop, port forwards
 - Sandboxed GitHub runners in altinn-studio CI
 
@@ -1139,7 +1139,7 @@ layout: center
 ### <span class="c-amber">Next</span>
 
 - Session content and prompt/steer/interrupt APIs
-- A Platform API in the Sandbox for delegation and host plugins
+- A Platform API in the sandbox for delegation and host plugins
 - Studio assistant on the SDK? (opportunity)
 - Cloud agents? Software factories?
 

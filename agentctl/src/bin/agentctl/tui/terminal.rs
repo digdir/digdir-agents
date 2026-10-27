@@ -181,7 +181,7 @@ fn deactivate() -> Result<(), Error> {
     raw.map_err(Error::from)
 }
 
-// The title replaces the one an attached Session left in the terminal's tab.
+// The title replaces the one an attached session left in the terminal's tab.
 fn enter_screen(output: &mut impl Write) -> std::io::Result<()> {
     crossterm::execute!(
         output,

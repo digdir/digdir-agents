@@ -1,4 +1,4 @@
-//! Carrying `spec.home` into the Sandbox.
+//! Carrying `spec.home` into the sandbox.
 
 use std::{io::Cursor, path::Path};
 

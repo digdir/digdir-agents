@@ -1,11 +1,11 @@
-//! Observable Agent provisioning progress.
+//! Observable agent provisioning progress.
 //!
 //! The Sandbox SDK reports progress as events and defines what they mean as a
 //! folded [`::sandbox::progress::Progress`]. The reconciler folds every event of
-//! a pass into the Agent's [`Provisioning`] in [`ProvisioningState`]; readers
+//! a pass into the agent's [`Provisioning`] in [`ProvisioningState`]; readers
 //! see its current value, and a daemon-wide revision tells them when it
-//! changed. A resync of a Ready Agent is published only if it fails. Durable
-//! readiness and failure are the Agent's stored conditions.
+//! changed. A resync of a Ready agent is published only if it fails. Durable
+//! readiness and failure are the agent's stored conditions.
 
 mod observer;
 mod state;
@@ -13,16 +13,16 @@ mod state;
 pub use observer::SandboxObserver;
 pub use state::{Provisioning, ProvisioningState};
 
-/// Platform setup inside the Sandbox: harnesses, home, instructions and Skills.
-pub const SETUP: ::sandbox::Phase = ::sandbox::Phase::new("agentSetup", "Set up Agent");
-/// Declared SSH access to the Sandbox.
+/// Platform setup inside the sandbox: harnesses, home, instructions and Skills.
+pub const SETUP: ::sandbox::Phase = ::sandbox::Phase::new("agentSetup", "Set up agent");
+/// Declared SSH access to the sandbox.
 pub const SSH_ACCESS: ::sandbox::Phase = ::sandbox::Phase::new("sshAccess", "Configure SSH access");
-/// Stopping the Sandbox of an Agent whose run state is Stopped.
-pub const SANDBOX_STOP: ::sandbox::Phase = ::sandbox::Phase::new("sandboxStop", "Stop Sandbox");
-/// Declared VNC access to the Agent's desktop.
+/// Stopping the sandbox of an agent whose run state is Stopped.
+pub const SANDBOX_STOP: ::sandbox::Phase = ::sandbox::Phase::new("sandboxStop", "Stop sandbox");
+/// Declared VNC access to the agent's desktop.
 pub const VNC_ACCESS: ::sandbox::Phase = ::sandbox::Phase::new("vncAccess", "Configure VNC access");
 
-/// One Agent's stored status and the progress of its latest pass, as of one
+/// One agent's stored status and the progress of its latest pass, as of one
 /// revision, returned by `agents.v1.progress`.
 #[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]

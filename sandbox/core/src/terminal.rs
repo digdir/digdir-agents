@@ -1,4 +1,4 @@
-//! Bidirectional terminal execution inside a running Sandbox.
+//! Bidirectional terminal execution inside a running sandbox.
 
 use std::{fmt, pin::Pin, rc::Rc};
 
@@ -61,7 +61,7 @@ impl fmt::Display for InvalidTerminalSize {
 
 impl std::error::Error for InvalidTerminalSize {}
 
-/// Starts a terminal-backed Execution in a running Sandbox.
+/// Starts a terminal-backed Execution in a running sandbox.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StartTerminalExecutionRequest {
     /// Backend-neutral identity assigned before dispatch.
@@ -108,7 +108,7 @@ impl StartTerminalExecutionRequest {
     }
 }
 
-/// Attaches the caller's terminal to an interactive Execution in a running Sandbox.
+/// Attaches the caller's terminal to an interactive Execution in a running sandbox.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AttachTerminalRequest {
     spec: execution::ExecutionSpec,

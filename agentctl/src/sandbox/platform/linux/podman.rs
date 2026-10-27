@@ -147,7 +147,7 @@ pub(super) async fn configure_podman(sandbox: &SandboxHandle) -> Result<bool, Er
     )
     .await?;
     run_checked(sandbox, "/usr/bin/sudo", ["-n", "/usr/bin/systemctl", "daemon-reload"]).await?;
-    // An already-listening socket retains its old mode until the next Sandbox
+    // An already-listening socket retains its old mode until the next sandbox
     // boot; the compile-time drop-in is not changed independently at runtime.
     run_checked(
         sandbox,

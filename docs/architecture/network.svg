@@ -105,7 +105,7 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
 <rect class="canvas" width="1600" height="870"/>
 
 <text class="kicker" x="40" y="48">AGENT PLATFORM · NETWORK AND SECRETS</text>
-<text class="title" x="40" y="82">Secrets never enter the Sandbox</text>
+<text class="title" x="40" y="82">Secrets never enter the sandbox</text>
 <text class="subtitle" x="40" y="106">Every flow ends in the msb network engine on the host. It asks agentd before it acts, and it puts a real secret into a request only on its way to an allowed host.</text>
 
 <!-- Sandbox -->
@@ -121,7 +121,7 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
 
 <rect class="box box-sandbox" x="62" y="328" width="316" height="100" rx="10"/>
 <text class="h" x="80" y="355">TLS client</text>
-<text class="s" x="80" y="375">trusts the Sandbox CA, which guest</text>
+<text class="s" x="80" y="375">trusts the sandbox CA, which guest</text>
 <text class="s" x="80" y="392">agentd adds to the system store and</text>
 <text class="code-sm" x="80" y="411">SSL_CERT_FILE · NODE_EXTRA_CA_CERTS</text>
 
@@ -138,7 +138,7 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
 <path class="edge" d="M220,523 V544" marker-end="url(#arrow)"/>
 
 <rect class="box" x="62" y="648" width="316" height="140" rx="10" style="fill:#fffdf6;stroke:#e3c06a"/>
-<text class="h-sm" x="80" y="673">Never in the Sandbox</text>
+<text class="h-sm" x="80" y="673">Never in the sandbox</text>
 <g class="s">
   <text x="80" y="697">· real secret values</text>
   <text x="80" y="717">· the CA's private key</text>
@@ -167,7 +167,7 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
   <rect class="box box-host" x="465" y="379" width="390" height="82" rx="10"/>
   <text class="h" x="483" y="406">TLS termination</text>
   <text class="s" x="483" y="426">a certificate for each host, minted</text>
-  <text class="s" x="483" y="443">on demand by the Sandbox CA</text>
+  <text class="s" x="483" y="443">on demand by the sandbox CA</text>
 
   <rect class="box box-host" x="465" y="481" width="390" height="82" rx="10"/>
   <text class="h" x="483" y="508">HTTP request</text>
@@ -260,7 +260,7 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
   <circle class="badge" cx="1329" cy="376" r="9"/><text class="step" x="1329" y="380" text-anchor="middle">4</text>
   <text x="1346" y="381">To rotate, change <tspan class="code-sm">.env</tspan></text>
   <text x="1346" y="398">and apply again; nothing</text>
-  <text x="1346" y="415">is copied into the Sandbox.</text>
+  <text x="1346" y="415">is copied into the sandbox.</text>
 </g>
 
 <rect class="box box-ext" x="1302" y="612" width="236" height="74" rx="10"/>

@@ -5,7 +5,7 @@ extends: agent.yaml
 metadata:
   name: agentctl-dev-nested
 
-# Reduced to fit inside another Agent, with the image built from this checkout so that changes to it can be tried.
+# Reduced to fit inside another agent, with the image built from this checkout so that changes to it can be tried.
 spec:
   sandbox:
     image:

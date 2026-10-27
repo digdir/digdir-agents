@@ -106,7 +106,7 @@ async fn cache_directory_can_be_shared_without_sharing_provider_state() {
     assert!(second_home.join("state/sandboxes").is_dir());
 }
 
-/// A daemon's Provider and a client's, which attaches directly to a Sandbox's terminal, open the
+/// A daemon's Provider and a client's, which attaches directly to a sandbox's terminal, open the
 /// same home at once.
 #[tokio::test(flavor = "local")]
 async fn two_providers_can_open_the_same_home_at_once() {

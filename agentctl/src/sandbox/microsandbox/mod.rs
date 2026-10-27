@@ -1,4 +1,4 @@
-//! Microsandbox integration for the Agent layer.
+//! Microsandbox integration for the agent layer.
 
 use std::{path::Path, rc::Rc};
 
@@ -26,14 +26,14 @@ pub const LOG_DIRECTIVES: &str = sandbox_microsandbox::LOG_DIRECTIVES;
 
 pub(super) const PROVIDER_ID: &str = "microsandbox";
 
-/// How long `agentd` keeps an image no Agent uses after its last use, so an Agent deleted and
+/// How long `agentd` keeps an image no agent uses after its last use, so an agent deleted and
 /// applied again, even after a weekend, does not download its image again.
 const UNUSED_IMAGE_RETENTION: std::time::Duration = std::time::Duration::from_hours(72);
 
 /// How often an idle `agentd` removes unused images.
 const UNUSED_IMAGE_SWEEP: std::time::Duration = std::time::Duration::from_hours(1);
 
-/// Removes unused images while `agentd` runs, so they go even when no Agent changes.
+/// Removes unused images while `agentd` runs, so they go even when no agent changes.
 async fn remove_unused_images_periodically(provider: std::rc::Weak<MicrosandboxProvider>) {
     let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + UNUSED_IMAGE_SWEEP, UNUSED_IMAGE_SWEEP);
     loop {
@@ -47,12 +47,12 @@ async fn remove_unused_images_periodically(provider: std::rc::Weak<MicrosandboxP
 
 /// Sandbox-resolvable name of the Microsandbox Network Backend's host alias.
 ///
-/// The Backend's DNS answers this name with the per-Sandbox gateway address
+/// The Backend's DNS answers this name with the per-sandbox gateway address
 /// and rewrites gateway-bound connections to host loopback at dial time, so
-/// this is how processes inside a Sandbox reach the Platform API endpoint.
+/// this is how processes inside a sandbox reach the Platform API endpoint.
 pub const HOST_ALIAS: &str = "host.microsandbox.internal";
 
-/// Runtime-selectable Agent adapter for a Microsandbox Provider.
+/// Runtime-selectable agent adapter for a Microsandbox Provider.
 pub struct Adapter {
     id: ProviderId,
     service: SandboxService,
@@ -96,7 +96,7 @@ impl Adapter {
         })
     }
 
-    /// The Platform API base URL reachable from this Provider's Sandboxes.
+    /// The Platform API base URL reachable from this Provider's sandboxes.
     #[must_use]
     pub fn platform_url(&self) -> String {
         format!("http://{HOST_ALIAS}:{}", self.platform_port)
@@ -110,7 +110,7 @@ impl Adapter {
             .resolve_from(&record.source_directory, &self.default_architecture)
     }
 
-    /// Reports whether the Provider offers nested Sandboxes for the Agent's platform, and why not
+    /// Reports whether the Provider offers nested sandboxes for the agent's platform, and why not
     /// when it does not.
     async fn nested_sandboxes_offered(&self, record: &AgentRecord) -> Result<Result<(), String>, Error> {
         let capabilities = self.service.capabilities(&self.sandbox_spec(record)?.platform).await?;
@@ -122,7 +122,7 @@ impl Adapter {
         }
         Ok(Err(sandbox_microsandbox::nested_sandbox_support()
             .err()
-            .unwrap_or_else(|| "this platform has no nested Sandboxes".into())))
+            .unwrap_or_else(|| "this platform has no nested sandboxes".into())))
     }
 
     fn sandbox_mounts(record: &AgentRecord) -> Vec<::sandbox::mount::Mount> {
@@ -181,7 +181,7 @@ impl Provider for Adapter {
             spec.resources = spec
                 .resources
                 .with_nested_sandboxes(nested_sandboxes == Some(NestedSandboxesOutcome::Available));
-            // Ensure starts a stopped Sandbox, and restarts a running one to replace its environment
+            // Ensure starts a stopped sandbox, and restarts a running one to replace its environment
             // or its resources.
             let runtime_restarted = match self.service.inspect(&sandbox_name).await {
                 Ok(sandbox) => {

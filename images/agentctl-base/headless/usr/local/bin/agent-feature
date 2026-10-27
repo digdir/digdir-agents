@@ -80,7 +80,7 @@ case $command in
                 continue
             fi
             echo "agent-feature: installing $feature"
-            # A scratch HOME and TMPDIR keep caches out of the image, and out of /home/agent, which the Agent must own.
+            # A scratch HOME and TMPDIR keep caches out of the image, and out of /home/agent, which the agent must own.
             scratch=$(mktemp -d)
             HOME=$scratch TMPDIR=$scratch "$features/$feature/install"
             rm -rf "$scratch"

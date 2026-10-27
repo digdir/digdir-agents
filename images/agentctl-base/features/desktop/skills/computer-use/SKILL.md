@@ -1,11 +1,11 @@
 ---
 name: computer-use
-description: Drive the Agent's graphical desktop with the `desktop` helper: look at the screen, point, type and control native applications. Use when the task is a native application, when a person will watch or take over, or when the rendered result is the deliverable.
+description: Drive the agent's graphical desktop with the `desktop` helper: look at the screen, point, type and control native applications. Use when the task is a native application, when a person will watch or take over, or when the rendered result is the deliverable.
 ---
 
 # Computer use
 
-This Agent has an X11 desktop on display `:1` that you drive with `desktop`. `desktop help` lists
+This agent has an X11 desktop on display `:1` that you drive with `desktop`. `desktop help` lists
 every command, and `--json` before a command gives machine-readable output from those that observe.
 
 You see the desktop through a screenshot, which you read as an image, or through its

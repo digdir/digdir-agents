@@ -193,7 +193,7 @@ impl<W: io::Write> ProgressDisplay<W> {
 
     fn ready(&mut self) -> io::Result<()> {
         self.clear_line()?;
-        writeln!(self.output, "✓ Sandbox ready")
+        writeln!(self.output, "✓ sandbox ready")
     }
 
     fn failed(&mut self, progress: &Progress) -> io::Result<()> {

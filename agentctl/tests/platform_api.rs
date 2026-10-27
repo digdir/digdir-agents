@@ -125,7 +125,7 @@ async fn session_reports_require_the_current_launch_token() {
     assert_eq!(request_to(port, "/v1/session-reports", TOKEN_1, &report).await, 404);
     // A stale or foreign token authenticates as nothing.
     assert_eq!(request(port, "unknown-token", &report).await, 401);
-    // A valid token for a different platform Session is rejected.
+    // A valid token for a different platform session is rejected.
     let mismatched = format!(
         r#"{{"eventId":"00000000-0000-4000-8000-000000000001","sessionId":"{agent_id}","event":"sessionStart","nativeSessionId":"{native}"}}"#
     );
@@ -142,7 +142,7 @@ async fn session_reports_require_the_current_launch_token() {
         Some("opaque-harness-id")
     );
     assert_eq!(stored.status.reported.harness_transcript_path, None);
-    // A transcript location must be an absolute Sandbox path.
+    // A transcript location must be an absolute sandbox path.
     let relative = format!(
         r#"{{"eventId":"00000000-0000-4000-8000-000000000001","sessionId":"{}","event":"sessionStart","nativeSessionId":"{native}","transcriptPath":"relative.jsonl"}}"#,
         session.id
@@ -248,7 +248,7 @@ async fn session_reports_require_the_current_launch_token() {
         )
         .await
         .expect("record relaunch");
-    // The relaunch reset what the old launch reported, so the Session is
+    // The relaunch reset what the old launch reported, so the session is
     // Starting again until the new process reports; the old ID stays for resume.
     let relaunched = database.get_session(session.id).await.expect("session");
     assert_eq!(relaunched.status.state, agent::sessions::State::Starting);

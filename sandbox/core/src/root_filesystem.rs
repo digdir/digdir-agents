@@ -6,12 +6,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::ByteQuantity;
 
-/// How an Image is materialized as a writable Sandbox root filesystem.
+/// How an Image is materialized as a writable sandbox root filesystem.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub enum RootFilesystemMode {
-    /// Share an immutable Image and record Sandbox writes in a private layer.
+    /// Share an immutable Image and record sandbox writes in a private layer.
     Layered,
     /// Materialize the complete Image into a private writable filesystem.
     Direct,
@@ -52,7 +52,7 @@ impl<const N: usize> From<[RootFilesystemMode; N]> for RootFilesystemModeSet {
     }
 }
 
-/// Desired capacity and immutable materialization mode of a Sandbox root filesystem.
+/// Desired capacity and immutable materialization mode of a sandbox root filesystem.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RootFilesystem {

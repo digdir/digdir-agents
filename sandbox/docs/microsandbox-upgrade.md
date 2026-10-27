@@ -25,10 +25,10 @@ in [`client.rs`](../microsandbox/src/client.rs). They always come from one Digdi
    ```
 
 4. Run `make check`.
-5. Start a Sandbox from an empty Microsandbox home, so a runtime downloaded earlier cannot hide a wrong release or
+5. Start a sandbox from an empty Microsandbox home, so a runtime downloaded earlier cannot hide a wrong release or
    digest, and from a home the previous pin has used, so the database migrations run.
 
-Most pin updates change nothing Agent users notice and take the `skip-changelog` label. Otherwise add a changelog entry
+Most pin updates change nothing agent users notice and take the `skip-changelog` label. Otherwise add a changelog entry
 as [CONTRIBUTING.md](../../CONTRIBUTING.md#pull-requests) says.
 
 ## Before the release
@@ -45,7 +45,7 @@ test, and its release later publishes exactly those files, so their digests are 
    sandbox/microsandbox/fetch-runtime.sh <directory>
    ```
 
-3. Set `AGENT_MICROSANDBOX_RUNTIME_DIR=<directory>` wherever the tests or `agentctl` run. A Sandbox Provider then
+3. Set `AGENT_MICROSANDBOX_RUNTIME_DIR=<directory>` wherever the tests or `agentctl` run. A sandbox provider then
    installs the runtime from that directory instead of downloading the release, and only a bundle with the pinned
    digest is accepted. The pull request's end-to-end tests do this themselves while the pinned version has no
    release.

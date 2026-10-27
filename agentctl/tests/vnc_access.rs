@@ -175,7 +175,7 @@ async fn granting_access_enables_the_units_the_image_declared() {
             .expect("described")
             .web_guest_port,
         Some(6080),
-        "a granted Agent reports the viewer port its image declared"
+        "a granted agent reports the viewer port its image declared"
     );
 }
 

@@ -1,11 +1,11 @@
-//! Convergent file placement for Agent setup.
+//! Convergent file placement for agent setup.
 //!
-//! Setup reruns on every reconciliation pass, so a file the Agent's harness watches must not be
+//! Setup reruns on every reconciliation pass, so a file the agent's harness watches must not be
 //! rewritten unless its contents changed: every write is a new inode the harness reloads. The
 //! Sandbox SDK makes each write atomic; this module additionally skips writes that would not
 //! change anything.
 //!
-//! The files compared here are writable by the Sandbox user, so every read is bounded: a file
+//! The files compared here are writable by the sandbox user, so every read is bounded: a file
 //! grown or redirected to something unbounded counts as changed and is replaced.
 
 use std::io::Cursor;
@@ -15,7 +15,7 @@ use tokio::io::AsyncReadExt as _;
 
 use crate::Error;
 
-/// Reads up to `limit` bytes of a Sandbox file, or `None` when it cannot be read or is longer.
+/// Reads up to `limit` bytes of a sandbox file, or `None` when it cannot be read or is longer.
 ///
 /// Any read failure counts as absent: the following write reports the real problem if the
 /// file is genuinely inaccessible.
@@ -33,7 +33,7 @@ pub(crate) async fn read_existing(sandbox: &SandboxHandle, path: &str, limit: us
 ///
 /// # Errors
 ///
-/// Returns an error when the Sandbox cannot write the file.
+/// Returns an error when the sandbox cannot write the file.
 pub(crate) async fn write_if_changed(sandbox: &SandboxHandle, path: &str, contents: &[u8]) -> Result<bool, Error> {
     if read_existing(sandbox, path, contents.len()).await.as_deref() == Some(contents) {
         return Ok(false);

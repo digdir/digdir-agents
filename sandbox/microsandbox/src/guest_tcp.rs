@@ -1,9 +1,9 @@
 //! Host-dialed TCP streams into a running Microsandbox guest.
 //!
 //! The Microsandbox agent relay multiplexes `TcpConnect` streams over the
-//! Sandbox's host socket, so a host process can open TCP connections that are
+//! sandbox's host socket, so a host process can open TCP connections that are
 //! dialed from inside the guest network namespace without any configuration
-//! on the Sandbox itself.
+//! on the sandbox itself.
 
 use std::{cell::Cell, sync::Arc};
 
@@ -21,11 +21,11 @@ use crate::{MicrosandboxProvider, error};
 
 const RELAY_READ_BUFFER_BYTES: usize = 32 * 1024;
 
-/// Dials TCP connections from inside one running Sandbox.
+/// Dials TCP connections from inside one running sandbox.
 ///
 /// The dialer keeps a single multiplexed agent connection, so opening many
 /// concurrent streams through one dialer is cheap. It stops working when the
-/// Sandbox runtime restarts; create a replacement through
+/// sandbox runtime restarts; create a replacement through
 /// [`MicrosandboxProvider::guest_tcp_dialer`] when a connect fails.
 pub struct GuestTcpDialer {
     client: Arc<AgentClient>,
@@ -41,11 +41,11 @@ pub struct GuestTcpStream {
 }
 
 impl MicrosandboxProvider {
-    /// Connects a TCP dialer to one running Sandbox.
+    /// Connects a TCP dialer to one running sandbox.
     ///
     /// # Errors
     ///
-    /// Returns an error when the Sandbox is unknown, not running, or its
+    /// Returns an error when the sandbox is unknown, not running, or its
     /// runtime predates agent-relay TCP support.
     pub async fn guest_tcp_dialer(&self, id: &SandboxId) -> Result<GuestTcpDialer, Error> {
         let record = self.state.sandbox_by_id(id).await?;
@@ -53,7 +53,7 @@ impl MicrosandboxProvider {
         let client = sandbox.client_arc();
         if !client.supports(MessageType::TcpConnect) {
             return Err(Error::Backend(
-                "Sandbox runtime does not support agent-relay TCP forwarding; restart the Sandbox".into(),
+                "Sandbox runtime does not support agent-relay TCP forwarding; restart the sandbox".into(),
             ));
         }
         Ok(GuestTcpDialer {
@@ -104,7 +104,7 @@ impl GuestTcpStream {
                 )))
             }
             other => Err(Error::Backend(format!(
-                "unexpected Sandbox agent reply {:?} to guest TCP connect",
+                "unexpected sandbox agent reply {:?} to guest TCP connect",
                 other.as_str()
             ))),
         }
@@ -216,7 +216,7 @@ impl GuestTcpStream {
                     MessageType::TcpClosed => return Ok::<(), Error>(()),
                     other => {
                         return Err(Error::Backend(format!(
-                            "unexpected Sandbox agent message {:?} on a guest TCP stream",
+                            "unexpected sandbox agent message {:?} on a guest TCP stream",
                             other.as_str()
                         )));
                     }

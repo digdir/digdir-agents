@@ -147,7 +147,7 @@ const EXPANDED_AGENT_ID: &str = "33333333-3333-4333-8333-333333333333";
 const PREVIEW_SECRET: &[u8] = b"\0preview-one-secret\xff";
 
 fn preview_desired(name: &str) -> String {
-    let mut desired = serde_json::to_value(support::agent(name)).expect("serialize fixture Agent");
+    let mut desired = serde_json::to_value(support::agent(name)).expect("serialize fixture agent");
     let spec = desired["spec"].as_object_mut().expect("fixture spec");
     let mut instructions = spec.remove("instructions").expect("fixture instructions");
     let instruction = instructions.as_array_mut().expect("current instructions").remove(0);
@@ -157,7 +157,7 @@ fn preview_desired(name: &str) -> String {
 }
 
 fn preview_desired_with_null_instructions(name: &str) -> String {
-    let mut desired = serde_json::to_value(support::agent(name)).expect("serialize fixture Agent");
+    let mut desired = serde_json::to_value(support::agent(name)).expect("serialize fixture agent");
     let spec = desired["spec"].as_object_mut().expect("fixture spec");
     spec.insert("instructions".into(), serde_json::Value::Null);
     spec.remove("skills");
@@ -181,7 +181,7 @@ fn create_preview_1_database(path: &Path) {
                 preview_desired_with_null_instructions("deleted")
             ],
         )
-        .expect("preview Agents");
+        .expect("preview agents");
     for (index, state) in (0_i64..).zip(["starting", "running", "idle", "failed"]) {
         let id = format!("00000000-0000-4000-8000-{index:012}");
         let lifecycle = serde_json::json!({
@@ -209,7 +209,7 @@ fn create_preview_1_database(path: &Path) {
                     index + 1,
                 ],
             )
-            .expect("preview Session");
+            .expect("preview session");
     }
     connection
         .execute(
@@ -276,7 +276,7 @@ fn a_status_write_to_an_agent_being_deleted_conflicts() {
             .await;
         assert!(
             matches!(written, Err(Error::Conflict)),
-            "a pass that read the Agent before its delete records nothing: {written:?}"
+            "a pass that read the agent before its delete records nothing: {written:?}"
         );
     });
 }
@@ -353,7 +353,7 @@ fn sessions_are_idempotent_and_survive_database_reopen() {
     let first = persistence::Database::open(&path).expect("open first database owner");
     LocalRuntime::new().expect("local runtime").block_on(async {
         let ready = ready_record("worker", test_agent_id());
-        first.put(ready, 0).await.expect("ready Agent");
+        first.put(ready, 0).await.expect("ready agent");
         let name = SessionName::new("s1").expect("session name");
         let created = first
             .ensure_session(
@@ -416,11 +416,11 @@ fn sessions_are_idempotent_and_survive_database_reopen() {
         let not_running = first
             .session_attach_target(created.id)
             .await
-            .expect_err("a Session that is not running cannot be attached")
+            .expect_err("a session that is not running cannot be attached")
             .to_string();
         assert!(
             not_running.contains("Session \"s1\"") && not_running.contains("harness exited; relaunching"),
-            "the error identifies the Session and its lifecycle failure: {not_running}"
+            "the error identifies the session and its lifecycle failure: {not_running}"
         );
         first
             .update_session_lifecycle(created.id, Lifecycle::running(), 0)
@@ -460,7 +460,7 @@ fn sessions_are_idempotent_and_survive_database_reopen() {
             second
                 .get_agent_session("worker", &SessionName::new("s1").expect("Session name"))
                 .await
-                .expect("named Session"),
+                .expect("named session"),
             sessions[1]
         );
     });
@@ -474,7 +474,7 @@ fn concurrent_creation_only_conflicts_on_explicit_selections() {
         store
             .put(ready_record("worker", test_agent_id()), 0)
             .await
-            .expect("ready Agent");
+            .expect("ready agent");
         let name = SessionName::new("raced").expect("session name");
         let selection = |model: Option<&str>, effort: Option<&str>| agent::ModelSelection {
             model: model.map(|model| agent::Model::new(model).expect("model")),
@@ -499,7 +499,7 @@ fn concurrent_creation_only_conflicts_on_explicit_selections() {
                 NewSession::resolved(agent::Harness::ClaudeCode, agent::ModelSelection::default(), &defaults),
             )
             .await
-            .expect("omitted selections take the Session as recorded");
+            .expect("omitted selections take the session as recorded");
         assert_eq!(omitted.id, first.id);
         assert_eq!(omitted.model_selection, first.model_selection);
 
@@ -510,7 +510,7 @@ fn concurrent_creation_only_conflicts_on_explicit_selections() {
                 NewSession::resolved(agent::Harness::ClaudeCode, selection(Some("opus"), None), &defaults),
             )
             .await
-            .expect("the same explicit choice finds the Session");
+            .expect("the same explicit choice finds the session");
         assert_eq!(same.id, first.id);
 
         let conflict = store
@@ -523,7 +523,7 @@ fn concurrent_creation_only_conflicts_on_explicit_selections() {
             .expect_err("a loser that explicitly chose differently is told");
         assert_eq!(
             conflict.to_string(),
-            "invalid Agent: Session \"raced\" already uses model \"opus\", not \"sonnet\""
+            "invalid agent: Session \"raced\" already uses model \"opus\", not \"sonnet\""
         );
         let unselected = store
             .ensure_session(
@@ -551,10 +551,10 @@ fn finalized_agents_and_their_sessions_remain_as_tombstones_when_a_name_is_reuse
     let directory = TempDir::new().expect("temporary directory");
     let path = directory.path().join("control-plane.db");
     let store = persistence::Database::open(&path).expect("open database owner");
-    let old_id = "f9fc2dac-ae2d-4534-a9c1-dd13dd9b5160".parse().expect("old Agent ID");
-    let new_id = "f50fbec8-03a9-43ea-b65d-c15a86e9eb65".parse().expect("new Agent ID");
+    let old_id = "f9fc2dac-ae2d-4534-a9c1-dd13dd9b5160".parse().expect("old agent ID");
+    let new_id = "f50fbec8-03a9-43ea-b65d-c15a86e9eb65".parse().expect("new agent ID");
     LocalRuntime::new().expect("local runtime").block_on(async {
-        store.put(ready_record("worker", old_id), 0).await.expect("old Agent");
+        store.put(ready_record("worker", old_id), 0).await.expect("old agent");
         let old_session = SessionName::new("old-session").expect("session name");
         store
             .ensure_session(
@@ -571,8 +571,8 @@ fn finalized_agents_and_their_sessions_remain_as_tombstones_when_a_name_is_reuse
         store
             .put(ready_record("worker", new_id), 0)
             .await
-            .expect("new Agent incarnation");
-        let sessions = store.list_agent_sessions("worker").await.expect("new Agent sessions");
+            .expect("new agent incarnation");
+        let sessions = store.list_agent_sessions("worker").await.expect("new agent sessions");
         assert_eq!(sessions, []);
     });
     drop(store);
@@ -601,13 +601,13 @@ fn released_preview_1_database_migrates_without_losing_state() {
     let database = persistence::Database::open(&path).expect("migrate preview 1 database");
     LocalRuntime::new().expect("local runtime").block_on(async {
         let agent = database
-            .get(PREVIEW_AGENT_ID.parse().expect("preview Agent ID"))
+            .get(PREVIEW_AGENT_ID.parse().expect("preview agent ID"))
             .await
-            .expect("migrated Agent");
+            .expect("migrated agent");
         assert_eq!(agent.source_directory, Path::new("/preview/source"));
         assert_eq!(agent.agent.spec.instructions.len(), 1);
         assert_eq!(agent.agent.spec.skills, []);
-        let sessions = database.list_agent_sessions("worker").await.expect("migrated Sessions");
+        let sessions = database.list_agent_sessions("worker").await.expect("migrated sessions");
         assert_eq!(sessions.len(), 4);
         assert_eq!(
             sessions[0].status.lifecycle.state,
@@ -643,7 +643,7 @@ fn released_preview_1_database_migrates_without_losing_state() {
                 [PREVIEW_DELETED_AGENT_ID],
                 |row| row.get::<_, String>(0),
             )
-            .expect("deleted Agent source"),
+            .expect("deleted agent source"),
         serde_json::to_string(Path::new("/preview/deleted")).expect("source")
     );
     let deleted: agent::Agent = serde_json::from_str(
@@ -653,9 +653,9 @@ fn released_preview_1_database_migrates_without_losing_state() {
                 [PREVIEW_DELETED_AGENT_ID],
                 |row| row.get::<_, String>(0),
             )
-            .expect("deleted Agent desired state"),
+            .expect("deleted agent desired state"),
     )
-    .expect("migrated deleted Agent");
+    .expect("migrated deleted agent");
     assert_eq!(deleted.spec.instructions, []);
     assert_eq!(
         connection
@@ -685,7 +685,7 @@ fn released_preview_1_database_migrates_without_losing_state() {
                 [],
                 |row| row.get::<_, u32>(0),
             )
-            .expect("migrated Session defaults"),
+            .expect("migrated session defaults"),
         4
     );
     drop(connection);
@@ -720,20 +720,20 @@ fn preview_1_home_opened_by_the_expanded_version_1_build_migrates() {
                 expanded_desired,
             ],
         )
-        .expect("expanded Agent");
+        .expect("expanded agent");
     drop(connection);
 
     let database = persistence::Database::open(&path).expect("migrate intermediate database");
     LocalRuntime::new().expect("local runtime").block_on(async {
         let agent = database
-            .get(PREVIEW_AGENT_ID.parse().expect("preview Agent ID"))
+            .get(PREVIEW_AGENT_ID.parse().expect("preview agent ID"))
             .await
-            .expect("preserved Agent");
+            .expect("preserved agent");
         assert_eq!(agent.agent.spec.instructions.len(), 1);
         let expanded = database
-            .get(EXPANDED_AGENT_ID.parse().expect("expanded Agent ID"))
+            .get(EXPANDED_AGENT_ID.parse().expect("expanded agent ID"))
             .await
-            .expect("preserved expanded Agent");
+            .expect("preserved expanded agent");
         assert_eq!(expanded.agent.spec.instructions.len(), 1);
     });
     drop(database);
@@ -780,7 +780,7 @@ fn version_2_home_records_the_model_existing_claude_code_sessions_launched_with(
                     1_700_000_000_i64,
                 ],
             )
-            .expect("version 2 Session");
+            .expect("version 2 session");
     }
     drop(connection);
 
@@ -822,16 +822,16 @@ fn expanded_version_1_schema_is_adopted_without_losing_state() {
                 desired,
             ],
         )
-        .expect("expanded Agent");
+        .expect("expanded agent");
     drop(connection);
     let before = schema_snapshot(&path).1;
 
     let database = persistence::Database::open(&path).expect("adopt expanded version 1 database");
     LocalRuntime::new().expect("local runtime").block_on(async {
         database
-            .get(EXPANDED_AGENT_ID.parse().expect("expanded Agent ID"))
+            .get(EXPANDED_AGENT_ID.parse().expect("expanded agent ID"))
             .await
-            .expect("preserved Agent");
+            .expect("preserved agent");
     });
     drop(database);
 
@@ -856,7 +856,7 @@ fn expanded_version_1_schema_is_adopted_without_losing_state() {
     assert!(!before_sessions.contains("model TEXT"));
     assert!(
         after_sessions.contains("model TEXT") && after_sessions.contains("effort TEXT"),
-        "only the Session selection columns are added: {after_sessions}"
+        "only the session selection columns are added: {after_sessions}"
     );
 }
 
@@ -912,7 +912,7 @@ fn failed_preview_1_row_migration_rolls_back_schema_and_rows() {
             "UPDATE agents SET desired_json = 'not-json' WHERE id = ?1",
             [PREVIEW_DELETED_AGENT_ID],
         )
-        .expect("corrupt later Agent row");
+        .expect("corrupt later agent row");
     drop(connection);
     let before = schema_snapshot(&path);
     let valid_desired = connection_value(&path, PREVIEW_AGENT_ID, "desired_json");
@@ -932,16 +932,16 @@ fn failed_preview_1_row_migration_rolls_back_schema_and_rows() {
     );
 }
 
-/// Preview Sessions never chose a model, but every Claude Code Session launched on
+/// Preview sessions never chose a model, but every Claude Code session launched on
 /// the `fable` alias the adapter hardcoded; the migration records that so they stay
-/// on the same model, while Codex Sessions keep their harness default.
+/// on the same model, while Codex sessions keep their harness default.
 fn assert_migrated_session_selections(connection: &rusqlite::Connection, claude_code: u32, codex: u32) {
     let count = |filter: &str| {
         connection
             .query_row(&format!("SELECT COUNT(*) FROM sessions WHERE {filter}"), [], |row| {
                 row.get::<_, u32>(0)
             })
-            .expect("migrated Sessions")
+            .expect("migrated sessions")
     };
     assert_eq!(
         count("harness = 'claudeCode' AND model = 'fable' AND effort IS NULL"),
@@ -1073,13 +1073,13 @@ fn desired_state_cannot_change_after_deletion_starts() {
         let error = store
             .put(stale, 1)
             .await
-            .expect_err("deleting Agent must reject desired-state updates");
+            .expect_err("deleting agent must reject desired-state updates");
         assert!(matches!(error, Error::Conflict));
         assert!(
             store
                 .get_by_name("worker")
                 .await
-                .expect("deleting Agent")
+                .expect("deleting agent")
                 .agent
                 .metadata
                 .deletion_timestamp
@@ -1382,7 +1382,7 @@ fn a_deleted_session_is_marked_before_it_is_removed_and_frees_its_name() {
         let created = store
             .ensure_session("worker", &name, NewSession::for_harness(agent::Harness::ClaudeCode))
             .await
-            .expect("create Session");
+            .expect("create session");
 
         let marked = store
             .mark_session_deleting("worker", &name)
@@ -1400,13 +1400,13 @@ fn a_deleted_session_is_marked_before_it_is_removed_and_frees_its_name() {
             "the first request owns the deletion timestamp"
         );
 
-        // Reconciliation still sees the Session it has to release, so a daemon
+        // Reconciliation still sees the session it has to release, so a daemon
         // restart between the request and the release cannot strand a harness.
         assert!(
             store
                 .get_session(created.id)
                 .await
-                .expect("marked Session")
+                .expect("marked session")
                 .is_deleting()
         );
         assert!(
@@ -1452,7 +1452,7 @@ fn a_deleted_session_is_marked_before_it_is_removed_and_frees_its_name() {
             .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get::<_, i64>(0))
             .expect("session count"),
         1,
-        "the released Session leaves no row behind"
+        "the released session leaves no row behind"
     );
 }
 
@@ -1475,7 +1475,7 @@ fn ssh_host_keys_are_stored_per_incarnation_and_removed_with_it() {
             store.load_host_key(id).await.expect("load").expect("stored").as_slice(),
             b"host-key"
         );
-        // Manifest secrets of the same Agent live under another prefix.
+        // Manifest secrets of the same agent live under another prefix.
         let agent_secret = store
             .set(&format!("agent/{id}/github-token"), b"github-secret")
             .await
@@ -1509,7 +1509,7 @@ fn archiving_a_session_is_recorded_once_and_survives_reopening() {
         let created = store
             .ensure_session("worker", &name, NewSession::for_harness(agent::Harness::ClaudeCode))
             .await
-            .expect("create Session");
+            .expect("create session");
         assert!(!created.is_archived());
 
         let archived = store
@@ -1532,7 +1532,7 @@ fn archiving_a_session_is_recorded_once_and_survives_reopening() {
 
     let store = persistence::Database::open(&path).expect("reopen database owner");
     LocalRuntime::new().expect("local runtime").block_on(async {
-        let session = store.get_session(id).await.expect("archived Session");
+        let session = store.get_session(id).await.expect("archived session");
         assert_eq!(session.archived_at, Some(archived_at));
         let unarchived = store
             .set_session_archived("worker", &name, false)

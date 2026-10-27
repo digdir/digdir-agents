@@ -81,7 +81,7 @@ impl MicrosandboxNetworkBackend {
         self
     }
 
-    /// Replaces the secret bindings applied when this named Sandbox's Network starts.
+    /// Replaces the secret bindings applied when this named sandbox's network starts.
     ///
     /// Returns whether the binding definition changed. Existing connections
     /// keep their handshake configuration until the caller restarts the Network.
@@ -99,19 +99,19 @@ impl MicrosandboxNetworkBackend {
         Ok(changed)
     }
 
-    /// Removes the configured bindings for a named Sandbox.
+    /// Removes the configured bindings for a named sandbox.
     pub fn remove_secret_bindings(&self, sandbox_name: &SandboxName) {
         self.secret_bindings.borrow_mut().remove(sandbox_name);
     }
 
-    /// Revokes all currently allowed flows for one running Sandbox.
+    /// Revokes all currently allowed flows for one running sandbox.
     ///
     /// New operations continue to use the current Policy Engine state.
     ///
     /// # Errors
     ///
     /// Returns [`Error::NotFound`] when this process does not drive the
-    /// Sandbox's Network endpoint.
+    /// sandbox's network endpoint.
     pub async fn revoke_all(&self, sandbox_id: &SandboxId) -> Result<(), Error> {
         let commands = self
             .drivers
@@ -258,7 +258,7 @@ impl SecretBinding {
         Ok(binding)
     }
 
-    /// Returns the non-secret environment assignment exposed inside the Sandbox.
+    /// Returns the non-secret environment assignment exposed inside the sandbox.
     #[must_use]
     pub fn guest_environment(&self) -> (&str, &str) {
         (&self.environment, &self.placeholder)
@@ -403,10 +403,10 @@ struct DriverState {
 
 /// Per-driver bound on denial logging.
 ///
-/// A Sandbox can be denied once per request it makes, so unbounded logging would
+/// A sandbox can be denied once per request it makes, so unbounded logging would
 /// let it grow the host log at will. Each distinct `(action, hostname)` is logged
 /// on its first denial and then once per [`DenialLog::REPEAT_EVERY`] repeats. A
-/// Sandbox rotating hostnames would still log one line per new key, so the total
+/// sandbox rotating hostnames would still log one line per new key, so the total
 /// number of lines per driver is capped at [`DenialLog::MAX_LINES`]; beyond it only
 /// every [`DenialLog::SUMMARY_EVERY`]th denial is logged, with the running total.
 #[derive(Default)]
@@ -885,11 +885,11 @@ mod tests {
     fn sandbox_id() -> sandbox::SandboxId {
         "d727d8a4-1345-4b31-b99d-59e04c9e476c"
             .parse()
-            .expect("valid test Sandbox ID")
+            .expect("valid test sandbox ID")
     }
 
     fn sandbox_name() -> SandboxName {
-        SandboxName::new("worker").expect("valid test Sandbox name")
+        SandboxName::new("worker").expect("valid test sandbox name")
     }
 
     fn operation() -> NetworkOperation {
@@ -966,8 +966,8 @@ mod tests {
     #[test]
     fn secret_bindings_are_scoped_by_sandbox_name() {
         let backend = MicrosandboxNetworkBackend::new(Rc::new(StaticPolicy::allow_all()));
-        let first = SandboxName::new("first").expect("valid Sandbox name");
-        let second = SandboxName::new("second").expect("valid Sandbox name");
+        let first = SandboxName::new("first").expect("valid sandbox name");
+        let second = SandboxName::new("second").expect("valid sandbox name");
         backend
             .set_secret_bindings(
                 first.clone(),
@@ -980,7 +980,7 @@ mod tests {
                     .expect("valid first binding"),
                 ],
             )
-            .expect("configure first Sandbox");
+            .expect("configure first sandbox");
         backend
             .set_secret_bindings(
                 second.clone(),
@@ -993,7 +993,7 @@ mod tests {
                     .expect("valid second binding"),
                 ],
             )
-            .expect("configure second Sandbox");
+            .expect("configure second sandbox");
 
         let bindings = backend.secret_bindings.borrow();
         assert_eq!(bindings[&first][0].environment, "FIRST_TOKEN");

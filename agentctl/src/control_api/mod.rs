@@ -1,4 +1,4 @@
-//! Versioned Agent Control API with JSON-RPC 2.0/JSONL and replaceable stream transports.
+//! Versioned Control API with JSON-RPC 2.0/JSONL and replaceable stream transports.
 
 mod client;
 mod protocol;

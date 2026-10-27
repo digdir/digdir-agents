@@ -1,6 +1,6 @@
 # Agent image contract
 
-What `agentd` expects of the image an Agent runs. Build on the
+What `agentd` expects of the image an agent runs. Build on the
 [agentctl base images](../../images/agentctl-base/README.md) and end the build with `agent-image-check`, which checks
 the contract and explains each check in its
 [source](../../images/agentctl-base/headless/usr/local/bin/agent-image-check).
@@ -16,4 +16,4 @@ the contract and explains each check in its
   The base images ship it.
 
 `agentd` writes the harnesses' configuration, instructions and skills, and its own setup, each time it reconciles the
-Agent. It leaves other files alone, so an image may ship skills of its own.
+agent. It leaves other files alone, so an image may ship skills of its own.

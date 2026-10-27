@@ -1,4 +1,4 @@
-//! Streaming command execution inside a running Sandbox.
+//! Streaming command execution inside a running sandbox.
 
 use std::{collections::BTreeMap, future::poll_fn, pin::Pin};
 
@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::{Error, SandboxPath};
 
-/// Identifies a live Execution within a Sandbox.
+/// Identifies a live Execution within a sandbox.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct ExecutionId(Uuid);
@@ -48,7 +48,7 @@ pub enum Program {
     ImageEntrypoint,
     /// Run one executable with explicit arguments.
     Command {
-        /// Executable path inside the Sandbox.
+        /// Executable path inside the sandbox.
         executable: SandboxPath,
         /// Arguments passed directly to the executable.
         args: Vec<String>,
@@ -61,7 +61,7 @@ pub enum Program {
 pub struct ExecutionSpec {
     /// Program to run.
     program: Program,
-    /// Working directory inside the Sandbox, or the Image default when absent.
+    /// Working directory inside the sandbox, or the Image default when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     working_directory: Option<SandboxPath>,
     /// Environment additions for the process.
@@ -95,7 +95,7 @@ impl ExecutionSpec {
         })
     }
 
-    /// Sets the working directory inside the Sandbox.
+    /// Sets the working directory inside the sandbox.
     #[must_use]
     pub fn with_working_directory(mut self, path: SandboxPath) -> Self {
         self.working_directory = Some(path);
@@ -128,7 +128,7 @@ impl ExecutionSpec {
     }
 }
 
-/// Starts an Execution in a running Sandbox.
+/// Starts an Execution in a running sandbox.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StartExecutionRequest {
     /// Backend-neutral identity assigned before dispatch.
@@ -166,7 +166,7 @@ impl StartExecutionRequest {
     }
 }
 
-/// Process exit status reported by a Sandbox Backend.
+/// Process exit status reported by a sandbox backend.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ExitStatus {

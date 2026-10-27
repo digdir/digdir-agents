@@ -1,4 +1,4 @@
-//! Single-threaded in-memory Agent Control Plane components.
+//! Single-threaded in-memory agent control plane components.
 
 use std::{cell::RefCell, collections::BTreeMap};
 
@@ -9,7 +9,7 @@ use crate::{AgentId, Error, Status, resources::Changes};
 
 use super::{AgentRecord, AgentStore};
 
-/// In-memory Agent store with generation-based compare-and-swap writes.
+/// In-memory agent store with generation-based compare-and-swap writes.
 ///
 /// Like the database, every successful write advances its change history.
 #[derive(Default)]

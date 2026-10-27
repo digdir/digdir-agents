@@ -34,7 +34,7 @@ use open::{DesktopViewer, OpenTarget, SshSetup};
 use terminal::Tui;
 use view::{HitMap, HitTarget, WheelTarget};
 
-/// Turns of the selected Session shown beside the tree.
+/// Turns of the selected session shown beside the tree.
 const TRANSCRIPT_TURNS: usize = 3;
 /// Pause before watching again after the daemon could not be reached.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(1);
@@ -48,7 +48,7 @@ enum Input {
     Event(Option<std::io::Result<Event>>),
     /// A watch reply, or why the daemon could not be watched.
     Resources(Result<Resources, String>),
-    /// The lines of an Agent's followed provisioning.
+    /// The lines of an agent's followed provisioning.
     Provisioning {
         agent: String,
         lines: Vec<String>,
@@ -59,15 +59,15 @@ enum Input {
         turns: Result<Vec<Turn>, String>,
     },
     PromptSent(PromptForm, Result<(), String>),
-    /// A background Session change failed; its success shows through the watch.
+    /// A background session change failed; its success shows through the watch.
     SessionChangeFailed(String),
-    /// A Session was archived or unarchived, as recorded.
+    /// A session was archived or unarchived, as recorded.
     ArchiveChanged(Session),
     ForwardCreated(CreateOutcome),
     ManifestsDiscovered(Vec<ManifestCandidate>),
     /// An action a finished step leads to, run in turn with the input already waiting.
     Then(Action),
-    /// OpenSSH resolved an Agent's alias.
+    /// OpenSSH resolved an agent's alias.
     SshChecked {
         agent: String,
         setup: SshSetup,
@@ -377,7 +377,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                 target: target @ OpenTarget::Desktop(viewer),
             } => {
                 if app.start_opening(&agent, target, Instant::now()) {
-                    // An Agent's desktop already forwarded is opened again rather than twice.
+                    // An agent's desktop already forwarded is opened again rather than twice.
                     let outside = forwards.desktop(&agent, viewer).map_or_else(
                         || Outside::Desktop {
                             agent: agent.clone(),
@@ -402,8 +402,8 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
     }
 }
 
-/// Whether `forward` dials the Sandbox the Agent named `agent` has now. An
-/// Agent whose Sandbox is not materialized yet keeps what it has.
+/// Whether `forward` dials the sandbox the agent named `agent` has now. An
+/// agent whose sandbox is not materialized yet keeps what it has.
 fn dials_current_sandbox(agents: &[Agent], agent: &str, forward: &PortForward) -> bool {
     agents.iter().any(|listed| {
         listed.metadata.name == agent
@@ -424,8 +424,8 @@ struct ActiveForwards {
 }
 
 impl ActiveForwards {
-    /// Holds `forward` while its Agent still has the Sandbox it dials. A
-    /// forward that finished starting after its Agent was deleted or re-created
+    /// Holds `forward` while its agent still has the sandbox it dials. A
+    /// forward that finished starting after its agent was deleted or re-created
     /// is stopped at once, and `false` says so.
     fn push(&mut self, agent: String, forward: PortForward, agents: &[Agent]) -> bool {
         if !dials_current_sandbox(agents, &agent, &forward) {
@@ -441,15 +441,15 @@ impl ActiveForwards {
         self.active.retain(|(entry, _, _)| *entry != id);
     }
 
-    /// Stops forwards whose Sandbox their Agent no longer has: the Agent was
-    /// deleted, or re-created under the same name with a Sandbox of its own.
-    /// An Agent whose Sandbox is not materialized yet keeps its forwards.
+    /// Stops forwards whose sandbox their agent no longer has: the agent was
+    /// deleted, or re-created under the same name with a sandbox of its own.
+    /// An agent whose sandbox is not materialized yet keeps its forwards.
     fn prune(&mut self, agents: &[Agent]) {
         self.active
             .retain(|(_, name, forward)| dials_current_sandbox(agents, name, forward));
     }
 
-    /// The address that opens the Agent's forward to `viewer`, while it still serves.
+    /// The address that opens the agent's forward to `viewer`, while it still serves.
     fn desktop(&self, agent: &str, viewer: DesktopViewer) -> Option<String> {
         self.active
             .iter()
@@ -475,7 +475,7 @@ impl ActiveForwards {
     }
 }
 
-/// Follows every Agent and Session, sending each state the daemon reports.
+/// Follows every agent and session, sending each state the daemon reports.
 ///
 /// Each reply is the complete current state, so a reply lost to a reconnect
 /// needs no recovery: the next one supersedes it.
@@ -531,7 +531,7 @@ impl Follow {
     }
 }
 
-/// Follows one Agent's provisioning through `agents.v1.progress`, sending the
+/// Follows one agent's provisioning through `agents.v1.progress`, sending the
 /// lines to show after every reply.
 fn spawn_follow(socket_path: PathBuf, agent: String, inputs: Inputs) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_local(async move {
@@ -572,7 +572,7 @@ enum Outside {
         editor: crate::launch::Editor,
         launcher: Option<PathBuf>,
     },
-    /// The Agent's desktop, through a new forward.
+    /// The agent's desktop, through a new forward.
     Desktop { agent: String, viewer: DesktopViewer },
     /// The address of a forward that is already open.
     Forward(String),
@@ -581,13 +581,13 @@ enum Outside {
 /// What a background open leaves for the event loop.
 struct OpenOutcome {
     notice: String,
-    /// A forward the open started, for the TUI to hold, with its Agent.
+    /// A forward the open started, for the TUI to hold, with its agent.
     forward: Option<(String, PortForward)>,
     /// An address to copy instead of opening, since this terminal cannot show windows.
     copy: Option<String>,
 }
 
-/// Opens `outside`, first waiting for its Agent to be Ready when it has one,
+/// Opens `outside`, first waiting for its agent to be Ready when it has one,
 /// so an editor's first connection does not wait behind provisioning and time
 /// out, and ends the wait for `waiting`. With `copy`, since nothing can open
 /// here, an address is copied instead.
@@ -705,7 +705,7 @@ fn open_finished(
     app.opened(waiting, result, Instant::now());
 }
 
-/// Forwards the Agent's desktop to a free local port once it is Ready. The
+/// Forwards the agent's desktop to a free local port once it is Ready. The
 /// browser viewer's port is known only after a pass has seen what the image
 /// declares, so it is read after converging.
 async fn desktop_forward(
@@ -735,7 +735,7 @@ async fn desktop_forward(
         .map_err(|error| error.to_string())
 }
 
-/// Loads the most recent turns of the selected Session.
+/// Loads the most recent turns of the selected session.
 fn spawn_transcript(socket_path: PathBuf, inputs: Inputs, agent: String, session: SessionName) {
     tokio::task::spawn_local(async move {
         let turns = Client::for_path(socket_path)
@@ -746,7 +746,7 @@ fn spawn_transcript(socket_path: PathBuf, inputs: Inputs, agent: String, session
     });
 }
 
-/// Sends a prompt to a running Session without waiting for its turn to start.
+/// Sends a prompt to a running session without waiting for its turn to start.
 fn spawn_prompt(socket_path: PathBuf, inputs: Inputs, form: PromptForm) {
     tokio::task::spawn_local(async move {
         let result = Client::for_path(socket_path)
@@ -757,7 +757,7 @@ fn spawn_prompt(socket_path: PathBuf, inputs: Inputs, form: PromptForm) {
     });
 }
 
-/// Deletes a Session off the event loop: the call returns only once its harness
+/// Deletes a session off the event loop: the call returns only once its harness
 /// is stopped, and the watch removes the row.
 fn spawn_session_delete(socket_path: PathBuf, inputs: Inputs, agent: String, session: SessionName) {
     tokio::task::spawn_local(async move {
@@ -767,7 +767,7 @@ fn spawn_session_delete(socket_path: PathBuf, inputs: Inputs, agent: String, ses
     });
 }
 
-/// Archives or unarchives a Session off the event loop, which stopping its harness would block.
+/// Archives or unarchives a session off the event loop, which stopping its harness would block.
 fn spawn_session_archive(socket_path: PathBuf, inputs: Inputs, agent: String, session: SessionName, archived: bool) {
     tokio::task::spawn_local(async move {
         let _ = inputs.send(
@@ -807,7 +807,7 @@ fn spawn_discovery(inputs: Inputs, agents: Vec<Agent>) {
     });
 }
 
-/// Assembles create-agent candidates from the working tree and recorded Agent manifests.
+/// Assembles create-agent candidates from the working tree and recorded agent manifests.
 ///
 /// Inside a git repository every manifest below the repository root is offered,
 /// skipping hidden and ignored directories; outside one only `agent.yaml` and
@@ -859,11 +859,11 @@ fn repository_root(directory: &Path) -> Option<&Path> {
     directory.ancestors().find(|ancestor| ancestor.join(".git").exists())
 }
 
-/// Lists Agents and their variant manifests for `directory`.
+/// Lists agents and their variant manifests for `directory`.
 ///
 /// Inside a git repository the whole repository is walked, honoring ignore files;
 /// outside one only `directory/agent.yaml` and `directory/agents/*/agent.yaml` are
-/// checked, so running from a home directory never walks it. Each Agent directory
+/// checked, so running from a home directory never walks it. Each agent directory
 /// is then enumerated directly so checkout-local, ignored `agent.<variant>.yaml`
 /// siblings remain discoverable.
 fn working_tree_manifests(directory: &Path) -> Vec<PathBuf> {
@@ -1057,7 +1057,7 @@ async fn exec(home: &ControlPlaneHome, client: &Client, agent: &str) -> Result<(
     }
 }
 
-/// Runs OpenSSH against the Agent's generated alias until it exits.
+/// Runs OpenSSH against the agent's generated alias until it exits.
 ///
 /// Unlike `agentctl ssh`, this waits for the client rather than replacing the
 /// process, which is the TUI's.
@@ -1527,7 +1527,7 @@ mod tests {
         forwards.prune(std::slice::from_ref(&desk));
         assert!(
             forwards.desktop("desk", DesktopViewer::Browser).is_some(),
-            "same Sandbox"
+            "same sandbox"
         );
         assert!(
             forwards.desktop("desk", DesktopViewer::VncClient).is_none(),
@@ -1539,7 +1539,7 @@ mod tests {
         assert_eq!(
             forwards.entries().len(),
             1,
-            "no Sandbox reported yet, so nothing says it is gone"
+            "no sandbox reported yet, so nothing says it is gone"
         );
 
         desk.status.sandbox = Some(second.clone());
@@ -1551,7 +1551,7 @@ mod tests {
 
         assert!(forwards.push("desk".into(), forward(&second, 3000).await, std::slice::from_ref(&desk)));
         forwards.prune(&[]);
-        assert!(forwards.entries().is_empty(), "the Agent is gone");
+        assert!(forwards.entries().is_empty(), "the agent is gone");
     }
 
     #[tokio::test(flavor = "local")]

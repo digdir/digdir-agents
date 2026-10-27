@@ -1,4 +1,4 @@
-//! Claude Code status-line configuration for managed Agent Sessions.
+//! Claude Code status-line configuration for managed agent sessions.
 
 pub(super) const fn script() -> &'static [u8] {
     include_bytes!("status_line.mjs")

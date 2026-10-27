@@ -1,4 +1,4 @@
-//! Running setup commands in the Sandbox.
+//! Running setup commands in the sandbox.
 
 use ::sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
 
@@ -6,7 +6,7 @@ use crate::Error;
 
 const SETUP_STDERR_LINES: usize = 3;
 
-/// Runs one setup command in the Sandbox and fails with what it ran and what it printed.
+/// Runs one setup command in the sandbox and fails with what it ran and what it printed.
 ///
 /// # Errors
 ///

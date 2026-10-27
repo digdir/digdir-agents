@@ -8,7 +8,7 @@ use crate::{AgentId, ReconcileFailure};
 
 use super::ProvisioningState;
 
-/// One reconciliation pass of an Agent, folded into the Agent's provisioning.
+/// One reconciliation pass of an agent, folded into the agent's provisioning.
 ///
 /// The pass ends as succeeded or failed. A pass dropped without either, when
 /// reconciliation returns an error first, ends as failed.
@@ -19,7 +19,7 @@ pub struct SandboxObserver {
 }
 
 impl SandboxObserver {
-    /// Starts recording a new pass for an Agent.
+    /// Starts recording a new pass for an agent.
     #[must_use]
     pub fn new(id: AgentId, state: ProvisioningState) -> Self {
         state.begin(id);
@@ -30,7 +30,7 @@ impl SandboxObserver {
         }
     }
 
-    /// Starts recording a resync of a Ready Agent, which replaces the Agent's
+    /// Starts recording a resync of a Ready agent, which replaces the agent's
     /// latest pass only if it fails.
     #[must_use]
     pub fn resync(id: AgentId, state: ProvisioningState) -> Self {

@@ -34,11 +34,11 @@ struct Arguments {
     #[arg(long, global = true)]
     name: Option<SandboxName>,
 
-    /// CPU assigned to the development Sandbox.
+    /// CPU assigned to the development sandbox.
     #[arg(long, default_value = "4")]
     cpu: CpuQuantity,
 
-    /// Memory assigned to the development Sandbox.
+    /// Memory assigned to the development sandbox.
     #[arg(long, default_value = "8Gi")]
     memory: ByteQuantity,
 
@@ -63,7 +63,7 @@ enum Harness {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Delete the Sandbox.
+    /// Delete the sandbox.
     Delete,
 }
 
@@ -88,7 +88,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     ));
     match arguments.command {
         Some(Command::Delete) => {
-            progress::wait_for_operation("Delete Sandbox", service.delete(&sandbox_name)).await?;
+            progress::wait_for_operation("Delete sandbox", service.delete(&sandbox_name)).await?;
             return Ok(());
         }
         None => {}
@@ -146,7 +146,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Ok(_) => Err(io::Error::other("unsupported terminal attachment outcome").into()),
         Err(error) => Err(Box::new(error) as Box<dyn Error>),
     };
-    let release_result = progress::wait_for_operation("Stop Sandbox", sandbox.release()).await;
+    let release_result = progress::wait_for_operation("Stop sandbox", sandbox.release()).await;
     let status = combine_run_and_release(run_result, release_result)?;
     if !status.success() {
         std::process::exit(status.code);
@@ -163,7 +163,7 @@ fn combine_run_and_release(
         (Err(run), Ok(())) => Err(run),
         (Ok(_), Err(release)) => Err(release),
         (Err(run), Err(release)) => Err(io::Error::other(format!(
-            "Terminal Execution failed: {run}; stopping the Sandbox also failed: {release}"
+            "Terminal Execution failed: {run}; stopping the sandbox also failed: {release}"
         ))
         .into()),
     }

@@ -5,10 +5,10 @@
 //! other version shares and its root filesystem artifacts. It refuses while a runtime uses the
 //! image. Everything that holds an image is therefore a catalog entry:
 //!
-//! - A Sandbox entry per Sandbox record, added when the record is created and removed when the
-//!   Sandbox is deleted, so an image stays while a Sandbox uses it, with or without a runtime.
+//! - A sandbox entry per sandbox record, added when the record is created and removed when the
+//!   sandbox is deleted, so an image stays while a sandbox uses it, with or without a runtime.
 //! - A cache entry per image version, named by its digest, which resolving or importing the
-//!   image refreshes, and which deleting a Sandbox that used it refreshes too. A removal pass
+//!   image refreshes, and which deleting a sandbox that used it refreshes too. A removal pass
 //!   removes it once it has not been refreshed for the retention period.
 //!
 //! Microsandbox applies each removal atomically, so removing an entry never needs to know what
@@ -40,14 +40,14 @@ use crate::{
 };
 
 /// The shortest retention period. A cache entry must outlive the time between resolving an
-/// image and creating the Sandbox that holds it.
+/// image and creating the sandbox that holds it.
 pub(crate) const MINIMUM_RETENTION: Duration = Duration::from_hours(1);
 
 /// Directory below the Microsandbox cache for this crate's image and build-context archives.
 /// Microsandbox stages its own downloads in the parent directory.
 const SCRATCH_DIRECTORY: &str = "tmp/sandbox-microsandbox";
 
-/// Repository of Sandbox entries, tagged with the Sandbox ID. Nothing pulls it: runtimes are
+/// Repository of sandbox entries, tagged with the sandbox ID. Nothing pulls it: runtimes are
 /// created from the cache only.
 const SANDBOX_REPOSITORY: &str = "sandbox-microsandbox-sandbox";
 
@@ -57,7 +57,7 @@ const CACHE_REPOSITORY: &str = "sandbox-microsandbox-cache";
 /// Repository of the temporary entry that tells whether a runtime records using an image.
 const PROBE_REPOSITORY: &str = "sandbox-microsandbox-probe";
 
-/// Marks a home whose catalog, from before Sandbox entries, has been migrated.
+/// Marks a home whose catalog, from before sandbox entries, has been migrated.
 const MIGRATED_MARKER: &str = "image-catalog-v2";
 
 /// The Microsandbox image cache of one Provider home.
@@ -98,7 +98,7 @@ impl ImageCache {
         Ok((name, fetched))
     }
 
-    /// Adds the entry that keeps a Sandbox's image while the Sandbox exists, and returns the
+    /// Adds the entry that keeps a sandbox's image while the sandbox exists, and returns the
     /// name to create its runtime from, or `None` when the image is not in the cache. Adding it
     /// again changes nothing. Without a retention period nothing removes images, so no entry is
     /// added and any entry naming the image is returned.
@@ -136,7 +136,7 @@ impl ImageCache {
         Ok(Some(name))
     }
 
-    /// Releases a deleted Sandbox's image. Its cache entry is refreshed before the Sandbox's
+    /// Releases a deleted sandbox's image. Its cache entry is refreshed before the sandbox's
     /// entry goes, so the image stays for the retention period after the deletion, and never
     /// loses its last entry here. An entry this leaves behind goes with the next pass.
     pub(crate) async fn release(&self, record: &SandboxRecord) {
@@ -155,19 +155,19 @@ impl ImageCache {
         }
         .await;
         if let Err(error) = taken_over {
-            tracing::warn!(sandbox = %record.id, %error, "failed to keep a deleted Sandbox's image");
+            tracing::warn!(sandbox = %record.id, %error, "failed to keep a deleted sandbox's image");
             return;
         }
         match microsandbox::Image::remove_local(self.client.local(), &name, false).await {
-            // Another Sandbox's runtime still uses the image, or an operation holds the entry.
+            // Another sandbox's runtime still uses the image, or an operation holds the entry.
             Ok(())
             | Err(microsandbox::MicrosandboxError::ImageNotFound(_) | microsandbox::MicrosandboxError::ImageInUse(_)) =>
                 {}
-            Err(failure) => tracing::warn!(entry = name, error = %failure, "failed to release a Sandbox's image"),
+            Err(failure) => tracing::warn!(entry = name, error = %failure, "failed to release a sandbox's image"),
         }
     }
 
-    /// Removes cache entries not used for the retention period, and entries of Sandboxes
+    /// Removes cache entries not used for the retention period, and entries of sandboxes
     /// whose record is gone.
     ///
     /// Removal is best-effort and never fails the caller. A pass is skipped while an image is
@@ -186,8 +186,8 @@ impl ImageCache {
     }
 
     async fn remove_unused_at(&self, now: SystemTime, retention: Duration) -> Result<(), Error> {
-        // A Sandbox's image is kept while its record exists, whether or not the Sandbox holds it
-        // yet, as in a home from before Sandboxes held their images.
+        // A sandbox's image is kept while its record exists, whether or not the sandbox holds it
+        // yet, as in a home from before sandboxes held their images.
         let records = self.state.sandbox_records().await?;
         let sandboxes: HashSet<String> = records.iter().map(|record| entry_tag(&record.id)).collect();
         let used: HashSet<&str> = records
@@ -227,17 +227,17 @@ impl ImageCache {
         Ok(())
     }
 
-    /// Reports whether this home's catalog is from before Sandboxes held their images.
+    /// Reports whether this home's catalog is from before sandboxes held their images.
     pub(crate) async fn migration_pending(&self) -> bool {
         !tokio::fs::try_exists(self.state.marker(MIGRATED_MARKER))
             .await
             .unwrap_or(false)
     }
 
-    /// Reports whether a runtime records that it uses a held Sandbox image, which is what
+    /// Reports whether a runtime records that it uses a held sandbox image, which is what
     /// protects an image from Microsandbox's prune. Microsandbox refuses to remove an entry of an
     /// image a runtime records using, so a temporary entry that can be removed shows that none
-    /// does. The Sandbox's own entry keeps the image meanwhile. Microsandbox also refuses while an
+    /// does. The sandbox's own entry keeps the image meanwhile. Microsandbox also refuses while an
     /// operation holds the entry, which is why this one's ends first; nothing else reads it.
     pub(crate) async fn is_pinned(&self, record: &SandboxRecord) -> Result<bool, Error> {
         let probe = format!("{PROBE_REPOSITORY}:{}", entry_tag(&record.id));
@@ -271,10 +271,10 @@ impl ImageCache {
         }
     }
 
-    /// Completes the migration of a catalog from before Sandboxes held their images. Image
+    /// Completes the migration of a catalog from before sandboxes held their images. Image
     /// versions no entry names, which a moved tag left behind, are reachable only through
     /// Microsandbox's prune, which also removes every entry of an image no runtime records
-    /// using, so it runs only once every Sandbox's image [is pinned](Self::is_pinned), while the
+    /// using, so it runs only once every sandbox's image [is pinned](Self::is_pinned), while the
     /// Provider opens and before anything else runs. The prune skips what an operation holds,
     /// so the migration stays pending until a prune skips nothing.
     pub(crate) async fn finish_migration(&self) -> Result<(), Error> {
@@ -373,7 +373,7 @@ fn entry_tag(id: &SandboxId) -> String {
     id.as_uuid().simple().to_string()
 }
 
-/// Returns the catalog name of a Sandbox's entry.
+/// Returns the catalog name of a sandbox's entry.
 fn sandbox_entry(id: &SandboxId) -> String {
     format!("{SANDBOX_REPOSITORY}:{}", entry_tag(id))
 }
@@ -383,7 +383,7 @@ pub(crate) fn cache_entry(manifest_digest: &str) -> String {
     format!("{CACHE_REPOSITORY}@{manifest_digest}")
 }
 
-/// Returns the Sandbox ID tag of a Sandbox entry, or `None` for any other catalog entry.
+/// Returns the sandbox ID tag of a sandbox entry, or `None` for any other catalog entry.
 fn sandbox_entry_tag(reference: &str) -> Option<&str> {
     let (repository, tag) = reference.rsplit_once(':')?;
     (repository == SANDBOX_REPOSITORY).then_some(tag)
@@ -460,7 +460,7 @@ mod tests {
                 .expect("image should be recorded");
         }
 
-        /// Records a catalog entry the way releases before Sandbox entries did.
+        /// Records a catalog entry the way releases before sandbox entries did.
         async fn record_legacy(&self, name: &str, manifest_digest: &str) {
             microsandbox::Image::persist(self.client.local(), name, metadata(manifest_digest))
                 .await
@@ -564,7 +564,7 @@ mod tests {
             .expect("the image should be cached");
         assert_eq!(images.hold(&record).await.expect("hold again"), Some(entry.clone()));
 
-        // Nothing is removed while the Sandbox uses the image, however long ago it was pulled.
+        // Nothing is removed while the sandbox uses the image, however long ago it was pulled.
         images
             .remove_unused_at(SystemTime::now() + 2 * DAY, DAY)
             .await
@@ -645,7 +645,7 @@ mod tests {
         assert_eq!(home.references().await, [cache_entry(&image)]);
     }
 
-    /// Records a tag the way releases before Sandbox entries did, moved from a previous version
+    /// Records a tag the way releases before sandbox entries did, moved from a previous version
     /// to a current one, which leaves the previous version without an entry.
     async fn record_moved_tag(home: &Home) -> PathBuf {
         let (previous, current) = (digest('a'), digest('b'));
@@ -688,7 +688,7 @@ mod tests {
         assert!(home.state.marker(MIGRATED_MARKER).exists());
     }
 
-    /// Records a Sandbox built from a Dockerfile before this release, whose image only its
+    /// Records a sandbox built from a Dockerfile before this release, whose image only its
     /// import entry names, and which never started.
     async fn record_unstarted_built_sandbox(home: &Home) -> (SandboxRecord, PathBuf) {
         let image = digest('e');
@@ -720,11 +720,11 @@ mod tests {
             .expect("pass");
         assert!(
             image_files.exists(),
-            "the Sandbox keeps its image through the migration and later passes"
+            "the sandbox keeps its image through the migration and later passes"
         );
         assert!(
             previous_files.exists(),
-            "nothing is pruned while a Sandbox's image is unprotected"
+            "nothing is pruned while a sandbox's image is unprotected"
         );
         assert!(!home.state.marker(MIGRATED_MARKER).exists());
 
@@ -899,7 +899,7 @@ mod tests {
         )
     }
 
-    /// Creates a Sandbox without starting it, as when its first start fails.
+    /// Creates a sandbox without starting it, as when its first start fails.
     async fn create_unstarted(provider: &crate::MicrosandboxProvider, id: &str, reference: &str) -> sandbox::Sandbox {
         use sandbox::{backend::SandboxBackend as _, provider::SandboxProvider as _};
 
@@ -972,7 +972,7 @@ mod tests {
         let stopped = service
             .ensure(&ensure_request("stopped", "docker.io/library/alpine:3.21", Layered))
             .await
-            .expect("layered Sandbox should start")
+            .expect("layered sandbox should start")
             .snapshot()
             .clone();
         provider.stop(&stopped.id).await.expect("Sandbox should stop");
@@ -985,7 +985,7 @@ mod tests {
         let deleted = service
             .ensure(&ensure_request("deleted", "docker.io/library/alpine:3.22", Direct))
             .await
-            .expect("direct Sandbox should start")
+            .expect("direct sandbox should start")
             .snapshot()
             .clone();
         service.delete(&deleted.name).await.expect("Sandbox should be deleted");
@@ -999,18 +999,18 @@ mod tests {
         };
         assert!(
             !flat_ref(&deleted.image.manifest_digest).exists(),
-            "the deleted Sandbox's image should be removed once unused for the retention period"
+            "the deleted sandbox's image should be removed once unused for the retention period"
         );
         assert!(flat_ref(&unstarted.image.manifest_digest).exists());
 
         provider
             .start(&stopped.id)
             .await
-            .expect("the stopped Sandbox should keep its image and restart");
+            .expect("the stopped sandbox should keep its image and restart");
         provider
             .start(&unstarted.id)
             .await
-            .expect("the Sandbox without a runtime should keep its image and start");
+            .expect("the sandbox without a runtime should keep its image and start");
         for sandbox in [&stopped, &unstarted] {
             service.delete(&sandbox.name).await.expect("Sandbox should be deleted");
         }
@@ -1019,7 +1019,7 @@ mod tests {
             assert_eq!(
                 cached_files(&cache.join(directory)),
                 Vec::<PathBuf>::new(),
-                "no image should remain in {directory} once no Sandbox needs one"
+                "no image should remain in {directory} once no sandbox needs one"
             );
         }
     }
@@ -1051,7 +1051,7 @@ mod tests {
         let reopened = provider(home.path()).await;
         assert!(
             !previous_files.exists(),
-            "every Sandbox's image is pinned, so the migration prunes"
+            "every sandbox's image is pinned, so the migration prunes"
         );
         assert!(home.state.marker(MIGRATED_MARKER).exists());
         let probe = format!("{PROBE_REPOSITORY}:{}", entry_tag(&sandbox.id));
@@ -1063,7 +1063,7 @@ mod tests {
         reopened
             .start(&sandbox.id)
             .await
-            .expect("the Sandbox should keep its image and restart");
+            .expect("the sandbox should keep its image and restart");
         reopened.delete(&sandbox.id).await.expect("Sandbox should be deleted");
     }
 }

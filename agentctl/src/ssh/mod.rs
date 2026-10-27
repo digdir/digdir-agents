@@ -1,17 +1,17 @@
-//! SSH access to Agents.
+//! SSH access to agents.
 //!
-//! An Agent declaring `spec.access: [{type: ssh}]` gets an OpenSSH server
-//! inside its Sandbox, listening on the guest loopback only, and an OpenSSH
+//! An agent declaring `spec.access: [{type: ssh}]` gets an OpenSSH server
+//! inside its sandbox, listening on the guest loopback only, and an OpenSSH
 //! client configuration on the host that reaches it through
 //! `agentctl ssh-proxy`. The platform owns every moving part: the guest user
-//! is `agent`, the host key is generated per Agent incarnation and kept in
+//! is `agent`, the host key is generated per agent incarnation and kept in
 //! the owner-protected database, the client key pair lives under the
 //! control-plane home and its private half never enters the guest.
 //!
 //! The image provides OpenSSH, systemd and a usable `agent` account; `agentd`
-//! owns the server policy, unit and per-Agent state written at setup. Nothing
-//! here is a security boundary beyond the Sandbox itself: the guest user has
-//! passwordless `sudo`, so the server hardening is hygiene, and Sessions and
+//! owns the server policy, unit and per-agent state written at setup. Nothing
+//! here is a security boundary beyond the sandbox itself: the guest user has
+//! passwordless `sudo`, so the server hardening is hygiene, and sessions and
 //! SSH logins share one trust boundary.
 
 mod client_config;
@@ -40,14 +40,14 @@ pub use client_config::{
 };
 pub use keys::KeyPair;
 
-/// Guest user every SSH login becomes: the platform-owned Sandbox user the Linux adapter defines.
+/// Guest user every SSH login becomes: the platform-owned sandbox user the Linux adapter defines.
 pub const GUEST_USER: &str = platform::USER;
-/// Guest loopback port the Agent's server listens on.
+/// Guest loopback port the agent's server listens on.
 pub const GUEST_PORT: u16 = 2222;
 /// The `type` value of an SSH access descriptor.
 pub const ACCESS_TYPE: &str = "ssh";
 
-/// Returns the OpenSSH `Host` alias for an Agent name.
+/// Returns the OpenSSH `Host` alias for an agent name.
 #[must_use]
 pub fn alias(agent: &str) -> String {
     format!("agentctl-{agent}")
@@ -82,25 +82,25 @@ impl SshHome {
         self.0.join("config")
     }
 
-    /// Returns the `known_hosts` file pre-seeded with every Agent's host key.
+    /// Returns the `known_hosts` file pre-seeded with every agent's host key.
     #[must_use]
     pub fn known_hosts_path(&self) -> PathBuf {
         self.0.join("known_hosts")
     }
 
-    /// Returns the directory holding one Agent incarnation's client key pair.
+    /// Returns the directory holding one agent incarnation's client key pair.
     #[must_use]
     pub fn agent_directory(&self, id: AgentId) -> PathBuf {
         self.0.join(id.to_string())
     }
 
-    /// Returns one Agent incarnation's private client key.
+    /// Returns one agent incarnation's private client key.
     #[must_use]
     pub fn identity_path(&self, id: AgentId) -> PathBuf {
         self.agent_directory(id).join("id_ed25519")
     }
 
-    /// Returns one Agent incarnation's public client key.
+    /// Returns one agent incarnation's public client key.
     #[must_use]
     pub fn public_identity_path(&self, id: AgentId) -> PathBuf {
         self.agent_directory(id).join("id_ed25519.pub")
@@ -142,7 +142,7 @@ impl UserInclude {
     }
 }
 
-/// Stable machine-readable description of one Agent's SSH access.
+/// Stable machine-readable description of one agent's SSH access.
 ///
 /// This is the seam an IDE integration consumes: everything needed to open a
 /// connection without parsing the generated configuration.
@@ -162,17 +162,17 @@ pub struct AccessInfo {
     pub user: String,
     /// Absolute private client key path.
     pub identity_file: PathBuf,
-    /// Absolute `known_hosts` path holding the Agent's host key.
+    /// Absolute `known_hosts` path holding the agent's host key.
     pub known_hosts_file: PathBuf,
     /// Absolute path of the generated OpenSSH client configuration.
     pub config_file: PathBuf,
-    /// Complete `ProxyCommand` value dialing the Agent through `agentctl`.
+    /// Complete `ProxyCommand` value dialing the agent through `agentctl`.
     pub proxy_command: String,
-    /// Guest directory Sessions open in, which editors open as their folder.
+    /// Guest directory sessions open in, which editors open as their folder.
     pub working_directory: String,
 }
 
-/// Persists each Agent incarnation's SSH host key.
+/// Persists each agent incarnation's SSH host key.
 pub trait HostKeyStore {
     /// Loads the stored OpenSSH private host key, if one exists.
     fn load_host_key(&self, id: AgentId) -> LocalFuture<'_, Result<Option<Zeroizing<Vec<u8>>>, Error>>;
@@ -194,19 +194,19 @@ pub struct GuestMaterial {
     pub authorized_keys: String,
 }
 
-/// Builds the message given when the Agent's image cannot serve SSH access.
+/// Builds the message given when the agent's image cannot serve SSH access.
 ///
 /// The image is immutable for the incarnation, so the message names what is
 /// missing and the only fixes: an image that provides it, or withdrawing access.
 #[must_use]
 pub fn image_contract_missing(what: &str) -> String {
     format!(
-        "the Agent's image cannot provide SSH access: {what}; re-apply the Agent with an image that provides \
+        "the agent's image cannot provide SSH access: {what}; re-apply the agent with an image that provides \
          OpenSSH, runs systemd and has a usable `agent` account, or remove `ssh` from spec.access"
     )
 }
 
-/// Reconciles SSH access for Agents: host key material, client configuration
+/// Reconciles SSH access for agents: host key material, client configuration
 /// and the in-guest server state.
 pub struct Access {
     home: SshHome,
@@ -249,11 +249,11 @@ impl Access {
         &self.home
     }
 
-    /// Describes the SSH access of a named Agent.
+    /// Describes the SSH access of a named agent.
     ///
     /// # Errors
     ///
-    /// Returns `Error::NotFound` for an unknown Agent, `Error::Conflict` while
+    /// Returns `Error::NotFound` for an unknown agent, `Error::Conflict` while
     /// it is being deleted, and `Error::Invalid` when it declares no SSH access.
     pub async fn describe(&self, name: &str) -> Result<AccessInfo, Error> {
         let record = self.agents.get_by_name(name).await?;
@@ -289,15 +289,15 @@ impl Access {
         })
     }
 
-    /// Converges SSH access for one Agent against its running Sandbox.
+    /// Converges SSH access for one agent against its running sandbox.
     ///
-    /// Returns whether the Agent has SSH access after the pass. An Agent
+    /// Returns whether the agent has SSH access after the pass. An agent
     /// without declared access has any earlier server state removed.
     ///
     /// # Errors
     ///
     /// Returns `Error::Invalid` when the image lacks an OpenSSH server or the
-    /// Sandbox operating system is unsupported, and transient errors when key
+    /// sandbox operating system is unsupported, and transient errors when key
     /// material or guest setup cannot be written.
     pub async fn reconcile(&self, record: &AgentRecord, sandbox: &SandboxHandle) -> Result<bool, Error> {
         let os = sandbox.snapshot().image.platform.os.clone();
@@ -314,7 +314,7 @@ impl Access {
         Ok(true)
     }
 
-    /// Removes every host-side trace of a deleted Agent incarnation.
+    /// Removes every host-side trace of a deleted agent incarnation.
     ///
     /// # Errors
     ///
@@ -376,7 +376,7 @@ impl Access {
         self.rewrite_config().await
     }
 
-    /// Rewrites the generated client configuration from every active Agent with SSH access.
+    /// Rewrites the generated client configuration from every active agent with SSH access.
     async fn rewrite_config(&self) -> Result<(), Error> {
         let mut entries = self
             .agents
@@ -461,7 +461,7 @@ async fn verify_guest_server(os: &str, sandbox: &SandboxHandle) -> Result<(), Er
     match os {
         "linux" => platform::linux::ssh::verify_server(sandbox).await,
         os => Err(Error::Invalid(format!(
-            "SSH access is not supported on Sandbox operating system {os:?}"
+            "SSH access is not supported on sandbox operating system {os:?}"
         ))),
     }
 }
@@ -470,7 +470,7 @@ async fn install_guest_state(os: &str, sandbox: &SandboxHandle, material: &Guest
     match os {
         "linux" => platform::linux::ssh::install_server_state(sandbox, material).await,
         os => Err(Error::Invalid(format!(
-            "SSH access is not supported on Sandbox operating system {os:?}"
+            "SSH access is not supported on sandbox operating system {os:?}"
         ))),
     }
 }

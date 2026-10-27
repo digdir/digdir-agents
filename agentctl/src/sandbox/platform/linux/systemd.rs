@@ -15,7 +15,7 @@ pub(super) const SYSTEMD_RUNNING: &str = "/run/systemd/system";
 
 /// Waits until systemd is PID 1 and has finished booting the guest.
 ///
-/// Sandbox setup starts as soon as the Sandbox accepts Executions, which on an
+/// Sandbox setup starts as soon as the sandbox accepts Executions, which on an
 /// image-init guest is before the image entrypoint has become systemd; `systemctl`
 /// then reports "System has not been booted with systemd". `is-system-running
 /// --wait` blocks until startup finishes once systemd is up. It runs as root

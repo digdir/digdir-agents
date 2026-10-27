@@ -106,7 +106,7 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
 
 <text class="kicker" x="40" y="48">AGENT PLATFORM · CRATES</text>
 <text class="title" x="40" y="82">Two layers, one direction</text>
-<text class="subtitle" x="40" y="106">The Agent layer builds on a generic Sandbox SDK. The SDK knows nothing about Agents, so CI runners and other isolated workloads can use it too.</text>
+<text class="subtitle" x="40" y="106">The agent layer builds on a generic Sandbox SDK. The SDK knows nothing about agents, so CI runners and other isolated workloads can use it too.</text>
 
 <!-- Agent layer -->
 <rect class="zone zone-host" x="40" y="130" width="1070" height="300" rx="16"/>
@@ -138,20 +138,20 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
   <text class="s-sm" x="104" y="334">Claude Code and Codex adapters</text>
   <rect class="tag tag-gray" x="335" y="295" width="235" height="50" rx="8"/>
   <text class="code" x="349" y="315">persistence</text>
-  <text class="s-sm" x="349" y="334">SQLite: Agents, Sessions, secrets</text>
+  <text class="s-sm" x="349" y="334">SQLite: agents, sessions, secrets</text>
   <rect class="tag tag-gray" x="580" y="295" width="235" height="50" rx="8"/>
   <text class="code" x="594" y="315">sandbox</text>
   <text class="s-sm" x="594" y="334">Provider selection, guest setup</text>
   <rect class="tag tag-gray" x="825" y="295" width="235" height="50" rx="8"/>
   <text class="code" x="839" y="315">authorization</text>
-  <text class="s-sm" x="839" y="334">the Agent's network policy</text>
+  <text class="s-sm" x="839" y="334">the agent's network policy</text>
 
   <rect class="tag tag-gray" x="90" y="353" width="235" height="50" rx="8"/>
   <text class="code" x="104" y="373">platform_api</text>
   <text class="s-sm" x="104" y="392">HTTP endpoint for the guest</text>
   <rect class="tag tag-gray" x="335" y="353" width="235" height="50" rx="8"/>
   <text class="code" x="349" y="373">progress</text>
-  <text class="s-sm" x="349" y="392">provisioning state per Agent</text>
+  <text class="s-sm" x="349" y="392">provisioning state per agent</text>
   <rect class="tag tag-gray" x="580" y="353" width="235" height="50" rx="8"/>
   <text class="code" x="594" y="373">ssh · vnc</text>
   <text class="s-sm" x="594" y="392">access into the guest</text>
@@ -199,7 +199,7 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
 <rect class="box box-secret" x="680" y="645" width="400" height="100" rx="12"/>
 <text class="h" x="702" y="673">sandbox-authorization</text>
 <text class="code" x="900" y="673">sandbox/authorization/</text>
-<text class="s" x="702" y="693">Policy vocabulary for Sandbox-originated work.</text>
+<text class="s" x="702" y="693">Policy vocabulary for sandbox-originated work.</text>
 <g>
   <rect class="tag tag-coral" x="700" y="707" width="110" height="24" rx="12"/>
   <text class="tag-text tag-text-coral" x="755" y="723" text-anchor="middle">POLICYENGINE</text>
@@ -250,7 +250,7 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
 <g class="s">
   <circle class="badge" cx="1182" cy="196" r="11"/><text class="step" x="1182" y="200" text-anchor="middle">1</text>
   <text x="1204" y="193"><tspan class="h-sm">Dependencies point down only.</tspan></text>
-  <text x="1204" y="213">The Sandbox crates never depend on Agent</text>
+  <text x="1204" y="213">The sandbox crates never depend on agent</text>
   <text x="1204" y="230">automation.</text>
 
   <circle class="badge" cx="1182" cy="270" r="11"/><text class="step" x="1182" y="274" text-anchor="middle">2</text>
@@ -266,18 +266,18 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
   <circle class="badge" cx="1182" cy="418" r="11"/><text class="step" x="1182" y="422" text-anchor="middle">4</text>
   <text x="1204" y="415"><tspan class="h-sm">Network is chosen separately.</tspan></text>
   <text x="1204" y="435">A Network Backend is selected independently</text>
-  <text x="1204" y="452">of the Sandbox Backend, and the attachment</text>
-  <text x="1204" y="469">is fixed for the Sandbox's lifetime.</text>
+  <text x="1204" y="452">of the sandbox backend, and the attachment</text>
+  <text x="1204" y="469">is fixed for the sandbox's lifetime.</text>
 
   <circle class="badge" cx="1182" cy="509" r="11"/><text class="step" x="1182" y="513" text-anchor="middle">5</text>
   <text x="1204" y="506"><tspan class="h-sm">No unobserved egress.</tspan></text>
-  <text x="1204" y="526">A Sandbox Backend blocks all traffic its</text>
+  <text x="1204" y="526">A sandbox backend blocks all traffic its</text>
   <text x="1204" y="543">selected endpoint does not represent.</text>
 
   <circle class="badge" cx="1182" cy="583" r="11"/><text class="step" x="1182" y="587" text-anchor="middle">6</text>
   <text x="1204" y="580"><tspan class="h-sm">Live decisions, not static policy.</tspan></text>
   <text x="1204" y="600">Network implementations ask</text>
-  <text x="1204" y="617"><tspan class="code-sm">sandbox-authorization</tspan>; the Sandbox</text>
+  <text x="1204" y="617"><tspan class="code-sm">sandbox-authorization</tspan>; the sandbox</text>
   <text x="1204" y="634">contract has no <tspan class="code-sm">NetworkPolicy</tspan>.</text>
 
   <circle class="badge" cx="1182" cy="674" r="11"/><text class="step" x="1182" y="678" text-anchor="middle">7</text>

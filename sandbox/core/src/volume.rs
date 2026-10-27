@@ -1,4 +1,4 @@
-//! Mutable storage with a lifecycle independent of a Sandbox image.
+//! Mutable storage with a lifecycle independent of a sandbox image.
 
 use std::fmt;
 

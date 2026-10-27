@@ -1,10 +1,10 @@
-//! Session runtime seam: how a harness is carried inside a Sandbox.
+//! Session runtime seam: how a harness is carried inside a sandbox.
 //!
 //! The runtime owns process lifecycle, terminal state, operator input and the
-//! conversation record for a Session. Tmux is the M0 Unix implementation;
+//! conversation record for a session. Tmux is the M0 Unix implementation;
 //! nothing above this trait names tmux, panes, buffers or transcript files, so
 //! a later Agent Host Protocol runtime can replace [`Tmux`] without touching
-//! the reconciler, the Session service, the control API, the CLI or persistence.
+//! the reconciler, the session service, the control API, the CLI or persistence.
 
 mod tmux;
 
@@ -16,15 +16,15 @@ use crate::Error;
 
 use super::{AttachTarget, LaunchToken, Session, Turn};
 
-/// Runtime-observed liveness and inactivity for a Session.
+/// Runtime-observed liveness and inactivity for a session.
 ///
 /// The idle age is calculated against the guest clock so host/microVM skew
-/// cannot make an active Session look idle.
+/// cannot make an active session look idle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Observation {
-    /// The Session's process is not present in the runtime.
+    /// The session's process is not present in the runtime.
     Missing,
-    /// The Session is present, with attachment and activity age.
+    /// The session is present, with attachment and activity age.
     Alive {
         /// Whether a client terminal is attached.
         attached: bool,
@@ -37,7 +37,7 @@ pub enum Observation {
 /// where it runs.
 #[derive(Clone, Copy, Debug)]
 pub struct LaunchContext<'a> {
-    /// The Platform API base URL reachable from the Sandbox, where the harness reports activity.
+    /// The Platform API base URL reachable from the sandbox, where the harness reports activity.
     pub platform_api_url: &'a str,
     /// The agent's name.
     pub agent: &'a str,
@@ -47,10 +47,10 @@ pub struct LaunchContext<'a> {
     pub host: &'a str,
 }
 
-/// One harness Session carried inside a Sandbox.
+/// One harness session carried inside a sandbox.
 ///
 /// Every method takes the materialized [`SandboxHandle`]; the runtime holds no
-/// Sandbox state of its own, mirroring how tmux is addressed per execution.
+/// sandbox state of its own, mirroring how tmux is addressed per execution.
 pub trait SessionRuntime {
     /// Observes runtime liveness, attachment and inactivity.
     fn observe<'a>(
@@ -75,7 +75,7 @@ pub trait SessionRuntime {
         initial_prompt: Option<&'a str>,
     ) -> ::sandbox::LocalFuture<'a, Result<(), Error>>;
 
-    /// Stops a deliberately idle Session.
+    /// Stops a deliberately idle session.
     fn stop<'a>(
         &'a self,
         session: &'a Session,
@@ -100,7 +100,7 @@ pub trait SessionRuntime {
         prompt: &'a str,
     ) -> ::sandbox::LocalFuture<'a, Result<(), Error>>;
 
-    /// Reads the Session's conversation so far as ordered turns, optionally
+    /// Reads the session's conversation so far as ordered turns, optionally
     /// limiting work and output to the last `last` complete turns.
     ///
     /// A conversation that has not produced a record yet is empty, not an error.
@@ -111,8 +111,8 @@ pub trait SessionRuntime {
         last: Option<usize>,
     ) -> ::sandbox::LocalFuture<'a, Result<Vec<Turn>, Error>>;
 
-    /// Attaches a local terminal to the Session; a client capability distinct
-    /// from daemon-owned convergence. It never creates or resumes a Session.
+    /// Attaches a local terminal to the session; a client capability distinct
+    /// from daemon-owned convergence. It never creates or resumes a session.
     fn attach<'a>(
         &'a self,
         home: &'a std::path::Path,

@@ -1,4 +1,4 @@
-//! Linux Sandbox configuration for Pi.
+//! Linux sandbox configuration for Pi.
 
 use sandbox::SandboxHandle;
 
@@ -16,7 +16,7 @@ pub(super) async fn configure(
     skills: &[crate::harness::Skill],
 ) -> Result<(), Error> {
     let skills_path = skills_directory(home);
-    // The extension lives outside Pi's own directories, which belong to the Agent; Pi does not
+    // The extension lives outside Pi's own directories, which belong to the agent; Pi does not
     // discover it there, so the launch loads it. Instructions go where Pi reads global context,
     // as the other harnesses' do.
     let directory = platform_directory(home);
@@ -33,7 +33,7 @@ pub(super) async fn configure(
     write_if_changed(sandbox, &extension_path, extension::script()?.as_bytes()).await?;
     write_if_changed(sandbox, &instructions_path, instructions).await?;
     let managed = [extension_path.as_str(), instructions_path.as_str()];
-    // Runtime file transfer writes as the Sandbox supervisor (root), while executions run as the
+    // Runtime file transfer writes as the sandbox supervisor (root), while executions run as the
     // image user. Correct only the files managed above.
     let mut chown = vec!["/usr/bin/chown", "agent:agent"];
     chown.extend(managed.iter().copied());

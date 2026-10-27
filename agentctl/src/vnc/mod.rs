@@ -1,12 +1,12 @@
-//! VNC access to Agents.
+//! VNC access to agents.
 //!
 //! The image runs the desktop and ships the units that bridge it to guest ports, disabled, and
-//! lists them in `/etc/agent-access.d/vnc.conf`. When an Agent declares `access: [{type: vnc}]`
+//! lists them in `/etc/agent-access.d/vnc.conf`. When an agent declares `access: [{type: vnc}]`
 //! this module enables those units, and disables them when it stops. Nothing here names a socket,
 //! viewer or URL, so an image with a different viewer needs no change here.
 //!
-//! This decides what the platform offers; it is not an isolation boundary. The Agent has `sudo`
-//! and could enable the units itself. The Sandbox boundary, and forwarding that only the host can
+//! This decides what the platform offers; it is not an isolation boundary. The agent has `sudo`
+//! and could enable the units itself. The sandbox boundary, and forwarding that only the host can
 //! start, protect the desktop, as they do every guest loopback port.
 
 use std::{cell::RefCell, collections::BTreeMap, path::PathBuf, rc::Rc};
@@ -28,7 +28,7 @@ pub const WEB_GUEST_PORT: u16 = 6080;
 /// The `type` value of a VNC access descriptor.
 pub const ACCESS_TYPE: &str = "vnc";
 
-/// Machine-readable description of one Agent's VNC access.
+/// Machine-readable description of one agent's VNC access.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AccessInfo {
@@ -48,28 +48,28 @@ pub struct AccessInfo {
     pub forward_command: String,
 }
 
-/// Builds the message given when the Agent's image cannot serve VNC access. The image cannot
+/// Builds the message given when the agent's image cannot serve VNC access. The image cannot
 /// change for the incarnation, so it names the only fixes.
 #[must_use]
 pub fn image_contract_missing(what: &str) -> String {
     format!(
-        "the Agent's image cannot provide VNC access: {what}; re-apply the Agent with an image that declares its \
-         access units in /etc/agent-access.d/vnc.conf, such as the published desktop Agent image, or remove `vnc` \
+        "the agent's image cannot provide VNC access: {what}; re-apply the agent with an image that declares its \
+         access units in /etc/agent-access.d/vnc.conf, such as the published desktop agent image, or remove `vnc` \
          from spec.access"
     )
 }
 
-/// Reconciles VNC access for Agents by enabling or disabling the units their image declares.
+/// Reconciles VNC access for agents by enabling or disabling the units their image declares.
 pub struct Access {
     agentctl: PathBuf,
     agents: Rc<dyn AgentStore>,
-    /// What the last successful pass left in each Agent's guest, so that describing an Agent needs
-    /// no call into its Sandbox and a resync can skip a withdrawal that already succeeded. Not
+    /// What the last successful pass left in each agent's guest, so that describing an agent needs
+    /// no call into its sandbox and a resync can skip a withdrawal that already succeeded. Not
     /// persisted: after a restart it is unknown until the next pass.
     applied: RefCell<BTreeMap<AgentId, Applied>>,
 }
 
-/// What one successful reconciliation pass left in an Agent's guest.
+/// What one successful reconciliation pass left in an agent's guest.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Applied {
     /// The image's units are enabled, with the browser viewer port it declared.
@@ -89,11 +89,11 @@ impl Access {
         }
     }
 
-    /// Describes the VNC access of a named Agent.
+    /// Describes the VNC access of a named agent.
     ///
     /// # Errors
     ///
-    /// Returns `Error::NotFound` for an unknown Agent, `Error::Conflict` while
+    /// Returns `Error::NotFound` for an unknown agent, `Error::Conflict` while
     /// it is being deleted, and `Error::Invalid` when it declares no VNC access.
     pub async fn describe(&self, name: &str) -> Result<AccessInfo, Error> {
         let record = self.agents.get_by_name(name).await?;
@@ -126,13 +126,13 @@ impl Access {
         }
     }
 
-    /// Converges VNC access for one Agent and returns whether it has access afterwards. Without
+    /// Converges VNC access for one agent and returns whether it has access afterwards. Without
     /// declared access the units are disabled, leaving the desktop running with nothing
     /// listening; a withdrawal that succeeded is not repeated for the same incarnation.
     ///
     /// # Errors
     ///
-    /// Returns `Error::Invalid` when the image runs no desktop or the Sandbox
+    /// Returns `Error::Invalid` when the image runs no desktop or the sandbox
     /// operating system is unsupported, and transient errors when the guest
     /// setup cannot be applied.
     pub async fn reconcile(&self, record: &AgentRecord, sandbox: &SandboxHandle) -> Result<bool, Error> {
@@ -166,7 +166,7 @@ impl Access {
         }
     }
 
-    /// Forgets what was applied to a deleted Agent incarnation.
+    /// Forgets what was applied to a deleted agent incarnation.
     pub fn forget(&self, id: AgentId) {
         self.applied.borrow_mut().remove(&id);
     }
@@ -176,7 +176,7 @@ async fn grant_guest_access(os: &str, sandbox: &SandboxHandle) -> Result<platfor
     match os {
         "linux" => platform::linux::vnc::grant(sandbox).await,
         os => Err(Error::Invalid(format!(
-            "VNC access is not supported on Sandbox operating system {os:?}"
+            "VNC access is not supported on sandbox operating system {os:?}"
         ))),
     }
 }

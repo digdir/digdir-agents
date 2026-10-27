@@ -1,4 +1,4 @@
-# Builds the agentctl image from images/agentctl: agentctl and agentd alone, for Agent images to copy in. Pull requests
+# Builds the agentctl image from images/agentctl: agentctl and agentd alone, for agent images to copy in. Pull requests
 # that change the Rust workspace or the image only build it. Every push to main that does, and a manual run on main,
 # publishes it to ghcr.io/digdir/agentctl as `sha-<commit>`, and as `main` while no newer commit has started a run. The
 # release workflow calls this one on a release pull request to push the release's image by digest, and tags it as

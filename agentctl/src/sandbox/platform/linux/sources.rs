@@ -1,4 +1,4 @@
-//! Reading an Agent's instructions, skills and home from the host.
+//! Reading an agent's instructions, skills and home from the host.
 
 use std::path::Path;
 
@@ -113,7 +113,7 @@ pub(super) fn walk_source(
         if relative.as_os_str().is_empty() {
             continue;
         }
-        // Only directories and regular files are carried into the Sandbox. A symbolic link would
+        // Only directories and regular files are carried into the sandbox. A symbolic link would
         // point at host content outside the source, and reading a FIFO or device would block setup.
         let kind = entry
             .file_type()

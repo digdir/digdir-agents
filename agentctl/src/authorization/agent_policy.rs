@@ -10,7 +10,7 @@ use sandbox_authorization::{
 use crate::Agent;
 use sandbox::SandboxName;
 
-/// Live policy registry keyed by stable Agent/Sandbox name.
+/// Live policy registry keyed by stable agent/Sandbox name.
 #[derive(Default)]
 pub struct AgentPolicyEngine {
     agents: RefCell<BTreeMap<String, AgentPolicy>>,
@@ -29,7 +29,7 @@ impl AgentPolicyEngine {
         Self::default()
     }
 
-    /// Registers the one Sandbox-reachable host endpoint exposed by the platform.
+    /// Registers the one sandbox-reachable host endpoint exposed by the platform.
     ///
     /// Host-destined traffic (the Network Backend's host alias, and raw dials
     /// into host-reserved address ranges) is denied except for exactly this
@@ -41,7 +41,7 @@ impl AgentPolicyEngine {
         });
     }
 
-    /// Replaces the policy for one desired Agent generation.
+    /// Replaces the policy for one desired agent generation.
     pub fn set_agent(
         &self,
         sandbox: &SandboxName,
@@ -64,7 +64,7 @@ impl AgentPolicyEngine {
         );
     }
 
-    /// Removes policy for a released Agent.
+    /// Removes policy for a released agent.
     pub fn remove_agent(&self, sandbox: &SandboxName) {
         self.agents.borrow_mut().remove(sandbox.as_str());
     }
@@ -195,20 +195,20 @@ fn authority_port(request: &AuthorizationRequest) -> Option<u16> {
 }
 
 /// Address ranges that can carry the Network Backend's gateway, plus ranges
-/// that never name a legitimate upstream from inside a Sandbox.
+/// that never name a legitimate upstream from inside a sandbox.
 const fn is_host_reserved(address: std::net::IpAddr) -> bool {
     match address {
         std::net::IpAddr::V4(v4) => {
             v4.is_loopback()
                 || v4.is_link_local()
                 || v4.is_unspecified()
-                // CGNAT 100.64.0.0/10 carries the per-Sandbox gateway.
+                // CGNAT 100.64.0.0/10 carries the per-sandbox gateway.
                 || (v4.octets()[0] == 100 && (v4.octets()[1] & 0b1100_0000) == 64)
         }
         std::net::IpAddr::V6(v6) => {
             v6.is_loopback()
                 || v6.is_unspecified()
-                // ULA fc00::/7 carries the per-Sandbox gateway.
+                // ULA fc00::/7 carries the per-sandbox gateway.
                 || (v6.octets()[0] & 0b1111_1110) == 0xfc
                 // Link-local fe80::/10.
                 || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0b1100_0000) == 0x80)

@@ -1,6 +1,6 @@
 ---
 name: changelog
-description: Write and edit agentctl/CHANGELOG.md entries as release notes for the people who use agentctl and its Agents. Use when adding or changing a changelog entry, when a pull request needs one, or when preparing a release's changelog.
+description: Write and edit agentctl/CHANGELOG.md entries as release notes for the people who use agentctl and its agents. Use when adding or changing a changelog entry, when a pull request needs one, or when preparing a release's changelog.
 ---
 
 # Changelog entries
@@ -77,13 +77,13 @@ Each block shows entries exactly as they are written in the changelog. Long entr
 Too long, with implementation detail:
 
 ```markdown
-- `agentctl stop` and `agentctl start` change the Agent's desired run state, which the Sandbox controller reconciles by asking the Microsandbox backend to stop the VM process while keeping the root filesystem and volumes, so that a later start reuses the same disk instead of materializing the image again. ...
+- `agentctl stop` and `agentctl start` change the agent's desired run state, which the sandbox controller reconciles by asking the Microsandbox backend to stop the VM process while keeping the root filesystem and volumes, so that a later start reuses the same disk instead of materializing the image again. ...
 ```
 
 Better:
 
 ```markdown
-- `agentctl stop` and `agentctl start`, or `x` in `agentctl tui`, stop an Agent's VM and start it again on the same disk, also one that stopped responding. ([#123](https://github.com/digdir/digdir-agents/issues/123))
+- `agentctl stop` and `agentctl start`, or `x` in `agentctl tui`, stop an agent's VM and start it again on the same disk, also one that stopped responding. ([#123](https://github.com/digdir/digdir-agents/issues/123))
 ```
 
 Explains the mechanism instead of the effect:
@@ -95,21 +95,21 @@ Explains the mechanism instead of the effect:
 Better:
 
 ```markdown
-- On macOS, Agents resolve names through the host's system resolver, so VPN split DNS and `/etc/resolver` domains work inside an Agent as they do on the host. ([#123](https://github.com/digdir/digdir-agents/pull/123))
+- On macOS, agents resolve names through the host's system resolver, so VPN split DNS and `/etc/resolver` domains work inside an agent as they do on the host. ([#123](https://github.com/digdir/digdir-agents/pull/123))
 ```
 
 Several entries for one feature:
 
 ```markdown
-- `agentctl tui` opens an Agent's shell, VS Code, Zed or SSH with `o`. ...
-- `agentctl tui` opens an Agent's desktop in the browser or a VNC client with `o`. ...
+- `agentctl tui` opens an agent's shell, VS Code, Zed or SSH with `o`. ...
+- `agentctl tui` opens an agent's desktop in the browser or a VNC client with `o`. ...
 - `agentctl tui` opens a port forward with `o` from the forwards view. ...
 ```
 
 Better, as one entry with sub-bullets:
 
 ```markdown
-- `agentctl tui` opens an Agent with `o`:
+- `agentctl tui` opens an agent with `o`:
   - in a shell, VS Code, Zed or SSH, offering to add the `Include` to `~/.ssh/config` first ([#123](https://github.com/digdir/digdir-agents/pull/123))
   - on its desktop, in the browser or a VNC client ([#124](https://github.com/digdir/digdir-agents/pull/124))
   - through a forward, from the forwards view ([#124](https://github.com/digdir/digdir-agents/pull/124))
@@ -118,7 +118,7 @@ Better, as one entry with sub-bullets:
 Two changes in one entry:
 
 ```markdown
-- `agentctl tui` asks before quitting when that would close port forwards, and forwards are now closed when their Agent is deleted or re-created.
+- `agentctl tui` asks before quitting when that would close port forwards, and forwards are now closed when their agent is deleted or re-created.
 ```
 
 Better, grouped under what they change:
@@ -126,17 +126,17 @@ Better, grouped under what they change:
 ```markdown
 - `agentctl tui` port forwards: ([#124](https://github.com/digdir/digdir-agents/pull/124))
   - `q` asks before quitting would close them
-  - they close when their Agent is deleted or re-created
+  - they close when their agent is deleted or re-created
 ```
 
 A fix described by its cause:
 
 ```markdown
-- `agentd` no longer blocks its request loop while a cancelled client waits for an Agent to become ready.
+- `agentd` no longer blocks its request loop while a cancelled client waits for an agent to become ready.
 ```
 
 Better, by its symptom:
 
 ```markdown
-- Interrupted commands that wait for an Agent, such as an editor retrying its SSH connection to an Agent that cannot start, no longer make `agentd` stop answering every other command. ([#123](https://github.com/digdir/digdir-agents/pull/123))
+- Interrupted commands that wait for an agent, such as an editor retrying its SSH connection to an agent that cannot start, no longer make `agentd` stop answering every other command. ([#123](https://github.com/digdir/digdir-agents/pull/123))
 ```

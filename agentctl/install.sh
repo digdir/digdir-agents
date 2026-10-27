@@ -27,7 +27,7 @@ resume_update() {
   target_version="$(sed -n 's/^  "targetVersion": "\(.*\)",$/\1/p' "${journal}")"
   previous="$(sed -n 's/^  "previousRelease": "\(.*\)",$/\1/p' "${journal}")"
   if [ -z "${target}" ] || [ -z "${target_version}" ] || [ ! -x "${target}/agentctl" ]; then
-    echo "The Agent update journal does not name a usable staged release: ${journal}" >&2
+    echo "The agentctl update journal does not name a usable staged release: ${journal}" >&2
     exit 1
   fi
   set -- --home "${agent_home}" self __complete-update \
@@ -78,7 +78,7 @@ case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) platform=linux-x86_64 ;;
   Linux-aarch64 | Linux-arm64) platform=linux-aarch64 ;;
   Darwin-arm64) platform=macos-aarch64 ;;
-  *) echo "Unsupported Agent host: $(uname -s) $(uname -m)" >&2; exit 1 ;;
+  *) echo "Unsupported agentctl host: $(uname -s) $(uname -m)" >&2; exit 1 ;;
 esac
 
 temporary="$(mktemp -d -t agentctl-install.XXXXXXXX)"

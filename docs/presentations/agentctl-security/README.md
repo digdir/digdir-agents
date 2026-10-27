@@ -3,7 +3,7 @@
 A shorter [Slidev](https://sli.dev) presentation of `agentctl` and the Sandbox SDK for Digdir's security team and
 security champions. It sets the microVM boundary against the rise in Linux kernel CVEs and the PwnEscape guest-to-host
 escape (CVE-2026-99999), then covers secret mediation, recent security fixes, the remaining host attack surface and
-what the Sandbox does not protect against, the sandboxed GitHub runners and what may come next. The general
+what the sandbox does not protect against, the sandboxed GitHub runners and what may come next. The general
 presentation is in [`../agentctl-sandbox-sdk`](../agentctl-sandbox-sdk/).
 
 ## Run it
@@ -16,7 +16,7 @@ npm run dev
 Open <http://localhost:3030>. `f` toggles fullscreen, `o` shows an overview and the arrow keys step through each
 slide's clicks. The presenter view is at <http://localhost:3030/presenter/>.
 
-The dev server listens on `127.0.0.1` only. From inside an Agent, forward the port to your machine:
+The dev server listens on `127.0.0.1` only. From inside an agent, forward the port to your machine:
 
 ```sh
 agentctl port-forward <agent> 3030:3030

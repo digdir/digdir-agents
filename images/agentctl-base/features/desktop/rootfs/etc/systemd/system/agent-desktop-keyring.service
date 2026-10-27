@@ -1,5 +1,5 @@
 [Unit]
-Description=Secret Service for the Agent desktop
+Description=Secret Service for the agent desktop
 Documentation=https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base
 # It serves on the session bus agent-desktop-dbus.service provides.
 After=agent-desktop-dbus.service
@@ -7,10 +7,10 @@ Requires=agent-desktop-dbus.service
 
 [Service]
 # libsecret, and through it Chromium's and Electron's password stores, needs an unlocked Secret
-# Service. A Sandbox has no login to unlock a keyring with, so the login keyring is created and
+# Service. A sandbox has no login to unlock a keyring with, so the login keyring is created and
 # unlocked at start with the password given on standard input: a single newline, since gnome-keyring
 # takes no input as no password. Anyone who can read the keyring file can therefore decrypt it, and
-# what it holds is protected by the Sandbox boundary alone.
+# what it holds is protected by the sandbox boundary alone.
 Type=exec
 User=agent
 Group=agent

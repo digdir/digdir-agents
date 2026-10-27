@@ -11,7 +11,7 @@ use thiserror::Error;
 
 /// Stable vocabulary shared by trusted authorization request producers.
 pub mod vocabulary {
-    /// Built-in Sandbox-originated Actions.
+    /// Built-in sandbox-originated Actions.
     pub mod action {
         /// Resolve a DNS name.
         pub const DNS_QUERY: &str = "dns.query";
@@ -29,7 +29,7 @@ pub mod vocabulary {
 
     /// Built-in Principal kinds.
     pub mod principal_kind {
-        /// One materialized Sandbox.
+        /// One materialized sandbox.
         pub const SANDBOX: &str = "sandbox";
     }
 
@@ -45,7 +45,7 @@ pub mod vocabulary {
 
     /// Built-in trusted Context attribute names.
     pub mod context {
-        /// Stable Sandbox name supplied by its trusted Network Backend.
+        /// Stable sandbox name supplied by its trusted Network Backend.
         pub const SANDBOX_NAME: &str = "sandbox.name";
         /// DNS record type.
         pub const DNS_RECORD_TYPE: &str = "dns.recordType";

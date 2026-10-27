@@ -1,11 +1,11 @@
-//! Internal identity and persisted representation of an Agent resource.
+//! Internal identity and persisted representation of an agent resource.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{Agent, Error};
 
-/// Immutable identity of one Agent incarnation.
+/// Immutable identity of one agent incarnation.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct AgentId(Uuid);
@@ -36,10 +36,10 @@ impl std::str::FromStr for AgentId {
     }
 }
 
-/// Stored desired and observed Agent state plus local source provenance.
+/// Stored desired and observed agent state plus local source provenance.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct AgentRecord {
-    /// Immutable identity of this Agent incarnation.
+    /// Immutable identity of this agent incarnation.
     pub id: AgentId,
     /// Absolute directory against which manifest-relative sources are resolved.
     pub source_directory: std::path::PathBuf,
@@ -65,21 +65,21 @@ impl AgentRecord {
             .unwrap_or_else(|| self.source_directory.join(ENV_FILE))
     }
 
-    /// Derives the Provider-independent Sandbox name for this Agent incarnation.
+    /// Derives the Provider-independent sandbox name for this agent incarnation.
     ///
     /// # Errors
     ///
-    /// Returns an error only if the stable Agent identity cannot form a valid Sandbox name.
+    /// Returns an error only if the stable agent identity cannot form a valid sandbox name.
     pub fn sandbox_name(&self) -> Result<::sandbox::SandboxName, Error> {
         ::sandbox::SandboxName::new(format!("agent-{}", self.id))
-            .map_err(|error| Error::Database(format!("Agent ID cannot identify its Sandbox: {error}")))
+            .map_err(|error| Error::Database(format!("Agent ID cannot identify its sandbox: {error}")))
     }
 
-    /// Refuses work that needs the Sandbox running while the Agent is stopped.
+    /// Refuses work that needs the sandbox running while the agent is stopped.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Stopped`] when the Agent's run state is Stopped.
+    /// Returns [`Error::Stopped`] when the agent's run state is Stopped.
     pub fn reject_stopped(&self) -> Result<(), Error> {
         if self.agent.spec.is_stopped() {
             return Err(Error::Stopped(self.agent.metadata.name.clone()));
@@ -87,13 +87,13 @@ impl AgentRecord {
         Ok(())
     }
 
-    /// Derives the hostname the Sandbox reports: the Agent name.
+    /// Derives the hostname the sandbox reports: the agent name.
     ///
     /// # Errors
     ///
-    /// Returns an error only if the validated Agent name cannot form a hostname.
+    /// Returns an error only if the validated agent name cannot form a hostname.
     pub fn sandbox_hostname(&self) -> Result<::sandbox::Hostname, Error> {
         ::sandbox::Hostname::new(self.agent.metadata.name.clone())
-            .map_err(|error| Error::Database(format!("Agent name cannot be its Sandbox hostname: {error}")))
+            .map_err(|error| Error::Database(format!("Agent name cannot be its sandbox hostname: {error}")))
     }
 }

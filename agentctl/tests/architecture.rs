@@ -13,7 +13,7 @@ fn harness_internals_are_contained_by_the_harness_adapter() {
     for path in files {
         // The harness adapter owns harness internals. The `bin/` composition
         // roots legitimately name a harness to dispatch on the closed enum
-        // (like `agentd` naming a Sandbox Provider), but must still not carry
+        // (like `agentd` naming a sandbox provider), but must still not carry
         // harness implementation details — asserted separately below.
         if path.starts_with(&harness) || path.starts_with(&binaries) {
             continue;

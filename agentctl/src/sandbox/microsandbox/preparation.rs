@@ -6,7 +6,7 @@ use crate::{Error, authorization::AgentPolicyEngine, control_plane, environment,
 use ::sandbox::{SandboxHandle, SandboxId, SandboxName, network::NetworkBackend as _};
 use sandbox_microsandbox::{MicrosandboxNetworkBackend, SecretBinding};
 
-/// Connects Agent policy and host-owned secrets to the Microsandbox Network Backend.
+/// Connects agent policy and host-owned secrets to the Microsandbox Network Backend.
 pub(super) struct Preparation {
     database: persistence::Database,
     policy: Rc<AgentPolicyEngine>,
@@ -20,7 +20,7 @@ pub(super) struct PreparedNetwork {
 }
 
 impl Preparation {
-    /// Creates the Agent-side Microsandbox mediation adapter.
+    /// Creates the agent-side Microsandbox mediation adapter.
     #[must_use]
     pub(super) const fn new(
         database: persistence::Database,

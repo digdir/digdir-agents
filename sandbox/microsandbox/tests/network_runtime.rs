@@ -61,7 +61,7 @@ async fn controlled_network_authorizes_dns_tcp_and_http_and_fails_closed() {
         .await
         .expect("integration secret should be stored");
     let network = Rc::new(MicrosandboxNetworkBackend::new(policy.clone()).with_secret_store(secrets.clone()));
-    let sandbox_name = SandboxName::new("controlled-network").expect("test Sandbox name should be valid");
+    let sandbox_name = SandboxName::new("controlled-network").expect("test sandbox name should be valid");
     network
         .set_secret_bindings(
             sandbox_name.clone(),
@@ -84,7 +84,7 @@ async fn controlled_network_authorizes_dns_tcp_and_http_and_fails_closed() {
             retention_policy: RetentionPolicy::Delete,
         },
     );
-    let sandbox = service.ensure(&request).await.expect("controlled Sandbox should start");
+    let sandbox = service.ensure(&request).await.expect("controlled sandbox should start");
 
     let test_result = AssertUnwindSafe(async {
         let allowed = sandbox
@@ -140,7 +140,7 @@ async fn controlled_network_authorizes_dns_tcp_and_http_and_fails_closed() {
     service
         .delete(request.name())
         .await
-        .expect("controlled Sandbox should delete");
+        .expect("controlled sandbox should delete");
     if let Err(payload) = test_result {
         std::panic::resume_unwind(payload);
     }
@@ -160,7 +160,7 @@ async fn resource_restart_after_reopening_the_provider_keeps_network_control() {
         init_system: sandbox::init::InitSystem::Backend,
         retention_policy: RetentionPolicy::Delete,
     };
-    let sandbox_name = SandboxName::new("controlled-restart").expect("test Sandbox name should be valid");
+    let sandbox_name = SandboxName::new("controlled-restart").expect("test sandbox name should be valid");
     {
         let backend = Rc::new(MicrosandboxProvider::open(&home).await.expect("Backend should open"));
         let network = Rc::new(MicrosandboxNetworkBackend::new(Rc::new(RecordingPolicy::allow_all())));
@@ -169,11 +169,11 @@ async fn resource_restart_after_reopening_the_provider_keeps_network_control() {
             .with_network_backend(network)
             .ensure(&EnsureSandboxRequest::new(sandbox_name.clone(), spec("1")))
             .await
-            .expect("controlled Sandbox should start");
+            .expect("controlled sandbox should start");
     }
 
     // A reopened Provider holds no process-local Network control state, as
-    // after an agentd restart while the Sandbox kept running. Growing the CPU
+    // after an agentd restart while the sandbox kept running. Growing the CPU
     // count restarts the runtime before its Network endpoint is reopened.
     let policy = Rc::new(RecordingPolicy::allow_all());
     policy.deny("network.connect");
@@ -184,7 +184,7 @@ async fn resource_restart_after_reopening_the_provider_keeps_network_control() {
     let sandbox = service
         .ensure(&request)
         .await
-        .expect("resource change should restart the Sandbox");
+        .expect("resource change should restart the sandbox");
 
     let test_result = AssertUnwindSafe(async {
         let denied = sandbox
@@ -193,7 +193,7 @@ async fn resource_restart_after_reopening_the_provider_keeps_network_control() {
             .expect("denied request should still produce an exit status");
         assert!(
             !denied.status.success(),
-            "restarted Sandbox reached the network without host control"
+            "restarted sandbox reached the network without host control"
         );
         assert_action(&policy.requests.borrow(), "network.connect");
     })
@@ -202,7 +202,7 @@ async fn resource_restart_after_reopening_the_provider_keeps_network_control() {
     service
         .delete(request.name())
         .await
-        .expect("controlled Sandbox should delete");
+        .expect("controlled sandbox should delete");
     if let Err(payload) = test_result {
         std::panic::resume_unwind(payload);
     }

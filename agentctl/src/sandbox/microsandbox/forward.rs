@@ -4,14 +4,14 @@ use sandbox_microsandbox::{GuestTcpDialer, GuestTcpStream, MicrosandboxProvider}
 
 use crate::{Error, sandbox::Assignment};
 
-/// Dials TCP connections from inside one Agent Sandbox.
+/// Dials TCP connections from inside one agent sandbox.
 ///
-/// The dialer multiplexes streams over a single Sandbox connection, so opening
+/// The dialer multiplexes streams over a single sandbox connection, so opening
 /// many concurrent connections through one dialer is cheap. It stops working
-/// when the Sandbox runtime restarts; create a replacement when a connect fails.
+/// when the sandbox runtime restarts; create a replacement when a connect fails.
 pub struct GuestDialer(GuestTcpDialer);
 
-/// One open TCP stream dialed from inside an Agent Sandbox.
+/// One open TCP stream dialed from inside an agent sandbox.
 pub struct GuestConnection(GuestTcpStream);
 
 impl GuestDialer {
@@ -62,7 +62,7 @@ impl GuestConnection {
 pub(crate) async fn guest_tcp_dialer(home: &std::path::Path, assignment: &Assignment) -> Result<GuestDialer, Error> {
     let provider = MicrosandboxProvider::open(home.join("microsandbox")).await?;
     let Assignment::Materialized { id, .. } = assignment else {
-        return Err(Error::Invalid("forward target Sandbox is not materialized".into()));
+        return Err(Error::Invalid("forward target sandbox is not materialized".into()));
     };
     provider
         .guest_tcp_dialer(id)

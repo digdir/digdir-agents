@@ -1,9 +1,9 @@
-//! Requests converging an Agent and waiting for the outcome.
+//! Requests converging an agent and waiting for the outcome.
 //!
-//! A waiter reads readiness and failure from the stored Agent and rereads it
+//! A waiter reads readiness and failure from the stored agent and rereads it
 //! whenever the daemon-wide revision advances, so it can skip intermediate
 //! states but never miss the terminal one. Progress is observed separately,
-//! through the Agent's provisioning state.
+//! through the agent's provisioning state.
 
 use std::time::Duration;
 
@@ -11,26 +11,26 @@ use crate::{AgentId, Error, FailureKind, ReconcileFailure, resources::Changes};
 
 use super::{SharedAgentStore, Wakeup};
 
-/// Longest a waiter goes without rereading the stored Agent.
+/// Longest a waiter goes without rereading the stored agent.
 const RECHECK_INTERVAL: Duration = Duration::from_secs(30);
-/// How long a waiter lets changes gather before rereading the stored Agent.
-/// Every progress event of any Agent advances the revision, so a waiter
+/// How long a waiter lets changes gather before rereading the stored agent.
+/// Every progress event of any agent advances the revision, so a waiter
 /// rereads once per burst instead of once per event.
 const SETTLE: Duration = Duration::from_millis(50);
 
-/// How long a request waits for the Agent it woke.
+/// How long a request waits for the agent it woke.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WaitPolicy {
     /// Returns after one reconciliation pass with that pass's outcome.
     FirstPass,
     /// Keeps waiting through transient failures, which the background controller
-    /// retries, until the Agent has its desired run state or that state is
-    /// invalid. A running Agent's guest recorded as unresponsive ends the wait
+    /// retries, until the agent has its desired run state or that state is
+    /// invalid. A running agent's guest recorded as unresponsive ends the wait
     /// instead.
     UntilConverged,
 }
 
-/// Wakes Agent convergence and lets a request wait for it.
+/// Wakes agent convergence and lets a request wait for it.
 #[derive(Clone)]
 pub struct Convergence {
     wakeup: Wakeup,
@@ -39,24 +39,24 @@ pub struct Convergence {
 }
 
 impl Convergence {
-    /// Pairs the controller's wake-up handle with the stored Agents and their revision.
+    /// Pairs the controller's wake-up handle with the stored agents and their revision.
     #[must_use]
     pub fn new(wakeup: Wakeup, store: SharedAgentStore, changes: Changes) -> Self {
         Self { wakeup, store, changes }
     }
 
-    /// Wakes convergence of the named Agent, waits according to `wait`, and
-    /// returns the Agent as stored when the wait ended. Converged means its
+    /// Wakes convergence of the named agent, waits according to `wait`, and
+    /// returns the agent as stored when the wait ended. Converged means its
     /// desired run state was recorded for its generation: Ready when it runs,
-    /// stopped when it is stopped. A caller that needs the Sandbox running
-    /// refuses a stopped Agent itself, before and after converging.
+    /// stopped when it is stopped. A caller that needs the sandbox running
+    /// refuses a stopped agent itself, before and after converging.
     ///
     /// # Errors
     ///
     /// Returns `Error::Invalid` when desired state must change, the first pass's
     /// failure under [`WaitPolicy::FirstPass`], `Error::SandboxUnresponsive`
-    /// when a running Agent's guest is unresponsive, `Error::Conflict` when the
-    /// Agent is being or was deleted, `Error::NotFound` when it does not exist,
+    /// when a running agent's guest is unresponsive, `Error::Conflict` when the
+    /// agent is being or was deleted, `Error::NotFound` when it does not exist,
     /// or a storage error.
     pub async fn converge(&self, name: &str, wait: WaitPolicy) -> Result<super::AgentRecord, Error> {
         let record = self.store.get_by_name(name).await?;
@@ -92,12 +92,12 @@ impl Convergence {
         }
     }
 
-    /// Hints convergence of every Agent, for host state any of them may wait on, such as the login
+    /// Hints convergence of every agent, for host state any of them may wait on, such as the login
     /// an optional harness installation needs. The periodic pass still follows a dropped hint.
     ///
     /// # Errors
     ///
-    /// Returns a storage error when the Agents cannot be listed.
+    /// Returns a storage error when the agents cannot be listed.
     pub async fn wake_all(&self) -> Result<(), Error> {
         for record in self.store.list().await? {
             self.wakeup.notify(record.id);
@@ -105,7 +105,7 @@ impl Convergence {
         Ok(())
     }
 
-    /// Reads the waited-on Agent, which must still exist.
+    /// Reads the waited-on agent, which must still exist.
     async fn get(&self, id: AgentId) -> Result<super::AgentRecord, Error> {
         match self.store.get(id).await {
             Ok(record) if record.agent.metadata.deletion_timestamp.is_none() => Ok(record),
@@ -133,7 +133,7 @@ fn outcome(record: &super::AgentRecord) -> Option<Result<(), Error>> {
             .into()));
         }
     }
-    // A stopped Agent reaches nothing in its guest, so a stall recorded before it stopped is stale.
+    // A stopped agent reaches nothing in its guest, so a stall recorded before it stopped is stale.
     if !stopped && let Some(stalled) = status.unresponsive() {
         return Some(Err(Error::SandboxUnresponsive(stalled.detail())));
     }

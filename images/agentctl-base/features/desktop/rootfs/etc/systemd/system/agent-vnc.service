@@ -1,5 +1,5 @@
 [Unit]
-Description=VNC access proxy to the Agent desktop
+Description=VNC access proxy to the agent desktop
 Documentation=https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base
 Requires=agent-vnc.socket
 After=agent-vnc.socket

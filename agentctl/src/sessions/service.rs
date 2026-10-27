@@ -1,4 +1,4 @@
-//! User-facing Session operations coordinated with the reconciler.
+//! User-facing session operations coordinated with the reconciler.
 
 use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Duration};
 
@@ -24,16 +24,16 @@ const INPUT_READY_POLL: Duration = Duration::from_millis(100);
 const UPGRADE_SESSION_PASS_TIMEOUT: Duration = Duration::from_mins(1);
 const UPGRADE_SANDBOX_INSPECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Sessions that block an upgrade and Sessions that will restart without resumption.
+/// Sessions that block an upgrade and sessions that will restart without resumption.
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct UpgradeReadiness {
     /// Active work or attachments that make the transition unsafe.
     pub blockers: Vec<String>,
-    /// Quiescent Sessions without a harness-native conversation to resume.
+    /// Quiescent sessions without a harness-native conversation to resume.
     pub warnings: Vec<String>,
 }
 
-/// Durable Session registry whose effects are owned by the daemon controller.
+/// Durable session registry whose effects are owned by the daemon controller.
 pub struct Service {
     store: SharedStore,
     sandboxes: Rc<AgentSandboxes>,
@@ -42,12 +42,12 @@ pub struct Service {
     wakeup: Wakeup,
     /// Sessions with a delivery in flight, each with the signal its waiters
     /// sleep on. Two concurrent prompts would interleave their keystrokes in
-    /// the harness's single input line, so deliveries are serialized per Session.
+    /// the harness's single input line, so deliveries are serialized per session.
     deliveries: RefCell<HashMap<SessionId, Rc<Notify>>>,
 }
 
-/// Marks one Session busy delivering for as long as it lives; dropping it,
-/// including on cancellation, releases the Session and wakes the next sender.
+/// Marks one session busy delivering for as long as it lives; dropping it,
+/// including on cancellation, releases the session and wakes the next sender.
 struct Delivering<'a> {
     deliveries: &'a RefCell<HashMap<SessionId, Rc<Notify>>>,
     session: SessionId,
@@ -80,8 +80,8 @@ impl Drop for Delivering<'_> {
 }
 
 impl Service {
-    /// Creates a Session service over durable storage, Agent Sandboxes,
-    /// Agent convergence and the Session controller.
+    /// Creates a session service over durable storage, agent sandboxes,
+    /// agent convergence and the session controller.
     #[must_use]
     pub fn new(
         store: SharedStore,
@@ -100,20 +100,20 @@ impl Service {
         }
     }
 
-    /// Creates or gets one named Session and waits until its driver is ready.
+    /// Creates or gets one named session and waits until its driver is ready.
     ///
-    /// `request` applies only when this call creates the Session. Its harness,
+    /// `request` applies only when this call creates the session. Its harness,
     /// model and effort resolve in that order of precedence: the explicit
     /// request, then the selected installation's manifest defaults, then the
     /// harness's own defaults; the resolved values are recorded with the
-    /// Session. The initial prompt is handed to the harness at its first
+    /// session. The initial prompt is handed to the harness at its first
     /// launch, so the harness starts working before this call returns.
     ///
     /// # Errors
     ///
-    /// Returns an error when persistence fails, the Agent is invalid, or an
-    /// explicit selection conflicts with an existing Session; with
-    /// [`WaitPolicy::FirstPass`] also when the single Agent pass fails.
+    /// Returns an error when persistence fails, the agent is invalid, or an
+    /// explicit selection conflicts with an existing session; with
+    /// [`WaitPolicy::FirstPass`] also when the single agent pass fails.
     pub async fn ensure(
         &self,
         agent: &str,
@@ -124,17 +124,17 @@ impl Service {
         let (owner, session) = self.prepare(agent, name, request).await?;
         let converged = self.convergence.converge(agent, wait).await?;
         if converged.id != owner.id {
-            // The Agent was deleted and its name reused while this request waited.
+            // The agent was deleted and its name reused while this request waited.
             return Err(Error::Conflict);
         }
         converged.reject_stopped()?;
-        // On a brand-new Agent this is the first moment the answer exists.
+        // On a brand-new agent this is the first moment the answer exists.
         Self::reject_omitted_optional_harness(&converged, session.harness)?;
         self.wakeup.reconcile(session.id).await?;
         self.store.session_attach_target(session.id).await
     }
 
-    /// Delivers a prompt to a running Session's harness.
+    /// Delivers a prompt to a running session's harness.
     ///
     /// With `wait`, snapshots the completed-turn counter before delivery and
     /// waits for it to advance with identical waiting activity in two consecutive
@@ -150,9 +150,9 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns an error when the Session is not running, the harness has not
+    /// Returns an error when the session is not running, the harness has not
     /// become ready for input within a short grace period, the input cannot be
-    /// delivered, the Session fails mid-turn, or the wait exceeds `timeout`.
+    /// delivered, the session fails mid-turn, or the wait exceeds `timeout`.
     pub async fn prompt(
         &self,
         agent: &str,
@@ -181,7 +181,7 @@ impl Service {
             timeout.unwrap_or(PROMPT_TIMEOUT_MAX),
             self.wait_for_completion(id, name, completed_before),
         ).await.map_err(|_| Error::Session(format!(
-            "timed out waiting for Session \"{name}\" to complete; the prompt was submitted; inspect turns before retrying"
+            "timed out waiting for session \"{name}\" to complete; the prompt was submitted; inspect turns before retrying"
         )))?
     }
 
@@ -259,14 +259,14 @@ impl Service {
             }
         })
         .await
-        .map_err(|_| Error::Session(format!("timed out waiting for Session \"{name}\" to accept input")))?
+        .map_err(|_| Error::Session(format!("timed out waiting for session \"{name}\" to accept input")))?
     }
 
-    /// Reads the Session's conversation as ordered turns, optionally the last `last`.
+    /// Reads the session's conversation as ordered turns, optionally the last `last`.
     ///
     /// # Errors
     ///
-    /// Returns an error when the Session or its Sandbox is unavailable or the
+    /// Returns an error when the session or its sandbox is unavailable or the
     /// conversation cannot be read.
     pub async fn turns(&self, agent: &str, name: &SessionName, last: Option<usize>) -> Result<Vec<Turn>, Error> {
         let session = self.visible(agent, name).await?;
@@ -291,9 +291,9 @@ impl Service {
         Ok((session, sandbox))
     }
 
-    /// Refuses a Session on an optional installation this Agent's Sandbox does not carry.
+    /// Refuses a session on an optional installation this agent's sandbox does not carry.
     ///
-    /// Reports the reason to the caller; the Session reconciler enforces it. Before the Sandbox is
+    /// Reports the reason to the caller; the session reconciler enforces it. Before the sandbox is
     /// materialized nothing is known, so the decision is deferred to the next attach.
     fn reject_omitted_optional_harness(
         owner: &control_plane::AgentRecord,
@@ -310,7 +310,7 @@ impl Service {
         }
         Err(Error::Invalid(format!(
             "Agent {:?} declares harness {:?} as optional and it is not installed, because its \
-             host login is absent; sign in on the host and the next Agent convergence installs it",
+             host login is absent; sign in on the host and the next agent convergence installs it",
             owner.agent.metadata.name,
             installation.kind.as_str()
         )))
@@ -360,8 +360,8 @@ impl Service {
                     .kind
             }
         };
-        // Validated before the Session is persisted: a Session name is bound to its harness for the
-        // life of the Session, so a refused attempt must not leave the name claimed.
+        // Validated before the session is persisted: a session name is bound to its harness for the
+        // life of the session, so a refused attempt must not leave the name claimed.
         Self::reject_omitted_optional_harness(&owner, harness)?;
         let session = if let Some(session) = existing {
             session
@@ -388,7 +388,7 @@ impl Service {
         Ok((owner, session))
     }
 
-    /// Gets one durable Session from the active Agent incarnation.
+    /// Gets one durable session from the active agent incarnation.
     ///
     /// # Errors
     ///
@@ -397,11 +397,11 @@ impl Service {
         self.visible(agent, name).await
     }
 
-    /// Lists durable Sessions, optionally scoped to one active Agent incarnation.
+    /// Lists durable sessions, optionally scoped to one active agent incarnation.
     ///
     /// # Errors
     ///
-    /// Returns an error when the scoped Agent is missing or persistent state cannot be read.
+    /// Returns an error when the scoped agent is missing or persistent state cannot be read.
     pub async fn list(&self, agent: Option<&str>) -> Result<Vec<Session>, Error> {
         let Some(agent) = agent else {
             return self.live_sessions().await;
@@ -410,18 +410,18 @@ impl Service {
         Ok(live(self.store.list_agent_sessions(agent).await?))
     }
 
-    /// Releases one Session: its harness is stopped and the Session is removed.
+    /// Releases one session: its harness is stopped and the session is removed.
     ///
-    /// The request is recorded first, so a Session that cannot be released yet
-    /// stays marked and is retried by the Session controller instead of leaving
-    /// a harness running with nothing tracking it. The Session is no longer
+    /// The request is recorded first, so a session that cannot be released yet
+    /// stays marked and is retried by the session controller instead of leaving
+    /// a harness running with nothing tracking it. The session is no longer
     /// listed or resolvable by name from the moment it is marked, and its name
     /// becomes available again once the harness is gone. Repeating the request
     /// while the release is still pending is safe.
     ///
     /// # Errors
     ///
-    /// Returns an error when the Agent or Session is missing, the request
+    /// Returns an error when the agent or session is missing, the request
     /// cannot be recorded, or the release pass fails; the marker survives a
     /// failed pass.
     pub async fn delete(&self, agent: &str, name: &SessionName) -> Result<(), Error> {
@@ -433,16 +433,16 @@ impl Service {
         })
     }
 
-    /// Archives or unarchives one Session and returns it as recorded.
+    /// Archives or unarchives one session and returns it as recorded.
     ///
     /// Archiving stops the harness and keeps it stopped, once any turn in
-    /// progress has ended; the Session keeps its name and conversation.
+    /// progress has ended; the session keeps its name and conversation.
     /// Unarchiving leaves it Idle, so the next attach resumes it. Repeating
     /// either is safe.
     ///
     /// # Errors
     ///
-    /// Returns an error when the Agent or Session is missing, the request
+    /// Returns an error when the agent or session is missing, the request
     /// cannot be recorded, or the pass fails; the request survives a failed pass.
     pub async fn set_archived(&self, agent: &str, name: &SessionName, archived: bool) -> Result<Session, Error> {
         let session = self.store.set_session_archived(agent, name, archived).await?;
@@ -450,13 +450,13 @@ impl Service {
         self.store.get_session(session.id).await
     }
 
-    /// Every Session that is not being deleted. One already on its way out
+    /// Every session that is not being deleted. One already on its way out
     /// is gone as far as listings and upgrades are concerned.
     async fn live_sessions(&self) -> Result<Vec<Session>, Error> {
         Ok(live(self.store.list_all_sessions().await?))
     }
 
-    /// Resolves a Session a caller may still act on. A Session marked for
+    /// Resolves a session a caller may still act on. A session marked for
     /// release is already gone as far as its name is concerned.
     async fn visible(&self, agent: &str, name: &SessionName) -> Result<Session, Error> {
         let session = self.store.get_agent_session(agent, name).await?;
@@ -470,11 +470,11 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns an error when the durable Session or Sandbox state cannot be inspected.
+    /// Returns an error when the durable session or sandbox state cannot be inspected.
     pub async fn upgrade_readiness(&self) -> Result<UpgradeReadiness, Error> {
         tokio::time::timeout(UPGRADE_SESSION_PASS_TIMEOUT, self.inspect_upgrade_readiness())
             .await
-            .map_err(|_| Error::Session("timed out checking Sessions before upgrade".into()))?
+            .map_err(|_| Error::Session("timed out checking sessions before upgrade".into()))?
     }
 
     async fn inspect_upgrade_readiness(&self) -> Result<UpgradeReadiness, Error> {
@@ -522,21 +522,21 @@ impl Service {
         Ok(readiness)
     }
 
-    /// Stops quiescent Session runtimes once after a software upgrade so normal
+    /// Stops quiescent session runtimes once after a software upgrade so normal
     /// reconciliation relaunches them with the current harness hooks.
     ///
     /// # Errors
     ///
     /// Returns an error, without clearing the caller-owned marker, when a
-    /// running Sandbox cannot be inspected or a Session becomes attached.
+    /// running sandbox cannot be inspected or a session becomes attached.
     pub async fn relaunch_after_upgrade(&self) -> Result<(), Error> {
         tokio::time::timeout(UPGRADE_SESSION_PASS_TIMEOUT, self.relaunch_sessions())
             .await
-            .map_err(|_| Error::Session("timed out relaunching Sessions after upgrade".into()))?
+            .map_err(|_| Error::Session("timed out relaunching sessions after upgrade".into()))?
     }
 
     async fn relaunch_sessions(&self) -> Result<(), Error> {
-        // An archived Session stays stopped, even one still finishing its last turn.
+        // An archived session stays stopped, even one still finishing its last turn.
         for session in self
             .live_sessions()
             .await?
@@ -580,7 +580,7 @@ impl Service {
             .await
             .map_err(|_| {
                 Error::Session(format!(
-                    "timed out inspecting the Sandbox for Session \"{}\"",
+                    "timed out inspecting the sandbox for session \"{}\"",
                     session.name
                 ))
             })?;
@@ -596,12 +596,12 @@ impl Service {
     }
 }
 
-/// Leaves out Sessions that are being deleted.
+/// Leaves out sessions that are being deleted.
 fn live(sessions: Vec<Session>) -> Vec<Session> {
     sessions.into_iter().filter(|session| !session.is_deleting()).collect()
 }
 
-/// An existing Session keeps its recorded harness, model and effort; only an
+/// An existing session keeps its recorded harness, model and effort; only an
 /// explicit, differing request is an error, so a manifest default that changed
 /// after creation never conflicts with relaunching or attaching.
 fn reject_conflicting_selections(name: &SessionName, session: &Session, request: &SessionRequest) -> Result<(), Error> {

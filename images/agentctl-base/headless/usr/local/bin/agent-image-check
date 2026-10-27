@@ -1,5 +1,5 @@
 #!/bin/sh
-# Checks an Agent image against what agentd expects of it (agentctl/docs/image-contract.md in digdir/digdir-agents).
+# Checks an agent image against what agentd expects of it (agentctl/docs/image-contract.md in digdir/digdir-agents).
 # Run it as root at the end of an image's last build stage, after every step that writes files:
 #
 #   RUN agent-image-check
@@ -38,7 +38,7 @@ else
     esac
 fi
 
-# A root-owned file under the home directory locks the Agent out of its own caches and configuration.
+# A root-owned file under the home directory locks the agent out of its own caches and configuration.
 [ -d /home/agent/code ] || fail "/home/agent/code is missing"
 foreign="$(find /home/agent ! -user agent -print 2>/dev/null | head -5)"
 [ -z "$foreign" ] || fail "files under /home/agent not owned by agent, such as: $(echo "$foreign" | tr '\n' ' ')"
@@ -54,7 +54,7 @@ for path in /usr/bin/env /usr/bin/sudo /usr/bin/tmux /usr/bin/tar /usr/bin/insta
     [ -x "$path" ] || fail "$path is missing"
 done
 [ -f /etc/ssl/certs/ca-certificates.crt ] || fail "/etc/ssl/certs/ca-certificates.crt is missing; install ca-certificates"
-# Every process in the Sandbox runs with LANG=C.UTF-8 and TERM=xterm-256color. locale reports a missing locale on
+# Every process in the sandbox runs with LANG=C.UTF-8 and TERM=xterm-256color. locale reports a missing locale on
 # stderr but still succeeds.
 [ -z "$(LC_ALL=C.UTF-8 locale 2>&1 >/dev/null)" ] || fail "the C.UTF-8 locale is missing"
 terminfo=
@@ -76,7 +76,7 @@ rm -rf "$scratch"
 # SSH access: agentd owns the server's policy, keys and unit, and needs systemd to run it.
 [ -x /usr/sbin/sshd ] || fail "/usr/sbin/sshd is missing; install openssh-server"
 [ -x /usr/bin/systemctl ] || fail "/usr/bin/systemctl is missing"
-# The manifest owns optional tmpfs mounts. Letting systemd mount /tmp would hide the Sandbox disk's free space.
+# The manifest owns optional tmpfs mounts. Letting systemd mount /tmp would hide the sandbox disk's free space.
 for unit in ssh.service ssh.socket tmp.mount; do
     state="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
     case "$state" in masked | not-found | '') ;; *) fail "$unit is $state; it must be masked" ;; esac
@@ -84,7 +84,7 @@ done
 if ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
     fail "the image ships SSH host keys in /etc/ssh"
 fi
-# Every Agent boots with its own machine ID.
+# Every agent boots with its own machine ID.
 [ ! -s /etc/machine-id ] || fail "/etc/machine-id is not empty"
 
 # VNC access: the descriptor names the units agentd enables and the ports it expects.

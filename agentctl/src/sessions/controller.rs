@@ -6,10 +6,10 @@ use crate::{Error, controller};
 
 use super::{SessionId, SharedStore};
 
-/// Observes recoverable Session reconciliation errors without stopping the controller.
+/// Observes recoverable session reconciliation errors without stopping the controller.
 pub type ErrorHandler = controller::ErrorHandler<SessionId>;
 
-/// A handle for requesting immediate Session convergence.
+/// A handle for requesting immediate session convergence.
 pub type Wakeup = controller::Wakeup<SessionId>;
 
 struct Source(SharedStore);
@@ -25,10 +25,10 @@ impl controller::Source<SessionId> for Source {
     }
 }
 
-/// Generic keyed reconciliation specialized for durable Sessions.
+/// Generic keyed reconciliation specialized for durable sessions.
 pub struct Controller(controller::Controller<SessionId>);
 
-/// Wakes Sessions affected by an Agent readiness or Sandbox transition.
+/// Wakes sessions affected by an agent readiness or sandbox transition.
 pub struct AgentNotifier {
     store: SharedStore,
     wakeup: Wakeup,
@@ -36,7 +36,7 @@ pub struct AgentNotifier {
 }
 
 impl AgentNotifier {
-    /// Creates a notifier over durable Sessions and their controller.
+    /// Creates a notifier over durable sessions and their controller.
     #[must_use]
     pub fn new(store: SharedStore, wakeup: Wakeup, on_error: Rc<dyn Fn(&Error)>) -> Self {
         Self {
@@ -81,7 +81,7 @@ impl crate::control_plane::SessionNotifier for AgentNotifier {
 }
 
 impl Controller {
-    /// Creates a Session controller and its independently shareable wake-up handle.
+    /// Creates a session controller and its independently shareable wake-up handle.
     #[must_use]
     pub fn new(
         store: SharedStore,
@@ -94,7 +94,7 @@ impl Controller {
         (Self(controller), wakeup)
     }
 
-    /// Reconciles existing Sessions immediately and then continuously.
+    /// Reconciles existing sessions immediately and then continuously.
     pub async fn run(self) {
         self.0.run().await;
     }

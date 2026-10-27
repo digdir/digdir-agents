@@ -1,4 +1,4 @@
-//! Kubernetes-style quantities used by Sandbox resource assignments.
+//! Kubernetes-style quantities used by sandbox resource assignments.
 
 use std::{fmt, num::NonZeroU64, str::FromStr};
 

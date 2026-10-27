@@ -126,7 +126,7 @@ ARG YARN_VERSION=4.18.0
 
 ENV COREPACK_HOME=/usr/local/share/corepack
 
-# Agent Sandboxes mount their CA bundle here; this step's Node downloads trust it.
+# Agent sandboxes mount their CA bundle here; this step's Node downloads trust it.
 RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
       export NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem; \
     fi; \

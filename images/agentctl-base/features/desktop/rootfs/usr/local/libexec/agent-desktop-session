@@ -1,5 +1,5 @@
 #!/bin/sh
-# Starts the Agent desktop session: the configured keyboard layout, a panel, a window manager.
+# Starts the agent desktop session: the configured keyboard layout, a panel, a window manager.
 set -eu
 
 : "${AGENT_DESKTOP_DISPLAY:=:1}"
@@ -21,6 +21,6 @@ setxkbmap $AGENT_DESKTOP_KEYBOARD \
     || echo "desktop session: setxkbmap $AGENT_DESKTOP_KEYBOARD failed; the keyboard layout is unchanged" >&2
 
 # -c pins the configuration to the image: without it tint2 copies its template into the home
-# directory, which the platform resynchronizes from the host on every Sandbox setup.
+# directory, which the platform resynchronizes from the host on every sandbox setup.
 tint2 -c /etc/xdg/tint2/tint2rc >/dev/null 2>&1 &
 exec openbox

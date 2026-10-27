@@ -1,4 +1,4 @@
-//! Runtime selection and lifecycle integration for Agent Sandboxes.
+//! Runtime selection and lifecycle integration for agent sandboxes.
 
 use std::{collections::BTreeSet, path::Path, rc::Rc};
 
@@ -23,7 +23,7 @@ enum Heartbeat {
     Advanced,
 }
 
-/// Stable identity of one configured Sandbox Provider.
+/// Stable identity of one configured sandbox provider.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ProviderId(String);
@@ -42,7 +42,7 @@ impl ProviderId {
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
         {
             return Err(Error::Invalid(
-                "Sandbox Provider ID must contain lowercase ASCII letters, digits, or '-'".into(),
+                "Sandbox provider ID must contain lowercase ASCII letters, digits, or '-'".into(),
             ));
         }
         Ok(Self(value))
@@ -75,7 +75,7 @@ impl std::fmt::Display for ProviderId {
     }
 }
 
-/// Sticky runtime assignment for one Agent's Sandbox.
+/// Sticky runtime assignment for one agent's sandbox.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase", tag = "state")]
 pub enum Assignment {
@@ -84,13 +84,13 @@ pub enum Assignment {
         /// Configured Provider identity.
         provider: ProviderId,
     },
-    /// The selected Provider has materialized the Sandbox.
+    /// The selected Provider has materialized the sandbox.
     Materialized {
         /// Configured Provider identity.
         provider: ProviderId,
-        /// Provider-owned Sandbox identity.
+        /// Provider-owned sandbox identity.
         id: SandboxId,
-        /// Harness installations convergence put in this Sandbox. An optional installation whose
+        /// Harness installations convergence put in this sandbox. An optional installation whose
         /// host login was absent is missing here, and is installed by a later pass once it exists.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         harnesses: Vec<crate::Harness>,
@@ -106,7 +106,7 @@ impl Assignment {
         }
     }
 
-    /// Returns the materialized Sandbox identity when available.
+    /// Returns the materialized sandbox identity when available.
     #[must_use]
     pub const fn id(&self) -> Option<&SandboxId> {
         match self {
@@ -115,7 +115,7 @@ impl Assignment {
         }
     }
 
-    /// Returns the harnesses installed in the materialized Sandbox, when it exists.
+    /// Returns the harnesses installed in the materialized sandbox, when it exists.
     #[must_use]
     pub fn installed_harnesses(&self) -> Option<&[crate::Harness]> {
         match self {
@@ -125,15 +125,15 @@ impl Assignment {
     }
 }
 
-/// One runtime-selectable implementation of Agent Sandbox lifecycle effects.
+/// One runtime-selectable implementation of agent sandbox lifecycle effects.
 pub trait Provider {
     /// Returns the configured Provider identity.
     fn id(&self) -> &ProviderId;
 
-    /// Reports whether this Provider can satisfy the Agent requirements.
+    /// Reports whether this Provider can satisfy the agent requirements.
     fn supports<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<bool, Error>>;
 
-    /// Idempotently ensures the Sandbox and its Provider-specific host integration.
+    /// Idempotently ensures the sandbox and its Provider-specific host integration.
     fn ensure<'a>(
         &'a self,
         record: &'a AgentRecord,
@@ -141,44 +141,44 @@ pub trait Provider {
         progress: ::sandbox::ProgressReporter,
     ) -> LocalFuture<'a, Result<ProviderEnsureOutcome, Error>>;
 
-    /// Idempotently stops the Sandbox and its Provider-specific host integration,
+    /// Idempotently stops the sandbox and its Provider-specific host integration,
     /// keeping both for a later [`Self::ensure`].
     fn stop<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>>;
 
-    /// Like [`Self::stop`], but ends the Sandbox at once instead of letting its guest shut down.
+    /// Like [`Self::stop`], but ends the sandbox at once instead of letting its guest shut down.
     fn kill<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>>;
 
-    /// Opens the exact already-materialized Sandbox without lifecycle effects.
+    /// Opens the exact already-materialized sandbox without lifecycle effects.
     fn open<'a>(&'a self, record: &'a AgentRecord, id: &'a SandboxId) -> LocalFuture<'a, Result<SandboxHandle, Error>>;
 
-    /// Idempotently releases the Sandbox and its Provider-specific host integration.
+    /// Idempotently releases the sandbox and its Provider-specific host integration.
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>>;
 }
 
-/// Provider result retaining lifecycle information needed by dependent Sessions.
+/// Provider result retaining lifecycle information needed by dependent sessions.
 pub struct ProviderEnsureOutcome {
     pub sandbox: SandboxHandle,
-    /// The pass started the Sandbox's runtime, so harness processes from before are gone.
+    /// The pass started the sandbox's runtime, so harness processes from before are gone.
     pub runtime_restarted: bool,
     /// Harness installations this pass prepared.
     pub harnesses: Vec<crate::Harness>,
-    /// Whether the Sandbox got the nested Sandboxes the Agent asks for, when it asks for them.
+    /// Whether the sandbox got the nested sandboxes the agent asks for, when it asks for them.
     pub nested_sandboxes: Option<NestedSandboxesOutcome>,
 }
 
-/// Whether a Sandbox runs Sandboxes of its own as its Agent asks.
+/// Whether a sandbox runs sandboxes of its own as its agent asks.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NestedSandboxesOutcome {
-    /// The Sandbox can run Sandboxes of its own.
+    /// The sandbox can run sandboxes of its own.
     Available,
-    /// The Agent prefers them, but the host cannot provide them, for the reason given.
+    /// The agent prefers them, but the host cannot provide them, for the reason given.
     Unavailable(String),
 }
 
-/// Decides whether an Agent's Sandbox runs Sandboxes of its own.
+/// Decides whether an agent's sandbox runs sandboxes of its own.
 ///
 /// It follows what the manifest asks for and whether the Provider offers them on this host, or
-/// why not. A requirement that cannot be met fails the Agent; a preference falls back to none.
+/// why not. A requirement that cannot be met fails the agent; a preference falls back to none.
 ///
 /// # Errors
 ///
@@ -197,26 +197,26 @@ pub fn resolve_nested_sandboxes(
     }
 }
 
-/// Materialized Sandbox and relevant lifecycle transition.
+/// Materialized sandbox and relevant lifecycle transition.
 pub struct EnsureOutcome {
     pub id: SandboxId,
     pub runtime_restarted: bool,
-    /// The running Sandbox, for Agent-level setup that follows platform setup.
+    /// The running sandbox, for agent-level setup that follows platform setup.
     pub sandbox: SandboxHandle,
     /// Harness installations this pass prepared.
     pub harnesses: Vec<crate::Harness>,
-    /// Whether the Sandbox got the nested Sandboxes the Agent asks for, when it asks for them.
+    /// Whether the sandbox got the nested sandboxes the agent asks for, when it asks for them.
     pub nested_sandboxes: Option<NestedSandboxesOutcome>,
     /// The optional instructions and skills setup left out because they do not exist.
     pub missing_sources: Vec<String>,
 }
 
-/// Runtime-selectable setup for an operating system reported by a materialized Sandbox.
+/// Runtime-selectable setup for an operating system reported by a materialized sandbox.
 pub trait PlatformAdapter {
-    /// Reports whether this adapter supports the resolved Sandbox platform.
+    /// Reports whether this adapter supports the resolved sandbox platform.
     fn supports(&self, platform: &Platform) -> bool;
 
-    /// Idempotently applies Agent and harness setup inside the Sandbox,
+    /// Idempotently applies agent and harness setup inside the sandbox,
     /// reporting its steps through `steps`. Returns the optional instructions and skills it left
     /// out because they do not exist.
     fn setup<'a>(
@@ -228,7 +228,7 @@ pub trait PlatformAdapter {
     ) -> LocalFuture<'a, Result<Vec<String>, Error>>;
 }
 
-/// Resolves Agent requirements against configured Providers and dispatches lifecycle effects.
+/// Resolves agent requirements against configured Providers and dispatches lifecycle effects.
 pub struct Service {
     providers: Vec<Rc<dyn Provider>>,
     platforms: Vec<Rc<dyn PlatformAdapter>>,
@@ -249,17 +249,17 @@ impl Service {
         let mut configured = Vec::new();
         for provider in providers {
             if !identities.insert(provider.id().clone()) {
-                return Err(Error::Invalid("duplicate Sandbox Provider identity".into()));
+                return Err(Error::Invalid("duplicate sandbox provider identity".into()));
             }
             configured.push(provider);
         }
         if configured.is_empty() {
-            return Err(Error::Invalid("at least one Sandbox Provider is required".into()));
+            return Err(Error::Invalid("at least one sandbox provider is required".into()));
         }
         let platforms = platforms.into_iter().collect::<Vec<_>>();
         if platforms.is_empty() {
             return Err(Error::Invalid(
-                "at least one Sandbox platform adapter is required".into(),
+                "at least one sandbox platform adapter is required".into(),
             ));
         }
         Ok(Self {
@@ -269,11 +269,11 @@ impl Service {
         })
     }
 
-    /// Selects the first configured Provider that supports the Agent requirements.
+    /// Selects the first configured Provider that supports the agent requirements.
     ///
     /// # Errors
     ///
-    /// Returns an error when capability discovery fails or no Provider supports the Agent.
+    /// Returns an error when capability discovery fails or no Provider supports the agent.
     pub async fn resolve(&self, record: &AgentRecord) -> Result<ProviderId, Error> {
         for provider in &self.providers {
             if provider.supports(record).await? {
@@ -281,12 +281,12 @@ impl Service {
             }
         }
         Err(Error::Invalid(format!(
-            "no configured Sandbox Provider supports platform {:?}",
+            "no configured sandbox provider supports platform {:?}",
             record.agent.spec.sandbox.platform
         )))
     }
 
-    /// Runs the selected Provider and resolved Sandbox-platform setup idempotently.
+    /// Runs the selected Provider and resolved sandbox-platform setup idempotently.
     ///
     /// # Errors
     ///
@@ -307,7 +307,7 @@ impl Service {
             .find(|adapter| adapter.supports(resolved_platform))
             .ok_or_else(|| {
                 Error::Invalid(format!(
-                    "no Agent setup adapter supports resolved Sandbox platform {resolved_platform:?}"
+                    "no agent setup adapter supports resolved sandbox platform {resolved_platform:?}"
                 ))
             })?;
         // The snapshot is fresh from this pass, which may have booted the
@@ -333,8 +333,8 @@ impl Service {
         })
     }
 
-    /// Stops the Agent's Sandbox, keeping its identity and storage for a later
-    /// [`Self::ensure`]; `immediately` ends it without letting its guest shut down. An Agent
+    /// Stops the agent's sandbox, keeping its identity and storage for a later
+    /// [`Self::ensure`]; `immediately` ends it without letting its guest shut down. An agent
     /// without an assigned Provider has nothing to stop.
     ///
     /// # Errors
@@ -356,25 +356,25 @@ impl Service {
         Ok(())
     }
 
-    /// Opens the persisted materialized Sandbox without lifecycle or setup effects.
+    /// Opens the persisted materialized sandbox without lifecycle or setup effects.
     ///
     /// # Errors
     ///
     /// Returns an error unless the assignment is materialized through a configured Provider.
     pub async fn open(&self, record: &AgentRecord) -> Result<SandboxHandle, Error> {
         let Some(Assignment::Materialized { provider, id, .. }) = &record.agent.status.sandbox else {
-            return Err(Error::Invalid("Agent has no materialized Sandbox assignment".into()));
+            return Err(Error::Invalid("Agent has no materialized sandbox assignment".into()));
         };
         self.provider(provider)?.open(record, id).await
     }
 
-    /// Whether the Sandbox's guest reported a heartbeat when last inspected.
+    /// Whether the sandbox's guest reported a heartbeat when last inspected.
     #[must_use]
     pub fn reports_heartbeat(&self, sandbox: &SandboxId) -> bool {
         self.responsiveness.heartbeat(sandbox).is_some()
     }
 
-    /// Runs work that reaches into a Sandbox's guest, inspecting the Sandbox
+    /// Runs work that reaches into a sandbox's guest, inspecting the sandbox
     /// every [`responsiveness::OBSERVATION_INTERVAL`] without a round trip to
     /// the guest, and ends the work once the guest has stalled.
     ///
@@ -413,7 +413,7 @@ impl Service {
         }
     }
 
-    /// Inspects the Sandbox until its guest has stalled, or, given `from`,
+    /// Inspects the sandbox until its guest has stalled, or, given `from`,
     /// until its heartbeat moves past `from` or is no longer reported.
     async fn watch_heartbeat(
         &self,
@@ -440,7 +440,7 @@ impl Service {
         }
     }
 
-    /// Releases the selected Provider idempotently. An unassigned Agent has no effect to release.
+    /// Releases the selected Provider idempotently. An unassigned agent has no effect to release.
     ///
     /// # Errors
     ///
@@ -462,7 +462,7 @@ impl Service {
             .status
             .sandbox
             .as_ref()
-            .ok_or_else(|| Error::Invalid("Agent has no Sandbox Provider assignment".into()))?;
+            .ok_or_else(|| Error::Invalid("Agent has no sandbox provider assignment".into()))?;
         self.provider(assignment.provider())
     }
 
@@ -471,26 +471,26 @@ impl Service {
             .iter()
             .find(|provider| provider.id() == id)
             .map(Rc::as_ref)
-            .ok_or_else(|| Error::Invalid(format!("assigned Sandbox Provider {id:?} is not configured")))
+            .ok_or_else(|| Error::Invalid(format!("assigned sandbox provider {id:?} is not configured")))
     }
 }
 
-/// Connects a guest TCP dialer through the recorded Sandbox Provider.
+/// Connects a guest TCP dialer through the recorded sandbox provider.
 ///
 /// # Errors
 ///
 /// Returns an error when the Provider is unsupported by this client or the
-/// Sandbox is not running.
+/// sandbox is not running.
 pub async fn guest_tcp_dialer(home: &Path, assignment: &Assignment) -> Result<GuestDialer, Error> {
     match assignment.provider().as_str() {
         microsandbox::PROVIDER_ID => microsandbox::guest_tcp_dialer(home, assignment).await,
         provider => Err(Error::Invalid(format!(
-            "guest TCP forwarding is not supported through Sandbox Provider {provider:?}"
+            "guest TCP forwarding is not supported through sandbox provider {provider:?}"
         ))),
     }
 }
 
-/// Attaches a terminal through the recorded Sandbox Provider.
+/// Attaches a terminal through the recorded sandbox provider.
 ///
 /// # Errors
 ///
@@ -503,7 +503,7 @@ pub async fn attach_terminal(
     match assignment.provider().as_str() {
         microsandbox::PROVIDER_ID => microsandbox::attach_terminal(home, assignment, request).await,
         provider => Err(Error::Invalid(format!(
-            "terminal attachment is not supported through Sandbox Provider {provider:?}"
+            "terminal attachment is not supported through sandbox provider {provider:?}"
         ))),
     }
 }
@@ -532,7 +532,7 @@ mod tests {
         );
         let Err(Error::Invalid(message)) = resolve_nested_sandboxes(Some(NestedSandboxes::Required), unsupported())
         else {
-            panic!("an unmet requirement should fail the Agent");
+            panic!("an unmet requirement should fail the agent");
         };
         assert!(message.ends_with("no nesting here"), "{message}");
     }

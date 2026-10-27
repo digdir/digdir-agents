@@ -9,12 +9,12 @@ PLAYWRIGHT_CLI_VERSION=${PLAYWRIGHT_CLI_VERSION:-0.1.22}
 
 export NODE_PATH=/usr/local/lib/node_modules
 export PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-# Agent Sandboxes mount their CA bundle here; this step's Node downloads trust it.
+# Agent sandboxes mount their CA bundle here; this step's Node downloads trust it.
 if [ -r /run/agent/tls/ca-bundle.pem ]; then
     export NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem
 fi
 
-# ffmpeg converts and inspects browser captures and libnss3-tools imports the Agent CA into Chromium.
+# ffmpeg converts and inspects browser captures and libnss3-tools imports the agent CA into Chromium.
 apt-get update
 apt-get install --yes --no-install-recommends ffmpeg libnss3-tools
 

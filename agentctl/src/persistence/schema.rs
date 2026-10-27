@@ -139,7 +139,7 @@ fn apply_pending_migrations(
     for migration in migrations.iter().filter(|migration| migration.version > current) {
         (migration.apply)(&transaction).map_err(|error| {
             Error::Database(format!(
-                "failed to apply Agent database migration {} ({}): {error}",
+                "failed to apply agent database migration {} ({}): {error}",
                 migration.version, migration.name
             ))
         })?;
@@ -174,10 +174,10 @@ fn add_session_management(transaction: &Transaction<'_>) -> Result<(), Error> {
         .map_err(database_error)
 }
 
-/// Adds the model and effort a Session was created with. Sessions from earlier
+/// Adds the model and effort a session was created with. Sessions from earlier
 /// schemas never chose either; an adapter that hardcoded a launch model until now
-/// reports it, and that model is recorded for its existing Sessions so they keep
-/// launching on one known model once the choice is a Session property.
+/// reports it, and that model is recorded for its existing sessions so they keep
+/// launching on one known model once the choice is a session property.
 fn add_session_selections(transaction: &Transaction<'_>) -> Result<(), Error> {
     if schema_difference(transaction, 3)?.is_none() {
         return Ok(());
@@ -213,7 +213,7 @@ fn add_session_selections(transaction: &Transaction<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Adds the marker that requests a Session's release. Sessions from earlier
+/// Adds the marker that requests a session's release. Sessions from earlier
 /// schemas were never deletable, so every existing row starts unmarked.
 fn add_session_deletion(transaction: &Transaction<'_>) -> Result<(), Error> {
     if schema_difference(transaction, 4)?.is_none() {
@@ -224,7 +224,7 @@ fn add_session_deletion(transaction: &Transaction<'_>) -> Result<(), Error> {
         .map_err(database_error)
 }
 
-/// Adds the request to archive a Session. Sessions from earlier schemas were
+/// Adds the request to archive a session. Sessions from earlier schemas were
 /// never archived, so every existing row starts active.
 fn add_session_archive(transaction: &Transaction<'_>) -> Result<(), Error> {
     if schema_difference(transaction, 5)?.is_none() {

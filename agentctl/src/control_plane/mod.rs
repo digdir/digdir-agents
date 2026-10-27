@@ -1,4 +1,4 @@
-//! Declarative Agent storage, reconciliation, and continuous repair.
+//! Declarative agent storage, reconciliation, and continuous repair.
 
 mod controller;
 mod convergence;
@@ -21,10 +21,10 @@ pub use service::{ApplyRequest, ControlPlane, ImmediateStops, Notifier};
 
 /// Separates desired-state writes from reconciler status writes using generation checks.
 pub trait AgentStore {
-    /// Gets an active Agent record by immutable identity.
+    /// Gets an active agent record by immutable identity.
     fn get(&self, id: AgentId) -> LocalFuture<'_, Result<AgentRecord, Error>>;
 
-    /// Gets an active Agent record by its user-facing name.
+    /// Gets an active agent record by its user-facing name.
     fn get_by_name<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<AgentRecord, Error>>;
 
     /// Lists an independent snapshot of every record.
@@ -34,7 +34,7 @@ pub trait AgentStore {
     fn put(&self, record: AgentRecord, expected_generation: u64) -> LocalFuture<'_, Result<(), Error>>;
 
     /// Replaces observed state if the reconciled generation is still current
-    /// and the Agent is not being deleted, stamping condition transition times
+    /// and the agent is not being deleted, stamping condition transition times
     /// against the stored status, and returns the status as stored.
     fn update_status(&self, id: AgentId, generation: u64, status: Status) -> LocalFuture<'_, Result<Status, Error>>;
 

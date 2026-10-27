@@ -16,10 +16,10 @@ use time::OffsetDateTime;
 use super::open::{Environment, MenuEntry, OpenMenu, OpenTarget, SshSetup};
 use crate::{format, forward::ForwardSpec};
 
-/// Output lines of a failed pass the Agent side panel shows.
+/// Output lines of a failed pass the agent side panel shows.
 const AGENT_PANEL_OUTPUT_LINES: usize = 10;
 
-/// How long the header shows the outcome of a Session change.
+/// How long the header shows the outcome of a session change.
 const NOTICE_DURATION: Duration = Duration::from_secs(5);
 
 /// A displayed key hint and, when unambiguous, the key emitted by a click.
@@ -61,7 +61,7 @@ impl Hint {
     }
 }
 
-/// Key hints of the new Session form, shared by the modal and the footer.
+/// Key hints of the new session form, shared by the modal and the footer.
 pub(crate) const NEW_SESSION_HINTS: [Hint; 4] = [
     Hint::key("enter", "create", KeyCode::Enter),
     Hint::display("tab/↑/↓", "field"),
@@ -69,7 +69,7 @@ pub(crate) const NEW_SESSION_HINTS: [Hint; 4] = [
     Hint::key("esc", "cancel", KeyCode::Esc),
 ];
 
-/// Key hints of the create Agent form, shared by the modal and the footer.
+/// Key hints of the create agent form, shared by the modal and the footer.
 pub(crate) const CREATE_AGENT_HINTS: [Hint; 4] = [
     Hint::key("enter", "create", KeyCode::Enter),
     Hint::display("tab/↑/↓", "field"),
@@ -109,7 +109,7 @@ pub(crate) const CONFIRM_SSH_SETUP_HINTS: [Hint; 2] = [
 ];
 
 /// The SSH setup question for something waiting to open, which can also open
-/// without the line: an editor may reach Agents through a configuration of its own.
+/// without the line: an editor may reach agents through a configuration of its own.
 pub(crate) const CONFIRM_SSH_SETUP_THEN_HINTS: [Hint; 3] = [
     Hint::key("enter", "add", KeyCode::Enter),
     Hint::key("o", "open anyway", KeyCode::Char('o')),
@@ -151,7 +151,7 @@ const AGENT_HINTS: [Hint; 12] = [
     Hint::key("c", "new agent", KeyCode::Char('c')),
 ];
 
-/// An Agent whose stop is not recorded yet: starting it now would cancel the stop.
+/// An agent whose stop is not recorded yet: starting it now would cancel the stop.
 const STOPPING_AGENT_HINTS: [Hint; 7] = [
     Hint::key("enter", "fold", KeyCode::Enter),
     Hint::key("d", "delete", KeyCode::Char('d')),
@@ -162,7 +162,7 @@ const STOPPING_AGENT_HINTS: [Hint; 7] = [
     Hint::key("c", "new agent", KeyCode::Char('c')),
 ];
 
-/// A stopped Agent runs nothing, so only what works without its Sandbox is offered.
+/// A stopped agent runs nothing, so only what works without its sandbox is offered.
 const STOPPED_AGENT_HINTS: [Hint; 8] = [
     Hint::key("x", "start", KeyCode::Char('x')),
     Hint::key("enter", "fold", KeyCode::Enter),
@@ -196,7 +196,7 @@ const ARCHIVED_SESSION_HINTS: [Hint; 7] = [
     Hint::key("c", "new agent", KeyCode::Char('c')),
 ];
 
-/// A stopped Agent's Session can only be put away or inspected until the Agent starts.
+/// A stopped agent's session can only be put away or inspected until the agent starts.
 const STOPPED_SESSION_HINTS: [Hint; 5] = [
     Hint::key("a", "archive", KeyCode::Char('a')),
     Hint::key("d", "delete", KeyCode::Char('d')),
@@ -239,14 +239,14 @@ pub(crate) const HELP: [&[HelpSection]; 2] = [
         (
             "Fleet",
             &[
-                ("tab", "next Session needing you"),
+                ("tab", "next session needing you"),
                 ("j / k", "move"),
-                ("enter", "fold, or attach a Session"),
+                ("enter", "fold, or attach a session"),
                 ("z", "fold or unfold all"),
-                ("X", "stop every Agent at once"),
-                ("A", "show or hide archived Sessions"),
+                ("X", "stop every agent at once"),
+                ("A", "show or hide archived sessions"),
                 ("/", "filter by name or state"),
-                ("c", "create an Agent"),
+                ("c", "create an agent"),
                 ("F", "port forwards"),
                 ("q", "quit"),
             ],
@@ -257,19 +257,19 @@ pub(crate) const HELP: [&[HelpSection]; 2] = [
                 ("j / k", "scroll a detail view"),
                 ("o", "open, in forwards"),
                 ("q / esc", "back, or close a form"),
-                ("ctrl-b d", "detach from a Session"),
+                ("ctrl-b d", "detach from a session"),
             ],
         ),
     ],
     &[
         (
-            "Selected Agent",
+            "Selected agent",
             &[
                 ("p", "follow provisioning"),
                 ("s / y", "describe, or show YAML"),
-                ("n", "new Session"),
+                ("n", "new session"),
                 ("o", "open in editor, desktop…"),
-                ("e", "shell in its Sandbox"),
+                ("e", "shell in its sandbox"),
                 ("f", "forward a port"),
                 ("x", "stop, or start"),
                 ("r", "restart"),
@@ -277,12 +277,12 @@ pub(crate) const HELP: [&[HelpSection]; 2] = [
             ],
         ),
         (
-            "Selected Session",
+            "Selected session",
             &[
                 ("p", "prompt without attaching"),
                 ("s / y", "describe, or show YAML"),
-                ("n", "new Session on its Agent"),
-                ("o", "open its Agent"),
+                ("n", "new session on its agent"),
+                ("o", "open its agent"),
                 ("a", "archive, or unarchive"),
                 ("d", "delete"),
             ],
@@ -300,11 +300,11 @@ pub(crate) struct App {
     pub(crate) groups: Vec<Group>,
     pub(crate) rows: Vec<Row>,
     pub(crate) collapsed: HashSet<String>,
-    /// Shows only Agents and Sessions whose name, state, harness or model
-    /// contains it, ignoring case; an Agent that matches keeps all its Sessions.
+    /// Shows only agents and sessions whose name, state, harness or model
+    /// contains it, ignoring case; an agent that matches keeps all its sessions.
     pub(crate) filter: String,
     /// Selected tree row, kept by identity so a snapshot that reorders or
-    /// reshapes the tree leaves it on the same Agent or Session.
+    /// reshapes the tree leaves it on the same agent or session.
     pub(crate) selection: Option<TreeRowId>,
     pub(crate) loaded: bool,
     /// Why the daemon cannot be watched; the last state it reported stays shown.
@@ -320,30 +320,30 @@ pub(crate) struct App {
     /// Prompts being sent.
     pub(crate) prompting: usize,
     pub(crate) transcript: Option<Transcript>,
-    /// The Session whose turns are being loaded and its turn count when they
+    /// The session whose turns are being loaded and its turn count when they
     /// were requested; one load runs at a time.
     turns_loading: Option<(String, SessionName, u64)>,
     /// The terminal is wide enough for the panel beside the tree, which shows
-    /// the selected Session's turns or the selected Agent's status.
+    /// the selected session's turns or the selected agent's status.
     pub(crate) side_panel: bool,
-    /// Lists archived Sessions, which are hidden otherwise.
+    /// Lists archived sessions, which are hidden otherwise.
     pub(crate) show_archived: bool,
-    /// The outcome of a Session change and when it was shown.
+    /// The outcome of a session change and when it was shown.
     pub(crate) notice: Option<(String, Instant)>,
     pub(crate) discovering: bool,
     pub(crate) queued_candidates: Option<Vec<ManifestCandidate>>,
     /// Editors and whether the terminal is remote, which the open menu depends on.
     pub(crate) environment: Environment,
-    /// Whether OpenSSH reaches Agents through the generated configuration, as
-    /// it resolved the alias of the Agent checked last.
+    /// Whether OpenSSH reaches agents through the generated configuration, as
+    /// it resolved the alias of the agent checked last.
     pub(crate) ssh_setup: SshSetup,
-    /// Whether the SSH setup is to be checked again once an Agent can be.
+    /// Whether the SSH setup is to be checked again once an agent can be.
     pub(crate) ssh_check_due: bool,
     /// Whether an SSH setup check is running.
     pub(crate) ssh_checking: bool,
     /// The `Include` SSH setup adds, when the user's home is known.
     pub(crate) ssh_include: Option<agent::ssh::UserInclude>,
-    /// Opens waiting in the background, at most one per Agent and target.
+    /// Opens waiting in the background, at most one per agent and target.
     pub(crate) opening: Vec<(String, OpenTarget)>,
 }
 
@@ -479,7 +479,7 @@ pub(crate) enum Modal {
     },
 }
 
-/// A prompt for a running Session, sent without attaching to it.
+/// A prompt for a running session, sent without attaching to it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PromptForm {
     pub(crate) agent: String,
@@ -512,21 +512,21 @@ impl PromptForm {
     }
 }
 
-/// The selected Session's most recent turns, shown beside the tree.
+/// The selected session's most recent turns, shown beside the tree.
 pub(crate) struct Transcript {
     pub(crate) agent: String,
     pub(crate) session: SessionName,
-    /// The Session's turn count when the turns were last requested, if they
+    /// The session's turn count when the turns were last requested, if they
     /// were; a change reloads them.
     requested_at: Option<u64>,
     pub(crate) turns: Vec<Turn>,
     pub(crate) loading: bool,
     pub(crate) error: Option<String>,
-    /// The Session's Agent is stopped, so its turns, which live in the guest, are not read.
+    /// The session's agent is stopped, so its turns, which live in the guest, are not read.
     pub(crate) stopped: bool,
 }
 
-/// Text field of the new Session form that typing edits.
+/// Text field of the new session form that typing edits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SessionField {
     Name,
@@ -548,7 +548,7 @@ impl SessionField {
     }
 }
 
-/// New Session form state: a name, optional model and effort, and a harness picker.
+/// New session form state: a name, optional model and effort, and a harness picker.
 ///
 /// Empty model and effort fields leave the choice to the daemon, which applies
 /// the selected installation's manifest defaults and then the harness's own.
@@ -615,7 +615,7 @@ impl SessionForm {
     }
 
     /// Validates the form. An existing name is rejected, because ensuring it
-    /// would attach to that Session instead of creating one.
+    /// would attach to that session instead of creating one.
     fn submit(&self, sessions: &[Session]) -> Result<Action, String> {
         let session = SessionName::new(self.name.clone()).map_err(|invalid| invalid.to_string())?;
         if sessions
@@ -697,17 +697,17 @@ impl ManifestCandidate {
     }
 }
 
-/// One Agent's default manifest and variant leaves.
+/// One agent's default manifest and variant leaves.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AgentDefinition {
-    /// Directory containing the Agent's `agent.yaml`.
+    /// Directory containing the agent's `agent.yaml`.
     pub(crate) directory: PathBuf,
     /// Manifest leaves in picker order, with `agent.yaml` first.
     pub(crate) variants: Vec<ManifestCandidate>,
 }
 
 impl AgentDefinition {
-    /// User-facing Agent label, taken from the expanded default when possible.
+    /// User-facing agent label, taken from the expanded default when possible.
     pub(crate) fn label(&self) -> String {
         self.variants
             .iter()
@@ -729,7 +729,7 @@ impl AgentDefinition {
     }
 }
 
-/// Focused field of the create-Agent form.
+/// Focused field of the create-agent form.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CreateField {
     Agent,
@@ -752,7 +752,7 @@ impl CreateField {
     }
 }
 
-/// Create-agent form state: independent Agent and variant pickers plus apply overrides.
+/// Create-agent form state: independent agent and variant pickers plus apply overrides.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CreateForm {
     pub(crate) agents: Vec<AgentDefinition>,
@@ -911,7 +911,7 @@ impl CreateForm {
     fn submission(&self, agents: &[Agent]) -> Result<Action, String> {
         let candidate = self
             .candidate()
-            .ok_or_else(|| "no Agent manifests found; apply one with agentctl apply".to_owned())?;
+            .ok_or_else(|| "no agent manifests found; apply one with agentctl apply".to_owned())?;
         let manifest_name = candidate.name.as_ref().map_err(Clone::clone)?;
         let name = if self.name.is_empty() {
             numbered_name(manifest_name, agents)
@@ -931,7 +931,7 @@ impl CreateForm {
     }
 }
 
-/// Returns `name-N` for the lowest N from 1 that no Agent uses, or `name` itself when no numbered name fits.
+/// Returns `name-N` for the lowest N from 1 that no agent uses, or `name` itself when no numbered name fits.
 fn numbered_name(name: &str, agents: &[Agent]) -> String {
     (1..=u32::MAX)
         .map(|number| format!("{name}-{number}"))
@@ -1180,9 +1180,9 @@ pub(crate) enum Tone {
 /// One tree row as the renderer draws it.
 pub(crate) struct RowView {
     pub(crate) agent: bool,
-    /// A Session waits for input, or an Agent has one that does.
+    /// A session waits for input, or an agent has one that does.
     pub(crate) attention: bool,
-    /// An Agent's fold marker or a Session's state glyph, readable without color.
+    /// An agent's fold marker or a session's state glyph, readable without color.
     pub(crate) marker: &'static str,
     pub(crate) name: String,
     pub(crate) state: &'static str,
@@ -1196,7 +1196,7 @@ pub(crate) struct RowView {
     pub(crate) age: String,
 }
 
-/// Sessions by state and Agents provisioning, for the header.
+/// Sessions by state and agents provisioning, for the header.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TriageCounts {
     pub(crate) needs_you: usize,
@@ -1255,8 +1255,8 @@ impl App {
         self.rebuild_from(fallback);
     }
 
-    /// Rebuilds the tree. A selected Session hidden by folding its Agent leaves
-    /// the selection on that Agent; any other selection whose row disappeared
+    /// Rebuilds the tree. A selected session hidden by folding its agent leaves
+    /// the selection on that agent; any other selection whose row disappeared
     /// falls back to the row now at its former position.
     pub(crate) fn rebuild(&mut self) {
         self.rebuild_from(self.selected_index().unwrap_or_default());
@@ -1292,7 +1292,7 @@ impl App {
                     return Vec::new();
                 }
                 let mut rows = vec![Row::Agent(group_index)];
-                // Folding hides Sessions only while nothing is filtered, so a match is never hidden.
+                // Folding hides sessions only while nothing is filtered, so a match is never hidden.
                 if self.filter.is_empty() && self.collapsed.contains(&agent.metadata.name) {
                     return rows;
                 }
@@ -1312,11 +1312,11 @@ impl App {
         }
     }
 
-    /// Where the selection goes when its Session's row disappeared: the listed
-    /// Session of the same Agent that follows it by name, the one before it
-    /// when it was the last, or else the Agent. Archiving or deleting one
-    /// Session after another then needs no move between them, however many
-    /// rows a snapshot, the filter or showing archived Sessions removed.
+    /// Where the selection goes when its session's row disappeared: the listed
+    /// session of the same agent that follows it by name, the one before it
+    /// when it was the last, or else the agent. Archiving or deleting one
+    /// session after another then needs no move between them, however many
+    /// rows a snapshot, the filter or showing archived sessions removed.
     fn session_or_agent_near(&self, agent: &str, name: &SessionName) -> Option<TreeRowId> {
         let listed = (0..self.rows.len())
             .filter_map(|index| match self.tree_id_at(index)? {
@@ -1339,8 +1339,8 @@ impl App {
         self.matches(&agent.metadata.name) || self.matches(agent_state(agent).label)
     }
 
-    /// Positions of the group's Sessions the tree lists, folded or not: the
-    /// shown ones, and while filtered, those matching or of a matching Agent.
+    /// Positions of the group's sessions the tree lists, folded or not: the
+    /// shown ones, and while filtered, those matching or of a matching agent.
     fn listed_positions(&self, group: &Group, agent_matches: bool) -> Vec<usize> {
         (0..group.sessions.len())
             .filter(|position| {
@@ -1351,7 +1351,7 @@ impl App {
             .collect()
     }
 
-    /// Whether the tree lists this Session when nothing is filtered or folded.
+    /// Whether the tree lists this session when nothing is filtered or folded.
     const fn lists(&self, session: &Session) -> bool {
         self.show_archived || !session.is_archived()
     }
@@ -1372,10 +1372,10 @@ impl App {
         .any(|value| self.matches(value))
     }
 
-    /// Selects the next Session waiting for input in tree order, after the
-    /// selection and wrapping around. The header counts every such Session, so
-    /// one in a folded Agent is unfolded and one the filter hides clears it.
-    /// An archived Session is neither counted nor selected, as nobody answers it.
+    /// Selects the next session waiting for input in tree order, after the
+    /// selection and wrapping around. The header counts every such session, so
+    /// one in a folded agent is unfolded and one the filter hides clears it.
+    /// An archived session is neither counted nor selected, as nobody answers it.
     fn select_next_needing_input(&mut self) {
         let order = self
             .groups
@@ -1639,7 +1639,7 @@ impl App {
             KeyCode::Char('z') => self.toggle_all(),
             KeyCode::Char('A') => {
                 self.show_archived = !self.show_archived;
-                // Showing or hiding archived Sessions answers a notice about
+                // Showing or hiding archived sessions answers a notice about
                 // archiving, "A to show" included; any other is short-lived.
                 self.notice = None;
                 self.rebuild();
@@ -1719,7 +1719,7 @@ impl App {
             return Action::None;
         };
         let name = agent.metadata.name.clone();
-        // Nothing runs in a stopped Agent until it is started.
+        // Nothing runs in a stopped agent until it is started.
         if agent.spec.is_stopped() && matches!(key.code, KeyCode::Char('n' | 'o' | 'e' | 'f')) {
             return Action::None;
         }
@@ -1756,7 +1756,7 @@ impl App {
                 };
             }
             KeyCode::Char('x') => self.modal = Some(Modal::ConfirmStop { agent: name }),
-            // A stopped Agent is started with x; a stopping one would have its stop undone.
+            // A stopped agent is started with x; a stopping one would have its stop undone.
             KeyCode::Char('r') if !agent.spec.is_stopped() => self.modal = Some(Modal::ConfirmRestart { agent: name }),
             KeyCode::Char('n') => self.open_new_session(group),
             KeyCode::Char('o') => self.open_menu(&name),
@@ -1781,11 +1781,11 @@ impl App {
         let Some(session) = self.group_session(group, position) else {
             return Action::None;
         };
-        // An archived Session cannot be attached or prompted until it is unarchived.
+        // An archived session cannot be attached or prompted until it is unarchived.
         if session.is_archived() && matches!(key.code, KeyCode::Enter | KeyCode::Char('p')) {
             return Action::None;
         }
-        // Nothing runs in a stopped Agent until it is started.
+        // Nothing runs in a stopped agent until it is started.
         if self.group_agent(group).is_some_and(|agent| agent.spec.is_stopped())
             && matches!(key.code, KeyCode::Enter | KeyCode::Char('p' | 'n' | 'o'))
         {
@@ -1985,7 +1985,7 @@ impl App {
         }
     }
 
-    /// Opens the create-agent modal, preselecting the highlighted Agent's manifest.
+    /// Opens the create-agent modal, preselecting the highlighted agent's manifest.
     pub(crate) fn open_create(&mut self, candidates: Vec<ManifestCandidate>) {
         let manifest = match self.selected_row() {
             Some(Row::Agent(group) | Row::Session { group, .. }) => self
@@ -1997,7 +1997,7 @@ impl App {
         self.modal = Some(Modal::CreateAgent(CreateForm::new(candidates, manifest.as_deref())));
     }
 
-    /// Shows an Agent this TUI just created, ahead of the watch reply that will
+    /// Shows an agent this TUI just created, ahead of the watch reply that will
     /// report it, selects it and follows its provisioning.
     pub(crate) fn agent_applied(&mut self, agent: Agent) {
         let name = agent.metadata.name.clone();
@@ -2010,13 +2010,13 @@ impl App {
         self.detail = Some(Detail::provisioning(name));
     }
 
-    /// The selected Session whose turns need loading: newly selected, or with
+    /// The selected session whose turns need loading: newly selected, or with
     /// more turns than when they were last requested.
-    /// The selected Session whose turns the side panel needs loaded, if any.
+    /// The selected session whose turns the side panel needs loaded, if any.
     ///
-    /// Turns are read from the Session's Sandbox, so they load only while the
-    /// panel is shown, one load at a time: moving through Sessions loads the one
-    /// the selection rests on. They reload when the Session finishes a turn.
+    /// Turns are read from the session's sandbox, so they load only while the
+    /// panel is shown, one load at a time: moving through sessions loads the one
+    /// the selection rests on. They reload when the session finishes a turn.
     pub(crate) fn transcript_request(&mut self) -> Option<(String, SessionName)> {
         let Some(TreeRowId::Session { agent, session }) = self.selection.as_ref().filter(|_| self.side_panel) else {
             self.transcript = None;
@@ -2061,7 +2061,7 @@ impl App {
         else {
             return;
         };
-        // The selection may have left the Session and come back while it loaded.
+        // The selection may have left the session and come back while it loaded.
         transcript.requested_at = requested_at;
         transcript.loading = false;
         match turns {
@@ -2086,8 +2086,8 @@ impl App {
 
     /// Applies an archive or unarchive as the daemon recorded it, so the tree
     /// changes with the notice instead of on the next watch reply, which
-    /// confirms it. The notice tells what happened, since an archived Session
-    /// leaves the tree while archived Sessions are hidden. It is kept short to
+    /// confirms it. The notice tells what happened, since an archived session
+    /// leaves the tree while archived sessions are hidden. It is kept short to
     /// fit the header; the row reads Archiving while the harness still runs.
     pub(crate) fn archive_changed(&mut self, session: Session, now: Instant) {
         let name = session.name.as_str();
@@ -2117,7 +2117,7 @@ impl App {
         }
     }
 
-    /// The selected Agent's status for the side panel: readiness, and the pass
+    /// The selected agent's status for the side panel: readiness, and the pass
     /// in progress or the one that failed with its last output.
     pub(crate) fn agent_panel_lines(&self, name: &str) -> Vec<String> {
         let Some(agent) = self.agents.iter().find(|agent| agent.metadata.name == name) else {
@@ -2149,7 +2149,7 @@ impl App {
         lines
     }
 
-    /// The Agent whose provisioning the open detail follows.
+    /// The agent whose provisioning the open detail follows.
     pub(crate) fn followed_agent(&self) -> Option<&str> {
         self.detail.as_ref()?.follows.as_deref()
     }
@@ -2217,7 +2217,7 @@ impl App {
         }
     }
 
-    /// Opens the open menu for the named Agent, and checks the SSH setup
+    /// Opens the open menu for the named agent, and checks the SSH setup
     /// again, since the user may have changed their configuration since.
     fn open_menu(&mut self, agent: &str) {
         if let Some(agent) = self.agents.iter().find(|candidate| candidate.metadata.name == agent) {
@@ -2226,9 +2226,9 @@ impl App {
         }
     }
 
-    /// The Agent whose alias the SSH setup is to be checked with next, when a
-    /// check is due and none is running: the open menu's Agent, or else any
-    /// Agent with SSH access, since OpenSSH resolves only aliases it has.
+    /// The agent whose alias the SSH setup is to be checked with next, when a
+    /// check is due and none is running: the open menu's agent, or else any
+    /// agent with SSH access, since OpenSSH resolves only aliases it has.
     pub(crate) fn ssh_check_request(&mut self) -> Option<String> {
         if self.ssh_checking || !self.ssh_check_due {
             return None;
@@ -2467,7 +2467,7 @@ impl App {
                         failure,
                         since,
                     } = agent_state(agent);
-                    // The Sessions listed under it, as unfolding would show them.
+                    // The sessions listed under it, as unfolding would show them.
                     let listed = self.listed_positions(self.groups.get(group)?, self.agent_matches(agent));
                     let count = match listed.len() {
                         0 => String::new(),
@@ -2511,7 +2511,7 @@ impl App {
                         .model_selection
                         .model_str()
                         .map_or_else(|| harness.to_owned(), |model| format!("{harness} · {model}"));
-                    // A Session held or failed says why, such as an Agent whose guest stalled.
+                    // A session held or failed says why, such as an agent whose guest stalled.
                     let detail = match (&session.status.state, &session.status.lifecycle.failure) {
                         (State::Starting | State::Failed, Some(reason)) => format!("{identity} · {reason}"),
                         _ => identity,
@@ -2588,7 +2588,7 @@ fn offset_clamped(current: usize, limit: usize, delta: isize) -> usize {
     }
 }
 
-/// An Agent row's state, the detail beside it and when it entered the state.
+/// An agent row's state, the detail beside it and when it entered the state.
 struct AgentState {
     tone: Tone,
     label: &'static str,
@@ -2598,10 +2598,10 @@ struct AgentState {
     since: Option<OffsetDateTime>,
 }
 
-/// Reads an Agent's state from its typed status: deletion first, then the
+/// Reads an agent's state from its typed status: deletion first, then the
 /// class of the last failure, the pass in progress and readiness.
 ///
-/// A failure holds while its generation is current, so an Agent that is
+/// A failure holds while its generation is current, so an agent that is
 /// retrying stays Retrying through each retry, and time in state is how long
 /// `Ready` has been in its current state. A pass for a newer generation is
 /// provisioning the change, and its time in state is the pass's own.
@@ -2634,10 +2634,10 @@ fn agent_state(agent: &Agent) -> AgentState {
         // A failed stop reads as Retrying below, like any other failed pass.
         failure.is_none().then_some("Stopping")
     } else if agent.restart_pending() {
-        // Until its Sandbox has stopped; a failed stop reads as Retrying below.
+        // Until its sandbox has stopped; a failed stop reads as Retrying below.
         failure.is_none().then_some("Restarting")
     } else {
-        // A running Agent recorded stopped, as a start or a restart leaves it, starts next.
+        // A running agent recorded stopped, as a start or a restart leaves it, starts next.
         ready
             .is_some_and(|ready| {
                 [Condition::REASON_STARTING, Condition::REASON_STOPPED].contains(&ready.reason.as_str())
@@ -2672,7 +2672,7 @@ fn agent_state(agent: &Agent) -> AgentState {
     }
 }
 
-/// Whether the Agent was asked to stop and no pass for that generation has
+/// Whether the agent was asked to stop and no pass for that generation has
 /// recorded it stopped yet.
 fn stop_pending(agent: &Agent) -> bool {
     agent.spec.is_stopped()
@@ -2689,7 +2689,7 @@ fn pass_started(progress: &Progress) -> OffsetDateTime {
     end - time::Duration::milliseconds(i64::try_from(finished).unwrap_or(i64::MAX))
 }
 
-/// The Agent's pass while it is running.
+/// The agent's pass while it is running.
 fn provisioning(agent: &Agent) -> Option<&Progress> {
     let progress = &agent.status.progress.as_ref()?.progress;
     (*progress.status() == OperationStatus::Running).then_some(progress)
@@ -2712,13 +2712,13 @@ fn progress_summary(progress: &Progress) -> String {
     summary
 }
 
-/// Whether a Session waits for its user. An archived one never does: it reads
+/// Whether a session waits for its user. An archived one never does: it reads
 /// Archiving until its harness stops, as nobody answers it.
 const fn needs_you(session: &Session) -> bool {
     matches!(session.status.state, State::WaitingForInput)
 }
 
-/// A Session state's tone, glyph and label.
+/// A session state's tone, glyph and label.
 const fn session_state(state: State) -> (Tone, &'static str, &'static str) {
     match state {
         State::WaitingForInput => (Tone::Yellow, "!", "Needs you"),
@@ -2951,7 +2951,7 @@ mod tests {
         );
         app.filter.clear();
         type_text(&mut app, "work");
-        assert_eq!(app.rows.len(), 3, "an Agent that matches keeps all its Sessions");
+        assert_eq!(app.rows.len(), 3, "an agent that matches keeps all its sessions");
 
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
         assert!(app.modal.is_none());
@@ -2996,7 +2996,7 @@ mod tests {
             ],
         );
         app.on_key(key(KeyCode::Char('z')));
-        assert_eq!(app.rows.len(), 2, "both Agents are folded");
+        assert_eq!(app.rows.len(), 2, "both agents are folded");
         app.on_key(key(KeyCode::Tab));
         assert_eq!(
             app.selection,
@@ -3005,7 +3005,7 @@ mod tests {
                 session: SessionName::new("c").expect("name"),
             })
         );
-        assert!(!app.collapsed.contains("second"), "the Agent holding it unfolds");
+        assert!(!app.collapsed.contains("second"), "the agent holding it unfolds");
 
         app.filter = "first".into();
         app.select_index(0);
@@ -3041,13 +3041,13 @@ mod tests {
         assert_eq!(
             app.selection,
             Some(TreeRowId::Agent("builder".into())),
-            "not worker, which folding moved to the Session's former position"
+            "not worker, which folding moved to the session's former position"
         );
         app.on_key(key(KeyCode::Char('z')));
         assert_eq!(
             app.selection,
             Some(TreeRowId::Agent("builder".into())),
-            "unfolding keeps it on the Agent"
+            "unfolding keeps it on the agent"
         );
     }
 
@@ -3100,7 +3100,7 @@ mod tests {
     fn session_target(agent: &str, session: &str) -> RowTarget {
         RowTarget::Tree(TreeRowId::Session {
             agent: agent.into(),
-            session: SessionName::new(session).expect("valid Session name"),
+            session: SessionName::new(session).expect("valid session name"),
         })
     }
 
@@ -3117,7 +3117,7 @@ mod tests {
             app.on_mouse(MouseAction::Primary(session_target("worker", "s2"))),
             Action::Attach {
                 agent: "worker".into(),
-                session: SessionName::new("s2").expect("valid Session name"),
+                session: SessionName::new("s2").expect("valid session name"),
             }
         );
 
@@ -3142,12 +3142,12 @@ mod tests {
                 session("builder", "b1", "starting"),
             ],
         );
-        assert_eq!(app.selected_index(), Some(5), "the new Agent moved the Session down");
+        assert_eq!(app.selected_index(), Some(5), "the new agent moved the session down");
         assert_eq!(
             app.on_mouse(MouseAction::Primary(rendered)),
             Action::Attach {
                 agent: "worker".into(),
-                session: SessionName::new("s1").expect("valid Session name"),
+                session: SessionName::new("s1").expect("valid session name"),
             }
         );
         assert_eq!(
@@ -3215,7 +3215,7 @@ mod tests {
             agent: "builder".into(),
             session: b1.clone(),
         };
-        assert_eq!(app.tree_index(&b1_row), None, "archived Sessions are hidden");
+        assert_eq!(app.tree_index(&b1_row), None, "archived sessions are hidden");
         assert_eq!(app.triage_counts().archived, 1, "but counted");
         assert_eq!(app.triage_counts().starting, 0);
 
@@ -3226,7 +3226,7 @@ mod tests {
         assert_eq!(
             app.on_key(key(KeyCode::Enter)),
             Action::None,
-            "an archived Session is not attached"
+            "an archived session is not attached"
         );
         assert!(app.modal.is_none(), "nor prompted");
         assert_eq!(app.on_key(key(KeyCode::Char('p'))), Action::None);
@@ -3238,7 +3238,7 @@ mod tests {
                 session: b1,
                 archived: false,
             },
-            "a unarchives an archived Session"
+            "a unarchives an archived session"
         );
 
         app.selection = Some(TreeRowId::Session {
@@ -3251,7 +3251,7 @@ mod tests {
         ));
     }
 
-    /// Archives a test Session as the daemon reports it: Archiving until its
+    /// Archives a test session as the daemon reports it: Archiving until its
     /// harness has stopped.
     fn archived(mut session: Session) -> Session {
         session.archived_at = Some(time::OffsetDateTime::UNIX_EPOCH);
@@ -3280,7 +3280,7 @@ mod tests {
             ],
         );
         let detail = |app: &App| app.render_rows()[0].detail.clone();
-        assert_eq!(detail(&app), "2 sessions", "a hidden archived Session is not counted");
+        assert_eq!(detail(&app), "2 sessions", "a hidden archived session is not counted");
         assert!(!app.render_rows()[0].attention, "nor does it ask for attention");
 
         app.on_key(key(KeyCode::Char('A')));
@@ -3293,7 +3293,7 @@ mod tests {
         app.filter.clear();
         app.collapsed.insert("worker".into());
         app.rebuild();
-        assert_eq!(detail(&app), "3 sessions", "a folded Agent tells what unfolding shows");
+        assert_eq!(detail(&app), "3 sessions", "a folded agent tells what unfolding shows");
     }
 
     /// A row the selection was on leaves the tree, and where the selection lands.
@@ -3355,7 +3355,7 @@ mod tests {
                 expected: TreeRowId::Agent("c".into()),
             },
             NeighbourCase {
-                why: "the next Session takes the place of one that leaves",
+                why: "the next session takes the place of one that leaves",
                 show_archived: false,
                 agents: &["builder", "worker"],
                 sessions: worker_sessions(&[]),
@@ -3364,7 +3364,7 @@ mod tests {
                 expected: session_row("worker", "s3"),
             },
             NeighbourCase {
-                why: "the last Session gives way to the one above",
+                why: "the last session gives way to the one above",
                 show_archived: false,
                 agents: &["builder", "worker"],
                 sessions: worker_sessions(&["s2"]),
@@ -3375,7 +3375,7 @@ mod tests {
                 expected: session_row("worker", "s1"),
             },
             NeighbourCase {
-                why: "the last listed Session gives way to its Agent",
+                why: "the last listed session gives way to its agent",
                 show_archived: false,
                 agents: &["builder", "worker"],
                 sessions: worker_sessions(&["s2", "s3"]),
@@ -3407,7 +3407,7 @@ mod tests {
                 expected: session_row("worker", "s3"),
             },
             NeighbourCase {
-                why: "hiding archived Sessions moves to a listed neighbour",
+                why: "hiding archived sessions moves to a listed neighbour",
                 show_archived: true,
                 agents: &["worker"],
                 sessions: vec![
@@ -3421,7 +3421,7 @@ mod tests {
                 expected: session_row("worker", "s2"),
             },
             NeighbourCase {
-                why: "rows above, of its own and of another Agent, left with it",
+                why: "rows above, of its own and of another agent, left with it",
                 show_archived: true,
                 agents: &["alpha", "worker"],
                 sessions: alpha_and_worker(),
@@ -3496,7 +3496,7 @@ mod tests {
         );
         let rows = app.render_rows();
         assert_eq!((rows[1].name.as_str(), rows[1].state), ("s1", "Archiving"));
-        assert!(!rows[1].attention, "an archived Session never asks for attention");
+        assert!(!rows[1].attention, "an archived session never asks for attention");
         assert_eq!((rows[2].name.as_str(), rows[2].state), ("s2", "Archived"));
         app.filter = "archiving".into();
         app.rebuild();
@@ -3529,11 +3529,11 @@ mod tests {
         assert_eq!(app.triage_counts().archived, 1);
 
         app.on_key(key(KeyCode::Char('A')));
-        assert!(app.notice.is_none(), "showing archived Sessions answers the notice");
+        assert!(app.notice.is_none(), "showing archived sessions answers the notice");
         assert_eq!(app.render_rows()[1].state, "Archiving");
 
         app.archive_changed(archived(session("worker", "gone", "idle")), Instant::now());
-        assert_eq!(app.sessions.len(), 2, "a Session the tree does not list is not added");
+        assert_eq!(app.sessions.len(), 2, "a session the tree does not list is not added");
     }
 
     #[test]
@@ -3569,7 +3569,7 @@ mod tests {
 
         assert_eq!(app.on_key(key(KeyCode::Char('d'))), Action::None);
         let Some(Modal::ConfirmDeleteSession { agent, session }) = &app.modal else {
-            panic!("deleting a Session must ask for confirmation");
+            panic!("deleting a session must ask for confirmation");
         };
         assert_eq!((agent.as_str(), session.as_str()), ("builder", "b1"));
 
@@ -4117,19 +4117,19 @@ mod tests {
                     "pulling".into(),
                     "Provisioning",
                     Tone::Cyan,
-                    "Resolve Sandbox Image · Pull OCI image: 1.0 KiB / 2.0 KiB".into()
+                    "Resolve sandbox image · Pull OCI image: 1.0 KiB / 2.0 KiB".into()
                 ),
                 (
                     "retrying".into(),
                     "Retrying",
                     Tone::Yellow,
-                    "Resolve Sandbox Image · Pull OCI image: 1.0 KiB / 2.0 KiB".into()
+                    "Resolve sandbox image · Pull OCI image: 1.0 KiB / 2.0 KiB".into()
                 ),
                 (
                     "updating".into(),
                     "Provisioning",
                     Tone::Cyan,
-                    "Resolve Sandbox Image · Pull OCI image: 1.0 KiB / 2.0 KiB".into()
+                    "Resolve sandbox image · Pull OCI image: 1.0 KiB / 2.0 KiB".into()
                 ),
             ]
         );
@@ -4168,7 +4168,7 @@ mod tests {
                 kind: "Ready".into(),
                 status: ConditionStatus::False,
                 reason: "SandboxUnresponsive".into(),
-                message: "Agent Sandbox is not responding: the guest has not reported progress for more than 15s"
+                message: "Agent sandbox is not responding: the guest has not reported progress for more than 15s"
                     .into(),
                 last_transition_time: None,
             },
@@ -4181,7 +4181,7 @@ mod tests {
             (
                 "Unresponsive",
                 Tone::Red,
-                "Agent Sandbox is not responding: the guest has not reported progress for more than 15s"
+                "Agent sandbox is not responding: the guest has not reported progress for more than 15s"
             )
         );
     }
@@ -4287,7 +4287,7 @@ mod tests {
 
         app.select_index(0);
         assert_eq!(app.on_key(key(KeyCode::Char('r'))), Action::None);
-        assert!(app.modal.is_none(), "x starts a stopped Agent");
+        assert!(app.modal.is_none(), "x starts a stopped agent");
     }
 
     #[test]
@@ -4369,10 +4369,10 @@ mod tests {
         assert_eq!(
             app.on_key(key(KeyCode::Char('e'))),
             Action::None,
-            "nothing runs in a stopped Agent"
+            "nothing runs in a stopped agent"
         );
         app.on_key(key(KeyCode::Char('n')));
-        assert!(app.modal.is_none(), "no Session is created in a stopped Agent");
+        assert!(app.modal.is_none(), "no session is created in a stopped agent");
     }
 
     #[test]
@@ -4458,7 +4458,7 @@ mod tests {
         assert_eq!(
             since,
             [("retrying".into(), "5m".into()), ("updating".into(), "0s".into())],
-            "a retry keeps the time the Agent started failing, and a pass shows its own"
+            "a retry keeps the time the agent started failing, and a pass shows its own"
         );
     }
 
@@ -4644,7 +4644,7 @@ mod tests {
         assert_eq!(app.followed_agent(), None);
         app.select_index(1);
         app.on_key(key(KeyCode::Char('p')));
-        assert_eq!(app.followed_agent(), Some("builder"), "p follows the selected Agent");
+        assert_eq!(app.followed_agent(), Some("builder"), "p follows the selected agent");
     }
 
     #[test]
@@ -4686,15 +4686,15 @@ mod tests {
         );
         app.side_panel = true;
         app.select_index(0);
-        assert_eq!(app.transcript_request(), None, "an Agent row has no turns");
+        assert_eq!(app.transcript_request(), None, "an agent row has no turns");
         app.select_index(1);
-        let target = app.transcript_request().expect("the selected Session's turns");
+        let target = app.transcript_request().expect("the selected session's turns");
         assert_eq!(app.transcript_request(), None, "one request at a time");
         app.select_index(3);
         assert_eq!(
             app.transcript_request(),
             None,
-            "another Session waits for the load in flight"
+            "another session waits for the load in flight"
         );
         app.select_index(1);
         assert_eq!(app.transcript_request(), None, "coming back waits for the same load");
@@ -4896,7 +4896,7 @@ mod tests {
     fn the_ssh_setup_is_checked_with_an_agent_openssh_knows_and_again_on_each_menu() {
         let mut app = App::new();
         app.apply_snapshot(vec![ready_agent("builder")], Vec::new());
-        assert_eq!(app.ssh_check_request(), None, "no Agent has an alias to resolve");
+        assert_eq!(app.ssh_check_request(), None, "no agent has an alias to resolve");
 
         let mut app = ssh_app(SshSetup::Unknown);
         let mut other = ready_agent("alpha");
@@ -4914,7 +4914,7 @@ mod tests {
         assert_eq!(
             app.ssh_check_request().as_deref(),
             Some("worker"),
-            "the menu's Agent first"
+            "the menu's agent first"
         );
     }
 

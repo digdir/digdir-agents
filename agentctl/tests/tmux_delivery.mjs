@@ -54,10 +54,10 @@ try {
   const exited = (child) => new Promise((resolve) => child.on("exit", resolve));
   tmux("new-session", "-d", "-s", "stoppable", "sleep 600");
   assert.equal(await exited(stop("=stoppable")), 0);
-  assert.equal(tmux("list-sessions", "-F", "#{session_name}").trim(), "input", "the stopped Session is gone");
-  assert.equal(await exited(stop("=stoppable")), 0, "an already stopped Session is stopped");
+  assert.equal(tmux("list-sessions", "-F", "#{session_name}").trim(), "input", "the stopped session is gone");
+  assert.equal(await exited(stop("=stoppable")), 0, "an already stopped session is stopped");
   const noServer = { ...process.env, TMUX: `${join(directory, "no-server")},0,0` };
-  assert.equal(await exited(stop("=stoppable", noServer)), 0, "a stopped server has no Session left");
+  assert.equal(await exited(stop("=stoppable", noServer)), 0, "a stopped server has no session left");
   console.log("tmux: submissions stay separate, cleanup succeeds, transcript freshness counts as activity, and stopping is idempotent");
 } finally {
   tmux("kill-server");

@@ -1,21 +1,21 @@
 # Changelog
 
-All notable changes to the Agent platform will be documented in this file.
+All notable changes to the agent platform will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Entries should describe only user-facing functionality in clear, user-friendly language; omit implementation details that do not affect how people use the product.
 Section ordering: Added, Changed, Fixed, Removed, Security, Deprecated.
 
-The version is the Agent release published under the `agentctl/v*` tag, covering `agentctl`, `agentd` and the example
-Agents. The Rust workspace version is a build detail and is not tracked here.
+The version is the agentctl release published under the `agentctl/v*` tag, covering `agentctl`, `agentd` and the example
+agents. The Rust workspace version is a build detail and is not tracked here.
 
 ## [Unreleased]
 
 ### Added
 
-- `optional: true` in `spec.instructions` and `spec.skills` leaves out a source that does not exist, so a committed manifest can name your own files, such as `~/agent-instructions/everywhere.md`. `agentctl describe` names what was left out, and the Agent gets it once it exists. ([#331](https://github.com/digdir/digdir-agents/issues/331))
-- Your terminal tab is named after the Agent and Session you are attached to, such as `builder/b1`, and reads `agentctl` again when you return to `agentctl tui`. ([#343](https://github.com/digdir/digdir-agents/pull/343))
+- `optional: true` in `spec.instructions` and `spec.skills` leaves out a source that does not exist, so a committed manifest can name your own files, such as `~/agent-instructions/everywhere.md`. `agentctl describe` names what was left out, and the agent gets it once it exists. ([#331](https://github.com/digdir/digdir-agents/issues/331))
+- Your terminal tab is named after the agent and session you are attached to, such as `builder/b1`, and reads `agentctl` again when you return to `agentctl tui`. ([#343](https://github.com/digdir/digdir-agents/pull/343))
 
 ## [0.1.0-preview.13] - 2026-10-26
 

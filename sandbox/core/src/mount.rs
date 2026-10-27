@@ -1,4 +1,4 @@
-//! Attachments materialized inside a Sandbox.
+//! Attachments materialized inside a sandbox.
 
 use std::{collections::BTreeSet, path::PathBuf};
 
@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ByteQuantity, SandboxPath, volume::VolumeId};
 
-/// One form of filesystem attachment supported by a Sandbox Backend.
+/// One form of filesystem attachment supported by a sandbox backend.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -42,7 +42,7 @@ impl<const N: usize> From<[MountKind; N]> for MountKindSet {
     }
 }
 
-/// One attachment inside a Sandbox.
+/// One attachment inside a sandbox.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Mount {
@@ -52,7 +52,7 @@ pub enum Mount {
         target: SandboxPath,
         read_only: bool,
     },
-    /// A host path made visible to the Sandbox.
+    /// A host path made visible to the sandbox.
     Bind {
         source: PathBuf,
         target: SandboxPath,

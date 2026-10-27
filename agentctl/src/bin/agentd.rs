@@ -19,7 +19,7 @@ use tokio::runtime::LocalRuntime;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[derive(Parser)]
-#[command(name = "agentd", about = "Run the per-user Agent control plane", version = agent::build_version())]
+#[command(name = "agentd", about = "Run the per-user agent control plane", version = agent::build_version())]
 struct Arguments {
     /// Agent control-plane home.
     #[arg(long)]
@@ -72,7 +72,7 @@ type ErrorHandler<Key> = Rc<dyn Fn(Option<Key>, &Error)>;
 
 /// Wires SSH and VNC access around the `agentctl` installed beside this
 /// daemon, which generated SSH client configuration and reported forwarding
-/// commands dial Agents through. SSH keeps its host keys in the database; VNC
+/// commands dial agents through. SSH keeps its host keys in the database; VNC
 /// holds no key material and generates no client configuration.
 fn access(
     home: &ControlPlaneHome,
@@ -135,7 +135,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     let policy = Rc::new(agent::authorization::AgentPolicyEngine::new());
     let platform_api_listener = agent::platform_api::bind().await?;
     // Earlier releases reused a port persisted here; nothing reads it any more.
-    // TODO: Remove with `AGENT_SESSION_HOOK_URL` in the Session launch environment.
+    // TODO: Remove with `AGENT_SESSION_HOOK_URL` in the session launch environment.
     let _ = tokio::fs::remove_file(home.path().join("platform-api-port")).await;
     let platform_api_port = platform_api_listener.local_addr()?.port();
     let (sandboxes, platform_api_url) =

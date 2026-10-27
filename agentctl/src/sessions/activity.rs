@@ -67,7 +67,7 @@ impl Activity {
     pub fn folded(mut self, event: ActivityEvent, at: OffsetDateTime) -> Self {
         let previous = self.phase;
         match event {
-            // A delayed or duplicate start report must not move a Session back
+            // A delayed or duplicate start report must not move a session back
             // from a later activity state.
             ActivityEvent::SessionStart if !matches!(self.phase, Phase::Unknown) => return self,
             ActivityEvent::SessionStart | ActivityEvent::TurnStarted => {

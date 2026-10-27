@@ -1,4 +1,4 @@
-//! Harness-specific adapters behind the closed Agent manifest harness selection.
+//! Harness-specific adapters behind the closed agent manifest harness selection.
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -25,7 +25,7 @@ pub enum Harness {
     ClaudeCode,
     /// `OpenAI` Codex CLI.
     Codex,
-    /// Pi, configured entirely by the Agent: its providers, models and credentials.
+    /// Pi, configured entirely by the agent: its providers, models and credentials.
     Pi,
 }
 
@@ -87,7 +87,7 @@ impl std::str::FromStr for Harness {
 pub enum HarnessAuthMode {
     /// Credentials remain on the host and are injected into authorized requests.
     Mediated,
-    /// The harness has no platform-managed login; the Agent supplies its credentials, for
+    /// The harness has no platform-managed login; the agent supplies its credentials, for
     /// example through `spec.secrets` and the harness's own configuration files.
     None,
 }
@@ -177,8 +177,8 @@ launch_selection! {
 
 /// A harness's model and effort level, each optional and provider-owned.
 ///
-/// Declared on a harness installation as the defaults for its new Sessions,
-/// requested when a Session is created, and recorded with the Session as the
+/// Declared on a harness installation as the defaults for its new sessions,
+/// requested when a session is created, and recorded with the session as the
 /// selection every launch of its harness applies.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -220,7 +220,7 @@ impl ModelSelection {
     }
 
     /// Describes the first field `requested` selects differently from this
-    /// recorded selection, as a clause following the Session's name; `None`
+    /// recorded selection, as a clause following the session's name; `None`
     /// when every requested field matches or is unselected.
     #[must_use]
     pub fn conflict_with(&self, requested: &Self) -> Option<String> {
@@ -253,27 +253,27 @@ fn validate_selection(label: &str, value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// One harness installation declared for an Agent.
+/// One harness installation declared for an agent.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(from = "DeclaredHarnessSpec", rename_all = "camelCase")]
 pub struct HarnessSpec {
     /// Closed harness family identifier.
     #[serde(rename = "type")]
     pub kind: Harness,
-    /// Exact version installed by the Agent image; omitted when the image owns the version, so image bumps need no manifest change.
+    /// Exact version installed by the agent image; omitted when the image owns the version, so image bumps need no manifest change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     /// Authentication delivery mode. A manifest may omit it, because each harness accepts exactly
     /// one ([`Harness::auth_mode`]); it is always stored.
     pub auth: HarnessAuthMode,
     /// Whether a host login this harness cannot find omits the installation instead of blocking
-    /// Agent provisioning. Re-evaluated on every pass, so a later host login installs it.
+    /// agent provisioning. Re-evaluated on every pass, so a later host login installs it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
-    /// Whether new Sessions select this installation when no harness is specified.
+    /// Whether new sessions select this installation when no harness is specified.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub default: bool,
-    /// Model and effort level for new Sessions of this installation that do not
+    /// Model and effort level for new sessions of this installation that do not
     /// select their own. Omitted, the harness picks its own defaults.
     #[serde(default, skip_serializing_if = "ModelSelection::is_empty")]
     pub defaults: ModelSelection,
@@ -356,7 +356,7 @@ impl AuthenticationManager {
             Harness::ClaudeCode => self.claude_code.login(credential).await,
             Harness::Codex => self.codex.login(credential, imported).await,
             Harness::Pi => Err(Error::Invalid(
-                "Pi has no platform login; the Agent supplies its credentials".into(),
+                "Pi has no platform login; the agent supplies its credentials".into(),
             )),
         }
     }
@@ -424,30 +424,30 @@ pub fn acquire_host_credential(
         Harness::ClaudeCode => claude_code::acquire_host_token(sign_in()),
         Harness::Codex => codex::acquire_host_credential(control_plane_home),
         Harness::Pi => Err(Error::Invalid(
-            "Pi has no platform login; the Agent supplies its credentials".into(),
+            "Pi has no platform login; the agent supplies its credentials".into(),
         )),
     }
 }
 
-/// Whether this process runs inside an Agent's Sandbox: in a Session, an Execution or an SSH login.
+/// Whether this process runs inside an agent's sandbox: in a session, an Execution or an SSH login.
 ///
-/// Agent setup writes [`crate::sandbox::platform::PLATFORM_API_URL_FILE`] into every Agent's
-/// Sandbox and nowhere else, so its presence is the signal; see that constant.
+/// Agent setup writes [`crate::sandbox::platform::PLATFORM_API_URL_FILE`] into every agent's
+/// sandbox and nowhere else, so its presence is the signal; see that constant.
 #[must_use]
 pub fn inside_agent() -> bool {
     std::path::Path::new(crate::sandbox::platform::PLATFORM_API_URL_FILE).exists()
 }
 
-/// The credential for the harness that an Agent holds, for a login run `inside` it.
+/// The credential for the harness that an agent holds, for a login run `inside` it.
 ///
-/// It is the mediated placeholder the Agent's Sessions carry, never a real credential. Importing it
-/// lets a nested `agentd` chain through the outer Agent's mediation, so inside an Agent a login
-/// needs no sign-in. `None` outside an Agent, where a login signs in.
+/// It is the mediated placeholder the agent's sessions carry, never a real credential. Importing it
+/// lets a nested `agentd` chain through the outer agent's mediation, so inside an agent a login
+/// needs no sign-in. `None` outside an agent, where a login signs in.
 ///
 /// # Errors
 ///
-/// Returns an error inside an Agent without the harness, where no sign-in could complete, or when
-/// the Agent's credential cannot be read.
+/// Returns an error inside an agent without the harness, where no sign-in could complete, or when
+/// the agent's credential cannot be read.
 pub fn agent_credential(
     harness: Harness,
     inside: bool,
@@ -463,12 +463,12 @@ pub fn agent_credential(
     }
 }
 
-/// Refuses a login inside an Agent that has no login of `harness` to reuse, for `reason`.
+/// Refuses a login inside an agent that has no login of `harness` to reuse, for `reason`.
 fn no_agent_login(harness: Harness, reason: &str) -> Error {
     let name = harness.display_name();
     Error::Invalid(format!(
-        "this Agent has no {name} login to reuse: {reason}. Its manifest must declare {name} and the host be logged \
-         in to it, which restarts this Agent; or pass a credential with `--from-stdin`"
+        "this agent has no {name} login to reuse: {reason}. Its manifest must declare {name} and the host be logged \
+         in to it, which restarts this agent; or pass a credential with `--from-stdin`"
     ))
 }
 
@@ -480,7 +480,7 @@ pub(crate) async fn authentication_ready(harness: Harness, database: &persistenc
     match harness {
         Harness::ClaudeCode => claude_code::authentication_ready(database).await,
         Harness::Codex => codex::authentication_ready(database).await,
-        // No login to wait for: the Agent supplies Pi's credentials itself.
+        // No login to wait for: the agent supplies Pi's credentials itself.
         Harness::Pi => Ok(true),
     }
 }
@@ -530,7 +530,7 @@ pub(crate) async fn bootstrap_linux(
     }
 }
 
-/// Where the harness reads the Agent's instructions from.
+/// Where the harness reads the agent's instructions from.
 pub(crate) fn instructions_path(harness: Harness, home: &str) -> String {
     match harness {
         Harness::ClaudeCode => claude_code::instructions_path(home),
@@ -577,15 +577,15 @@ async fn version_output(
     }
 }
 
-/// Harness-specific process and environment used by the Session runtime.
+/// Harness-specific process and environment used by the session runtime.
 pub struct ProcessLaunch {
     /// Shell command used to launch the harness.
     pub command: String,
-    /// Environment added to the generic Agent session environment.
+    /// Environment added to the generic agent session environment.
     pub environment: Vec<(String, String)>,
 }
 
-/// Harness-neutral inputs of one Session launch.
+/// Harness-neutral inputs of one session launch.
 #[derive(Clone, Copy, Debug)]
 pub struct LaunchRequest<'a> {
     /// Guest home directory holding the harness configuration.
@@ -599,7 +599,7 @@ pub struct LaunchRequest<'a> {
     /// First prompt of a fresh conversation, passed as the harness's positional
     /// prompt argument so it starts working immediately; ignored when resuming.
     pub initial_prompt: Option<&'a str>,
-    /// Model and effort level the Session was created with.
+    /// Model and effort level the session was created with.
     pub model_selection: &'a ModelSelection,
 }
 
@@ -616,9 +616,9 @@ pub fn launch_linux(harness: Harness, request: &LaunchRequest<'_>) -> ProcessLau
     }
 }
 
-/// Model every Session of `harness` launched with before Sessions recorded a
+/// Model every session of `harness` launched with before sessions recorded a
 /// model, when the adapter hardcoded one. Persistence records it for existing
-/// Sessions when it adopts the Session selection columns.
+/// sessions when it adopts the session selection columns.
 pub(crate) const fn model_launched_before_selection(harness: Harness) -> Option<&'static str> {
     match harness {
         Harness::ClaudeCode => Some(claude_code::MODEL_LAUNCHED_BEFORE_SELECTION),
@@ -792,7 +792,7 @@ mod tests {
                 .expect("host")
                 .is_none()
         );
-        // In an Agent without the harness, no sign-in could complete: fail at once instead.
+        // In an agent without the harness, no sign-in could complete: fail at once instead.
         let error = agent_credential(Harness::ClaudeCode, true, |_: &str| None).expect_err("no login to reuse");
         let error = error.to_string();
         assert!(

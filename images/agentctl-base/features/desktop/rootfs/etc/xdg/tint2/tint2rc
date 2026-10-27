@@ -1,7 +1,7 @@
 # A panel with a terminal launcher, what is open and what time it is, and nothing else. Pinned
 # rather than left to the distribution default so the taskbar occupies the same 30 pixels of every
 # screenshot, and passed to tint2 with -c so it is read from here rather than copied into a home
-# directory the platform resynchronizes from the host on every Sandbox setup.
+# directory the platform resynchronizes from the host on every sandbox setup.
 
 # Every background an item refers to must be defined, in order: tint2 segfaults on a background id
 # it cannot resolve.

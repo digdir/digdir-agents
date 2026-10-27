@@ -20,7 +20,7 @@ pub(super) struct HookScript<'a> {
 }
 
 /// The report half shared by hook scripts and in-process harness extensions: the
-/// Platform API endpoint, the Session identity and the retrying POST.
+/// Platform API endpoint, the session identity and the retrying POST.
 const REPORTER: &str = r#"// agentd's port changes when it restarts, so the endpoint is read on every report.
 function platformUrl() {
   try {
@@ -302,7 +302,7 @@ mod tests {
         }
         let mut child = command
             .spawn()
-            .expect("Node.js runs the hook script, as it does in every Sandbox and CI host");
+            .expect("Node.js runs the hook script, as it does in every sandbox and CI host");
         let mut ready = [0; 6];
         tokio::time::timeout(
             std::time::Duration::from_mins(1),

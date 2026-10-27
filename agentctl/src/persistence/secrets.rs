@@ -43,7 +43,7 @@ pub(super) fn replace_agent_secrets(
     for secret in secrets {
         let name = agent_secret_name(id, &secret.name);
         if !desired.insert(name.clone()) {
-            return Err(Error::Invalid(format!("duplicate Agent secret {:?}", secret.name)));
+            return Err(Error::Invalid(format!("duplicate agent secret {:?}", secret.name)));
         }
         set_secret(&transaction, &name, &secret.value)?;
     }

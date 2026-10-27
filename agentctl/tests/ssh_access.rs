@@ -180,7 +180,7 @@ impl Fixture {
     }
 
     /// What OpenSSH makes of the generated configuration for `agent`'s alias, when it dials the
-    /// Agent through `agentctl`.
+    /// agent through `agentctl`.
     #[cfg(unix)]
     fn resolved(&self, agent: &str) -> Option<String> {
         let output = std::process::Command::new("ssh")
@@ -244,7 +244,7 @@ async fn access_is_idempotent_and_only_public_material_enters_the_guest() {
     {
         let resolved = fixture
             .resolved("worker")
-            .expect("the alias dials the Agent through agentctl");
+            .expect("the alias dials the agent through agentctl");
         let setting = |key: &str| {
             resolved
                 .lines()
@@ -478,7 +478,7 @@ async fn withdrawing_access_removes_guest_and_host_state() {
     #[cfg(unix)]
     assert!(
         fixture.resolved("worker").is_none(),
-        "the alias no longer reaches the Agent"
+        "the alias no longer reaches the agent"
     );
 
     // A later pass finds no guest state.

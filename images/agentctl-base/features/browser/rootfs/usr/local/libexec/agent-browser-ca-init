@@ -7,7 +7,7 @@ state_dir=${AGENT_BROWSER_CA_STATE_DIR:-${HOME}/.config/agent}
 state_file=$state_dir/chromium-ca-state
 runtime_dir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 # The import runs in the background after boot. The runtime directory is emptied on every boot, so
-# this marker tells a Session that Chromium trusts the current bundle.
+# this marker tells a session that Chromium trusts the current bundle.
 ready_file=${AGENT_BROWSER_CA_READY_FILE:-${runtime_dir}/chromium-ca-ready}
 
 if [ ! -r "$bundle" ]; then

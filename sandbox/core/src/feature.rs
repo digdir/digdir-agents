@@ -9,30 +9,30 @@ use crate::{
     root_filesystem::RootFilesystemModeSet,
 };
 
-/// Optional functionality that callers may require from a Sandbox implementation.
+/// Optional functionality that callers may require from a sandbox implementation.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub enum SandboxFeature {
-    /// Run addressable commands inside a Sandbox.
+    /// Run addressable commands inside a sandbox.
     Execution,
-    /// Run bidirectional terminal Executions inside a Sandbox.
+    /// Run bidirectional terminal Executions inside a sandbox.
     TerminalExecution,
-    /// Attach the caller's terminal to an interactive Sandbox Execution.
+    /// Attach the caller's terminal to an interactive sandbox execution.
     TerminalAttach,
-    /// Stream regular files to and from a running Sandbox.
+    /// Stream regular files to and from a running sandbox.
     FileTransfer,
-    /// Attach storage whose lifecycle is independent of a Sandbox.
+    /// Attach storage whose lifecycle is independent of a sandbox.
     PersistentVolumes,
-    /// Run a container engine inside the Sandbox.
+    /// Run a container engine inside the sandbox.
     NestedContainers,
-    /// Hand Sandbox initialization to the init system supplied by the Image.
+    /// Hand sandbox initialization to the init system supplied by the Image.
     ImageInit,
-    /// Run Sandboxes inside the Sandbox, with the means the Backend's own Sandboxes need.
+    /// Run sandboxes inside the sandbox, with the means the Backend's own sandboxes need.
     NestedSandboxes,
 }
 
-/// A deterministic set of Sandbox Features.
+/// A deterministic set of sandbox features.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct SandboxFeatureSet(BTreeSet<SandboxFeature>);
@@ -72,20 +72,20 @@ impl<const N: usize> From<[SandboxFeature; N]> for SandboxFeatureSet {
     }
 }
 
-/// Platform-specific functionality reported by a Sandbox Backend.
+/// Platform-specific functionality reported by a sandbox backend.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SandboxBackendCapabilities {
-    /// Optional Sandbox operations implemented by the Backend.
+    /// Optional sandbox operations implemented by the Backend.
     pub features: SandboxFeatureSet,
-    /// Filesystem attachment forms accepted during Sandbox creation.
+    /// Filesystem attachment forms accepted during sandbox creation.
     pub mounts: MountKindSet,
-    /// Root filesystem materialization modes accepted during Sandbox creation.
+    /// Root filesystem materialization modes accepted during sandbox creation.
     pub root_filesystems: RootFilesystemModeSet,
     /// Network endpoint forms the Backend can expose.
     pub network: NetworkEndpointCapabilities,
 }
 
-/// Consumer-visible functionality available from a configured Sandbox Service.
+/// Consumer-visible functionality available from a configured sandbox service.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SandboxCapabilities {
     features: SandboxFeatureSet,
@@ -115,19 +115,19 @@ impl SandboxCapabilities {
         }
     }
 
-    /// Returns optional Sandbox operations supported by the configured Provider.
+    /// Returns optional sandbox operations supported by the configured Provider.
     #[must_use]
     pub const fn features(&self) -> &SandboxFeatureSet {
         &self.features
     }
 
-    /// Returns filesystem attachment forms accepted during Sandbox creation.
+    /// Returns filesystem attachment forms accepted during sandbox creation.
     #[must_use]
     pub const fn mount_kinds(&self) -> &MountKindSet {
         &self.mount_kinds
     }
 
-    /// Returns root-filesystem modes accepted by both the Sandbox Backend and
+    /// Returns root-filesystem modes accepted by both the sandbox backend and
     /// the Image Backend's resolve operation.
     #[must_use]
     pub const fn root_filesystem_modes(&self) -> &RootFilesystemModeSet {
