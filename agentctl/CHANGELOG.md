@@ -17,6 +17,16 @@ Agents. The Rust workspace version is a build detail and is not tracked here.
 - `optional: true` in `spec.instructions` and `spec.skills` leaves out a source that does not exist, so a committed manifest can name your own files, such as `~/agent-instructions/everywhere.md`. `agentctl describe` names what was left out, and the Agent gets it once it exists. ([#331](https://github.com/digdir/digdir-agents/issues/331))
 - Your terminal tab is named after the Agent and Session you are attached to, such as `builder/b1`, and reads `agentctl` again when you return to `agentctl tui`. ([#343](https://github.com/digdir/digdir-agents/pull/343))
 
+### Changed
+
+- Commands that use the current directory's Agent, such as `attach`, `exec` and `ssh`, find it from anywhere in its Git repository or, outside one, from the folder holding its `agents/`, and without `-f`, `agentctl apply` names the manifests it finds there. ([#309](https://github.com/digdir/digdir-agents/pull/309))
+- A manifest may leave out `spec.home` and `spec.network`: without `home` nothing is copied into `/home/agent`, and without `network` all traffic goes through the host's network mediator. ([#309](https://github.com/digdir/digdir-agents/pull/309))
+- agentctl's help starts with what it is for and lists the commands people use first. ([#309](https://github.com/digdir/digdir-agents/pull/309))
+- agentctl's error messages: ([#309](https://github.com/digdir/digdir-agents/pull/309))
+  - no longer begin with `invalid Agent:` or `Agent Control API error:`
+  - for a field only a new Agent takes, such as `spec.sandbox.image`, say how to create the Agent again
+  - for a name another directory's Agent has, ask for another name
+
 ## [0.1.0-preview.13] - 2026-10-26
 
 ### Added

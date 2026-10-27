@@ -69,7 +69,7 @@ impl Completion {
 
 #[derive(clap::Subcommand)]
 pub(super) enum SelfCommand {
-    /// Check for or install a released Agent update.
+    /// Check for or install a released agent update.
     Update {
         /// Install this exact release version.
         #[arg(long)]
@@ -223,7 +223,7 @@ async fn complete(completion: Completion, home: &ControlPlaneHome) -> CommandRes
             || journal.target_version != target_version
             || journal.previous_release != previous_release
         {
-            return Err(Error::Invalid("arguments do not match the unfinished Agent update".into()).into());
+            return Err(Error::Invalid("arguments do not match the unfinished agent update".into()).into());
         }
         (journal, false)
     } else {
@@ -234,7 +234,7 @@ async fn complete(completion: Completion, home: &ControlPlaneHome) -> CommandRes
     };
     let client = Client::for_path(home.socket_path());
     if journal.phase < UpdatePhase::Migrated {
-        println!("Check Agent activity");
+        println!("Check agent activity");
         match tokio::time::timeout(Duration::from_secs(2), client.health()).await {
             Ok(Ok(info)) => {
                 if is_preview_1(&info) {
@@ -266,7 +266,7 @@ async fn complete(completion: Completion, home: &ControlPlaneHome) -> CommandRes
         journal.advance(&paths, UpdatePhase::Prepared)?;
     }
     if journal.phase < UpdatePhase::Migrated {
-        println!("Migrate Agent state");
+        println!("Migrate agent state");
         if let Err(error) = migrate_state(&paths, &journal, &home.path().join("agent.db")) {
             drop(home_lock);
             if let Some(previous_release) = &previous_release {
@@ -379,7 +379,7 @@ async fn verify_target(client: &Client, home: &ControlPlaneHome, target_version:
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     Err(Error::Daemon(format!(
-        "target agentd {target_version:?} did not become healthy and finish Session relaunch within {} seconds; {}",
+        "target agentd {target_version:?} did not become healthy and finish session relaunch within {} seconds; {}",
         TARGET_VERIFY_TIMEOUT.as_secs(),
         super::daemon_startup_diagnostics(home)
     )))
@@ -402,7 +402,7 @@ fn compare_versions(current: &str, target: &str) -> Result<(), Error> {
         && target < *current
     {
         return Err(Error::Invalid(format!(
-            "downgrading Agent from v{current} to v{target} is not supported"
+            "downgrading agent from v{current} to v{target} is not supported"
         )));
     }
     Ok(())

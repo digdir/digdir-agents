@@ -139,8 +139,10 @@ impl Linux {
         let kvm = grant_kvm(sandbox).await?;
         step.complete().await;
         let step = steps.start_step("Sync home").await;
-        let archive = archive_home(record.source_directory.clone(), record.agent.spec.home.source.clone()).await?;
-        sync_home(sandbox, archive).await?;
+        if let Some(home) = &record.agent.spec.home {
+            let archive = archive_home(record.source_directory.clone(), home.source.clone()).await?;
+            sync_home(sandbox, archive).await?;
+        }
         if podman {
             // After the home sync, so a file of the same name in the Agent's home cannot replace it.
             point_podman_at_socket(sandbox).await?;

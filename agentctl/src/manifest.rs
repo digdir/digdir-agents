@@ -216,8 +216,9 @@ pub struct Spec {
     pub run_state: Option<RunState>,
     /// Generic sandbox configuration mapped to the lower-layer SDK.
     pub sandbox: SandboxManifestSpec,
-    /// Host directory synchronized into the sandbox user's home at bootstrap.
-    pub home: HomeSpec,
+    /// Host directory synchronized into the sandbox user's home at bootstrap, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<HomeSpec>,
     /// Agent-wide guidance installed through every declared Harness Adapter, concatenated in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instructions: Vec<InstructionsSpec>,
@@ -235,7 +236,8 @@ pub struct Spec {
     /// Ways the Agent's user reaches into the Sandbox besides Sessions and `exec`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub access: Vec<AccessSpec>,
-    /// Sandbox egress mediation policy.
+    /// Sandbox egress mediation policy; mediated with every host allowed when omitted.
+    #[serde(default)]
     pub network: NetworkSpec,
 }
 
@@ -550,7 +552,11 @@ impl Spec {
                 )));
             }
         }
-        if self.home.source.as_os_str().is_empty() {
+        if self
+            .home
+            .as_ref()
+            .is_some_and(|home| home.source.as_os_str().is_empty())
+        {
             return Err(Error::Invalid("spec.home.source must not be empty".into()));
         }
         if let Some(index) = self
@@ -836,23 +842,25 @@ impl SecretSpec {
 }
 
 /// Required network mediation mode.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NetworkMode {
     /// Route sandbox traffic through the trusted mediation backend.
+    #[default]
     Mediated,
 }
 
 /// Baseline egress policy.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NetworkAllow {
     /// Permit network operations except explicitly denied hosts.
+    #[default]
     All,
 }
 
 /// Agent-layer network policy interpreted by the host Policy Engine.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct NetworkSpec {
     /// Required mediation mode.
@@ -1435,8 +1443,13 @@ fn display_leaf(path: &Path) -> String {
     )
 }
 
+/// An error in the manifest at `path`, named by its file. A validation message is shown as it is;
+/// any other error says which form of the manifest, `context`, could not be read.
 fn manifest_error(path: &Path, context: &str, error: &Error) -> Error {
-    Error::Invalid(format!("{}: invalid {context}: {error}", display_leaf(path)))
+    match error {
+        Error::Invalid(message) => Error::Invalid(format!("{}: {message}", display_leaf(path))),
+        error => Error::Invalid(format!("{}: invalid {context}: {error}", display_leaf(path))),
+    }
 }
 
 fn with_chain(error: Error, chain: &[PathBuf]) -> Error {
@@ -1451,7 +1464,11 @@ fn with_chain(error: Error, chain: &[PathBuf]) -> Error {
         .chain(lines.map(|line| format!("  extends {line}")))
         .collect::<Vec<_>>()
         .join("\n");
-    Error::Invalid(format!("{error}\ninheritance chain:\n{diagnostic}"))
+    let message = match error {
+        Error::Invalid(message) => message,
+        error => error.to_string(),
+    };
+    Error::Invalid(format!("{message}\ninheritance chain:\n{diagnostic}"))
 }
 
 #[cfg(test)]
