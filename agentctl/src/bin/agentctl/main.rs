@@ -23,6 +23,7 @@ mod progress;
 mod prompt;
 mod self_update;
 mod tui;
+mod watch;
 
 use format::{condition_status, format_age, format_harnesses, session_state};
 use futures_util::StreamExt as _;
@@ -127,6 +128,9 @@ enum Command {
         /// Include archived sessions in a session listing.
         #[arg(long)]
         archived: bool,
+        /// Keep printing the resources each time they change, as one line each with `-o json`.
+        #[arg(short = 'w', long)]
+        watch: bool,
         /// Output format.
         #[arg(short = 'o', long, default_value = "table", value_enum)]
         output: OutputFormat,
@@ -623,8 +627,17 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             variant,
             all_agents,
             archived,
+            watch,
             output,
-        } => get_resources(client, &resource, name, agent, variant, all_agents, archived, output).await?,
+        } => {
+            let scope = SessionScope {
+                agent,
+                variant,
+                all_agents,
+                archived,
+            };
+            get_resources(client, &resource, name, scope, watch, output).await?;
+        }
         Command::Describe { resource, name, output } => describe(client, &resource, name, output).await?,
         Command::Delete {
             resource,
@@ -730,21 +743,38 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
     Ok(ExitCode::SUCCESS)
 }
 
-#[allow(clippy::too_many_arguments, reason = "mirrors the get command's flags")]
-async fn get_resources(
-    client: &Client,
-    resource: &str,
-    name: Option<String>,
+/// The `get` flags that select Sessions.
+struct SessionScope {
     agent: Option<String>,
     variant: Option<AgentVariantName>,
     all_agents: bool,
     archived: bool,
+}
+
+async fn get_resources(
+    client: &Client,
+    resource: &str,
+    name: Option<String>,
+    scope: SessionScope,
+    watch: bool,
     output: OutputFormat,
 ) -> CommandResult<()> {
     let (resource, name) = resource_reference(resource, name)?;
     match resource {
         Resource::Agent => {
-            reject_session_scope(agent.as_deref(), variant.as_ref(), all_agents)?;
+            reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
+            if watch {
+                return watch::follow(
+                    client,
+                    |resources| {
+                        let mut agents = resources.agents;
+                        agents.retain(|agent| name.as_ref().is_none_or(|name| agent.metadata.name == *name));
+                        agents
+                    },
+                    |agents| print_watched(output, agents, print_agents),
+                )
+                .await;
+            }
             let agents = if let Some(name) = name {
                 vec![client.get(&name).await?]
             } else {
@@ -756,35 +786,63 @@ async fn get_resources(
             }
         }
         Resource::Session => {
-            let sessions = if name.is_some() {
-                if all_agents {
-                    return Err(Error::Invalid(
-                        "a named session requires --agent or current-directory inference".into(),
-                    )
-                    .into());
-                }
-                let agent = resolve_agent_name(client, agent, variant).await?;
-                vec![
-                    client
-                        .get_session(&agent, SessionName::new(require_name(name, "Session")?)?)
-                        .await?,
-                ]
+            let name = name.map(SessionName::new).transpose()?;
+            if name.is_some() && scope.all_agents {
+                return Err(
+                    Error::Invalid("a named session requires --agent or current-directory inference".into()).into(),
+                );
+            }
+            let agent = if scope.all_agents {
+                None
             } else {
-                let sessions = if all_agents {
-                    client.list_sessions(None).await?
-                } else {
-                    let agent = resolve_agent_name(client, agent, variant).await?;
-                    client.list_sessions(Some(&agent)).await?
-                };
+                Some(resolve_agent_name(client, scope.agent, scope.variant).await?)
+            };
+            // A named Session is shown even when archived, as `get` shows it.
+            let selects = |session: &Session| {
+                agent.as_ref().is_none_or(|agent| session.agent == *agent)
+                    && match &name {
+                        Some(name) => session.name == *name,
+                        None => scope.archived || !session.is_archived(),
+                    }
+            };
+            if watch {
+                return watch::follow(
+                    client,
+                    |resources| resources.sessions.into_iter().filter(selects).collect(),
+                    |sessions| print_watched(output, sessions, |sessions| print_sessions(sessions, scope.all_agents)),
+                )
+                .await;
+            }
+            let sessions = if let (Some(agent), Some(name)) = (&agent, &name) {
+                vec![client.get_session(agent, name.clone()).await?]
+            } else {
+                let mut sessions = client.list_sessions(agent.as_deref()).await?;
+                sessions.retain(selects);
                 sessions
-                    .into_iter()
-                    .filter(|session| archived || !session.is_archived())
-                    .collect()
             };
             match output {
                 OutputFormat::Json => print_json(&sessions)?,
-                OutputFormat::Table => print_sessions(&sessions, all_agents),
+                OutputFormat::Table => print_sessions(&sessions, scope.all_agents),
             }
+        }
+    }
+    Ok(())
+}
+
+/// Prints one state of a watch: a line in the shape `-o json` prints, or a table and a blank line.
+fn print_watched<T: serde::Serialize>(output: OutputFormat, items: &[T], table: impl Fn(&[T])) -> CommandResult<()> {
+    use std::io::Write as _;
+    match output {
+        // Written rather than printed, so the watch ends when its reader goes away.
+        OutputFormat::Json => writeln!(
+            std::io::stdout(),
+            "{}",
+            serde_json::to_string(items).map_err(Error::from)?
+        )
+        .map_err(Error::from)?,
+        OutputFormat::Table => {
+            table(items);
+            println!();
         }
     }
     Ok(())
