@@ -21,6 +21,13 @@ ignore = [
   # unsafe-libyaml is archived and has no successor release. agentctl uses it through serde_yaml_ng to parse its own
   # Agent manifests; the advisory reports no vulnerability. Moving to a safe-Rust YAML parser removes this entry.
   { id = "RUSTSEC-2024-0449", reason = "unmaintained unsafe-libyaml used by serde_yaml_ng; no known vulnerability or safe upgrade" },
+  # zstd 0.13 and zstd-safe 7 have no fixed release. Microsandbox's image crate and msb_krun_vmm still require them and
+  # only decompress through zstd::stream::read::Decoder, without with_context or the seekable feature, which these
+  # advisories leave unaffected. Async-compression, which reads image layers, already uses the fixed zstd-safe 8. Moving
+  # both crates to zstd 0.14 removes these entries.
+  { id = "RUSTSEC-2026-0391", reason = "zstd 0.13 with_context reuse; Microsandbox and msb_krun_vmm do not use with_context" },
+  { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7 Seekable::decompress; the seekable feature is not enabled" },
+  { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7 legacy decompress_stream into a Vec; Microsandbox and msb_krun_vmm use read::Decoder, which is not affected" },
 ]
 
 [sources]
