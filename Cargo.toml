@@ -41,6 +41,7 @@ serde_json = "1.0.151"
 serde_yaml_ng = "0.10.0"
 semver = "1.0.27"
 sha2 = "0.11.0"
+signal-hook = { version = "0.3.18", default-features = false }
 ssh-key = { version = "0.6.7", default-features = false, features = ["ed25519", "rand_core", "std"] }
 tar = "0.4.46"
 tempfile = "3.27.0"
