@@ -38,7 +38,7 @@ impl Notifier for Wakeup {
     }
 }
 
-/// Agent Control Plane facade for desired-state operations.
+/// Agent control plane facade for desired-state operations.
 pub struct ControlPlane {
     store: SharedAgentStore,
     notifier: Rc<dyn Notifier>,

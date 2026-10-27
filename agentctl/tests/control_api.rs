@@ -657,7 +657,7 @@ async fn client_reports_responses_above_sixty_four_mib_from_a_peer() {
     }));
     let error = client.health().await.expect_err("oversized peer response");
     assert!(
-        matches!(error, Error::Invalid(ref message) if message == "Agent Control API response exceeds 64 MiB"),
+        matches!(error, Error::Invalid(ref message) if message == "Control API response exceeds 64 MiB"),
         "unexpected error: {error}"
     );
 }

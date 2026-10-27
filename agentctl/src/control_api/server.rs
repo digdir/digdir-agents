@@ -483,7 +483,7 @@ impl Server {
                         None,
                     )
                     .await?;
-                    return Err(Error::Invalid("Agent Control API request exceeds 4 MiB".into()));
+                    return Err(Error::Invalid("Control API request exceeds 4 MiB".into()));
                 }
             };
 
@@ -988,7 +988,7 @@ async fn write_response<W: AsyncWrite + Unpin>(
         let message = if method == Some(METHOD_SESSION_TURNS) {
             "Session turns response exceeds 64 MiB; retry with --last to request fewer turns"
         } else {
-            "Agent Control API response exceeds 64 MiB"
+            "Control API response exceeds 64 MiB"
         };
         bytes = serde_json::to_vec(&error_response(response.id, CODE_INTERNAL, message))?;
     }

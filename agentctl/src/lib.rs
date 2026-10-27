@@ -99,6 +99,6 @@ pub enum Error {
     #[error("invalid YAML: {0}")]
     Yaml(#[from] serde_yaml_ng::Error),
     /// The Control API returned a protocol-level error.
-    #[error("Agent Control API error: {0}")]
+    #[error("Control API error: {0}")]
     Rpc(#[from] control_api::ResponseError),
 }

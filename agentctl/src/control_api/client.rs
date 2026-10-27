@@ -488,7 +488,7 @@ impl Client {
         let line = match read_message(&mut stream, MAX_RESPONSE_BYTES).await? {
             ReadMessage::Complete(line) => line,
             ReadMessage::TooLarge => {
-                return Err(Error::Invalid("Agent Control API response exceeds 64 MiB".into()));
+                return Err(Error::Invalid("Control API response exceeds 64 MiB".into()));
             }
             ReadMessage::EndOfStream => {
                 return Err(Error::Invalid("invalid Control API response".into()));
@@ -504,7 +504,7 @@ impl Client {
         serde_json::from_value(
             response
                 .result
-                .ok_or_else(|| Error::Invalid("Agent Control API response has no result".into()))?,
+                .ok_or_else(|| Error::Invalid("Control API response has no result".into()))?,
         )
         .map_err(Error::from)
     }
