@@ -26,6 +26,7 @@ use sandbox::terminal::TerminalAttachOutcome;
 use crate::CommandResult;
 use crate::forward::{ForwardSpec, PortForward};
 use crate::progress::Wait;
+use crate::watch::RECONNECT_INTERVAL;
 use agent::manifest::MANIFEST_FILE;
 use app::{
     Action, App, CreateForm, ForwardEntry, ForwardForm, ManifestCandidate, Modal, MouseAction, PromptForm, RowTarget,
@@ -36,8 +37,6 @@ use view::{HitMap, HitTarget, WheelTarget};
 
 /// Turns of the selected session shown beside the tree.
 const TRANSCRIPT_TURNS: usize = 3;
-/// Pause before watching again after the daemon could not be reached.
-const RECONNECT_INTERVAL: Duration = Duration::from_secs(1);
 /// How often the screen is redrawn without input, so times keep moving.
 const REDRAW_INTERVAL: Duration = Duration::from_secs(1);
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
