@@ -460,11 +460,16 @@ struct Streams {
 }
 
 impl Streams {
-    fn open(&self) -> StreamGuard<'_> {
+    /// Counts a stream as open from the moment its call is admitted, so calls
+    /// still resolving their agent cannot together pass `most`.
+    fn reserve(&self, most: usize) -> Option<StreamGuard<'_>> {
+        if self.open.get() >= most {
+            return None;
+        }
         self.open.set(self.open.get() + 1);
         // One permit is enough, since the accept loop reads the count again whenever it wakes.
         self.opened.notify_one();
-        StreamGuard { streams: self }
+        Some(StreamGuard { streams: self })
     }
 }
 
@@ -492,22 +497,22 @@ impl Stream {
 }
 
 /// A call's response, and the stream that follows it on the connection, if any.
-struct Reply {
+struct Reply<'a> {
     response: Response,
-    stream: Option<Stream>,
+    stream: Option<(Stream, StreamGuard<'a>)>,
 }
 
-impl From<Response> for Reply {
+impl From<Response> for Reply<'_> {
     fn from(response: Response) -> Self {
         Self { response, stream: None }
     }
 }
 
-impl Reply {
-    fn switch(id: u64, stream: Stream) -> Self {
+impl<'a> Reply<'a> {
+    fn switch(id: u64, stream: Stream, open: StreamGuard<'a>) -> Self {
         Self {
             response: result_response(id, Ok(StreamResult { stream: stream.kind() })),
-            stream: Some(stream),
+            stream: Some((stream, open)),
         }
     }
 }
@@ -655,11 +660,14 @@ impl Server {
     /// Carries a stream until it ends or the daemon drains. Draining closes
     /// open streams rather than waiting for them, since an SSH session or a
     /// forwarded connection may last for days; the upgrade warns about them first.
-    async fn carry<S>(&self, switched: Stream, connection: BufReader<S>) -> Result<(), Error>
+    async fn carry<S>(
+        &self,
+        (switched, _open): (Stream, StreamGuard<'_>),
+        connection: BufReader<S>,
+    ) -> Result<(), Error>
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
-        let _open = self.streams.open();
         let (mut reader, mut writer) = tokio::io::split(connection);
         let carried = async {
             match switched {
@@ -696,7 +704,7 @@ impl Server {
         self.streams.opened.notified().await;
     }
 
-    async fn handle(&self, request: Request) -> Reply {
+    async fn handle(&self, request: Request) -> Reply<'_> {
         if request.jsonrpc != JSON_RPC_VERSION || request.method.is_empty() {
             return error_response(request.id, CODE_INVALID_REQUEST, "invalid JSON-RPC 2.0 request").into();
         }
@@ -959,7 +967,7 @@ impl Server {
         result_response(id, self.vnc.describe(&params.name).await)
     }
 
-    async fn open_guest_tcp(&self, id: u64, value: Value) -> Reply {
+    async fn open_guest_tcp(&self, id: u64, value: Value) -> Reply<'_> {
         let Some((name, uid, port)) = serde_json::from_value::<GuestTcpParams>(value)
             .ok()
             .filter(|params| !params.name.is_empty())
@@ -967,7 +975,8 @@ impl Server {
         else {
             return error_response(id, CODE_INVALID_PARAMS, "name and a port from 1 to 65535 are required").into();
         };
-        if self.streams.open.get() >= self.max_open_streams {
+        // Dropping the reservation releases it, whether the dial fails or the call is cancelled.
+        let Some(open) = self.streams.reserve(self.max_open_streams) else {
             let most = self.max_open_streams;
             return error_response(
                 id,
@@ -975,9 +984,9 @@ impl Server {
                 format!("agentd already carries {most} streams, the most it carries at once"),
             )
             .into();
-        }
+        };
         match self.guest_tcp.connect(&name, uid, port).await {
-            Ok(guest) => Reply::switch(id, Stream::Bytes(guest)),
+            Ok(guest) => Reply::switch(id, Stream::Bytes(guest), open),
             Err(error) => result_response::<()>(id, Err(error)).into(),
         }
     }
@@ -1107,7 +1116,11 @@ const fn wait_policy(follow: bool) -> WaitPolicy {
 /// Whether a request waits and may stop when its client disconnects. Each
 /// only reads or waits, or, like `sessions.v1.ensure`, its writes are each
 /// complete on their own. Every other request runs to completion, so an
-/// interrupted command never leaves a change half made.
+/// interrupted command never leaves a change half made. A stream call runs
+/// to completion too: its client may end its input right after the request
+/// and still want the guest's output, which looks the same as leaving. A
+/// client that has really left fails the response or the relay instead,
+/// which releases the stream.
 fn ends_with_its_client(method: &str) -> bool {
     matches!(
         method,
@@ -1115,7 +1128,6 @@ fn ends_with_its_client(method: &str) -> bool {
             | METHOD_RESOURCES_WATCH
             | METHOD_CONVERGE
             | METHOD_EXECUTION_ENSURE
-            | METHOD_GUEST_TCP
             | METHOD_SESSION_ENSURE
             | METHOD_SESSION_TURNS
     )

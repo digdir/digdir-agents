@@ -326,6 +326,7 @@ impl ExecutionApi for FakeExecutions {
 struct FakeGuestTcp;
 
 const GUEST_GREETING: &[u8] = b"SSH-2.0-fake\r\n";
+const SLOW_AGENT: &str = "slow";
 const WORKER_UID: &str = "5f0c8a7e-2b1d-4c3e-9f4a-6d7e8f9a0b1c";
 
 impl GuestTcpApi for FakeGuestTcp {
@@ -339,8 +340,12 @@ impl GuestTcpApi for FakeGuestTcp {
             if uid.is_some_and(|uid| uid.to_string() != WORKER_UID) {
                 return Err(Error::Invalid(format!("agent {name:?} was replaced")));
             }
+            // `slow` is `worker` behind a lookup that takes a while, so calls overlap in it.
+            if name == SLOW_AGENT {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
             match (name, port.get()) {
-                ("worker", 22) => Ok(Box::new(ShoutingGuest) as Box<dyn ByteStream>),
+                ("worker" | SLOW_AGENT, 22) => Ok(Box::new(ShoutingGuest) as Box<dyn ByteStream>),
                 ("worker", port) => Err(Error::Invalid(format!(
                     "guest TCP connect to 127.0.0.1:{port} failed: connection refused"
                 ))),
@@ -1395,6 +1400,44 @@ async fn an_upgrade_warns_about_open_streams_and_closes_them() {
         .expect("the drain closes the stream")
         .expect("closed stream");
     assert_eq!(rest, b"");
+}
+
+#[tokio::test(flavor = "local")]
+async fn streams_still_opening_count_against_the_budget() {
+    let fixture = api_with_open_files(Some(8));
+    let openings = (0..5).map(|_| fixture.client.guest_tcp(SLOW_AGENT, None, 22));
+    let opened = futures_util::future::join_all(openings).await;
+    let streams = opened.iter().filter(|opened| opened.is_ok()).count();
+    assert_eq!(streams, 2, "only as many streams as the budget allows open at once");
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_stream_call_whose_client_ends_its_input_still_opens() {
+    let fixture = api();
+    let (mut raw_client, raw_server) = tokio::io::duplex(4096);
+    let api = fixture.server.clone();
+    tokio::task::spawn_local(async move {
+        let _ignored = api.serve_connection(raw_server).await;
+    });
+    let request = r#"{"jsonrpc":"2.0","id":3,"method":"streams.v1.guestTcp","params":{"name":"slow","port":22}}"#;
+    raw_client
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .expect("request");
+    raw_client
+        .shutdown()
+        .await
+        .expect("end the guest's input with nothing sent");
+
+    let mut received = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), raw_client.read_to_end(&mut received))
+        .await
+        .expect("the stream ends")
+        .expect("response and stream");
+    let newline = received.iter().position(|byte| *byte == b'\n').expect("response line");
+    let response: serde_json::Value = serde_json::from_slice(&received[..newline]).expect("JSON-RPC response");
+    assert_eq!(response["result"], serde_json::json!({"stream": "bytes"}), "{response}");
+    assert_eq!(&received[newline + 1..], GUEST_GREETING, "the guest's output arrives");
 }
 
 #[tokio::test(flavor = "local")]
