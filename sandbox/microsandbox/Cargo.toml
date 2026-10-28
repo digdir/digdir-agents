@@ -17,6 +17,7 @@ bytes.workspace = true
 futures-util.workspace = true
 ignore.workspace = true
 microsandbox.workspace = true
+microsandbox-agent-client.workspace = true
 microsandbox-image.workspace = true
 microsandbox-network.workspace = true
 sandbox = { path = "../core" }
