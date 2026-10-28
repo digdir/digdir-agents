@@ -16,7 +16,7 @@ use agent::{
     },
     control_plane::WaitPolicy,
     control_plane::{ApplyRequest, ControlPlane, memory::InMemoryAgentStore},
-    harness::ImportedAuthentication,
+    harness::{AuthenticationStatus, ImportedAuthentication},
     resources::Changes,
 };
 use sandbox::LocalFuture;
@@ -145,6 +145,15 @@ impl AuthenticationApi for FakeAuthentication {
                 provider: "claude".into(),
                 ready: true,
             })
+        })
+    }
+
+    fn status(&self) -> LocalFuture<'_, Result<Vec<AuthenticationStatus>, Error>> {
+        Box::pin(async {
+            Ok(vec![AuthenticationStatus {
+                harness: agent::Harness::Codex,
+                ready: true,
+            }])
         })
     }
 }
@@ -567,6 +576,21 @@ async fn a_login_wakes_every_agent() {
         .expect("login");
 
     assert_eq!(fixture.woken.get(), 1);
+}
+
+#[tokio::test(flavor = "local")]
+async fn the_daemon_reports_which_logins_it_holds() {
+    let fixture = api();
+
+    let status = fixture.client.auth_status().await.expect("status");
+
+    assert_eq!(
+        status,
+        [AuthenticationStatus {
+            harness: agent::Harness::Codex,
+            ready: true,
+        }]
+    );
 }
 
 #[tokio::test(flavor = "local")]

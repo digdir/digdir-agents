@@ -41,6 +41,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "vt100",
  "whoami",
  "win_uds",
  "zeroize",
@@ -3720,7 +3721,7 @@ dependencies = [
  "libc",
  "libloading",
  "log",
- "lru 0.18.2",
+ "lru 0.19.0",
  "msb-imago",
  "msb-vm-memory",
  "msb_krun_arch",
@@ -6946,6 +6947,27 @@ checksum = "506c62fdf617a5176827c2f9afbcf1be155b03a9b4bf9617a60dbc07e3a1642f"
 dependencies = [
  "bitflags 1.3.2",
  "libc",
+]
+
+[[package]]
+name = "vt100"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb05cdd19ae8707bf6a0a269972c07e6358103a7079faec749dec318a5b3dc23"
+dependencies = [
+ "itoa",
+ "unicode-width",
+ "vte",
+]
+
+[[package]]
+name = "vte"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd"
+dependencies = [
+ "arrayvec",
+ "memchr",
 ]
 
 [[package]]
