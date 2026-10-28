@@ -57,6 +57,9 @@ spec:
       # `agentctl create` override them.
       # defaults:
       #   model: opus
+      # The host login this agent's requests carry, stored with `agentctl claude login NAME`, such as one for work
+      # and one for a private subscription. Without it, the agent uses the login stored without a name.
+      # login: work
     - type: codex
       # Without a Codex login on the host, the agent starts without Codex instead of failing. Log in later, and
       # the next reconcile adds it.

@@ -65,6 +65,7 @@ pub(crate) fn agent(name: &str) -> Agent {
             harnesses: vec![HarnessSpec {
                 kind: Harness::ClaudeCode,
                 version: Some("2.1.266".into()),
+                login: agent::harness::LoginName::default(),
                 auth: HarnessAuthMode::Mediated,
                 optional: false,
                 default: false,

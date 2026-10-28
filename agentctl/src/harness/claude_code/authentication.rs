@@ -10,9 +10,13 @@
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::{Error, harness::ImportedAuthentication, persistence};
+use crate::{
+    Error,
+    harness::{ImportedAuthentication, LoginName},
+    persistence,
+};
 
-use super::{ACCESS_SECRET, API_HOST, PROVIDER, SETUP_TOKEN_PREFIX};
+use super::{ACCESS_SECRET, API_HOST, LOGINS, PROVIDER, SETUP_TOKEN_PREFIX};
 
 /// Endpoint used to validate a freshly supplied token before it is stored.
 const CLAUDE_PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
@@ -37,14 +41,18 @@ impl Authentication {
         }
     }
 
-    /// Validates a host-minted setup token and stores it as the agent credential.
+    /// Validates a host-minted setup token and stores it as the login `login`.
     ///
     /// Token material is never returned or logged.
     ///
     /// # Errors
     ///
     /// Returns an error when the token is malformed, rejected by Claude, or cannot be persisted.
-    pub(in crate::harness) async fn login(&self, token: Zeroizing<String>) -> Result<ImportedAuthentication, Error> {
+    pub(in crate::harness) async fn login(
+        &self,
+        login: LoginName,
+        token: Zeroizing<String>,
+    ) -> Result<ImportedAuthentication, Error> {
         let token = Zeroizing::new(token.trim().to_owned());
         if !token.starts_with(SETUP_TOKEN_PREFIX) {
             return Err(Error::Invalid(
@@ -55,18 +63,17 @@ impl Authentication {
         let metadata = ClaudeMetadata {
             kind: CredentialKind::SetupToken,
         };
-        self.database
-            .put_provider_account(persistence::ProviderAccountWrite {
-                provider: PROVIDER.into(),
-                credentials: vec![persistence::StoredSecret {
-                    name: ACCESS_SECRET.into(),
-                    value: Zeroizing::new(token.as_bytes().to_vec()),
-                }],
-                metadata_json: serde_json::to_string(&metadata)?,
-            })
+        LOGINS
+            .put(
+                &self.database,
+                &login,
+                vec![(ACCESS_SECRET, Zeroizing::new(token.as_bytes().to_vec()))],
+                serde_json::to_string(&metadata)?,
+            )
             .await?;
         Ok(ImportedAuthentication {
             provider: PROVIDER.into(),
+            login,
             ready: true,
         })
     }
@@ -127,9 +134,9 @@ struct ClaudeMetadata {
     kind: CredentialKind,
 }
 
-/// Confirms a stored Claude credential exists for mediation.
-pub(super) async fn is_ready(database: &persistence::Database) -> Result<bool, Error> {
-    database.provider_account_exists(PROVIDER).await
+/// Confirms the Claude login `login` is stored for mediation.
+pub(super) async fn is_ready(database: &persistence::Database, login: &LoginName) -> Result<bool, Error> {
+    Ok(LOGINS.metadata(database, login).await?.is_some())
 }
 
 /// The host that the stored Claude token is mediated to.
@@ -141,11 +148,15 @@ pub(super) const fn mediated_host() -> &'static str {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use sandbox::secret_store::{SecretReference, SecretStore as _};
+    use sandbox::secret_store::SecretStore as _;
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
+
+    fn work() -> LoginName {
+        LoginName::new("work").expect("login name")
+    }
 
     async fn serve_once(status: &'static str) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -180,18 +191,19 @@ mod tests {
         let manager = Authentication::new(database.clone()).with_profile_url(endpoint);
 
         let imported = manager
-            .login(Zeroizing::new("sk-ant-oat01-token-canary\n".into()))
+            .login(work(), Zeroizing::new("sk-ant-oat01-token-canary\n".into()))
             .await
             .expect("login");
         assert_eq!(imported.provider, "claude");
         assert!(imported.ready);
 
         let access = database
-            .resolve(&SecretReference::from_opaque("claude-access-token"))
+            .resolve(&LOGINS.secret(ACCESS_SECRET, &work()))
             .await
             .expect("access token");
         assert_eq!(access.expose(), b"sk-ant-oat01-token-canary");
-        assert!(is_ready(&database).await.expect("readiness"));
+        assert!(is_ready(&database, &work()).await.expect("readiness"));
+        assert!(!is_ready(&database, &LoginName::default()).await.expect("readiness"));
     }
 
     #[tokio::test(flavor = "local")]
@@ -201,11 +213,11 @@ mod tests {
         // Unroutable profile URL proves format validation happens before the network call.
         let manager = Authentication::new(database.clone()).with_profile_url("http://127.0.0.1:1/profile".into());
         let error = manager
-            .login(Zeroizing::new("not-a-real-token".into()))
+            .login(work(), Zeroizing::new("not-a-real-token".into()))
             .await
             .expect_err("reject");
         assert!(!error.to_string().contains("not-a-real-token"));
-        assert!(!is_ready(&database).await.expect("readiness"));
+        assert!(!is_ready(&database, &work()).await.expect("readiness"));
     }
 
     #[tokio::test(flavor = "local")]
@@ -215,10 +227,10 @@ mod tests {
         let endpoint = serve_once("401 Unauthorized").await;
         let manager = Authentication::new(database.clone()).with_profile_url(endpoint);
         manager
-            .login(Zeroizing::new("sk-ant-oat01-bad".into()))
+            .login(work(), Zeroizing::new("sk-ant-oat01-bad".into()))
             .await
             .expect_err("reject");
-        assert!(!is_ready(&database).await.expect("readiness"));
+        assert!(!is_ready(&database, &work()).await.expect("readiness"));
     }
 
     #[tokio::test(flavor = "local")]
@@ -230,9 +242,9 @@ mod tests {
         let endpoint = serve_once("403 Forbidden").await;
         let manager = Authentication::new(database.clone()).with_profile_url(endpoint);
         manager
-            .login(Zeroizing::new("sk-ant-oat01-valid-but-scoped".into()))
+            .login(work(), Zeroizing::new("sk-ant-oat01-valid-but-scoped".into()))
             .await
             .expect("accept scoped token");
-        assert!(is_ready(&database).await.expect("readiness"));
+        assert!(is_ready(&database, &work()).await.expect("readiness"));
     }
 }

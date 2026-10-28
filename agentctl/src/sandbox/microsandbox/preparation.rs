@@ -80,11 +80,11 @@ impl Preparation {
             let mut installed = Vec::with_capacity(record.agent.spec.harnesses.len());
             for installation in &record.agent.spec.harnesses {
                 // Re-evaluated every pass, so signing in later installs it with no manifest change.
-                if installation.optional && !harness::authentication_ready(installation.kind, &self.database).await? {
+                if installation.optional && !harness::authentication_ready(installation, &self.database).await? {
                     continue;
                 }
                 installed.push(installation.kind);
-                for secret in harness::prepare(installation.kind, &self.database).await? {
+                for secret in harness::prepare(installation, &self.database).await? {
                     if let Some(existing) = managed_environments.insert(secret.environment, installation.kind.as_str())
                     {
                         return Err(Error::Invalid(format!(

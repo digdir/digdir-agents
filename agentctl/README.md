@@ -27,6 +27,10 @@ agentctl claude login
 agentctl codex login
 ```
 
+To keep more than one subscription, such as one for work and one of your own, store each under a name with
+`agentctl claude login work`, and set `login: work` on the harness in the manifests that should use it.
+`agentctl claude list` shows the logins and the agents that use each.
+
 Update with `agentctl self update`. Agents and sessions carry over.
 
 ## Your first agent

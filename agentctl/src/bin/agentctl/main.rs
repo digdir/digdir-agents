@@ -503,14 +503,27 @@ type CommandResult<T> = Result<T, CommandError>;
 
 #[derive(Subcommand)]
 enum ClaudeCommand {
-    /// Mint a long-lived Claude token on the host and store it for agents.
+    /// Mint a long-lived Claude token on the host and store it for agents under a name.
     ///
-    /// Inside an agent with Claude Code, store that agent's mediated placeholder instead, so a
-    /// nested `agentd` chains through the outer mediation without ever holding a real credential.
+    /// Agents whose manifest has `login: NAME` on their Claude Code harness use it, so each
+    /// subscription you sign in to can serve its own agents. Inside an agent with Claude Code,
+    /// store that agent's mediated placeholder instead, so a nested `agentd` chains through the
+    /// outer mediation without ever holding a real credential.
     Login {
+        /// The name manifests ask for the login by.
+        #[arg(default_value_t)]
+        name: agent::harness::LoginName,
         /// Read an existing credential from standard input instead.
         #[arg(long)]
         from_stdin: bool,
+    },
+    /// List the stored Claude logins and the agents that use each.
+    List,
+    /// Forget a stored Claude login; the agents using it lose Claude Code at once.
+    Logout {
+        /// The name of the login to forget.
+        #[arg(default_value_t)]
+        name: agent::harness::LoginName,
     },
 }
 
@@ -522,16 +535,28 @@ enum SshConfigCommand {
 
 #[derive(Subcommand)]
 enum CodexCommand {
-    /// Sign in with `ChatGPT` and store an agent-only grant.
+    /// Sign in with `ChatGPT` and store an agent-only grant under a name.
     ///
-    /// Inside an agent with Codex, store the placeholder credential file that agent's Codex has
-    /// instead, so a nested `agentd` chains through the outer mediation without ever holding a
-    /// real credential.
+    /// Agents whose manifest has `login: NAME` on their Codex harness use it, so each
+    /// subscription you sign in to can serve its own agents. Inside an agent with Codex, store the
+    /// placeholder credential file that agent's Codex has instead, so a nested `agentd` chains
+    /// through the outer mediation without ever holding a real credential.
     Login {
+        /// The name manifests ask for the login by.
+        #[arg(default_value_t)]
+        name: agent::harness::LoginName,
         /// Read a credential file from standard input instead; only an agent's placeholder file
         /// is accepted that way.
         #[arg(long)]
         from_stdin: bool,
+    },
+    /// List the stored Codex logins and the agents that use each.
+    List,
+    /// Forget a stored Codex login; the agents using it lose Codex at once.
+    Logout {
+        /// The name of the login to forget.
+        #[arg(default_value_t)]
+        name: agent::harness::LoginName,
     },
 }
 
@@ -578,21 +603,25 @@ fn run() -> CommandResult<ExitCode> {
 async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> CommandResult<ExitCode> {
     match command {
         Command::Self_ { command } => self_update::execute(command, home).await?,
-        Command::Claude {
-            command: ClaudeCommand::Login { from_stdin },
-        } => {
-            login(
-                client,
-                home,
-                agent::Harness::ClaudeCode,
-                from_stdin.then(read_token_from_stdin),
-            )
-            .await?;
+        Command::Claude { command } => {
+            let harness = agent::Harness::ClaudeCode;
+            match command {
+                ClaudeCommand::Login { name, from_stdin } => {
+                    login(client, home, harness, name, from_stdin.then(read_token_from_stdin)).await?;
+                }
+                ClaudeCommand::List => print_logins(client, harness).await?,
+                ClaudeCommand::Logout { name } => logout(client, harness, name).await?,
+            }
         }
-        Command::Codex {
-            command: CodexCommand::Login { from_stdin },
-        } => {
-            login(client, home, agent::Harness::Codex, from_stdin.then(read_stdin_to_end)).await?;
+        Command::Codex { command } => {
+            let harness = agent::Harness::Codex;
+            match command {
+                CodexCommand::Login { name, from_stdin } => {
+                    login(client, home, harness, name, from_stdin.then(read_stdin_to_end)).await?;
+                }
+                CodexCommand::List => print_logins(client, harness).await?,
+                CodexCommand::Logout { name } => logout(client, harness, name).await?,
+            }
         }
         Command::Apply {
             filename,
@@ -1996,6 +2025,7 @@ async fn login(
     client: &Client,
     home: &ControlPlaneHome,
     harness: agent::Harness,
+    name: agent::harness::LoginName,
     from_stdin: Option<Result<zeroize::Zeroizing<String>, Error>>,
 ) -> CommandResult<()> {
     let (credential, imported, source) = match from_stdin {
@@ -2011,8 +2041,73 @@ async fn login(
             ),
         },
     };
-    let stored = client.auth_login(harness, credential.to_string(), imported).await?;
-    println!("{} authentication stored{source}", stored.provider);
+    let stored = client
+        .auth_login(harness, name, credential.to_string(), imported)
+        .await?;
+    println!("{} login {} stored{source}", stored.provider, stored.login);
+    Ok(())
+}
+
+async fn logout(client: &Client, harness: agent::Harness, name: agent::harness::LoginName) -> CommandResult<()> {
+    if client.auth_logout(harness, name.clone()).await? {
+        println!("{} login {name} forgotten", harness.display_name());
+        Ok(())
+    } else {
+        Err(CommandError::Message(format!(
+            "no {} login is named {name}",
+            harness.display_name()
+        )))
+    }
+}
+
+/// Prints `harness`'s stored logins, and those its agents ask for that are not stored, with the
+/// agents that use each.
+async fn print_logins(client: &Client, harness: agent::Harness) -> CommandResult<()> {
+    let mut logins = std::collections::BTreeMap::<_, (bool, Vec<String>)>::new();
+    for stored in client.auth_logins().await? {
+        if stored.harness == harness {
+            logins.entry(stored.login).or_default().0 = true;
+        }
+    }
+    for agent in client.list_agents().await? {
+        for installation in agent
+            .spec
+            .harnesses
+            .iter()
+            .filter(|installation| installation.kind == harness)
+        {
+            logins
+                .entry(installation.login.clone())
+                .or_default()
+                .1
+                .push(agent.metadata.name.clone());
+        }
+    }
+    if logins.is_empty() {
+        println!(
+            "No {} logins; run {} to sign in",
+            harness.display_name(),
+            agent::harness::login_command(harness, &agent::harness::LoginName::default())
+        );
+        return Ok(());
+    }
+    let rows = logins
+        .into_iter()
+        .map(|(name, (stored, agents))| {
+            vec![
+                name.to_string(),
+                if stored { "yes" } else { "no" }.into(),
+                if agents.is_empty() {
+                    "-".into()
+                } else {
+                    agents.join(",")
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    for line in table_lines(&["NAME", "STORED", "AGENTS"], &rows) {
+        println!("{line}");
+    }
     Ok(())
 }
 

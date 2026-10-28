@@ -147,6 +147,7 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
     resource.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
         version: None,
+        login: agent::harness::LoginName::default(),
         auth: agent::HarnessAuthMode::Mediated,
         optional: true,
         default: false,
@@ -496,6 +497,7 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
     resource.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
         version: None,
+        login: agent::harness::LoginName::default(),
         auth: agent::HarnessAuthMode::Mediated,
         optional: true,
         default: false,
@@ -787,6 +789,7 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     resource.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
         version: Some("0.149.1".into()),
+        login: agent::harness::LoginName::default(),
         auth: agent::HarnessAuthMode::Mediated,
         optional: false,
         default: false,

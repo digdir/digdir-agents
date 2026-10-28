@@ -129,6 +129,25 @@ impl Database {
         })
         .await
     }
+
+    /// Lists `(provider, metadata_json)` of every provider account named `<namespace>/…`, by name.
+    pub(crate) async fn provider_accounts(&self, namespace: &str) -> Result<Vec<(String, String)>, Error> {
+        self.request(|response| Command::ProviderAccounts {
+            namespace: namespace.into(),
+            response,
+        })
+        .await
+    }
+
+    /// Removes a provider account and its credentials together.
+    pub(crate) async fn delete_provider_account(&self, provider: &str, credentials: Vec<String>) -> Result<(), Error> {
+        self.request(|response| Command::DeleteProviderAccount {
+            provider: provider.into(),
+            credentials,
+            response,
+        })
+        .await
+    }
 }
 
 impl crate::sessions::SessionReports for Database {
@@ -554,6 +573,15 @@ enum Command {
         provider: String,
         response: oneshot::Sender<Result<Option<String>, Error>>,
     },
+    ProviderAccounts {
+        namespace: String,
+        response: oneshot::Sender<Result<Vec<(String, String)>, Error>>,
+    },
+    DeleteProviderAccount {
+        provider: String,
+        credentials: Vec<String>,
+        response: oneshot::Sender<Result<(), Error>>,
+    },
     EnsureSession {
         agent: String,
         name: crate::sessions::SessionName,
@@ -672,6 +700,8 @@ impl Command {
             | Self::PutProviderAccount { .. }
             | Self::ProviderAccountExists { .. }
             | Self::ProviderAccountMetadata { .. }
+            | Self::ProviderAccounts { .. }
+            | Self::DeleteProviderAccount { .. }
             | Self::GetSession { .. }
             | Self::GetSessionByName { .. }
             | Self::ListAllSessions { .. }
@@ -833,6 +863,16 @@ fn execute(connection: &mut Connection, command: Command) {
         }
         Command::ProviderAccountMetadata { provider, response } => {
             let _ = response.send(secrets::provider_account_metadata(connection, &provider));
+        }
+        Command::ProviderAccounts { namespace, response } => {
+            let _ = response.send(secrets::provider_accounts(connection, &namespace));
+        }
+        Command::DeleteProviderAccount {
+            provider,
+            credentials,
+            response,
+        } => {
+            let _ = response.send(secrets::delete_provider_account(connection, &provider, &credentials));
         }
         session_command => execute_session(connection, session_command),
     }
@@ -1000,7 +1040,7 @@ mod tests {
     use tempfile::TempDir;
     use zeroize::Zeroizing;
 
-    use super::{Database, StoredSecret, open};
+    use super::{Database, ProviderAccountWrite, StoredSecret, open};
 
     #[test]
     fn database_owner_enables_secure_deletion() {
@@ -1100,5 +1140,69 @@ mod tests {
             database.resolve(&provider).await.expect("provider secret").expose(),
             b"provider-secret"
         );
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn provider_accounts_lists_only_its_own_namespace() {
+        let directory = TempDir::new().expect("temporary directory");
+        let database = Database::open(&directory.path().join("agent.db")).expect("database");
+        for provider in [
+            "github/digdir",
+            "github",
+            "githubx/digdir",
+            "githubx",
+            "gith",
+            "git_ub/x",
+            "other/github/x",
+        ] {
+            database
+                .put_provider_account(ProviderAccountWrite {
+                    provider: provider.into(),
+                    credentials: Vec::new(),
+                    metadata_json: format!("{provider:?}"),
+                })
+                .await
+                .expect("provider account");
+        }
+
+        assert_eq!(
+            database.provider_accounts("github").await.expect("accounts"),
+            [("github/digdir".to_owned(), "\"github/digdir\"".to_owned())]
+        );
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn deleting_a_provider_account_deletes_its_credentials_and_nothing_else() {
+        let directory = TempDir::new().expect("temporary directory");
+        let database = Database::open(&directory.path().join("agent.db")).expect("database");
+        for (provider, secret) in [("github/a", "token/a"), ("github/b", "token/b")] {
+            database
+                .put_provider_account(ProviderAccountWrite {
+                    provider: provider.into(),
+                    credentials: vec![StoredSecret {
+                        name: secret.into(),
+                        value: Zeroizing::new(b"not-a-real-token".to_vec()),
+                    }],
+                    metadata_json: "{}".into(),
+                })
+                .await
+                .expect("provider account");
+        }
+
+        database
+            .delete_provider_account("github/a", vec!["token/a".into()])
+            .await
+            .expect("delete");
+
+        database
+            .resolve(&SecretReference::from_opaque("token/a"))
+            .await
+            .expect_err("the credential is gone");
+        assert!(!database.provider_account_exists("github/a").await.expect("exists"));
+        database
+            .resolve(&SecretReference::from_opaque("token/b"))
+            .await
+            .expect("another account's credential stays");
+        assert!(database.provider_account_exists("github/b").await.expect("exists"));
     }
 }

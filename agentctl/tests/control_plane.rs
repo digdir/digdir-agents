@@ -1186,6 +1186,7 @@ async fn repeated_apply_is_idempotent_and_immutable_fields_are_rejected() {
     kind_set_change.agent.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
         version: Some("0.149.1".into()),
+        login: agent::harness::LoginName::default(),
         auth: agent::HarnessAuthMode::Mediated,
         optional: false,
         default: false,

@@ -17,6 +17,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 - `optional: true` in `spec.instructions` and `spec.skills` leaves out a source that does not exist, so a committed manifest can name your own files, such as `~/agent-instructions/everywhere.md`. `agentctl describe` names what was left out, and the agent gets it once it exists. ([#331](https://github.com/digdir/digdir-agents/issues/331))
 - Your terminal tab is named after the agent and session you are attached to, such as `builder/b1`, and reads `agentctl` again when you return to `agentctl tui`. ([#343](https://github.com/digdir/digdir-agents/pull/343))
 - `agentctl get agents --watch -o json` prints the agents as one JSON line, then again each time they change, so a tool can follow them without polling. It exits once an `agentd` upgrade makes it incompatible. `get sessions --watch` works the same way. ([#349](https://github.com/digdir/digdir-agents/issues/349))
+- `agentctl claude login work` and `agentctl codex login work` store a login under a name, so you can keep one per subscription, such as work and private, and `login: work` on a harness in an agent's manifest picks it. `list` and `logout` show and forget them. Your existing logins become `default`, which agents use when they name none.
 
 ### Changed
 
