@@ -40,6 +40,9 @@ const RELAY_READ_BUFFER_BYTES: usize = 32 * 1024;
 
 /// How long connecting to a sandbox's runtime may take, as the Microsandbox SDK allows.
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a bulk connection waits, once both ends have finished, for the
+/// guest to write the last of what it received and close the connection.
+const BULK_CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Where a running sandbox's runtime listens, resolved from the provider's
 /// state so that any thread can dial it.
@@ -393,6 +396,8 @@ impl GuestTcpStream {
         let credit = tokio::sync::Notify::new();
         let host_closed = Cell::new(false);
         let terminated = Cell::new(false);
+        // Keeps its permit when the guest finishes before the host does.
+        let guest_finished = tokio::sync::Notify::new();
         // Unbounded in records, while the receive window bounds its bytes: the
         // guest sends no more than its credit, which returns only once the
         // host has taken the bytes.
@@ -422,6 +427,7 @@ impl GuestTcpStream {
                             let finish: BulkFinish = message.payload().map_err(error::backend)?;
                             from_guest.borrow_mut().accept_finish(finish).map_err(error::backend)?;
                             let _ = output.send(GuestOutput::Finished);
+                            guest_finished.notify_one();
                         }
                         other => return terminal_or_unexpected(other, &terminated),
                     }
@@ -477,7 +483,19 @@ impl GuestTcpStream {
         let result = tokio::select! {
             result = &mut guest_to_host => result,
             result = host_to_guest => match result {
-                Ok(()) => guest_to_host.await,
+                // A guest whose destination never takes the last of the upload would hold the
+                // connection after both ends have finished, so it gets a grace period before the
+                // connection is cancelled.
+                Ok(()) => tokio::select! {
+                    result = &mut guest_to_host => result,
+                    () = async {
+                        guest_finished.notified().await;
+                        tokio::time::sleep(BULK_CLOSE_GRACE).await;
+                    } => Err(Error::Backend(format!(
+                        "the guest did not finish writing a forwarded connection's input within {}s of its end",
+                        BULK_CLOSE_GRACE.as_secs()
+                    ))),
+                },
                 Err(error) => Err(error),
             },
         };
@@ -921,6 +939,57 @@ mod tests {
             .expect("relay task should not panic")
             .expect("relay should end cleanly");
         agent.expect_silence().await;
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn a_guest_that_never_closes_a_finished_connection_is_cancelled() {
+        let (client, mut agent) = FakeGuestAgent::handshake(None).await;
+        let (opened, ()) = tokio::join!(GuestTcpStream::open(client, "127.0.0.1", 80), async {
+            let connect = agent.expect(MessageType::TcpConnect).await;
+            let request: TcpConnect = connect.payload().expect("connect request");
+            let offer = request.bulk.expect("a bulk lane is offered to a runtime that has one");
+            agent
+                .reply(MessageType::TcpConnected, connect.id, &TcpConnected {})
+                .await;
+            let accepted = BulkAccepted {
+                kind: BulkKind::Tcp,
+                flows: BULK_FLOW_MASK_HOST_TO_GUEST | BULK_FLOW_MASK_GUEST_TO_HOST,
+                format: BULK_FORMAT_RAW_V1,
+                max_record_payload: offer.max_record_payload,
+                host_to_guest_credit_limit: offer.guest_to_host_credit_limit,
+                guest_to_host_credit_limit: offer.guest_to_host_credit_limit,
+            };
+            agent.reply(MessageType::BulkAccepted, connect.id, &accepted).await;
+        });
+        let stream = opened.expect("guest connect should succeed");
+        let session = stream.id;
+
+        let (mut browser, forwarded) = host_connection().await;
+        let relay = tokio::task::spawn_local(stream.relay(forwarded));
+        browser.shutdown().await.expect("half-close the browser side");
+        agent.expect(MessageType::BulkFinish).await;
+        agent
+            .reply(
+                MessageType::BulkFinish,
+                session,
+                &BulkFinish {
+                    kind: BulkKind::Tcp,
+                    flow: BulkFlow::GuestToHost,
+                    final_offset: 0,
+                },
+            )
+            .await;
+
+        // Both ends have finished, but the guest never sends its terminal frame.
+        tokio::time::pause();
+        let ended = tokio::time::timeout(super::BULK_CLOSE_GRACE * 2, relay)
+            .await
+            .expect("the relay should give up once its grace period has passed")
+            .expect("relay task should not panic");
+        assert!(ended.is_err(), "giving up on the guest is reported");
+        tokio::time::resume();
+        let cancel = agent.expect(MessageType::BulkCancel).await;
+        assert_eq!(cancel.id, session, "the abandoned connection is cancelled");
     }
 
     #[tokio::test(flavor = "local")]
