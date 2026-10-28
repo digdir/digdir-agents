@@ -106,19 +106,7 @@ impl Authentication {
         let windows = [body.rate_limit.primary_window, body.rate_limit.secondary_window]
             .into_iter()
             .flatten()
-            .filter_map(|window| {
-                // Rounded up, so a limit nearly used counts as used.
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "clamped to 0-100 first"
-                )]
-                let used_percent = window.used_percent.clamp(0.0, 100.0).ceil() as u8;
-                Some(UsageWindow {
-                    used_percent,
-                    resets_at: time::OffsetDateTime::from_unix_timestamp(window.reset_at).ok()?,
-                })
-            })
+            .filter_map(|window| UsageWindow::from_reading(window.used_percent, window.reset_at))
             .collect();
         Ok(Usage { windows })
     }

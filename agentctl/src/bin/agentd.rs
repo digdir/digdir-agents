@@ -149,6 +149,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
 
     let platform_api_server = Rc::new(agent::platform_api::Server::new(
         session_reports,
+        credentials.clone(),
         Rc::new(|error| tracing::error!(%error, "Platform API connection failed")),
     ));
     let session_reconciler: Rc<dyn agent::sessions::Reconcile<agent::sessions::SessionId>> =

@@ -352,6 +352,8 @@ pub struct AuthenticationManager {
     /// The login each agent's harness was given here since start; see [`Self::assign_login`].
     assignments:
         std::cell::RefCell<std::collections::BTreeMap<crate::AgentId, std::collections::BTreeMap<Harness, LoginName>>>,
+    /// The latest usage sessions reported for each login whose provider tells only the harness.
+    reported: std::cell::RefCell<std::collections::BTreeMap<(Harness, LoginName), Usage>>,
 }
 
 impl AuthenticationManager {
@@ -363,6 +365,7 @@ impl AuthenticationManager {
             claude_code: claude_code::authentication::Authentication::new(database.clone()),
             codex: codex::authentication::Authentication::new(database),
             assignments: std::cell::RefCell::default(),
+            reported: std::cell::RefCell::default(),
         }
     }
 
@@ -502,12 +505,62 @@ impl AuthenticationManager {
         Ok(chosen)
     }
 
-    /// How much of `harness`'s login `login` is used, when its provider tells the host.
+    /// How much of `harness`'s login `login` is used: read on the host where its provider allows
+    /// that, else as its sessions last reported it.
     async fn usage(&self, harness: Harness, login: &LoginName) -> Option<Usage> {
         match harness {
             Harness::Codex => self.codex.usage(login).await,
-            Harness::ClaudeCode | Harness::Pi => None,
+            Harness::ClaudeCode | Harness::Pi => self.reported.borrow().get(&(harness, login.clone())).cloned(),
         }
+    }
+
+    /// Records `usage` that the launch of `session` holding `token` reported for the login its
+    /// agent's harness uses.
+    ///
+    /// The report comes from inside the sandbox, so it is trusted only as far as it can do harm: it
+    /// steers which login agents are given, never which credential an agent gets. A session can
+    /// report only for its own agent's login.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotFound`] when `token` is not the session's current launch, and an error
+    /// when the database cannot be read.
+    pub async fn record_session_usage(
+        &self,
+        session: crate::sessions::SessionId,
+        token: &crate::sessions::LaunchToken,
+        usage: Usage,
+    ) -> Result<(), Error> {
+        use crate::{control_plane::AgentStore as _, sessions::SessionStore as _};
+
+        let launch = self.database.session_launch_state(session).await?;
+        if launch.is_none_or(|launch| launch.token != *token) {
+            return Err(Error::NotFound);
+        }
+        let session = self.database.get_session(session).await?;
+        let assigned = self
+            .assignments
+            .borrow()
+            .get(&session.agent_id)
+            .and_then(|logins| logins.get(&session.harness))
+            .cloned();
+        let login = if let Some(login) = assigned {
+            Some(login)
+        } else {
+            let agent = self.database.get(session.agent_id).await?;
+            agent
+                .agent
+                .status
+                .sandbox
+                .as_ref()
+                .and_then(|assignment| assignment.login(session.harness))
+                .cloned()
+        };
+        // An agent given no login yet has none to report for.
+        if let Some(login) = login {
+            self.reported.borrow_mut().insert((session.harness, login), usage);
+        }
+        Ok(())
     }
 }
 

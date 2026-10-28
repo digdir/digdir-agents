@@ -45,7 +45,12 @@ pub(super) async fn configure(
     write_if_changed(sandbox, &credentials_path, &credentials).await?;
     write_if_changed(sandbox, &instructions_path, instructions).await?;
     write_if_changed(sandbox, &hook_path, super::super::hooks::script()?.as_bytes()).await?;
-    write_if_changed(sandbox, &status_line_path, super::super::status_line::script()).await?;
+    write_if_changed(
+        sandbox,
+        &status_line_path,
+        super::super::status_line::script()?.as_bytes(),
+    )
+    .await?;
     let mut settings = sandbox_settings();
     // Sessions also report activity. Their hooks include the Bash approval.
     settings.insert("hooks".into(), super::super::hooks::configuration(&hook_path));

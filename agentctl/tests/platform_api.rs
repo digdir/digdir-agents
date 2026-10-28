@@ -107,6 +107,7 @@ async fn session_reports_require_the_current_launch_token() {
     let error_count = reported_errors.clone();
     let server = Rc::new(agent::platform_api::Server::new(
         Rc::new(database.clone()),
+        Rc::new(agent::harness::AuthenticationManager::new(database.clone())),
         Rc::new(move |error| {
             assert!(
                 error.to_string().contains("injected fold failure"),
@@ -276,6 +277,62 @@ async fn session_reports_require_the_current_launch_token() {
 }
 
 #[tokio::test(flavor = "local")]
+async fn usage_reports_need_the_current_launch_token_and_a_plausible_reading() {
+    const TOKEN: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    let directory = TempDir::new().expect("temporary directory");
+    let database = persistence::Database::open(&directory.path().join("agent.db")).expect("database");
+    let agent_id = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
+    database.put(ready_record("worker", agent_id), 0).await.expect("Agent");
+    let session = database
+        .ensure_session(
+            "worker",
+            &SessionName::new("s1").expect("name"),
+            agent::sessions::NewSession::for_harness(agent::Harness::ClaudeCode),
+        )
+        .await
+        .expect("session");
+    database
+        .record_session_launch(
+            session.id,
+            LaunchRecord {
+                token: TOKEN.parse().expect("launch token"),
+                sandbox: "sandbox-1".into(),
+                launched_at: 0,
+                attempts: 1,
+            },
+        )
+        .await
+        .expect("record launch");
+    let listener = agent::platform_api::bind().await.expect("bind Platform API listener");
+    let port = listener.local_addr().expect("local address").port();
+    let server = Rc::new(agent::platform_api::Server::new(
+        Rc::new(database.clone()),
+        Rc::new(agent::harness::AuthenticationManager::new(database)),
+        Rc::new(|error| panic!("unexpected Platform API error: {error}")),
+    ));
+    let server_task = tokio::task::spawn_local(server.serve(listener));
+    let report = |windows: &str| format!(r#"{{"sessionId":"{}","windows":{windows}}}"#, session.id);
+    let usage = agent::platform_api::SESSION_USAGE_PATH;
+    let reading = report(r#"[{"usedPercent":23.5,"resetsAt":4102444800}]"#);
+
+    assert_eq!(
+        request_to(port, usage, "dddddddd-dddd-4ddd-8ddd-dddddddddddd", &reading).await,
+        401
+    );
+    let too_many = format!("[{}]", [r#"{"usedPercent":1,"resetsAt":4102444800}"#; 5].join(","));
+    for implausible in ["[]", r#"[{"usedPercent":"23","resetsAt":4102444800}]"#, &too_many] {
+        assert_eq!(
+            request_to(port, usage, TOKEN, &report(implausible)).await,
+            400,
+            "{implausible}"
+        );
+    }
+    assert_eq!(request_to(port, usage, TOKEN, &reading).await, 204);
+
+    server_task.abort();
+}
+
+#[tokio::test(flavor = "local")]
 async fn platform_api_bounds_stalled_connections() {
     const TOKEN: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     let directory = TempDir::new().expect("temporary directory");
@@ -283,7 +340,8 @@ async fn platform_api_bounds_stalled_connections() {
     let listener = agent::platform_api::bind().await.expect("bind Platform API listener");
     let port = listener.local_addr().expect("local address").port();
     let server = Rc::new(agent::platform_api::Server::new(
-        Rc::new(database),
+        Rc::new(database.clone()),
+        Rc::new(agent::harness::AuthenticationManager::new(database)),
         Rc::new(|_error| {}),
     ));
     let server_task = tokio::task::spawn_local(server.serve(listener));

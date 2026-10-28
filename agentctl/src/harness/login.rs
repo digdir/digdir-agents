@@ -236,6 +236,28 @@ pub struct UsageWindow {
     pub resets_at: time::OffsetDateTime,
 }
 
+impl UsageWindow {
+    /// A window from a provider's reading: the share used in percent, and when it resets in Unix
+    /// seconds. `None` when the reading is not a number or the time cannot be represented.
+    #[must_use]
+    pub fn from_reading(used_percent: f64, resets_at: i64) -> Option<Self> {
+        if !used_percent.is_finite() {
+            return None;
+        }
+        // Rounded up, so a limit nearly used counts as used.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to 0-100 first"
+        )]
+        let used_percent = used_percent.clamp(0.0, 100.0).ceil() as u8;
+        Some(Self {
+            used_percent,
+            resets_at: time::OffsetDateTime::from_unix_timestamp(resets_at).ok()?,
+        })
+    }
+}
+
 impl Usage {
     /// The used share of the fullest window not yet reset at `now`, which decides when the login
     /// runs out.

@@ -296,6 +296,76 @@ spec:
         assert_eq!(logins, ["a", "b"]);
     }
 
+    /// A harness that reports how much of its login is used steers the next agent to another.
+    #[tokio::test(flavor = "local")]
+    async fn usage_a_session_reports_counts_against_its_agents_login() {
+        use crate::sessions::SessionStore as _;
+
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let database = crate::persistence::Database::open(&directory.path().join("agent.db")).expect("database");
+        for name in ["a", "b"] {
+            harness::store_test_login(name, &database).await;
+        }
+        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
+        let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
+        let credentials = Rc::new(harness::AuthenticationManager::new(database.clone()));
+        let preparation = super::Preparation::new(database.clone(), credentials.clone(), policy, network);
+        let login = |prepared: &super::PreparedNetwork| prepared.logins[&harness::test_harness()].to_string();
+        let first = record("first", "6a3c1f0e-2b7d-4e59-9c84-0f1d2e3a4b5c");
+        let second = record("second", "7b4d2a1f-3c8e-4f6a-8d95-1a2b3c4d5e6f");
+        for agent in [&first, &second] {
+            let prepared = preparation.prepare(agent).await.expect("prepare");
+            store_materialized(&database, agent.clone(), &prepared).await;
+        }
+        let session = database
+            .ensure_session(
+                "first",
+                &crate::sessions::SessionName::new("s1").expect("session name"),
+                crate::sessions::NewSession::for_harness(harness::test_harness()),
+            )
+            .await
+            .expect("session");
+        let token: crate::sessions::LaunchToken = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".parse().expect("token");
+        database
+            .record_session_launch(
+                session.id,
+                crate::sessions::LaunchRecord {
+                    token: token.clone(),
+                    sandbox: "sandbox".into(),
+                    launched_at: 0,
+                    attempts: 1,
+                },
+            )
+            .await
+            .expect("record launch");
+        let usage = harness::Usage {
+            windows: vec![harness::UsageWindow {
+                used_percent: 90,
+                resets_at: time::OffsetDateTime::now_utc() + time::Duration::DAY,
+            }],
+        };
+        let stale: crate::sessions::LaunchToken = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".parse().expect("token");
+        assert!(matches!(
+            credentials
+                .record_session_usage(session.id, &stale, usage.clone())
+                .await,
+            Err(crate::Error::NotFound)
+        ));
+
+        credentials
+            .record_session_usage(session.id, &token, usage)
+            .await
+            .expect("record usage");
+
+        let third = record("third", "8c5e3b2a-4d9f-4a7b-9ea6-2b3c4d5e6f70");
+        let prepared = preparation.prepare(&third).await.expect("prepare third");
+        assert_eq!(
+            login(&prepared),
+            "b",
+            "a and b have one agent each, and the first agent's session reported a nearly used up"
+        );
+    }
+
     async fn stop(database: &crate::persistence::Database, id: crate::AgentId) {
         let mut record = database.get(id).await.expect("agent");
         record.agent.spec.set_run_state(crate::RunState::Stopped);

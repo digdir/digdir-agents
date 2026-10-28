@@ -2,9 +2,10 @@
 //!
 //! Harness processes inside a sandbox reach the host through the mediated
 //! Network Backend's host alias, which rewrites to host loopback. This module
-//! owns the loopback listener and its session-report route: per-launch reports
+//! owns the loopback listener and its session routes: per-launch reports
 //! carrying the harness-native conversation ID and transcript location (on
-//! start) and activity signals folded into session status. The same listener
+//! start) and activity signals folded into session status, and how much of its
+//! login's limits a harness says is used. The same listener
 //! is the growth point for later platform tools (MCP), so nothing here assumes
 //! the report route is the only one.
 //!
@@ -38,6 +39,34 @@ type ConnectionFuture = futures_util::future::LocalBoxFuture<'static, ()>;
 /// Route harness hooks report session activity to.
 pub const SESSION_HOOKS_PATH: &str = "/v1/session/hooks";
 
+/// Route a harness reports how much of its login's limits is used to.
+pub const SESSION_USAGE_PATH: &str = "/v1/session/usage";
+
+/// Upper bound for the limit windows one usage report carries.
+const MAX_USAGE_WINDOWS: usize = 4;
+
+/// Where usage a session reports is recorded.
+pub trait UsageReports {
+    /// Records `usage` for the login the session's harness uses, when `token` is its launch's.
+    fn record_session_usage<'a>(
+        &'a self,
+        session: sessions::SessionId,
+        token: &'a sessions::LaunchToken,
+        usage: crate::harness::Usage,
+    ) -> ::sandbox::LocalFuture<'a, Result<(), Error>>;
+}
+
+impl UsageReports for crate::harness::AuthenticationManager {
+    fn record_session_usage<'a>(
+        &'a self,
+        session: sessions::SessionId,
+        token: &'a sessions::LaunchToken,
+        usage: crate::harness::Usage,
+    ) -> ::sandbox::LocalFuture<'a, Result<(), Error>> {
+        Box::pin(self.record_session_usage(session, token, usage))
+    }
+}
+
 /// Binds the Platform API listener on a loopback port the operating system selects.
 ///
 /// The port is not stable across daemon starts: sandboxes read the current
@@ -54,6 +83,7 @@ pub async fn bind() -> Result<TcpListener, Error> {
 /// Serves Platform API requests from sandboxes until the listener fails.
 pub struct Server {
     sessions: Rc<dyn sessions::SessionReports>,
+    usage: Rc<dyn UsageReports>,
     on_error: Rc<dyn Fn(&Error)>,
 }
 
@@ -61,8 +91,16 @@ impl Server {
     /// Creates a Platform API server that records what harnesses report; it
     /// holds no other session capability.
     #[must_use]
-    pub fn new(sessions: Rc<dyn sessions::SessionReports>, on_error: Rc<dyn Fn(&Error)>) -> Self {
-        Self { sessions, on_error }
+    pub fn new(
+        sessions: Rc<dyn sessions::SessionReports>,
+        usage: Rc<dyn UsageReports>,
+        on_error: Rc<dyn Fn(&Error)>,
+    ) -> Self {
+        Self {
+            sessions,
+            usage,
+            on_error,
+        }
     }
 
     /// Accepts and handles connections until the listener fails.
@@ -106,7 +144,7 @@ impl Server {
         if request.method != "POST" {
             return 405;
         }
-        if request.target != SESSION_HOOKS_PATH {
+        if request.target != SESSION_HOOKS_PATH && request.target != SESSION_USAGE_PATH {
             return 404;
         }
         let Some(token) = request.bearer_token() else {
@@ -115,10 +153,30 @@ impl Server {
         let Ok(token) = token.parse::<sessions::LaunchToken>() else {
             return 401;
         };
+        if request.target == SESSION_USAGE_PATH {
+            let Ok(report) = serde_json::from_slice::<UsageReport>(&request.body) else {
+                return 400;
+            };
+            return self.accept_usage(&token, report).await;
+        }
         let Ok(report) = serde_json::from_slice::<SessionReport>(&request.body) else {
             return 400;
         };
         self.accept_report(&token, &report).await
+    }
+
+    async fn accept_usage(&self, token: &sessions::LaunchToken, report: UsageReport) -> u16 {
+        let Some(usage) = report.usage() else {
+            return 400;
+        };
+        match self.usage.record_session_usage(report.session_id, token, usage).await {
+            Ok(()) => 204,
+            Err(Error::NotFound) => 401,
+            Err(error) => {
+                (self.on_error)(&error);
+                500
+            }
+        }
     }
 
     /// Applies one authenticated session report: it records the native session
@@ -182,6 +240,37 @@ struct SessionReport {
     #[serde(default)]
     #[allow(dead_code, reason = "accepted for diagnostics; not used for authorization")]
     source: String,
+}
+
+/// How much of its login's limits a harness says is used, per limit window.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct UsageReport {
+    session_id: sessions::SessionId,
+    windows: Vec<UsageReportWindow>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct UsageReportWindow {
+    used_percent: f64,
+    /// Unix seconds.
+    resets_at: i64,
+}
+
+impl UsageReport {
+    /// The reported usage, or `None` when it is not a plausible reading.
+    fn usage(&self) -> Option<crate::harness::Usage> {
+        if self.windows.is_empty() || self.windows.len() > MAX_USAGE_WINDOWS {
+            return None;
+        }
+        let windows = self
+            .windows
+            .iter()
+            .map(|window| crate::harness::UsageWindow::from_reading(window.used_percent, window.resets_at))
+            .collect::<Option<_>>()?;
+        Some(crate::harness::Usage { windows })
+    }
 }
 
 struct Request {

@@ -22,10 +22,10 @@ pub(super) struct HookScript<'a> {
 /// The report half shared by hook scripts and in-process harness extensions: the
 /// Platform API endpoint, the session identity and the retrying POST.
 const REPORTER: &str = r#"// agentd's port changes when it restarts, so the endpoint is read on every report.
-function platformUrl() {
+function platformUrl(path = __SESSION_HOOKS_PATH__) {
   try {
     const base = readFileSync(__PLATFORM_API_URL_FILE__, "utf8").trim();
-    return base === "" ? "" : base + __SESSION_HOOKS_PATH__;
+    return base === "" ? "" : base + path;
   } catch {
     return "";
   }
@@ -87,6 +87,14 @@ async function report(event, fields) {
       if (pause > 0) await new Promise((resolve) => setTimeout(resolve, pause));
     }
   }
+}
+
+// Sends how much of the harness's login limits is used, as `{ usedPercent, resetsAt }` windows with
+// Unix seconds, in one short attempt. Resolves to whether agentd took it.
+async function reportUsage(windows) {
+  const url = platformUrl(__SESSION_USAGE_PATH__);
+  if (!url || !token || !sessionId) return false;
+  return post(url, JSON.stringify({ sessionId, windows }), 300);
 }
 "#;
 
@@ -179,6 +187,10 @@ pub(super) fn reporter() -> Result<String, serde_json::Error> {
         .replace(
             "__SESSION_HOOKS_PATH__",
             &serde_json::to_string(crate::platform_api::SESSION_HOOKS_PATH)?,
+        )
+        .replace(
+            "__SESSION_USAGE_PATH__",
+            &serde_json::to_string(crate::platform_api::SESSION_USAGE_PATH)?,
         ))
 }
 
