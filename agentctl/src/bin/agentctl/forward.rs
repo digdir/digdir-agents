@@ -6,11 +6,7 @@
 //! stopped. [`relay_stdio`] carries this process's standard input and output
 //! over one stream instead, behind `agentctl ssh-proxy`.
 
-use std::{
-    cell::{Cell, RefCell},
-    net::IpAddr,
-    rc::Rc,
-};
+use std::{cell::RefCell, net::IpAddr, rc::Rc};
 
 use agent::{
     AgentId, Error,
@@ -200,40 +196,51 @@ async fn accept_loop(
 /// Carries one local TCP connection over a guest TCP stream until both
 /// directions have closed.
 ///
-/// agentd closes the stream once the guest connection has ended, so a write
-/// it no longer takes after the guest's end of stream is that end, not a failure.
+/// A clean end of one direction lets the other run to its own end, as a
+/// half-closed TCP connection does. An error in either direction ends both,
+/// since the other may wait forever on a peer that sends nothing.
 async fn relay(local: tokio::net::TcpStream, stream: Box<dyn Connection>) -> Result<(), Error> {
     let (reader, mut writer) = local.into_split();
     let (from_guest, mut to_guest) = tokio::io::split(stream);
     let mut from_guest = BufReader::with_capacity(RELAY_BUFFER_BYTES, from_guest);
     let mut reader = BufReader::with_capacity(RELAY_BUFFER_BYTES, reader);
-    let guest_ended = Cell::new(false);
     let download = async {
         tokio::io::copy_buf(&mut from_guest, &mut writer).await?;
-        guest_ended.set(true);
         writer.shutdown().await
     };
     let upload = async {
         tokio::io::copy_buf(&mut reader, &mut to_guest).await?;
         to_guest.shutdown().await
     };
-    let (download, upload) = tokio::join!(download, upload);
-    download?;
-    match upload {
-        Err(error)
-            if guest_ended.get()
-                && matches!(
-                    error.kind(),
-                    std::io::ErrorKind::BrokenPipe
-                        | std::io::ErrorKind::ConnectionReset
-                        | std::io::ErrorKind::ConnectionAborted
-                        | std::io::ErrorKind::NotConnected
-                ) =>
-        {
-            Ok(())
+    tokio::pin!(download, upload);
+    let (mut downloaded, mut uploaded) = (false, false);
+    while !(downloaded && uploaded) {
+        tokio::select! {
+            result = &mut download, if !downloaded => {
+                result?;
+                downloaded = true;
+            }
+            result = &mut upload, if !uploaded => match result {
+                Err(error) if !ends_stream(&error) => return Err(error.into()),
+                Ok(()) | Err(_) => uploaded = true,
+            },
         }
-        upload => upload.map_err(Error::from),
     }
+    Ok(())
+}
+
+/// Whether a failed write to agentd is the end of the stream rather than a
+/// failure. agentd closes the stream once the guest connection has ended, so
+/// a write it no longer takes is that end, which the other direction then
+/// reaches too.
+fn ends_stream(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::NotConnected
+    )
 }
 
 /// Carries this process's standard input and output over a guest TCP stream
@@ -241,11 +248,13 @@ async fn relay(local: tokio::net::TcpStream, stream: Box<dyn Connection>) -> Res
 ///
 /// Standard output cannot be half-closed, so its reader would never learn
 /// that the guest finished while this process waited for the end of standard
-/// input. The relay ends with the guest's output instead.
+/// input. The relay ends with the guest's output instead, or with an error in
+/// either direction.
 ///
 /// # Errors
 ///
-/// Returns an error when reading the stream or writing standard output fails.
+/// Returns an error when reading the stream or standard input, or writing
+/// standard output, fails.
 pub(crate) async fn relay_stdio(stream: Box<dyn Connection>) -> Result<(), Error> {
     let (from_guest, mut to_guest) = tokio::io::split(stream);
     let mut from_guest = BufReader::with_capacity(RELAY_BUFFER_BYTES, from_guest);
@@ -262,9 +271,10 @@ pub(crate) async fn relay_stdio(stream: Box<dyn Connection>) -> Result<(), Error
     tokio::pin!(download);
     tokio::select! {
         result = &mut download => result?,
-        // A failed upload means the reader of standard output has gone or agentd closed the stream,
-        // and either ends the download too.
-        _uploaded = upload => download.await?,
+        uploaded = upload => match uploaded {
+            Err(error) if !ends_stream(&error) => return Err(error.into()),
+            Ok(()) | Err(_) => download.await?,
+        },
     }
     Ok(())
 }
@@ -274,6 +284,61 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    /// A stream from agentd whose reads fail, and which takes every write.
+    struct FailingStream;
+
+    impl tokio::io::AsyncRead for FailingStream {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+            _buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("the stream failed")))
+        }
+    }
+
+    impl tokio::io::AsyncWrite for FailingStream {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+            buffer: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Ok(buffer.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_download_ends_a_connection_that_sends_nothing() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+        let mut client = tokio::net::TcpStream::connect(listener.local_addr().expect("address"))
+            .await
+            .expect("connect");
+        let (local, _) = listener.accept().await.expect("accept");
+
+        let relayed = tokio::time::timeout(std::time::Duration::from_secs(2), relay(local, Box::new(FailingStream)))
+            .await
+            .expect("the relay ends instead of waiting for the client");
+        assert!(relayed.is_err(), "the failure reaches the forward's status");
+        let mut rest = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut client, &mut rest)
+            .await
+            .expect("the local connection closes");
+    }
 
     #[test]
     fn specs_follow_kubectl_shapes() {
