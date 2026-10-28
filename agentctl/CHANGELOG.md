@@ -19,7 +19,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 - `agentctl get agents --watch -o json` prints the agents as one JSON line, then again each time they change, so a tool can follow them without polling. It exits once an `agentd` upgrade makes it incompatible. `get sessions --watch` works the same way. ([#349](https://github.com/digdir/digdir-agents/issues/349))
 - Claude Code and Codex logins have names, so you can keep one per subscription, such as work and private:
   - `agentctl claude login work` and `agentctl codex login work` store one, and `list` and `logout` show and forget them. Your existing logins become `default`. ([#356](https://github.com/digdir/digdir-agents/pull/356))
-  - `login: work` on a harness in an agent's manifest picks one. `login: [work, private]` or `login: any` gives the agent whichever the fewest other running agents use, and it keeps that one while it stays allowed and stored.
+  - `login: work` on a harness in an agent's manifest picks one. `login: [work, private]` or `login: any` gives the agent whichever the fewest other running agents use, and it keeps that one while it stays allowed and stored. ([#357](https://github.com/digdir/digdir-agents/pull/357))
 
 ### Changed
 
