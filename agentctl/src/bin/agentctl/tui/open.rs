@@ -656,6 +656,7 @@ mod tests {
         std::fs::create_dir_all(generated.parent().expect("parent")).expect("directory");
         let proxy = agent::ssh::render_proxy_command(
             Path::new("/usr/local/bin/agentctl"),
+            Path::new("/home/someone/.agent"),
             "worker",
             agent::ssh::CommandShell::Posix,
         )

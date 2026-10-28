@@ -29,6 +29,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 ### Fixed
 
 - `clear`, `less` and editors no longer fail with `unknown terminal type` over `agentctl ssh`, the SSH shell in `agentctl tui` or plain `ssh agentctl-<name>` from a terminal such as Ghostty. ([#391](https://github.com/digdir/digdir-agents/pull/391))
+- `ssh agentctl-<name>`, `agentctl ssh` and editors connecting over SSH reach the right agent when it runs on another control-plane home than the default, such as one chosen with `--home`: the SSH configuration now names the home. `agentctl vnc-info` names it in its forwarding command too. ([#375](https://github.com/digdir/digdir-agents/pull/375))
 
 ## [0.1.0-preview.13] - 2026-10-26
 

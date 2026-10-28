@@ -16,6 +16,7 @@ use sandbox::{
 };
 
 const AGENTCTL: &str = "/usr/local/bin/agentctl";
+const HOME: &str = "/home/someone/.agent";
 const DESCRIPTOR: &str = "/etc/agent-access.d/vnc.conf";
 const UNITS: [&str; 2] = ["agent-vnc.socket", "agent-vnc-web.service"];
 
@@ -123,7 +124,8 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let store = Rc::new(InMemoryAgentStore::new());
-        let access = Access::new(PathBuf::from(AGENTCTL), store.clone());
+        let home = agent::local::home::ControlPlaneHome::resolve(Some(std::path::Path::new(HOME))).expect("home");
+        let access = Access::new(&home, PathBuf::from(AGENTCTL), store.clone());
         Self {
             store,
             access,
@@ -317,8 +319,15 @@ async fn describing_an_agent_without_declared_access_names_the_remedy() {
         info.web_guest_port, None,
         "which ports the image offers is observed, so it is unknown until a pass has looked"
     );
+    // A home given without a drive is on the current one on Windows, so it is compared resolved.
+    let home = agent::local::home::ControlPlaneHome::resolve(Some(std::path::Path::new(HOME))).expect("home");
+    let word = |text: &str| agent::ssh::shell_word(text, agent::ssh::CommandShell::host());
     assert_eq!(
         info.forward_command,
-        format!("{AGENTCTL} port-forward agent/viewer :5900")
+        format!(
+            "{} --home {} port-forward agent/viewer :5900",
+            word(AGENTCTL),
+            word(&home.path().to_string_lossy())
+        )
     );
 }
