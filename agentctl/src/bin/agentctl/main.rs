@@ -2070,14 +2070,19 @@ async fn print_logins(client: &Client, harness: agent::Harness) -> CommandResult
         }
     }
     for agent in client.list_agents().await? {
-        for installation in agent
-            .spec
-            .harnesses
-            .iter()
-            .filter(|installation| installation.kind == harness)
-        {
+        let Some(installation) = agent.spec.harness(harness) else {
+            continue;
+        };
+        // The login the agent was given, or else the one it asks for, when it asks for just one.
+        let login = agent
+            .status
+            .sandbox
+            .as_ref()
+            .and_then(|assignment| assignment.login(harness))
+            .or_else(|| installation.login.single());
+        if let Some(login) = login {
             logins
-                .entry(installation.login.clone())
+                .entry(login.clone())
                 .or_default()
                 .1
                 .push(agent.metadata.name.clone());
