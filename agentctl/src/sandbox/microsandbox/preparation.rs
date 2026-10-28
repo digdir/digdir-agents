@@ -14,6 +14,7 @@ use sandbox_microsandbox::{MicrosandboxNetworkBackend, SecretBinding};
 /// Connects agent policy and host-owned secrets to the Microsandbox Network Backend.
 pub(super) struct Preparation {
     database: persistence::Database,
+    credentials: Rc<harness::AuthenticationManager>,
     policy: Rc<AgentPolicyEngine>,
     network: Rc<MicrosandboxNetworkBackend>,
 }
@@ -35,11 +36,13 @@ impl Preparation {
     #[must_use]
     pub(super) const fn new(
         database: persistence::Database,
+        credentials: Rc<harness::AuthenticationManager>,
         policy: Rc<AgentPolicyEngine>,
         network: Rc<MicrosandboxNetworkBackend>,
     ) -> Self {
         Self {
             database,
+            credentials,
             policy,
             network,
         }
@@ -190,7 +193,7 @@ impl Preparation {
             .as_ref()
             .and_then(|assignment| assignment.login(installation.kind));
         let counts = in_use.get(&installation.kind).cloned().unwrap_or_default();
-        match harness::choose_login(installation, current, &counts, &self.database).await? {
+        match self.credentials.choose_login(installation, current, &counts).await? {
             None if !installation.optional => Err(harness::no_login_stored(installation.kind, &installation.login)),
             chosen => Ok(chosen),
         }
@@ -324,7 +327,8 @@ spec:
         }
         let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
         let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
-        let preparation = super::Preparation::new(database.clone(), policy, network);
+        let credentials = Rc::new(harness::AuthenticationManager::new(database.clone()));
+        let preparation = super::Preparation::new(database.clone(), credentials, policy, network);
         let login = |prepared: &super::PreparedNetwork| prepared.logins[&harness::test_harness()].to_string();
 
         let first = record("first", "6a3c1f0e-2b7d-4e59-9c84-0f1d2e3a4b5c");

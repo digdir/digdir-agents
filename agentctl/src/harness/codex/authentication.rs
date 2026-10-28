@@ -9,13 +9,18 @@ use zeroize::Zeroizing;
 
 use crate::{
     Error,
-    harness::{Harness, ImportedAuthentication, LoginName, login_command},
+    harness::{Harness, ImportedAuthentication, LoginName, Usage, UsageWindow, login_command},
     persistence,
 };
 
 use super::{ACCESS_PLACEHOLDER, ACCESS_SECRET, ACCOUNT_SECRET, LOGINS, PROVIDER, REFRESH_PLACEHOLDER, REFRESH_SECRET};
 
 const REFRESH_URL: &str = "https://auth.openai.com/oauth/token";
+/// Where Codex's own `/status` reads how much of a `ChatGPT` subscription's limits is used.
+const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+/// How long a usage reading stands before it is read again, failed readings included, so that
+/// choosing logins for many agents asks the provider once.
+const USAGE_TTL: std::time::Duration = std::time::Duration::from_mins(5);
 const OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const REFRESH_AHEAD_SECONDS: i64 = 5 * 60;
 const TRANSIENT_FAILURE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
@@ -26,8 +31,10 @@ pub(in crate::harness) struct Authentication {
     database: persistence::Database,
     client: reqwest::Client,
     refresh_url: String,
+    usage_url: String,
     /// Kept for every login used since start, never removed, so each login has exactly one lock.
     refreshes: RefCell<BTreeMap<LoginName, Rc<Refresh>>>,
+    usage: RefCell<BTreeMap<LoginName, (Instant, Option<Usage>)>>,
 }
 
 /// One login's refresh state. Each grant's refresh token rotates on use, so its refreshes must
@@ -45,8 +52,75 @@ impl Authentication {
             database,
             client: reqwest::Client::new(),
             refresh_url: REFRESH_URL.into(),
+            usage_url: USAGE_URL.into(),
             refreshes: RefCell::default(),
+            usage: RefCell::default(),
         }
+    }
+
+    /// How much of `login`'s subscription limits is used, read at most every [`USAGE_TTL`].
+    /// `None` when it cannot be read, which never blocks choosing a login.
+    pub(in crate::harness) async fn usage(&self, login: &LoginName) -> Option<Usage> {
+        if let Some((read_at, usage)) = self.usage.borrow().get(login)
+            && read_at.elapsed() < USAGE_TTL
+        {
+            return usage.clone();
+        }
+        let usage = match self.read_usage(login).await {
+            Ok(usage) => Some(usage),
+            Err(error) => {
+                tracing::warn!(%error, %login, "could not read Codex usage");
+                None
+            }
+        };
+        self.usage
+            .borrow_mut()
+            .insert(login.clone(), (Instant::now(), usage.clone()));
+        usage
+    }
+
+    async fn read_usage(&self, login: &LoginName) -> Result<Usage, Error> {
+        let access = self.resolve_access(login).await.map_err(Error::from)?;
+        let access = std::str::from_utf8(access.expose())
+            .map_err(|_| Error::Invalid("stored Codex access token is invalid".into()))?;
+        let account_id = metadata(&self.database, login).await?.account_id;
+        let response = self
+            .client
+            .get(&self.usage_url)
+            .timeout(REQUEST_TIMEOUT)
+            .bearer_auth(access)
+            .header("ChatGPT-Account-Id", account_id)
+            .send()
+            .await
+            .map_err(|_| Error::Invalid("could not reach OpenAI to read Codex usage".into()))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(Error::Invalid(format!(
+                "OpenAI answered HTTP {status} to a Codex usage read"
+            )));
+        }
+        let body: UsageResponse = response
+            .json()
+            .await
+            .map_err(|_| Error::Invalid("OpenAI returned an invalid Codex usage response".into()))?;
+        let windows = [body.rate_limit.primary_window, body.rate_limit.secondary_window]
+            .into_iter()
+            .flatten()
+            .filter_map(|window| {
+                // Rounded up, so a limit nearly used counts as used.
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "clamped to 0-100 first"
+                )]
+                let used_percent = window.used_percent.clamp(0.0, 100.0).ceil() as u8;
+                Some(UsageWindow {
+                    used_percent,
+                    resets_at: time::OffsetDateTime::from_unix_timestamp(window.reset_at).ok()?,
+                })
+            })
+            .collect();
+        Ok(Usage { windows })
     }
 
     fn refresh_state(&self, login: &LoginName) -> Rc<Refresh> {
@@ -272,6 +346,12 @@ impl Authentication {
         self.refresh_url = refresh_url;
         self
     }
+
+    #[cfg(test)]
+    fn with_usage_url(mut self, usage_url: String) -> Self {
+        self.usage_url = usage_url;
+        self
+    }
 }
 
 fn cached_refresh_failure(state: &Refresh) -> Option<Error> {
@@ -360,6 +440,23 @@ struct CodexMetadata {
     kind: CredentialKind,
     account_id: String,
     expires_at: i64,
+}
+
+#[derive(Deserialize)]
+struct UsageResponse {
+    rate_limit: UsageLimits,
+}
+
+#[derive(Deserialize)]
+struct UsageLimits {
+    primary_window: Option<UsageResponseWindow>,
+    secondary_window: Option<UsageResponseWindow>,
+}
+
+#[derive(Deserialize)]
+struct UsageResponseWindow {
+    used_percent: f64,
+    reset_at: i64,
 }
 
 #[derive(Serialize)]
@@ -715,6 +812,62 @@ mod tests {
         assert!(!is_ready(&database, &work).await.expect("readiness"));
         assert!(is_ready(&database, &private).await.expect("readiness"));
         assert_eq!(LOGINS.logins(&database).await.expect("logins"), [private]);
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn usage_is_read_with_the_logins_grant_and_kept_for_a_while() {
+        let directory = TempDir::new().expect("temporary directory");
+        let database = persistence::Database::open(&directory.path().join("agent.db")).expect("database");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind usage endpoint");
+        let endpoint = format!("http://{}/wham/usage", listener.local_addr().expect("local address"));
+        let requests = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&requests);
+        let access = jwt(unix_time().expect("time") + 3_600);
+        let expected = format!("Bearer {access}");
+        tokio::task::spawn_local(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut request = [0_u8; 4_096];
+                let read = stream.read(&mut request).await.expect("read request");
+                let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+                assert!(request.contains(&expected.to_ascii_lowercase()), "the login's grant");
+                assert!(request.contains("chatgpt-account-id: account-canary"));
+                observed.set(observed.get() + 1);
+                let body = r#"{"rate_limit":{"primary_window":{"used_percent":24.2,"reset_at":4102444800},"secondary_window":null}}"#;
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .expect("write response");
+            }
+        });
+        let manager = Authentication::new(database).with_usage_url(endpoint);
+        let login = LoginName::default();
+        manager
+            .login(login.clone(), login_file(&access, "refresh-canary"), false)
+            .await
+            .expect("login");
+
+        let first = manager.usage(&login).await.expect("usage");
+        let second = manager.usage(&login).await.expect("cached usage");
+
+        assert_eq!(
+            first.windows,
+            [UsageWindow {
+                used_percent: 25,
+                resets_at: time::OffsetDateTime::from_unix_timestamp(4_102_444_800).expect("time"),
+            }],
+            "a partly used percent rounds up"
+        );
+        assert_eq!(first, second);
+        assert_eq!(requests.get(), 1);
     }
 
     #[tokio::test(flavor = "local")]

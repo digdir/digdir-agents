@@ -259,7 +259,22 @@ pub(crate) const fn session_state(state: agent::sessions::State) -> &'static str
 }
 
 pub(crate) fn format_age(created_at: time::OffsetDateTime) -> String {
-    let seconds = (time::OffsetDateTime::now_utc() - created_at).whole_seconds().max(0);
+    format_duration(time::OffsetDateTime::now_utc() - created_at)
+}
+
+/// How much of a login's limits is used, and in how long the fullest limit resets, such as
+/// `24% (resets in 6d)`.
+pub(crate) fn format_usage(usage: &agent::harness::Usage, now: time::OffsetDateTime) -> String {
+    let used = usage.used_percent(now);
+    usage.resets_at(now).map_or_else(
+        || format!("{used}%"),
+        |resets_at| format!("{used}% (resets in {})", format_duration(resets_at - now)),
+    )
+}
+
+/// A duration in its largest whole unit, such as `5m` or `6d`.
+fn format_duration(duration: time::Duration) -> String {
+    let seconds = duration.whole_seconds().max(0);
     match seconds {
         0..60 => format!("{seconds}s"),
         60..3600 => format!("{}m", seconds / 60),

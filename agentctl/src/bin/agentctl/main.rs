@@ -2063,10 +2063,15 @@ async fn logout(client: &Client, harness: agent::Harness, name: agent::harness::
 /// Prints `harness`'s stored logins, and those its agents ask for that are not stored, with the
 /// agents that use each.
 async fn print_logins(client: &Client, harness: agent::Harness) -> CommandResult<()> {
-    let mut logins = std::collections::BTreeMap::<_, (bool, Vec<String>)>::new();
+    let now = time::OffsetDateTime::now_utc();
+    let mut logins = std::collections::BTreeMap::<_, (Option<String>, Vec<String>)>::new();
     for stored in client.auth_logins().await? {
         if stored.harness == harness {
-            logins.entry(stored.login).or_default().0 = true;
+            let usage = stored
+                .usage
+                .as_ref()
+                .map_or_else(|| "-".into(), |usage| format::format_usage(usage, now));
+            logins.entry(stored.login).or_default().0 = Some(usage);
         }
     }
     for agent in client.list_agents().await? {
@@ -2098,10 +2103,11 @@ async fn print_logins(client: &Client, harness: agent::Harness) -> CommandResult
     }
     let rows = logins
         .into_iter()
-        .map(|(name, (stored, agents))| {
+        .map(|(name, (usage, agents))| {
             vec![
                 name.to_string(),
-                if stored { "yes" } else { "no" }.into(),
+                if usage.is_some() { "yes" } else { "no" }.into(),
+                usage.unwrap_or_else(|| "-".into()),
                 if agents.is_empty() {
                     "-".into()
                 } else {
@@ -2110,7 +2116,7 @@ async fn print_logins(client: &Client, harness: agent::Harness) -> CommandResult
             ]
         })
         .collect::<Vec<_>>();
-    for line in table_lines(&["NAME", "STORED", "AGENTS"], &rows) {
+    for line in table_lines(&["NAME", "STORED", "USED", "AGENTS"], &rows) {
         println!("{line}");
     }
     Ok(())

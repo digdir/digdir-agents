@@ -411,6 +411,7 @@ mod tests {
             logins.map(|login| StoredLogin {
                 harness: Harness::ClaudeCode,
                 login,
+                usage: None,
             })
         );
     }

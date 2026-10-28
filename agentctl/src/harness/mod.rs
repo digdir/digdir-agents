@@ -16,7 +16,7 @@ const VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 const MAX_INITIAL_PROMPT_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_SELECTION_CHARACTERS: usize = 128;
 
-pub use login::{LoginName, LoginSet};
+pub use login::{LoginName, LoginSet, USAGE_STEP, Usage, UsageWindow};
 pub(crate) use skills::{Skill, SkillFile, platform_skill, remove_linux as remove_skills_linux};
 
 /// Supported harnesses.
@@ -332,13 +332,16 @@ pub struct ImportedAuthentication {
 }
 
 /// A stored harness login, without its credential.
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StoredLogin {
     /// The harness the login is for.
     pub harness: Harness,
     /// The name it is stored under.
     pub login: LoginName,
+    /// How much of its limits is used, when that can be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
 }
 
 /// Dispatches host-side authentication to the selected harness adapter.
@@ -395,7 +398,8 @@ impl AuthenticationManager {
         }
     }
 
-    /// The stored logins of every harness, without their credentials.
+    /// The stored logins of every harness, without their credentials, with how much of each one's
+    /// limits is used where that can be read.
     ///
     /// # Errors
     ///
@@ -407,10 +411,49 @@ impl AuthenticationManager {
             (Harness::Codex, &codex::LOGINS),
         ] {
             for login in store.logins(&self.database).await? {
-                logins.push(StoredLogin { harness, login });
+                let usage = self.usage(harness, &login).await;
+                logins.push(StoredLogin { harness, login, usage });
             }
         }
         Ok(logins)
+    }
+
+    /// Picks the host login a mediated installation uses, from its set and the usable stored logins;
+    /// see [`LoginSet::choose`] for the rule and its arguments. `None` when none of the set is usable.
+    ///
+    /// An optional installation is omitted rather than failing provisioning without one, so this must
+    /// distinguish "no login here" from a genuine fault, which stays an error.
+    pub(crate) async fn choose_login(
+        &self,
+        installation: &HarnessSpec,
+        current: Option<&LoginName>,
+        in_use: &std::collections::BTreeMap<LoginName, usize>,
+    ) -> Result<Option<LoginName>, Error> {
+        let usable = match installation.kind {
+            Harness::ClaudeCode => claude_code::usable_logins(&self.database).await?,
+            Harness::Codex => codex::usable_logins(&self.database).await?,
+            Harness::Pi => return Err(no_platform_login()),
+        };
+        let mut usage = std::collections::BTreeMap::new();
+        // A set of one login has nothing to choose between, so it reads no usage.
+        if installation.login.single().is_none() {
+            for login in usable.iter().filter(|login| installation.login.allows(login)) {
+                if let Some(reading) = self.usage(installation.kind, login).await {
+                    usage.insert(login.clone(), reading);
+                }
+            }
+        }
+        Ok(installation
+            .login
+            .choose(&usable, current, in_use, &usage, time::OffsetDateTime::now_utc()))
+    }
+
+    /// How much of `harness`'s login `login` is used, when its provider tells the host.
+    async fn usage(&self, harness: Harness, login: &LoginName) -> Option<Usage> {
+        match harness {
+            Harness::Codex => self.codex.usage(login).await,
+            Harness::ClaudeCode | Harness::Pi => None,
+        }
     }
 }
 
@@ -557,25 +600,6 @@ fn no_agent_login(harness: Harness, reason: &str) -> Error {
         "this agent has no {name} login to reuse: {reason}. Its manifest must declare {name} and the host be logged \
          in to it, which restarts this agent; or pass a credential with `--from-stdin`"
     ))
-}
-
-/// Picks the host login a mediated installation uses, from its set and the usable stored logins;
-/// see [`LoginSet::choose`] for the rule and its arguments. `None` when none of the set is usable.
-///
-/// An optional installation is omitted rather than failing provisioning without one, so this must
-/// distinguish "no login here" from a genuine fault, which stays an error.
-pub(crate) async fn choose_login(
-    installation: &HarnessSpec,
-    current: Option<&LoginName>,
-    in_use: &std::collections::BTreeMap<LoginName, usize>,
-    database: &persistence::Database,
-) -> Result<Option<LoginName>, Error> {
-    let usable = match installation.kind {
-        Harness::ClaudeCode => claude_code::usable_logins(database).await?,
-        Harness::Codex => codex::usable_logins(database).await?,
-        Harness::Pi => return Err(no_platform_login()),
-    };
-    Ok(installation.login.choose(&usable, current, in_use))
 }
 
 /// The mediated secrets an installation of `harness` gets from its host login `login`.
@@ -918,7 +942,8 @@ mod tests {
             ("default", "login \"default\" is not stored", "`agentctl claude login`"),
         ] {
             let installation = claude_code(set);
-            let chosen = choose_login(&installation, None, &std::collections::BTreeMap::new(), &database)
+            let chosen = AuthenticationManager::new(database.clone())
+                .choose_login(&installation, None, &std::collections::BTreeMap::new())
                 .await
                 .expect("choose");
             assert_eq!(chosen, None, "{set}");
