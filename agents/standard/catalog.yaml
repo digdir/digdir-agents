@@ -1,0 +1,20 @@
+# The standard agents `agentctl setup` offers to start from, one entry per directory beside this file. The KI-hub
+# directory site lists them too. `minimum` and `recommended` size the agent's sandbox. `hidden` keeps an entry out of
+# both until its agent is ready.
+- id: dotnet-backend-developer
+  title: "ASP.NET Core backend"
+  description: >-
+    Builds and maintains ASP.NET Core backends with .NET 8 and 10, and runs what they depend on in containers with
+    Podman, the `docker` command and Docker Compose.
+  defaultName: dotnet-backend
+  minimum:
+    cpu: "2"
+    memory: 6Gi
+    disk: 40Gi
+  recommended:
+    cpu: "4"
+    memory: 12Gi
+    disk: 80Gi
+  harnesses: [claudeCode, codex]
+  tags: [dotnet, aspnet, containers]
+  hidden: false

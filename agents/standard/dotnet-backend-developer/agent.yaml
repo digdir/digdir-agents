@@ -1,0 +1,100 @@
+# An agent for ASP.NET Core backend work: a computer of its own with the .NET SDKs 8.0 and 10.0, and Podman for what it
+# runs in containers, with Claude Code and Codex. It works on GitHub without the token ever entering it.
+#
+# Paths in a manifest resolve against the directory it is in, or against your home directory when they start with
+# `~/`.
+apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  # The agent's name in agentctl's commands and the TUI. `agentctl apply --name` overrides it, so one manifest can
+  # create several agents.
+  name: dotnet-backend
+spec:
+  sandbox:
+    # The published image the sandbox boots, built from the Dockerfile beside this file, so the host needs no Docker.
+    image:
+      type: reference
+      reference: ghcr.io/digdir/digdir-agents/agent-dotnet-backend-developer:latest
+    platform:
+      os: linux
+    # What the sandbox may use of the host.
+    resources:
+      cpu: "4"
+      memory: "12Gi"
+      rootFilesystem:
+        # The most disk the agent can use. Builds, NuGet caches and container images fill it faster than you
+        # expect.
+        capacity: "80Gi"
+        # `direct` copies the whole image onto the agent's own disk. `layered` instead shares the image and stores
+        # only what the agent writes on top of it.
+        mode: direct
+    # Boot the image's own init system, systemd in the base images. It runs Podman and the SSH server for `access`
+    # below.
+    initSystem: image
+
+  # A directory copied over /home/agent every time agentd reconciles the agent, for configuration you want to own
+  # from here. It never deletes files in the sandbox.
+  home:
+    source: home
+
+  # What every harness is told about this computer, installed where each one reads its instructions.
+  instructions:
+    - source: instructions.md
+
+  # Skills every harness can use, here the commands and patterns for ASP.NET Core work.
+  skills:
+    - source: skills/aspnet-backend
+
+  # The harnesses sessions can run. They log in on the host once, with `agentctl claude login` or
+  # `agentctl codex login`, and the sandbox only sees a placeholder for the credential.
+  harnesses:
+    - type: claudeCode
+      auth: mediated
+      # What a new session runs when you do not choose a harness.
+      default: true
+    - type: codex
+      auth: mediated
+      # Without a Codex login on the host, the agent starts without Codex instead of failing. Log in later, and
+      # the next reconcile adds it.
+      optional: true
+
+  # Plain values copied into the sandbox from the environment file, `.env` beside this file unless
+  # `agentctl apply --env-file` names another. The sandbox sees them as they are, so never put a secret here.
+  environment:
+    - name: GIT_USER_NAME
+    - name: GIT_USER_EMAIL
+
+  # Secrets stay on the host. The sandbox sees a placeholder in the variable, and the host puts the real value into
+  # requests to the hosts listed, and nowhere else.
+  secrets:
+    - environment: GITHUB_TOKEN
+      # Without a value in the environment file, the agent starts without it, but cannot clone private
+      # repositories, push or open pull requests.
+      optional: true
+      # gh attaches files to pull requests only with a token it recognizes by its prefix, so the placeholder
+      # carries the fine-grained token's prefix.
+      placeholder: github_pat_AGENT_MEDIATED_GITHUB_TOKEN
+      # Git and gh, gists, and the uploads behind `gh pr create --attach`.
+      allowedHosts:
+        - github.com
+        - api.github.com
+        - gist.github.com
+        - uploads.github.com
+    # A private NuGet feed takes another secret with its own host, such as:
+    # - environment: AZURE_ARTIFACTS_TOKEN
+    #   allowedHosts:
+    #     - pkgs.dev.azure.com
+
+  # Ways to reach the agent besides agentctl's sessions: OpenSSH, for Rider, Visual Studio Code or a terminal of your
+  # own. `agentctl ssh-config install` adds the agent to your SSH configuration.
+  access:
+    - type: ssh
+
+  # All traffic leaves through the host, which applies this policy.
+  network:
+    mode: mediated
+    allow: all
+    # Hosts the agent may not reach. Google Cloud's metadata service hands out the credentials of the VM it runs on,
+    # so block it in case the host is one.
+    deny:
+      - metadata.google.internal

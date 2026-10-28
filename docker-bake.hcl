@@ -72,6 +72,26 @@ target "self-dev-full" {
   }
 }
 
+group "standard" {
+  targets = ["standard-dotnet-backend-developer"]
+}
+
+# The standard agents' images, which `agentctl setup` offers from agents/standard/catalog.yaml. Like the self-dev
+# images, they build on the base image from this file, so that CI tests a change to the base with the agents users
+# start from.
+target "standard-dotnet-backend-developer" {
+  inherits = ["_source"]
+  context  = "agents/standard/dotnet-backend-developer"
+  contexts = {
+    ("${BASE_REPOSITORY}:${BASE_DISTRIBUTION}") = "target:base-headless"
+  }
+  tags = ["ghcr.io/digdir/digdir-agents/agent-dotnet-backend-developer:latest"]
+  labels = {
+    "org.opencontainers.image.title"       = "agent-dotnet-backend-developer"
+    "org.opencontainers.image.description" = "The standard ASP.NET Core backend agent's image"
+  }
+}
+
 # The version the agentctl image's binaries report. CI sets the release's, or `<latest release>.main.g<commit>` on main.
 variable "AGENT_VERSION" {
   default = "v0.0.1-dev"
