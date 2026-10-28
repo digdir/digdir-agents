@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use crate::{
     Error,
-    harness::{LaunchRequest, MediatedSecret, ProcessLaunch, SignIn, shell_single_quoted},
+    harness::{LaunchRequest, MediatedSecret, ProcessLaunch, SandboxSignIn, SignIn, shell_single_quoted},
     persistence,
 };
 use sandbox::secret_store::SecretReference;
@@ -148,14 +148,12 @@ pub(super) fn acquire_host_token(sign_in: SignIn) -> Result<zeroize::Zeroizing<S
                 BROWSER_SIGN_IN_TIMEOUT.as_secs() / 60
             );
             let output = run_hidden(&mut command)?;
-            find_setup_token(&output)
-                .map(|token| zeroize::Zeroizing::new(token.to_owned()))
-                .ok_or_else(|| {
-                    Error::Invalid(
-                        "`claude setup-token` printed no token; run again with AGENTCTL_OPEN=copy to sign in by hand"
-                            .into(),
-                    )
-                })
+            find_setup_token(&output).ok_or_else(|| {
+                Error::Invalid(
+                    "`claude setup-token` printed no token; run again with AGENTCTL_OPEN=copy to sign in by hand"
+                        .into(),
+                )
+            })
         }
         SignIn::Elsewhere { reason } => {
             eprintln!("No browser here would reach you: {reason}.");
@@ -235,16 +233,59 @@ const fn token_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
 }
 
-/// Finds the last setup token in terminal output, which interleaves it with
-/// ANSI escape sequences rather than only whitespace. Hidden output repeats
-/// every frame, including whatever was typed into its prompt, so the token it
-/// printed last is the one it minted.
-fn find_setup_token(output: &[u8]) -> Option<&str> {
-    let prefix = SETUP_TOKEN_PREFIX.as_bytes();
-    let start = output.windows(prefix.len()).rposition(|window| window == prefix)?;
-    let rest = &output[start..];
-    let end = rest.iter().position(|&byte| !token_byte(byte)).unwrap_or(rest.len());
-    std::str::from_utf8(&rest[..end]).ok()
+/// Finds the last setup token on the screen the output draws. The interface
+/// redraws as it goes, including whatever was typed into its prompt, so the
+/// token shown last is the one it minted. It wraps a long token at the
+/// terminal's width, ending a row with a newline or with a cursor movement, so
+/// the token goes on over the rows below that hold nothing else.
+fn find_setup_token(output: &[u8]) -> Option<zeroize::Zeroizing<String>> {
+    let rows = super::screen::rows(output);
+    let row = rows.iter().rposition(|row| row.contains(SETUP_TOKEN_PREFIX))?;
+    let first = rows[row].as_bytes();
+    let start = rows[row].rfind(SETUP_TOKEN_PREFIX)?;
+    let first = &first[start..];
+    let end = first.iter().position(|&byte| !token_byte(byte)).unwrap_or(first.len());
+    let mut token = zeroize::Zeroizing::new(String::from_utf8_lossy(&first[..end]).into_owned());
+    if first[end..].trim_ascii().is_empty() {
+        for line in rows[row + 1..].iter().map(|row| row.trim().as_bytes()) {
+            if line.is_empty() || !line.iter().copied().all(token_byte) {
+                break;
+            }
+            token.push_str(&String::from_utf8_lossy(line));
+        }
+    }
+    Some(token)
+}
+
+/// Mints a long-lived Claude token with `claude setup-token` in a sandbox.
+///
+/// No browser in the sandbox would reach the person, so the one it opens does
+/// nothing, and it shows its sign-in link instead. The person pastes the code
+/// that the sign-in page shows back into its terminal, and it prints the token.
+pub(super) fn sandbox_sign_in() -> SandboxSignIn {
+    SandboxSignIn {
+        execution: sandbox::execution::ExecutionSpec::command(
+            sandbox::SandboxPath::new("/usr/bin/env"),
+            ["claude".into(), "setup-token".into()],
+        )
+        .with_environment([
+            ("BROWSER".into(), "true".into()),
+            (DISABLE_ALTERNATE_SCREEN_ENVIRONMENT.into(), "1".into()),
+        ]),
+        artifact: None,
+        credential: |output, _artifact| {
+            find_setup_token(output).ok_or_else(|| Error::Invalid("`claude setup-token` printed no token".into()))
+        },
+    }
+}
+
+/// Whether `url` is the page where `claude setup-token` signs in. It prints the
+/// page as a hyperlink too, so the whole link is found however it wraps.
+pub(super) fn is_sign_in_link(url: &reqwest::Url) -> bool {
+    matches!(
+        url.host_str(),
+        Some("claude.com" | "claude.ai" | "platform.claude.com" | "console.anthropic.com")
+    ) && url.path().ends_with("/oauth/authorize")
 }
 
 /// Reads a pasted token through the empty line that ends it. The interface
@@ -374,13 +415,93 @@ mod tests {
 
     #[test]
     fn the_last_setup_token_is_found_between_terminal_escapes() {
+        let (head, tail) = TOKEN.split_at(10);
         for (output, expected) in [
             (format!("Your token:\n{TOKEN}\n"), Some(TOKEN)),
             (format!("\x1b[1m{TOKEN}\x1b[22m"), Some(TOKEN)),
             (format!("> sk-ant-oat01-typed\x1b[2K\r{TOKEN}\n"), Some(TOKEN)),
+            (format!("{TOKEN}\r\nStore this token securely.\r\n"), Some(TOKEN)),
+            (
+                format!("{head}\r\n{tail}\r\nStore this token securely.\r\n"),
+                Some(TOKEN),
+            ),
+            (format!("{head} in a sentence\r\n{tail}\r\n"), Some(head)),
             ("Paste code here if prompted >".to_owned(), None),
         ] {
-            assert_eq!(super::find_setup_token(output.as_bytes()), expected, "{output:?}");
+            let token = super::find_setup_token(output.as_bytes());
+            assert_eq!(token.as_deref().map(String::as_str), expected, "{output:?}");
+        }
+    }
+
+    /// What `claude setup-token` prints once the person has pasted the code, with the token
+    /// wrapped at the terminal's width.
+    #[test]
+    fn a_sandbox_sign_in_takes_the_token_however_the_terminal_wraps_it() {
+        let (head, tail) = TOKEN.split_at(10);
+        let output = format!(
+            "\x1b[38;5;114m\u{2713} Long-lived authentication token created successfully!\x1b[39m\r\r\n\r\r\n\
+             Your OAuth token (valid for 1 year):\r\r\n\r\r\n\
+             \x1b[38;5;220m{head}\x1b[39m\r\r\n\x1b[38;5;220m{tail}\x1b[39m\r\r\n\r\r\n\
+             \x1b[2mStore this token securely. You won't be able to see it again.\x1b[22m\r\r\n"
+        );
+        let sign_in = super::sandbox_sign_in();
+        let token = sign_in.credential(output.as_bytes(), None).expect("token");
+        assert_eq!(token.as_str(), TOKEN);
+        sign_in
+            .credential(b"Paste code here if prompted >", None)
+            .expect_err("a sign-in that printed no token has no credential");
+    }
+
+    /// What `claude setup-token` 2.1.309 drew in a sandbox once it had minted the token: it
+    /// rewrites its interface in place and breaks the token over two rows with a carriage
+    /// return and cursor movements, not a newline.
+    #[test]
+    fn a_token_wrapped_by_cursor_movements_is_read_whole() {
+        let (head, tail) = TOKEN.split_at(12);
+        let output = format!(
+            "Paste\x1b[8Gcode\x1b[13Ghere\x1b[18Gif\x1b[21Gprompted\x1b[30G>\r\r\n\x1b[?2004h\r\x1b[31C\x1b[1A\
+             ************************************************************\r\r\n\x1b[32G******7nZ5aU\r\r\n\
+             \r\x1b[1C\x1b[10A\x1b[K\r\x1b[1C\x1b[1B\x1b[38;5;114m\u{2713} Long-lived authentication token created \
+             successfully!\r\x1b[1B\x1b[39m\x1b[K\r\x1b[1B Your OAuth token (valid for 1 year):\x1b[K\r\x1b[1B\x1b[K\
+             \r\x1b[1B \x1b[38;5;174m{head}\r\x1b[1C\x1b[1B{tail}\r\x1b[1C\x1b[2B\x1b[38;5;246mStore this token \
+             securely. You won't be able to see it again.\x1b[39m\x1b[K\r\x1b[31C\x1b[1B\x1b[K\r\r\n"
+        );
+        let token = super::find_setup_token(output.as_bytes());
+        assert_eq!(token.as_deref().map(String::as_str), Some(TOKEN));
+    }
+
+    const SIGN_IN_LINK: &str = "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=uALJenVHrZQ_o__Jg8BwozrZjBeQPZLxiKNqpG7xL3s&code_challenge_method=S256&state=pJetKcOJtm-CoE5zfM3N3mo966yWGC2nehbtWqYzfds";
+
+    /// What `claude setup-token` 2.1 prints in an 80-column terminal: its link wrapped over
+    /// lines, each of them a hyperlink to all of it.
+    fn sign_in_output() -> String {
+        use std::fmt::Write as _;
+
+        let mut output =
+            "\x1b[38;5;246mBrowser didn't open? Use the url below to sign in (c to copy)\x1b[39m\r\r\n\r\r\n"
+                .to_owned();
+        for line in SIGN_IN_LINK.as_bytes().chunks(80) {
+            let line = std::str::from_utf8(line).expect("ASCII");
+            let _infallible = write!(
+                output,
+                "\x1b]8;id=1gyrjfn;{SIGN_IN_LINK}\x07\x1b[38;5;246m{line}\x1b[39m\x1b]8;;\x07\r\r\n"
+            );
+        }
+        output + "\r\r\n\x1b[2GPaste\x1b[8Gcode\x1b[13Ghere\x1b[18Gif\x1b[21Gprompted\x1b[30G>\r\r\n"
+    }
+
+    #[test]
+    fn the_sign_in_link_is_found_whole_however_the_output_arrives() {
+        let output = sign_in_output();
+        let whole = reqwest::Url::parse(SIGN_IN_LINK).expect("link");
+        assert_eq!(
+            crate::harness::sign_in_links(output.as_bytes()),
+            std::slice::from_ref(&whole)
+        );
+        for end in 0..output.len() {
+            for link in crate::harness::sign_in_links(&output.as_bytes()[..end]) {
+                assert_eq!(link, whole, "after {end} bytes");
+            }
         }
     }
 

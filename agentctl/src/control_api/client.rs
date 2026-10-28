@@ -8,13 +8,13 @@ use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, ses
 
 use super::protocol::{
     DaemonInfo, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, MAX_RESPONSE_BYTES,
-    METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET,
-    METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
-    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, ProgressParams, ReadMessage, Request,
-    ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams,
-    SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
+    METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_STATUS, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE,
+    METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH,
+    METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET,
+    METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN,
+    METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, ProgressParams,
+    ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams,
+    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -299,6 +299,16 @@ impl Client {
             },
         )
         .await
+    }
+
+    /// Reports, for each harness that the platform signs in to, whether the daemon holds a usable
+    /// login.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or reading the stored logins fails.
+    pub async fn auth_status(&self) -> Result<Vec<harness::AuthenticationStatus>, Error> {
+        self.call(METHOD_AUTH_STATUS, serde_json::json!({})).await
     }
 
     /// Creates or resolves one named session attach target.

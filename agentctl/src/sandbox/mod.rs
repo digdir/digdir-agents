@@ -508,6 +508,27 @@ pub async fn attach_terminal(
     }
 }
 
+/// Starts a terminal Execution through the recorded sandbox provider, for the caller to relay.
+///
+/// Unlike [`attach_terminal`], the caller owns the terminal: it writes the input, resizes it and
+/// reads the output from the returned Execution, so it can also scan what the program prints.
+///
+/// # Errors
+///
+/// Returns an error when the Provider is unsupported by this client or the Execution cannot start.
+pub async fn start_terminal_execution(
+    home: &Path,
+    assignment: &Assignment,
+    request: ::sandbox::terminal::StartTerminalExecutionRequest,
+) -> Result<::sandbox::terminal::StartedTerminalExecution, Error> {
+    match assignment.provider().as_str() {
+        microsandbox::PROVIDER_ID => microsandbox::start_terminal_execution(home, assignment, request).await,
+        provider => Err(Error::Invalid(format!(
+            "terminal execution is not supported through sandbox provider {provider:?}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{NestedSandboxesOutcome, resolve_nested_sandboxes};
