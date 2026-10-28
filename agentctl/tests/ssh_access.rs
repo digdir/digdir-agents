@@ -130,6 +130,18 @@ struct Fixture {
 }
 
 impl Fixture {
+    /// The `ProxyCommand` the generated configuration gives `agent`, which names this home.
+    /// The `ProxyCommand` for `agent`, its words quoted for this host's shell and `%` doubled for
+    /// OpenSSH.
+    fn proxy_command(&self, agent: &str) -> String {
+        let word = |text: &str| agent::ssh::shell_word(text, agent::ssh::CommandShell::host()).replace('%', "%%");
+        format!(
+            "{} --home {} ssh-proxy agent/{agent}",
+            word(AGENTCTL),
+            word(&self.home.path().to_string_lossy())
+        )
+    }
+
     fn new() -> Self {
         let directory = TempDir::new().expect("temporary directory");
         let home = ControlPlaneHome::resolve(Some(&directory.path().join("agent-home"))).expect("home");
@@ -269,7 +281,7 @@ async fn access_is_idempotent_and_only_public_material_enters_the_guest() {
     let info = fixture.access.describe("worker").await.expect("descriptor");
     assert_eq!(info.alias, "agentctl-worker");
     assert_eq!(info.identity_file, ssh_home.identity_path(record.id));
-    assert_eq!(info.proxy_command, format!("{AGENTCTL} ssh-proxy agent/worker"));
+    assert_eq!(info.proxy_command, fixture.proxy_command("worker"));
 
     assert!(fixture.access.reconcile(&record, &sandbox).await.expect("second pass"));
     assert_eq!(
@@ -556,7 +568,7 @@ async fn descriptor_json_is_the_documented_shape() {
     assert_eq!(value["agentId"], "38f41de4-6ff7-4679-ae46-678bc61e4dcb");
     assert_eq!(value["alias"], "agentctl-worker");
     assert_eq!(value["user"], "agent");
-    assert_eq!(value["proxyCommand"], format!("{AGENTCTL} ssh-proxy agent/worker"));
+    assert_eq!(value["proxyCommand"], fixture.proxy_command("worker"));
     assert_eq!(value["workingDirectory"], "/home/agent/code");
     let decoded: ssh::AccessInfo = serde_json::from_value(value).expect("round trip");
     assert_eq!(decoded, info);

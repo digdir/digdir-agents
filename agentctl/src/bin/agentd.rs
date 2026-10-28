@@ -84,7 +84,7 @@ fn access(
     let agentctl = agent::ssh::stable_agentctl_path(&sibling, std::env::var_os("PATH").as_deref());
     let host_keys: Rc<dyn agent::ssh::HostKeyStore> = Rc::new(database.clone());
     let ssh = agent::ssh::Access::new(home, agentctl.clone(), host_keys, store.clone());
-    Ok((Rc::new(ssh), Rc::new(agent::vnc::Access::new(agentctl, store))))
+    Ok((Rc::new(ssh), Rc::new(agent::vnc::Access::new(home, agentctl, store))))
 }
 
 /// Logs recoverable reconciliation errors for one durable resource kind.
