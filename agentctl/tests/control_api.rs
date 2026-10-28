@@ -324,6 +324,7 @@ impl ExecutionApi for FakeExecutions {
                         .map_err(|error| Error::Invalid(format!("invalid test sandbox ID: {error}")))?,
                     harnesses: Vec::new(),
                     skills: std::collections::BTreeMap::new(),
+                    logins: std::collections::BTreeMap::new(),
                 },
                 operating_system: "linux".into(),
             })

@@ -17,7 +17,7 @@ mod status_line;
 pub(super) mod transcript;
 
 const PROVIDER: &str = "claude";
-const ACCESS_SECRET: &str = "claude-access-token";
+pub(super) const ACCESS_SECRET: &str = "claude-access-token";
 pub(super) const LOGINS: LoginStore = LoginStore::new(PROVIDER, &[ACCESS_SECRET]);
 pub(super) const ACCESS_ENVIRONMENT: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 const ACCESS_PLACEHOLDER: &str = "sk-ant-oat01-agent-mediated-placeholder-not-a-real-credential";
@@ -54,8 +54,9 @@ pub(super) fn skills_directory(home: &str) -> String {
     format!("{home}/.claude/skills")
 }
 
-pub(super) async fn authentication_ready(database: &persistence::Database, login: &LoginName) -> Result<bool, Error> {
-    authentication::is_ready(database, login).await
+/// The stored Claude logins, each usable as soon as it is stored.
+pub(super) async fn usable_logins(database: &persistence::Database) -> Result<Vec<LoginName>, Error> {
+    LOGINS.logins(database).await
 }
 
 pub(super) async fn prepare(database: &persistence::Database, login: &LoginName) -> Result<Vec<MediatedSecret>, Error> {

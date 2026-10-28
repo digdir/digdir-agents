@@ -608,19 +608,24 @@ fn an_omitted_authentication_mode_is_the_harness_own_and_is_stored() {
 }
 
 #[test]
-fn an_installation_uses_the_login_it_names_and_the_default_login_otherwise() {
+fn an_installation_names_a_login_a_list_of_them_or_any_and_the_default_login_otherwise() {
     let bytes = manifest_with(&[(
         CLAUDE_CODE,
-        "    - type: claudeCode\n      default: true\n      login: work\n    - type: codex\n",
+        "    - type: claudeCode\n      default: true\n      login: [work, private]\n    - type: codex\n      login: any\n    - type: pi\n",
     )]);
     let agent = manifest::decode(&bytes).expect("manifest");
-    let login = |harness| agent.spec.harness(harness).expect("installation").login.as_str();
-    assert_eq!(login(Harness::ClaudeCode), "work");
-    assert_eq!(login(Harness::Codex), "default");
+    let login = |harness| agent.spec.harness(harness).expect("installation").login.to_string();
+    assert_eq!(login(Harness::ClaudeCode), "work, private");
+    assert_eq!(login(Harness::Codex), "any");
+    assert_eq!(login(Harness::Pi), "default");
     let value = serde_json::to_value(&agent).expect("Agent JSON");
-    assert_eq!(value["spec"]["harnesses"][0]["login"], "work");
+    assert_eq!(
+        value["spec"]["harnesses"][0]["login"],
+        serde_json::json!(["work", "private"])
+    );
+    assert_eq!(value["spec"]["harnesses"][1]["login"], "any");
     assert!(
-        value["spec"]["harnesses"][1].get("login").is_none(),
+        value["spec"]["harnesses"][2].get("login").is_none(),
         "the default stays unwritten, so stored agents read back the same"
     );
 }

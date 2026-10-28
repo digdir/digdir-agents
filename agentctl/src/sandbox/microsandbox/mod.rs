@@ -162,6 +162,7 @@ impl Provider for Adapter {
             let nested_sandboxes = resolve_nested_sandboxes(requested, offered)?;
             let prepared = self.preparation.prepare(record).await?;
             let harnesses = prepared.harnesses;
+            let logins = prepared.logins;
             for (name, value) in prepared.environment {
                 if environment.insert(name.clone(), value).is_some() {
                     return Err(Error::Invalid(format!(
@@ -199,6 +200,7 @@ impl Provider for Adapter {
                 sandbox,
                 runtime_restarted,
                 harnesses,
+                logins,
                 nested_sandboxes,
             })
         })
