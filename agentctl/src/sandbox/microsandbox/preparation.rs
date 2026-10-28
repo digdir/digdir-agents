@@ -14,7 +14,6 @@ pub(super) struct Preparation {
 }
 
 pub(super) struct PreparedNetwork {
-    pub(super) bindings_changed: bool,
     pub(super) environment: BTreeMap<String, String>,
     pub(super) harnesses: Vec<crate::Harness>,
 }
@@ -36,8 +35,9 @@ impl Preparation {
 }
 
 impl Preparation {
-    pub(super) fn network_is_running(&self, sandbox: &SandboxId) -> bool {
-        self.network.is_running(sandbox)
+    /// Whether the sandbox's running Network must restart to apply the bindings prepared for it.
+    pub(super) fn network_is_stale(&self, sandbox: &SandboxId) -> bool {
+        self.network.has_stale_secret_bindings(sandbox)
     }
 
     pub(super) async fn restart_network(&self, sandbox: &SandboxHandle) -> Result<(), Error> {
@@ -128,9 +128,8 @@ impl Preparation {
                     (name.to_owned(), value.to_owned())
                 })
                 .collect();
-            let bindings_changed = self.network.set_secret_bindings(sandbox_name.clone(), bindings)?;
+            self.network.set_secret_bindings(sandbox_name.clone(), bindings)?;
             Ok(PreparedNetwork {
-                bindings_changed,
                 environment: guest_environment,
                 harnesses: installed,
             })

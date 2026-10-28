@@ -26,6 +26,7 @@ pub(in crate::harness) struct Authentication {
     database: persistence::Database,
     client: reqwest::Client,
     refresh_url: String,
+    /// Kept for every login used since start, never removed, so each login has exactly one lock.
     refreshes: RefCell<BTreeMap<LoginName, Rc<Refresh>>>,
 }
 
@@ -113,11 +114,12 @@ impl Authentication {
 
     /// Forgets the login `login`, returning whether it was stored.
     pub(in crate::harness) async fn logout(&self, login: &LoginName) -> Result<bool, Error> {
-        // A refresh in flight would store the grant again after it is forgotten.
+        // A refresh in flight would store the grant again after it is forgotten. The state stays,
+        // so callers already waiting for it and later ones keep sharing one lock.
         let state = self.refresh_state(login);
         let _refresh = state.lock.lock().await;
         let forgotten = LOGINS.delete(&self.database, login).await?;
-        self.refreshes.borrow_mut().remove(login);
+        state.failure.borrow_mut().take();
         Ok(forgotten)
     }
 
@@ -703,7 +705,12 @@ mod tests {
         assert!(failed.to_string().contains("agentctl codex login work"));
         assert_eq!(resolved.expose(), current.as_bytes());
         assert_eq!(requests.get(), 1);
+        let state = manager.refresh_state(&work);
         assert!(manager.logout(&work).await.expect("logout"));
+        assert!(
+            Rc::ptr_eq(&state, &manager.refresh_state(&work)),
+            "callers queued behind a logout and later ones share one lock"
+        );
         assert!(!manager.logout(&work).await.expect("second logout"));
         assert!(!is_ready(&database, &work).await.expect("readiness"));
         assert!(is_ready(&database, &private).await.expect("readiness"));
