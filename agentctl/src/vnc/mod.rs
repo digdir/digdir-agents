@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AgentId, Error,
     control_plane::{AgentRecord, AgentStore},
+    local::home::ControlPlaneHome,
     sandbox::platform,
+    ssh::CommandShell,
 };
 
 /// Guest loopback port carrying the RFB stream. The image declares the same ports, and a mismatch
@@ -62,6 +64,8 @@ pub fn image_contract_missing(what: &str) -> String {
 /// Reconciles VNC access for agents by enabling or disabling the units their image declares.
 pub struct Access {
     agentctl: PathBuf,
+    /// The control-plane home the forwarding command names.
+    control_home: PathBuf,
     agents: Rc<dyn AgentStore>,
     /// What the last successful pass left in each agent's guest, so that describing an agent needs
     /// no call into its sandbox and a resync can skip a withdrawal that already succeeded. Not
@@ -79,11 +83,13 @@ enum Applied {
 }
 
 impl Access {
-    /// Creates the VNC access reconciler; `agentctl` is the executable the forwarding command names.
+    /// Creates the VNC access reconciler; `agentctl` is the executable the forwarding command names,
+    /// on `home`.
     #[must_use]
-    pub fn new(agentctl: PathBuf, agents: Rc<dyn AgentStore>) -> Self {
+    pub fn new(home: &ControlPlaneHome, agentctl: PathBuf, agents: Rc<dyn AgentStore>) -> Self {
         Self {
             agentctl,
+            control_home: home.path().to_path_buf(),
             agents,
             applied: RefCell::new(BTreeMap::new()),
         }
@@ -122,7 +128,11 @@ impl Access {
                 Some(Applied::Withdrawn) | None => None,
             },
             // `:PORT` binds a free local port, as `agentctl vnc` does: 5900 is often taken locally.
-            forward_command: format!("{} port-forward agent/{name} :{GUEST_PORT}", self.agentctl.display()),
+            forward_command: format!(
+                "{} --home {} port-forward agent/{name} :{GUEST_PORT}",
+                crate::ssh::shell_word(&self.agentctl.to_string_lossy(), CommandShell::host()),
+                crate::ssh::shell_word(&self.control_home.to_string_lossy(), CommandShell::host()),
+            ),
         }
     }
 
