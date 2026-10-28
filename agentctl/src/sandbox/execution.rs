@@ -13,6 +13,8 @@ use super::Assignment;
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ExecutionTarget {
+    /// The agent's uid, which tells it apart from a later agent of the same name.
+    pub uid: crate::AgentId,
     /// Sticky Provider and immutable sandbox identity.
     pub sandbox: Assignment,
     /// Sandbox operating system used to construct the Execution.
@@ -68,6 +70,7 @@ fn target(record: control_plane::AgentRecord, name: &str) -> Result<ExecutionTar
         .filter(|assignment| assignment.id().is_some())
         .ok_or_else(|| Error::Invalid(format!("Agent {name:?} has no materialized sandbox")))?;
     Ok(ExecutionTarget {
+        uid: record.id,
         sandbox,
         operating_system: record.agent.spec.sandbox.platform.os,
     })

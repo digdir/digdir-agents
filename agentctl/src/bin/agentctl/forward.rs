@@ -13,9 +13,8 @@ use std::{
 };
 
 use agent::{
-    Error,
+    AgentId, Error,
     control_api::{Client, Connection},
-    sandbox::Assignment,
 };
 use tokio::{
     io::{AsyncWriteExt as _, BufReader},
@@ -78,26 +77,22 @@ fn parse_port(text: &str) -> Result<u16, String> {
 /// One running forward with its local listener task.
 pub(crate) struct PortForward {
     spec: ForwardSpec,
-    assignment: Assignment,
+    uid: AgentId,
     local: std::net::SocketAddr,
     task: tokio::task::JoinHandle<()>,
     status: Rc<RefCell<Option<String>>>,
 }
 
 impl PortForward {
-    /// Binds the local listener and forwards each connection to the named
-    /// agent's sandbox until stopped. `assignment` is the sandbox the agent had
-    /// when the forward started.
+    /// Binds the local listener and forwards each connection to the sandbox of
+    /// the agent with this name and `uid` until stopped. Once the agent is
+    /// replaced by another of the same name, connections are refused, as a
+    /// pod's port forward ends with the pod.
     ///
     /// # Errors
     ///
     /// Returns an error when the local address cannot be bound.
-    pub(crate) async fn start(
-        client: Rc<Client>,
-        agent: &str,
-        assignment: Assignment,
-        spec: ForwardSpec,
-    ) -> Result<Self, Error> {
+    pub(crate) async fn start(client: Rc<Client>, agent: &str, uid: AgentId, spec: ForwardSpec) -> Result<Self, Error> {
         let listener = TcpListener::bind((spec.address, spec.local_port))
             .await
             .map_err(Error::from)?;
@@ -106,13 +101,14 @@ impl PortForward {
         let task = tokio::task::spawn_local(accept_loop(
             client,
             agent.into(),
+            uid,
             spec.guest_port,
             listener,
             Rc::clone(&status),
         ));
         Ok(Self {
             spec,
-            assignment,
+            uid,
             local,
             task,
             status,
@@ -125,10 +121,10 @@ impl PortForward {
         &self.spec
     }
 
-    /// Returns the sandbox assignment the agent had when the forward started.
+    /// Returns the uid of the agent the forward reaches.
     #[must_use]
-    pub(crate) const fn assignment(&self) -> &Assignment {
-        &self.assignment
+    pub(crate) const fn uid(&self) -> AgentId {
+        self.uid
     }
 
     /// Returns the bound local address, with any ephemeral port resolved.
@@ -164,6 +160,7 @@ impl Drop for PortForward {
 async fn accept_loop(
     client: Rc<Client>,
     agent: Rc<str>,
+    uid: AgentId,
     guest_port: u16,
     listener: TcpListener,
     status: Rc<RefCell<Option<String>>>,
@@ -184,7 +181,7 @@ async fn accept_loop(
         // Each connection opens its stream in its own task, so a slow one does not hold up the next.
         relays.spawn_local(async move {
             let relayed = async {
-                let stream = client.guest_tcp(&agent, guest_port).await?;
+                let stream = client.guest_tcp(&agent, Some(uid), guest_port).await?;
                 *status.borrow_mut() = None;
                 relay(local, stream).await
             };

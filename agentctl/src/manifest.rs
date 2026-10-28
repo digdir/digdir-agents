@@ -164,6 +164,7 @@ impl Agent {
     }
 
     pub(crate) fn clear_managed_fields(&mut self) {
+        self.metadata.uid = None;
         self.metadata.generation = 0;
         self.metadata.deletion_timestamp = None;
         self.metadata.restart_timestamp = None;
@@ -184,6 +185,11 @@ impl Agent {
 pub struct Metadata {
     /// Stable resource name.
     pub name: String,
+    /// Identity the agent gets when it is first created. Applying it again, restarting it or
+    /// replacing its sandbox keeps it, while an agent deleted and created again under the same
+    /// name gets a new one, so a client can tell the two apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<crate::AgentId>,
     /// Desired-state revision managed by the control plane.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub generation: u64,

@@ -332,10 +332,12 @@ impl VncAccessApi for crate::vnc::Access {
 
 /// Connections into agent sandboxes exposed through the local control API.
 pub trait GuestTcpApi {
-    /// Dials `port` on the loopback interface of the named agent's sandbox.
+    /// Dials `port` on the loopback interface of the named agent's sandbox,
+    /// provided the agent still has `uid` when one is given.
     fn connect<'a>(
         &'a self,
         name: &'a str,
+        uid: Option<crate::AgentId>,
         port: std::num::NonZeroU16,
     ) -> LocalFuture<'a, Result<Box<dyn ByteStream>, Error>>;
 }
@@ -344,10 +346,11 @@ impl GuestTcpApi for crate::sandbox::GuestTcp {
     fn connect<'a>(
         &'a self,
         name: &'a str,
+        uid: Option<crate::AgentId>,
         port: std::num::NonZeroU16,
     ) -> LocalFuture<'a, Result<Box<dyn ByteStream>, Error>> {
         Box::pin(async move {
-            let connection = Self::connect(self, name, port).await?;
+            let connection = Self::connect(self, name, uid, port).await?;
             Ok(Box::new(connection) as Box<dyn ByteStream>)
         })
     }
@@ -941,10 +944,10 @@ impl Server {
     }
 
     async fn open_guest_tcp(&self, id: u64, value: Value) -> Reply {
-        let Some((name, port)) = serde_json::from_value::<GuestTcpParams>(value)
+        let Some((name, uid, port)) = serde_json::from_value::<GuestTcpParams>(value)
             .ok()
             .filter(|params| !params.name.is_empty())
-            .and_then(|params| Some((params.name, std::num::NonZeroU16::new(params.port)?)))
+            .and_then(|params| Some((params.name, params.uid, std::num::NonZeroU16::new(params.port)?)))
         else {
             return error_response(id, CODE_INVALID_PARAMS, "name and a port from 1 to 65535 are required").into();
         };
@@ -956,7 +959,7 @@ impl Server {
             )
             .into();
         }
-        match self.guest_tcp.connect(&name, port).await {
+        match self.guest_tcp.connect(&name, uid, port).await {
             Ok(guest) => Reply::switch(id, Stream::Bytes(guest)),
             Err(error) => result_response::<()>(id, Err(error)).into(),
         }

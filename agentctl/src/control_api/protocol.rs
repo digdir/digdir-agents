@@ -107,6 +107,9 @@ pub(crate) struct NameParams {
 pub(crate) struct GuestTcpParams {
     pub name: String,
     pub port: u16,
+    /// Refuses the connection unless the agent named `name` still has this uid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<crate::AgentId>,
 }
 
 /// What a connection carries after a call has answered by switching it to a stream.

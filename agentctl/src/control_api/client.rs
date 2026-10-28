@@ -474,19 +474,26 @@ impl Client {
     /// through agentd. The connection carries the guest connection's bytes
     /// both ways, and shutting down its write side ends the guest's input.
     /// The guest connection closes when both directions have, or when the
-    /// connection is dropped.
+    /// connection is dropped. With `uid`, only the agent that has it is dialed,
+    /// not a later one created under the same name.
     ///
     /// # Errors
     ///
-    /// Returns an error when the agent is missing, stopped or has no running
-    /// sandbox, or when nothing in the guest accepts the connection.
-    pub async fn guest_tcp(&self, name: &str, port: u16) -> Result<Box<dyn Connection>, Error> {
+    /// Returns an error when the agent is missing, replaced, stopped or has no
+    /// running sandbox, or when nothing in the guest accepts the connection.
+    pub async fn guest_tcp(
+        &self,
+        name: &str,
+        uid: Option<crate::AgentId>,
+        port: u16,
+    ) -> Result<Box<dyn Connection>, Error> {
         let (result, connection) = self
             .exchange(
                 METHOD_GUEST_TCP,
                 GuestTcpParams {
                     name: name.into(),
                     port,
+                    uid,
                 },
             )
             .await?;

@@ -999,7 +999,7 @@ async fn port_forward(
     let forward_client = std::rc::Rc::new(Client::for_path(home.socket_path()));
     let mut forwards = Vec::new();
     for spec in specs {
-        let forward = forward::PortForward::start(forward_client.clone(), &agent, target.sandbox.clone(), spec).await?;
+        let forward = forward::PortForward::start(forward_client.clone(), &agent, target.uid, spec).await?;
         println!(
             "Forwarding from {} -> {} (agent {agent:?})",
             forward.local_address(),
@@ -1113,7 +1113,7 @@ async fn ssh_proxy(client: &Client, resource: String) -> CommandResult<ExitCode>
         client.ensure_execution(&agent, WaitPolicy::UntilConverged),
     )
     .await?;
-    let stream = client.guest_tcp(&agent, agent::ssh::GUEST_PORT).await?;
+    let stream = client.guest_tcp(&agent, None, agent::ssh::GUEST_PORT).await?;
     forward::relay_stdio(stream).await?;
     // A blocked standard-input read would keep the runtime from shutting down;
     // the relay is finished, so leave immediately.
@@ -1205,7 +1205,7 @@ async fn vnc(
         guest_port,
     };
     let forward_client = std::rc::Rc::new(Client::for_path(home.socket_path()));
-    let forward = forward::PortForward::start(forward_client, &agent, target.sandbox.clone(), spec).await?;
+    let forward = forward::PortForward::start(forward_client, &agent, target.uid, spec).await?;
     let address = forward.local_address();
     // The image decides what its viewer port serves and where the root redirects, so the caller is
     // pointed at the root rather than a path this side would have to keep in step with it.
@@ -1251,7 +1251,7 @@ async fn vnc_proxy(client: &Client, resource: String) -> CommandResult<ExitCode>
         client.ensure_execution(&agent, WaitPolicy::UntilConverged),
     )
     .await?;
-    let stream = client.guest_tcp(&agent, access.guest_port).await?;
+    let stream = client.guest_tcp(&agent, None, access.guest_port).await?;
     forward::relay_stdio(stream).await?;
     // A blocked standard-input read would keep the runtime from shutting down;
     // the relay is finished, so leave immediately.

@@ -21,6 +21,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 ### Changed
 
 - SSH, `agentctl port-forward` and `agentctl vnc` now connect through `agentd`, so `agentctl self update` closes open SSH sessions and forwarded connections, and says how many. ([#273](https://github.com/digdir/digdir-agents/issues/273))
+- A running `agentctl port-forward` refuses new connections once its agent is deleted and created again under the same name. Each agent's `metadata.uid`, shown by `agentctl describe` and `get -o json`, tells the two apart. ([#273](https://github.com/digdir/digdir-agents/issues/273))
 
 ## [0.1.0-preview.13] - 2026-10-26
 

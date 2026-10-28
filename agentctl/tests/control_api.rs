@@ -307,6 +307,7 @@ impl ExecutionApi for FakeExecutions {
                 return Err(Error::NotFound);
             }
             Ok(agent::sandbox::ExecutionTarget {
+                uid: WORKER_UID.parse().expect("uid"),
                 sandbox: agent::sandbox::Assignment::Materialized {
                     provider: agent::sandbox::ProviderId::new("memory")?,
                     id: "ca4e2f21-91d9-43f1-97c6-13f0f350fbe7"
@@ -325,14 +326,19 @@ impl ExecutionApi for FakeExecutions {
 struct FakeGuestTcp;
 
 const GUEST_GREETING: &[u8] = b"SSH-2.0-fake\r\n";
+const WORKER_UID: &str = "5f0c8a7e-2b1d-4c3e-9f4a-6d7e8f9a0b1c";
 
 impl GuestTcpApi for FakeGuestTcp {
     fn connect<'a>(
         &'a self,
         name: &'a str,
+        uid: Option<agent::AgentId>,
         port: std::num::NonZeroU16,
     ) -> LocalFuture<'a, Result<Box<dyn ByteStream>, Error>> {
         Box::pin(async move {
+            if uid.is_some_and(|uid| uid.to_string() != WORKER_UID) {
+                return Err(Error::Invalid(format!("agent {name:?} was replaced")));
+            }
             match (name, port.get()) {
                 ("worker", 22) => Ok(Box::new(ShoutingGuest) as Box<dyn ByteStream>),
                 ("worker", port) => Err(Error::Invalid(format!(
@@ -1281,7 +1287,11 @@ async fn session_ensure_rejects_invalid_selections_before_reaching_the_service()
 #[tokio::test(flavor = "local")]
 async fn a_guest_tcp_call_switches_its_connection_to_the_guest_bytes() {
     let fixture = api();
-    let mut stream = fixture.client.guest_tcp("worker", 22).await.expect("guest stream");
+    let mut stream = fixture
+        .client
+        .guest_tcp("worker", None, 22)
+        .await
+        .expect("guest stream");
     let mut greeting = vec![0; GUEST_GREETING.len()];
     stream.read_exact(&mut greeting).await.expect("greeting");
     assert_eq!(greeting, GUEST_GREETING, "the guest speaks first");
@@ -1329,7 +1339,7 @@ async fn guest_tcp_failures_are_answered_before_any_stream() {
         ("worker", 0, false),
         ("gone", 22, true),
     ] {
-        let Err(Error::Rpc(error)) = fixture.client.guest_tcp(name, port).await else {
+        let Err(Error::Rpc(error)) = fixture.client.guest_tcp(name, None, port).await else {
             panic!("{name}:{port} should be refused with a JSON-RPC error");
         };
         assert_eq!(error.is_not_found(), not_found, "{name}:{port}: {error:?}");
@@ -1338,9 +1348,31 @@ async fn guest_tcp_failures_are_answered_before_any_stream() {
 }
 
 #[tokio::test(flavor = "local")]
+async fn a_guest_tcp_call_reaches_only_the_agent_with_its_uid() {
+    let fixture = api();
+    let replaced = "00000000-0000-0000-0000-000000000001".parse().expect("uid");
+    let Err(Error::Rpc(error)) = fixture.client.guest_tcp("worker", Some(replaced), 22).await else {
+        panic!("another agent's uid should be refused with a JSON-RPC error");
+    };
+    assert!(error.is_invalid_params(), "{error:?}");
+
+    let mut stream = fixture
+        .client
+        .guest_tcp("worker", Some(WORKER_UID.parse().expect("uid")), 22)
+        .await
+        .expect("the current agent's uid");
+    let mut greeting = vec![0; GUEST_GREETING.len()];
+    stream.read_exact(&mut greeting).await.expect("greeting");
+}
+
+#[tokio::test(flavor = "local")]
 async fn an_upgrade_warns_about_open_streams_and_closes_them() {
     let fixture = api();
-    let mut stream = fixture.client.guest_tcp("worker", 22).await.expect("guest stream");
+    let mut stream = fixture
+        .client
+        .guest_tcp("worker", None, 22)
+        .await
+        .expect("guest stream");
     let mut greeting = vec![0; GUEST_GREETING.len()];
     stream.read_exact(&mut greeting).await.expect("greeting");
 
@@ -1382,7 +1414,7 @@ async fn open_streams_leave_room_for_calls() {
     tokio::time::timeout(Duration::from_secs(5), async {
         // More than the daemon serves calls at once.
         for _ in 0..200 {
-            let mut stream = client.guest_tcp("worker", 22).await.expect("guest stream");
+            let mut stream = client.guest_tcp("worker", None, 22).await.expect("guest stream");
             let mut greeting = vec![0; GUEST_GREETING.len()];
             stream.read_exact(&mut greeting).await.expect("greeting");
             streams.push(stream);
