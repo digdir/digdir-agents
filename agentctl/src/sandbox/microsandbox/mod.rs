@@ -13,7 +13,7 @@ mod preparation;
 mod terminal;
 
 pub(super) use execution::start_execution;
-pub use forward::{GuestConnection, GuestDialer};
+pub use forward::{GuestConnection, GuestTarget};
 pub use terminal::attach_terminal;
 
 use preparation::Preparation;
@@ -242,7 +242,7 @@ impl Provider for Adapter {
         })
     }
 
-    fn guest_tcp_dialer<'a>(&'a self, id: &'a ::sandbox::SandboxId) -> LocalFuture<'a, Result<GuestDialer, Error>> {
-        Box::pin(async move { Ok(GuestDialer(self.provider.guest_tcp_dialer(id).await?)) })
+    fn guest_tcp_target<'a>(&'a self, id: &'a ::sandbox::SandboxId) -> LocalFuture<'a, Result<GuestTarget, Error>> {
+        Box::pin(async move { Ok(GuestTarget(self.provider.guest_tcp_target(id).await?)) })
     }
 }

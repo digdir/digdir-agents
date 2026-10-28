@@ -15,7 +15,7 @@ pub mod responsiveness;
 
 pub use execution::{ExecutionService, ExecutionTarget, start_execution};
 pub use guest_tcp::GuestTcp;
-pub use microsandbox::{GuestConnection, GuestDialer};
+pub use microsandbox::{GuestConnection, GuestTarget};
 pub use responsiveness::UNRESPONSIVE_AFTER;
 
 /// What watching a guest's heartbeat found.
@@ -155,8 +155,8 @@ pub trait Provider {
     /// Idempotently releases the sandbox and its Provider-specific host integration.
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>>;
 
-    /// Connects a dialer for TCP connections made inside the exact running sandbox.
-    fn guest_tcp_dialer<'a>(&'a self, _id: &'a SandboxId) -> LocalFuture<'a, Result<GuestDialer, Error>> {
+    /// Resolves the exact running sandbox, so that another thread can dial TCP connections inside it.
+    fn guest_tcp_target<'a>(&'a self, _id: &'a SandboxId) -> LocalFuture<'a, Result<GuestTarget, Error>> {
         Box::pin(async move {
             Err(Error::Invalid(format!(
                 "guest TCP connections are not supported through sandbox provider {:?}",
@@ -379,20 +379,20 @@ impl Service {
         self.provider(provider)?.open(record, id).await
     }
 
-    /// Connects a dialer for TCP connections made inside the persisted materialized sandbox.
+    /// Resolves the persisted materialized sandbox, so that another thread can dial TCP connections inside it.
     ///
     /// # Errors
     ///
     /// Returns an error unless the assignment is materialized through a configured provider that
     /// supports guest TCP, and its sandbox is running.
-    pub async fn guest_tcp_dialer(&self, record: &AgentRecord) -> Result<GuestDialer, Error> {
+    pub async fn guest_tcp_target(&self, record: &AgentRecord) -> Result<GuestTarget, Error> {
         let Some(Assignment::Materialized { provider, id, .. }) = &record.agent.status.sandbox else {
             return Err(Error::Invalid(format!(
                 "Agent {:?} has no materialized sandbox",
                 record.agent.metadata.name
             )));
         };
-        self.provider(provider)?.guest_tcp_dialer(id).await
+        self.provider(provider)?.guest_tcp_target(id).await
     }
 
     /// Whether the sandbox's guest reported a heartbeat when last inspected.

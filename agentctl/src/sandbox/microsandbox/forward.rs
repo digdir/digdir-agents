@@ -1,12 +1,11 @@
 //! Guest TCP dialing transport for the Microsandbox Backend.
 
-use sandbox_microsandbox::{GuestTcpDialer, GuestTcpStream};
+use sandbox_microsandbox::{GuestTcpDialer, GuestTcpStream, GuestTcpTarget};
 
 use crate::Error;
 
-/// A connection to one running agent sandbox that dials a TCP connection from
-/// inside its guest.
-pub struct GuestDialer(pub(super) GuestTcpDialer);
+/// A running agent sandbox, resolved so that another thread can dial its guest.
+pub struct GuestTarget(pub(super) GuestTcpTarget);
 
 /// One open TCP stream dialed from inside an agent sandbox.
 pub struct GuestConnection {
@@ -15,19 +14,20 @@ pub struct GuestConnection {
     _dialer: GuestTcpDialer,
 }
 
-impl GuestDialer {
-    /// Opens one TCP connection dialed from inside the guest, which keeps the
-    /// dialer's sandbox connection to itself.
+impl GuestTarget {
+    /// Opens one TCP connection dialed from inside the guest, over a sandbox
+    /// connection of its own. The calling thread's runtime reads it.
     ///
     /// # Errors
     ///
-    /// Returns an error when the stream cannot be opened or the guest dial is
-    /// rejected.
+    /// Returns an error when the sandbox cannot be reached or the guest dial
+    /// is rejected.
     pub async fn connect(self, host: &str, port: u16) -> Result<GuestConnection, Error> {
-        let stream = self.0.connect(host, port).await?;
+        let dialer = self.0.dial().await?;
+        let stream = dialer.connect(host, port).await?;
         Ok(GuestConnection {
             stream,
-            _dialer: self.0,
+            _dialer: dialer,
         })
     }
 }

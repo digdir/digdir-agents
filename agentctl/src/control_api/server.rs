@@ -21,8 +21,9 @@ use super::protocol::{
     METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
     METHOD_VNC_ACCESS, NameParams, PROTOCOL_VERSION, ProgressParams, ReadMessage, Request, ResourcesWatchParams,
     Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
-    SessionTurnsParams, ShutdownParams, StreamKind, StreamResult, error_response, read_message,
+    SessionTurnsParams, ShutdownParams, error_response, read_message,
 };
+use super::streams::{GuestTcpTarget, Open, Opening, Streams};
 
 /// Quiet period after a change before a progress reply, so a burst of byte
 /// progress costs one reply.
@@ -333,48 +334,25 @@ impl VncAccessApi for crate::vnc::Access {
 
 /// Connections into agent sandboxes exposed through the local control API.
 pub trait GuestTcpApi {
-    /// Dials `port` on the loopback interface of the named agent's sandbox,
-    /// provided the agent still has `uid` when one is given.
-    fn connect<'a>(
+    /// Resolves the named agent to its running sandbox, provided the agent
+    /// still has `uid` when one is given. The stream thread dials it.
+    fn resolve<'a>(
         &'a self,
         name: &'a str,
         uid: Option<crate::AgentId>,
-        port: std::num::NonZeroU16,
-    ) -> LocalFuture<'a, Result<Box<dyn ByteStream>, Error>>;
+    ) -> LocalFuture<'a, Result<Box<dyn GuestTcpTarget>, Error>>;
 }
 
 impl GuestTcpApi for crate::sandbox::GuestTcp {
-    fn connect<'a>(
+    fn resolve<'a>(
         &'a self,
         name: &'a str,
         uid: Option<crate::AgentId>,
-        port: std::num::NonZeroU16,
-    ) -> LocalFuture<'a, Result<Box<dyn ByteStream>, Error>> {
+    ) -> LocalFuture<'a, Result<Box<dyn GuestTcpTarget>, Error>> {
         Box::pin(async move {
-            let connection = Self::connect(self, name, uid, port).await?;
-            Ok(Box::new(connection) as Box<dyn ByteStream>)
+            let target = Self::resolve(self, name, uid).await?;
+            Ok(Box::new(target) as Box<dyn GuestTcpTarget>)
         })
-    }
-}
-
-/// Bytes a call carries both ways over its connection once it has answered,
-/// such as a connection dialed into a sandbox.
-pub trait ByteStream {
-    /// Relays the stream over `reader` and `writer` until both directions have closed.
-    fn relay<'a>(
-        self: Box<Self>,
-        reader: &'a mut (dyn AsyncRead + Unpin),
-        writer: &'a mut (dyn AsyncWrite + Unpin),
-    ) -> LocalFuture<'a, Result<(), Error>>;
-}
-
-impl ByteStream for crate::sandbox::GuestConnection {
-    fn relay<'a>(
-        self: Box<Self>,
-        reader: &'a mut (dyn AsyncRead + Unpin),
-        writer: &'a mut (dyn AsyncWrite + Unpin),
-    ) -> LocalFuture<'a, Result<(), Error>> {
-        Box::pin(self.relay_io(reader, writer))
     }
 }
 
@@ -452,68 +430,15 @@ impl Drop for ShutdownCheck<'_> {
     }
 }
 
-/// Connections that calls have switched to streams.
-#[derive(Default)]
-struct Streams {
-    open: Cell<usize>,
-    opened: Notify,
+/// What a call leaves its connection to: a response, or a stream the stream thread opens and answers for.
+enum Reply {
+    Respond(Response),
+    Switch { id: u64, opening: Opening, open: Open },
 }
 
-impl Streams {
-    /// Counts a stream as open from the moment its call is admitted, so calls
-    /// still resolving their agent cannot together pass `most`.
-    fn reserve(&self, most: usize) -> Option<StreamGuard<'_>> {
-        if self.open.get() >= most {
-            return None;
-        }
-        self.open.set(self.open.get() + 1);
-        // One permit is enough, since the accept loop reads the count again whenever it wakes.
-        self.opened.notify_one();
-        Some(StreamGuard { streams: self })
-    }
-}
-
-struct StreamGuard<'a> {
-    streams: &'a Streams,
-}
-
-impl Drop for StreamGuard<'_> {
-    fn drop(&mut self) {
-        self.streams.open.set(self.streams.open.get() - 1);
-    }
-}
-
-/// What a call switches its connection to once it has answered.
-enum Stream {
-    Bytes(Box<dyn ByteStream>),
-}
-
-impl Stream {
-    const fn kind(&self) -> StreamKind {
-        match self {
-            Self::Bytes(_) => StreamKind::Bytes,
-        }
-    }
-}
-
-/// A call's response, and the stream that follows it on the connection, if any.
-struct Reply<'a> {
-    response: Response,
-    stream: Option<(Stream, StreamGuard<'a>)>,
-}
-
-impl From<Response> for Reply<'_> {
+impl From<Response> for Reply {
     fn from(response: Response) -> Self {
-        Self { response, stream: None }
-    }
-}
-
-impl<'a> Reply<'a> {
-    fn switch(id: u64, stream: Stream, open: StreamGuard<'a>) -> Self {
-        Self {
-            response: result_response(id, Ok(StreamResult { stream: stream.kind() })),
-            stream: Some((stream, open)),
-        }
+        Self::Respond(response)
     }
 }
 
@@ -565,7 +490,7 @@ impl Server {
             changes,
             on_error,
             lifecycle: Lifecycle::default(),
-            streams: Streams::default(),
+            streams: Streams::start(),
             max_open_streams: MAX_OPEN_STREAMS,
         }
     }
@@ -593,15 +518,16 @@ impl Server {
     }
 
     /// Serves one JSON object per line until the client closes its stream, or
-    /// until a call switches the connection to a stream of its own.
+    /// until a call switches the connection to a stream, which the stream
+    /// thread then carries.
     ///
     /// # Errors
     ///
     /// Returns an error when a message is malformed, exceeds the limit, or cannot be read or written,
-    /// or when the stream a call switched to fails.
+    /// or when the stream thread has stopped.
     pub async fn serve_connection<S>(&self, stream: S) -> Result<(), Error>
     where
-        S: AsyncRead + AsyncWrite + Unpin,
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut stream = BufReader::new(stream);
         loop {
@@ -649,34 +575,13 @@ impl Server {
             } else {
                 self.handle(request).await
             };
-            write_response(stream.get_mut(), &reply.response, Some(&method)).await?;
-            if let Some(switched) = reply.stream {
-                // The reader may already hold the first bytes of the stream, so it carries them.
-                return self.carry(switched, stream).await;
+            match reply {
+                Reply::Respond(response) => write_response(stream.get_mut(), &response, Some(&method)).await?,
+                // The reader may already hold the first bytes of the stream, so it goes along.
+                Reply::Switch { id, opening, open } => {
+                    return self.streams.carry(id, Box::new(stream), opening, open).await;
+                }
             }
-        }
-    }
-
-    /// Carries a stream until it ends or the daemon drains. Draining closes
-    /// open streams rather than waiting for them, since an SSH session or a
-    /// forwarded connection may last for days; the upgrade warns about them first.
-    async fn carry<S>(
-        &self,
-        (switched, _open): (Stream, StreamGuard<'_>),
-        connection: BufReader<S>,
-    ) -> Result<(), Error>
-    where
-        S: AsyncRead + AsyncWrite + Unpin,
-    {
-        let (mut reader, mut writer) = tokio::io::split(connection);
-        let carried = async {
-            match switched {
-                Stream::Bytes(guest) => guest.relay(&mut reader, &mut writer).await,
-            }
-        };
-        tokio::select! {
-            result = carried => result,
-            () = self.shutdown_requested() => Ok(()),
         }
     }
 
@@ -694,17 +599,7 @@ impl Server {
         }
     }
 
-    /// How many connections carry streams, which do not count against the connections left for calls.
-    pub(crate) const fn open_streams(&self) -> usize {
-        self.streams.open.get()
-    }
-
-    /// Completes once a call has switched its connection to a stream since the last time it completed.
-    pub(crate) async fn stream_opened(&self) {
-        self.streams.opened.notified().await;
-    }
-
-    async fn handle(&self, request: Request) -> Reply<'_> {
+    async fn handle(&self, request: Request) -> Reply {
         if request.jsonrpc != JSON_RPC_VERSION || request.method.is_empty() {
             return error_response(request.id, CODE_INVALID_REQUEST, "invalid JSON-RPC 2.0 request").into();
         }
@@ -792,7 +687,7 @@ impl Server {
         .await;
         match readiness {
             Ok(Ok(mut readiness)) if readiness.blockers.is_empty() => {
-                let open = self.streams.open.get();
+                let open = self.streams.open();
                 if open > 0 {
                     let connections = if open == 1 { "connection" } else { "connections" };
                     readiness.warnings.push(format!(
@@ -800,6 +695,7 @@ impl Server {
                     ));
                 }
                 check.commit();
+                self.streams.close();
                 result_response(id, Ok(serde_json::json!({"warnings": readiness.warnings})))
             }
             Ok(Ok(readiness)) => error_response(
@@ -967,7 +863,7 @@ impl Server {
         result_response(id, self.vnc.describe(&params.name).await)
     }
 
-    async fn open_guest_tcp(&self, id: u64, value: Value) -> Reply<'_> {
+    async fn open_guest_tcp(&self, id: u64, value: Value) -> Reply {
         let Some((name, uid, port)) = serde_json::from_value::<GuestTcpParams>(value)
             .ok()
             .filter(|params| !params.name.is_empty())
@@ -975,7 +871,7 @@ impl Server {
         else {
             return error_response(id, CODE_INVALID_PARAMS, "name and a port from 1 to 65535 are required").into();
         };
-        // Dropping the reservation releases it, whether the dial fails or the call is cancelled.
+        // Dropping the reservation releases it, whether the lookup fails or the call is cancelled.
         let Some(open) = self.streams.reserve(self.max_open_streams) else {
             let most = self.max_open_streams;
             return error_response(
@@ -985,8 +881,12 @@ impl Server {
             )
             .into();
         };
-        match self.guest_tcp.connect(&name, uid, port).await {
-            Ok(guest) => Reply::switch(id, Stream::Bytes(guest), open),
+        match self.guest_tcp.resolve(&name, uid).await {
+            Ok(target) => Reply::Switch {
+                id,
+                opening: Opening::GuestTcp { target, port },
+                open,
+            },
             Err(error) => result_response::<()>(id, Err(error)).into(),
         }
     }
@@ -1175,7 +1075,7 @@ const fn response_with_id(id: u64, mut response: Response) -> Response {
     response
 }
 
-fn result_response<T: Serialize>(id: u64, result: Result<T, Error>) -> Response {
+pub(super) fn result_response<T: Serialize>(id: u64, result: Result<T, Error>) -> Response {
     match result {
         Ok(value) => serde_json::to_value(value).map_or_else(
             |_| error_response(id, CODE_INTERNAL, "encode response result"),
@@ -1195,7 +1095,7 @@ fn result_response<T: Serialize>(id: u64, result: Result<T, Error>) -> Response 
     }
 }
 
-async fn write_response<W: AsyncWrite + Unpin>(
+pub(super) async fn write_response<W: AsyncWrite + Unpin>(
     writer: &mut W,
     response: &Response,
     method: Option<&str>,
