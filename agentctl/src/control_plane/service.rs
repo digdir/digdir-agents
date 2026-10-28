@@ -539,35 +539,19 @@ async fn reject_dot_env_in_bind_mounts(agent: &Agent) -> Result<(), Error> {
     let mounts = bind_mount_sources(agent);
     tokio::task::spawn_blocking(move || {
         for (field, source) in mounts {
-            for result in WalkBuilder::new(&source)
-                .hidden(false)
-                .ignore(false)
-                .git_ignore(false)
-                .git_global(false)
-                .git_exclude(false)
-                .parents(false)
-                .follow_links(false)
-                .build()
-            {
-                let entry = result.map_err(|error| {
-                    Error::Invalid(format!(
-                        "cannot inspect {field}.source {} for .env files: {error}",
-                        source.display()
-                    ))
-                })?;
-                let is_directory = entry.file_type().is_some_and(|kind| kind.is_dir());
-                let is_env_file = entry
-                    .file_name()
-                    .as_encoded_bytes()
-                    .eq_ignore_ascii_case(super::resource::ENV_FILE.as_bytes());
-                if !is_directory && is_env_file {
-                    return Err(Error::Invalid(format!(
-                        "{field} bind-mounts {} which contains .env at {}; the sandbox would see its real values. \
-                         Remove the file or keep it outside mounted directories",
-                        source.display(),
-                        entry.path().display(),
-                    )));
-                }
+            let found = find_dot_env(&source).map_err(|error| {
+                Error::Invalid(format!(
+                    "cannot inspect {field}.source {} for .env files: {error}",
+                    source.display()
+                ))
+            })?;
+            if let Some(path) = found {
+                return Err(Error::Invalid(format!(
+                    "{field} bind-mounts {} which contains .env at {}; the sandbox would see its real values. \
+                     Remove the file or keep it outside mounted directories",
+                    source.display(),
+                    path.display(),
+                )));
             }
         }
         Ok(())
@@ -699,6 +683,38 @@ fn validate_request_paths(request: &ApplyRequest) -> Result<(), Error> {
         return Err(Error::Invalid("envFile must be absolute".into()));
     }
     Ok(())
+}
+
+/// The first `.env` file below `source`, in any case, that a bind mount of `source` would expose to the sandbox.
+///
+/// Every file counts, ignore files or not, and symbolic links are not followed, as agentd checks before it mounts.
+/// This walks the whole tree, so it blocks for as long as a large directory takes.
+///
+/// # Errors
+///
+/// Returns an error when part of the tree cannot be read.
+pub fn find_dot_env(source: &std::path::Path) -> Result<Option<PathBuf>, Error> {
+    for result in WalkBuilder::new(source)
+        .hidden(false)
+        .ignore(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .parents(false)
+        .follow_links(false)
+        .build()
+    {
+        let entry = result.map_err(|error| Error::Invalid(error.to_string()))?;
+        let is_directory = entry.file_type().is_some_and(|kind| kind.is_dir());
+        let is_env_file = entry
+            .file_name()
+            .as_encoded_bytes()
+            .eq_ignore_ascii_case(super::resource::ENV_FILE.as_bytes());
+        if !is_directory && is_env_file {
+            return Ok(Some(entry.into_path()));
+        }
+    }
+    Ok(None)
 }
 
 fn bind_mount_sources(agent: &Agent) -> Vec<(String, PathBuf)> {

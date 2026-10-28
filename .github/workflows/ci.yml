@@ -54,14 +54,14 @@ jobs:
           # Each area's paths, as an extended regular expression over the changed file names.
           areas=(
             'integrations=^(integrations/|\.github/CODEOWNERS$|\.github/workflows/(ci|integrations)\.yml$)'
-            'rust=^(agentctl/|sandbox/|\.cargo/|(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|rustfmt\.toml|clippy\.toml|deny\.toml|Makefile)$|\.github/workflows/(ci|rust)\.yml$)'
+            'rust=^(agentctl/|agents/standard/|sandbox/|\.cargo/|(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|rustfmt\.toml|clippy\.toml|deny\.toml|Makefile)$|\.github/workflows/(ci|rust)\.yml$)'
             'cache-warm=^\.github/workflows/cache-warm\.yml$'
           )
           # A renamed file counts under both its old and its new name.
           names='.filename, (.previous_filename // empty)'
           gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq ".[] | ${names}" > files.txt
           # Markdown files that a build bundles, which count like code.
-          bundled='^agentctl/skills/'
+          bundled='^(agentctl/skills|agents/standard)/'
           grep -E -v '\.md$' files.txt > changed.txt || true
           grep -E "${bundled}" files.txt >> changed.txt || true
           for area in "${areas[@]}"; do

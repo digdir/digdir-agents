@@ -4,6 +4,7 @@
 mod support;
 
 mod architecture;
+mod catalog;
 mod control_api;
 mod control_plane;
 mod database;

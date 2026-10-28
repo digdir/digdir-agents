@@ -16,6 +16,30 @@ $AgentHome = [IO.Path]::GetFullPath($AgentHome)
 if ($LocalArchive) { $LocalArchive = [IO.Path]::GetFullPath($LocalArchive) }
 $JournalPath = Join-Path $InstallRoot "update.json"
 
+# Hands over to `agentctl setup`, which creates a first agent, after a first managed install. An
+# upgrade, whose agents exist already, starts it only with AGENT_SETUP=1, and AGENT_SETUP=0 never
+# does. A standalone install is for images and CI jobs, which get no daemon either, so it never
+# starts setup. Without a console to ask at, setup runs only with AGENT_SETUP_ARGS, which must then
+# answer every question. A release without setup, or a setup that does not finish, leaves the
+# installation as it is.
+function Invoke-Setup($Agentctl, $PreviousRelease) {
+    if ($env:AGENT_SETUP -eq "0") { return }
+    if ($PreviousRelease -and $env:AGENT_SETUP -ne "1") { return }
+    & $Agentctl setup --help *> $null
+    if ($LASTEXITCODE -ne 0) { return }
+    $SetupArguments = @()
+    if ($env:AGENT_SETUP_ARGS) { $SetupArguments = $env:AGENT_SETUP_ARGS -split '\s+' | Where-Object { $_ } }
+    if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+        & $Agentctl --home $AgentHome setup @SetupArguments
+    } elseif ($SetupArguments.Count -gt 0) {
+        & $Agentctl --home $AgentHome setup --non-interactive @SetupArguments
+    } else {
+        Write-Host "Run ``agentctl setup`` to create your first agent."
+        return
+    }
+    if ($LASTEXITCODE -ne 0) { Write-Warning "agentctl setup did not finish; run ``agentctl setup`` to try again" }
+}
+
 function Invoke-Completion($Journal) {
     $Target = $Journal.targetRelease
     $TargetVersion = $Journal.targetVersion
@@ -128,3 +152,4 @@ if (($UserPath -split ';') -notcontains $BinDirectory) {
     [Environment]::SetEnvironmentVariable("Path", (($UserPath.TrimEnd(';') + ';' + $BinDirectory).TrimStart(';')), "User")
 }
 Write-Host "Installed agentctl and agentd to $BinDirectory"
+Invoke-Setup (Join-Path $BinDirectory "agentctl.exe") $Previous

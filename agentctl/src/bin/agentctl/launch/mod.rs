@@ -15,7 +15,7 @@ use std::{
 };
 
 pub(crate) use browser::{as_browser, open_argument, sign_in};
-pub(crate) use host::{launch_blocked, open_url};
+pub(crate) use host::{copy_to_clipboard, launch_blocked, open_url};
 
 /// How long a launcher gets to fail before it is taken to have launched.
 const LAUNCH_GRACE: Duration = Duration::from_secs(2);
