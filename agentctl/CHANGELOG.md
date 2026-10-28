@@ -25,7 +25,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Fixed
 
-- SSH sessions into an agent no longer lag by over a hundred milliseconds while a port forward to the same agent moves a lot of data, terminals there lag less, and forwarded downloads are faster.
+- SSH sessions into an agent no longer lag by over a hundred milliseconds while a port forward to the same agent moves a lot of data, terminals there lag less, and forwarded downloads are faster. ([#355](https://github.com/digdir/digdir-agents/pull/355))
 
 ## [0.1.0-preview.13] - 2026-10-26
 
