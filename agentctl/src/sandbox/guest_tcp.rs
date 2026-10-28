@@ -37,7 +37,7 @@ impl GuestTcp {
         let record = self.agents.get_by_name(name).await?;
         if uid.is_some_and(|uid| uid != record.id) {
             return Err(Error::Invalid(format!(
-                "agent {name:?} was replaced by a new agent of the same name; forward to the new one to reach it"
+                "agent {name:?} was replaced by a new agent of the same name. Start a new forward to reach it"
             )));
         }
         if record.agent.metadata.deletion_timestamp.is_some() {
