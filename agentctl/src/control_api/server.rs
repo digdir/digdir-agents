@@ -33,9 +33,10 @@ const WATCH_SETTLE: Duration = Duration::from_millis(150);
 /// Longest a watch waits without a change; the unchanged reply tells the
 /// watcher the daemon is still there.
 const WATCH_KEEPALIVE: Duration = Duration::from_secs(30);
-/// Most connections switched to streams at once. A stream lasts as long as
-/// what it carries, such as an SSH session, so streams have a budget of their
-/// own rather than taking the connections that calls need.
+/// Most connections switched to streams at once, unless the open-file limit
+/// allows fewer. A stream lasts as long as what it carries, such as an SSH
+/// session, so streams have a budget of their own rather than taking the
+/// connections that calls need.
 const MAX_OPEN_STREAMS: usize = 1024;
 
 /// Agent operations exposed through the Control API.
@@ -525,6 +526,7 @@ pub struct Server {
     on_error: ErrorHandler,
     lifecycle: Lifecycle,
     streams: Streams,
+    max_open_streams: usize,
 }
 
 impl Server {
@@ -559,7 +561,21 @@ impl Server {
             on_error,
             lifecycle: Lifecycle::default(),
             streams: Streams::default(),
+            max_open_streams: MAX_OPEN_STREAMS,
         }
+    }
+
+    /// Accepts only as many streams as `open_files` descriptors carry, when
+    /// that is fewer than usual. A stream holds about two, and half the
+    /// descriptors are left for everything else agentd opens, such as calls
+    /// and its connections to sandboxes.
+    #[must_use]
+    pub fn with_open_file_limit(mut self, open_files: Option<u64>) -> Self {
+        if let Some(open_files) = open_files {
+            self.max_open_streams =
+                usize::try_from(open_files / 4).map_or(MAX_OPEN_STREAMS, |streams| streams.min(MAX_OPEN_STREAMS));
+        }
+        self
     }
 
     /// Listens on the platform's local socket implementation.
@@ -951,11 +967,12 @@ impl Server {
         else {
             return error_response(id, CODE_INVALID_PARAMS, "name and a port from 1 to 65535 are required").into();
         };
-        if self.streams.open.get() >= MAX_OPEN_STREAMS {
+        if self.streams.open.get() >= self.max_open_streams {
+            let most = self.max_open_streams;
             return error_response(
                 id,
                 CODE_INTERNAL,
-                format!("agentd already carries {MAX_OPEN_STREAMS} streams, the most it carries at once"),
+                format!("agentd already carries {most} streams, the most it carries at once"),
             )
             .into();
         }

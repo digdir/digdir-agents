@@ -427,6 +427,10 @@ impl Connector for ScriptedConnector {
 }
 
 fn api() -> ApiFixture {
+    api_with_open_files(None)
+}
+
+fn api_with_open_files(open_files: Option<u64>) -> ApiFixture {
     let control_plane = Rc::new(ControlPlane::new(
         Rc::new(InMemoryAgentStore::new()),
         Rc::new(IgnoreNotifications),
@@ -445,27 +449,30 @@ fn api() -> ApiFixture {
     let waiting = executions.waiting.clone();
     let convergence = FakeConvergence::default();
     let woken = convergence.woken.clone();
-    let server = Rc::new(Server::new(
-        control_plane,
-        Rc::new(FakeAuthentication),
-        Rc::new(convergence),
-        executions,
-        Rc::new(FakeGuestTcp),
-        Rc::new(FakeSessions {
-            conversation: conversation.clone(),
-            ensured: ensured.clone(),
-            sent: sent.clone(),
-            deleted: deleted.clone(),
-            archived: archived.clone(),
-            upgrade_blockers: upgrade_blockers.clone(),
-            upgrade_warnings: upgrade_warnings.clone(),
-            upgrade_gates: upgrade_gates.clone(),
-        }),
-        Rc::new(FakeSshAccess),
-        Rc::new(FakeVncAccess),
-        changes.clone(),
-        Rc::new(move |error| observed_errors.borrow_mut().push(error.to_string())),
-    ));
+    let server = Rc::new(
+        Server::new(
+            control_plane,
+            Rc::new(FakeAuthentication),
+            Rc::new(convergence),
+            executions,
+            Rc::new(FakeGuestTcp),
+            Rc::new(FakeSessions {
+                conversation: conversation.clone(),
+                ensured: ensured.clone(),
+                sent: sent.clone(),
+                deleted: deleted.clone(),
+                archived: archived.clone(),
+                upgrade_blockers: upgrade_blockers.clone(),
+                upgrade_warnings: upgrade_warnings.clone(),
+                upgrade_gates: upgrade_gates.clone(),
+            }),
+            Rc::new(FakeSshAccess),
+            Rc::new(FakeVncAccess),
+            changes.clone(),
+            Rc::new(move |error| observed_errors.borrow_mut().push(error.to_string())),
+        )
+        .with_open_file_limit(open_files),
+    );
     let client = Client::new(Rc::new(InProcessConnector { server: server.clone() }));
     ApiFixture {
         server,
@@ -1388,6 +1395,33 @@ async fn an_upgrade_warns_about_open_streams_and_closes_them() {
         .expect("the drain closes the stream")
         .expect("closed stream");
     assert_eq!(rest, b"");
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_low_open_file_limit_caps_the_open_streams() {
+    let fixture = api_with_open_files(Some(8));
+    let mut streams = Vec::new();
+    for _ in 0..2 {
+        let mut stream = fixture
+            .client
+            .guest_tcp("worker", None, 22)
+            .await
+            .expect("guest stream");
+        let mut greeting = vec![0; GUEST_GREETING.len()];
+        stream.read_exact(&mut greeting).await.expect("greeting");
+        streams.push(stream);
+    }
+    let Err(Error::Rpc(_)) = fixture.client.guest_tcp("worker", None, 22).await else {
+        panic!("a third stream needs more descriptors than agentd may open");
+    };
+    drop(streams.pop());
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while fixture.client.guest_tcp("worker", None, 22).await.is_err() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("a closed stream makes room for another");
 }
 
 #[cfg(unix)]
