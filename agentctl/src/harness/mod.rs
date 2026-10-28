@@ -349,6 +349,9 @@ pub struct AuthenticationManager {
     database: persistence::Database,
     claude_code: claude_code::authentication::Authentication,
     codex: codex::authentication::Authentication,
+    /// The login each agent's harness was given here since start; see [`Self::assign_login`].
+    assignments:
+        std::cell::RefCell<std::collections::BTreeMap<crate::AgentId, std::collections::BTreeMap<Harness, LoginName>>>,
 }
 
 impl AuthenticationManager {
@@ -359,6 +362,7 @@ impl AuthenticationManager {
             database: database.clone(),
             claude_code: claude_code::authentication::Authentication::new(database.clone()),
             codex: codex::authentication::Authentication::new(database),
+            assignments: std::cell::RefCell::default(),
         }
     }
 
@@ -418,17 +422,24 @@ impl AuthenticationManager {
         Ok(logins)
     }
 
-    /// Picks the host login a mediated installation uses, from its set and the usable stored logins;
-    /// see [`LoginSet::choose`] for the rule and its arguments. `None` when none of the set is usable.
+    /// Chooses the host login `record`'s mediated `installation` uses and records the choice at
+    /// once; see [`LoginSet::choose`] for the rule. `None` when none of its set is usable.
+    ///
+    /// The choice counts every other running agent's login, including choices made moments ago for
+    /// agents whose sandboxes are still starting, so agents applied together spread out. Counting,
+    /// choosing and recording happen without an await between them, which on this single-threaded
+    /// runtime makes them one step. An agent's stored status supplies its login after a restart,
+    /// before any choice is made for it here.
     ///
     /// An optional installation is omitted rather than failing provisioning without one, so this must
     /// distinguish "no login here" from a genuine fault, which stays an error.
-    pub(crate) async fn choose_login(
+    pub(crate) async fn assign_login(
         &self,
+        record: &crate::control_plane::AgentRecord,
         installation: &HarnessSpec,
-        current: Option<&LoginName>,
-        in_use: &std::collections::BTreeMap<LoginName, usize>,
     ) -> Result<Option<LoginName>, Error> {
+        use crate::control_plane::AgentStore as _;
+
         let usable = match installation.kind {
             Harness::ClaudeCode => claude_code::usable_logins(&self.database).await?,
             Harness::Codex => codex::usable_logins(&self.database).await?,
@@ -443,9 +454,52 @@ impl AuthenticationManager {
                 }
             }
         }
-        Ok(installation
-            .login
-            .choose(&usable, current, in_use, &usage, time::OffsetDateTime::now_utc()))
+        let agents = self.database.list().await?;
+
+        // From here to the end, nothing awaits.
+        let mut assignments = self.assignments.borrow_mut();
+        assignments.retain(|id, _| agents.iter().any(|agent| agent.id == *id));
+        let login_of = |agent: &crate::control_plane::AgentRecord| {
+            assignments
+                .get(&agent.id)
+                .and_then(|logins| logins.get(&installation.kind))
+                .or_else(|| {
+                    agent
+                        .agent
+                        .status
+                        .sandbox
+                        .as_ref()
+                        .and_then(|assignment| assignment.login(installation.kind))
+                })
+                .cloned()
+        };
+        let mut in_use = std::collections::BTreeMap::<_, usize>::new();
+        for other in &agents {
+            // A stopped agent spends no quota, and one being deleted soon none.
+            if other.id == record.id
+                || other.agent.spec.is_stopped()
+                || other.agent.metadata.deletion_timestamp.is_some()
+            {
+                continue;
+            }
+            if let Some(login) = login_of(other) {
+                *in_use.entry(login).or_default() += 1;
+            }
+        }
+        let current = login_of(record);
+        let chosen = installation.login.choose(
+            &usable,
+            current.as_ref(),
+            &in_use,
+            &usage,
+            time::OffsetDateTime::now_utc(),
+        );
+        let logins = assignments.entry(record.id).or_default();
+        match &chosen {
+            Some(login) => logins.insert(installation.kind, login.clone()),
+            None => logins.remove(&installation.kind),
+        };
+        Ok(chosen)
     }
 
     /// How much of `harness`'s login `login` is used, when its provider tells the host.
@@ -942,11 +996,6 @@ mod tests {
             ("default", "login \"default\" is not stored", "`agentctl claude login`"),
         ] {
             let installation = claude_code(set);
-            let chosen = AuthenticationManager::new(database.clone())
-                .choose_login(&installation, None, &std::collections::BTreeMap::new())
-                .await
-                .expect("choose");
-            assert_eq!(chosen, None, "{set}");
             let error = no_login_stored(installation.kind, &installation.login).to_string();
             assert!(error.contains(message), "{set}: {error}");
             assert!(error.contains(command), "{set}: {error}");
