@@ -6,8 +6,13 @@
 !Cargo.lock
 !rust-toolchain.toml
 !agentctl/Cargo.toml
+!agentctl/build.rs
 !agentctl/src/
 !agentctl/skills/
+# The standard agents agentctl embeds; their image build inputs are left out.
+!agents/standard/
+agents/standard/**/Dockerfile
+agents/standard/**/.dockerignore
 !sandbox/authorization/Cargo.toml
 !sandbox/authorization/src/
 !sandbox/core/Cargo.toml

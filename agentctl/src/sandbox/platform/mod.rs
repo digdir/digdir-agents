@@ -12,6 +12,16 @@ pub(crate) use linux::{
     HOME, PLATFORM_API_URL_FILE, PORTABLE_TERMINAL, USER, UTF8_LOCALE, WORKING_DIRECTORY, run_checked,
 };
 
+/// The directory sessions, Executions and SSH logins start in on one sandbox OS, where bind
+/// mounts of a person's checkouts belong; `None` for an OS without an agent adapter.
+#[must_use]
+pub fn working_directory(os: &str) -> Option<&'static str> {
+    match os {
+        "linux" => Some(WORKING_DIRECTORY),
+        _ => None,
+    }
+}
+
 /// Builds the agent-conventional Execution environment for one sandbox OS.
 ///
 /// # Errors

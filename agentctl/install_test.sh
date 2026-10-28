@@ -81,6 +81,7 @@ run_installer() {
       export LC_ALL
     fi
     HOME="${case_directory}/home" \
+      AGENT_SETUP=0 \
       AGENT_HOME="${case_directory}/agent-home" \
       AGENT_INSTALL_ROOT="${case_directory}/install" \
       AGENT_INSTALL_DIR="${case_directory}/bin" \

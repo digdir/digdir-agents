@@ -83,6 +83,8 @@ jobs:
           ARCHIVE: ${{ matrix.archive }}
         run: |
           export AGENT_VERSION="${VERSION}"
+          # The installers would otherwise hand over to `agentctl setup`.
+          export AGENT_SETUP=0
           SMOKE_ROOT="${RUNNER_TEMP}/agent-install-smoke"
           ARCHIVE_PATH="${GITHUB_WORKSPACE}/dist/${ARCHIVE}.tar.gz"
           if [ "${RUNNER_OS}" = "Windows" ]; then

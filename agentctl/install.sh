@@ -22,6 +22,35 @@ if [ -n "${local_archive}" ]; then
 fi
 journal="${install_root}/update.json"
 
+# Hands over to `agentctl setup`, which creates a first agent, after a first managed install. An
+# upgrade, whose agents exist already, starts it only with AGENT_SETUP=1, and AGENT_SETUP=0 never
+# does. A standalone install is for images and CI jobs, which get no daemon either, so it never
+# starts setup. Under `curl | sh` standard input is this script, so the questions read the
+# terminal. Without one, setup runs only with AGENT_SETUP_ARGS, which must then answer every
+# question. A release without setup, or a setup that does not finish, leaves the installation as it
+# is.
+run_setup() {
+  agentctl="$1"
+  previous_release="$2"
+  case "${AGENT_SETUP:-}" in
+    0) return 0 ;;
+    1) ;;
+    *) [ -z "${previous_release}" ] || return 0 ;;
+  esac
+  "${agentctl}" setup --help >/dev/null 2>&1 || return 0
+  if ( : </dev/tty ) 2>/dev/null; then
+    # shellcheck disable=SC2086 # AGENT_SETUP_ARGS is a list of flags.
+    "${agentctl}" --home "${agent_home}" setup ${AGENT_SETUP_ARGS:-} </dev/tty \
+      || echo "agentctl setup did not finish; run \`agentctl setup\` to try again" >&2
+  elif [ -n "${AGENT_SETUP_ARGS:-}" ]; then
+    # shellcheck disable=SC2086 # AGENT_SETUP_ARGS is a list of flags.
+    "${agentctl}" --home "${agent_home}" setup --non-interactive ${AGENT_SETUP_ARGS} \
+      || echo "agentctl setup did not finish; run \`agentctl setup\` to try again" >&2
+  else
+    echo "Run \`agentctl setup\` to create your first agent."
+  fi
+}
+
 resume_update() {
   target="$(sed -n 's/^  "targetRelease": "\(.*\)",$/\1/p' "${journal}")"
   target_version="$(sed -n 's/^  "targetVersion": "\(.*\)",$/\1/p' "${journal}")"
@@ -135,3 +164,4 @@ if [ -n "${previous}" ]; then
 fi
 "${target}/agentctl" "$@"
 echo "Installed agentctl and agentd to ${bin_directory}"
+run_setup "${bin_directory}/agentctl" "${previous}"

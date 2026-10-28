@@ -933,11 +933,9 @@ impl CreateForm {
 
 /// Returns `name-N` for the lowest N from 1 that no agent uses, or `name` itself when no numbered name fits.
 fn numbered_name(name: &str, agents: &[Agent]) -> String {
-    (1..=u32::MAX)
-        .map(|number| format!("{name}-{number}"))
-        .take_while(|numbered| numbered.len() <= ::sandbox::MAX_SANDBOX_NAME_BYTES)
-        .find(|numbered| agents.iter().all(|agent| agent.metadata.name != *numbered))
-        .unwrap_or_else(|| name.to_owned())
+    crate::names::numbered_name(name, |numbered| {
+        agents.iter().any(|agent| agent.metadata.name == numbered)
+    })
 }
 
 fn wrapped_index(current: usize, length: usize, delta: isize) -> usize {
@@ -1245,6 +1243,9 @@ impl App {
     }
 
     pub(crate) fn apply_snapshot(&mut self, mut agents: Vec<Agent>, mut sessions: Vec<Session>) {
+        // The short-lived agents `agentctl setup` signs in from are not anyone's to work in.
+        agents.retain(|agent| !crate::setup::sign_in::is_sign_in_agent(&agent.metadata.name));
+        sessions.retain(|session| !crate::setup::sign_in::is_sign_in_agent(&session.agent));
         agents.sort_by(|left, right| left.metadata.name.cmp(&right.metadata.name));
         sessions.sort_by(|left, right| left.agent.cmp(&right.agent).then_with(|| left.name.cmp(&right.name)));
         // The selection's position is read before the rows it indexes are replaced.

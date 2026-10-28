@@ -29,6 +29,70 @@ pub(crate) async fn open_url(url: &str) -> Result<&'static str, String> {
         .map(|()| opener.program)
 }
 
+/// Puts `text` on this machine's clipboard, and names the program that did. A terminal reached
+/// over SSH has no clipboard here that the person uses, nor has a Linux session without a
+/// display, so nothing is copied there.
+///
+/// # Errors
+///
+/// Returns why nothing was copied.
+pub(crate) async fn copy_to_clipboard(text: &str) -> Result<&'static str, String> {
+    use tokio::io::AsyncWriteExt as _;
+
+    let variable = |name: &str| std::env::var_os(name);
+    if set(&variable, "SSH_CONNECTION") || set(&variable, "SSH_TTY") {
+        return Err("this terminal is reached over SSH, so the clipboard here is not yours".into());
+    }
+    let path = variable("PATH");
+    let (program, arguments) = copiers(variable)
+        .into_iter()
+        .find(|(program, _)| find_executable(path.as_deref(), &[program]).is_some())
+        .ok_or_else(|| "no clipboard program for this session is installed".to_owned())?;
+    let mut child = tokio::process::Command::new(program)
+        .args(arguments)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| format!("could not run {program}: {error}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(text.as_bytes())
+            .await
+            .map_err(|error| format!("could not write to {program}: {error}"))?;
+    }
+    // Some copiers stay behind to serve the clipboard, once their first process has exited.
+    match tokio::time::timeout(super::LAUNCH_GRACE, child.wait()).await {
+        Ok(Ok(status)) if !status.success() => Err(format!("{program} failed ({status})")),
+        Ok(Err(error)) => Err(format!("could not wait for {program}: {error}")),
+        Ok(Ok(_)) | Err(_) => Ok(program),
+    }
+}
+
+/// The programs that copy their input to the clipboard of this session, with their arguments, the
+/// first installed one to be used. On Linux that depends on the display the session has: a
+/// Wayland copier fails without a Wayland display, and an X one without an X display.
+fn copiers(variable: impl Fn(&str) -> Option<OsString>) -> Vec<(&'static str, &'static [&'static str])> {
+    if cfg!(target_os = "macos") {
+        return vec![("pbcopy", &[])];
+    }
+    if cfg!(target_os = "windows") || wsl(&variable) {
+        // Under WSL, the Windows clipboard is the person's.
+        return vec![("clip.exe", &[])];
+    }
+    let mut copiers: Vec<(&'static str, &'static [&'static str])> = Vec::new();
+    if set(&variable, "WAYLAND_DISPLAY") {
+        copiers.push(("wl-copy", &[]));
+    }
+    if set(&variable, "DISPLAY") {
+        copiers.extend([
+            ("xclip", &["-selection", "clipboard"][..]),
+            ("xsel", &["--clipboard", "--input"][..]),
+        ]);
+    }
+    copiers
+}
+
 /// A program that opens the address given after its own `arguments`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Opener {
@@ -123,6 +187,21 @@ pub(super) fn find_executable(path: Option<&OsStr>, names: &[&str]) -> Option<Pa
 #[cfg(test)]
 mod tests {
     use super::{super::test_support::*, *};
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn on_linux_the_clipboard_copier_is_one_for_the_display_the_session_has() {
+        fn names(variables: &'static [(&'static str, &'static str)]) -> Vec<&'static str> {
+            copiers(only(variables))
+                .into_iter()
+                .map(|(program, _)| program)
+                .collect()
+        }
+        assert_eq!(names(&[("DISPLAY", ":0")]), ["xclip", "xsel"]);
+        assert_eq!(names(&[("WAYLAND_DISPLAY", "wayland-0")]), ["wl-copy"]);
+        assert_eq!(names(&[]), Vec::<&str>::new());
+        assert_eq!(names(&[("WSL_DISTRO_NAME", "Ubuntu")]), ["clip.exe"]);
+    }
 
     #[test]
     fn the_override_decides_whatever_the_terminal() {

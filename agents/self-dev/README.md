@@ -51,7 +51,7 @@ credentials outside the checkout.
 ## Credentials
 
 `GITHUB_TOKEN` is a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with
-`Contents` and `Pull requests` read and write.
+`Contents`, `Pull requests` and `Workflows` read and write.
 
 `AIVAR_API_KEY` is optional. It is the key for the company AI gateway at `api.aivar.no`, which Pi uses. Without it Pi
 starts but rejects every prompt, so `agentctl prompt --wait` times out.
