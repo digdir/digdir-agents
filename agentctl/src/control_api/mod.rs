@@ -12,4 +12,4 @@ pub use server::{
     AgentApi, AuthenticationApi, ConvergenceApi, ErrorHandler, ExecutionApi, GuestTcpApi, Server, SessionApi,
     SshAccessApi, VncAccessApi,
 };
-pub use streams::{ByteStream, GuestTcpTarget, StreamConnection};
+pub use streams::{ByteStream, Detached, GuestTcpTarget, ServedConnection, StreamConnection};

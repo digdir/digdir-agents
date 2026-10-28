@@ -3,7 +3,7 @@ use std::{cell::Cell, rc::Rc, time::Duration};
 use sandbox::LocalFuture;
 use serde::Serialize;
 use serde_json::Value;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
 
 use crate::{
@@ -23,7 +23,7 @@ use super::protocol::{
     Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
     SessionTurnsParams, ShutdownParams, error_response, read_message,
 };
-use super::streams::{GuestTcpTarget, Open, Opening, Streams};
+use super::streams::{GuestTcpTarget, Open, Opening, ServedConnection, Streams};
 
 /// Quiet period after a change before a progress reply, so a burst of byte
 /// progress costs one reply.
@@ -527,7 +527,7 @@ impl Server {
     /// or when the stream thread has stopped.
     pub async fn serve_connection<S>(&self, stream: S) -> Result<(), Error>
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: ServedConnection,
     {
         let mut stream = BufReader::new(stream);
         loop {
@@ -579,7 +579,7 @@ impl Server {
                 Reply::Respond(response) => write_response(stream.get_mut(), &response, Some(&method)).await?,
                 // The reader may already hold the first bytes of the stream, so it goes along.
                 Reply::Switch { id, opening, open } => {
-                    return self.streams.carry(id, Box::new(stream), opening, open).await;
+                    return self.streams.carry(id, stream, opening, open).await;
                 }
             }
         }

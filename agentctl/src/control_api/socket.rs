@@ -212,6 +212,15 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
 #[cfg(target_os = "windows")]
 struct HalfClosing(tokio_util::compat::Compat<win_uds::net::AsyncStream>);
 
+// async-io's own reactor thread drives the socket rather than either tokio runtime, so it crosses
+// to the stream thread as it is.
+#[cfg(target_os = "windows")]
+impl super::ServedConnection for HalfClosing {
+    fn detach(self) -> std::io::Result<super::Detached> {
+        Ok(super::Detached::unregistered(self))
+    }
+}
+
 #[cfg(target_os = "windows")]
 impl tokio::io::AsyncRead for HalfClosing {
     fn poll_read(

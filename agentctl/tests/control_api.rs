@@ -1540,6 +1540,73 @@ async fn a_low_open_file_limit_caps_the_open_streams() {
     .expect("a closed stream makes room for another");
 }
 
+/// A socket the control thread accepted wakes the stream thread itself, so a
+/// blocked control thread does not stall the stream.
+#[cfg(unix)]
+#[tokio::test(flavor = "local")]
+async fn socket_streams_flow_while_the_control_thread_is_blocked() {
+    let temporary = tempfile::Builder::new()
+        .prefix("agent-api-")
+        .tempdir()
+        .expect("temporary API directory");
+    let socket_path = temporary.path().join("agentd.sock");
+    let server = api().server;
+    let served_path = socket_path.clone();
+    tokio::task::spawn_local(async move { server.serve_path(&served_path).await });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !socket_path.exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("socket should be created");
+
+    let (switched, switched_here) = tokio::sync::oneshot::channel();
+    let (blocked, blocked_there) = std::sync::mpsc::channel::<()>();
+    let (echoed, echoed_here) = std::sync::mpsc::channel();
+    let client = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("client runtime");
+        runtime.block_on(async move {
+            let socket = tokio::net::UnixStream::connect(&socket_path).await.expect("connect");
+            let mut connection = BufReader::new(socket);
+            // The first bytes of the stream arrive with the request, so they cross with the connection.
+            let request =
+                r#"{"jsonrpc":"2.0","id":1,"method":"streams.v1.guestTcp","params":{"name":"worker","port":7}}"#;
+            connection
+                .get_mut()
+                .write_all(format!("{request}\nearly").as_bytes())
+                .await
+                .expect("request");
+            let mut response = String::new();
+            connection.read_line(&mut response).await.expect("response");
+            let mut early = [0; 5];
+            connection.read_exact(&mut early).await.expect("early bytes echoed");
+            switched.send((response, early)).expect("report the switch");
+            blocked_there.recv().expect("the control thread blocks");
+            let mut rounds = 0;
+            for _ in 0..20 {
+                connection.get_mut().write_all(b"ping").await.expect("send");
+                let mut answer = [0; 4];
+                connection.read_exact(&mut answer).await.expect("echo");
+                rounds += usize::from(&answer == b"ping");
+            }
+            echoed.send(rounds).expect("report the echoes");
+        });
+    });
+
+    let (response, early) = switched_here.await.expect("switched");
+    assert!(response.contains(r#""stream":"bytes""#), "{response}");
+    assert_eq!(&early, b"early");
+    blocked.send(()).expect("start echoing");
+    // Blocks the control thread's runtime, as a slow call or reconciliation step would.
+    let rounds = echoed_here.recv_timeout(Duration::from_secs(5));
+    assert_eq!(rounds, Ok(20), "every echo arrives while the control thread is blocked");
+    client.join().expect("client thread");
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "local")]
 async fn open_streams_leave_room_for_calls() {
