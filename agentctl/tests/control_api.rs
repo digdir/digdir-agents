@@ -1512,3 +1512,66 @@ async fn unix_socket_transport_is_private_and_usable() {
         .expect("server task")
         .expect("server result");
 }
+
+/// Set in the child process that runs [`running_out_of_descriptors_does_not_end_the_server`].
+#[cfg(unix)]
+const DESCRIPTOR_CHILD: &str = "AGENT_TEST_DESCRIPTOR_CHILD";
+
+/// Runs its server in a child process, since it lowers the open-file limit of its whole process.
+#[cfg(unix)]
+#[test]
+fn running_out_of_descriptors_does_not_end_the_server() {
+    if std::env::var_os(DESCRIPTOR_CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "control_api::running_out_of_descriptors_does_not_end_the_server",
+                "--test-threads=1",
+            ])
+            .env(DESCRIPTOR_CHILD, "1")
+            .status()
+            .expect("run the child test");
+        assert!(status.success(), "the child test failed: {status}");
+        return;
+    }
+    let runtime = tokio::runtime::LocalRuntime::new().expect("runtime");
+    runtime.block_on(async {
+        let temporary = tempfile::Builder::new()
+            .prefix("agent-api-")
+            .tempdir()
+            .expect("temporary API directory");
+        let socket_path = temporary.path().join("agentd.sock");
+        let server = api().server;
+        let served_path = socket_path.clone();
+        let serving = tokio::task::spawn_local(async move { server.serve_path(&served_path).await });
+        while !socket_path.exists() {
+            tokio::task::yield_now().await;
+        }
+
+        let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile);
+        rustix::process::setrlimit(
+            rustix::process::Resource::Nofile,
+            rustix::process::Rlimit {
+                current: Some(256),
+                maximum: limit.maximum,
+            },
+        )
+        .expect("lower the open-file limit");
+        let mut filler = Vec::new();
+        while let Ok(file) = std::fs::File::open("/dev/null") {
+            filler.push(file);
+        }
+        // One descriptor for the client, none left for the server to accept it with.
+        filler.pop();
+        let client = Client::for_path(socket_path);
+        let health = tokio::task::spawn_local(async move { client.health().await });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!serving.is_finished(), "the server keeps serving without descriptors");
+        drop(filler);
+        tokio::time::timeout(Duration::from_secs(2), health)
+            .await
+            .expect("the waiting call is served once descriptors are free")
+            .expect("health task")
+            .expect("health");
+    });
+}

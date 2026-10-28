@@ -21,6 +21,45 @@ async fn drain_connections(connections: &mut FuturesUnordered<ConnectionFuture>,
     }
 }
 
+/// How long the server stops accepting after an accept fails for want of a
+/// resource, such as descriptors, that closing connections frees again.
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+/// Takes an accepted connection, or pauses accepting after a failure that
+/// leaves the listener working. Running out of descriptors, which open
+/// streams make reachable, must not end the server, since the connections
+/// it already carries free them again as they close.
+fn take_accepted<T>(
+    accepted: std::io::Result<T>,
+    paused_until: &mut Option<tokio::time::Instant>,
+) -> Result<Option<T>, Error> {
+    match accepted {
+        Ok(accepted) => Ok(Some(accepted)),
+        Err(error) if listener_is_broken(&error) => Err(Error::Io(error)),
+        Err(error) => {
+            tracing::warn!(%error, "could not accept a Control API connection, retrying shortly");
+            *paused_until = Some(tokio::time::Instant::now() + ACCEPT_RETRY_DELAY);
+            Ok(None)
+        }
+    }
+}
+
+/// Whether an accept error means the listener itself no longer works.
+fn listener_is_broken(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        use rustix::io::Errno;
+
+        Errno::from_io_error(error)
+            .is_some_and(|errno| matches!(errno, Errno::BADF | Errno::INVAL | Errno::NOTSOCK | Errno::OPNOTSUPP))
+    }
+    #[cfg(windows)]
+    {
+        // WSAEBADF, WSAEINVAL, WSAENOTSOCK and WSAEOPNOTSUPP.
+        matches!(error.raw_os_error(), Some(10009 | 10022 | 10038 | 10045))
+    }
+}
+
 /// Connector for the fixed per-user Control API socket path.
 pub(super) struct PathConnector {
     path: PathBuf,
@@ -73,14 +112,17 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
     let listener = tokio::net::UnixListener::bind(path)?;
     crate::local::home::secure_file(path)?;
     let mut connections = FuturesUnordered::<ConnectionFuture>::new();
+    let mut paused_until = None;
 
     loop {
         if server.is_draining() {
             break;
         }
         tokio::select! {
-            accepted = listener.accept(), if connections.len() < MAX_CONCURRENT_CONNECTIONS + server.open_streams() => {
-                let (stream, _) = accepted?;
+            accepted = listener.accept(), if paused_until.is_none() && connections.len() < MAX_CONCURRENT_CONNECTIONS + server.open_streams() => {
+                let Some((stream, _)) = take_accepted(accepted, &mut paused_until)? else {
+                    continue;
+                };
                 let connection_server = server.clone();
                 connections.push(async move {
                     if let Err(error) = connection_server.serve_connection(stream).await {
@@ -89,6 +131,9 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
                 }.boxed_local());
             }
             Some(()) = connections.next(), if !connections.is_empty() => {}
+            () = tokio::time::sleep_until(paused_until.unwrap_or_else(tokio::time::Instant::now)), if paused_until.is_some() => {
+                paused_until = None;
+            }
             // A connection that became a stream frees its place for calls.
             () = server.stream_opened() => {}
             () = server.shutdown_requested() => break,
@@ -134,14 +179,17 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
     let listener = win_uds::net::AsyncListener::bind(path)?;
     let _cleanup = SocketCleanup(path.to_path_buf());
     let mut connections = FuturesUnordered::<ConnectionFuture>::new();
+    let mut paused_until = None;
 
     loop {
         if server.is_draining() {
             break;
         }
         tokio::select! {
-            accepted = listener.accept(), if connections.len() < MAX_CONCURRENT_CONNECTIONS + server.open_streams() => {
-                let (stream, _) = accepted?;
+            accepted = listener.accept(), if paused_until.is_none() && connections.len() < MAX_CONCURRENT_CONNECTIONS + server.open_streams() => {
+                let Some((stream, _)) = take_accepted(accepted, &mut paused_until)? else {
+                    continue;
+                };
                 let connection_server = server.clone();
                 connections.push(async move {
                     if let Err(error) = connection_server.serve_connection(HalfClosing(stream.compat())).await {
@@ -150,6 +198,9 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
                 }.boxed_local());
             }
             Some(()) = connections.next(), if !connections.is_empty() => {}
+            () = tokio::time::sleep_until(paused_until.unwrap_or_else(tokio::time::Instant::now)), if paused_until.is_some() => {
+                paused_until = None;
+            }
             // A connection that became a stream frees its place for calls.
             () = server.stream_opened() => {}
             () = server.shutdown_requested() => break,
