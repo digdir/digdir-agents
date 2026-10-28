@@ -70,11 +70,11 @@ impl Adapter {
     pub async fn open(
         home: &Path,
         database: persistence::Database,
-        secret_store: Rc<dyn ::sandbox::secret_store::SecretStore>,
+        credentials: Rc<crate::harness::AuthenticationManager>,
         policy: Rc<AgentPolicyEngine>,
         platform_port: u16,
     ) -> Result<Self, Error> {
-        let network = Rc::new(MicrosandboxNetworkBackend::new(policy.clone()).with_secret_store(secret_store));
+        let network = Rc::new(MicrosandboxNetworkBackend::new(policy.clone()).with_secret_store(credentials.clone()));
         let service = {
             let provider = Rc::new(
                 MicrosandboxProvider::builder(home.join("microsandbox"))
@@ -90,7 +90,7 @@ impl Adapter {
         Ok(Self {
             id: ProviderId::new(PROVIDER_ID)?,
             service,
-            preparation: Preparation::new(database, policy, network),
+            preparation: Preparation::new(database, credentials, policy, network),
             default_architecture: Platform::native("linux").architecture,
             platform_port,
         })

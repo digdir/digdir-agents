@@ -352,6 +352,10 @@ pub struct AuthenticationManager {
     database: persistence::Database,
     claude_code: claude_code::authentication::Authentication,
     codex: codex::authentication::Authentication,
+    /// The latest login each agent's harness was given here, whether or not the pass that chose it
+    /// went on to succeed; see [`Self::assign_login`].
+    assignments:
+        std::cell::RefCell<std::collections::BTreeMap<crate::AgentId, std::collections::BTreeMap<Harness, LoginName>>>,
 }
 
 impl AuthenticationManager {
@@ -362,6 +366,7 @@ impl AuthenticationManager {
             database: database.clone(),
             claude_code: claude_code::authentication::Authentication::new(database.clone()),
             codex: codex::authentication::Authentication::new(database),
+            assignments: std::cell::RefCell::default(),
         }
     }
 
@@ -414,6 +419,74 @@ impl AuthenticationManager {
             }
         }
         Ok(logins)
+    }
+
+    /// Chooses the host login `record`'s mediated `installation` uses and records the choice at
+    /// once; see [`LoginSet::choose`] for the rule. `None` when none of its set is usable.
+    ///
+    /// The choice counts every other running agent's login, including choices made moments ago for
+    /// agents whose sandboxes are still starting, so agents applied together spread out. Counting,
+    /// choosing and recording happen without an await between them, which on this single-threaded
+    /// runtime makes them one step. An agent's stored status supplies its login after a restart,
+    /// before any choice is made for it here.
+    ///
+    /// A choice counts from the moment it is made, even if its pass then fails or is abandoned: the
+    /// agent still runs, or is about to, and will use that login once a pass succeeds.
+    ///
+    /// An optional installation is omitted rather than failing provisioning without one, so this must
+    /// distinguish "no login here" from a genuine fault, which stays an error.
+    pub(crate) async fn assign_login(
+        &self,
+        record: &crate::control_plane::AgentRecord,
+        installation: &HarnessSpec,
+    ) -> Result<Option<LoginName>, Error> {
+        use crate::control_plane::AgentStore as _;
+
+        let usable = match installation.kind {
+            Harness::ClaudeCode => claude_code::usable_logins(&self.database).await?,
+            Harness::Codex => codex::usable_logins(&self.database).await?,
+            Harness::Pi => return Err(no_platform_login()),
+        };
+        let agents = self.database.list().await?;
+
+        // From here to the end, nothing awaits.
+        let mut assignments = self.assignments.borrow_mut();
+        assignments.retain(|id, _| agents.iter().any(|agent| agent.id == *id));
+        let login_of = |agent: &crate::control_plane::AgentRecord| {
+            assignments
+                .get(&agent.id)
+                .and_then(|logins| logins.get(&installation.kind))
+                .or_else(|| {
+                    agent
+                        .agent
+                        .status
+                        .sandbox
+                        .as_ref()
+                        .and_then(|assignment| assignment.login(installation.kind))
+                })
+                .cloned()
+        };
+        let mut in_use = std::collections::BTreeMap::<_, usize>::new();
+        for other in &agents {
+            // A stopped agent spends no quota, and one being deleted soon none.
+            if other.id == record.id
+                || other.agent.spec.is_stopped()
+                || other.agent.metadata.deletion_timestamp.is_some()
+            {
+                continue;
+            }
+            if let Some(login) = login_of(other) {
+                *in_use.entry(login).or_default() += 1;
+            }
+        }
+        let current = login_of(record);
+        let chosen = installation.login.choose(&usable, current.as_ref(), &in_use);
+        let logins = assignments.entry(record.id).or_default();
+        match &chosen {
+            Some(login) => logins.insert(installation.kind, login.clone()),
+            None => logins.remove(&installation.kind),
+        };
+        Ok(chosen)
     }
 }
 
@@ -560,25 +633,6 @@ fn no_agent_login(harness: Harness, reason: &str) -> Error {
         "this agent has no {name} login to reuse: {reason}. Its manifest must declare {name} and the host be logged \
          in to it, which restarts this agent; or pass a credential with `--from-stdin`"
     ))
-}
-
-/// Picks the host login a mediated installation uses, from its set and the usable stored logins;
-/// see [`LoginSet::choose`] for the rule and its arguments. `None` when none of the set is usable.
-///
-/// An optional installation is omitted rather than failing provisioning without one, so this must
-/// distinguish "no login here" from a genuine fault, which stays an error.
-pub(crate) async fn choose_login(
-    installation: &HarnessSpec,
-    current: Option<&LoginName>,
-    in_use: &std::collections::BTreeMap<LoginName, usize>,
-    database: &persistence::Database,
-) -> Result<Option<LoginName>, Error> {
-    let usable = match installation.kind {
-        Harness::ClaudeCode => claude_code::usable_logins(database).await?,
-        Harness::Codex => codex::usable_logins(database).await?,
-        Harness::Pi => return Err(no_platform_login()),
-    };
-    Ok(installation.login.choose(&usable, current, in_use))
 }
 
 /// The mediated secrets an installation of `harness` gets from its host login `login`.
@@ -921,10 +975,6 @@ mod tests {
             ("default", "login \"default\" is not stored", "`agentctl claude login`"),
         ] {
             let installation = claude_code(set);
-            let chosen = choose_login(&installation, None, &std::collections::BTreeMap::new(), &database)
-                .await
-                .expect("choose");
-            assert_eq!(chosen, None, "{set}");
             let error = no_login_stored(installation.kind, &installation.login).to_string();
             assert!(error.contains(message), "{set}: {error}");
             assert!(error.contains(command), "{set}: {error}");

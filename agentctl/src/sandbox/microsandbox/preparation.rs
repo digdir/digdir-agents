@@ -2,18 +2,14 @@
 
 use std::{collections::BTreeMap, rc::Rc};
 
-use crate::{
-    Error,
-    authorization::AgentPolicyEngine,
-    control_plane::{self, AgentStore as _},
-    environment, harness, persistence,
-};
+use crate::{Error, authorization::AgentPolicyEngine, control_plane, environment, harness, persistence};
 use ::sandbox::{SandboxHandle, SandboxId, SandboxName, network::NetworkBackend as _};
 use sandbox_microsandbox::{MicrosandboxNetworkBackend, SecretBinding};
 
 /// Connects agent policy and host-owned secrets to the Microsandbox Network Backend.
 pub(super) struct Preparation {
     database: persistence::Database,
+    credentials: Rc<harness::AuthenticationManager>,
     policy: Rc<AgentPolicyEngine>,
     network: Rc<MicrosandboxNetworkBackend>,
 }
@@ -35,11 +31,13 @@ impl Preparation {
     #[must_use]
     pub(super) const fn new(
         database: persistence::Database,
+        credentials: Rc<harness::AuthenticationManager>,
         policy: Rc<AgentPolicyEngine>,
         network: Rc<MicrosandboxNetworkBackend>,
     ) -> Self {
         Self {
             database,
+            credentials,
             policy,
             network,
         }
@@ -134,15 +132,17 @@ impl Preparation {
         let mut managed_placeholders = BTreeMap::new();
         let mut installed = Vec::with_capacity(record.agent.spec.harnesses.len());
         let mut logins = BTreeMap::new();
-        let in_use = self.logins_in_use(record).await?;
         for installation in &record.agent.spec.harnesses {
             if installation.auth == harness::HarnessAuthMode::None {
                 installed.push(installation.kind);
                 continue;
             }
             // Re-evaluated every pass, so signing in later installs it with no manifest change.
-            let Some(login) = self.choose_login(record, installation, &in_use).await? else {
-                continue;
+            let Some(login) = self.credentials.assign_login(record, installation).await? else {
+                if installation.optional {
+                    continue;
+                }
+                return Err(harness::no_login_stored(installation.kind, &installation.login));
             };
             installed.push(installation.kind);
             for secret in harness::prepare(installation.kind, &login, &self.database).await? {
@@ -173,51 +173,6 @@ impl Preparation {
             installed,
             logins,
         })
-    }
-
-    /// The host login `record`'s mediated `installation` uses, or `None` for an optional one with
-    /// none of its logins stored.
-    async fn choose_login(
-        &self,
-        record: &control_plane::AgentRecord,
-        installation: &crate::HarnessSpec,
-        in_use: &BTreeMap<crate::Harness, BTreeMap<harness::LoginName, usize>>,
-    ) -> Result<Option<harness::LoginName>, Error> {
-        let current = record
-            .agent
-            .status
-            .sandbox
-            .as_ref()
-            .and_then(|assignment| assignment.login(installation.kind));
-        let counts = in_use.get(&installation.kind).cloned().unwrap_or_default();
-        match harness::choose_login(installation, current, &counts, &self.database).await? {
-            None if !installation.optional => Err(harness::no_login_stored(installation.kind, &installation.login)),
-            chosen => Ok(chosen),
-        }
-    }
-
-    /// How many running agents other than `record`'s use each host login, by harness.
-    async fn logins_in_use(
-        &self,
-        record: &control_plane::AgentRecord,
-    ) -> Result<BTreeMap<crate::Harness, BTreeMap<harness::LoginName, usize>>, Error> {
-        let mut in_use = BTreeMap::<_, BTreeMap<_, usize>>::new();
-        for other in self.database.list().await? {
-            // A stopped agent spends no quota, and one being deleted soon none.
-            if other.id == record.id
-                || other.agent.spec.is_stopped()
-                || other.agent.metadata.deletion_timestamp.is_some()
-            {
-                continue;
-            }
-            let Some(crate::sandbox::Assignment::Materialized { logins, .. }) = &other.agent.status.sandbox else {
-                continue;
-            };
-            for (harness, login) in logins {
-                *in_use.entry(*harness).or_default().entry(login.clone()).or_default() += 1;
-            }
-        }
-        Ok(in_use)
     }
 
     pub(super) fn remove(&self, sandbox: &SandboxName) {
@@ -309,6 +264,38 @@ spec:
             .expect("store status");
     }
 
+    /// Agents applied together are prepared concurrently, each before any has recorded its
+    /// sandbox, and still spread out.
+    #[tokio::test(flavor = "local")]
+    async fn agents_prepared_at_once_get_different_logins() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let database = crate::persistence::Database::open(&directory.path().join("agent.db")).expect("database");
+        for name in ["a", "b"] {
+            harness::store_test_login(name, &database).await;
+        }
+        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
+        let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
+        let credentials = Rc::new(harness::AuthenticationManager::new(database.clone()));
+        let preparation = super::Preparation::new(database.clone(), credentials, policy, network);
+        let (first, second) = (
+            record("first", "6a3c1f0e-2b7d-4e59-9c84-0f1d2e3a4b5c"),
+            record("second", "7b4d2a1f-3c8e-4f6a-8d95-1a2b3c4d5e6f"),
+        );
+        for agent in [&first, &second] {
+            database.put(agent.clone(), 0).await.expect("store agent");
+        }
+
+        let (first, second) = tokio::join!(preparation.prepare(&first), preparation.prepare(&second));
+
+        let login = |prepared: super::PreparedNetwork| prepared.logins[&harness::test_harness()].to_string();
+        let mut logins = [
+            login(first.expect("prepare first")),
+            login(second.expect("prepare second")),
+        ];
+        logins.sort();
+        assert_eq!(logins, ["a", "b"]);
+    }
+
     async fn stop(database: &crate::persistence::Database, id: crate::AgentId) {
         let mut record = database.get(id).await.expect("agent");
         record.agent.spec.set_run_state(crate::RunState::Stopped);
@@ -324,7 +311,8 @@ spec:
         }
         let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
         let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
-        let preparation = super::Preparation::new(database.clone(), policy, network);
+        let credentials = Rc::new(harness::AuthenticationManager::new(database.clone()));
+        let preparation = super::Preparation::new(database.clone(), credentials, policy, network);
         let login = |prepared: &super::PreparedNetwork| prepared.logins[&harness::test_harness()].to_string();
 
         let first = record("first", "6a3c1f0e-2b7d-4e59-9c84-0f1d2e3a4b5c");
