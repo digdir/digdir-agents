@@ -1606,15 +1606,22 @@ fn running_out_of_descriptors_does_not_end_the_server() {
         }
         // One descriptor for the client, none left for the server to accept it with.
         filler.pop();
-        let client = Client::for_path(socket_path);
+        let client = Client::for_path(socket_path.clone());
         let health = tokio::task::spawn_local(async move { client.health().await });
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(!serving.is_finished(), "the server keeps serving without descriptors");
         drop(filler);
-        tokio::time::timeout(Duration::from_secs(2), health)
+        let waiting = tokio::time::timeout(Duration::from_secs(2), health)
             .await
-            .expect("the waiting call is served once descriptors are free")
-            .expect("health task")
-            .expect("health");
+            .expect("the waiting call ends once descriptors are free")
+            .expect("health task");
+        // Linux leaves a connection it has no descriptor for in the backlog, while macOS closes it.
+        if cfg!(target_os = "linux") {
+            waiting.expect("the waiting call is served");
+        }
+        Client::for_path(socket_path)
+            .health()
+            .await
+            .expect("a new call is served once descriptors are free");
     });
 }
