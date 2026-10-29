@@ -200,6 +200,7 @@ persist real values.
 `agentctl` skill.
 <!-- agentd: end of Agent sandbox section -->
 
+<!-- agentd: the agent's own instructions, from spec.instructions -->
 test instructions
 ",
         agent::build_version()
@@ -302,6 +303,133 @@ async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns
     );
     let skill = read_file(&sandbox, "/home/agent/.claude/skills/agentctl/SKILL.md").await;
     assert_eq!(skill, b"---\nname: agentctl\n---\nour own");
+}
+
+/// Instruction files and skills change in place. A later pass removes the skills an earlier one placed that the agent
+/// no longer declares, and the agent's own instructions once it has none, but leaves the image's skills and the
+/// platform's alone.
+#[tokio::test(flavor = "local")]
+#[allow(clippy::too_many_lines)]
+async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_declares() {
+    const SKILLS: &str = "/home/agent/.claude/skills";
+    let directory = TempDir::new().expect("temporary directory");
+    let home = directory.path().join("home");
+    std::fs::create_dir_all(&home).expect("home directory");
+    std::fs::write(directory.path().join("instructions.md"), "test instructions\n").expect("instruction file");
+    for name in ["evidence", "review"] {
+        let skill = directory.path().join("skills").join(name);
+        std::fs::create_dir_all(&skill).expect("skill directory");
+        std::fs::write(skill.join("SKILL.md"), format!("---\nname: {name}\n---\n")).expect("skill file");
+    }
+    let skill = |source: &str, name: Option<&str>| agent::SkillSpec {
+        source: PathBuf::from(source),
+        name: name.map(str::to_owned),
+        optional: false,
+    };
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home.source = home;
+    resource.spec.skills = vec![skill("skills/evidence", None), skill("skills/review", None)];
+    let mut record = AgentRecord {
+        id: "7c2e9a41-5b3d-4f6e-8a1c-0d9b4e7f2a63".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    };
+    let backend = Rc::new(memory::Provider::new());
+    for _ in 0..2 {
+        backend.queue_execution_events_matching(
+            is_claude_version,
+            vec![
+                ExecutionEvent::Started { process_id: None },
+                ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
+                ExecutionEvent::Exited(ExitStatus { code: 0 }),
+            ],
+        );
+        backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    }
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+    sandbox
+        .write_file(
+            &SandboxPath::new(format!("{SKILLS}/image-own/SKILL.md")),
+            Box::pin(Cursor::new(b"---\nname: image-own\n---\n".to_vec())),
+        )
+        .await
+        .expect("image skill");
+    let platform = Linux::new(PLATFORM_API_URL);
+
+    platform
+        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
+        .await
+        .expect("first setup");
+    let first = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+    assert!(first.ends_with("\ntest instructions\n"), "{first}");
+    assert_eq!(
+        read_file(&sandbox, &format!("{SKILLS}/.agentd-skills")).await,
+        b"agentctl\nevidence\nreview\n"
+    );
+    let executions = backend.execution_specs().len();
+
+    // Rename one skill, drop the other and every instruction file.
+    record.agent.spec.skills = vec![skill("skills/review", Some("reviewing"))];
+    record.agent.spec.instructions = Vec::new();
+    platform
+        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
+        .await
+        .expect("second setup");
+
+    let removals = backend
+        .execution_specs()
+        .into_iter()
+        .skip(executions)
+        .filter_map(|spec| match spec.program() {
+            Program::Command { executable, args }
+                if executable.as_str() == "/usr/bin/sudo"
+                    && args.first().map(String::as_str) == Some("/usr/bin/rm") =>
+            {
+                Some(args.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        removals,
+        [vec![
+            "/usr/bin/rm".to_owned(),
+            "-rf".into(),
+            "--".into(),
+            format!("{SKILLS}/evidence"),
+            format!("{SKILLS}/review"),
+        ]],
+        "only the skills an earlier pass placed are removed"
+    );
+    assert_eq!(
+        read_file(&sandbox, &format!("{SKILLS}/.agentd-skills")).await,
+        b"agentctl\nreviewing\n"
+    );
+    assert_eq!(
+        read_file(&sandbox, &format!("{SKILLS}/reviewing/SKILL.md")).await,
+        b"---\nname: review\n---\n"
+    );
+    let second = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+    assert!(
+        second.ends_with("<!-- agentd: end of Agent sandbox section -->\n"),
+        "the agent's own instructions are not kept as the image's: {second}"
+    );
 }
 
 /// Claude Code that the platform does not launch, such as T3 Code's, approves Bash requests in bypass mode as sessions
@@ -525,7 +653,7 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     let instructions = String::from_utf8(instructions).expect("UTF-8 instructions");
     assert!(instructions.contains("\n# Agent sandbox\n"), "{instructions}");
     assert!(
-        instructions.ends_with("\n\ntest instructions\n\n# Environment\n\nhas a browser\n"),
+        instructions.ends_with("spec.instructions -->\ntest instructions\n\n# Environment\n\nhas a browser\n"),
         "the agent's own instructions follow the agent sandbox section: {instructions}"
     );
     let codex_instructions = read_file(&sandbox, "/home/agent/.codex/AGENTS.md").await;
@@ -920,7 +1048,10 @@ async fn linux_setup_reads_home_instructions_and_skills_below_the_home_directory
             .any(|window| window == b"tilde-marker")
     );
     let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
-    assert!(instructions.ends_with("\n\ntilde instructions\n"), "{instructions}");
+    assert!(
+        instructions.ends_with("spec.instructions -->\ntilde instructions\n"),
+        "{instructions}"
+    );
     assert_eq!(
         read_file(&sandbox, "/home/agent/.claude/skills/evidence/SKILL.md").await,
         b"capture"
@@ -1072,7 +1203,10 @@ async fn linux_setup_leaves_out_missing_optional_sources_until_they_exist() {
         ]
     );
     let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
-    assert!(instructions.ends_with("\n\nrequired\n"), "{instructions}");
+    assert!(
+        instructions.ends_with("spec.instructions -->\nrequired\n"),
+        "{instructions}"
+    );
 
     std::fs::write(directory.path().join("personal.md"), "personal\n").expect("optional instruction file");
     let skill = directory.path().join("skills").join("review");
@@ -1085,7 +1219,10 @@ async fn linux_setup_leaves_out_missing_optional_sources_until_they_exist() {
 
     assert!(missing.is_empty(), "{missing:?}");
     let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
-    assert!(instructions.ends_with("\n\nrequired\n\npersonal\n"), "{instructions}");
+    assert!(
+        instructions.ends_with("spec.instructions -->\nrequired\n\npersonal\n"),
+        "{instructions}"
+    );
     assert_eq!(
         read_file(&sandbox, "/home/agent/.claude/skills/review/SKILL.md").await,
         b"review"

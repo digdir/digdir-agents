@@ -1131,6 +1131,15 @@ async fn repeated_apply_is_idempotent_and_immutable_fields_are_rejected() {
     mutable_change.agent.spec.sandbox.retention_policy = Some(RetentionPolicy::Delete);
     mutable_change.agent.spec.harnesses[0].version = Some("2.1.240".into());
     mutable_change.agent.spec.harnesses[0].default = true;
+    mutable_change.agent.spec.instructions.push(agent::InstructionsSpec {
+        source: PathBuf::from("environment.md"),
+        optional: false,
+    });
+    mutable_change.agent.spec.skills.push(agent::SkillSpec {
+        source: PathBuf::from("skills/review"),
+        name: None,
+        optional: false,
+    });
     let updated_request = mutable_change.clone();
     let updated = fixture
         .control_plane
@@ -1140,6 +1149,8 @@ async fn repeated_apply_is_idempotent_and_immutable_fields_are_rejected() {
     assert_eq!(updated.metadata.generation, 2);
     assert_eq!(updated.spec.harnesses[0].version.as_deref(), Some("2.1.240"));
     assert!(updated.spec.harnesses[0].default);
+    assert_eq!(updated.spec.instructions, updated_request.agent.spec.instructions);
+    assert_eq!(updated.spec.skills, updated_request.agent.spec.skills);
 
     let mut kind_set_change = updated_request.clone();
     kind_set_change.agent.spec.harnesses[0].default = true;

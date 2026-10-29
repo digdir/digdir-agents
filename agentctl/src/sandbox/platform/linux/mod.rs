@@ -170,11 +170,12 @@ impl Linux {
                 ))
                 .await;
             let instructions = if let Some(own) = &own {
-                preamble::place(&section, own)
+                preamble::place_own(&section, own)
             } else {
                 // Without instructions of its own, the agent's image or home overlay may own the file: the section
-                // goes above what it holds. The home sync restores an overlay's file on every pass, so for a
-                // moment before this rewrite it lacks the section.
+                // goes above what it holds, less any instructions of the agent's own an earlier pass placed. The home
+                // sync restores an overlay's file on every pass, so for a moment before this rewrite it lacks the
+                // section.
                 let path = harness::instructions_path(installation.kind, HOME);
                 let existing = read_owned_instructions(sandbox, &path).await?;
                 preamble::place(&section, preamble::without_section(&existing))

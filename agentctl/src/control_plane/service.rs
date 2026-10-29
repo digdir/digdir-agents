@@ -620,12 +620,6 @@ fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) -> Result<(
     if current.agent.spec.home != desired.spec.home {
         return Err(Error::Immutable("spec.home"));
     }
-    if current.agent.spec.instructions != desired.spec.instructions {
-        return Err(Error::Immutable("spec.instructions"));
-    }
-    if current.agent.spec.skills != desired.spec.skills {
-        return Err(Error::Immutable("spec.skills"));
-    }
     let current_kinds = current
         .agent
         .spec
