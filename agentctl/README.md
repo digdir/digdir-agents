@@ -59,8 +59,15 @@ it later.
   setup offers the account another agent in `~/agents` uses (`--github existing`), after checking its token still
   works.
 - **Agents you set up before** are offered first when you run setup again: connect a running one to an editor, sign
-  in to its harnesses, or replace it with a new definition, which setup asks about first. For a stopped agent or one
-  that is not ready, setup names the `agentctl` command that helps.
+  in to its harnesses, update it, or replace it with a new definition, which setup asks about first. For a stopped
+  agent or one that is not ready, setup names the `agentctl` command that helps.
+- **Updating** fetches an agent's definition again from where setup got it, such as after its repository improved it,
+  and applies it with the agent's disk, sessions and `.env` kept (`--existing <name> --action update`). Your answers
+  for its name, size, harnesses and shared folders carry over, so what you left out stays out while what the source
+  adds comes in. The review lists the files that change first, and anything else you edited in its `agent.yaml` gives
+  way to the source. An existing agent cannot change some fields, such as its image or the list of skills it reads, so
+  an update that changes one creates the agent again, deleting its disk. Setup asks first, and a script passes
+  `--replace`.
 - **Editors:** setup opens the agent in VS Code or Zed. Other apps that work over SSH, such as JetBrains Gateway and
   the Claude desktop app's Code tab, connect to the SSH host `agentctl-<name>` that setup names, in the folder it
   names. The Claude desktop app copies its own Claude sign-in into the agent, while sessions agentctl starts never let

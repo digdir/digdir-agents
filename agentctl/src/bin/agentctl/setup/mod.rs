@@ -30,6 +30,7 @@ pub(crate) mod sign_in;
 mod sizing;
 mod source;
 mod staging;
+mod update;
 mod values;
 
 use std::{
@@ -221,6 +222,8 @@ struct Draft {
     access: Access,
     /// The published image the agent's image is built here in place of.
     built_here: Option<String>,
+    /// What its source defines that setup left out, so an update leaves it out again.
+    left_out: update::LeftOut,
 }
 
 impl Draft {
@@ -233,6 +236,7 @@ impl Draft {
             replace: None,
             access: Access::default(),
             built_here: None,
+            left_out: update::LeftOut::default(),
         }
     }
 }
@@ -243,6 +247,8 @@ struct Source {
     directory: PathBuf,
     /// What the agent came from, named in the written manifest.
     origin: String,
+    /// Where to fetch it again to update the agent from it.
+    recorded: Option<update::Recorded>,
     /// The repository the manifest is in, whose checkout its relative bind mounts mount.
     repository: Option<mounts::Repository>,
     /// Whether it is a standard agent, which a mounted folder's own agents may replace.
@@ -332,6 +338,7 @@ async fn run_once(
     let context = existing::Context {
         arguments,
         answers,
+        catalog,
         client,
         home,
         staging: &staging,

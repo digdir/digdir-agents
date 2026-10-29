@@ -4,6 +4,7 @@
 
 use super::answers::{Answers, Choice};
 use super::sizing::Whole;
+use super::update::Recorded;
 use super::{Draft, SetupArguments, Source, SourceChoice, fetch, image, mounts};
 use crate::{CommandError, CommandResult};
 use agent::catalog::Catalog;
@@ -19,7 +20,7 @@ pub(super) async fn choose_draft(
     source: SourceChoice,
 ) -> CommandResult<Draft> {
     match source {
-        SourceChoice::Standard => standard_draft(arguments, answers, catalog, staging),
+        SourceChoice::Standard => standard_draft(arguments.archetype.as_deref(), answers, catalog, staging),
         SourceChoice::Team => team_source(arguments, answers, staging).await,
         SourceChoice::Existing => Err(CommandError::Message(
             "an existing agent is carried on with, not set up again".into(),
@@ -41,7 +42,7 @@ pub(super) async fn team_source(arguments: &SetupArguments, answers: &Answers, s
                 check_team_source,
             )?,
         };
-        match team_draft_from(arguments, answers, staging, &from).await {
+        match team_draft_from(arguments.variant.as_ref(), answers, staging, &from).await {
             Err(error) if arguments.from.is_none() && answers.interactive() && !answers.went_back() => {
                 // What went wrong with the address, without the prefix a manifest's own errors carry.
                 match error {
@@ -82,18 +83,19 @@ pub(super) fn check_team_source(answer: &str) -> Result<(), String> {
 }
 
 /// The team's agent at `from`, a GitHub address or a path, its manifest chosen when it holds
-/// several.
+/// several, or the one of `variant`.
 pub(super) async fn team_draft_from(
-    arguments: &SetupArguments,
+    variant: Option<&agent::AgentVariantName>,
     answers: &Answers,
     staging: &Path,
     from: &str,
 ) -> CommandResult<Draft> {
     if let Some(mut github) = fetch::GithubSource::parse(from) {
         let folder = github.fetch(staging).await?;
-        let manifest = choose_manifest(answers, arguments.variant.as_ref(), &folder)?;
+        let manifest = choose_manifest(answers, variant, &folder)?;
         let within = manifest.strip_prefix(staging.join("checkout")).unwrap_or(&manifest);
-        record_team_source(answers, &github.address_of(within), &manifest);
+        let address = github.address_of(within);
+        record_team_source(answers, &address, &manifest);
         let origin = format!(
             "github.com/{}/{}, {}",
             github.owner,
@@ -105,25 +107,26 @@ pub(super) async fn team_draft_from(
             &staging.join("checkout"),
             &github.repository,
         )?);
+        draft.source.recorded = Some(Recorded::Team {
+            from: address,
+            variant: manifest::variant_from_filename(&manifest).map(|variant| variant.as_str().to_owned()),
+        });
         return Ok(draft);
     }
-    let manifest = choose_manifest(
-        answers,
-        arguments.variant.as_ref(),
-        &manifest::expand_host_path(Path::new(from))?,
-    )?;
+    let manifest = choose_manifest(answers, variant, &manifest::expand_host_path(Path::new(from))?)?;
     answers.record("--from", &[&manifest.display().to_string()]);
     answers.forget("--variant");
     team_draft(&manifest, &manifest.display().to_string())
 }
 
+/// The standard agent `id`, else the one the person picks from the catalog.
 pub(super) fn standard_draft(
-    arguments: &SetupArguments,
+    id: Option<&str>,
     answers: &Answers,
     catalog: &Catalog,
     staging: &Path,
 ) -> CommandResult<Draft> {
-    let archetype = if let Some(id) = &arguments.archetype {
+    let archetype = if let Some(id) = id {
         catalog.get(id).ok_or_else(|| {
             Error::Invalid(format!(
                 "no standard agent {id:?}; see `agentctl setup --list-archetypes`"
@@ -152,6 +155,9 @@ pub(super) fn standard_draft(
     let directory = parent(&manifest_path)?;
     let source = Source {
         origin: format!("the standard agent {}", archetype.id),
+        recorded: Some(Recorded::Standard {
+            id: archetype.id.clone(),
+        }),
         repository: None,
         from_catalog: true,
         image_sources: Some(directory.clone()).filter(|directory| image::buildable(directory)),
@@ -233,6 +239,13 @@ pub(super) fn team_draft(manifest_path: &Path, origin: &str) -> CommandResult<Dr
     let source = Source {
         directory: parent(manifest_path)?,
         origin: origin.to_owned(),
+        recorded: Some(Recorded::Team {
+            from: std::path::absolute(manifest_path)
+                .map_err(Error::from)?
+                .display()
+                .to_string(),
+            variant: None,
+        }),
         repository,
         from_catalog: false,
         image_sources: None,

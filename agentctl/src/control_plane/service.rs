@@ -584,65 +584,12 @@ fn applied_run_state(requested: Option<crate::RunState>, current: Option<&AgentR
 }
 
 fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) -> Result<(), Error> {
-    if current.agent.spec.sandbox.image != desired.spec.sandbox.image {
-        return Err(Error::Immutable("spec.sandbox.image"));
-    }
-    if current.agent.spec.sandbox.platform != desired.spec.sandbox.platform {
-        return Err(Error::Immutable("spec.sandbox.platform"));
-    }
-    if current.agent.spec.sandbox.init_system != desired.spec.sandbox.init_system {
-        return Err(Error::Immutable("spec.sandbox.initSystem"));
-    }
-    if current.agent.spec.sandbox.resources.root_filesystem.mode()
-        != desired.spec.sandbox.resources.root_filesystem.mode()
-    {
-        return Err(Error::Immutable("spec.sandbox.resources.rootFilesystem.mode"));
-    }
-    if current.agent.spec.sandbox.mounts != desired.spec.sandbox.mounts {
-        return Err(Error::Immutable("spec.sandbox.mounts"));
-    }
-    if current.agent.spec.home != desired.spec.home {
-        return Err(Error::Immutable("spec.home"));
-    }
-    if current.agent.spec.instructions != desired.spec.instructions {
-        return Err(Error::Immutable("spec.instructions"));
-    }
-    if current.agent.spec.skills != desired.spec.skills {
-        return Err(Error::Immutable("spec.skills"));
-    }
-    let current_kinds = current
+    current
         .agent
         .spec
-        .harnesses
-        .iter()
-        .map(|harness| harness.kind)
-        .collect::<std::collections::BTreeSet<_>>();
-    let desired_kinds = desired
-        .spec
-        .harnesses
-        .iter()
-        .map(|harness| harness.kind)
-        .collect::<std::collections::BTreeSet<_>>();
-    if current_kinds != desired_kinds {
-        return Err(Error::Immutable("spec.harnesses.type"));
-    }
-    let current_auth = current
-        .agent
-        .spec
-        .harnesses
-        .iter()
-        .map(|harness| (harness.kind, harness.auth))
-        .collect::<std::collections::BTreeSet<_>>();
-    let desired_auth = desired
-        .spec
-        .harnesses
-        .iter()
-        .map(|harness| (harness.kind, harness.auth))
-        .collect::<std::collections::BTreeSet<_>>();
-    if current_auth != desired_auth {
-        return Err(Error::Immutable("spec.harnesses.auth"));
-    }
-    Ok(())
+        .immutable_changes(&desired.spec)
+        .first()
+        .map_or(Ok(()), |field| Err(Error::Immutable(field)))
 }
 
 async fn resolve_mount_sources(agent: &mut Agent, source_directory: &std::path::Path) -> Result<(), Error> {

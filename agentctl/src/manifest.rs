@@ -521,6 +521,44 @@ impl Spec {
         }
     }
 
+    /// The fields an existing agent cannot change, in manifest notation, that `desired` changes.
+    /// Each shapes what the agent was created from, such as its image or the files it reads, so
+    /// changing one takes creating the agent again.
+    #[must_use]
+    pub fn immutable_changes(&self, desired: &Self) -> Vec<&'static str> {
+        let kinds = |spec: &Self| -> std::collections::BTreeSet<_> {
+            spec.harnesses.iter().map(|harness| harness.kind).collect()
+        };
+        let auth = |spec: &Self| -> std::collections::BTreeSet<_> {
+            spec.harnesses
+                .iter()
+                .map(|harness| (harness.kind, harness.auth))
+                .collect()
+        };
+        let (current, desired_sandbox) = (&self.sandbox, &desired.sandbox);
+        [
+            ("spec.sandbox.image", current.image != desired_sandbox.image),
+            ("spec.sandbox.platform", current.platform != desired_sandbox.platform),
+            (
+                "spec.sandbox.initSystem",
+                current.init_system != desired_sandbox.init_system,
+            ),
+            (
+                "spec.sandbox.resources.rootFilesystem.mode",
+                current.resources.root_filesystem.mode() != desired_sandbox.resources.root_filesystem.mode(),
+            ),
+            ("spec.sandbox.mounts", current.mounts != desired_sandbox.mounts),
+            ("spec.home", self.home != desired.home),
+            ("spec.instructions", self.instructions != desired.instructions),
+            ("spec.skills", self.skills != desired.skills),
+            ("spec.harnesses.type", kinds(self) != kinds(desired)),
+            ("spec.harnesses.auth", auth(self) != auth(desired)),
+        ]
+        .into_iter()
+        .filter_map(|(field, changed)| changed.then_some(field))
+        .collect()
+    }
+
     /// Returns whether the agent declares SSH access.
     #[must_use]
     pub fn ssh_access(&self) -> bool {

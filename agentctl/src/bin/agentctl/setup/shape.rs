@@ -202,6 +202,11 @@ pub(super) fn choose_harnesses(arguments: &SetupArguments, answers: &Answers, dr
             "--harness {harness} must be one of the --harnesses the agent has"
         )));
     }
+    draft.left_out.harnesses = declared
+        .iter()
+        .copied()
+        .filter(|harness| !kept.contains(harness))
+        .collect();
     let harnesses = &mut draft.agent.spec.harnesses;
     harnesses.retain(|harness| kept.contains(&harness.kind));
     let current = harnesses.iter().position(|harness| harness.default).unwrap_or_default();

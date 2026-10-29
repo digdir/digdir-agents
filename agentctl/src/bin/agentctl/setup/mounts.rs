@@ -382,8 +382,8 @@ fn listed(
 }
 
 /// Applies `shares` to `agent`: its repository's mounts share the checkout chosen, or are left out
-/// without one, and the mounts left out are removed.
-fn apply(agent: &mut Agent, repository: Option<&RepositoryShares>, shares: &Shares) {
+/// without one, and the mounts left out are removed. Returns where the agent would have seen those.
+fn apply(agent: &mut Agent, repository: Option<&RepositoryShares>, shares: &Shares) -> Vec<String> {
     let mut removed = shares.left_out.clone();
     for mount in repository
         .map(|repository| repository.found.as_slice())
@@ -400,9 +400,15 @@ fn apply(agent: &mut Agent, repository: Option<&RepositoryShares>, shares: &Shar
     }
     removed.sort_unstable();
     removed.dedup();
-    for index in removed.into_iter().rev() {
-        agent.spec.sandbox.mounts.remove(index);
-    }
+    let mut targets: Vec<String> = removed
+        .into_iter()
+        .rev()
+        .map(|index| match agent.spec.sandbox.mounts.remove(index) {
+            MountSpec::Bind { target, .. } | MountSpec::Tmpfs { target, .. } => target.as_str().to_owned(),
+        })
+        .collect();
+    targets.reverse();
+    targets
 }
 
 /// The folder `within` of `checkout`. Joining an empty path would add a trailing separator.
@@ -458,7 +464,7 @@ pub(super) fn choose_shared(
     {
         return Ok(Some((manifest, folder.clone())));
     }
-    apply(&mut draft.agent, repository.as_ref(), &shares);
+    draft.left_out.shared = apply(&mut draft.agent, repository.as_ref(), &shares);
     if let Some(folder) = &added {
         mount_unless_mounted(draft, folder)?;
     }

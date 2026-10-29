@@ -1,5 +1,5 @@
 //! The agents setup made before, in `~/agents/<name>/`: finding them with their state, carrying
-//! on with one, and replacing one with a new definition.
+//! on with one, updating one from where it came from, and replacing one with a new definition.
 //!
 //! Replacing is done so that a failure or a change of mind leaves the old definition as it was:
 //! the new folder is written in full first, and only then is the old agent deleted and its folder
@@ -33,6 +33,8 @@ pub(super) struct Existing {
     pub(super) name: String,
     /// What setup made it from, when setup made it.
     pub(super) origin: Option<String>,
+    /// Where setup can fetch it again, when setup recorded that.
+    pub(super) recorded: Option<super::update::Record>,
     pub(super) state: State,
 }
 
@@ -114,6 +116,7 @@ pub(super) async fn scan(client: Option<&Client>, root: &Path, agents: &[Agent])
             }
         };
         found.push(Existing {
+            recorded: super::update::recorded(&folder),
             folder,
             name,
             origin,
@@ -152,6 +155,8 @@ pub(crate) enum ExistingAction {
     Connect,
     /// Sign in to its harnesses.
     SignIn,
+    /// Update it from the definition it came from, keeping its disk and sessions.
+    Update,
     /// Replace it with a new agent definition.
     Replace,
 }
@@ -168,6 +173,7 @@ pub(super) enum Proceed {
 pub(super) struct Context<'a> {
     pub(super) arguments: &'a SetupArguments,
     pub(super) answers: &'a Answers,
+    pub(super) catalog: &'a agent::catalog::Catalog,
     pub(super) client: &'a Client,
     pub(super) home: &'a agent::local::home::ControlPlaneHome,
     pub(super) staging: &'a super::staging::Staging,
@@ -204,7 +210,7 @@ pub(super) async fn proceed(context: &Context<'_>, existing: Existing) -> Comman
         }
         _ => false,
     };
-    let offered = actions(&existing.state, sign_in);
+    let offered = actions(&existing.state, sign_in, existing.recorded.is_some());
     let action = match context.arguments.action {
         Some(action) if offered.iter().any(|(offered, _)| *offered == Some(action)) => action,
         Some(action) => {
@@ -232,7 +238,8 @@ pub(super) async fn proceed(context: &Context<'_>, existing: Existing) -> Comman
             action
         }
     };
-    if action != ExistingAction::Replace {
+    // Updating and replacing ask more before they do anything.
+    if !matches!(action, ExistingAction::Update | ExistingAction::Replace) {
         context.answers.no_way_back();
     }
     let name = existing.name.as_str();
@@ -259,6 +266,7 @@ pub(super) async fn proceed(context: &Context<'_>, existing: Existing) -> Comman
             .await?;
             println!("Signed in; agent/{name} picks the logins up as it converges.");
         }
+        ExistingAction::Update => Box::pin(super::update::run(context, &existing)).await?,
         ExistingAction::Replace => return Ok(Proceed::Replace(existing)),
     }
     Ok(Proceed::Done)
@@ -285,14 +293,27 @@ fn remedy(existing: &Existing, cli: &str) -> Option<String> {
 }
 
 /// What setup offers for an agent in `state`: connecting a running one, signing in when
-/// `sign_in` allows it, replacing it, and leaving it as it is.
-fn actions(state: &State, sign_in: bool) -> Vec<(Option<ExistingAction>, &'static str)> {
+/// `sign_in` allows it, updating it when it was `recorded` where it came from, replacing it, and
+/// leaving it as it is.
+fn actions(state: &State, sign_in: bool, recorded: bool) -> Vec<(Option<ExistingAction>, &'static str)> {
     let mut actions = Vec::new();
     if *state == State::Running {
         actions.push((Some(ExistingAction::Connect), "Connect it to an editor on this machine"));
     }
     if sign_in {
         actions.push((Some(ExistingAction::SignIn), "Sign in to its harnesses"));
+    }
+    // An update keeps what setup's questions decided, so it reads them from a manifest that
+    // resolves, and applies it to the agent of this folder.
+    let updatable = matches!(
+        state,
+        State::Running | State::Stopped | State::NotReady | State::NotCreated
+    );
+    if recorded && updatable {
+        actions.push((
+            Some(ExistingAction::Update),
+            "Update it from where it came from, keeping its disk and sessions",
+        ));
     }
     actions.push((Some(ExistingAction::Replace), "Replace it with a new agent definition"));
     actions.push((None, "Nothing, for now"));
@@ -335,15 +356,20 @@ pub(super) async fn swap(
         }
         wait_until_deleted(client, name, timeout).await?;
     }
-    std::fs::rename(&replaced.folder, backup).map_err(|error| {
-        CommandError::Message(format!("could not move {} aside: {error}", replaced.folder.display()))
-    })?;
-    if let Err(error) = move_folder(staged, &replaced.folder) {
-        std::fs::remove_dir_all(&replaced.folder).ok();
-        std::fs::rename(backup, &replaced.folder).ok();
+    exchange(&replaced.folder, staged, backup)
+}
+
+/// Moves `folder` aside to `backup` and the folder written at `staged` into its place. Should the
+/// move fail, the old folder is put back.
+pub(super) fn exchange(folder: &Path, staged: &Path, backup: &Path) -> CommandResult<()> {
+    std::fs::rename(folder, backup)
+        .map_err(|error| CommandError::Message(format!("could not move {} aside: {error}", folder.display())))?;
+    if let Err(error) = move_folder(staged, folder) {
+        std::fs::remove_dir_all(folder).ok();
+        std::fs::rename(backup, folder).ok();
         return Err(CommandError::Message(format!(
             "could not put the new definition in {}: {error}; the old one is back",
-            replaced.folder.display()
+            folder.display()
         )));
     }
     Ok(())
@@ -397,22 +423,33 @@ mod tests {
     use super::{ExistingAction, State, actions, move_folder, scan};
 
     #[test]
-    fn a_running_agent_can_be_connected_and_any_replaced() {
-        let offered = |state: &State, sign_in| -> Vec<_> {
-            actions(state, sign_in).into_iter().map(|(action, _)| action).collect()
+    fn a_running_agent_can_be_connected_one_with_a_known_source_updated_and_any_replaced() {
+        let offered = |state: &State, sign_in, recorded| -> Vec<_> {
+            actions(state, sign_in, recorded)
+                .into_iter()
+                .map(|(action, _)| action)
+                .collect()
         };
         assert_eq!(
-            offered(&State::Running, true),
+            offered(&State::Running, true, true),
             [
                 Some(ExistingAction::Connect),
                 Some(ExistingAction::SignIn),
+                Some(ExistingAction::Update),
                 Some(ExistingAction::Replace),
                 None
             ]
         );
-        assert_eq!(offered(&State::Stopped, false), [Some(ExistingAction::Replace), None]);
         assert_eq!(
-            offered(&State::Invalid("bad".into()), false),
+            offered(&State::Stopped, false, false),
+            [Some(ExistingAction::Replace), None]
+        );
+        assert_eq!(
+            offered(&State::NotCreated, false, true),
+            [Some(ExistingAction::Update), Some(ExistingAction::Replace), None]
+        );
+        assert_eq!(
+            offered(&State::Invalid("bad".into()), false, true),
             [Some(ExistingAction::Replace), None]
         );
     }

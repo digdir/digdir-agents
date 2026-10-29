@@ -5,7 +5,8 @@ use super::answers::{Answers, Choice};
 use super::sign_in::login_command;
 use super::sizing::Whole;
 use super::{
-    BrowserSignIn, Draft, SetupArguments, bundle, command_line, env_file, existing, github, ide, image, repeat, staging,
+    BrowserSignIn, Draft, SetupArguments, bundle, command_line, env_file, existing, github, ide, image, repeat,
+    staging, update,
 };
 use crate::{CommandError, CommandResult};
 use agent::local::home::ControlPlaneHome;
@@ -251,19 +252,33 @@ pub(super) fn write_folder(draft: &mut Draft, folder: &Path) -> CommandResult<Pa
         return Err(CommandError::Message(format!("{} already exists", folder.display())));
     }
     std::fs::create_dir_all(folder).map_err(Error::from)?;
-    let written = (|| {
-        let mut agent = draft.agent.clone();
-        bundle_into(&mut agent, draft, folder)?;
-        draft.agent = agent;
-        let path = folder.join(manifest::MANIFEST_FILE);
-        std::fs::write(&path, manifest_text(&draft.agent, draft)?)?;
-        env_file::write(folder, &draft.access.values)?;
-        Ok::<_, Error>(path)
-    })();
-    if written.is_err() {
-        std::fs::remove_dir_all(folder).ok();
+    match write_contents(draft, folder) {
+        Ok(agent) => {
+            draft.agent = agent;
+            Ok(folder.join(manifest::MANIFEST_FILE))
+        }
+        Err(error) => {
+            std::fs::remove_dir_all(folder).ok();
+            Err(error.into())
+        }
     }
-    Ok(written?)
+}
+
+/// Writes into `folder` what makes up the agent: its manifest, the files it reads, its `.env` and
+/// where it came from. Returns the manifest written, whose paths point at the copies.
+pub(super) fn write_contents(draft: &Draft, folder: &Path) -> Result<Agent, Error> {
+    let mut agent = draft.agent.clone();
+    bundle_into(&mut agent, draft, folder)?;
+    std::fs::write(folder.join(manifest::MANIFEST_FILE), manifest_text(&agent, draft)?)?;
+    env_file::write(folder, &draft.access.values)?;
+    if let Some(recorded) = &draft.source.recorded {
+        let record = update::Record {
+            source: recorded.clone(),
+            left_out: draft.left_out.clone(),
+        };
+        update::record(folder, &record)?;
+    }
+    Ok(agent)
 }
 
 /// Copies what `agent` reads into `folder`, and the sources of its image when it is built here.
