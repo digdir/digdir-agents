@@ -7,7 +7,7 @@ use std::{io::Cursor, path::PathBuf, rc::Rc};
 use agent::{
     AgentId,
     control_plane::AgentRecord,
-    sandbox::{PlatformAdapter as _, platform::Linux},
+    sandbox::{Assignment, PlatformAdapter as _, ProviderId, platform::Linux},
 };
 use sandbox::{
     EnsureSandboxRequest, Platform, SandboxPath, SandboxService,
@@ -305,9 +305,9 @@ async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns
     assert_eq!(skill, b"---\nname: agentctl\n---\nour own");
 }
 
-/// Instruction files and skills change in place. A later pass removes the skills an earlier one placed that the agent
-/// no longer declares, and the agent's own instructions once it has none, but leaves the image's skills and the
-/// platform's alone.
+/// Instruction files and skills change in place. A later pass removes the skills the agent's status says an earlier one
+/// placed in this sandbox that the agent no longer declares, and the agent's own instructions once it has none, but
+/// leaves the image's skills and the platform's alone.
 #[tokio::test(flavor = "local")]
 #[allow(clippy::too_many_lines)]
 async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_declares() {
@@ -338,7 +338,7 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
         agent: resource,
     };
     let backend = Rc::new(memory::Provider::new());
-    for _ in 0..2 {
+    for _ in 0..3 {
         backend.queue_execution_events_matching(
             is_claude_version,
             vec![
@@ -372,42 +372,51 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
         .expect("image skill");
     let platform = Linux::new(PLATFORM_API_URL);
 
-    platform
+    let placed_in = |sandbox: &sandbox::SandboxHandle, skills: Vec<String>| {
+        Some(Assignment::Materialized {
+            provider: ProviderId::new("memory").expect("Provider ID"),
+            id: sandbox.snapshot().id.clone(),
+            harnesses: vec![agent::Harness::ClaudeCode],
+            skills,
+        })
+    };
+    let removals_since = |executions: usize| {
+        backend
+            .execution_specs()
+            .into_iter()
+            .skip(executions)
+            .filter_map(|spec| match spec.program() {
+                Program::Command { executable, args }
+                    if executable.as_str() == "/usr/bin/sudo"
+                        && args.first().map(String::as_str) == Some("/usr/bin/rm") =>
+                {
+                    Some(args.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let first = platform
         .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
         .await
         .expect("first setup");
-    let first = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
-    assert!(first.ends_with("\ntest instructions\n"), "{first}");
-    assert_eq!(
-        read_file(&sandbox, &format!("{SKILLS}/.agentd-skills")).await,
-        b"agentctl\nevidence\nreview\n"
-    );
+    let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+    assert!(instructions.ends_with("\ntest instructions\n"), "{instructions}");
+    assert_eq!(first.skills, ["evidence", "review", "agentctl"]);
+    record.agent.status.sandbox = placed_in(&sandbox, first.skills);
     let executions = backend.execution_specs().len();
 
     // Rename one skill, drop the other and every instruction file.
     record.agent.spec.skills = vec![skill("skills/review", Some("reviewing"))];
     record.agent.spec.instructions = Vec::new();
-    platform
+    let second = platform
         .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
         .await
         .expect("second setup");
 
-    let removals = backend
-        .execution_specs()
-        .into_iter()
-        .skip(executions)
-        .filter_map(|spec| match spec.program() {
-            Program::Command { executable, args }
-                if executable.as_str() == "/usr/bin/sudo"
-                    && args.first().map(String::as_str) == Some("/usr/bin/rm") =>
-            {
-                Some(args.clone())
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
     assert_eq!(
-        removals,
+        removals_since(executions),
         [vec![
             "/usr/bin/rm".to_owned(),
             "-rf".into(),
@@ -417,18 +426,33 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
         ]],
         "only the skills an earlier pass placed are removed"
     );
-    assert_eq!(
-        read_file(&sandbox, &format!("{SKILLS}/.agentd-skills")).await,
-        b"agentctl\nreviewing\n"
-    );
+    assert_eq!(second.skills, ["reviewing", "agentctl"]);
     assert_eq!(
         read_file(&sandbox, &format!("{SKILLS}/reviewing/SKILL.md")).await,
         b"---\nname: review\n---\n"
     );
-    let second = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
+    let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
     assert!(
-        second.ends_with("<!-- agentd: end of Agent sandbox section -->\n"),
-        "the agent's own instructions are not kept as the image's: {second}"
+        instructions.ends_with("<!-- agentd: end of Agent sandbox section -->\n"),
+        "the agent's own instructions are not kept as the image's: {instructions}"
+    );
+
+    // What status says was placed in another sandbox is not this one's to remove.
+    record.agent.status.sandbox = Some(Assignment::Materialized {
+        provider: ProviderId::new("memory").expect("Provider ID"),
+        id: "3f978c33-4d43-4ea4-b58d-10b90ef166af".parse().expect("Sandbox ID"),
+        harnesses: vec![agent::Harness::ClaudeCode],
+        skills: vec!["image-own".into()],
+    });
+    let executions = backend.execution_specs().len();
+    platform
+        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
+        .await
+        .expect("third setup");
+    assert_eq!(removals_since(executions), Vec::<Vec<String>>::new());
+    assert_eq!(
+        read_file(&sandbox, &format!("{SKILLS}/image-own/SKILL.md")).await,
+        b"---\nname: image-own\n---\n"
     );
 }
 
@@ -1196,7 +1220,7 @@ async fn linux_setup_leaves_out_missing_optional_sources_until_they_exist() {
         .expect("setup without the optional sources");
 
     assert_eq!(
-        missing,
+        missing.missing_sources,
         [
             "spec.instructions[1].source personal.md",
             "spec.skills[0].source skills/review",
@@ -1217,7 +1241,7 @@ async fn linux_setup_leaves_out_missing_optional_sources_until_they_exist() {
         .await
         .expect("setup with the optional sources");
 
-    assert!(missing.is_empty(), "{missing:?}");
+    assert!(missing.missing_sources.is_empty(), "{missing:?}");
     let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
     assert!(
         instructions.ends_with("spec.instructions -->\nrequired\n\npersonal\n"),

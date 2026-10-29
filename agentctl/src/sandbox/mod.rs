@@ -94,6 +94,11 @@ pub enum Assignment {
         /// host login was absent is missing here, and is installed by a later pass once it exists.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         harnesses: Vec<crate::Harness>,
+        /// Skills setup placed in the harnesses' skill folders in this sandbox, by name. The image
+        /// may ship skills there too, so this is how a later pass tells the ones it may remove,
+        /// once the agent no longer declares them, from those it must leave alone.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skills: Vec<String>,
     },
 }
 
@@ -121,6 +126,18 @@ impl Assignment {
         match self {
             Self::Selected { .. } => None,
             Self::Materialized { harnesses, .. } => Some(harnesses),
+        }
+    }
+
+    /// Returns the skills setup placed in the sandbox `id`: none when this assignment is for
+    /// another sandbox, since a new one starts with only its image's.
+    #[must_use]
+    pub fn placed_skills(&self, id: &SandboxId) -> &[String] {
+        match self {
+            Self::Materialized {
+                id: placed_in, skills, ..
+            } if placed_in == id => skills,
+            _ => &[],
         }
     }
 }
@@ -209,6 +226,18 @@ pub struct EnsureOutcome {
     pub nested_sandboxes: Option<NestedSandboxesOutcome>,
     /// The optional instructions and skills setup left out because they do not exist.
     pub missing_sources: Vec<String>,
+    /// The skills setup placed in the harnesses' skill folders, by name.
+    pub skills: Vec<String>,
+}
+
+/// What platform setup did in the sandbox.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PlatformSetup {
+    /// The optional instructions and skills it left out because they do not exist.
+    pub missing_sources: Vec<String>,
+    /// The skills it placed in the harnesses' skill folders, by name, having removed those an
+    /// earlier pass placed that the agent no longer declares.
+    pub skills: Vec<String>,
 }
 
 /// Runtime-selectable setup for an operating system reported by a materialized sandbox.
@@ -217,15 +246,14 @@ pub trait PlatformAdapter {
     fn supports(&self, platform: &Platform) -> bool;
 
     /// Idempotently applies agent and harness setup inside the sandbox,
-    /// reporting its steps through `steps`. Returns the optional instructions and skills it left
-    /// out because they do not exist.
+    /// reporting its steps through `steps`.
     fn setup<'a>(
         &'a self,
         record: &'a AgentRecord,
         sandbox: &'a SandboxHandle,
         harnesses: &'a [crate::Harness],
         steps: &'a ::sandbox::SandboxProgress,
-    ) -> LocalFuture<'a, Result<Vec<String>, Error>>;
+    ) -> LocalFuture<'a, Result<PlatformSetup, Error>>;
 }
 
 /// Resolves agent requirements against configured Providers and dispatches lifecycle effects.
@@ -315,7 +343,7 @@ impl Service {
         self.responsiveness
             .observe(sandbox.snapshot(), tokio::time::Instant::now());
         let phase = progress.start_phase(crate::progress::SETUP).await;
-        let missing_sources = self
+        let set_up = self
             .guard_guest(
                 record,
                 &sandbox.snapshot().id,
@@ -329,7 +357,8 @@ impl Service {
             sandbox,
             harnesses: outcome.harnesses,
             nested_sandboxes: outcome.nested_sandboxes,
-            missing_sources,
+            missing_sources: set_up.missing_sources,
+            skills: set_up.skills,
         })
     }
 

@@ -15,7 +15,7 @@ use ::sandbox::{LocalFuture, Platform, SandboxHandle, SandboxPath, execution::Ex
 use crate::{Error, control_plane, harness};
 
 use super::{
-    super::PlatformAdapter,
+    super::{PlatformAdapter, PlatformSetup},
     files::{read_existing, write_if_changed},
 };
 pub(crate) use command::run_checked;
@@ -101,22 +101,21 @@ impl PlatformAdapter for Linux {
         sandbox: &'a SandboxHandle,
         harnesses: &'a [crate::Harness],
         steps: &'a ::sandbox::SandboxProgress,
-    ) -> LocalFuture<'a, Result<Vec<String>, Error>> {
+    ) -> LocalFuture<'a, Result<PlatformSetup, Error>> {
         Box::pin(self.setup(record, sandbox, harnesses, steps))
     }
 }
 
 impl Linux {
     /// Sets up only the harnesses preparation reported installing, so setup and preparation
-    /// cannot disagree about an optional installation whose host login was absent. Returns the
-    /// optional instructions and skills it left out because they do not exist.
+    /// cannot disagree about an optional installation whose host login was absent.
     async fn setup(
         &self,
         record: &control_plane::AgentRecord,
         sandbox: &SandboxHandle,
         harnesses: &[crate::Harness],
         steps: &::sandbox::SandboxProgress,
-    ) -> Result<Vec<String>, Error> {
+    ) -> Result<PlatformSetup, Error> {
         let installations: Vec<&crate::HarnessSpec> = record
             .agent
             .spec
@@ -162,6 +161,17 @@ impl Linux {
         if !skills.iter().any(|skill| skill.name == platform_skill.name) {
             skills.push(platform_skill);
         }
+        let placed_before = record
+            .agent
+            .status
+            .sandbox
+            .as_ref()
+            .map_or(&[][..], |assignment| assignment.placed_skills(&sandbox.snapshot().id));
+        let dropped: Vec<&str> = placed_before
+            .iter()
+            .filter(|name| !skills.iter().any(|skill| &skill.name == *name))
+            .map(String::as_str)
+            .collect();
         for installation in &installations {
             let step = steps
                 .start_step(format!(
@@ -180,10 +190,21 @@ impl Linux {
                 let existing = read_owned_instructions(sandbox, &path).await?;
                 preamble::place(&section, preamble::without_section(&existing))
             };
+            let skills_directory = harness::skills_directory(installation.kind, HOME);
+            harness::remove_skills_linux(sandbox, &skills_directory, &dropped).await?;
             harness::bootstrap_linux(installation.kind, sandbox, HOME, &instructions, &skills).await?;
             step.complete().await;
         }
-        Ok(missing)
+        // Without a harness to place them for, nothing was placed or removed.
+        let skills = if installations.is_empty() {
+            placed_before.to_vec()
+        } else {
+            skills.into_iter().map(|skill| skill.name).collect()
+        };
+        Ok(PlatformSetup {
+            missing_sources: missing,
+            skills,
+        })
     }
 }
 

@@ -15,7 +15,9 @@ use agent::{
     local::home::ControlPlaneHome,
     persistence,
     resources::Changes,
-    sandbox::{Assignment as SandboxAssignment, PlatformAdapter, Provider, ProviderEnsureOutcome, ProviderId},
+    sandbox::{
+        Assignment as SandboxAssignment, PlatformAdapter, PlatformSetup, Provider, ProviderEnsureOutcome, ProviderId,
+    },
     sessions::{NewSession, Reconcile, SessionId, SessionName, SessionReports as _, SessionRequest, SessionStore as _},
 };
 use sandbox::{
@@ -68,6 +70,7 @@ impl Reconcile<AgentId> for BlockingAgentReady {
                                 .parse()
                                 .map_err(|error| Error::Database(format!("test sandbox ID: {error}")))?,
                             harnesses: record.agent.spec.harnesses.iter().map(|i| i.kind).collect(),
+                            skills: Vec::new(),
                         }),
                         vec![Condition {
                             kind: "Ready".into(),
@@ -117,8 +120,8 @@ impl PlatformAdapter for NoopPlatform {
         _sandbox: &'a SandboxHandle,
         _harnesses: &'a [agent::Harness],
         _steps: &'a sandbox::SandboxProgress,
-    ) -> LocalFuture<'a, Result<Vec<String>, Error>> {
-        Box::pin(async { Ok(Vec::new()) })
+    ) -> LocalFuture<'a, Result<PlatformSetup, Error>> {
+        Box::pin(async { Ok(PlatformSetup::default()) })
     }
 }
 
@@ -230,6 +233,7 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
             provider: ProviderId::new("memory").expect("Provider ID"),
             id: "3f978c33-4d43-4ea4-b58d-10b90ef166af".parse().expect("Sandbox ID"),
             harnesses: resource.spec.harnesses.iter().map(|i| i.kind).collect(),
+            skills: Vec::new(),
         }),
         vec![Condition {
             kind: "Ready".into(),
@@ -477,6 +481,7 @@ fn observing(record: &AgentRecord, harnesses: &[agent::Harness]) -> SandboxAssig
         provider: provider.clone(),
         id: id.clone(),
         harnesses: harnesses.to_vec(),
+        skills: Vec::new(),
     }
 }
 
@@ -529,6 +534,7 @@ async fn running_session(
         provider: ProviderId::new("memory").expect("Provider ID"),
         id: sandbox.id().clone(),
         harnesses: Vec::new(),
+        skills: Vec::new(),
     });
     observe_all_harnesses(&mut record);
     database.put(record, 0).await.expect("Agent");
@@ -1859,6 +1865,7 @@ async fn a_session_admitted_before_convergence_is_parked_until_its_optional_harn
         provider: ProviderId::new("memory").expect("Provider ID"),
         id: sandbox.id().clone(),
         harnesses: vec![agent::Harness::ClaudeCode],
+        skills: Vec::new(),
     });
     database.put(record.clone(), 0).await.expect("Agent");
     let provider: Rc<dyn Provider> = Rc::new(MemoryProvider {
@@ -2204,6 +2211,7 @@ async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() 
         provider: ProviderId::new("memory").expect("Provider ID"),
         id: sandbox.id().clone(),
         harnesses: Vec::new(),
+        skills: Vec::new(),
     });
     observe_all_harnesses(&mut record);
     database.put(record, 0).await.expect("Agent");

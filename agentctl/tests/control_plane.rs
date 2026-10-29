@@ -19,8 +19,8 @@ use agent::{
     progress::{OutputPosition, ProvisioningState, SandboxObserver},
     resources::Changes,
     sandbox::{
-        ExecutionService, PlatformAdapter, Provider, ProviderEnsureOutcome, ProviderId, Service, UNRESPONSIVE_AFTER,
-        resolve_nested_sandboxes,
+        ExecutionService, PlatformAdapter, PlatformSetup, Provider, ProviderEnsureOutcome, ProviderId, Service,
+        UNRESPONSIVE_AFTER, resolve_nested_sandboxes,
     },
 };
 use sandbox::{
@@ -71,8 +71,8 @@ impl PlatformAdapter for NoopPlatform {
         _sandbox: &'a SandboxHandle,
         _harnesses: &'a [agent::Harness],
         _steps: &'a sandbox::SandboxProgress,
-    ) -> LocalFuture<'a, Result<Vec<String>, Error>> {
-        Box::pin(async { Ok(Vec::new()) })
+    ) -> LocalFuture<'a, Result<PlatformSetup, Error>> {
+        Box::pin(async { Ok(PlatformSetup::default()) })
     }
 }
 
@@ -1017,13 +1017,13 @@ async fn nested_sandboxes_are_reported_in_a_condition_and_an_unmet_requirement_f
     assert_eq!(nested(&status), None, "an agent that asks for none reports none");
 }
 
-/// Reports `missing` as the optional sources setup left out.
+/// Reports `set_up` as what platform setup did.
 #[derive(Default)]
-struct MissingSourcesPlatform {
-    missing: RefCell<Vec<String>>,
+struct ReportingPlatform {
+    set_up: RefCell<PlatformSetup>,
 }
 
-impl PlatformAdapter for MissingSourcesPlatform {
+impl PlatformAdapter for ReportingPlatform {
     fn supports(&self, platform: &Platform) -> bool {
         platform.os == "linux"
     }
@@ -1034,8 +1034,8 @@ impl PlatformAdapter for MissingSourcesPlatform {
         _sandbox: &'a SandboxHandle,
         _harnesses: &'a [agent::Harness],
         _steps: &'a sandbox::SandboxProgress,
-    ) -> LocalFuture<'a, Result<Vec<String>, Error>> {
-        Box::pin(async { Ok(self.missing.borrow().clone()) })
+    ) -> LocalFuture<'a, Result<PlatformSetup, Error>> {
+        Box::pin(async { Ok(self.set_up.borrow().clone()) })
     }
 }
 
@@ -1043,7 +1043,7 @@ impl PlatformAdapter for MissingSourcesPlatform {
 async fn missing_optional_sources_are_reported_in_a_condition_of_a_ready_agent() {
     let store = Rc::new(memory::InMemoryAgentStore::new());
     let provider: Rc<dyn Provider> = Rc::new(MemoryProvider::new(Rc::new(sandbox_memory::Provider::new())));
-    let platform = Rc::new(MissingSourcesPlatform::default());
+    let platform = Rc::new(ReportingPlatform::default());
     let service = Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service");
     let reconciler = Reconciler::new(store.clone(), Rc::new(service), ProvisioningState::default());
     let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
@@ -1076,7 +1076,7 @@ async fn missing_optional_sources_are_reported_in_a_condition_of_a_ready_agent()
         optional: true,
     });
     control_plane.apply(request).await.expect("apply");
-    *platform.missing.borrow_mut() = vec!["spec.skills[0].source ~/skills/review".into()];
+    platform.set_up.borrow_mut().missing_sources = vec!["spec.skills[0].source ~/skills/review".into()];
     assert_eq!(
         optional_sources("reviewer").await,
         Some((
@@ -1086,11 +1086,33 @@ async fn missing_optional_sources_are_reported_in_a_condition_of_a_ready_agent()
         ))
     );
 
-    platform.missing.borrow_mut().clear();
+    platform.set_up.borrow_mut().missing_sources.clear();
     assert_eq!(
         optional_sources("reviewer").await,
         Some((ConditionStatus::True, "Found".into(), String::new()))
     );
+}
+
+/// The skills setup placed are recorded with the sandbox they are in, for the next pass to remove those the agent no
+/// longer declares.
+#[tokio::test(flavor = "local")]
+async fn the_skills_setup_placed_are_recorded_in_the_agents_status() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let provider: Rc<dyn Provider> = Rc::new(MemoryProvider::new(Rc::new(sandbox_memory::Provider::new())));
+    let platform = Rc::new(ReportingPlatform::default());
+    let service = Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service");
+    let reconciler = Reconciler::new(store.clone(), Rc::new(service), ProvisioningState::default());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    platform.set_up.borrow_mut().skills = vec!["review".into(), "agentctl".into()];
+
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let id = store.get_by_name("worker").await.expect("Agent").id;
+    reconciler.reconcile(id).await.expect("reconcile");
+
+    let status = store.get_by_name("worker").await.expect("Agent").agent.status;
+    let assignment = status.sandbox.expect("a sandbox");
+    let sandbox = assignment.id().expect("a materialized sandbox").clone();
+    assert_eq!(assignment.placed_skills(&sandbox), ["review", "agentctl"]);
 }
 
 #[tokio::test(flavor = "local")]
@@ -2232,7 +2254,7 @@ impl PlatformAdapter for StallingPlatform {
         _sandbox: &'a SandboxHandle,
         _harnesses: &'a [agent::Harness],
         _steps: &'a sandbox::SandboxProgress,
-    ) -> LocalFuture<'a, Result<Vec<String>, Error>> {
+    ) -> LocalFuture<'a, Result<PlatformSetup, Error>> {
         Box::pin(async move {
             self.setups.set(self.setups.get() + 1);
             if self.fail.get() {
@@ -2242,7 +2264,7 @@ impl PlatformAdapter for StallingPlatform {
                 self.started.notify_one();
                 std::future::pending::<()>().await;
             }
-            Ok(Vec::new())
+            Ok(PlatformSetup::default())
         })
     }
 }

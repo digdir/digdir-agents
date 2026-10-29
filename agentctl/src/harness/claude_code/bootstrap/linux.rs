@@ -24,7 +24,7 @@ pub(super) async fn configure(
     instructions: &[u8],
     skills: &[crate::harness::Skill],
 ) -> Result<(), Error> {
-    let skills_path = format!("{home}/.claude/skills");
+    let skills_path = super::super::skills_directory(home);
     let config = format!("{home}/.claude");
     let hooks_path = format!("{config}/hooks");
     let credentials_path = format!("{config}/.credentials.json");

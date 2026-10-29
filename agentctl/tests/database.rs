@@ -49,6 +49,7 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
                 .iter()
                 .map(|installation| installation.kind)
                 .collect(),
+            skills: Vec::new(),
         }),
         vec![Condition {
             kind: "Ready".into(),

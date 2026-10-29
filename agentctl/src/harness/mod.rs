@@ -15,7 +15,7 @@ const VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 const MAX_INITIAL_PROMPT_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_SELECTION_CHARACTERS: usize = 128;
 
-pub(crate) use skills::{Skill, SkillFile, platform_skill};
+pub(crate) use skills::{Skill, SkillFile, platform_skill, remove_linux as remove_skills_linux};
 
 /// Supported harnesses.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -536,6 +536,15 @@ pub(crate) fn instructions_path(harness: Harness, home: &str) -> String {
         Harness::ClaudeCode => claude_code::instructions_path(home),
         Harness::Codex => codex::instructions_path(home),
         Harness::Pi => pi::instructions_path(home),
+    }
+}
+
+/// Where `harness` finds its skills, one folder each.
+pub(crate) fn skills_directory(harness: Harness, home: &str) -> String {
+    match harness {
+        Harness::ClaudeCode => claude_code::skills_directory(home),
+        Harness::Codex => codex::skills_directory(home),
+        Harness::Pi => pi::skills_directory(home),
     }
 }
 
