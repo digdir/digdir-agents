@@ -1,6 +1,6 @@
-//! Where a new agent comes from: a standard agent from the catalog, or a team's from a path or
-//! a GitHub address, with the manifest chosen among those it holds, and, for a standard agent
-//! whose image cannot be pulled, an image built here instead.
+//! Where a new agent comes from: a standard agent from the catalog, or a team's from a path or a
+//! GitHub address, with the manifest chosen among those it holds, and, for an agent agentctl
+//! carries whose image cannot be pulled, an image built here instead.
 
 use super::answers::{Answers, Choice};
 use super::sizing::Whole;
@@ -230,6 +230,15 @@ pub(super) fn manifest_label(root: &Path, manifest: &Path) -> String {
         Ok(resolved) => format!("{} ({file})", resolved.agent.metadata.name),
         Err(error) => format!("{file}, which does not resolve: {error}"),
     }
+}
+
+/// The agent builder, which agentctl carries like a standard agent, sized as its manifest says.
+pub(super) fn builder_draft(staging: &Path) -> CommandResult<Draft> {
+    let manifest = agent::builder::extract(staging)?;
+    let mut draft = team_draft(&manifest, "the agent builder")?;
+    draft.source.recorded = None;
+    draft.source.image_sources = Some(draft.source.directory.clone()).filter(|directory| image::buildable(directory));
+    Ok(draft)
 }
 
 pub(super) fn team_draft(manifest_path: &Path, origin: &str) -> CommandResult<Draft> {

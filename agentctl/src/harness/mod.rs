@@ -17,7 +17,7 @@ const VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 const MAX_INITIAL_PROMPT_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_SELECTION_CHARACTERS: usize = 128;
 
-pub(crate) use skills::{Skill, SkillFile, platform_skill, remove_linux as remove_skills_linux};
+pub(crate) use skills::{Skill, SkillFile, platform_skills, remove_linux as remove_skills_linux};
 
 /// Supported harnesses.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]

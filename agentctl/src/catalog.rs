@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use sandbox::{ByteQuantity, CpuQuantity, SandboxName};
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Harness, manifest::MANIFEST_FILE};
+use crate::{Error, Harness, embedded, manifest::MANIFEST_FILE};
 
 /// The variable that replaces the embedded catalog with a directory.
 pub const CATALOG_DIRECTORY_VARIABLE: &str = "AGENTCTL_CATALOG_DIR";
@@ -23,8 +23,8 @@ pub const CATALOG_DIRECTORY_VARIABLE: &str = "AGENTCTL_CATALOG_DIR";
 /// The file describing the archetypes, at the root of the catalog.
 pub const CATALOG_FILE: &str = "catalog.yaml";
 
-/// Every file below `agents/standard/` at build time, by `/`-separated path relative to it.
-const EMBEDDED: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/catalog_files.rs"));
+/// The catalog's folder below `agents/`, as the build embeds it.
+const EMBEDDED_FOLDER: &str = "standard";
 
 /// One standard agent.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -98,7 +98,7 @@ impl Catalog {
     ///
     /// Returns an error when the embedded catalog file describes an archetype wrongly.
     pub fn embedded() -> Result<Self, Error> {
-        let archetypes = match embedded_file(CATALOG_FILE) {
+        let archetypes = match embedded::file(&format!("{EMBEDDED_FOLDER}/{CATALOG_FILE}")) {
             Some(contents) => parse(contents, "the embedded catalog")?,
             None => Vec::new(),
         };
@@ -153,18 +153,12 @@ impl Catalog {
             .get(id)
             .ok_or_else(|| Error::Invalid(format!("the catalog has no archetype {id:?}")))?;
         match &self.source {
-            Source::Embedded => {
-                let prefix = format!("{}/", archetype.id);
-                for (relative, contents) in EMBEDDED.iter().filter(|(relative, _)| relative.starts_with(&prefix)) {
-                    let path = destination.join(relative);
-                    if let Some(parent) = path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&path, contents)?;
-                }
-            }
+            Source::Embedded => embedded::extract(
+                &format!("{EMBEDDED_FOLDER}/{}", archetype.id),
+                &destination.join(&archetype.id),
+            )?,
             Source::Directory(directory) => {
-                copy_directory(&directory.join(&archetype.id), &destination.join(&archetype.id))?;
+                embedded::copy_directory(&directory.join(&archetype.id), &destination.join(&archetype.id))?;
             }
         }
         let manifest = destination.join(&archetype.id).join(MANIFEST_FILE);
@@ -173,13 +167,6 @@ impl Catalog {
         }
         Ok(manifest)
     }
-}
-
-fn embedded_file(relative: &str) -> Option<&'static [u8]> {
-    EMBEDDED
-        .iter()
-        .find(|(path, _)| *path == relative)
-        .map(|(_, contents)| *contents)
 }
 
 fn parse(contents: &[u8], origin: &str) -> Result<Vec<Archetype>, Error> {
@@ -216,23 +203,6 @@ fn validate(archetype: &Archetype) -> Result<(), String> {
         || recommended.disk.bytes() < minimum.disk.bytes()
     {
         return Err(format!("{:?}: recommended is below minimum", archetype.id));
-    }
-    Ok(())
-}
-
-fn copy_directory(source: &Path, destination: &Path) -> Result<(), Error> {
-    std::fs::create_dir_all(destination)?;
-    for entry in std::fs::read_dir(source)
-        .map_err(|error| Error::Invalid(format!("cannot read {}: {error}", source.display())))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        let target = destination.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_directory(&path, &target)?;
-        } else {
-            std::fs::copy(&path, &target)?;
-        }
     }
     Ok(())
 }

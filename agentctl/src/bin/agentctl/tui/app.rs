@@ -1244,8 +1244,8 @@ impl App {
 
     pub(crate) fn apply_snapshot(&mut self, mut agents: Vec<Agent>, mut sessions: Vec<Session>) {
         // The short-lived agents `agentctl setup` signs in from are not anyone's to work in.
-        agents.retain(|agent| !crate::setup::sign_in::is_sign_in_agent(&agent.metadata.name));
-        sessions.retain(|session| !crate::setup::sign_in::is_sign_in_agent(&session.agent));
+        agents.retain(|agent| !crate::setup::is_setup_agent(&agent.metadata.name));
+        sessions.retain(|session| !crate::setup::is_setup_agent(&session.agent));
         agents.sort_by(|left, right| left.metadata.name.cmp(&right.metadata.name));
         sessions.sort_by(|left, right| left.agent.cmp(&right.agent).then_with(|| left.name.cmp(&right.name)));
         // The selection's position is read before the rows it indexes are replaced.

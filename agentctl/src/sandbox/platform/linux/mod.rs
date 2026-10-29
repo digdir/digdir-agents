@@ -157,13 +157,8 @@ impl Linux {
         let section = preamble::render(record, &observed);
         let mut missing = Vec::new();
         let own = read_instructions(record, &mut missing).await?;
-        let mut skills = read_skills(record, &mut missing).await?;
-        let platform_skill = harness::platform_skill();
-        let platform_skill_name = platform_skill.name.clone();
-        // An agent's own skill of the same name replaces the platform's.
-        if !skills.iter().any(|skill| skill.name == platform_skill.name) {
-            skills.push(platform_skill);
-        }
+        let platform_skills = harness::platform_skills();
+        let skills = with_platform_skills(read_skills(record, &mut missing).await?, &platform_skills);
         // A skill whose optional source is missing is still declared, so what an earlier pass placed of it stays.
         let declared: Vec<&str> = record
             .agent
@@ -171,7 +166,7 @@ impl Linux {
             .skills
             .iter()
             .filter_map(crate::SkillSpec::name)
-            .chain([platform_skill_name.as_str()])
+            .chain(platform_skills.iter().map(|skill| skill.name.as_str()))
             .collect();
         // A folder no harness of this pass writes keeps its record, for a later pass that does.
         let mut placed = record
@@ -293,4 +288,15 @@ async fn run_git_config(sandbox: &SandboxHandle, key: &str, value: &str) -> Resu
         )
         .await?;
     checked_output("/usr/bin/env", &args, &output)
+}
+
+/// The agent's skills and the platform's, an agent's own skill of the same name replacing the
+/// platform's.
+fn with_platform_skills(mut skills: Vec<harness::Skill>, platform: &[harness::Skill]) -> Vec<harness::Skill> {
+    for platform_skill in platform {
+        if !skills.iter().any(|skill| skill.name == platform_skill.name) {
+            skills.push(platform_skill.clone());
+        }
+    }
+    skills
 }

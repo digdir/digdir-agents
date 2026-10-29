@@ -1,7 +1,8 @@
-//! Embeds the standard agents in `agents/standard/` so that `agentctl setup` works offline and
-//! always offers the archetypes its own manifest schema understands. A release archive holds only
-//! the two binaries, which self-update requires, so the catalog travels inside `agentctl`. Their
-//! image sources come along, so setup can build an image here that it cannot pull.
+//! Embeds the agent definitions `agentctl setup` offers, the standard agents in `agents/standard/`
+//! and the agent builder in `agents/agent-builder/`, so that setup works offline and always offers
+//! agents its own manifest schema understands. A release archive holds only the two binaries,
+//! which self-update requires, so the definitions travel inside `agentctl`. Their image sources
+//! come along, so setup can build an image here that it cannot pull.
 
 use std::{
     fmt::Write as _,
@@ -10,12 +11,14 @@ use std::{
 
 fn main() {
     let manifest_directory = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_default());
-    let catalog = manifest_directory.join("..").join("agents").join("standard");
-    println!("cargo:rerun-if-changed={}", catalog.display());
-
+    let agents = manifest_directory.join("..").join("agents");
     let mut files = Vec::new();
-    if catalog.is_dir() {
-        collect(&catalog, &catalog, &mut files);
+    for folder in ["standard", "agent-builder"] {
+        let folder = agents.join(folder);
+        println!("cargo:rerun-if-changed={}", folder.display());
+        if folder.is_dir() {
+            collect(&agents, &folder, &mut files);
+        }
     }
     files.sort();
 
@@ -26,8 +29,8 @@ fn main() {
     source.push(']');
 
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default());
-    if let Err(error) = std::fs::write(out.join("catalog_files.rs"), source) {
-        println!("cargo:warning=could not write the embedded catalog: {error}");
+    if let Err(error) = std::fs::write(out.join("embedded_agents.rs"), source) {
+        println!("cargo:warning=could not write the embedded agents: {error}");
         std::process::exit(1);
     }
 }

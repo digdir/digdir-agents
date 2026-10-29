@@ -127,7 +127,7 @@ impl GithubSource {
         if self.readable_through_api().await? {
             self.download(&checkout).await?;
         } else if git_available().await {
-            self.clone_with_git(&checkout).await?;
+            self.clone_with_git(&checkout, false).await?;
         } else {
             return Err(Error::Invalid(format!(
                 "GitHub does not show {} to this machine; a private repository needs GH_TOKEN set, or git that can \
@@ -229,10 +229,48 @@ impl GithubSource {
         }
     }
 
+    /// Clones the whole repository with the person's own `git` into `destination`, a folder that
+    /// stays, at the branch or tag the address names, else the default branch. Unlike
+    /// [`Self::fetch`], this keeps the history, so the person can commit and push from it.
+    pub(super) async fn clone_to(&mut self, destination: &Path) -> Result<(), Error> {
+        eprintln!(
+            "Cloning {}/{} into {}.",
+            self.owner,
+            self.repository,
+            destination.display()
+        );
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        self.clone_with_git(destination, true).await
+    }
+
+    /// Whether `folder` is a checkout of this repository: one whose `origin` is on GitHub at the
+    /// same owner and name, by HTTPS or SSH.
+    pub(super) fn is_cloned_in(&self, folder: &Path) -> bool {
+        if !folder.join(".git").exists() {
+            return false;
+        }
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(folder)
+            .args(["remote", "get-url", "origin"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| github_remote(String::from_utf8_lossy(&output.stdout).trim()))
+            .is_some_and(|(owner, repository)| {
+                owner.eq_ignore_ascii_case(&self.owner) && repository.eq_ignore_ascii_case(&self.repository)
+            })
+    }
+
     /// Clones the repository with `git`, at its ref when it has one. A `/tree/` or `/blob/`
-    /// address is split at the longest branch or tag it starts with that the clone finds.
-    async fn clone_with_git(&mut self, checkout: &Path) -> Result<(), Error> {
-        let candidates = match self.ref_and_path.take() {
+    /// address is split at the longest branch or tag it starts with that the clone finds. A
+    /// `whole` clone keeps the history and shows its progress.
+    async fn clone_with_git(&mut self, checkout: &Path, whole: bool) -> Result<(), Error> {
+        let candidates: Vec<_> = match self.ref_and_path.take() {
             Some(ref_and_path) => splits(&ref_and_path)
                 .into_iter()
                 .rev()
@@ -240,9 +278,17 @@ impl GithubSource {
                 .collect(),
             None => vec![(self.reference.clone(), self.subdirectory.clone())],
         };
+        // Each split but the right one fails, and git would say so.
+        let progress = whole && candidates.len() == 1;
         for (reference, subdirectory) in candidates {
             let mut command = tokio::process::Command::new("git");
-            command.args(["clone", "--quiet", "--depth", "1"]);
+            command.arg("clone");
+            if !progress {
+                command.arg("--quiet");
+            }
+            if !whole {
+                command.args(["--depth", "1"]);
+            }
             if let Some(reference) = &reference {
                 command.args(["--branch", reference]);
             }
@@ -251,7 +297,7 @@ impl GithubSource {
                 .arg(checkout)
                 .env("GIT_TERMINAL_PROMPT", "0")
                 .stdin(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(if progress { Stdio::inherit() } else { Stdio::null() })
                 .status()
                 .await
                 .map_err(|error| Error::Invalid(format!("could not run git: {error}")))?;
@@ -295,7 +341,18 @@ fn splits(ref_and_path: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-async fn git_available() -> bool {
+/// The owner and name of the GitHub repository a git `remote` address names, by HTTPS or SSH.
+fn github_remote(remote: &str) -> Option<(String, String)> {
+    let address = remote
+        .strip_prefix("git@github.com:")
+        .or_else(|| remote.strip_prefix("ssh://git@github.com/"))
+        .map_or_else(|| remote.to_owned(), |rest| format!("github.com/{rest}"));
+    GithubSource::parse(&address)
+        .filter(|source| source.subdirectory.is_none() && source.reference.is_none() && source.ref_and_path.is_none())
+        .map(|source| (source.owner, source.repository))
+}
+
+pub(super) async fn git_available() -> bool {
     tokio::process::Command::new("git")
         .arg("--version")
         .stdin(Stdio::null())
@@ -343,7 +400,7 @@ fn unpack(archive: &[u8], checkout: &Path) -> Result<(), Error> {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::{GithubSource, splits, unpack};
+    use super::{GithubSource, github_remote, splits, unpack};
 
     fn source(owner: &str, repository: &str, subdirectory: Option<&str>, reference: Option<&str>) -> GithubSource {
         GithubSource {
@@ -422,6 +479,23 @@ mod tests {
                 ("feature/x/agents".to_owned(), String::new()),
             ]
         );
+    }
+
+    #[test]
+    fn a_remote_names_its_repository_by_https_or_ssh() {
+        for remote in [
+            "https://github.com/digdir/digdir-agents.git",
+            "https://github.com/digdir/digdir-agents",
+            "git@github.com:digdir/digdir-agents.git",
+            "ssh://git@github.com/digdir/digdir-agents.git",
+        ] {
+            assert_eq!(
+                github_remote(remote),
+                Some(("digdir".to_owned(), "digdir-agents".to_owned())),
+                "{remote}"
+            );
+        }
+        assert_eq!(github_remote("https://gitlab.com/digdir/digdir-agents.git"), None);
     }
 
     #[test]

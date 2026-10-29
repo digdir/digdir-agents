@@ -92,6 +92,25 @@ target "standard-dotnet-backend-developer" {
   }
 }
 
+group "builder" {
+  targets = ["agent-builder"]
+}
+
+# The agent builder's image, which `agentctl new` runs to make a new agent. Like the standard agents' images, it
+# builds on the base image from this file.
+target "agent-builder" {
+  inherits = ["_source"]
+  context  = "agents/agent-builder"
+  contexts = {
+    ("${BASE_REPOSITORY}:${BASE_DISTRIBUTION}") = "target:base-headless"
+  }
+  tags = ["ghcr.io/digdir/digdir-agents/agent-agent-builder:latest"]
+  labels = {
+    "org.opencontainers.image.title"       = "agent-agent-builder"
+    "org.opencontainers.image.description" = "The agent builder's image"
+  }
+}
+
 # The version the agentctl image's binaries report. CI sets the release's, or `<latest release>.main.g<commit>` on main.
 variable "AGENT_VERSION" {
   default = "v0.0.1-dev"
