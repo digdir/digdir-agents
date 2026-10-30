@@ -17,6 +17,7 @@ bytes.workspace = true
 futures-util.workspace = true
 ignore.workspace = true
 microsandbox.workspace = true
+microsandbox-agent-client.workspace = true
 microsandbox-image.workspace = true
 microsandbox-network.workspace = true
 sandbox = { path = "../core" }
@@ -31,6 +32,9 @@ tokio-util.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

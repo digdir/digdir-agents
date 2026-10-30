@@ -5352,6 +5352,7 @@ dependencies = [
  "futures-util",
  "ignore",
  "microsandbox",
+ "microsandbox-agent-client",
  "microsandbox-image",
  "microsandbox-network",
  "sandbox",
