@@ -13,7 +13,6 @@ mod preparation;
 mod terminal;
 
 pub(super) use execution::start_execution;
-pub(super) use forward::guest_tcp_dialer;
 pub use forward::{GuestConnection, GuestDialer};
 pub use terminal::attach_terminal;
 
@@ -56,6 +55,8 @@ pub const HOST_ALIAS: &str = "host.microsandbox.internal";
 pub struct Adapter {
     id: ProviderId,
     service: SandboxService,
+    // The provider behind `service`, for what the generic sandbox service does not offer.
+    provider: Rc<MicrosandboxProvider>,
     preparation: Preparation,
     default_architecture: String,
     platform_port: u16,
@@ -75,21 +76,19 @@ impl Adapter {
         platform_port: u16,
     ) -> Result<Self, Error> {
         let network = Rc::new(MicrosandboxNetworkBackend::new(policy.clone()).with_secret_store(secret_store));
-        let service = {
-            let provider = Rc::new(
-                MicrosandboxProvider::builder(home.join("microsandbox"))
-                    .remove_unused_images_after(UNUSED_IMAGE_RETENTION)
-                    .open()
-                    .await?,
-            );
-            tokio::task::spawn_local(remove_unused_images_periodically(Rc::downgrade(&provider)));
-            SandboxService::new(provider)
-        }
-        .with_network_backend(network.clone());
+        let provider = Rc::new(
+            MicrosandboxProvider::builder(home.join("microsandbox"))
+                .remove_unused_images_after(UNUSED_IMAGE_RETENTION)
+                .open()
+                .await?,
+        );
+        tokio::task::spawn_local(remove_unused_images_periodically(Rc::downgrade(&provider)));
+        let service = SandboxService::new(provider.clone()).with_network_backend(network.clone());
         policy.set_platform_endpoint(HOST_ALIAS, platform_port);
         Ok(Self {
             id: ProviderId::new(PROVIDER_ID)?,
             service,
+            provider,
             preparation: Preparation::new(database, policy, network),
             default_architecture: Platform::native("linux").architecture,
             platform_port,
@@ -241,5 +240,9 @@ impl Provider for Adapter {
             self.preparation.remove(&name);
             Ok(())
         })
+    }
+
+    fn guest_tcp_dialer<'a>(&'a self, id: &'a ::sandbox::SandboxId) -> LocalFuture<'a, Result<GuestDialer, Error>> {
+        Box::pin(async move { Ok(GuestDialer(self.provider.guest_tcp_dialer(id).await?)) })
     }
 }

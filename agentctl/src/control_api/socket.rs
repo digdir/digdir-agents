@@ -7,6 +7,7 @@ use crate::Error;
 
 use super::{Connector, Server, client::Connection};
 
+/// Most calls served at once. Connections switched to streams do not count; the server limits those.
 const MAX_CONCURRENT_CONNECTIONS: usize = 128;
 const CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_mins(1);
 type ConnectionFuture = futures_util::future::LocalBoxFuture<'static, ()>;
@@ -17,6 +18,45 @@ async fn drain_connections(connections: &mut FuturesUnordered<ConnectionFuture>,
         .is_err()
     {
         tracing::warn!("cancelled Control API calls that did not finish during the shutdown drain");
+    }
+}
+
+/// How long the server stops accepting after an accept fails for want of a
+/// resource, such as descriptors, that closing connections frees again.
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+/// Takes an accepted connection, or pauses accepting after a failure that
+/// leaves the listener working. Running out of descriptors, which open
+/// streams make reachable, must not end the server, since the connections
+/// it already carries free them again as they close.
+fn take_accepted<T>(
+    accepted: std::io::Result<T>,
+    paused_until: &mut Option<tokio::time::Instant>,
+) -> Result<Option<T>, Error> {
+    match accepted {
+        Ok(accepted) => Ok(Some(accepted)),
+        Err(error) if listener_is_broken(&error) => Err(Error::Io(error)),
+        Err(error) => {
+            tracing::warn!(%error, "could not accept a Control API connection, retrying shortly");
+            *paused_until = Some(tokio::time::Instant::now() + ACCEPT_RETRY_DELAY);
+            Ok(None)
+        }
+    }
+}
+
+/// Whether an accept error means the listener itself no longer works.
+fn listener_is_broken(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        use rustix::io::Errno;
+
+        Errno::from_io_error(error)
+            .is_some_and(|errno| matches!(errno, Errno::BADF | Errno::INVAL | Errno::NOTSOCK | Errno::OPNOTSUPP))
+    }
+    #[cfg(windows)]
+    {
+        // WSAEBADF, WSAEINVAL, WSAENOTSOCK and WSAEOPNOTSUPP.
+        matches!(error.raw_os_error(), Some(10009 | 10022 | 10038 | 10045))
     }
 }
 
@@ -49,7 +89,7 @@ impl Connector for PathConnector {
             use tokio_util::compat::FuturesAsyncReadCompatExt as _;
 
             let stream = win_uds::net::AsyncStream::connect(&self.path).await?.compat();
-            Ok(Box::new(stream) as Box<dyn Connection>)
+            Ok(Box::new(HalfClosing(stream)) as Box<dyn Connection>)
         })
     }
 }
@@ -72,14 +112,17 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
     let listener = tokio::net::UnixListener::bind(path)?;
     crate::local::home::secure_file(path)?;
     let mut connections = FuturesUnordered::<ConnectionFuture>::new();
+    let mut paused_until = None;
 
     loop {
         if server.is_draining() {
             break;
         }
         tokio::select! {
-            accepted = listener.accept(), if connections.len() < MAX_CONCURRENT_CONNECTIONS => {
-                let (stream, _) = accepted?;
+            accepted = listener.accept(), if paused_until.is_none() && connections.len() < MAX_CONCURRENT_CONNECTIONS + server.open_streams() => {
+                let Some((stream, _)) = take_accepted(accepted, &mut paused_until)? else {
+                    continue;
+                };
                 let connection_server = server.clone();
                 connections.push(async move {
                     if let Err(error) = connection_server.serve_connection(stream).await {
@@ -88,6 +131,11 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
                 }.boxed_local());
             }
             Some(()) = connections.next(), if !connections.is_empty() => {}
+            () = tokio::time::sleep_until(paused_until.unwrap_or_else(tokio::time::Instant::now)), if paused_until.is_some() => {
+                paused_until = None;
+            }
+            // A connection that became a stream frees its place for calls.
+            () = server.stream_opened() => {}
             () = server.shutdown_requested() => break,
         }
     }
@@ -131,27 +179,78 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
     let listener = win_uds::net::AsyncListener::bind(path)?;
     let _cleanup = SocketCleanup(path.to_path_buf());
     let mut connections = FuturesUnordered::<ConnectionFuture>::new();
+    let mut paused_until = None;
 
     loop {
         if server.is_draining() {
             break;
         }
         tokio::select! {
-            accepted = listener.accept(), if connections.len() < MAX_CONCURRENT_CONNECTIONS => {
-                let (stream, _) = accepted?;
+            accepted = listener.accept(), if paused_until.is_none() && connections.len() < MAX_CONCURRENT_CONNECTIONS + server.open_streams() => {
+                let Some((stream, _)) = take_accepted(accepted, &mut paused_until)? else {
+                    continue;
+                };
                 let connection_server = server.clone();
                 connections.push(async move {
-                    if let Err(error) = connection_server.serve_connection(stream.compat()).await {
+                    if let Err(error) = connection_server.serve_connection(HalfClosing(stream.compat())).await {
                         connection_server.report(&error);
                     }
                 }.boxed_local());
             }
             Some(()) = connections.next(), if !connections.is_empty() => {}
+            () = tokio::time::sleep_until(paused_until.unwrap_or_else(tokio::time::Instant::now)), if paused_until.is_some() => {
+                paused_until = None;
+            }
+            // A connection that became a stream frees its place for calls.
+            () = server.stream_opened() => {}
             () = server.shutdown_requested() => break,
         }
     }
     drain_connections(&mut connections, CONNECTION_DRAIN_TIMEOUT).await;
     Ok(())
+}
+
+/// A Windows `AF_UNIX` connection whose shutdown ends its write direction, as
+/// it does on Unix, where the socket type's own close only flushes. A stream
+/// carries the end of one direction of a guest connection that way.
+#[cfg(target_os = "windows")]
+struct HalfClosing(tokio_util::compat::Compat<win_uds::net::AsyncStream>);
+
+#[cfg(target_os = "windows")]
+impl tokio::io::AsyncRead for HalfClosing {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_read(context, buffer)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl tokio::io::AsyncWrite for HalfClosing {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.0).poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::ready!(std::pin::Pin::new(&mut self.0).poll_flush(context))?;
+        std::task::Poll::Ready(self.0.get_ref().get_ref().shutdown(std::net::Shutdown::Write))
+    }
 }
 
 #[cfg(target_os = "windows")]

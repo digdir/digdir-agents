@@ -6,7 +6,7 @@ use agent::{
     control_plane::{ControlPlane, Controller, Reconciler},
     local::home::ControlPlaneHome,
     persistence,
-    sandbox::ExecutionService,
+    sandbox::{ExecutionService, GuestTcp},
     sessions::Service as SessionService,
 };
 use clap::Parser;
@@ -46,11 +46,13 @@ fn run() -> Result<(), Error> {
         .with_writer(std::io::stderr)
         .with_ansi(std::io::stderr().is_terminal())
         .init();
+    let open_files = agent::local::process::raise_open_file_limit();
+    tracing::debug!(?open_files, "open-file limit");
     let home = ControlPlaneHome::resolve(arguments.home.as_deref())?;
     let _lock = acquire_home_lock(&home)?;
     let database = persistence::Database::open(&home.path().join("agent.db"))?;
     let runtime = LocalRuntime::new()?;
-    runtime.block_on(run_control_plane(home, database))
+    runtime.block_on(run_control_plane(home, database, open_files))
 }
 
 fn acquire_home_lock(home: &ControlPlaneHome) -> Result<agent::local::home::Lock, Error> {
@@ -98,6 +100,10 @@ fn reconciliation_errors<Key: std::fmt::Display + 'static>(resource: &'static st
     })
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the Adapter moves into the provider list, which clippy takes for a drop at the end"
+)]
 async fn open_sandboxes(
     home: &ControlPlaneHome,
     database: &persistence::Database,
@@ -129,7 +135,11 @@ async fn open_sandboxes(
     clippy::too_many_lines,
     reason = "wires every daemon subsystem explicitly, as the Control API server's dependencies are"
 )]
-async fn run_control_plane(home: ControlPlaneHome, database: persistence::Database) -> Result<(), Error> {
+async fn run_control_plane(
+    home: ControlPlaneHome,
+    database: persistence::Database,
+    open_files: Option<u64>,
+) -> Result<(), Error> {
     let store = Rc::new(database.clone());
     let credentials = Rc::new(agent::harness::AuthenticationManager::new(database.clone()));
     let policy = Rc::new(agent::authorization::AgentPolicyEngine::new());
@@ -191,6 +201,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     );
     let convergence = agent::control_plane::Convergence::new(wakeup, store.clone(), changes.clone());
     let executions = Rc::new(ExecutionService::new(store.clone(), convergence.clone()));
+    let guest_tcp = Rc::new(GuestTcp::new(store.clone(), sandboxes));
     let sessions = Rc::new(SessionService::new(
         session_store,
         agent_sandboxes,
@@ -199,17 +210,21 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
         session_wakeup,
     ));
     agent::upgrade::consume_pending_session_relaunch(&home, &sessions).await?;
-    let server = Rc::new(Server::new(
-        control_plane,
-        credentials.clone(),
-        Rc::new(convergence.clone()),
-        executions,
-        sessions,
-        ssh,
-        vnc,
-        changes,
-        Rc::new(|error| tracing::error!(%error, "Control API connection failed")),
-    ));
+    let server = Rc::new(
+        Server::new(
+            control_plane,
+            credentials.clone(),
+            Rc::new(convergence.clone()),
+            executions,
+            guest_tcp,
+            sessions,
+            ssh,
+            vnc,
+            changes,
+            Rc::new(|error| tracing::error!(%error, "Control API connection failed")),
+        )
+        .with_open_file_limit(open_files),
+    );
     let mut controller_task = tokio::task::spawn_local(controller.run());
     let mut session_controller_task = tokio::task::spawn_local(session_controller.run());
     let mut platform_api_task = tokio::task::spawn_local(platform_api_server.serve(platform_api_listener));

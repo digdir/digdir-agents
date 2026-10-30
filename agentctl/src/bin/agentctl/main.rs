@@ -12,12 +12,12 @@ use agent::{
     control_plane::WaitPolicy,
     local::home::ControlPlaneHome,
     manifest,
-    sandbox::forward,
     sessions::{Session, SessionName, SessionRequest},
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod format;
+mod forward;
 mod launch;
 mod progress;
 mod prompt;
@@ -692,7 +692,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             resource,
             command,
         } => return ssh(client, resource, agent, variant, &command).await,
-        Command::SshProxy { resource } => return ssh_proxy(home, client, resource).await,
+        Command::SshProxy { resource } => return ssh_proxy(client, resource).await,
         Command::SshConfig {
             command: SshConfigCommand::Install,
         } => install_ssh_config(home)?,
@@ -713,7 +713,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             let options = VncOptions { port, web, open };
             return vnc(home, client, resource, agent, variant, options).await;
         }
-        Command::VncProxy { resource } => return vnc_proxy(home, client, resource).await,
+        Command::VncProxy { resource } => return vnc_proxy(client, resource).await,
         Command::VncInfo {
             resource,
             agent,
@@ -996,9 +996,10 @@ async fn port_forward(
             client.ensure_execution(&agent, WaitPolicy::UntilConverged),
         )
         .await?;
+    let forward_client = std::rc::Rc::new(Client::for_path(home.socket_path()));
     let mut forwards = Vec::new();
     for spec in specs {
-        let forward = forward::PortForward::start(home.path().to_path_buf(), target.sandbox.clone(), spec).await?;
+        let forward = forward::PortForward::start(forward_client.clone(), &agent, target.uid, spec).await?;
         println!(
             "Forwarding from {} -> {} (agent {agent:?})",
             forward.local_address(),
@@ -1103,24 +1104,17 @@ fn ssh_client_failure(error: &std::io::Error) -> String {
 ///
 /// Progress and errors go to standard error, which `ssh` shows to the user;
 /// standard output carries only the SSH byte stream.
-async fn ssh_proxy(home: &ControlPlaneHome, client: &Client, resource: String) -> CommandResult<ExitCode> {
+async fn ssh_proxy(client: &Client, resource: String) -> CommandResult<ExitCode> {
     let agent = resolve_execution_agent(client, Some(resource), None, None).await?;
     let wait = progress::Wait::start();
-    let target = wait
-        .until(
-            client,
-            &agent,
-            client.ensure_execution(&agent, WaitPolicy::UntilConverged),
-        )
-        .await?;
-    forward::relay_guest_port(
-        home.path(),
-        &target.sandbox,
-        agent::ssh::GUEST_PORT,
-        tokio::io::stdin(),
-        tokio::io::stdout(),
+    wait.until(
+        client,
+        &agent,
+        client.ensure_execution(&agent, WaitPolicy::UntilConverged),
     )
     .await?;
+    let stream = client.guest_tcp(&agent, None, agent::ssh::GUEST_PORT).await?;
+    forward::relay_stdio(stream).await?;
     // A blocked standard-input read would keep the runtime from shutting down;
     // the relay is finished, so leave immediately.
     std::process::exit(0)
@@ -1210,7 +1204,8 @@ async fn vnc(
         local_port: port.unwrap_or(0),
         guest_port,
     };
-    let forward = forward::PortForward::start(home.path().to_path_buf(), target.sandbox.clone(), spec).await?;
+    let forward_client = std::rc::Rc::new(Client::for_path(home.socket_path()));
+    let forward = forward::PortForward::start(forward_client, &agent, target.uid, spec).await?;
     let address = forward.local_address();
     // The image decides what its viewer port serves and where the root redirects, so the caller is
     // pointed at the root rather than a path this side would have to keep in step with it.
@@ -1246,25 +1241,18 @@ async fn open_locally(url: &str) {
 ///
 /// This is the seam for a viewer that dials through a command rather than a
 /// port, and for tooling that wants the RFB stream without a listening socket.
-async fn vnc_proxy(home: &ControlPlaneHome, client: &Client, resource: String) -> CommandResult<ExitCode> {
+async fn vnc_proxy(client: &Client, resource: String) -> CommandResult<ExitCode> {
     let agent = resolve_execution_agent(client, Some(resource), None, None).await?;
     let access = client.vnc_access(&agent).await?;
     let wait = progress::Wait::start();
-    let target = wait
-        .until(
-            client,
-            &agent,
-            client.ensure_execution(&agent, WaitPolicy::UntilConverged),
-        )
-        .await?;
-    forward::relay_guest_port(
-        home.path(),
-        &target.sandbox,
-        access.guest_port,
-        tokio::io::stdin(),
-        tokio::io::stdout(),
+    wait.until(
+        client,
+        &agent,
+        client.ensure_execution(&agent, WaitPolicy::UntilConverged),
     )
     .await?;
+    let stream = client.guest_tcp(&agent, None, access.guest_port).await?;
+    forward::relay_stdio(stream).await?;
     // A blocked standard-input read would keep the runtime from shutting down;
     // the relay is finished, so leave immediately.
     std::process::exit(0)

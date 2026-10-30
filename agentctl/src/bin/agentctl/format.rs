@@ -91,6 +91,10 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
 
     let mut lines = vec![
         format!("Name:       {}", agent.metadata.name),
+        format!(
+            "UID:        {}",
+            agent.metadata.uid.map_or_else(|| "-".to_owned(), |uid| uid.to_string())
+        ),
         format!("Generation: {}", agent.metadata.generation),
         format!("Run state:  {:?}", agent.spec.run_state()),
         format!("Source:     {source}"),

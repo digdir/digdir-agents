@@ -3651,3 +3651,53 @@ async fn a_delete_just_before_a_restart_starts_the_agent_keeps_it_from_booting_a
         "the Starting write fails, so the pass the delete woke releases it instead"
     );
 }
+
+#[tokio::test(flavor = "local")]
+async fn an_agent_keeps_its_uid_until_it_is_deleted() {
+    let Fixture {
+        store,
+        backend,
+        control_plane,
+        ..
+    } = fixture();
+    let mut request = apply_request("worker");
+    let claimed: AgentId = "00000000-0000-0000-0000-000000000001".parse().expect("uid");
+    request.agent.metadata.uid = Some(claimed);
+    let created = control_plane.apply(request).await.expect("create");
+    let uid = created.metadata.uid.expect("a created agent has a uid");
+    assert_ne!(uid, claimed, "agentd gives the uid, not the manifest");
+
+    let mut stopped = apply_request("worker");
+    stopped.agent.spec.run_state = Some(agent::RunState::Stopped);
+    let applied = control_plane.apply(stopped).await.expect("apply a change");
+    assert_eq!(applied.metadata.uid, Some(uid));
+    let restarted = control_plane.restart("worker", false).await.expect("restart");
+    assert_eq!(restarted.metadata.uid, Some(uid));
+    let listed = control_plane.list().await.expect("list");
+    assert_eq!(listed.first().and_then(|agent| agent.metadata.uid), Some(uid));
+
+    control_plane.delete("worker").await.expect("delete");
+    let deleting = store.get_by_name("worker").await.expect("deleting agent");
+    store
+        .finalize_deletion(deleting.id, deleting.agent.metadata.generation)
+        .await
+        .expect("finalize deletion");
+    let recreated = control_plane.apply(apply_request("worker")).await.expect("recreate");
+    assert_ne!(recreated.metadata.uid, Some(uid), "a new agent under the same name");
+    assert_eq!(
+        control_plane.get("worker").await.expect("get").metadata.uid,
+        recreated.metadata.uid
+    );
+
+    let guest_tcp =
+        agent::sandbox::GuestTcp::new(store.clone(), sandbox_service(Rc::new(MemoryProvider::new(backend))));
+    let port = std::num::NonZeroU16::new(22).expect("port");
+    let Err(Error::Invalid(refused)) = guest_tcp.connect("worker", Some(uid), port).await else {
+        panic!("the replaced agent's uid should be refused");
+    };
+    assert!(refused.contains("replaced"), "{refused}");
+    let Err(error) = guest_tcp.connect("worker", recreated.metadata.uid, port).await else {
+        panic!("the agent has no running sandbox to dial");
+    };
+    assert!(!error.to_string().contains("replaced"), "{error}");
+}

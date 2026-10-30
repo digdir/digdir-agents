@@ -16,6 +16,54 @@ pub fn configure_logging(command: &mut std::process::Command) {
     }
 }
 
+/// Most open files macOS lets a process have, whatever its hard limit says.
+#[cfg(target_os = "macos")]
+const MACOS_OPEN_MAX: u64 = 10_240;
+
+/// Raises this process's soft limit on open files to its hard limit, and
+/// returns the soft limit in effect afterwards, `None` for unlimited.
+///
+/// agentd carries every SSH session and forwarded connection into a sandbox
+/// as a stream that holds about two descriptors: the client's connection and
+/// agentd's own to the sandbox. Soft limits default to as little as 256 on
+/// macOS and 1024 on many Linux systems, far below the hard limit, so a few
+/// hundred streams would leave agentd unable to open anything else. A limit
+/// that cannot be raised is kept, and the streams agentd accepts follow it.
+#[cfg(unix)]
+pub fn raise_open_file_limit() -> Option<u64> {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+
+    let limit = getrlimit(Resource::Nofile);
+    // macOS refuses a soft limit above `OPEN_MAX` even when the hard limit is unlimited.
+    #[cfg(target_os = "macos")]
+    let wanted = Some(limit.maximum.map_or(MACOS_OPEN_MAX, |hard| hard.min(MACOS_OPEN_MAX)));
+    #[cfg(not(target_os = "macos"))]
+    let wanted = limit.maximum;
+    if wanted == limit.current {
+        return limit.current;
+    }
+    match setrlimit(
+        Resource::Nofile,
+        Rlimit {
+            current: wanted,
+            maximum: limit.maximum,
+        },
+    ) {
+        Ok(()) => wanted,
+        Err(error) => {
+            tracing::debug!(%error, ?wanted, "could not raise the open-file limit");
+            limit.current
+        }
+    }
+}
+
+/// Windows has no per-process limit on open files to raise.
+#[cfg(windows)]
+#[must_use]
+pub const fn raise_open_file_limit() -> Option<u64> {
+    None
+}
+
 /// Configures a child daemon to run independently of the invoking terminal.
 #[cfg(windows)]
 pub fn configure_detached(command: &mut std::process::Command) {
