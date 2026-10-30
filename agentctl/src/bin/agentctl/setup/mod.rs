@@ -283,17 +283,22 @@ pub(crate) async fn run(arguments: SetupArguments, home: &ControlPlaneHome, clie
         return list_archetypes(&catalog, arguments.output);
     }
     let interactive = crate::prompt::interactive() && !arguments.non_interactive;
+    // The recommended answers usually fit, so setup fills them in and shows them for review, until
+    // the person asks to change something. A dry run shows the manifest instead of a review.
+    let mut fill_in = interactive && !arguments.yes && !arguments.dry_run;
     let mut replay = None;
     loop {
         let mut answers = Answers::new(interactive, arguments.yes);
         if let Some(replay) = replay.take() {
             answers = answers.replaying(replay);
         }
-        let result = Box::pin(run_once(&arguments, &answers, &catalog, home, client)).await;
+        let result = Box::pin(run_once(&arguments, &answers, fill_in, &catalog, home, client)).await;
         if answers.cancelled() {
             return Err(CommandError::Message("setup was cancelled".into()));
         }
-        if !answers.went_back() {
+        if answers.starting_over() {
+            fill_in = false;
+        } else if !answers.went_back() {
             return result;
         }
         replay = Some(answers.rewind());
@@ -301,6 +306,7 @@ pub(crate) async fn run(arguments: SetupArguments, home: &ControlPlaneHome, clie
 }
 
 /// One run of setup, which going back to the question before ends, for [`run`] to start again.
+/// With `fill_in`, defaults answer the questions after the source, and the review shows them.
 #[allow(
     clippy::too_many_lines,
     reason = "the wizard's steps in the order people meet them; each step is a function of its own"
@@ -308,6 +314,7 @@ pub(crate) async fn run(arguments: SetupArguments, home: &ControlPlaneHome, clie
 async fn run_once(
     arguments: &SetupArguments,
     answers: &Answers,
+    fill_in: bool,
     catalog: &Catalog,
     home: &ControlPlaneHome,
     client: &Client,
@@ -333,6 +340,9 @@ async fn run_once(
         return Ok(());
     };
     let mut draft = choose_draft(arguments, answers, catalog, staging.path(), source).await?;
+    if fill_in {
+        answers.assume_defaults(true);
+    }
     let names = Names {
         agents: &agents,
         root: &agents_root,
@@ -378,9 +388,14 @@ async fn run_once(
     values::collect(answers, arguments.env_file.as_deref(), &mut draft).await?;
     choose_logins(arguments, answers, client, &mut draft).await?;
     let folder = agents_root.join(&draft.agent.metadata.name);
+    answers.assume_defaults(arguments.yes);
     loop {
-        match review(answers, &draft, &folder)? {
+        match review(answers, &draft, &folder, fill_in)? {
             Review::Create => break,
+            Review::Change => {
+                answers.start_over();
+                return Ok(());
+            }
             Review::Edit => {
                 edit::manifest(answers, &mut draft)?;
                 check_mounts(&draft, &protected)?;

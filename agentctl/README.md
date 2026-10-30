@@ -41,10 +41,12 @@ Update with `agentctl self update`. Agents and sessions carry over.
   source such as `../..`, a local manifest shares the checkout it is in. Setup offers another, such as a worktree
   (`--checkout`). A fetched one has no checkout here, so setup asks whether to share one of yours.
 
-It asks for a name, a size measured against your machine, which of the manifest's harnesses the agent has and which
-one new sessions use by default, the folders to share, a GitHub token and any other values the manifest declares, then
-writes `~/agents/<name>/` with the manifest, the files it reads and a `.env`, and creates the agent. The review before
-it creates the agent offers its `agent.yaml` in your editor, for anything the questions leave at its recommended
+The recommended answers usually fit, so setup fills them in and shows them before it creates anything: a name, a
+size measured against your machine, the manifest's harnesses and its default one, the folders it shares, how the
+agent reaches GitHub and who its commits are from, and which optional values stay empty. Choose Change something to
+answer each question yourself, with those answers offered. Setup still asks for what has no default, such as a
+required token. It then writes `~/agents/<name>/` with the manifest, the files it reads and a `.env`, and creates the
+agent. The review also offers its `agent.yaml` in your editor, for anything the questions leave at its recommended
 value, such as an exact size, the model or hosts the agent may not reach. Change the folder and run `agentctl apply` in
 it later.
 

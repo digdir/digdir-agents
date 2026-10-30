@@ -373,7 +373,9 @@ pub(super) async fn record_github(
             user.login
         )));
     }
-    println!("The agent acts on GitHub as {}.", user.login);
+    if !answers.filling_in() {
+        println!("The agent acts on GitHub as {}.", user.login);
+    }
     draft.access.github_account = Some(user.login.clone());
     // Done again without questions, the token comes from this agent's .env, which a browser
     // sign-in or a pasted token cannot give.
