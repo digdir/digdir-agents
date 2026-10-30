@@ -1,5 +1,5 @@
 //! The questions that shape an agent once its source is known: its name, which may replace a
-//! definition already in ~/agents, the size of its machine, and its default harness.
+//! definition already in ~/agents, the size of its machine, its harnesses and the default one.
 
 use super::answers::{Answers, Choice};
 use super::sizing::{Host, presets};
@@ -8,7 +8,7 @@ use crate::{CommandError, CommandResult};
 use agent::{Agent, Error, Harness};
 use std::path::Path;
 
-/// The questions that shape an agent once its source is known: name, size and default harness.
+/// The questions that shape an agent once its source is known: name, size and harnesses.
 pub(super) struct Shape<'a> {
     pub(super) arguments: &'a SetupArguments,
     pub(super) answers: &'a Answers,
@@ -20,7 +20,7 @@ impl Shape<'_> {
     pub(super) fn apply(&self, draft: &mut Draft) -> CommandResult<()> {
         choose_name(self.arguments, self.answers, draft, self.names)?;
         choose_size(self.arguments, self.answers, draft, self.storage)?;
-        choose_harness(self.arguments, self.answers, draft)
+        choose_harnesses(self.arguments, self.answers, draft)
     }
 }
 
@@ -166,35 +166,60 @@ pub(super) fn choose_size(
     Ok(())
 }
 
-pub(super) fn choose_harness(arguments: &SetupArguments, answers: &Answers, draft: &mut Draft) -> CommandResult<()> {
-    let harnesses = &mut draft.agent.spec.harnesses;
-    let declared: Vec<Harness> = harnesses.iter().map(|harness| harness.kind).collect();
-    let current = harnesses.iter().position(|harness| harness.default).unwrap_or_default();
-    let chosen = match arguments.harness {
-        Some(harness) if declared.contains(&harness) => harness,
-        Some(harness) => {
-            let declared: Vec<_> = declared.iter().map(|harness| harness.as_str()).collect();
-            return Err(CommandError::Message(format!(
-                "this agent has no {harness} harness; it has {}",
-                declared.join(", ")
-            )));
-        }
-        None => answers.choose(
-            "--harness",
-            "Which harness should sessions use unless they choose another?",
+/// Asks which of the harnesses the manifest declares the agent has, and which of those new
+/// sessions use by default. Those it does not have are left out of its manifest, so setup asks for
+/// no login to them.
+pub(super) fn choose_harnesses(arguments: &SetupArguments, answers: &Answers, draft: &mut Draft) -> CommandResult<()> {
+    let declared: Vec<Harness> = draft.agent.spec.harnesses.iter().map(|harness| harness.kind).collect();
+    let named = arguments.harnesses.iter().chain(&arguments.harness);
+    if let Some(harness) = named.into_iter().find(|harness| !declared.contains(harness)) {
+        let declared: Vec<_> = declared.iter().map(|harness| harness.as_str()).collect();
+        return Err(CommandError::Message(format!(
+            "this agent has no {harness} harness; it has {}",
+            declared.join(", ")
+        )));
+    }
+    let kept: Vec<Harness> = if arguments.harnesses.is_empty() {
+        let all: Vec<usize> = (0..declared.len()).collect();
+        answers.choose_many(
+            "--harnesses",
+            "Which harnesses should the agent have?",
             declared
                 .iter()
+                .map(|harness| Choice::new(*harness, harness.display_name()).flag("--harnesses", &[harness.as_str()]))
+                .collect(),
+            &all,
+        )?
+    } else {
+        declared
+            .iter()
+            .copied()
+            .filter(|harness| arguments.harnesses.contains(harness))
+            .collect()
+    };
+    if let Some(harness) = arguments.harness.filter(|harness| !kept.contains(harness)) {
+        return Err(CommandError::Message(format!(
+            "--harness {harness} must be one of the --harnesses the agent has"
+        )));
+    }
+    let harnesses = &mut draft.agent.spec.harnesses;
+    harnesses.retain(|harness| kept.contains(&harness.kind));
+    let current = harnesses.iter().position(|harness| harness.default).unwrap_or_default();
+    let chosen = match arguments.harness {
+        Some(harness) => harness,
+        None => answers.choose(
+            "--harness",
+            "Which harness should new sessions use by default?",
+            kept.iter()
                 .map(|harness| Choice::new(*harness, harness.display_name()).flag("--harness", &[harness.as_str()]))
                 .collect(),
             current,
         )?,
     };
-    if harnesses.len() > 1 {
-        for harness in harnesses.iter_mut() {
-            harness.default = harness.kind == chosen;
-            // The default is always installed, so its login is never skipped.
-            harness.optional &= harness.kind != chosen;
-        }
+    for harness in harnesses.iter_mut() {
+        harness.default = harness.kind == chosen;
+        // The default is always installed, so its login is never skipped.
+        harness.optional &= harness.kind != chosen;
     }
     Ok(())
 }

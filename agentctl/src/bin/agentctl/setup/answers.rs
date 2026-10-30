@@ -47,6 +47,7 @@ struct Asked {
 #[derive(Clone)]
 enum Given {
     Index(usize),
+    Indices(Vec<usize>),
     Text(String),
     Bool(bool),
     Secret(Zeroizing<String>),
@@ -226,6 +227,68 @@ impl Answers {
         Ok(choice.value)
     }
 
+    /// Picks one or more of `choices`. `defaults` are the indexes taken with `--yes` and offered
+    /// chosen. A single choice is taken without asking. The flags of the choices picked are
+    /// recorded together, unless the picks are the defaults, which `--yes` repeats.
+    pub(super) fn choose_many<T>(
+        &self,
+        flag: &str,
+        question: &str,
+        choices: Vec<Choice<T>>,
+        defaults: &[usize],
+    ) -> Result<Vec<T>, Error> {
+        if choices.is_empty() {
+            return Err(Error::Invalid(format!("nothing to choose for {question}")));
+        }
+        let defaults: Vec<usize> = defaults
+            .iter()
+            .copied()
+            .filter(|index| *index < choices.len())
+            .collect();
+        let picked = if choices.len() == 1 {
+            vec![0]
+        } else if self.assume_defaults {
+            defaults.clone()
+        } else if self.interactive {
+            let key = key(flag, question);
+            let picked = match self.replayed(&key) {
+                Some(Given::Indices(picked)) if picked.iter().all(|index| *index < choices.len()) => picked,
+                _ => {
+                    let labels: Vec<String> = choices.iter().map(|choice| choice.label.clone()).collect();
+                    match prompt::multi_menu(question, &labels, &defaults, self.can_go_back())? {
+                        Reply::Answer(picked) => picked,
+                        Reply::Back => return Err(self.back()),
+                        Reply::Cancel => return Err(self.cancel()),
+                    }
+                }
+            };
+            self.remember(key, Given::Indices(picked.clone()));
+            picked
+        } else {
+            let labels: Vec<&str> = defaults.iter().map(|index| choices[*index].label.as_str()).collect();
+            return Err(missing(flag, Some(&labels.join(", "))));
+        };
+        if picked != defaults {
+            let mut flags: Vec<(String, Vec<String>)> = Vec::new();
+            for (flag, values) in picked.iter().flat_map(|index| &choices[*index].flags) {
+                match flags.iter_mut().find(|(known, _)| known == flag) {
+                    Some((_, all)) => all.extend(values.iter().cloned()),
+                    None => flags.push((flag.clone(), values.clone())),
+                }
+            }
+            for (flag, values) in &flags {
+                let values: Vec<&str> = values.iter().map(String::as_str).collect();
+                self.record(flag, &values);
+            }
+        }
+        Ok(choices
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| picked.contains(index))
+            .map(|(_, choice)| choice.value)
+            .collect())
+    }
+
     /// Asks for text that `check` accepts, offering `default`. A non-empty answer to a plain flag
     /// is recorded as that flag.
     pub(super) fn text(
@@ -368,7 +431,48 @@ fn missing(flag: &str, default: Option<&str>) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{Answers, Choice};
+    use super::{Answers, Asked, Choice, Given, Replay, key};
+
+    fn harnesses() -> Vec<Choice<&'static str>> {
+        ["claudeCode", "codex", "pi"]
+            .into_iter()
+            .map(|harness| Choice::new(harness, harness).flag("--harnesses", &[harness]))
+            .collect()
+    }
+
+    #[test]
+    fn picking_several_records_their_flags_together_unless_they_are_the_defaults() {
+        let question = "Which harnesses?";
+        let defaults = [0, 1, 2];
+        let yes = Answers::new(false, true);
+        let all = yes.choose_many("--harnesses", question, harnesses(), &defaults).ok();
+        assert_eq!(all, Some(vec!["claudeCode", "codex", "pi"]));
+        assert!(yes.flags().is_empty(), "--yes repeats the defaults");
+
+        let without_terminal = Answers::new(false, false);
+        let error = without_terminal
+            .choose_many("--harnesses", question, harnesses(), &defaults)
+            .err()
+            .map(|error| error.to_string());
+        assert!(error.is_some_and(|error| error.contains("--harnesses")));
+
+        let given = Asked {
+            key: key("--harnesses", question),
+            given: Given::Indices(vec![0, 2]),
+        };
+        let replayed = Answers::new(true, false).replaying(Replay(vec![given]));
+        let picked = replayed
+            .choose_many("--harnesses", question, harnesses(), &defaults)
+            .ok();
+        assert_eq!(picked, Some(vec!["claudeCode", "pi"]));
+        assert_eq!(
+            replayed.flags(),
+            [(
+                "--harnesses".to_owned(),
+                Some(vec!["claudeCode".to_owned(), "pi".to_owned()])
+            )]
+        );
+    }
 
     #[test]
     fn without_a_terminal_a_missing_answer_names_its_flag() {

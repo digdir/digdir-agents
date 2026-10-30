@@ -129,8 +129,18 @@ pub(super) fn review(answers: &Answers, draft: &Draft, folder: &Path) -> Command
         format!("Harness:  {default}"),
     ];
     for mount in &agent.spec.sandbox.mounts {
-        if let agent::MountSpec::Bind { source, target, .. } = mount {
-            lines.push(format!("Mount:    {} at {}", source.display(), target.as_str()));
+        if let agent::MountSpec::Bind {
+            source,
+            target,
+            read_only,
+        } = mount
+        {
+            let access = if *read_only { "read-only" } else { "read-write" };
+            lines.push(format!(
+                "Shared:   {} ({access}), at {}",
+                source.display(),
+                target.as_str()
+            ));
         }
     }
     let github = match &draft.access.github_browser {

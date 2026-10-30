@@ -1,15 +1,13 @@
 //! `agentctl setup`: one guided way from nothing to a running agent connected to an editor.
 //!
 //! It starts from a standard agent in the embedded catalog, or from an agent a team keeps in its
-//! repository, asks what can differ (name, size, default harness, a folder to mount, GitHub
+//! repository, asks what can differ (name, size, harnesses, folders to share, GitHub
 //! access, other declared values), writes a self-contained `~/agents/<name>/` and creates the
 //! agent from it. Every question has a flag, so scripts get the same result without a terminal.
 
 use create::{Review, bundle_into, finish, manifest_text, review};
 use github::{choose_github, give_identity};
-use mounts::{
-    check_mounts, choose_checkout, choose_mount, mount_unless_mounted, protected_folders, refuse_staged_mounts,
-};
+use mounts::{check_mounts, choose_shared, mount_unless_mounted, protected_folders, refuse_staged_mounts};
 use shape::{Names, Shape};
 use sign_in::{choose_logins, remove_dead_sign_in_agents, sign_in_where_needed};
 use source::{choose_draft, choose_image, team_draft};
@@ -100,24 +98,32 @@ pub(crate) struct SetupArguments {
     /// Size of the agent's sandbox, measured against this machine.
     #[arg(long, value_enum)]
     size: Option<SizeChoice>,
-    /// Harness new sessions use unless they choose another; one the manifest declares.
+    /// Harnesses the agent has, of those the manifest declares; all of them unless named. Repeat
+    /// the flag, or separate them with commas.
+    #[arg(long, value_parser = crate::parse_harness, value_delimiter = ',')]
+    harnesses: Vec<Harness>,
+    /// Harness new sessions use by default; one the agent has.
     #[arg(long, value_parser = crate::parse_harness)]
     harness: Option<Harness>,
     /// Edit the whole manifest in $VISUAL or $EDITOR before the agent is created, for anything the
     /// questions leave at its recommended value, such as an exact size, the model or denied hosts.
     #[arg(long)]
     edit: bool,
-    /// Folder on this machine to mount read-write in the agent's working directory.
+    /// Folder on this machine to share with the agent, read-write, in its working directory.
     #[arg(long, conflicts_with = "no_mount")]
     mount: Option<PathBuf>,
-    /// Mount no folder.
+    /// Share no folder besides those the agent's definition shares.
     #[arg(long)]
     no_mount: bool,
-    /// The checkout of a team agent's repository to mount where its manifest mounts that
+    /// The checkout of a team agent's repository to share where its manifest mounts that
     /// repository, such as Altinn's `worktree` variant does. Defaults to the checkout a local
     /// manifest is in.
     #[arg(long)]
     checkout: Option<PathBuf>,
+    /// A folder the agent's definition shares that this agent should not, named by where the agent
+    /// sees it, as setup lists it.
+    #[arg(long, value_name = "PATH_IN_AGENT")]
+    unshare: Vec<String>,
     /// How the agent reaches GitHub.
     #[arg(long, value_enum)]
     github: Option<GithubChoice>,
@@ -131,11 +137,12 @@ pub(crate) struct SetupArguments {
     /// Read the GitHub token from standard input instead of asking for it.
     #[arg(long)]
     github_token_stdin: bool,
-    /// Name the agent's commits carry; defaults to the GitHub account's, when it signs in to one.
+    /// Name the agent's commits carry; defaults to the GitHub account's, when it signs in to one,
+    /// else to Git's `user.name` on this machine.
     #[arg(long)]
     git_user_name: Option<String>,
     /// Address the agent's commits carry; defaults to the GitHub account's private address, when it
-    /// signs in to one.
+    /// signs in to one, else to Git's `user.email` on this machine.
     #[arg(long)]
     git_user_email: Option<String>,
     /// File with values for what the manifest declares, as `NAME=value` lines.
@@ -168,7 +175,7 @@ enum SourceChoice {
     Existing,
     /// A standard agent from the catalog.
     Standard,
-    /// An agent a team keeps in its repository.
+    /// An agent definition that exists, such as one a team keeps in its repository.
     Team,
 }
 
@@ -341,11 +348,11 @@ async fn run_once(
     };
     shape.apply(&mut draft)?;
     let protected = protected_folders(&agents_root, home);
-    choose_checkout(arguments, answers, &mut draft, &protected)?;
-    if let Some((redirect, folder)) = choose_mount(arguments, answers, &mut draft, &protected)? {
+    if let Some((redirect, folder)) = choose_shared(arguments, answers, &mut draft, &protected, true)? {
         draft = team_draft(&redirect, &redirect.display().to_string())?;
         shape.apply(&mut draft)?;
-        choose_checkout(arguments, answers, &mut draft, &protected)?;
+        // The person chose the folder to share already, and the agent in it shares it.
+        choose_shared(arguments, answers, &mut draft, &protected, false)?;
         mount_unless_mounted(&mut draft, &folder)?;
     }
     refuse_staged_mounts(&draft, staging.path())?;
@@ -356,7 +363,7 @@ async fn run_once(
     if !draft.agent.spec.access.contains(&AccessSpec::Ssh {}) {
         draft.agent.spec.access.push(AccessSpec::Ssh {});
     }
-    check_mounts(&draft)?;
+    check_mounts(&draft, &protected)?;
     if arguments.dry_run {
         let mut preview = draft.agent.clone();
         bundle_into(&mut preview, &draft, staging.path().join("preview").as_path())?;
@@ -374,7 +381,10 @@ async fn run_once(
     loop {
         match review(answers, &draft, &folder)? {
             Review::Create => break,
-            Review::Edit => edit::manifest(answers, &mut draft)?,
+            Review::Edit => {
+                edit::manifest(answers, &mut draft)?;
+                check_mounts(&draft, &protected)?;
+            }
             Review::Stop => {
                 println!("Nothing was created.");
                 return Ok(());
@@ -471,7 +481,10 @@ fn choose_source(arguments: &SetupArguments, answers: &Answers, offer_existing: 
     }
     choices.extend([
         Choice::new(SourceChoice::Standard, "With a standard agent").suggested(),
-        Choice::new(SourceChoice::Team, "With an agent your team or repository defines"),
+        Choice::new(
+            SourceChoice::Team,
+            "With an agent definition that exists, such as your team's, in a folder or on GitHub",
+        ),
     ]);
     let choices = choices
         .into_iter()

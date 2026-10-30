@@ -1,10 +1,10 @@
-//! The host folders a new agent mounts: the checkout its own repository mounts, a folder the
-//! person chooses, what may not be mounted, the agent definitions a folder already holds, and
-//! where a folder appears in the sandbox.
+//! The folders on this machine a new agent shares with the person: the checkout its own repository
+//! mounts, the mounts of its definition, a folder the person chooses, what may not be mounted, the
+//! agent definitions a folder already holds, and where a folder appears in the sandbox.
 
 use super::answers::{Answers, Choice};
 use super::source::manifest_label;
-use super::{Draft, SetupArguments};
+use super::{Draft, SetupArguments, Source};
 use crate::{CommandError, CommandResult};
 use agent::local::home::ControlPlaneHome;
 
@@ -243,92 +243,411 @@ pub(super) fn protected_folders(agents_root: &Path, home: &ControlPlaneHome) -> 
     }
 }
 
-/// Asks which checkout of the agent's repository the manifest's mounts of that repository mount.
-/// A fetched repository is removed when setup ends, so it needs one on this machine, and the
-/// mounts are left out without one. A local manifest's mounts mount the checkout it is in unless
-/// the person names another, such as a worktree of it. The mounts keep the targets the manifest
-/// gives them.
-pub(super) fn choose_checkout(
+/// The mounts of the definition's own repository, by a relative source such as `../..`, which
+/// share a checkout of it.
+struct RepositoryShares {
+    repository: Repository,
+    found: Vec<RepositoryMount>,
+}
+
+impl RepositoryShares {
+    /// The mounts of `agent`'s own repository, when its definition, from `source`, has any.
+    fn of(agent: &Agent, source: &Source) -> Result<Option<Self>, Error> {
+        let Some(repository) = source.repository.clone() else {
+            return Ok(None);
+        };
+        let found = repository_mounts(agent, &source.directory, &repository)?;
+        Ok((!found.is_empty()).then_some(Self { repository, found }))
+    }
+
+    /// Where the agent sees its repository.
+    fn targets(&self, agent: &Agent) -> String {
+        let targets: Vec<&str> = self
+            .found
+            .iter()
+            .filter_map(|mount| match &agent.spec.sandbox.mounts[mount.index] {
+                MountSpec::Bind { target, .. } => Some(target.as_str()),
+                MountSpec::Tmpfs { .. } => None,
+            })
+            .collect();
+        targets.join(" and ")
+    }
+
+    fn shares(&self, index: usize) -> Option<&RepositoryMount> {
+        self.found.iter().find(|mount| mount.index == index)
+    }
+
+    /// `answer` as a checkout of the repository these mounts can share, or why it is not one.
+    fn checkout(&self, protected: &Protected, answer: &str) -> Result<PathBuf, String> {
+        if answer.trim().is_empty() {
+            return Err(format!("name a checkout of {}", self.repository.name));
+        }
+        let path = manifest::expand_host_path(Path::new(answer.trim())).map_err(|error| error.to_string())?;
+        let checkout = protected.check(&path)?;
+        match self
+            .found
+            .iter()
+            .map(|mount| checkout.join(&mount.within))
+            .find(|folder| !folder.is_dir())
+        {
+            Some(missing) => Err(format!("{} has no folder {}", checkout.display(), missing.display())),
+            None => Ok(checkout),
+        }
+    }
+
+    /// Asks for the checkout to share, offering `current`.
+    fn ask_checkout(
+        &self,
+        answers: &Answers,
+        protected: &Protected,
+        question: &str,
+        current: Option<&Path>,
+    ) -> CommandResult<PathBuf> {
+        let current = current.map(|current| current.display().to_string());
+        let answer = answers.text("--checkout", question, current.as_deref(), |answer| {
+            self.checkout(protected, answer).map(|_| ())
+        })?;
+        Ok(self.checkout(protected, &answer).map_err(Error::Invalid)?)
+    }
+}
+
+/// What the agent shares, as decided so far: the checkout its repository's mounts share, and the
+/// mounts of its definition left out, by their place and by where the agent sees them.
+#[derive(Default)]
+struct Shares {
+    checkout: Option<PathBuf>,
+    left_out: Vec<usize>,
+    unshared: Vec<String>,
+}
+
+/// A folder on this machine the agent shares.
+struct Shared {
+    /// Its place among the agent's mounts.
+    index: usize,
+    source: PathBuf,
+    target: String,
+    read_only: bool,
+}
+
+impl Shared {
+    fn describe(&self) -> String {
+        let access = if self.read_only { "read-only" } else { "read-write" };
+        format!(
+            "- {} ({access}), which the agent sees at {}",
+            self.source.display(),
+            self.target
+        )
+    }
+}
+
+/// The folders `agent`, whose manifest is in `directory`, shares once `shares` applies.
+fn listed(
+    agent: &Agent,
+    directory: &Path,
+    repository: Option<&RepositoryShares>,
+    shares: &Shares,
+) -> Result<Vec<Shared>, Error> {
+    let mut listed = Vec::new();
+    for (index, mount) in agent.spec.sandbox.mounts.iter().enumerate() {
+        let MountSpec::Bind {
+            source,
+            target,
+            read_only,
+        } = mount
+        else {
+            continue;
+        };
+        if shares.left_out.contains(&index) {
+            continue;
+        }
+        let source = match (
+            repository.and_then(|repository| repository.shares(index)),
+            &shares.checkout,
+        ) {
+            (Some(mount), Some(checkout)) => within(checkout, &mount.within),
+            (Some(_), None) => continue,
+            (None, _) => {
+                let source = manifest::resolve_host_path(directory, source, "spec.sandbox.mounts")?;
+                source.canonicalize().unwrap_or(source)
+            }
+        };
+        listed.push(Shared {
+            index,
+            source,
+            target: target.as_str().to_owned(),
+            read_only: *read_only,
+        });
+    }
+    Ok(listed)
+}
+
+/// Applies `shares` to `agent`: its repository's mounts share the checkout chosen, or are left out
+/// without one, and the mounts left out are removed.
+fn apply(agent: &mut Agent, repository: Option<&RepositoryShares>, shares: &Shares) {
+    let mut removed = shares.left_out.clone();
+    for mount in repository
+        .map(|repository| repository.found.as_slice())
+        .unwrap_or_default()
+    {
+        match &shares.checkout {
+            Some(checkout) => {
+                if let MountSpec::Bind { source, .. } = &mut agent.spec.sandbox.mounts[mount.index] {
+                    *source = within(checkout, &mount.within);
+                }
+            }
+            None => removed.push(mount.index),
+        }
+    }
+    removed.sort_unstable();
+    removed.dedup();
+    for index in removed.into_iter().rev() {
+        agent.spec.sandbox.mounts.remove(index);
+    }
+}
+
+/// The folder `within` of `checkout`. Joining an empty path would add a trailing separator.
+fn within(checkout: &Path, within: &Path) -> PathBuf {
+    if within.as_os_str().is_empty() {
+        checkout.to_path_buf()
+    } else {
+        checkout.join(within)
+    }
+}
+
+/// Decides which folders on this machine the agent shares with the person, read and written by
+/// both, and applies it: the checkout its repository's mounts share, mounts of its definition left
+/// out, and a folder of the person's own. The flags decide, and what they leave open is asked when
+/// `ask` allows, or left as the definition has it. Returns a manifest to start from instead, with
+/// the folder, when a standard agent was chosen and the folder holds agent definitions the person
+/// chooses one of.
+pub(super) fn choose_shared(
     arguments: &SetupArguments,
     answers: &Answers,
     draft: &mut Draft,
     protected: &Protected,
-) -> CommandResult<()> {
-    let Some(repository) = draft.source.repository.clone() else {
-        return Ok(());
-    };
-    let found = repository_mounts(&draft.agent, &draft.source.directory, &repository)?;
-    if found.is_empty() {
-        return Ok(());
+    ask: bool,
+) -> CommandResult<Option<(PathBuf, PathBuf)>> {
+    let ask = ask && answers.interactive() && !arguments.yes;
+    let repository = RepositoryShares::of(&draft.agent, &draft.source)?;
+    let mut shares = Shares::default();
+    if let Some(repository) = &repository {
+        shares.checkout = first_checkout(arguments, answers, &draft.agent, repository, protected, ask)?;
     }
-    let targets: Vec<String> = found
+    for target in &arguments.unshare {
+        let listed = listed(&draft.agent, &draft.source.directory, repository.as_ref(), &shares)?;
+        let unshared = listed.iter().find(|shared| shared.target == *target).ok_or_else(|| {
+            Error::Invalid(format!(
+                "the agent shares no folder at {target}; --unshare names where the agent sees one"
+            ))
+        })?;
+        shares.left_out.push(unshared.index);
+        shares.unshared.push(target.clone());
+    }
+    let os = draft.agent.spec.sandbox.platform.os.clone();
+    let added = match &arguments.mount {
+        Some(folder) => {
+            let listed = listed(&draft.agent, &draft.source.directory, repository.as_ref(), &shares)?;
+            Some(check_added(&os, &listed, protected, &folder.display().to_string()).map_err(Error::Invalid)?)
+        }
+        None if ask && !arguments.no_mount => ask_shares(answers, draft, repository.as_ref(), &mut shares, protected)?,
+        None => None,
+    };
+    if let Some(folder) = &added
+        && draft.source.from_catalog
+        && let Some(manifest) = offer_found_manifests(answers, folder)?
+    {
+        return Ok(Some((manifest, folder.clone())));
+    }
+    apply(&mut draft.agent, repository.as_ref(), &shares);
+    if let Some(folder) = &added {
+        mount_unless_mounted(draft, folder)?;
+    }
+    Ok(None)
+}
+
+/// The checkout the repository's mounts share before anything else is asked: the one `--checkout`
+/// names, else the one a local manifest is in. A fetched repository is removed when setup ends, so
+/// sharing it takes a checkout on this machine, asked for when `ask` allows; without one, its mounts
+/// are left out.
+fn first_checkout(
+    arguments: &SetupArguments,
+    answers: &Answers,
+    agent: &Agent,
+    repository: &RepositoryShares,
+    protected: &Protected,
+    ask: bool,
+) -> CommandResult<Option<PathBuf>> {
+    let named = match &arguments.checkout {
+        Some(checkout) => Some(checkout.clone()),
+        None if !repository.repository.fetched => Some(repository.repository.root.clone()),
+        None => None,
+    };
+    if let Some(checkout) = named {
+        let checkout = repository
+            .checkout(protected, &checkout.display().to_string())
+            .map_err(Error::Invalid)?;
+        return Ok(Some(checkout));
+    }
+    let name = &repository.repository.name;
+    let at = repository.targets(agent);
+    if !ask {
+        eprintln!(
+            "warning: the agent does not share {name}, which its definition shares at {at}: setup fetched {name} \
+             only to read the definition. Pass --checkout with a checkout of {name} to share it."
+        );
+        return Ok(None);
+    }
+    let lines = [
+        format!("The agent's definition shares its repository, {name}, at {at}."),
+        format!(
+            "Setup fetched {name} only to read the definition, so sharing it takes a checkout of {name} on this \
+             machine."
+        ),
+        format!("Share a checkout of {name} with the agent?"),
+    ];
+    let share = answers.choose(
+        "--checkout",
+        &lines.join("\n"),
+        vec![
+            Choice::new(false, "No, leave it out"),
+            Choice::new(true, "Yes, choose the checkout"),
+        ],
+        0,
+    )?;
+    if !share {
+        return Ok(None);
+    }
+    let question = format!("Checkout of {name} to share");
+    repository.ask_checkout(answers, protected, &question, None).map(Some)
+}
+
+/// What the person does with the folders the agent shares.
+#[derive(Clone, Copy)]
+enum Change {
+    Keep,
+    Checkout,
+    Add,
+    LeaveOut,
+}
+
+/// Shows the folders the agent shares and lets the person change them, until they keep them or
+/// share a folder of their own, which it returns.
+fn ask_shares(
+    answers: &Answers,
+    draft: &Draft,
+    repository: Option<&RepositoryShares>,
+    shares: &mut Shares,
+    protected: &Protected,
+) -> CommandResult<Option<PathBuf>> {
+    let os = &draft.agent.spec.sandbox.platform.os;
+    loop {
+        let listed = listed(&draft.agent, &draft.source.directory, repository, shares)?;
+        if listed.is_empty() {
+            let lines = [
+                "You and the agent then work on the same files, and what it changes lands in your folder.",
+                "Without one, it works on its own copies, which you reach over SSH or in your editor.",
+                "Share a folder on this machine with the agent?",
+            ];
+            let share = answers.choose(
+                "--mount",
+                &lines.join("\n"),
+                vec![
+                    Choice::new(false, "No, it works on its own copies").flag("--no-mount", &[]),
+                    Choice::new(true, "Yes, choose a folder"),
+                ],
+                0,
+            )?;
+            return if share {
+                ask_folder(answers, os, &listed, protected).map(Some)
+            } else {
+                Ok(None)
+            };
+        }
+        let mut lines = vec!["The agent shares these folders on this machine with you:".to_owned()];
+        lines.extend(listed.iter().map(Shared::describe));
+        lines.push("Keep them as they are?".to_owned());
+        let mut choices = vec![Choice::new(Change::Keep, "Keep them").flag("--no-mount", &[])];
+        // Another checkout is offered while the repository is shared, not once it is left out.
+        let shared_repository =
+            repository.filter(|repository| listed.iter().any(|shared| repository.shares(shared.index).is_some()));
+        if let Some(repository) = shared_repository {
+            choices.push(Choice::new(
+                Change::Checkout,
+                format!(
+                    "Share another checkout of {}, such as a worktree",
+                    repository.repository.name
+                ),
+            ));
+        }
+        choices.push(Choice::new(Change::Add, "Share another folder too"));
+        choices.push(Choice::new(Change::LeaveOut, "Leave one out"));
+        match answers.choose("--mount", &lines.join("\n"), choices, 0)? {
+            Change::Keep => return Ok(None),
+            Change::Checkout => {
+                if let Some(repository) = shared_repository {
+                    let question = format!(
+                        "Checkout of {} to share, such as another worktree of it",
+                        repository.repository.name
+                    );
+                    let current = shares.checkout.clone();
+                    shares.checkout =
+                        Some(repository.ask_checkout(answers, protected, &question, current.as_deref())?);
+                }
+            }
+            Change::Add => return ask_folder(answers, os, &listed, protected).map(Some),
+            Change::LeaveOut => leave_one_out(answers, &listed, shares)?,
+        }
+    }
+}
+
+/// Asks which of the `listed` folders the agent does not share after all.
+fn leave_one_out(answers: &Answers, listed: &[Shared], shares: &mut Shares) -> CommandResult<()> {
+    let choices = listed
         .iter()
-        .filter_map(|mount| match &draft.agent.spec.sandbox.mounts[mount.index] {
-            agent::MountSpec::Bind { target, .. } => Some(target.as_str().to_owned()),
-            agent::MountSpec::Tmpfs { .. } => None,
+        .map(|shared| {
+            Choice::new(
+                (shared.index, shared.target.clone()),
+                format!("{}, at {}", shared.source.display(), shared.target),
+            )
         })
         .collect();
-    let name = &repository.name;
-    let at = targets.join(" and ");
-    let local = repository.root.display().to_string();
-    let default = if repository.fetched { "" } else { local.as_str() };
-    let check = |answer: &str| {
-        if answer.trim().is_empty() {
-            return Ok(());
-        }
-        let path = manifest::expand_host_path(Path::new(answer.trim())).map_err(|error| error.to_string())?;
-        let checkout = protected.check(&path)?;
-        found
-            .iter()
-            .map(|mount| checkout.join(&mount.within))
-            .find(|folder| !folder.is_dir())
-            .map_or(Ok(()), |missing| {
-                Err(format!("{} has no folder {}", checkout.display(), missing.display()))
-            })
-    };
-    let answer = match &arguments.checkout {
-        Some(path) => path.display().to_string(),
-        None if answers.interactive() && !arguments.yes => {
-            let question = if repository.fetched {
-                format!(
-                    "The agent mounts its repository, {name}, at {at}.\nWhich checkout of {name} on this machine \
-                     should it mount? (Enter to leave the mount out)"
-                )
-            } else {
-                format!(
-                    "The agent mounts its repository, {name}, at {at}.\nWhich checkout of {name} should it mount, \
-                     such as another worktree of it?"
-                )
-            };
-            answers.text("--checkout", &question, Some(default), check)?
-        }
-        None => default.to_owned(),
-    };
-    if answer.trim().is_empty() {
-        eprintln!(
-            "warning: left out the mount at {at}: it mounts {name}, which setup fetched only for the agent \
-             definition. Pass --checkout with a checkout of {name} to mount it."
-        );
-        for mount in found.iter().rev() {
-            draft.agent.spec.sandbox.mounts.remove(mount.index);
-        }
-        return Ok(());
-    }
-    check(&answer).map_err(Error::Invalid)?;
-    let checkout = protected
-        .check(&manifest::expand_host_path(Path::new(answer.trim()))?)
-        .map_err(Error::Invalid)?;
-    for mount in &found {
-        if let agent::MountSpec::Bind { source, .. } = &mut draft.agent.spec.sandbox.mounts[mount.index] {
-            // Joining an empty path would add a trailing separator.
-            *source = if mount.within.as_os_str().is_empty() {
-                checkout.clone()
-            } else {
-                checkout.join(&mount.within)
-            };
-        }
-    }
+    let (index, target) = answers.choose("--unshare", "Which folder should the agent not share?", choices, 0)?;
+    shares.left_out.push(index);
+    shares.unshared.push(target);
+    let unshared: Vec<&str> = shares.unshared.iter().map(String::as_str).collect();
+    answers.record("--unshare", &unshared);
     Ok(())
+}
+
+/// Asks for a folder of the person's own to share with an agent running `os`.
+fn ask_folder(answers: &Answers, os: &str, listed: &[Shared], protected: &Protected) -> CommandResult<PathBuf> {
+    let working = agent::sandbox::platform::working_directory(os).unwrap_or("its working directory");
+    let question = format!("Folder to share; the agent sees it in {working} under its own name");
+    let answer = answers.text("--mount", &question, None, |answer| {
+        check_added(os, listed, protected, answer).map(|_| ())
+    })?;
+    Ok(check_added(os, listed, protected, &answer).map_err(Error::Invalid)?)
+}
+
+/// `answer` as a folder of the person's own to share, or why it cannot be one: it must be a folder
+/// agents may mount, not shared already, and land where no other `listed` folder does.
+fn check_added(os: &str, listed: &[Shared], protected: &Protected, answer: &str) -> Result<PathBuf, String> {
+    if answer.trim().is_empty() {
+        return Err("name a folder to share".into());
+    }
+    let path = manifest::expand_host_path(Path::new(answer.trim())).map_err(|error| error.to_string())?;
+    let folder = protected.check(&path)?;
+    if let Some(shared) = listed.iter().find(|shared| shared.source == folder) {
+        return Err(format!("{} is shared already, at {}", folder.display(), shared.target));
+    }
+    let target = working_directory_target(os, &folder).map_err(|error| error.to_string())?;
+    if listed.iter().any(|shared| shared.target == target.as_str()) {
+        return Err(format!(
+            "the agent shares another folder at {} already; choose a folder of another name",
+            target.as_str()
+        ));
+    }
+    Ok(folder)
 }
 
 /// The host folders `draft` mounts already, resolved, with where each appears in the sandbox.
@@ -348,72 +667,6 @@ pub(super) fn bind_mounts(draft: &Draft) -> Result<Vec<(PathBuf, String)>, Error
             Ok((source.canonicalize().unwrap_or(source), target.as_str().to_owned()))
         })
         .collect()
-}
-
-/// Asks for a folder to mount and adds the mount. The question names what the manifest mounts
-/// already, and a folder mounted already, or one that would land where a mount is, is refused.
-/// Returns a manifest to start from instead, with the folder, when a standard agent was chosen
-/// and the folder holds agent definitions the person chooses one of.
-pub(super) fn choose_mount(
-    arguments: &SetupArguments,
-    answers: &Answers,
-    draft: &mut Draft,
-    protected: &Protected,
-) -> CommandResult<Option<(PathBuf, PathBuf)>> {
-    if arguments.no_mount {
-        return Ok(None);
-    }
-    let mounted = bind_mounts(draft)?;
-    let os = draft.agent.spec.sandbox.platform.os.clone();
-    let check = |answer: &str| {
-        if answer.trim().is_empty() {
-            return Ok(());
-        }
-        let path = manifest::expand_host_path(Path::new(answer.trim())).map_err(|error| error.to_string())?;
-        let folder = protected.check(&path)?;
-        if let Some((_, target)) = mounted.iter().find(|(source, _)| *source == folder) {
-            return Err(format!("{} is mounted already, at {target}", folder.display()));
-        }
-        let target = working_directory_target(&os, &folder).map_err(|error| error.to_string())?;
-        if mounted.iter().any(|(_, mounted)| mounted == target.as_str()) {
-            return Err(format!(
-                "the agent mounts another folder at {} already; choose a folder of another name",
-                target.as_str()
-            ));
-        }
-        Ok(())
-    };
-    let answer = match &arguments.mount {
-        Some(path) => path.display().to_string(),
-        None if answers.interactive() && !arguments.yes => {
-            let mut question: Vec<String> = mounted
-                .iter()
-                .map(|(source, target)| format!("The agent mounts {} at {target} already.", source.display()))
-                .collect();
-            question.push(if mounted.is_empty() {
-                "Folder on this machine to work on in the agent (Enter to skip)".to_owned()
-            } else {
-                "Another folder to work on in the agent (Enter to skip)".to_owned()
-            });
-            answers.text("--mount", &question.join("\n"), Some(""), check)?
-        }
-        None => return Ok(None),
-    };
-    if answer.trim().is_empty() {
-        answers.record("--no-mount", &[]);
-        return Ok(None);
-    }
-    check(&answer).map_err(Error::Invalid)?;
-    let folder = protected
-        .check(&manifest::expand_host_path(Path::new(answer.trim()))?)
-        .map_err(Error::Invalid)?;
-    if draft.source.from_catalog
-        && let Some(manifest) = offer_found_manifests(answers, &folder)?
-    {
-        return Ok(Some((manifest, folder)));
-    }
-    mount_unless_mounted(draft, &folder)?;
-    Ok(None)
 }
 
 /// Mounts `folder` in the agent's working directory, unless the agent mounts it already, as the
@@ -457,27 +710,38 @@ pub(super) fn offer_found_manifests(answers: &Answers, folder: &Path) -> Command
     Ok(chosen)
 }
 
-/// Checks every folder the agent mounts before anything is written: each must exist and hold no
-/// `.env`, whose values the agent would see. agentd refuses either when it creates the agent, after
-/// the folder is written.
-pub(super) fn check_mounts(draft: &Draft) -> CommandResult<()> {
+/// Checks every folder the agent mounts before anything is written, those its definition names as
+/// well as those chosen here, since a definition fetched from GitHub is no more trusted than a
+/// folder typed in. agentd refuses a missing folder or a `.env` too, but only after the agent's
+/// folder is written, and it does not know the folders `protected` keeps out of agents.
+pub(super) fn check_mounts(draft: &Draft, protected: &Protected) -> CommandResult<()> {
     for (source, target) in bind_mounts(draft)? {
-        if !source.is_dir() {
-            return Err(CommandError::Message(format!(
-                "the agent mounts {} at {target}, but it is not a folder here",
-                source.display()
-            )));
-        }
-        if let Some(found) = agent::control_plane::find_dot_env(&source)? {
-            return Err(CommandError::Message(format!(
-                "the agent mounts {} at {target}, which holds {}; the agent would see its values. Move it out of \
-                 the folder, or mount another",
-                source.display(),
-                found.display()
-            )));
-        }
+        check_mount(&source, &target, protected).map_err(CommandError::Message)?;
     }
     Ok(draft.agent.validate()?)
+}
+
+/// Why the agent may not mount `source` at `target`: it must be a folder here, not one `protected`
+/// keeps out of agents, and hold no `.env`, whose values the agent would see.
+fn check_mount(source: &Path, target: &str, protected: &Protected) -> Result<(), String> {
+    if !source.is_dir() {
+        return Err(format!(
+            "the agent mounts {} at {target}, but it is not a folder here",
+            source.display()
+        ));
+    }
+    protected
+        .check(source)
+        .map_err(|reason| format!("the agent may not mount {} at {target}: {reason}", source.display()))?;
+    if let Some(found) = agent::control_plane::find_dot_env(source).map_err(|error| error.to_string())? {
+        return Err(format!(
+            "the agent mounts {} at {target}, which holds {}; the agent would see its values. Move it out of the \
+             folder, or mount another",
+            source.display(),
+            found.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Refuses a relative bind mount that resolves into setup's staging folder outside a repository
@@ -504,7 +768,10 @@ mod tests {
 
     use std::fmt::Write as _;
 
-    use super::{Protected, Repository, RepositoryMount, found_manifests, repository_mounts};
+    use super::{
+        Protected, Repository, RepositoryMount, RepositoryShares, Shares, apply, check_added, check_mount,
+        found_manifests, listed, repository_mounts,
+    };
 
     #[test]
     fn manifests_are_found_beside_one_level_down_and_in_agents() {
@@ -562,6 +829,27 @@ mod tests {
         assert!(protected.check(&home.path().join("missing")).is_err());
     }
 
+    #[test]
+    fn a_definition_may_not_mount_what_a_person_may_not() {
+        let home = tempfile::tempdir().expect("a home");
+        let project = home.path().join("code/project");
+        let ssh = home.path().join(".ssh");
+        std::fs::create_dir_all(&project).expect("a project");
+        std::fs::create_dir_all(&ssh).expect("an .ssh");
+        let protected = Protected {
+            user_home: Some(home.path().to_path_buf()),
+            inside: vec![ssh.clone()],
+        };
+        assert!(check_mount(&project, "/srv/project", &protected).is_ok());
+        for refused in [ssh.as_path(), home.path()] {
+            let error = check_mount(refused, "/srv/keys", &protected).expect_err("refused");
+            assert!(error.contains("may not mount"), "{error}");
+        }
+        std::fs::write(project.join(".env"), "TOKEN=x\n").expect("a .env");
+        let error = check_mount(&project, "/srv/project", &protected).expect_err("holds a .env");
+        assert!(error.contains(".env"), "{error}");
+    }
+
     fn agent_mounting(sources: &[&str]) -> agent::Agent {
         let mut mounts = String::new();
         for (index, source) in sources.iter().enumerate() {
@@ -608,5 +896,88 @@ mod tests {
         let leaving = agent_mounting(&["../../.."]);
         let error = repository_mounts(&leaving, &manifest_folder, &repository).expect_err("leaves the repository");
         assert!(error.to_string().contains("leaves the repository"), "{error}");
+    }
+
+    #[test]
+    fn the_repository_shares_the_checkout_chosen_and_without_one_is_left_out() {
+        let checkout = tempfile::tempdir().expect("a checkout");
+        let root = checkout.path().canonicalize().expect("canonical");
+        let manifest_folder = root.join("agents/desktop");
+        std::fs::create_dir_all(&manifest_folder).expect("folders");
+        std::fs::create_dir(root.join(".git")).expect("a .git");
+        let data = tempfile::tempdir().expect("a data folder");
+        let data = data.path().canonicalize().expect("canonical");
+        let mut agent = agent_mounting(&["../..", &data.display().to_string(), "../../src"]);
+        let repository = Repository::containing(&manifest_folder).expect("a repository");
+        let found = repository_mounts(&agent, &manifest_folder, &repository).expect("mounts");
+        let repository = RepositoryShares { repository, found };
+
+        let worktree = tempfile::tempdir().expect("a worktree");
+        let worktree = worktree.path().canonicalize().expect("canonical");
+        let shares = Shares {
+            checkout: Some(worktree.clone()),
+            left_out: vec![2],
+            unshared: vec!["/srv/m2".into()],
+        };
+        let shown: Vec<_> = listed(&agent, &manifest_folder, Some(&repository), &shares)
+            .expect("listed")
+            .into_iter()
+            .map(|shared| (shared.source, shared.target))
+            .collect();
+        assert_eq!(
+            shown,
+            [(worktree.clone(), "/srv/m0".into()), (data.clone(), "/srv/m1".into())]
+        );
+        let mut applied = agent.clone();
+        apply(&mut applied, Some(&repository), &shares);
+        let sources: Vec<_> = applied
+            .spec
+            .sandbox
+            .mounts
+            .iter()
+            .filter_map(|mount| match mount {
+                agent::MountSpec::Bind { source, .. } => Some(source.clone()),
+                agent::MountSpec::Tmpfs { .. } => None,
+            })
+            .collect();
+        assert_eq!(sources, [worktree, data]);
+
+        let fetched = Shares::default();
+        let shown = listed(&agent, &manifest_folder, Some(&repository), &fetched).expect("listed");
+        assert_eq!(shown.len(), 1, "only the data folder is shared without a checkout");
+        apply(&mut agent, Some(&repository), &fetched);
+        assert_eq!(agent.spec.sandbox.mounts.len(), 1);
+    }
+
+    #[test]
+    fn a_folder_of_ones_own_is_refused_when_shared_already_or_landing_on_another() {
+        let home = tempfile::tempdir().expect("a home");
+        let project = home.path().join("code/project");
+        let other = home.path().join("other/project");
+        std::fs::create_dir_all(&project).expect("a project");
+        std::fs::create_dir_all(&other).expect("another of that name");
+        let protected = Protected {
+            user_home: Some(home.path().to_path_buf()),
+            inside: Vec::new(),
+        };
+        let project = project.canonicalize().expect("canonical");
+        let target = super::working_directory_target("linux", &project).expect("a target");
+        let shared = vec![super::Shared {
+            index: 0,
+            source: project.clone(),
+            target: target.as_str().to_owned(),
+            read_only: false,
+        }];
+        let answer = project.display().to_string();
+        let error = check_added("linux", &shared, &protected, &answer).expect_err("shared already");
+        assert!(error.contains("shared already"), "{error}");
+        let answer = other.display().to_string();
+        let error = check_added("linux", &shared, &protected, &answer).expect_err("same name");
+        assert!(
+            error.contains(&format!("another folder at {}", target.as_str())),
+            "{error}"
+        );
+        assert!(check_added("linux", &[], &protected, &answer).is_ok());
+        assert!(check_added("linux", &[], &protected, " ").is_err());
     }
 }
