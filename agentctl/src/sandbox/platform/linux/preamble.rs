@@ -80,7 +80,8 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
             "Computer",
             Some(format!(
                 "agent `{name}`, a Linux sandbox VM that is yours to manage. User `{USER}` with passwordless \
-                 `sudo`, home `{HOME}`, work in `{WORKING_DIRECTORY}`."
+                 `sudo`, home `{HOME}`, work in `{WORKING_DIRECTORY}`. What you send through the host, such as \
+                 pushes, pull requests, comments and API calls, reaches real services and people."
             )),
         ),
         ("Resources", Some(resources(spec))),

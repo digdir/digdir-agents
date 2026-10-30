@@ -224,7 +224,8 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
 Written by agentd {}. Instructions after this section are the agent's own and take precedence.
 
 - **Computer:** agent `worker`, a Linux sandbox VM that is yours to manage. User `agent` with passwordless `sudo`, \
-home `/home/agent`, work in `/home/agent/code`.
+home `/home/agent`, work in `/home/agent/code`. What you send through the host, such as pushes, pull requests, \
+comments and API calls, reaches real services and people.
 - **Resources:** cpu 2, memory 1Gi, disk 4Gi; `df -h /` shows how much is free.
 - **Harnesses:**
   - Claude Code (default)
