@@ -15,7 +15,7 @@ Agents get their own computer, with mediated network access and no real secrets 
 | [`images/`](images/) | Container images for building agent images. |
 | [`agents/self-dev/`](agents/self-dev/) | The agent that develops this platform. It is also the example to start from when you make a new agent. |
 | [`integrations/`](integrations/) | Slack and GitHub listener from the earlier orchestrator pipeline. It is kept as a possible entry point to agentctl agents, but nothing consumes its events right now. |
-| [`docs/presentations/`](docs/presentations/) | Slide decks on agentctl and the Sandbox SDK, including a security view. |
+| [`docs/presentations/`](docs/presentations/) | Slide decks on agentctl and the Sandbox SDK, including a security view, and on harness engineering in Altinn Studio. |
 
 ## Getting started
 
