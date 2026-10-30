@@ -1,10 +1,11 @@
 //! Where each setup answer comes from: its flag, else a question at the terminal, else its
-//! default with `--yes`. Without a terminal, a missing answer fails and names its flag, so a
-//! script learns exactly what to pass.
+//! default with `--yes`, or while setup fills in the defaults to show them for review. Without a
+//! terminal, a missing answer fails and names its flag, so a script learns exactly what to pass.
 //!
 //! Each answer also records the flag that gives it, so setup can say how to repeat the same setup
 //! without questions. Going back to the question before starts setup again, replaying every answer
-//! given until then, so each step runs as it does the first time.
+//! given until then, so each step runs as it does the first time. Changing something in the review
+//! starts it again the same way, asking each question that defaults answered.
 
 use std::{
     cell::{Cell, RefCell},
@@ -18,7 +19,11 @@ use crate::prompt::{self, Reply};
 
 pub(super) struct Answers {
     interactive: bool,
-    assume_defaults: bool,
+    /// Whether `--yes` was given, so defaults answer what no flag does throughout.
+    yes: bool,
+    /// Whether defaults answer what no flag does: always with `--yes`, and while setup fills them
+    /// in to show for review.
+    assume_defaults: Cell<bool>,
     /// Answers given before going back, given again without asking.
     replay: RefCell<VecDeque<Asked>>,
     /// Answers given at the terminal, in order.
@@ -28,6 +33,8 @@ pub(super) struct Answers {
     /// Whether a question may still go back, which ends once setup has done something.
     may_go_back: Cell<bool>,
     went_back: Cell<bool>,
+    /// Whether the person asked to change what defaults answered, which ends this run.
+    starting_over: Cell<bool>,
     cancelled: Cell<bool>,
 }
 
@@ -87,12 +94,14 @@ impl Answers {
     pub(super) const fn new(interactive: bool, assume_defaults: bool) -> Self {
         Self {
             interactive,
-            assume_defaults,
+            yes: assume_defaults,
+            assume_defaults: Cell::new(assume_defaults),
             replay: RefCell::new(VecDeque::new()),
             asked: RefCell::new(Vec::new()),
             flags: RefCell::new(Vec::new()),
             may_go_back: Cell::new(true),
             went_back: Cell::new(false),
+            starting_over: Cell::new(false),
             cancelled: Cell::new(false),
         }
     }
@@ -109,9 +118,31 @@ impl Answers {
         self.interactive
     }
 
-    /// Whether `--yes` answers what no flag does.
+    /// Whether defaults answer what no flag does.
     pub(super) const fn assumes_defaults(&self) -> bool {
-        self.assume_defaults
+        self.assume_defaults.get()
+    }
+
+    /// Whether defaults are answering only to be shown for review, so what they decide need not be
+    /// reported as it happens.
+    pub(super) const fn filling_in(&self) -> bool {
+        self.assume_defaults.get() && !self.yes
+    }
+
+    /// Lets defaults answer what no flag does from here on, or stops them. Answers given this way
+    /// are not remembered, so starting over asks those questions.
+    pub(super) fn assume_defaults(&self, assume: bool) {
+        self.assume_defaults.set(assume);
+    }
+
+    /// Ends this run so that setup starts again, asking each question defaults answered.
+    pub(super) fn start_over(&self) {
+        self.starting_over.set(true);
+    }
+
+    /// Whether the person asked to change what defaults answered.
+    pub(super) const fn starting_over(&self) -> bool {
+        self.starting_over.get()
     }
 
     /// Whether a person answered any question.
@@ -199,7 +230,7 @@ impl Answers {
         }
         let default = default.min(choices.len() - 1);
         let single = choices.len() == 1 && !(show_single && self.interactive);
-        let index = if self.assume_defaults || single {
+        let index = if self.assumes_defaults() || single {
             default
         } else if self.interactive {
             let key = key(flag, question);
@@ -247,7 +278,7 @@ impl Answers {
             .collect();
         let picked = if choices.len() == 1 {
             vec![0]
-        } else if self.assume_defaults {
+        } else if self.assumes_defaults() {
             defaults.clone()
         } else if self.interactive {
             let key = key(flag, question);
@@ -312,7 +343,7 @@ impl Answers {
         default: Option<&str>,
         check: impl Fn(&str) -> Result<(), String>,
     ) -> Result<String, Error> {
-        if self.assume_defaults
+        if self.assumes_defaults()
             && let Some(default) = default
         {
             check(default).map_err(Error::Invalid)?;
@@ -346,7 +377,7 @@ impl Answers {
 
     /// Asks a yes-or-no question; `--yes` answers `default`.
     pub(super) fn confirm(&self, flag: &str, lines: &[&str], default: bool) -> Result<bool, Error> {
-        if self.assume_defaults {
+        if self.assumes_defaults() {
             return Ok(default);
         }
         if !self.interactive {
@@ -438,6 +469,21 @@ mod tests {
             .into_iter()
             .map(|harness| Choice::new(harness, harness).flag("--harnesses", &[harness]))
             .collect()
+    }
+
+    #[test]
+    fn defaults_filled_in_are_not_remembered_so_starting_over_asks_them() {
+        assert!(!Answers::new(true, true).filling_in(), "--yes reports what it decides");
+        let answers = Answers::new(true, false);
+        answers.assume_defaults(true);
+        assert!(answers.filling_in());
+        let choices = vec![Choice::new(1, "one"), Choice::new(2, "two")];
+        assert_eq!(answers.choose("--size", "Size?", choices, 1).ok(), Some(2));
+        assert!(!answers.asked_anything());
+        answers.assume_defaults(false);
+        assert!(!answers.assumes_defaults());
+        answers.start_over();
+        assert!(answers.starting_over());
     }
 
     #[test]
