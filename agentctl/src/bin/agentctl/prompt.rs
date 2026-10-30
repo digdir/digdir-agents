@@ -179,15 +179,39 @@ fn fitted(label: &str) -> String {
 
 const fn hint(back: bool) -> &'static str {
     if back {
-        "↑/↓ to choose, Enter to confirm, Esc to go back"
+        "Type a number or use ↑/↓, Enter to confirm, Esc to go back"
     } else {
-        "↑/↓ to choose, Enter to confirm"
+        "Type a number or use ↑/↓, Enter to confirm"
     }
 }
 
-/// Asks to choose one of `options`, with the arrow keys and Enter, starting at `default`. An
-/// option's lines after its first, such as a description, follow it on one line. Esc goes back
-/// when `back` allows it.
+/// `options` as a menu shows them: numbered, with any lines after an option's first on its line.
+fn numbered_labels(options: &[String]) -> Vec<String> {
+    options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| {
+            fitted(&format!(
+                "{}. {}",
+                index + 1,
+                option.lines().collect::<Vec<_>>().join(" — ")
+            ))
+        })
+        .collect()
+}
+
+/// Matches a number typed to the option of that number, so an option is chosen without the arrow
+/// keys, and other text to the options whose labels hold it.
+fn numbered(input: &str, option: &String, label: &str, index: usize) -> Option<i64> {
+    if !input.is_empty() && input.bytes().all(|byte| byte.is_ascii_digit()) {
+        return (input == (index + 1).to_string()).then_some(0);
+    }
+    (inquire::Select::<String>::DEFAULT_SCORER)(input, option, label, index)
+}
+
+/// Asks to choose one of `options`, numbered, by typing its number or with the arrow keys, and
+/// Enter, starting at `default`. An option's lines after its first, such as a description, follow
+/// it on one line. Esc goes back when `back` allows it.
 ///
 /// # Errors
 ///
@@ -195,10 +219,7 @@ const fn hint(back: bool) -> &'static str {
 pub(crate) fn menu(question: &str, options: &[String], default: usize, back: bool) -> Result<Reply<usize>, Error> {
     let lines: Vec<&str> = question.lines().collect();
     let question = context(&lines);
-    let labels: Vec<String> = options
-        .iter()
-        .map(|option| fitted(&option.lines().collect::<Vec<_>>().join(" — ")))
-        .collect();
+    let labels = numbered_labels(options);
     // An answered menu shows the option's first line only, such as a standard agent's title
     // without its description.
     let answered = |chosen: inquire::list_option::ListOption<&String>| {
@@ -208,11 +229,67 @@ pub(crate) fn menu(question: &str, options: &[String], default: usize, back: boo
         let result = inquire::Select::new(&question, labels.clone())
             .with_starting_cursor(default.min(labels.len().saturating_sub(1)))
             .with_help_message(hint(back))
+            .with_scorer(&numbered)
             .with_formatter(&answered)
             .with_render_config(render_config())
             .raw_prompt()
             .map(|chosen| chosen.index);
         let shown = |index: &usize| options[*index].lines().next().unwrap_or_default().to_owned();
+        if let Some(reply) = reply(&question, result, shown, back)? {
+            return Ok(reply);
+        }
+    }
+}
+
+/// Asks to choose one or more of `options`, numbered, starting with those at `defaults` chosen. A
+/// typed number, or the arrow keys, move to an option, Space chooses or clears it, and Enter
+/// confirms. Esc goes back when `back` allows it.
+///
+/// # Errors
+///
+/// Returns an error when the terminal cannot be read.
+pub(crate) fn multi_menu(
+    question: &str,
+    options: &[String],
+    defaults: &[usize],
+    back: bool,
+) -> Result<Reply<Vec<usize>>, Error> {
+    use inquire::{list_option::ListOption, validator::Validation};
+
+    let lines: Vec<&str> = question.lines().collect();
+    let question = context(&lines);
+    let labels = numbered_labels(options);
+    let first_lines = |indices: &mut dyn Iterator<Item = usize>| {
+        indices
+            .map(|index| options[index].lines().next().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let answered = |chosen: &[ListOption<&String>]| first_lines(&mut chosen.iter().map(|chosen| chosen.index));
+    let hint = if back {
+        "Type a number or use ↑/↓, Space to choose or clear, Enter to confirm, Esc to go back"
+    } else {
+        "Type a number or use ↑/↓, Space to choose or clear, Enter to confirm"
+    };
+    loop {
+        let result = inquire::MultiSelect::new(&question, labels.clone())
+            .with_default(defaults)
+            .with_help_message(hint)
+            .with_scorer(&numbered)
+            // A number typed to reach an option is cleared once Space chooses it.
+            .with_keep_filter(false)
+            .with_validator(|chosen: &[ListOption<&String>]| {
+                Ok(if chosen.is_empty() {
+                    Validation::Invalid("Choose at least one".into())
+                } else {
+                    Validation::Valid
+                })
+            })
+            .with_formatter(&answered)
+            .with_render_config(render_config())
+            .raw_prompt()
+            .map(|chosen| chosen.into_iter().map(|chosen| chosen.index).collect::<Vec<_>>());
+        let shown = |indices: &Vec<usize>| first_lines(&mut indices.iter().copied());
         if let Some(reply) = reply(&question, result, shown, back)? {
             return Ok(reply);
         }
@@ -323,6 +400,16 @@ fn yes_or_no(answer: &str) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_typed_number_picks_its_option_and_text_filters_by_label() {
+        let option = String::new();
+        assert_eq!(super::numbered("2", &option, "2. Keep them", 1), Some(0));
+        assert_eq!(super::numbered("2", &option, "12. Twelve", 11), None);
+        assert_eq!(super::numbered("12", &option, "12. Twelve", 11), Some(0));
+        assert!(super::numbered("keep", &option, "1. Keep them", 0).is_some());
+        assert!(super::numbered("leave", &option, "1. Keep them", 0).is_none());
+    }
+
     use super::yes_or_no;
 
     #[test]

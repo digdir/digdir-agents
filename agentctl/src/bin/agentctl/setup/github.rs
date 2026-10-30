@@ -117,6 +117,14 @@ pub(super) async fn verify(token: &str) -> Result<GithubUser, Error> {
         .map_err(|error| Error::Invalid(format!("GitHub's answer could not be read: {error}")))
 }
 
+/// Whether `spec` cannot do without the token: agentd refuses to create an agent whose required
+/// secret has no value, so going without GitHub is no answer for it.
+pub(super) fn token_required(spec: &Spec) -> bool {
+    spec.secrets
+        .iter()
+        .any(|secret| secret.source() == TOKEN_VARIABLE && !secret.optional)
+}
+
 /// Declares the token secret and the git identity in `spec`, unless the manifest already does.
 pub(super) fn declare(spec: &mut Spec) {
     if !spec.secrets.iter().any(|secret| secret.environment == TOKEN_VARIABLE) {
@@ -195,6 +203,13 @@ pub(super) async fn choose_github(
     draft: &mut Draft,
     found: &[existing::Existing],
 ) -> CommandResult<()> {
+    let required = token_required(&draft.agent.spec);
+    if required && arguments.github == Some(GithubChoice::Skip) {
+        return Err(CommandError::Message(format!(
+            "this agent's definition requires {TOKEN_VARIABLE}, so it cannot go without GitHub; pass --github \
+             browser, token or existing"
+        )));
+    }
     let reused = draft.access.known_values.get(TOKEN_VARIABLE).cloned();
     if let (Some(token), None, false) = (reused, arguments.github, arguments.github_token_stdin) {
         match record_github(arguments, answers, draft, token, None).await {
@@ -237,12 +252,7 @@ pub(super) async fn choose_github(
         }
         (Some(choice), _) => GithubAnswer::Choice(choice),
         (None, true) => GithubAnswer::Choice(GithubChoice::Token),
-        (None, false) => answers.choose(
-            "--github",
-            "How should the agent reach GitHub?",
-            github_choices(answers, &known),
-            0,
-        )?,
+        (None, false) => ask_github(answers, &known, required)?,
     };
     let choice = match answer {
         GithubAnswer::Known(index) => {
@@ -282,12 +292,32 @@ pub(super) async fn choose_github(
     }
 }
 
+/// Asks how the agent reaches GitHub, saying why going without it is not offered when the token
+/// is `required`.
+fn ask_github(answers: &Answers, known: &[KnownAccount], required: bool) -> CommandResult<GithubAnswer> {
+    let choices = github_choices(answers, known, required);
+    if choices.is_empty() {
+        return Err(CommandError::Message(format!(
+            "this agent's definition requires {TOKEN_VARIABLE}; without a terminal, pass --github token with \
+             --github-token-stdin, or --github existing"
+        )));
+    }
+    let question = if required {
+        "How should the agent reach GitHub? Its definition requires a token."
+    } else {
+        "How should the agent reach GitHub?"
+    };
+    Ok(answers.choose("--github", question, choices, 0)?)
+}
+
 /// The ways to reach GitHub on offer: the accounts other agents use first, as signing in again
-/// is what people would rather skip, then signing in or a token, which need a terminal, then none.
-/// Without a terminal, none comes first, so a script reuses an account only with
-/// `--github existing`.
-pub(super) fn github_choices(answers: &Answers, known: &[KnownAccount]) -> Vec<Choice<GithubAnswer>> {
-    let skip = Choice::new(GithubAnswer::Choice(GithubChoice::Skip), "Not at all, for now").flag("--github", &["skip"]);
+/// is what people would rather skip, then signing in or a token, which need a terminal, then none,
+/// unless the token is `required`. Without a terminal, none comes first, so a script reuses an
+/// account only with `--github existing`.
+pub(super) fn github_choices(answers: &Answers, known: &[KnownAccount], required: bool) -> Vec<Choice<GithubAnswer>> {
+    let skip = (!required).then(|| {
+        Choice::new(GithubAnswer::Choice(GithubChoice::Skip), "Not at all, for now").flag("--github", &["skip"])
+    });
     let accounts = known.iter().enumerate().map(|(index, account)| {
         Choice::new(
             GithubAnswer::Known(index),
@@ -297,7 +327,7 @@ pub(super) fn github_choices(answers: &Answers, known: &[KnownAccount]) -> Vec<C
         .flag("--github-user", &[&account.login])
     });
     if !answers.interactive() {
-        return std::iter::once(skip).chain(accounts).collect();
+        return skip.into_iter().chain(accounts).collect();
     }
     let mut choices: Vec<_> = accounts
         .enumerate()
@@ -320,7 +350,7 @@ pub(super) fn github_choices(answers: &Answers, known: &[KnownAccount]) -> Vec<C
         )
         .flag("--github", &["token"]),
     );
-    choices.push(skip);
+    choices.extend(skip);
     choices
 }
 
@@ -365,7 +395,25 @@ pub(super) async fn record_github(
 
 #[cfg(test)]
 mod tests {
-    use super::GithubUser;
+    use super::{GithubAnswer, GithubUser, github_choices};
+    use crate::setup::{GithubChoice, answers::Answers};
+
+    fn offers_skip(choices: &[crate::setup::answers::Choice<GithubAnswer>]) -> bool {
+        choices
+            .iter()
+            .any(|choice| matches!(choice.value, GithubAnswer::Choice(GithubChoice::Skip)))
+    }
+
+    #[test]
+    fn going_without_github_is_offered_only_when_the_token_is_optional() {
+        for interactive in [true, false] {
+            let answers = Answers::new(interactive, false);
+            assert!(offers_skip(&github_choices(&answers, &[], false)));
+            assert!(!offers_skip(&github_choices(&answers, &[], true)));
+        }
+        let script = Answers::new(false, true);
+        assert!(github_choices(&script, &[], true).is_empty());
+    }
 
     #[test]
     fn commits_carry_the_profile_name_and_the_private_address() {

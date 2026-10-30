@@ -36,7 +36,7 @@ pub(super) async fn team_source(arguments: &SetupArguments, answers: &Answers, s
             Some(from) => from.clone(),
             None => answers.text(
                 "--from",
-                "Path to the agent manifest or a folder holding one, or its GitHub address",
+                "Path to the agent manifest or a folder holding one, or its GitHub address:",
                 None,
                 check_team_source,
             )?,
@@ -61,7 +61,7 @@ pub(super) async fn team_source(arguments: &SetupArguments, answers: &Answers, s
 pub(super) fn check_team_source(answer: &str) -> Result<(), String> {
     let answer = answer.trim();
     if answer.is_empty() {
-        return Err("Type a path or an address.".to_owned());
+        return Err("Type a (relative or absolute) path or a URL to a GitHub file/folder.".to_owned());
     }
     let address = ["https://", "http://", "github.com/", "www.github.com/"]
         .iter()

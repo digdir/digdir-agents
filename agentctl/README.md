@@ -34,19 +34,23 @@ Update with `agentctl self update`. Agents and sessions carry over.
   published image, so no Docker is needed. `agentctl setup --list-archetypes` lists them. When the image cannot be
   pulled, such as before it is published, setup offers to build it on your machine from the Dockerfile agentctl
   carries, which needs Docker. `--build-image` always builds it.
-- **Start from your team's agent**: a manifest on disk, a folder holding one, or a GitHub address such as
-  `https://github.com/Altinn/altinn-studio//agents/minimal`, or the address GitHub shows for a folder or a manifest, at
-  any branch, tag or commit. A GitHub source is fetched into a temporary checkout that is removed once the agent's
-  files are copied. When the manifest mounts its own repository, by a relative bind mount
-  source such as `../..`, setup asks which checkout on your machine to mount there (`--checkout`). For a local manifest
-  that is the checkout it is in, unless you name another, such as a worktree.
+- **Start from an agent definition that exists**, such as your team's: a manifest on disk, a folder holding one, or a
+  GitHub address such as `https://github.com/Altinn/altinn-studio//agents/minimal`, or the address GitHub shows for a
+  folder or a manifest, at any branch, tag or commit. A GitHub source is fetched into a temporary checkout that is
+  removed once the agent's files are copied. When the manifest mounts its own repository, by a relative bind mount
+  source such as `../..`, a local manifest shares the checkout it is in. Setup offers another, such as a worktree
+  (`--checkout`). A fetched one has no checkout here, so setup asks whether to share one of yours.
 
-It asks for a name, a size measured against your machine, the default harness, a folder to mount, a GitHub token and
-any other values the manifest declares, then writes `~/agents/<name>/` with the manifest, the files it reads and a
-`.env`, and creates the agent. The review before it creates the agent offers its `agent.yaml` in your editor, for
-anything the questions leave at its recommended value, such as an exact size, the model or hosts the agent may not
-reach. Change the folder and run `agentctl apply` in it later.
+It asks for a name, a size measured against your machine, which of the manifest's harnesses the agent has and which
+one new sessions use by default, the folders to share, a GitHub token and any other values the manifest declares, then
+writes `~/agents/<name>/` with the manifest, the files it reads and a `.env`, and creates the agent. The review before
+it creates the agent offers its `agent.yaml` in your editor, for anything the questions leave at its recommended
+value, such as an exact size, the model or hosts the agent may not reach. Change the folder and run `agentctl apply` in
+it later.
 
+- **Shared folders** are folders on your machine that you and the agent both work on, so what it changes lands in
+  them. Without one, the agent works on its own copies, which you reach over SSH or in an editor. Setup lists what the
+  manifest shares and lets you keep it, share another checkout or folder (`--mount`), or leave one out (`--unshare`).
 - **Sign-ins** run in a short-lived sandbox, so this machine needs no harness or `gh`. A harness login agentctl holds
   already, from `agentctl claude login` or an earlier setup, is used for every agent; setup asks whether to use it or
   sign in again (`--sign-in again`). A GitHub account is per agent, since each keeps its token in its own `.env`, so
