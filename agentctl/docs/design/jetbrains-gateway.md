@@ -12,13 +12,21 @@ tab, `host-app-over-ssh.md`, can share.
 
 ## The flow we want
 
+Once, in a checkout with an agent definition, the user states their own preference:
+
 ```sh
-agentctl connect saman --client gateway
+agentctl apply --local ide:jetbrains
 ```
 
-Gateway opens, and JetBrains Client shows the agent's project in the IDE its image provides, with no dialog. On an
-image with the backend installed, the first connect from a host takes about a minute and a half, most of it JetBrains
-Client's own download to the host. Later ones take about 15 seconds.
+Then, whenever they want the IDE:
+
+```sh
+agentctl connect saman
+```
+
+Gateway opens, and JetBrains Client shows the agent's project with no dialog. The first connect takes about three
+minutes when Gateway has to install the backend and JetBrains Client, and about 15 seconds once both are in place.
+The repository's definition stays as it is, for colleagues who use another editor or none.
 
 ## What a user does today
 
@@ -114,24 +122,55 @@ it. The sandbox has no swap, and `agentd` protects only the SSH server from the 
 memory loses the backend or its harness rather than slowing down. A backend keeps its memory after Gateway exits, and
 after the client closes when the user chooses to keep it running.
 
+## Where the IDE preference lives
+
+Choosing an IDE changes the agent, not only the host. The agent needs `access: ssh`, about 4 GiB more memory, room for
+a backend and a trust store. The choice is one person's, though, so it does not belong in the repository's
+`agent.yaml`. A local agent variant is made for this: a `agent.<variant>.yaml` beside the repository's manifest that
+git ignores and that extends it, as Saman's `agent.desktop.yaml` adds a desktop. Writing one by hand for an IDE runs
+into three limits of variants:
+
+- **Lists replace.** A variant merges mappings but replaces lists. To add `ssh` to `access` it repeats the base's whole
+  list, and an entry the base adds later is silently lost.
+- **A variant cannot build on its base's image.** It can select a `target` stage the base's Dockerfile has, or copy
+  the Dockerfile, as Saman's `Dockerfile.desktop` does.
+- **`extends` names only a sibling.** A preference kept elsewhere, such as a team's IDE setup in another repository,
+  cannot be referenced.
+
+The IDE needs less from the image than it seems. Gateway installs the backend in the agent's home on the first connect,
+in about 80 seconds, and the home keeps it. So a local variant needs no image of its own, and a preinstalled backend
+only saves that first wait. What does not fit in a variant is the trust store, which has to come from somewhere that
+does not depend on the image.
+
 ## Proposal
 
-For the base images, a `jetbrains` feature beside `browser` and `desktop` in
-[the base images](../../../images/agentctl-base/README.md#features):
+**`agentctl` writes the local variant.** `agentctl apply --local ide:jetbrains` welds the repository's definition and
+the user's preference. It writes or updates `agent.me.yaml` beside the manifest, extending it, keeps the file out of
+git through `.git/info/exclude` rather than the repository's `.gitignore`, and applies it. It computes the merged
+lists itself, so the variant is right when written, and copies a preference kept elsewhere into the file with its
+source noted, so the agent definition stays in one directory. Running it again picks up changes on either side. It
+also records the client for the agent on the host, so `connect` needs no flags.
 
-1. Installs one backend, chosen by the image (WebStorm, IntelliJ IDEA Ultimate) at a pinned build, outside the home,
-   so that agents share the image layer instead of each downloading 1 GB and keeping 3 GB.
-2. Describes it in `/etc/agent-access.d/jetbrains.conf`, as the `desktop` feature describes its VNC units in
-   `vnc.conf`: the product code, the build and the path.
-3. Builds the trust store after boot, with a unit like the `browser` feature's
-   [`agent-browser-ca-init`](../../../images/agentctl-base/features/browser/rootfs/usr/local/libexec/agent-browser-ca-init),
-   and names it in the backend's VM options.
+**Lists of keyed entries merge by key.** If a variant merged `access` by `type`, `environment` by `name` and
+`secrets` by `environment`, a variant could add an entry without repeating the base's, and would not go stale. That
+changes what existing variants mean, so it is a decision of its own. Until then, `apply --local` has to recompute.
 
-For `agentctl`, one verb for every client that opens an agent over SSH, which the TUI's open menu and the Claude app
-proposal share:
+**`agentd` provides a Java trust store.** The host holds the mediated CA. `agentd` can write a PKCS12 trust store with
+it at a fixed path in every agent at boot, beside the system bundle, so no image has to build one. Whatever installs
+the backend points it there: the feature below in its VM options, or `connect` in the backend's user VM options once
+Gateway has installed it.
+
+**A `jetbrains` feature preinstalls the backend.** Beside `browser` and `desktop` in
+[the base images](../../../images/agentctl-base/README.md#features), it installs one backend at a pinned build outside
+the home, so agents share the image layer instead of each downloading 1 GB and keeping 3 GB. It describes the backend
+in `/etc/agent-access.d/jetbrains.conf`, as the `desktop` feature describes its VNC units in `vnc.conf`: the product
+code, the build and the path. A repository that wants it offers a Dockerfile stage with the feature, which a local
+variant selects with `target`.
+
+**One verb opens any client.** The TUI's open menu and the Claude app proposal share it:
 
 ```sh
-agentctl connect <agent> --client gateway|claude-app|vscode|zed [--project <path>] [--ide <product>]
+agentctl connect <agent> [--client gateway|claude-app|vscode|zed] [--project <path>] [--ide <product>]
 ```
 
 It sets up what the client needs and opens it:
@@ -153,6 +192,7 @@ at the standalone start that has no timer.
 
 ## Not covered
 
+- Applying a local IDE variant to an agent. The spike changed no agent's manifest.
 - Gateway's "New Connection" wizard past its first page, which the links skip.
 - macOS and Linux hosts, and reconnecting after the agent is stopped and started or the host sleeps.
 - `remote-dev-server.sh warmup`, which may build the project's index before the first connect, and
