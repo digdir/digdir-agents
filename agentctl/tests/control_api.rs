@@ -12,7 +12,7 @@ use agent::{
     Error,
     control_api::{
         AuthenticationApi, ByteStream, Client, Connection, Connector, ConvergenceApi, ExecutionApi, GuestTcpApi,
-        Server, SessionApi, SshAccessApi, VncAccessApi,
+        GuestTcpTarget, Server, SessionApi, SshAccessApi, StreamConnection, VncAccessApi,
     },
     control_plane::WaitPolicy,
     control_plane::{ApplyRequest, ControlPlane, memory::InMemoryAgentStore},
@@ -21,7 +21,7 @@ use agent::{
 };
 use sandbox::LocalFuture;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     sync::Notify,
 };
 
@@ -321,8 +321,9 @@ impl ExecutionApi for FakeExecutions {
     }
 }
 
-/// Dials the guest port 22 of the agent `worker`, where a server greets, then
-/// answers everything it read once its client has finished, in upper case.
+/// Resolves the agent `worker`. Its guest port 22 greets, then answers
+/// everything it read once its client has finished, in upper case. Port 7
+/// echoes, and every other port refuses the connection.
 struct FakeGuestTcp;
 
 const GUEST_GREETING: &[u8] = b"SSH-2.0-fake\r\n";
@@ -330,12 +331,11 @@ const SLOW_AGENT: &str = "slow";
 const WORKER_UID: &str = "5f0c8a7e-2b1d-4c3e-9f4a-6d7e8f9a0b1c";
 
 impl GuestTcpApi for FakeGuestTcp {
-    fn connect<'a>(
+    fn resolve<'a>(
         &'a self,
         name: &'a str,
         uid: Option<agent::AgentId>,
-        port: std::num::NonZeroU16,
-    ) -> LocalFuture<'a, Result<Box<dyn ByteStream>, Error>> {
+    ) -> LocalFuture<'a, Result<Box<dyn GuestTcpTarget>, Error>> {
         Box::pin(async move {
             if uid.is_some_and(|uid| uid.to_string() != WORKER_UID) {
                 return Err(Error::Invalid(format!("agent {name:?} was replaced")));
@@ -344,13 +344,29 @@ impl GuestTcpApi for FakeGuestTcp {
             if name == SLOW_AGENT {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            match (name, port.get()) {
-                ("worker" | SLOW_AGENT, 22) => Ok(Box::new(ShoutingGuest) as Box<dyn ByteStream>),
-                ("worker", port) => Err(Error::Invalid(format!(
+            match name {
+                "worker" | SLOW_AGENT => Ok(Box::new(FakeSandbox) as Box<dyn GuestTcpTarget>),
+                "stopped" => Err(Error::Stopped(name.into())),
+                _ => Err(Error::NotFound),
+            }
+        })
+    }
+}
+
+struct FakeSandbox;
+
+impl GuestTcpTarget for FakeSandbox {
+    fn connect(
+        self: Box<Self>,
+        port: std::num::NonZeroU16,
+    ) -> LocalFuture<'static, Result<Box<dyn ByteStream>, Error>> {
+        Box::pin(async move {
+            match port.get() {
+                22 => Ok(Box::new(ShoutingGuest) as Box<dyn ByteStream>),
+                7 => Ok(Box::new(EchoGuest) as Box<dyn ByteStream>),
+                port => Err(Error::Invalid(format!(
                     "guest TCP connect to 127.0.0.1:{port} failed: connection refused"
                 ))),
-                ("stopped", _) => Err(Error::Stopped(name.into())),
-                _ => Err(Error::NotFound),
             }
         })
     }
@@ -359,18 +375,26 @@ impl GuestTcpApi for FakeGuestTcp {
 struct ShoutingGuest;
 
 impl ByteStream for ShoutingGuest {
-    fn relay<'a>(
-        self: Box<Self>,
-        reader: &'a mut (dyn AsyncRead + Unpin),
-        writer: &'a mut (dyn AsyncWrite + Unpin),
-    ) -> LocalFuture<'a, Result<(), Error>> {
+    fn relay(self: Box<Self>, mut connection: Box<dyn StreamConnection>) -> LocalFuture<'static, Result<(), Error>> {
         Box::pin(async move {
-            writer.write_all(GUEST_GREETING).await?;
-            writer.flush().await?;
+            connection.write_all(GUEST_GREETING).await?;
+            connection.flush().await?;
             let mut received = Vec::new();
-            reader.read_to_end(&mut received).await?;
-            writer.write_all(&received.to_ascii_uppercase()).await?;
-            writer.shutdown().await?;
+            connection.read_to_end(&mut received).await?;
+            connection.write_all(&received.to_ascii_uppercase()).await?;
+            connection.shutdown().await?;
+            Ok(())
+        })
+    }
+}
+
+struct EchoGuest;
+
+impl ByteStream for EchoGuest {
+    fn relay(self: Box<Self>, connection: Box<dyn StreamConnection>) -> LocalFuture<'static, Result<(), Error>> {
+        Box::pin(async move {
+            let (mut reader, mut writer) = tokio::io::split(connection);
+            tokio::io::copy(&mut reader, &mut writer).await?;
             Ok(())
         })
     }
@@ -1343,6 +1367,55 @@ async fn bytes_sent_with_the_request_reach_the_guest() {
 }
 
 #[tokio::test(flavor = "local")]
+async fn streams_flow_while_the_control_thread_is_blocked() {
+    let fixture = api();
+    let (client_end, server_end) = tokio::io::duplex(4096);
+    let api = fixture.server.clone();
+    tokio::task::spawn_local(async move {
+        let _ignored = api.serve_connection(server_end).await;
+    });
+    let (switched, switched_here) = tokio::sync::oneshot::channel();
+    let (blocked, blocked_there) = std::sync::mpsc::channel::<()>();
+    let (echoed, echoed_here) = std::sync::mpsc::channel();
+    let client = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("client runtime");
+        runtime.block_on(async move {
+            let mut connection = BufReader::new(client_end);
+            let request =
+                r#"{"jsonrpc":"2.0","id":1,"method":"streams.v1.guestTcp","params":{"name":"worker","port":7}}"#;
+            connection
+                .get_mut()
+                .write_all(format!("{request}\n").as_bytes())
+                .await
+                .expect("request");
+            let mut response = String::new();
+            connection.read_line(&mut response).await.expect("response");
+            switched.send(response).expect("report the switch");
+            blocked_there.recv().expect("the control thread blocks");
+            let mut rounds = 0;
+            for _ in 0..20 {
+                connection.get_mut().write_all(b"ping").await.expect("send");
+                let mut answer = [0; 4];
+                connection.read_exact(&mut answer).await.expect("echo");
+                rounds += usize::from(&answer == b"ping");
+            }
+            echoed.send(rounds).expect("report the echoes");
+        });
+    });
+
+    let response = switched_here.await.expect("switched");
+    assert!(response.contains(r#""stream":"bytes""#), "{response}");
+    blocked.send(()).expect("start echoing");
+    // Blocks the control thread's runtime, as a slow call or reconciliation step would.
+    let rounds = echoed_here.recv_timeout(Duration::from_secs(5));
+    assert_eq!(rounds, Ok(20), "every echo arrives while the control thread is blocked");
+    client.join().expect("client thread");
+}
+
+#[tokio::test(flavor = "local")]
 async fn guest_tcp_failures_are_answered_before_any_stream() {
     let fixture = api();
     for (name, port, not_found) in [
@@ -1465,6 +1538,73 @@ async fn a_low_open_file_limit_caps_the_open_streams() {
     })
     .await
     .expect("a closed stream makes room for another");
+}
+
+/// A socket the control thread accepted wakes the stream thread itself, so a
+/// blocked control thread does not stall the stream.
+#[cfg(unix)]
+#[tokio::test(flavor = "local")]
+async fn socket_streams_flow_while_the_control_thread_is_blocked() {
+    let temporary = tempfile::Builder::new()
+        .prefix("agent-api-")
+        .tempdir()
+        .expect("temporary API directory");
+    let socket_path = temporary.path().join("agentd.sock");
+    let server = api().server;
+    let served_path = socket_path.clone();
+    tokio::task::spawn_local(async move { server.serve_path(&served_path).await });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !socket_path.exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("socket should be created");
+
+    let (switched, switched_here) = tokio::sync::oneshot::channel();
+    let (blocked, blocked_there) = std::sync::mpsc::channel::<()>();
+    let (echoed, echoed_here) = std::sync::mpsc::channel();
+    let client = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("client runtime");
+        runtime.block_on(async move {
+            let socket = tokio::net::UnixStream::connect(&socket_path).await.expect("connect");
+            let mut connection = BufReader::new(socket);
+            // The first bytes of the stream arrive with the request, so they cross with the connection.
+            let request =
+                r#"{"jsonrpc":"2.0","id":1,"method":"streams.v1.guestTcp","params":{"name":"worker","port":7}}"#;
+            connection
+                .get_mut()
+                .write_all(format!("{request}\nearly").as_bytes())
+                .await
+                .expect("request");
+            let mut response = String::new();
+            connection.read_line(&mut response).await.expect("response");
+            let mut early = [0; 5];
+            connection.read_exact(&mut early).await.expect("early bytes echoed");
+            switched.send((response, early)).expect("report the switch");
+            blocked_there.recv().expect("the control thread blocks");
+            let mut rounds = 0;
+            for _ in 0..20 {
+                connection.get_mut().write_all(b"ping").await.expect("send");
+                let mut answer = [0; 4];
+                connection.read_exact(&mut answer).await.expect("echo");
+                rounds += usize::from(&answer == b"ping");
+            }
+            echoed.send(rounds).expect("report the echoes");
+        });
+    });
+
+    let (response, early) = switched_here.await.expect("switched");
+    assert!(response.contains(r#""stream":"bytes""#), "{response}");
+    assert_eq!(&early, b"early");
+    blocked.send(()).expect("start echoing");
+    // Blocks the control thread's runtime, as a slow call or reconciliation step would.
+    let rounds = echoed_here.recv_timeout(Duration::from_secs(5));
+    assert_eq!(rounds, Ok(20), "every echo arrives while the control thread is blocked");
+    client.join().expect("client thread");
 }
 
 #[cfg(unix)]

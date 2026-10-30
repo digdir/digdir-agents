@@ -156,6 +156,11 @@ impl Client {
         &self.backend
     }
 
+    /// The backend, for a thread of its own to connect to sandboxes through.
+    pub(crate) fn shared(&self) -> Arc<LocalBackend> {
+        Arc::clone(&self.backend)
+    }
+
     pub(crate) async fn bind_network_controller(
         &self,
         name: &str,

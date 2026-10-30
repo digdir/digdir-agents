@@ -7,7 +7,7 @@ use crate::Error;
 
 use super::{Connector, Server, client::Connection};
 
-/// Most calls served at once. Connections switched to streams do not count; the server limits those.
+/// Most calls served at once. A connection switched to a stream leaves for the stream thread, which limits those.
 const MAX_CONCURRENT_CONNECTIONS: usize = 128;
 const CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_mins(1);
 type ConnectionFuture = futures_util::future::LocalBoxFuture<'static, ()>;
@@ -119,7 +119,7 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
             break;
         }
         tokio::select! {
-            accepted = listener.accept(), if paused_until.is_none() && connections.len() < MAX_CONCURRENT_CONNECTIONS + server.open_streams() => {
+            accepted = listener.accept(), if paused_until.is_none() && connections.len() < MAX_CONCURRENT_CONNECTIONS => {
                 let Some((stream, _)) = take_accepted(accepted, &mut paused_until)? else {
                     continue;
                 };
@@ -134,8 +134,6 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
             () = tokio::time::sleep_until(paused_until.unwrap_or_else(tokio::time::Instant::now)), if paused_until.is_some() => {
                 paused_until = None;
             }
-            // A connection that became a stream frees its place for calls.
-            () = server.stream_opened() => {}
             () = server.shutdown_requested() => break,
         }
     }
@@ -186,7 +184,7 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
             break;
         }
         tokio::select! {
-            accepted = listener.accept(), if paused_until.is_none() && connections.len() < MAX_CONCURRENT_CONNECTIONS + server.open_streams() => {
+            accepted = listener.accept(), if paused_until.is_none() && connections.len() < MAX_CONCURRENT_CONNECTIONS => {
                 let Some((stream, _)) = take_accepted(accepted, &mut paused_until)? else {
                     continue;
                 };
@@ -201,8 +199,6 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
             () = tokio::time::sleep_until(paused_until.unwrap_or_else(tokio::time::Instant::now)), if paused_until.is_some() => {
                 paused_until = None;
             }
-            // A connection that became a stream frees its place for calls.
-            () = server.stream_opened() => {}
             () = server.shutdown_requested() => break,
         }
     }
@@ -215,6 +211,15 @@ pub(crate) async fn serve(server: Rc<Server>, path: &std::path::Path) -> Result<
 /// carries the end of one direction of a guest connection that way.
 #[cfg(target_os = "windows")]
 struct HalfClosing(tokio_util::compat::Compat<win_uds::net::AsyncStream>);
+
+// async-io's own reactor thread drives the socket rather than either tokio runtime, so it crosses
+// to the stream thread as it is.
+#[cfg(target_os = "windows")]
+impl super::ServedConnection for HalfClosing {
+    fn detach(self) -> std::io::Result<super::Detached> {
+        Ok(super::Detached::unregistered(self))
+    }
+}
 
 #[cfg(target_os = "windows")]
 impl tokio::io::AsyncRead for HalfClosing {

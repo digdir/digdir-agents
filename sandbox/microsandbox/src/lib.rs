@@ -38,5 +38,5 @@ pub fn nested_sandbox_support() -> Result<(), String> {
 /// `RUST_LOG` directives that keep the Microsandbox runtime's helper processes quiet at the
 /// default level. The runtime's agent client logs every relay connection at INFO.
 pub const LOG_DIRECTIVES: &str = "microsandbox_agent_client=warn";
-pub use guest_tcp::{GuestTcpDialer, GuestTcpStream};
+pub use guest_tcp::{GuestTcpDialer, GuestTcpStream, GuestTcpTarget};
 pub use network_backend::{MicrosandboxNetworkBackend, SecretBinding};

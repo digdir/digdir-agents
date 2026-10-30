@@ -3691,12 +3691,11 @@ async fn an_agent_keeps_its_uid_until_it_is_deleted() {
 
     let guest_tcp =
         agent::sandbox::GuestTcp::new(store.clone(), sandbox_service(Rc::new(MemoryProvider::new(backend))));
-    let port = std::num::NonZeroU16::new(22).expect("port");
-    let Err(Error::Invalid(refused)) = guest_tcp.connect("worker", Some(uid), port).await else {
+    let Err(Error::Invalid(refused)) = guest_tcp.resolve("worker", Some(uid)).await else {
         panic!("the replaced agent's uid should be refused");
     };
     assert!(refused.contains("replaced"), "{refused}");
-    let Err(error) = guest_tcp.connect("worker", recreated.metadata.uid, port).await else {
+    let Err(error) = guest_tcp.resolve("worker", recreated.metadata.uid).await else {
         panic!("the agent has no running sandbox to dial");
     };
     assert!(!error.to_string().contains("replaced"), "{error}");

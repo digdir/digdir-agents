@@ -471,7 +471,10 @@ impl MicrosandboxProvider {
         Ok(network)
     }
 
-    async fn runtime_handle(&self, name: &str) -> Result<Option<microsandbox::sandbox::SandboxHandle>, Error> {
+    pub(crate) async fn runtime_handle(
+        &self,
+        name: &str,
+    ) -> Result<Option<microsandbox::sandbox::SandboxHandle>, Error> {
         match self.client.scope(microsandbox::Sandbox::get(name)).await {
             Ok(handle) => Ok(Some(handle)),
             Err(microsandbox::MicrosandboxError::SandboxNotFound(_)) => Ok(None),

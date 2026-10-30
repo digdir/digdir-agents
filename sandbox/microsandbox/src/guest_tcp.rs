@@ -21,16 +21,27 @@ use crate::{MicrosandboxProvider, error};
 
 const RELAY_READ_BUFFER_BYTES: usize = 32 * 1024;
 
+/// How long connecting to a sandbox's runtime may take, as the Microsandbox SDK allows.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Where a running sandbox's runtime listens, resolved from the provider's
+/// state so that any thread can dial it.
+///
+/// It holds no connection. The thread that calls [`Self::dial`] owns the
+/// connection, and that thread's runtime reads every byte from it, so a
+/// thread that carries guest connections never waits on the provider's own.
+pub struct GuestTcpTarget {
+    backend: Arc<microsandbox::LocalBackend>,
+    runtime_name: String,
+}
+
 /// Dials TCP connections from inside one running sandbox.
 ///
 /// The dialer keeps a single multiplexed agent connection, so opening many
 /// concurrent streams through one dialer is cheap. It stops working when the
-/// sandbox runtime restarts; create a replacement through
-/// [`MicrosandboxProvider::guest_tcp_dialer`] when a connect fails.
+/// sandbox runtime restarts; dial its target again when a connect fails.
 pub struct GuestTcpDialer {
     client: Arc<AgentClient>,
-    // Keeps the connected runtime handle (and its relay session) alive.
-    _sandbox: microsandbox::Sandbox,
 }
 
 /// One open TCP stream dialed from inside the guest.
@@ -41,24 +52,54 @@ pub struct GuestTcpStream {
 }
 
 impl MicrosandboxProvider {
-    /// Connects a TCP dialer to one running sandbox.
+    /// Resolves where one running sandbox's runtime listens.
     ///
     /// # Errors
     ///
-    /// Returns an error when the sandbox is unknown, not running, or its
-    /// runtime predates agent-relay TCP support.
-    pub async fn guest_tcp_dialer(&self, id: &SandboxId) -> Result<GuestTcpDialer, Error> {
+    /// Returns an error when the sandbox is unknown or not running.
+    pub async fn guest_tcp_target(&self, id: &SandboxId) -> Result<GuestTcpTarget, Error> {
         let record = self.state.sandbox_by_id(id).await?;
-        let sandbox = self.connect_running(&record).await?;
-        let client = sandbox.client_arc();
+        let runtime = self
+            .runtime_handle(&record.runtime_name)
+            .await?
+            .ok_or_else(|| Error::not_found(sandbox::ResourceKind::Sandbox, &record.id))?;
+        if !matches!(
+            runtime.status_snapshot(),
+            microsandbox::sandbox::SandboxStatus::Running | microsandbox::sandbox::SandboxStatus::Draining
+        ) {
+            return Err(error::microsandbox(microsandbox::MicrosandboxError::SandboxNotRunning(
+                format!("sandbox {} is not running", record.id),
+            )));
+        }
+        Ok(GuestTcpTarget {
+            backend: self.client.shared(),
+            runtime_name: record.runtime_name,
+        })
+    }
+}
+
+impl GuestTcpTarget {
+    /// Connects a dialer to the sandbox's runtime, read by the calling thread's runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the runtime cannot be reached, or predates
+    /// agent-relay TCP support.
+    pub async fn dial(self) -> Result<GuestTcpDialer, Error> {
+        use microsandbox::Backend as _;
+
+        let client = self
+            .backend
+            .dial_agent(&self.runtime_name, CONNECT_TIMEOUT)
+            .await
+            .map_err(error::microsandbox)?;
         if !client.supports(MessageType::TcpConnect) {
             return Err(Error::Backend(
                 "Sandbox runtime does not support agent-relay TCP forwarding; restart the sandbox".into(),
             ));
         }
         Ok(GuestTcpDialer {
-            client,
-            _sandbox: sandbox,
+            client: Arc::new(client),
         })
     }
 }

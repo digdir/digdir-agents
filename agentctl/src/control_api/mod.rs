@@ -4,10 +4,12 @@ mod client;
 mod protocol;
 mod server;
 mod socket;
+mod streams;
 
 pub use client::{Client, Connection, Connector};
 pub use protocol::{DaemonInfo, PROTOCOL_VERSION, ResponseError};
 pub use server::{
-    AgentApi, AuthenticationApi, ByteStream, ConvergenceApi, ErrorHandler, ExecutionApi, GuestTcpApi, Server,
-    SessionApi, SshAccessApi, VncAccessApi,
+    AgentApi, AuthenticationApi, ConvergenceApi, ErrorHandler, ExecutionApi, GuestTcpApi, Server, SessionApi,
+    SshAccessApi, VncAccessApi,
 };
+pub use streams::{ByteStream, Detached, GuestTcpTarget, ServedConnection, StreamConnection};
