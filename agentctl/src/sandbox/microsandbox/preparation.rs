@@ -175,6 +175,12 @@ impl Preparation {
         })
     }
 
+    /// Forgets the logins a failed pass chose for `record`; see
+    /// [`harness::AuthenticationManager::release_logins`].
+    pub(super) fn release_logins(&self, record: &control_plane::AgentRecord) {
+        self.credentials.release_logins(record.id);
+    }
+
     pub(super) fn remove(&self, sandbox: &SandboxName) {
         self.policy.remove_agent(sandbox);
         self.network.remove_secret_bindings(sandbox);
@@ -257,7 +263,10 @@ spec:
             logins: prepared.logins.clone(),
         });
         let status = record.agent.status.clone();
-        database.put(record.clone(), 0).await.expect("store agent");
+        // A later pass for the same agent only updates its status.
+        if database.get(record.id).await.is_err() {
+            database.put(record.clone(), 0).await.expect("store agent");
+        }
         database
             .update_status(record.id, 1, status)
             .await
@@ -364,6 +373,140 @@ spec:
             "b",
             "a and b have one agent each, and the first agent's session reported a nearly used up"
         );
+    }
+
+    /// A session reports for the login its agent's sandbox runs with, which its stored status
+    /// says, rather than one a pass has chosen but not yet started it with.
+    #[tokio::test(flavor = "local")]
+    async fn a_reading_counts_for_the_login_the_sandbox_runs_with_until_its_credential_changes() {
+        use crate::sessions::SessionStore as _;
+
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let database = crate::persistence::Database::open(&directory.path().join("agent.db")).expect("database");
+        for name in ["a", "b"] {
+            harness::store_test_login(name, &database).await;
+        }
+        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
+        let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
+        let credentials = Rc::new(harness::AuthenticationManager::new(database.clone()));
+        let preparation = super::Preparation::new(database.clone(), credentials.clone(), policy, network);
+        let agent = record("first", "6a3c1f0e-2b7d-4e59-9c84-0f1d2e3a4b5c");
+        let prepared = preparation.prepare(&agent).await.expect("prepare");
+        assert_eq!(prepared.logins[&harness::test_harness()].as_str(), "a");
+        store_materialized(&database, agent.clone(), &prepared).await;
+        let session = database
+            .ensure_session(
+                "first",
+                &crate::sessions::SessionName::new("s1").expect("session name"),
+                crate::sessions::NewSession::for_harness(harness::test_harness()),
+            )
+            .await
+            .expect("session");
+        let token: crate::sessions::LaunchToken = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".parse().expect("token");
+        database
+            .record_session_launch(
+                session.id,
+                crate::sessions::LaunchRecord {
+                    token: token.clone(),
+                    sandbox: "sandbox".into(),
+                    launched_at: 0,
+                    attempts: 1,
+                },
+            )
+            .await
+            .expect("record launch");
+        let resets_at = time::OffsetDateTime::now_utc() + time::Duration::DAY;
+        let reading = |used_percent| harness::Usage {
+            windows: vec![harness::UsageWindow {
+                used_percent,
+                resets_at,
+            }],
+        };
+        let report = |usage| credentials.record_session_usage(session.id, &token, usage);
+        let used = || async {
+            credentials
+                .logins()
+                .await
+                .expect("logins")
+                .into_iter()
+                .map(|login| {
+                    (
+                        login.login.to_string(),
+                        login.usage.map(|usage| usage.windows[0].used_percent),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let names = |logins: &[(&str, Option<u8>)]| {
+            logins
+                .iter()
+                .map(|(login, used)| ((*login).to_owned(), *used))
+                .collect::<Vec<_>>()
+        };
+
+        report(reading(100)).await.expect("report");
+        let moved = preparation.prepare(&agent).await.expect("prepare again");
+        assert_eq!(moved.logins[&harness::test_harness()].as_str(), "b", "a is used up");
+        report(reading(60)).await.expect("report");
+        assert_eq!(
+            used().await,
+            names(&[("a", Some(100)), ("b", None)]),
+            "the sandbox still runs with a until the pass that chose b has started it, and a late \
+             reading of a window does not lower it"
+        );
+
+        store_materialized(&database, agent.clone(), &moved).await;
+        report(reading(60)).await.expect("report");
+        assert_eq!(
+            used().await,
+            names(&[("a", Some(100)), ("b", None)]),
+            "the reading the session repeats after moving still describes a"
+        );
+        report(reading(30)).await.expect("report");
+        assert_eq!(used().await, names(&[("a", Some(100)), ("b", Some(30))]));
+
+        assert!(
+            credentials
+                .logout(
+                    harness::test_harness(),
+                    &harness::LoginName::new("b").expect("login name")
+                )
+                .await
+                .expect("logout")
+        );
+        harness::store_test_login("b", &database).await;
+        report(reading(30)).await.expect("report");
+        assert_eq!(
+            used().await,
+            names(&[("a", Some(100)), ("b", None)]),
+            "b may be another account now, which the repeated reading does not describe"
+        );
+    }
+
+    /// A pass that fails after choosing a login has not started its sandbox with it, so the choice
+    /// stops counting for other agents.
+    #[tokio::test(flavor = "local")]
+    async fn a_failed_pass_gives_back_the_logins_it_chose() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let database = crate::persistence::Database::open(&directory.path().join("agent.db")).expect("database");
+        for name in ["a", "b"] {
+            harness::store_test_login(name, &database).await;
+        }
+        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
+        let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
+        let credentials = Rc::new(harness::AuthenticationManager::new(database.clone()));
+        let preparation = super::Preparation::new(database.clone(), credentials, policy, network);
+        let login = |prepared: &super::PreparedNetwork| prepared.logins[&harness::test_harness()].to_string();
+        let failed = record("failed", "6a3c1f0e-2b7d-4e59-9c84-0f1d2e3a4b5c");
+        database.put(failed.clone(), 0).await.expect("store agent");
+        let prepared = preparation.prepare(&failed).await.expect("prepare");
+        assert_eq!(login(&prepared), "a");
+
+        preparation.release_logins(&failed);
+
+        let other = record("other", "7b4d2a1f-3c8e-4f6a-8d95-1a2b3c4d5e6f");
+        let prepared = preparation.prepare(&other).await.expect("prepare other");
+        assert_eq!(login(&prepared), "a", "the failed agent's choice no longer counts");
     }
 
     async fn stop(database: &crate::persistence::Database, id: crate::AgentId) {

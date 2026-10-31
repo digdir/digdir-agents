@@ -128,6 +128,59 @@ impl Adapter {
     fn sandbox_mounts(record: &AgentRecord) -> Vec<::sandbox::mount::Mount> {
         record.agent.spec.sandbox.resolved_mounts()
     }
+
+    /// Prepares `record`'s sandbox and starts it, once its nested sandboxes are resolved.
+    async fn ensure_prepared(
+        &self,
+        record: &AgentRecord,
+        mut environment: std::collections::BTreeMap<String, String>,
+        nested_sandboxes: Option<NestedSandboxesOutcome>,
+        progress: ::sandbox::ProgressReporter,
+    ) -> Result<ProviderEnsureOutcome, Error> {
+        let prepared = self.preparation.prepare(record).await?;
+        let harnesses = prepared.harnesses;
+        let logins = prepared.logins;
+        for (name, value) in prepared.environment {
+            if environment.insert(name.clone(), value).is_some() {
+                return Err(Error::Invalid(format!(
+                    "Sandbox environment variable {name:?} collides with a mediated secret"
+                )));
+            }
+        }
+        let sandbox_name = record.sandbox_name()?;
+        let mut spec = self.sandbox_spec(record)?;
+        spec.resources = spec
+            .resources
+            .with_nested_sandboxes(nested_sandboxes == Some(NestedSandboxesOutcome::Available));
+        // Ensure starts a stopped sandbox, and restarts a running one to replace its environment
+        // or its resources.
+        let runtime_restarted = match self.service.inspect(&sandbox_name).await {
+            Ok(sandbox) => {
+                sandbox.state == SandboxState::Stopped
+                    || sandbox.environment != environment
+                    || sandbox.resources != spec.resources
+            }
+            Err(error) if error.is_not_found() => false,
+            Err(error) => return Err(error.into()),
+        };
+        let request = EnsureSandboxRequest::new(sandbox_name, spec)
+            .with_hostname(record.sandbox_hostname()?)
+            .with_mounts(Self::sandbox_mounts(record))
+            .with_environment(environment);
+        let mut sandbox = self.service.ensure(&request).forward(&progress).await?;
+        if self.preparation.network_is_stale(sandbox.id()) {
+            self.preparation.restart_network(&sandbox).await?;
+            // Re-ensure starts the stopped Network with the replacement handshake bindings.
+            sandbox = self.service.ensure(&request).forward(&progress).await?;
+        }
+        Ok(ProviderEnsureOutcome {
+            sandbox,
+            runtime_restarted,
+            harnesses,
+            logins,
+            nested_sandboxes,
+        })
+    }
 }
 
 impl Provider for Adapter {
@@ -150,7 +203,7 @@ impl Provider for Adapter {
     fn ensure<'a>(
         &'a self,
         record: &'a AgentRecord,
-        mut environment: std::collections::BTreeMap<String, String>,
+        environment: std::collections::BTreeMap<String, String>,
         progress: ::sandbox::ProgressReporter,
     ) -> LocalFuture<'a, Result<ProviderEnsureOutcome, Error>> {
         Box::pin(async move {
@@ -160,49 +213,14 @@ impl Provider for Adapter {
                 None => Ok(()),
             };
             let nested_sandboxes = resolve_nested_sandboxes(requested, offered)?;
-            let prepared = self.preparation.prepare(record).await?;
-            let harnesses = prepared.harnesses;
-            let logins = prepared.logins;
-            for (name, value) in prepared.environment {
-                if environment.insert(name.clone(), value).is_some() {
-                    return Err(Error::Invalid(format!(
-                        "Sandbox environment variable {name:?} collides with a mediated secret"
-                    )));
-                }
+            let outcome = self
+                .ensure_prepared(record, environment, nested_sandboxes, progress)
+                .await;
+            // The sandbox may not run with the logins this pass chose; its status keeps those it last ran with.
+            if outcome.is_err() {
+                self.preparation.release_logins(record);
             }
-            let sandbox_name = record.sandbox_name()?;
-            let mut spec = self.sandbox_spec(record)?;
-            spec.resources = spec
-                .resources
-                .with_nested_sandboxes(nested_sandboxes == Some(NestedSandboxesOutcome::Available));
-            // Ensure starts a stopped sandbox, and restarts a running one to replace its environment
-            // or its resources.
-            let runtime_restarted = match self.service.inspect(&sandbox_name).await {
-                Ok(sandbox) => {
-                    sandbox.state == SandboxState::Stopped
-                        || sandbox.environment != environment
-                        || sandbox.resources != spec.resources
-                }
-                Err(error) if error.is_not_found() => false,
-                Err(error) => return Err(error.into()),
-            };
-            let request = EnsureSandboxRequest::new(sandbox_name, spec)
-                .with_hostname(record.sandbox_hostname()?)
-                .with_mounts(Self::sandbox_mounts(record))
-                .with_environment(environment);
-            let mut sandbox = self.service.ensure(&request).forward(&progress).await?;
-            if self.preparation.network_is_stale(sandbox.id()) {
-                self.preparation.restart_network(&sandbox).await?;
-                // Re-ensure starts the stopped Network with the replacement handshake bindings.
-                sandbox = self.service.ensure(&request).forward(&progress).await?;
-            }
-            Ok(ProviderEnsureOutcome {
-                sandbox,
-                runtime_restarted,
-                harnesses,
-                logins,
-                nested_sandboxes,
-            })
+            outcome
         })
     }
 

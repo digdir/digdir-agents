@@ -34,7 +34,18 @@ pub(in crate::harness) struct Authentication {
     usage_url: String,
     /// Kept for every login used since start, never removed, so each login has exactly one lock.
     refreshes: RefCell<BTreeMap<LoginName, Rc<Refresh>>>,
-    usage: RefCell<BTreeMap<LoginName, (Instant, Option<Usage>)>>,
+    /// Replaced when the login's credential changes, so a read in flight for the old one is kept
+    /// by nobody.
+    usage: RefCell<BTreeMap<LoginName, Rc<UsageReading>>>,
+}
+
+/// One login's usage reading. Agents prepared together each ask for it, so one reads it while the
+/// others wait for that reading.
+#[derive(Default)]
+struct UsageReading {
+    lock: tokio::sync::Mutex<()>,
+    /// When it was last read, and what was read.
+    last: RefCell<Option<(Instant, Option<Usage>)>>,
 }
 
 /// One login's refresh state. Each grant's refresh token rotates on use, so its refreshes must
@@ -58,25 +69,34 @@ impl Authentication {
         }
     }
 
-    /// How much of `login`'s subscription limits is used, read at most every [`USAGE_TTL`].
-    /// `None` when it cannot be read, which never blocks choosing a login.
+    /// How much of `login`'s subscription limits is used, read at most every [`USAGE_TTL`]. A read
+    /// that fails keeps the last one, whose windows still run out when they reset. `None` when it
+    /// has never been read, which never blocks choosing a login.
     pub(in crate::harness) async fn usage(&self, login: &LoginName) -> Option<Usage> {
-        if let Some((read_at, usage)) = self.usage.borrow().get(login)
+        let reading = Rc::clone(self.usage.borrow_mut().entry(login.clone()).or_default());
+        let _read = reading.lock.lock().await;
+        if let Some((read_at, usage)) = reading.last.borrow().as_ref()
             && read_at.elapsed() < USAGE_TTL
         {
             return usage.clone();
         }
-        let usage = match self.read_usage(login).await {
+        let read = match self.read_usage(login).await {
             Ok(usage) => Some(usage),
             Err(error) => {
                 tracing::warn!(%error, %login, "could not read Codex usage");
                 None
             }
         };
-        self.usage
-            .borrow_mut()
-            .insert(login.clone(), (Instant::now(), usage.clone()));
+        let mut last = reading.last.borrow_mut();
+        let usage = read.or_else(|| last.take().and_then(|(_, usage)| usage));
+        *last = Some((Instant::now(), usage.clone()));
         usage
+    }
+
+    /// Forgets `login`'s usage reading, once its credential has changed and may be another
+    /// account's.
+    fn forget_usage(&self, login: &LoginName) {
+        self.usage.borrow_mut().remove(login);
     }
 
     async fn read_usage(&self, login: &LoginName) -> Result<Usage, Error> {
@@ -167,6 +187,7 @@ impl Authentication {
         let _refresh = state.lock.lock().await;
         self.store(&login, &access_token, &refresh_token, &metadata).await?;
         state.failure.borrow_mut().take();
+        self.forget_usage(&login);
         Ok(ImportedAuthentication {
             provider: PROVIDER.into(),
             login,
@@ -182,6 +203,7 @@ impl Authentication {
         let _refresh = state.lock.lock().await;
         let forgotten = LOGINS.delete(&self.database, login).await?;
         state.failure.borrow_mut().take();
+        self.forget_usage(login);
         Ok(forgotten)
     }
 
@@ -800,7 +822,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "local")]
-    async fn usage_is_read_with_the_logins_grant_and_kept_for_a_while() {
+    async fn usage_is_read_once_with_the_logins_grant_and_kept_until_its_credential_changes() {
         let directory = TempDir::new().expect("temporary directory");
         let database = persistence::Database::open(&directory.path().join("agent.db")).expect("database");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -820,11 +842,19 @@ mod tests {
                 assert!(request.contains(&expected.to_ascii_lowercase()), "the login's grant");
                 assert!(request.contains("chatgpt-account-id: account-canary"));
                 observed.set(observed.get() + 1);
-                let body = r#"{"rate_limit":{"primary_window":{"used_percent":24.2,"reset_at":4102444800},"secondary_window":null}}"#;
+                // Only the first read succeeds.
+                let (status, body) = if observed.get() == 1 {
+                    (
+                        "200 OK",
+                        r#"{"rate_limit":{"primary_window":{"used_percent":24.2,"reset_at":4102444800},"secondary_window":null}}"#,
+                    )
+                } else {
+                    ("429 Too Many Requests", "{}")
+                };
                 stream
                     .write_all(
                         format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                             body.len()
                         )
                         .as_bytes(),
@@ -840,9 +870,8 @@ mod tests {
             .await
             .expect("login");
 
-        let first = manager.usage(&login).await.expect("usage");
-        let second = manager.usage(&login).await.expect("cached usage");
-
+        let (first, second) = tokio::join!(manager.usage(&login), manager.usage(&login));
+        let first = first.expect("usage");
         assert_eq!(
             first.windows,
             [UsageWindow {
@@ -851,8 +880,30 @@ mod tests {
             }],
             "a partly used percent rounds up"
         );
-        assert_eq!(first, second);
+        assert_eq!(second.as_ref(), Some(&first), "a read in flight is shared");
+        assert_eq!(manager.usage(&login).await.as_ref(), Some(&first), "and then kept");
         assert_eq!(requests.get(), 1);
+
+        let reading = Rc::clone(&manager.usage.borrow()[&login]);
+        let aged = Instant::now().checked_sub(USAGE_TTL).expect("an aged instant");
+        reading.last.borrow_mut().as_mut().expect("a reading").0 = aged;
+        assert_eq!(
+            manager.usage(&login).await.as_ref(),
+            Some(&first),
+            "a failed read keeps the last one"
+        );
+        assert_eq!(requests.get(), 2);
+
+        manager
+            .login(login.clone(), login_file(&access, "refresh-canary"), false)
+            .await
+            .expect("login again");
+        assert_eq!(
+            manager.usage(&login).await,
+            None,
+            "another credential's reading is not kept"
+        );
+        assert_eq!(requests.get(), 3);
     }
 
     #[tokio::test(flavor = "local")]

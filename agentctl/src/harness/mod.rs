@@ -349,11 +349,21 @@ pub struct AuthenticationManager {
     database: persistence::Database,
     claude_code: claude_code::authentication::Authentication,
     codex: codex::authentication::Authentication,
-    /// The login each agent's harness was given here since start; see [`Self::assign_login`].
+    /// The login each agent's harness was given by a pass here that has not failed since; see
+    /// [`Self::assign_login`].
     assignments:
         std::cell::RefCell<std::collections::BTreeMap<crate::AgentId, std::collections::BTreeMap<Harness, LoginName>>>,
-    /// The latest usage sessions reported for each login whose provider tells only the harness.
+    /// The usage sessions reported for each login whose provider tells only the harness, merged.
     reported: std::cell::RefCell<std::collections::BTreeMap<(Harness, LoginName), Usage>>,
+    /// What each session last reported; see [`Self::record_session_usage`].
+    session_readings: std::cell::RefCell<std::collections::BTreeMap<crate::sessions::SessionId, SessionReading>>,
+}
+
+/// A session's last usage report.
+struct SessionReading {
+    /// The login it was counted for, or `None` once that login's credential has changed.
+    login: Option<(Harness, LoginName)>,
+    usage: Usage,
 }
 
 impl AuthenticationManager {
@@ -366,6 +376,7 @@ impl AuthenticationManager {
             codex: codex::authentication::Authentication::new(database),
             assignments: std::cell::RefCell::default(),
             reported: std::cell::RefCell::default(),
+            session_readings: std::cell::RefCell::default(),
         }
     }
 
@@ -385,11 +396,13 @@ impl AuthenticationManager {
         credential: Zeroizing<String>,
         imported: bool,
     ) -> Result<ImportedAuthentication, Error> {
-        match harness {
+        let imported = match harness {
             Harness::ClaudeCode => self.claude_code.login(login, credential).await,
             Harness::Codex => self.codex.login(login, credential, imported).await,
             Harness::Pi => Err(no_platform_login()),
-        }
+        }?;
+        self.forget_usage(harness, &imported.login);
+        Ok(imported)
     }
 
     /// Forgets the selected harness's login `login`, returning whether it was stored.
@@ -398,10 +411,25 @@ impl AuthenticationManager {
     ///
     /// Returns an error when the harness has no platform login or the database cannot be written.
     pub async fn logout(&self, harness: Harness, login: &LoginName) -> Result<bool, Error> {
-        match harness {
+        let forgotten = match harness {
             Harness::ClaudeCode => claude_code::LOGINS.delete(&self.database, login).await,
             Harness::Codex => self.codex.logout(login).await,
             Harness::Pi => Err(no_platform_login()),
+        }?;
+        self.forget_usage(harness, login);
+        Ok(forgotten)
+    }
+
+    /// Forgets how much of `login`'s limits is used, once its credential has changed and may be
+    /// another account's.
+    fn forget_usage(&self, harness: Harness, login: &LoginName) {
+        // Codex forgets the usage it reads itself.
+        let key = (harness, login.clone());
+        self.reported.borrow_mut().remove(&key);
+        for reading in self.session_readings.borrow_mut().values_mut() {
+            if reading.login.as_ref() == Some(&key) {
+                reading.login = None;
+            }
         }
     }
 
@@ -432,7 +460,8 @@ impl AuthenticationManager {
     /// agents whose sandboxes are still starting, so agents applied together spread out. Counting,
     /// choosing and recording happen without an await between them, which on this single-threaded
     /// runtime makes them one step. An agent's stored status supplies its login after a restart,
-    /// before any choice is made for it here.
+    /// before any choice is made for it here, and after a pass that failed; see
+    /// [`Self::release_logins`].
     ///
     /// An optional installation is omitted rather than failing provisioning without one, so this must
     /// distinguish "no login here" from a genuine fault, which stays an error.
@@ -505,6 +534,12 @@ impl AuthenticationManager {
         Ok(chosen)
     }
 
+    /// Forgets the logins a pass that then failed chose for `agent`, so they stop counting for
+    /// other agents. Its stored status keeps the ones its sandbox last started with.
+    pub(crate) fn release_logins(&self, agent: crate::AgentId) {
+        self.assignments.borrow_mut().remove(&agent);
+    }
+
     /// How much of `harness`'s login `login` is used: read on the host where its provider allows
     /// that, else as its sessions last reported it.
     async fn usage(&self, harness: Harness, login: &LoginName) -> Option<Usage> {
@@ -515,11 +550,14 @@ impl AuthenticationManager {
     }
 
     /// Records `usage` that the launch of `session` holding `token` reported for the login its
-    /// agent's harness uses.
+    /// agent's harness uses, as its stored status says: a login chosen since is not in use until
+    /// the pass that chose it has started the sandbox's network with it.
     ///
     /// The report comes from inside the sandbox, so it is trusted only as far as it can do harm: it
     /// steers which login agents are given, never which credential an agent gets. A session can
-    /// report only for its own agent's login.
+    /// report only for its own agent's login. A session repeats its last reading now and then, so
+    /// that a restarted host learns it again; a repeat after its login changed describes the old
+    /// one and is dropped.
     ///
     /// # Errors
     ///
@@ -527,39 +565,48 @@ impl AuthenticationManager {
     /// when the database cannot be read.
     pub async fn record_session_usage(
         &self,
-        session: crate::sessions::SessionId,
+        session_id: crate::sessions::SessionId,
         token: &crate::sessions::LaunchToken,
         usage: Usage,
     ) -> Result<(), Error> {
         use crate::{control_plane::AgentStore as _, sessions::SessionStore as _};
 
-        let launch = self.database.session_launch_state(session).await?;
+        let launch = self.database.session_launch_state(session_id).await?;
         if launch.is_none_or(|launch| launch.token != *token) {
             return Err(Error::NotFound);
         }
-        let session = self.database.get_session(session).await?;
-        let assigned = self
-            .assignments
-            .borrow()
-            .get(&session.agent_id)
-            .and_then(|logins| logins.get(&session.harness))
-            .cloned();
-        let login = if let Some(login) = assigned {
-            Some(login)
-        } else {
-            let agent = self.database.get(session.agent_id).await?;
-            agent
-                .agent
-                .status
-                .sandbox
-                .as_ref()
-                .and_then(|assignment| assignment.login(session.harness))
-                .cloned()
-        };
+        let session = self.database.get_session(session_id).await?;
+        let agent = self.database.get(session.agent_id).await?;
         // An agent given no login yet has none to report for.
-        if let Some(login) = login {
-            self.reported.borrow_mut().insert((session.harness, login), usage);
+        let Some(login) = agent
+            .agent
+            .status
+            .sandbox
+            .as_ref()
+            .and_then(|assignment| assignment.login(session.harness))
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let key = (session.harness, login);
+        let now = time::OffsetDateTime::now_utc();
+        let mut readings = self.session_readings.borrow_mut();
+        // A reading whose windows have all reset steers nothing, so neither does its repeat.
+        readings.retain(|_, reading| reading.usage.resets_at(now).is_some());
+        if let Some(previous) = readings.get(&session_id)
+            && previous.usage == usage
+            && previous.login.as_ref() != Some(&key)
+        {
+            return Ok(());
         }
+        readings.insert(
+            session_id,
+            SessionReading {
+                login: Some(key.clone()),
+                usage: usage.clone(),
+            },
+        );
+        self.reported.borrow_mut().entry(key).or_default().merge(usage, now);
         Ok(())
     }
 }

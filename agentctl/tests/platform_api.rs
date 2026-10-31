@@ -313,14 +313,20 @@ async fn usage_reports_need_the_current_launch_token_and_a_plausible_reading() {
     let server_task = tokio::task::spawn_local(server.serve(listener));
     let report = |windows: &str| format!(r#"{{"sessionId":"{}","windows":{windows}}}"#, session.id);
     let usage = agent::platform_api::SESSION_USAGE_PATH;
-    let reading = report(r#"[{"usedPercent":23.5,"resetsAt":4102444800}]"#);
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let tomorrow = now + 86_400;
+    let reading = report(&format!(r#"[{{"usedPercent":23.5,"resetsAt":{tomorrow}}}]"#));
 
     assert_eq!(
         request_to(port, usage, "dddddddd-dddd-4ddd-8ddd-dddddddddddd", &reading).await,
         401
     );
-    let too_many = format!("[{}]", [r#"{"usedPercent":1,"resetsAt":4102444800}"#; 5].join(","));
-    for implausible in ["[]", r#"[{"usedPercent":"23","resetsAt":4102444800}]"#, &too_many] {
+    let window = format!(r#"{{"usedPercent":1,"resetsAt":{tomorrow}}}"#);
+    let too_many = format!("[{}]", vec![window; 5].join(","));
+    let not_a_number = format!(r#"[{{"usedPercent":"23","resetsAt":{tomorrow}}}]"#);
+    // Every limit resets within a week, so a reading that lasts longer is not believed.
+    let too_far = format!(r#"[{{"usedPercent":100,"resetsAt":{}}}]"#, now + 9 * 86_400);
+    for implausible in ["[]", &not_a_number, &too_many, &too_far] {
         assert_eq!(
             request_to(port, usage, TOKEN, &report(implausible)).await,
             400,

@@ -217,8 +217,11 @@ impl LoginSet {
 /// The step in which [`LoginSet::choose`] compares how much of logins' limits is used, in percent.
 pub const USAGE_STEP: u8 = 10;
 
+/// The most windows a [`Usage`] merged from many readings keeps, the fullest first.
+const MAX_MERGED_WINDOWS: usize = 8;
+
 /// How much of a login's subscription limits is used, as its provider last reported it.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Usage {
     /// Each rolling limit, such as five hours or a week.
@@ -279,6 +282,30 @@ impl Usage {
             .filter(|window| window.resets_at > now)
             .max_by_key(|window| (window.used_percent, std::cmp::Reverse(window.resets_at)))
             .map(|window| window.resets_at)
+    }
+
+    /// Adds `reading`, another reading of the same login, to this one. Use only grows within a
+    /// window until it resets, so the fuller reading of a window stands, and a reading that arrives
+    /// after a newer one of its window changes nothing. Windows reset at `now` are dropped.
+    pub fn merge(&mut self, reading: Self, now: time::OffsetDateTime) {
+        self.windows.retain(|window| window.resets_at > now);
+        for window in reading.windows.into_iter().filter(|window| window.resets_at > now) {
+            match self
+                .windows
+                .iter_mut()
+                .find(|known| known.resets_at == window.resets_at)
+            {
+                Some(known) => known.used_percent = known.used_percent.max(window.used_percent),
+                None => self.windows.push(window),
+            }
+        }
+        self.windows.sort_by_key(|window| {
+            (
+                std::cmp::Reverse(window.used_percent),
+                std::cmp::Reverse(window.resets_at),
+            )
+        });
+        self.windows.truncate(MAX_MERGED_WINDOWS);
     }
 }
 
@@ -636,5 +663,59 @@ mod tests {
         assert_eq!(usage.used_percent(now()), 40, "the full window has reset");
         assert_eq!(usage.resets_at(now()), Some(now() + time::Duration::DAY));
         assert_eq!(usage.used_percent(now() + time::Duration::WEEK), 0);
+    }
+
+    #[test]
+    fn a_late_reading_of_a_window_cannot_lower_a_newer_one() {
+        let window = |used_percent, resets_at| UsageWindow {
+            used_percent,
+            resets_at,
+        };
+        let five_hours = now() + time::Duration::HOUR;
+        let week = now() + time::Duration::DAY;
+        let mut usage = Usage {
+            windows: vec![
+                window(100, five_hours),
+                window(60, week),
+                window(90, now() - time::Duration::MINUTE),
+            ],
+        };
+
+        usage.merge(
+            Usage {
+                windows: vec![window(20, five_hours), window(70, week)],
+            },
+            now(),
+        );
+        assert_eq!(
+            usage.windows,
+            vec![window(100, five_hours), window(70, week)],
+            "the fuller reading of each window stands and the reset one goes"
+        );
+
+        let next_five_hours = five_hours + time::Duration::hours(5);
+        usage.merge(
+            Usage {
+                windows: vec![window(5, next_five_hours)],
+            },
+            five_hours,
+        );
+        assert_eq!(
+            usage.used_percent(five_hours),
+            70,
+            "a new window does not lower the week"
+        );
+        assert_eq!(usage.windows, vec![window(70, week), window(5, next_five_hours)]);
+
+        for minutes in 1..=20 {
+            usage.merge(
+                Usage {
+                    windows: vec![window(1, week + time::Duration::minutes(minutes))],
+                },
+                five_hours,
+            );
+        }
+        assert_eq!(usage.windows.len(), MAX_MERGED_WINDOWS);
+        assert_eq!(usage.used_percent(five_hours), 70, "the fullest windows are kept");
     }
 }

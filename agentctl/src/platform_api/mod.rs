@@ -45,6 +45,11 @@ pub const SESSION_USAGE_PATH: &str = "/v1/session/usage";
 /// Upper bound for the limit windows one usage report carries.
 const MAX_USAGE_WINDOWS: usize = 4;
 
+/// How far ahead a reported limit window may reset. Subscription limits run for at most a week; a
+/// reading reported from inside a sandbox steers which login agents get until it resets, so one
+/// that claims a later reset is not believed.
+const MAX_USAGE_HORIZON: time::Duration = time::Duration::days(8);
+
 /// Where usage a session reports is recorded.
 pub trait UsageReports {
     /// Records `usage` for the login the session's harness uses, when `token` is its launch's.
@@ -166,7 +171,7 @@ impl Server {
     }
 
     async fn accept_usage(&self, token: &sessions::LaunchToken, report: UsageReport) -> u16 {
-        let Some(usage) = report.usage() else {
+        let Some(usage) = report.usage(time::OffsetDateTime::now_utc()) else {
             return 400;
         };
         match self.usage.record_session_usage(report.session_id, token, usage).await {
@@ -259,8 +264,8 @@ struct UsageReportWindow {
 }
 
 impl UsageReport {
-    /// The reported usage, or `None` when it is not a plausible reading.
-    fn usage(&self) -> Option<crate::harness::Usage> {
+    /// The reported usage, or `None` when it is not a plausible reading at `now`.
+    fn usage(&self, now: time::OffsetDateTime) -> Option<crate::harness::Usage> {
         if self.windows.is_empty() || self.windows.len() > MAX_USAGE_WINDOWS {
             return None;
         }
@@ -268,7 +273,10 @@ impl UsageReport {
             .windows
             .iter()
             .map(|window| crate::harness::UsageWindow::from_reading(window.used_percent, window.resets_at))
-            .collect::<Option<_>>()?;
+            .collect::<Option<Vec<_>>>()?;
+        if windows.iter().any(|window| window.resets_at > now + MAX_USAGE_HORIZON) {
+            return None;
+        }
         Some(crate::harness::Usage { windows })
     }
 }
