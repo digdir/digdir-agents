@@ -281,3 +281,46 @@ fn validates_filename_grammar() {
         assert!(rejected.parse::<AgentVariantName>().is_err(), "{rejected}");
     }
 }
+
+#[test]
+fn a_variant_of_an_agent_resolves_back_to_it_and_holds_only_what_differs() {
+    let directory = agent_directory();
+    let base = manifest::resolve(&directory.path().join("agent.yaml"))
+        .expect("the base resolves")
+        .agent;
+    let mut desired = base.clone();
+    desired.metadata.name = "base-mine".into();
+    desired.spec.sandbox.resources.cpu = "6".parse().expect("a CPU count");
+    desired.spec.sandbox.image = sandbox::image::ImageSource::Reference {
+        reference: "example.com/agent:latest".into(),
+    };
+    desired.spec.sandbox.retention_policy = None;
+    desired.spec.sandbox.mounts.push(agent::MountSpec::Bind {
+        source: "/work/project".into(),
+        target: sandbox::SandboxPath::new("/home/agent/code/project"),
+        read_only: false,
+    });
+
+    let variant = manifest::variant_of(&base, &desired, "agent.yaml").expect("a variant");
+    let yaml = serde_yaml_ng::to_string(&variant).expect("variant YAML");
+    write(directory.path(), "agent.mine.yaml", &yaml);
+
+    let resolved = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect("the variant resolves")
+        .agent;
+    assert_eq!(resolved, desired, "{yaml}");
+    let spec = variant.spec.expect("a spec");
+    assert!(spec.get("home").is_none(), "unchanged fields stay out:\n{yaml}");
+    assert!(
+        spec["sandbox"].get("platform").is_none(),
+        "unchanged fields stay out:\n{yaml}"
+    );
+    assert!(
+        spec["sandbox"]["retentionPolicy"].is_null(),
+        "a dropped field is removed:\n{yaml}"
+    );
+
+    let unchanged = manifest::variant_of(&base, &base, "agent.yaml").expect("a variant");
+    assert_eq!(unchanged.spec, None);
+    assert_eq!(unchanged.metadata["name"], "base");
+}

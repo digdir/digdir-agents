@@ -1183,6 +1183,37 @@ pub fn resolve(path: &Path) -> Result<ResolvedManifest, Error> {
     Ok(ResolvedManifest { agent, chain })
 }
 
+/// The variant of the manifest `extends` that makes `base`, the agent it resolves to, into
+/// `desired`.
+///
+/// It holds only what differs, so changes to the manifest it extends still reach the agent, except
+/// in a list it restates, since a variant replaces a list whole. Its `metadata.name` is always
+/// stated, as every variant must.
+///
+/// # Errors
+///
+/// Returns an error when either agent cannot be represented as YAML.
+pub fn variant_of(base: &Agent, desired: &Agent, extends: &str) -> Result<AgentVariant, Error> {
+    let part = |agent: &Agent, field: &str| -> Result<serde_yaml_ng::Value, Error> {
+        let value = serde_yaml_ng::to_value(agent).map_err(Error::Yaml)?;
+        Ok(value.get(field).cloned().unwrap_or_default())
+    };
+    let mut metadata = serde_yaml_ng::Mapping::new();
+    metadata.insert("name".into(), desired.metadata.name.clone().into());
+    if let Some(serde_yaml_ng::Value::Mapping(changed)) =
+        patch_value(&part(base, "metadata")?, &part(desired, "metadata")?)
+    {
+        metadata.extend(changed.into_iter().filter(|(key, _)| key.as_str() != Some("name")));
+    }
+    Ok(AgentVariant {
+        api_version: API_VERSION.to_owned(),
+        kind: VARIANT_KIND.to_owned(),
+        extends: extends.to_owned(),
+        metadata: serde_yaml_ng::Value::Mapping(metadata),
+        spec: patch_value(&part(base, "spec")?, &part(desired, "spec")?),
+    })
+}
+
 /// Extracts a variant selector from a conventional leaf filename.
 #[must_use]
 pub fn variant_from_filename(path: &Path) -> Option<AgentVariantName> {
@@ -1372,6 +1403,37 @@ fn merge_value(base: &mut serde_yaml_ng::Value, patch: serde_yaml_ng::Value) {
     }
 }
 
+/// What [`merge_value`] needs on top of `base` to give `desired`, or `None` when they are equal:
+/// the keys of a mapping that differ, `null` for a key `desired` drops, and anything else whole.
+/// A tagged mapping whose `type` changes is whole too, since the merge replaces it.
+fn patch_value(base: &serde_yaml_ng::Value, desired: &serde_yaml_ng::Value) -> Option<serde_yaml_ng::Value> {
+    if base == desired {
+        return None;
+    }
+    let (Some(base), Some(desired_mapping)) = (base.as_mapping(), desired.as_mapping()) else {
+        return Some(desired.clone());
+    };
+    let discriminator = serde_yaml_ng::Value::String("type".into());
+    if base.get(&discriminator) != desired_mapping.get(&discriminator) {
+        return Some(desired.clone());
+    }
+    let mut patch = serde_yaml_ng::Mapping::new();
+    for (key, value) in desired_mapping {
+        let changed = base
+            .get(key)
+            .map_or_else(|| Some(value.clone()), |inherited| patch_value(inherited, value));
+        if let Some(changed) = changed {
+            patch.insert(key.clone(), changed);
+        }
+    }
+    for key in base.keys() {
+        if !desired_mapping.contains_key(key) {
+            patch.insert(key.clone(), serde_yaml_ng::Value::Null);
+        }
+    }
+    Some(serde_yaml_ng::Value::Mapping(patch))
+}
+
 fn string_field(mapping: &serde_yaml_ng::Mapping, field: &str, path: &Path) -> Result<String, Error> {
     mapping
         .get(serde_yaml_ng::Value::String(field.into()))
@@ -1382,8 +1444,23 @@ fn string_field(mapping: &serde_yaml_ng::Mapping, field: &str, path: &Path) -> R
 
 /// Resolves a manifest host path: `~` and `~/…` below the home directory, a relative path against the manifest's
 /// directory.
-pub(crate) fn resolve_host_path(source_directory: &Path, path: &Path, field: &str) -> Result<PathBuf, Error> {
+///
+/// # Errors
+///
+/// Returns an error naming `field` when the path starts with `~` and the home directory is not set.
+pub fn resolve_host_path(source_directory: &Path, path: &Path, field: &str) -> Result<PathBuf, Error> {
     resolve_host_path_with(source_directory, path, field, crate::local::home::user_home_directory)
+}
+
+/// Resolves a host path a person typed as a manifest path is resolved: `~` and `~/…` below the home directory, a
+/// relative path against the working directory.
+///
+/// # Errors
+///
+/// Returns an error when the path starts with `~` and the home directory is not set, or when the working directory
+/// cannot be read.
+pub fn expand_host_path(path: &Path) -> Result<PathBuf, Error> {
+    resolve_host_path(&std::env::current_dir()?, path, "path")
 }
 
 /// Resolves a manifest host path as [`resolve_host_path`] does, or `None` when the source is optional and the path
