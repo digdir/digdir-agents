@@ -634,7 +634,7 @@ fn released_preview_1_database_migrates_without_losing_state() {
         connection
             .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("schema version"),
-        5
+        6
     );
     assert_migrated_session_selections(&connection, 2, 2);
     assert_eq!(
@@ -661,7 +661,7 @@ fn released_preview_1_database_migrates_without_losing_state() {
     assert_eq!(
         connection
             .query_row(
-                "SELECT value FROM secrets WHERE name = 'claude-access-token'",
+                "SELECT value FROM secrets WHERE name = 'claude-access-token/default'",
                 [],
                 |row| { row.get::<_, Vec<u8>>(0) }
             )
@@ -671,7 +671,7 @@ fn released_preview_1_database_migrates_without_losing_state() {
     assert_eq!(
         connection
             .query_row(
-                "SELECT metadata_json FROM provider_accounts WHERE provider = 'claudeCode'",
+                "SELECT metadata_json FROM provider_accounts WHERE provider = 'claudeCode/default'",
                 [],
                 |row| row.get::<_, String>(0),
             )
@@ -691,6 +691,53 @@ fn released_preview_1_database_migrates_without_losing_state() {
     );
     drop(connection);
     drop(persistence::Database::open(&path).expect("reopen migrated database"));
+}
+
+/// A home from before logins had names keeps each harness's login as the one agents use when they
+/// name none, so they keep working without logging in again.
+#[test]
+fn each_harness_login_from_before_names_becomes_its_default_login() {
+    let directory = TempDir::new().expect("temporary directory");
+    let path = directory.path().join("control-plane.db");
+    create_preview_1_database(&path);
+    let connection = rusqlite::Connection::open(&path).expect("open preview 1 database");
+    connection
+        .execute_batch(
+            "INSERT INTO provider_accounts (provider, metadata_json) VALUES ('claude', '{}'), ('codex', '{}');
+             INSERT INTO secrets (name, value) VALUES
+                 ('codex-access-token', x'61'), ('codex-refresh-token', x'72'), ('codex-account-id', x'69');",
+        )
+        .expect("earlier logins");
+    drop(connection);
+
+    let database = persistence::Database::open(&path).expect("migrate");
+    LocalRuntime::new().expect("local runtime").block_on(async {
+        let logins = agent::harness::AuthenticationManager::new(database.clone())
+            .logins()
+            .await
+            .expect("logins");
+        assert_eq!(
+            logins
+                .iter()
+                .map(|stored| (stored.harness, stored.login.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (agent::Harness::ClaudeCode, "default"),
+                (agent::Harness::Codex, "default")
+            ]
+        );
+        for (name, value) in [
+            ("claude-access-token/default", PREVIEW_SECRET),
+            ("codex-refresh-token/default", b"r".as_slice()),
+            ("codex-account-id/default", b"i".as_slice()),
+        ] {
+            let resolved = database
+                .resolve(&sandbox::secret_store::SecretReference::from_opaque(name))
+                .await
+                .expect(name);
+            assert_eq!(resolved.expose(), value, "{name}");
+        }
+    });
 }
 
 #[test]
@@ -739,7 +786,7 @@ fn preview_1_home_opened_by_the_expanded_version_1_build_migrates() {
     });
     drop(database);
 
-    assert_eq!(schema_snapshot(&path).0, 5);
+    assert_eq!(schema_snapshot(&path).0, 6);
     assert_eq!(
         connection_value(&path, EXPANDED_AGENT_ID, "desired_json"),
         expanded_desired,
@@ -796,7 +843,7 @@ fn version_2_home_records_the_model_existing_claude_code_sessions_launched_with(
         assert!(sessions[1].model_selection.is_empty());
     });
     drop(database);
-    assert_eq!(schema_snapshot(&path).0, 5);
+    assert_eq!(schema_snapshot(&path).0, 6);
     assert!(
         directory.path().join("backups").is_dir(),
         "a pending migration is backed up first"
@@ -837,7 +884,7 @@ fn expanded_version_1_schema_is_adopted_without_losing_state() {
     drop(database);
 
     let after = schema_snapshot(&path);
-    assert_eq!(after.0, 5);
+    assert_eq!(after.0, 6);
     let unchanged = |snapshot: &[(String, String)]| {
         snapshot
             .iter()

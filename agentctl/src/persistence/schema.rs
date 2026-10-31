@@ -8,7 +8,7 @@ use crate::Error;
 
 use super::database_error;
 
-pub(crate) const VERSION: u32 = 5;
+pub(crate) const VERSION: u32 = 6;
 
 const PREVIEW_1_SQL: &str = "
     CREATE TABLE agents (
@@ -109,6 +109,12 @@ const MIGRATIONS: &[Migration] = &[
         name: "session archive",
         schema: &[SESSION_ARCHIVE_COLUMN_SQL],
         apply: add_session_archive,
+    },
+    Migration {
+        version: 6,
+        name: "named harness logins",
+        schema: &[],
+        apply: name_harness_logins,
     },
 ];
 
@@ -232,6 +238,19 @@ fn add_session_archive(transaction: &Transaction<'_>) -> Result<(), Error> {
     }
     transaction
         .execute_batch(SESSION_ARCHIVE_COLUMN_SQL)
+        .map_err(database_error)
+}
+
+/// Keeps each harness's one earlier login as its login named `default`, the one agents use when
+/// they name none, so they keep working without logging in again. Before logins had names, a
+/// provider account and its secrets were the only rows without a `/`, as every other secret
+/// belongs to an agent under `agent/<id>/`.
+fn name_harness_logins(transaction: &Transaction<'_>) -> Result<(), Error> {
+    transaction
+        .execute_batch(
+            "UPDATE provider_accounts SET provider = provider || '/default' WHERE instr(provider, '/') = 0;
+             UPDATE secrets SET name = name || '/default' WHERE instr(name, '/') = 0;",
+        )
         .map_err(database_error)
 }
 

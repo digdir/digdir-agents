@@ -16,7 +16,7 @@ use agent::{
     },
     control_plane::WaitPolicy,
     control_plane::{ApplyRequest, ControlPlane, memory::InMemoryAgentStore},
-    harness::ImportedAuthentication,
+    harness::{ImportedAuthentication, LoginName},
     resources::Changes,
 };
 use sandbox::LocalFuture;
@@ -137,15 +137,25 @@ impl AuthenticationApi for FakeAuthentication {
     fn login<'a>(
         &'a self,
         _harness: agent::Harness,
+        login: LoginName,
         _token: &'a str,
         _imported: bool,
     ) -> LocalFuture<'a, Result<ImportedAuthentication, Error>> {
         Box::pin(async {
             Ok(ImportedAuthentication {
                 provider: "claude".into(),
+                login,
                 ready: true,
             })
         })
+    }
+
+    fn logout<'a>(&'a self, _harness: agent::Harness, login: &'a LoginName) -> LocalFuture<'a, Result<bool, Error>> {
+        Box::pin(async { Ok(login.as_str() == "work") })
+    }
+
+    fn logins(&self) -> LocalFuture<'_, Result<Vec<agent::harness::StoredLogin>, Error>> {
+        Box::pin(async { Ok(Vec::new()) })
     }
 }
 
@@ -559,13 +569,36 @@ async fn session_operations_carry_their_parameters_across_the_wire() {
 #[tokio::test(flavor = "local")]
 async fn a_login_wakes_every_agent() {
     let fixture = api();
+    let work = LoginName::new("work").expect("login name");
 
-    fixture
+    let stored = fixture
         .client
-        .auth_login(agent::Harness::ClaudeCode, "token".into(), false)
+        .auth_login(agent::Harness::ClaudeCode, work.clone(), "token".into(), false)
         .await
         .expect("login");
 
+    assert_eq!(stored.login, work);
+    assert_eq!(fixture.woken.get(), 1);
+}
+
+/// The agents using a forgotten login lose it at once; forgetting nothing changes no agent.
+#[tokio::test(flavor = "local")]
+async fn only_a_logout_that_forgets_a_login_wakes_the_agents() {
+    let fixture = api();
+
+    let forgotten = fixture
+        .client
+        .auth_logout(agent::Harness::ClaudeCode, LoginName::new("work").expect("login name"))
+        .await
+        .expect("logout");
+    let unknown = fixture
+        .client
+        .auth_logout(agent::Harness::ClaudeCode, LoginName::new("other").expect("login name"))
+        .await
+        .expect("logout");
+
+    assert!(forgotten);
+    assert!(!unknown);
     assert_eq!(fixture.woken.get(), 1);
 }
 

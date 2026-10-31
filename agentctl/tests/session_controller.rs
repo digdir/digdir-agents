@@ -1775,6 +1775,7 @@ async fn selection_fixture(directory: &TempDir) -> SelectionFixture {
     record.agent.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
         version: Some("0.149.1".into()),
+        login: agent::harness::LoginName::default(),
         auth: agent::HarnessAuthMode::Mediated,
         optional: true,
         default: false,
@@ -1842,6 +1843,7 @@ async fn a_session_admitted_before_convergence_is_parked_until_its_optional_harn
     record.agent.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
         version: None,
+        login: agent::harness::LoginName::default(),
         auth: agent::HarnessAuthMode::Mediated,
         optional: true,
         default: false,

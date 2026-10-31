@@ -160,13 +160,6 @@ impl Provider for Adapter {
                 None => Ok(()),
             };
             let nested_sandboxes = resolve_nested_sandboxes(requested, offered)?;
-            let running_before = record
-                .agent
-                .status
-                .sandbox
-                .as_ref()
-                .and_then(super::Assignment::id)
-                .is_some_and(|id| self.preparation.network_is_running(id));
             let prepared = self.preparation.prepare(record).await?;
             let harnesses = prepared.harnesses;
             for (name, value) in prepared.environment {
@@ -197,7 +190,7 @@ impl Provider for Adapter {
                 .with_mounts(Self::sandbox_mounts(record))
                 .with_environment(environment);
             let mut sandbox = self.service.ensure(&request).forward(&progress).await?;
-            if prepared.bindings_changed && running_before {
+            if self.preparation.network_is_stale(sandbox.id()) {
                 self.preparation.restart_network(&sandbox).await?;
                 // Re-ensure starts the stopped Network with the replacement handshake bindings.
                 sandbox = self.service.ensure(&request).forward(&progress).await?;

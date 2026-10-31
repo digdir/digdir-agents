@@ -23,7 +23,8 @@ command -v agentctl || curl -fsSL https://raw.githubusercontent.com/digdir/digdi
 ```
 
 **Log in** for each harness this agent has, before `apply`. They reuse this agent's login; for a harness it lacks,
-they fail rather than sign in.
+they fail rather than sign in. A nested manifest whose harness names a `login` needs a login of that name here, such
+as `agentctl claude login work`.
 
 ```sh
 agentctl claude login
@@ -47,8 +48,8 @@ agent's disk can grow to its `rootFilesystem.capacity`, and every image built fo
 
 - The agents already there are the user's work. Change only those you create or the user names, and never run
   `stop --all` or `kill --all`.
-- Logins are the user's. When `apply` or `create` reports one missing, ask the user to run `agentctl claude login` or
-  `agentctl codex login`; do not sign in yourself.
+- Logins are the user's. When `apply` or `create` reports one missing, ask the user to run the login command it names,
+  such as `agentctl claude login work`; do not sign in yourself.
 - Environment files hold real secrets: never read, write or print one. When the manifest needs values and there is
   no env file to use, as below, ask the user which to pass.
 
