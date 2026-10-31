@@ -22,6 +22,7 @@ mod launch;
 mod progress;
 mod prompt;
 mod self_update;
+mod sign_in;
 mod tui;
 mod watch;
 
@@ -503,7 +504,8 @@ type CommandResult<T> = Result<T, CommandError>;
 
 #[derive(Subcommand)]
 enum ClaudeCommand {
-    /// Mint a long-lived Claude token on the host and store it for agents under a name.
+    /// Mint a long-lived Claude token and store it for agents under a name: with Claude Code on
+    /// this host, or else in a short-lived agent, signing in with this host's browser.
     ///
     /// Agents whose manifest has `login: NAME` on their Claude Code harness use it, so each
     /// subscription you sign in to can serve its own agents. Inside an agent with Claude Code,
@@ -536,7 +538,8 @@ enum SshConfigCommand {
 
 #[derive(Subcommand)]
 enum CodexCommand {
-    /// Sign in with `ChatGPT` and store an agent-only grant under a name.
+    /// Sign in with `ChatGPT` and store an agent-only grant under a name: with Codex on this host,
+    /// or else in a short-lived agent, signing in with this host's browser.
     ///
     /// Agents whose manifest has `login: NAME` on their Codex harness use it, so each
     /// subscription you sign in to can serve its own agents. Inside an agent with Codex, store the
@@ -817,13 +820,13 @@ async fn get_resources(
             let agents = if let Some(name) = &name {
                 vec![client.get(name).await?]
             } else {
-                client.list_agents().await?
+                listed(client.list_agents().await?)
             };
             if watch {
                 return watch::follow(
                     client,
                     |resources| {
-                        let mut agents = resources.agents;
+                        let mut agents = listed(resources.agents);
                         agents.retain(|agent| name.as_ref().is_none_or(|name| agent.metadata.name == *name));
                         render_watched(output, &agents, agents_table)
                     },
@@ -1849,6 +1852,13 @@ fn parse_variant_name(value: &str) -> Result<AgentVariantName, String> {
     value.parse().map_err(|error: Error| error.to_string())
 }
 
+/// The agents a listing shows: all but the short-lived ones sign-ins run in, which `get` still
+/// shows by name.
+fn listed(mut agents: Vec<Agent>) -> Vec<Agent> {
+    agents.retain(|agent| !sign_in::is_sign_in_agent(&agent.metadata.name));
+    agents
+}
+
 fn agents_table(agents: &[Agent]) -> Vec<String> {
     let rows = agents
         .iter()
@@ -2021,8 +2031,20 @@ fn read_apply_request_in(
     })
 }
 
+/// How to run agentctl on `home`, as a hint: with `--home` when a plain `agentctl` would reach
+/// another one. It assumes the `agentctl` on `PATH` is this one.
+pub(crate) fn command_line(home: &ControlPlaneHome) -> String {
+    let plain = ControlPlaneHome::resolve(None).is_ok_and(|plain| plain == *home);
+    if plain {
+        "agentctl".to_owned()
+    } else {
+        format!("agentctl --home {}", home.path().display())
+    }
+}
+
 /// Stores a harness login: the credential on standard input when given, else, inside an agent with
-/// the harness, that agent's mediated credential, else a sign-in on this host.
+/// the harness, that agent's mediated credential, else a sign-in on this host, in a short-lived
+/// agent when this host does not have the harness.
 async fn login(
     client: &Client,
     home: &ControlPlaneHome,
@@ -2036,11 +2058,16 @@ async fn login(
             std::env::var_os(name)
         })? {
             Some(credential) => (credential, true, " from this agent's mediated login"),
-            None => (
+            None if agent::harness::host_can_sign_in(harness) => (
                 agent::harness::acquire_host_credential(harness, home.path(), sign_in)?,
                 false,
                 "",
             ),
+            None => {
+                let stored = sign_in::store_login(client, home, harness, name, sign_in::START_TIMEOUT).await?;
+                println!("{} login {} stored", stored.provider, stored.login);
+                return Ok(());
+            }
         },
     };
     let stored = client

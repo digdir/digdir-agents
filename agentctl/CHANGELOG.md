@@ -20,6 +20,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 - Claude Code and Codex logins have names, so you can keep one per subscription, such as work and private:
   - `agentctl claude login work` and `agentctl codex login work` store one, and `list` and `logout` show and forget them. Your existing logins become `default`. ([#356](https://github.com/digdir/digdir-agents/pull/356))
   - `login: work` on a harness in an agent's manifest picks one. `login: [work, private]` or `login: any` gives the agent whichever the fewest other running agents use, and it keeps that one while it stays allowed and stored. ([#357](https://github.com/digdir/digdir-agents/pull/357))
+- `agentctl claude login` and `agentctl codex login` work without Claude Code or Codex on this machine: they sign in in a short-lived agent, through this machine's browser. ([#377](https://github.com/digdir/digdir-agents/pull/377))
 
 ### Changed
 
