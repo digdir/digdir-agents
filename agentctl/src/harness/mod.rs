@@ -923,6 +923,38 @@ pub(crate) const fn test_harness() -> Harness {
     Harness::ClaudeCode
 }
 
+/// Reads one whole HTTP request from `stream`, so a test server answers only once it has all of
+/// it: one answering earlier can close the connection on a body still being sent.
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+pub(super) async fn read_test_request(stream: &mut tokio::net::TcpStream) -> String {
+    use tokio::io::AsyncReadExt as _;
+
+    let mut received = Vec::new();
+    let mut buffer = [0; 4_096];
+    loop {
+        let read = stream.read(&mut buffer).await.expect("read request");
+        received.extend_from_slice(&buffer[..read]);
+        let text = String::from_utf8_lossy(&received).into_owned();
+        let Some((head, body)) = text.split_once("\r\n\r\n") else {
+            assert_ne!(read, 0, "the request ended before its head");
+            continue;
+        };
+        let length = head
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>())
+            })
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        if body.len() >= length || read == 0 {
+            return text;
+        }
+    }
+}
+
 /// Stores a login named `name` for [`test_harness`], with a credential no one accepts.
 #[cfg(test)]
 pub(crate) async fn store_test_login(name: &str, database: &persistence::Database) {

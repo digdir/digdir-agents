@@ -518,7 +518,7 @@ mod tests {
     use std::{cell::Cell, rc::Rc};
 
     use tempfile::TempDir;
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncWriteExt as _;
 
     use super::*;
 
@@ -552,9 +552,7 @@ mod tests {
         let endpoint = format!("http://{}/oauth/token", listener.local_addr().expect("local address"));
         tokio::task::spawn_local(async move {
             let (mut stream, _) = listener.accept().await.expect("accept");
-            let mut request = [0_u8; 4_096];
-            let read = stream.read(&mut request).await.expect("read request");
-            let request = String::from_utf8_lossy(&request[..read]);
+            let request = crate::harness::read_test_request(&mut stream).await;
             assert!(request.contains("refresh-canary"));
             assert!(request.contains(OAUTH_CLIENT_ID));
             let body = serde_json::json!({
@@ -587,8 +585,7 @@ mod tests {
         tokio::task::spawn_local(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.expect("accept");
-                let mut request = [0_u8; 4_096];
-                let _read = stream.read(&mut request).await.expect("read request");
+                crate::harness::read_test_request(&mut stream).await;
                 observed.set(observed.get() + 1);
                 stream
                     .write_all(
@@ -817,9 +814,9 @@ mod tests {
         tokio::task::spawn_local(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.expect("accept");
-                let mut request = [0_u8; 4_096];
-                let read = stream.read(&mut request).await.expect("read request");
-                let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+                let request = crate::harness::read_test_request(&mut stream)
+                    .await
+                    .to_ascii_lowercase();
                 assert!(request.contains(&expected.to_ascii_lowercase()), "the login's grant");
                 assert!(request.contains("chatgpt-account-id: account-canary"));
                 observed.set(observed.get() + 1);

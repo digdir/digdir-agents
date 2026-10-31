@@ -20,7 +20,7 @@ pub(super) fn configuration(script_path: &str) -> serde_json::Value {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncWriteExt as _;
 
     /// Runs the status line once for `state` against `url_file`, with its markers in `tmp`, and
     /// returns what it printed.
@@ -62,16 +62,20 @@ mod tests {
             &serde_json::to_string(&url_file).expect("path"),
             1,
         );
+        // A busy test host can take longer to answer than a status line waits, and an unanswered
+        // reading is sent again.
+        let waits = "windows }), 300)";
+        assert!(script.contains(waits), "the status line waits for its report");
+        let script = script.replacen(waits, "windows }), 30_000)", 1);
         let state = r#"{"rate_limits":{"five_hour":{"used_percentage":23.5,"resets_at":4102444800},"seven_day":{"used_percentage":40,"resets_at":4103049600}}}"#;
         let received = tokio::task::spawn_local(async move {
             let (mut stream, _) = listener.accept().await.expect("accept");
-            let mut request = vec![0; 4_096];
-            let read = stream.read(&mut request).await.expect("read request");
+            let request = crate::harness::read_test_request(&mut stream).await;
             stream
                 .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
                 .await
                 .expect("respond");
-            (String::from_utf8_lossy(&request[..read]).into_owned(), listener)
+            (request, listener)
         });
 
         let printed = render(&script, state, directory.path()).await;
