@@ -16,4 +16,5 @@ the contract and explains each check in its
   The base images ship it.
 
 `agentd` writes the harnesses' configuration, instructions and skills, and its own setup, each time it reconciles the
-agent. It leaves other files alone, so an image may ship skills of its own.
+agent, and removes the skills it placed that the agent no longer declares. It leaves other files alone, so an image may
+ship skills of its own.

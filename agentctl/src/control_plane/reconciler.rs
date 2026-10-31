@@ -198,6 +198,7 @@ impl Reconciler {
             provider,
             id: ensured.id,
             harnesses: ensured.harnesses.clone(),
+            skills: ensured.skills.clone(),
         };
         let mut conditions = vec![condition(
             Condition::SANDBOX_READY,

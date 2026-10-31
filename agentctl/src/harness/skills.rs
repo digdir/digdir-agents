@@ -69,6 +69,17 @@ pub(super) async fn install_linux(sandbox: &SandboxHandle, root: &str, skills: &
     Ok(())
 }
 
+/// Removes the skill folders `names` from `root`, as the image user would. Each name is one a
+/// pass placed, so a skill the image ships under another name stays.
+pub(crate) async fn remove_linux(sandbox: &SandboxHandle, root: &str, names: &[&str]) -> Result<(), Error> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    let mut remove = vec!["/usr/bin/rm".to_owned(), "-rf".to_owned(), "--".to_owned()];
+    remove.extend(names.iter().map(|name| format!("{root}/{name}")));
+    run_checked(sandbox, "/usr/bin/sudo", remove).await
+}
+
 async fn run_checked(
     sandbox: &SandboxHandle,
     executable: &str,
