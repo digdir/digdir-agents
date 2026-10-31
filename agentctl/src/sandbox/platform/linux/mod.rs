@@ -10,6 +10,8 @@ pub(crate) mod ssh;
 mod systemd;
 pub(crate) mod vnc;
 
+use std::collections::BTreeSet;
+
 use ::sandbox::{LocalFuture, Platform, SandboxHandle, SandboxPath, execution::ExecutionSpec};
 
 use crate::{Error, control_plane, harness};
@@ -157,21 +159,30 @@ impl Linux {
         let own = read_instructions(record, &mut missing).await?;
         let mut skills = read_skills(record, &mut missing).await?;
         let platform_skill = harness::platform_skill();
+        let platform_skill_name = platform_skill.name.clone();
         // An agent's own skill of the same name replaces the platform's.
         if !skills.iter().any(|skill| skill.name == platform_skill.name) {
             skills.push(platform_skill);
         }
-        let placed_before = record
+        // A skill whose optional source is missing is still declared, so what an earlier pass placed of it stays.
+        let declared: Vec<&str> = record
+            .agent
+            .spec
+            .skills
+            .iter()
+            .filter_map(crate::SkillSpec::name)
+            .chain([platform_skill_name.as_str()])
+            .collect();
+        // A folder no harness of this pass writes keeps its record, for a later pass that does.
+        let mut placed = record
             .agent
             .status
             .sandbox
             .as_ref()
-            .map_or(&[][..], |assignment| assignment.placed_skills(&sandbox.snapshot().id));
-        let dropped: Vec<&str> = placed_before
-            .iter()
-            .filter(|name| !skills.iter().any(|skill| &skill.name == *name))
-            .map(String::as_str)
-            .collect();
+            .and_then(|assignment| assignment.placed_skills(&sandbox.snapshot().id))
+            .cloned()
+            .unwrap_or_default();
+        let mut tidied = BTreeSet::new();
         for installation in &installations {
             let step = steps
                 .start_step(format!(
@@ -190,20 +201,33 @@ impl Linux {
                 let existing = read_owned_instructions(sandbox, &path).await?;
                 preamble::place(&section, preamble::without_section(&existing))
             };
-            let skills_directory = harness::skills_directory(installation.kind, HOME);
-            harness::remove_skills_linux(sandbox, &skills_directory, &dropped).await?;
+            // Harnesses may share a folder, so each is tidied once.
+            let directory = harness::skills_directory(installation.kind, HOME);
+            if tidied.insert(directory.clone()) {
+                let before = placed.remove(&directory).unwrap_or_default();
+                let dropped: Vec<&str> = before
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|name| !declared.contains(name))
+                    .collect();
+                harness::remove_skills_linux(sandbox, &directory, &dropped).await?;
+                // In manifest order, so a pass that changes nothing records the same.
+                let mut names: Vec<String> = Vec::new();
+                for &name in &declared {
+                    let present =
+                        skills.iter().any(|skill| skill.name == name) || before.iter().any(|kept| kept == name);
+                    if present && !names.iter().any(|placed| placed == name) {
+                        names.push(name.to_owned());
+                    }
+                }
+                placed.insert(directory, names);
+            }
             harness::bootstrap_linux(installation.kind, sandbox, HOME, &instructions, &skills).await?;
             step.complete().await;
         }
-        // Without a harness to place them for, nothing was placed or removed.
-        let skills = if installations.is_empty() {
-            placed_before.to_vec()
-        } else {
-            skills.into_iter().map(|skill| skill.name).collect()
-        };
         Ok(PlatformSetup {
             missing_sources: missing,
-            skills,
+            skills: placed,
         })
     }
 }

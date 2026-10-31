@@ -7,7 +7,7 @@ use std::{io::Cursor, path::PathBuf, rc::Rc};
 use agent::{
     AgentId,
     control_plane::AgentRecord,
-    sandbox::{Assignment, PlatformAdapter as _, ProviderId, platform::Linux},
+    sandbox::{Assignment, PlacedSkills, PlatformAdapter as _, ProviderId, platform::Linux},
 };
 use sandbox::{
     EnsureSandboxRequest, Platform, SandboxPath, SandboxService,
@@ -73,6 +73,47 @@ async fn read_file(sandbox: &sandbox::SandboxHandle, path: &str) -> Vec<u8> {
         .await
         .expect("read file bytes");
     bytes
+}
+
+/// The skill folders `sudo rm` removed in `backend` since its first `executions` executions.
+fn removals_since(backend: &memory::Provider, executions: usize) -> Vec<Vec<String>> {
+    backend
+        .execution_specs()
+        .into_iter()
+        .skip(executions)
+        .filter_map(|spec| match spec.program() {
+            Program::Command { executable, args }
+                if executable.as_str() == "/usr/bin/sudo"
+                    && args.first().map(String::as_str) == Some("/usr/bin/rm") =>
+            {
+                Some(args[3..].to_vec())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The record of `skills` placed in each of `folders`.
+fn placed(folders: &[(&str, &[&str])]) -> PlacedSkills {
+    folders
+        .iter()
+        .map(|(folder, skills)| {
+            (
+                (*folder).to_owned(),
+                skills.iter().map(|&skill| skill.to_owned()).collect(),
+            )
+        })
+        .collect()
+}
+
+/// `record`'s status after a pass in `sandbox` that placed `skills`.
+fn placed_in(record: &mut AgentRecord, sandbox: &sandbox::SandboxHandle, skills: PlacedSkills) {
+    record.agent.status.sandbox = Some(Assignment::Materialized {
+        provider: ProviderId::new("memory").expect("Provider ID"),
+        id: sandbox.snapshot().id.clone(),
+        harnesses: Vec::new(),
+        skills,
+    });
 }
 
 /// Every harness the agent declares, as preparation would report when all host logins are present.
@@ -372,39 +413,14 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
         .expect("image skill");
     let platform = Linux::new(PLATFORM_API_URL);
 
-    let placed_in = |sandbox: &sandbox::SandboxHandle, skills: Vec<String>| {
-        Some(Assignment::Materialized {
-            provider: ProviderId::new("memory").expect("Provider ID"),
-            id: sandbox.snapshot().id.clone(),
-            harnesses: vec![agent::Harness::ClaudeCode],
-            skills,
-        })
-    };
-    let removals_since = |executions: usize| {
-        backend
-            .execution_specs()
-            .into_iter()
-            .skip(executions)
-            .filter_map(|spec| match spec.program() {
-                Program::Command { executable, args }
-                    if executable.as_str() == "/usr/bin/sudo"
-                        && args.first().map(String::as_str) == Some("/usr/bin/rm") =>
-                {
-                    Some(args.clone())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-    };
-
     let first = platform
         .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
         .await
         .expect("first setup");
     let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
     assert!(instructions.ends_with("\ntest instructions\n"), "{instructions}");
-    assert_eq!(first.skills, ["evidence", "review", "agentctl"]);
-    record.agent.status.sandbox = placed_in(&sandbox, first.skills);
+    assert_eq!(first.skills, placed(&[(SKILLS, &["evidence", "review", "agentctl"])]));
+    placed_in(&mut record, &sandbox, first.skills);
     let executions = backend.execution_specs().len();
 
     // Rename one skill, drop the other and every instruction file.
@@ -416,17 +432,11 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
         .expect("second setup");
 
     assert_eq!(
-        removals_since(executions),
-        [vec![
-            "/usr/bin/rm".to_owned(),
-            "-rf".into(),
-            "--".into(),
-            format!("{SKILLS}/evidence"),
-            format!("{SKILLS}/review"),
-        ]],
+        removals_since(&backend, executions),
+        [[format!("{SKILLS}/evidence"), format!("{SKILLS}/review")]],
         "only the skills an earlier pass placed are removed"
     );
-    assert_eq!(second.skills, ["reviewing", "agentctl"]);
+    assert_eq!(second.skills, placed(&[(SKILLS, &["reviewing", "agentctl"])]));
     assert_eq!(
         read_file(&sandbox, &format!("{SKILLS}/reviewing/SKILL.md")).await,
         b"---\nname: review\n---\n"
@@ -442,18 +452,205 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
         provider: ProviderId::new("memory").expect("Provider ID"),
         id: "3f978c33-4d43-4ea4-b58d-10b90ef166af".parse().expect("Sandbox ID"),
         harnesses: vec![agent::Harness::ClaudeCode],
-        skills: vec!["image-own".into()],
+        skills: placed(&[(SKILLS, &["image-own"])]),
     });
     let executions = backend.execution_specs().len();
     platform
         .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
         .await
         .expect("third setup");
-    assert_eq!(removals_since(executions), Vec::<Vec<String>>::new());
+    assert_eq!(removals_since(&backend, executions), Vec::<Vec<String>>::new());
     assert_eq!(
         read_file(&sandbox, &format!("{SKILLS}/image-own/SKILL.md")).await,
         b"---\nname: image-own\n---\n"
     );
+}
+
+/// Each harness folder keeps its own record of the skills placed in it, since a pass writes only the folders of the
+/// harnesses it sets up. A folder joins with only the skills it is given, so the image's stay, and one a pass skips
+/// keeps its record until a pass removes from it what the agent dropped meanwhile.
+#[tokio::test(flavor = "local")]
+#[allow(clippy::too_many_lines)]
+async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_them_in() {
+    const CLAUDE: &str = "/home/agent/.claude/skills";
+    const AGENTS: &str = "/home/agent/.agents/skills";
+    let directory = TempDir::new().expect("temporary directory");
+    let home = directory.path().join("home");
+    std::fs::create_dir_all(&home).expect("home directory");
+    std::fs::write(directory.path().join("instructions.md"), "test instructions\n").expect("instruction file");
+    for name in ["evidence", "review"] {
+        let skill = directory.path().join("skills").join(name);
+        std::fs::create_dir_all(&skill).expect("skill directory");
+        std::fs::write(skill.join("SKILL.md"), format!("---\nname: {name}\n---\n")).expect("skill file");
+    }
+    let skill = |name: &str| agent::SkillSpec {
+        source: PathBuf::from(format!("skills/{name}")),
+        name: None,
+        optional: false,
+    };
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home.source = home;
+    resource.spec.harnesses[0].default = true;
+    resource.spec.harnesses.push(agent::HarnessSpec {
+        kind: agent::Harness::Codex,
+        version: None,
+        auth: agent::HarnessAuthMode::Mediated,
+        optional: true,
+        default: false,
+        defaults: agent::ModelSelection::default(),
+    });
+    resource.spec.skills = vec![skill("evidence"), skill("review")];
+    let mut record = AgentRecord {
+        id: "0b6f3d52-8e1a-4c7b-9d24-5a3e8f1c6b90".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+    };
+    let backend = Rc::new(memory::Provider::new());
+    for _ in 0..4 {
+        backend.queue_execution_events_matching(
+            is_claude_version,
+            vec![
+                ExecutionEvent::Started { process_id: None },
+                ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
+                ExecutionEvent::Exited(ExitStatus { code: 0 }),
+            ],
+        );
+        backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    }
+    for _ in 0..2 {
+        backend.queue_execution_events_matching(
+            is_codex_version,
+            vec![
+                ExecutionEvent::Started { process_id: None },
+                ExecutionEvent::Stdout("codex-cli 0.149.1\n".into()),
+                ExecutionEvent::Exited(ExitStatus { code: 0 }),
+            ],
+        );
+    }
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
+    let sandbox = SandboxService::new(backend.clone())
+        .ensure(
+            &EnsureSandboxRequest::new(record.sandbox_name().expect("Sandbox name"), spec)
+                .with_environment([("AGENT_CODEX_ACCOUNT_ID".into(), "account-test".into())]),
+        )
+        .await
+        .expect("Sandbox");
+    sandbox
+        .write_file(
+            &SandboxPath::new(format!("{AGENTS}/review/SKILL.md")),
+            Box::pin(Cursor::new(b"the image's".to_vec())),
+        )
+        .await
+        .expect("image skill");
+    let platform = Linux::new(PLATFORM_API_URL);
+    let claude = [agent::Harness::ClaudeCode];
+    let both = [agent::Harness::ClaudeCode, agent::Harness::Codex];
+
+    // Without a Codex login, only Claude Code's folder is written.
+    let set_up = platform
+        .setup(&record, &sandbox, &claude, &setup_phase())
+        .await
+        .expect("setup without Codex");
+    assert_eq!(set_up.skills, placed(&[(CLAUDE, &["evidence", "review", "agentctl"])]));
+    placed_in(&mut record, &sandbox, set_up.skills);
+
+    // Dropping a skill as Codex joins removes it from Claude Code's folder only.
+    record.agent.spec.skills = vec![skill("evidence")];
+    let executions = backend.execution_specs().len();
+    let set_up = platform
+        .setup(&record, &sandbox, &both, &setup_phase())
+        .await
+        .expect("setup with Codex");
+    assert_eq!(removals_since(&backend, executions), [[format!("{CLAUDE}/review")]]);
+    assert_eq!(
+        read_file(&sandbox, &format!("{AGENTS}/review/SKILL.md")).await,
+        b"the image's"
+    );
+    assert_eq!(
+        set_up.skills,
+        placed(&[(AGENTS, &["evidence", "agentctl"]), (CLAUDE, &["evidence", "agentctl"])])
+    );
+    placed_in(&mut record, &sandbox, set_up.skills);
+
+    // Dropping a skill while Codex is left out keeps its folder's record.
+    record.agent.spec.skills = Vec::new();
+    let executions = backend.execution_specs().len();
+    let set_up = platform
+        .setup(&record, &sandbox, &claude, &setup_phase())
+        .await
+        .expect("setup without Codex again");
+    assert_eq!(removals_since(&backend, executions), [[format!("{CLAUDE}/evidence")]]);
+    assert_eq!(
+        set_up.skills,
+        placed(&[(AGENTS, &["evidence", "agentctl"]), (CLAUDE, &["agentctl"])])
+    );
+    placed_in(&mut record, &sandbox, set_up.skills);
+
+    // So the skill leaves Codex's folder once Codex is back.
+    let executions = backend.execution_specs().len();
+    let set_up = platform
+        .setup(&record, &sandbox, &both, &setup_phase())
+        .await
+        .expect("setup with Codex again");
+    assert_eq!(removals_since(&backend, executions), [[format!("{AGENTS}/evidence")]]);
+    assert_eq!(
+        set_up.skills,
+        placed(&[(AGENTS, &["agentctl"]), (CLAUDE, &["agentctl"])])
+    );
+}
+
+/// A skill whose optional source goes missing is still declared, so the copy an earlier pass placed stays, and stays
+/// recorded, until the agent drops it.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_keeps_a_placed_skill_whose_optional_source_goes_missing() {
+    const SKILLS: &str = "/home/agent/.claude/skills";
+    let directory = TempDir::new().expect("temporary directory");
+    let mut record = optional_sources_record(directory.path(), "instructions.md", "skills/review");
+    let skill = directory.path().join("skills").join("review");
+    std::fs::create_dir_all(&skill).expect("skill directory");
+    std::fs::write(skill.join("SKILL.md"), "review").expect("skill file");
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 3).await;
+    let platform = Linux::new(PLATFORM_API_URL);
+
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("setup with the optional skill");
+    assert_eq!(set_up.skills, placed(&[(SKILLS, &["review", "agentctl"])]));
+    placed_in(&mut record, &sandbox, set_up.skills);
+
+    std::fs::remove_dir_all(&skill).expect("remove the optional skill");
+    let executions = backend.execution_specs().len();
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("setup without the optional skill");
+    assert_eq!(set_up.missing_sources, ["spec.skills[0].source skills/review"]);
+    assert_eq!(removals_since(&backend, executions), Vec::<Vec<String>>::new());
+    assert_eq!(
+        read_file(&sandbox, &format!("{SKILLS}/review/SKILL.md")).await,
+        b"review"
+    );
+    assert_eq!(set_up.skills, placed(&[(SKILLS, &["review", "agentctl"])]));
+    placed_in(&mut record, &sandbox, set_up.skills);
+
+    record.agent.spec.skills = Vec::new();
+    let executions = backend.execution_specs().len();
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .await
+        .expect("setup once the agent drops the skill");
+    assert_eq!(removals_since(&backend, executions), [[format!("{SKILLS}/review")]]);
+    assert_eq!(set_up.skills, placed(&[(SKILLS, &["agentctl"])]));
 }
 
 /// Claude Code that the platform does not launch, such as T3 Code's, approves Bash requests in bypass mode as sessions
@@ -1152,7 +1349,15 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
 
 /// A sandbox for `record` whose Claude Code version check answers `passes` setups.
 async fn claude_sandbox(record: &AgentRecord, passes: usize) -> sandbox::SandboxHandle {
-    let backend = Rc::new(memory::Provider::new());
+    claude_sandbox_on(Rc::new(memory::Provider::new()), record, passes).await
+}
+
+/// [`claude_sandbox`] in `backend`.
+async fn claude_sandbox_on(
+    backend: Rc<memory::Provider>,
+    record: &AgentRecord,
+    passes: usize,
+) -> sandbox::SandboxHandle {
     for _ in 0..passes {
         backend.queue_execution_events_matching(
             is_claude_version,

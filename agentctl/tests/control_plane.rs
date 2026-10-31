@@ -1103,7 +1103,11 @@ async fn the_skills_setup_placed_are_recorded_in_the_agents_status() {
     let service = Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service");
     let reconciler = Reconciler::new(store.clone(), Rc::new(service), ProvisioningState::default());
     let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
-    platform.set_up.borrow_mut().skills = vec!["review".into(), "agentctl".into()];
+    platform.set_up.borrow_mut().skills = [(
+        "/home/agent/.claude/skills".to_owned(),
+        vec!["review".into(), "agentctl".into()],
+    )]
+    .into();
 
     control_plane.apply(apply_request("worker")).await.expect("apply");
     let id = store.get_by_name("worker").await.expect("Agent").id;
@@ -1112,7 +1116,10 @@ async fn the_skills_setup_placed_are_recorded_in_the_agents_status() {
     let status = store.get_by_name("worker").await.expect("Agent").agent.status;
     let assignment = status.sandbox.expect("a sandbox");
     let sandbox = assignment.id().expect("a materialized sandbox").clone();
-    assert_eq!(assignment.placed_skills(&sandbox), ["review", "agentctl"]);
+    assert_eq!(
+        assignment.placed_skills(&sandbox),
+        Some(&platform.set_up.borrow().skills)
+    );
 }
 
 #[tokio::test(flavor = "local")]
