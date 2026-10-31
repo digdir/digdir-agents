@@ -4,15 +4,20 @@
 //! repository, asks what can differ (name, size, harnesses, folders to share, GitHub
 //! access, other declared values), writes a self-contained `~/agents/<name>/` and creates the
 //! agent from it. Every question has a flag, so scripts get the same result without a terminal.
+//!
+//! `agentctl new` makes a new agent definition with the agent builder, then sets it up here.
 
 use create::{Review, bundle_into, finish, manifest_text, review};
 use github::{choose_github, give_identity};
-use mounts::{check_mounts, choose_shared, mount_unless_mounted, protected_folders, refuse_staged_mounts};
+use mounts::{
+    check_mounts, choose_shared, create_missing_mounts, mount_unless_mounted, protected_folders, refuse_staged_mounts,
+};
 use shape::{Names, Shape};
 use sign_in::{choose_logins, remove_dead_sign_in_agents, sign_in_where_needed};
 use source::{choose_draft, choose_image, team_draft};
 
 mod answers;
+mod builder;
 mod bundle;
 mod create;
 mod docker;
@@ -40,7 +45,7 @@ use std::{
 };
 
 use agent::{AccessSpec, Agent, Error, Harness, catalog::Catalog, control_api::Client, local::home::ControlPlaneHome};
-use clap::{Args, ValueEnum};
+use clap::{Args, FromArgMatches as _, ValueEnum};
 use zeroize::Zeroizing;
 
 use crate::{CommandError, CommandResult, OutputFormat};
@@ -168,6 +173,19 @@ pub(crate) struct SetupArguments {
     /// published one. Setup offers it on its own when the published one cannot be pulled.
     #[arg(long)]
     build_image: bool,
+    /// What `agentctl new` asks the agent builder for, which setup then sets up.
+    #[arg(skip)]
+    new: Option<NewArguments>,
+}
+
+#[derive(Args)]
+pub(crate) struct NewArguments {
+    /// The repository the new agent is for: the folder of its checkout, or its GitHub address.
+    repository: Option<String>,
+    /// Given a GitHub address, the folder to clone the repository into, or one that holds a
+    /// checkout of it already. The clone stays, for you to review and push what the builder writes.
+    #[arg(long)]
+    clone_into: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -283,6 +301,16 @@ struct BrowserSignIn {
     account: Option<String>,
 }
 
+/// Makes a new agent with the agent builder, and sets up what it made.
+pub(crate) async fn new(arguments: NewArguments, home: &ControlPlaneHome, client: &Client) -> CommandResult<()> {
+    // Setting up what the builder made asks setup's questions, with their defaults.
+    let matches = SetupArguments::augment_args(clap::Command::new("new")).get_matches_from(["new"]);
+    let mut setup =
+        SetupArguments::from_arg_matches(&matches).map_err(|error| CommandError::Message(error.to_string()))?;
+    setup.new = Some(arguments);
+    run(setup, home, client).await
+}
+
 pub(crate) async fn run(arguments: SetupArguments, home: &ControlPlaneHome, client: &Client) -> CommandResult<()> {
     let catalog = Catalog::load()?;
     if arguments.list_archetypes {
@@ -343,10 +371,24 @@ async fn run_once(
         home,
         staging: &staging,
     };
-    let Some((source, replace_target)) = Box::pin(choose_start(&context, &found)).await? else {
+    let Some(start) = Box::pin(choose_start(&context, &agents, &found)).await? else {
         return Ok(());
     };
-    let mut draft = choose_draft(arguments, answers, catalog, staging.path(), source).await?;
+    let (mut draft, replace_target, builder) = match start {
+        Start::Source(source, replace_target) => (
+            choose_draft(arguments, answers, catalog, staging.path(), source).await?,
+            replace_target,
+            None,
+        ),
+        Start::Made(made) => {
+            // The command setup prints at the end sets up what the builder made, not the builder.
+            answers.forget("--clone-into");
+            answers.record("--source", &["team"]);
+            answers.record("--from", &[&made.manifest.display().to_string()]);
+            let draft = team_draft(&made.manifest, &made.manifest.display().to_string())?;
+            (draft, None, Some(made.builder))
+        }
+    };
     if fill_in {
         answers.assume_defaults(true);
     }
@@ -380,7 +422,8 @@ async fn run_once(
     if !draft.agent.spec.access.contains(&AccessSpec::Ssh {}) {
         draft.agent.spec.access.push(AccessSpec::Ssh {});
     }
-    check_mounts(&draft, &protected)?;
+    let to_create = create_missing_mounts(answers, &draft, &protected, arguments.dry_run)?;
+    check_mounts(&draft, &protected, &to_create)?;
     if arguments.dry_run {
         let mut preview = draft.agent.clone();
         bundle_into(&mut preview, &draft, staging.path().join("preview").as_path())?;
@@ -405,7 +448,7 @@ async fn run_once(
             }
             Review::Edit => {
                 edit::manifest(answers, &mut draft)?;
-                check_mounts(&draft, &protected)?;
+                check_mounts(&draft, &protected, &to_create)?;
             }
             Review::Stop => {
                 println!("Nothing was created.");
@@ -414,6 +457,10 @@ async fn run_once(
         }
     }
     answers.no_way_back();
+    // The review showed the folders still to be created, so confirming it creates them.
+    for folder in &to_create {
+        std::fs::create_dir_all(folder).map_err(Error::from)?;
+    }
     sign_in_where_needed(arguments, answers, client, home, &staging, &mut draft).await?;
     // What can fail before the agent exists is done before its folder is written, so a failure
     // leaves nothing behind.
@@ -425,7 +472,22 @@ async fn run_once(
     if builds && !arguments.no_apply {
         docker::ensure().await?;
     }
-    finish(arguments, answers, client, home, &staging, &mut draft, &folder).await
+    finish(arguments, answers, client, home, &staging, &mut draft, &folder).await?;
+    // The agent builder has done its work once the agent it made exists.
+    if let Some(builder) = builder
+        && !arguments.no_apply
+    {
+        builder::remove(&context, &builder).await?;
+    }
+    Ok(())
+}
+
+/// Where setup goes on from once it knows how the person wants to start.
+enum Start {
+    /// A new agent from this source, replacing this definition in ~/agents if one is given.
+    Source(SourceChoice, Option<existing::Existing>),
+    /// The agent the agent builder made.
+    Made(builder::Made),
 }
 
 /// agentd's agents, and the definitions in ~/agents with their state. A dry run changes nothing,
@@ -451,11 +513,15 @@ async fn agents_and_definitions(
 /// `None` when an action on an existing agent was all there was to do.
 async fn choose_start(
     context: &existing::Context<'_>,
+    agents: &[Agent],
     found: &[existing::Existing],
-) -> CommandResult<Option<(SourceChoice, Option<existing::Existing>)>> {
+) -> CommandResult<Option<Start>> {
+    if let Some(new) = &context.arguments.new {
+        return Ok(Box::pin(builder::make(context, new, agents)).await?.map(Start::Made));
+    }
     let source = choose_source(context.arguments, context.answers, !found.is_empty())?;
     if source != SourceChoice::Existing {
-        return Ok(Some((source, None)));
+        return Ok(Some(Start::Source(source, None)));
     }
     if context.arguments.dry_run {
         return Err(CommandError::Message(
@@ -468,7 +534,7 @@ async fn choose_start(
         existing::Proceed::Replace(replaced) => {
             println!("Set up the agent that replaces {}:", replaced.name);
             let source = choose_source(context.arguments, context.answers, false)?;
-            Ok(Some((source, Some(replaced))))
+            Ok(Some(Start::Source(source, Some(replaced))))
         }
     }
 }
@@ -516,6 +582,12 @@ fn choose_source(arguments: &SetupArguments, answers: &Answers, offer_existing: 
         })
         .collect();
     Ok(answers.choose("--source", "How do you want to start?", choices, 0)?)
+}
+
+/// Whether `name` is one of the agents setup runs for its own work, such as signing in or making a
+/// new agent, which `get` and the TUI leave out.
+pub(crate) fn is_setup_agent(name: &str) -> bool {
+    sign_in::is_sign_in_agent(name) || builder::is_builder_agent(name)
 }
 
 /// How to run agentctl on the control-plane home this setup used: with `--home` when a plain

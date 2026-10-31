@@ -419,7 +419,10 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
         .expect("first setup");
     let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
     assert!(instructions.ends_with("\ntest instructions\n"), "{instructions}");
-    assert_eq!(first.skills, placed(&[(SKILLS, &["evidence", "review", "agentctl"])]));
+    assert_eq!(
+        first.skills,
+        placed(&[(SKILLS, &["evidence", "review", "agentctl", "agent-definition"])])
+    );
     placed_in(&mut record, &sandbox, first.skills);
     let executions = backend.execution_specs().len();
 
@@ -436,7 +439,10 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
         [[format!("{SKILLS}/evidence"), format!("{SKILLS}/review")]],
         "only the skills an earlier pass placed are removed"
     );
-    assert_eq!(second.skills, placed(&[(SKILLS, &["reviewing", "agentctl"])]));
+    assert_eq!(
+        second.skills,
+        placed(&[(SKILLS, &["reviewing", "agentctl", "agent-definition"])])
+    );
     assert_eq!(
         read_file(&sandbox, &format!("{SKILLS}/reviewing/SKILL.md")).await,
         b"---\nname: review\n---\n"
@@ -559,7 +565,10 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
         .setup(&record, &sandbox, &claude, &setup_phase())
         .await
         .expect("setup without Codex");
-    assert_eq!(set_up.skills, placed(&[(CLAUDE, &["evidence", "review", "agentctl"])]));
+    assert_eq!(
+        set_up.skills,
+        placed(&[(CLAUDE, &["evidence", "review", "agentctl", "agent-definition"])])
+    );
     placed_in(&mut record, &sandbox, set_up.skills);
 
     // Dropping a skill as Codex joins removes it from Claude Code's folder only.
@@ -576,7 +585,10 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
     );
     assert_eq!(
         set_up.skills,
-        placed(&[(AGENTS, &["evidence", "agentctl"]), (CLAUDE, &["evidence", "agentctl"])])
+        placed(&[
+            (AGENTS, &["evidence", "agentctl", "agent-definition"]),
+            (CLAUDE, &["evidence", "agentctl", "agent-definition"])
+        ])
     );
     placed_in(&mut record, &sandbox, set_up.skills);
 
@@ -590,7 +602,10 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
     assert_eq!(removals_since(&backend, executions), [[format!("{CLAUDE}/evidence")]]);
     assert_eq!(
         set_up.skills,
-        placed(&[(AGENTS, &["evidence", "agentctl"]), (CLAUDE, &["agentctl"])])
+        placed(&[
+            (AGENTS, &["evidence", "agentctl", "agent-definition"]),
+            (CLAUDE, &["agentctl", "agent-definition"])
+        ])
     );
     placed_in(&mut record, &sandbox, set_up.skills);
 
@@ -603,7 +618,10 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
     assert_eq!(removals_since(&backend, executions), [[format!("{AGENTS}/evidence")]]);
     assert_eq!(
         set_up.skills,
-        placed(&[(AGENTS, &["agentctl"]), (CLAUDE, &["agentctl"])])
+        placed(&[
+            (AGENTS, &["agentctl", "agent-definition"]),
+            (CLAUDE, &["agentctl", "agent-definition"])
+        ])
     );
 }
 
@@ -625,7 +643,10 @@ async fn linux_setup_keeps_a_placed_skill_whose_optional_source_goes_missing() {
         .setup(&record, &sandbox, &declared(&record), &setup_phase())
         .await
         .expect("setup with the optional skill");
-    assert_eq!(set_up.skills, placed(&[(SKILLS, &["review", "agentctl"])]));
+    assert_eq!(
+        set_up.skills,
+        placed(&[(SKILLS, &["review", "agentctl", "agent-definition"])])
+    );
     placed_in(&mut record, &sandbox, set_up.skills);
 
     std::fs::remove_dir_all(&skill).expect("remove the optional skill");
@@ -640,7 +661,10 @@ async fn linux_setup_keeps_a_placed_skill_whose_optional_source_goes_missing() {
         read_file(&sandbox, &format!("{SKILLS}/review/SKILL.md")).await,
         b"review"
     );
-    assert_eq!(set_up.skills, placed(&[(SKILLS, &["review", "agentctl"])]));
+    assert_eq!(
+        set_up.skills,
+        placed(&[(SKILLS, &["review", "agentctl", "agent-definition"])])
+    );
     placed_in(&mut record, &sandbox, set_up.skills);
 
     record.agent.spec.skills = Vec::new();
@@ -650,7 +674,7 @@ async fn linux_setup_keeps_a_placed_skill_whose_optional_source_goes_missing() {
         .await
         .expect("setup once the agent drops the skill");
     assert_eq!(removals_since(&backend, executions), [[format!("{SKILLS}/review")]]);
-    assert_eq!(set_up.skills, placed(&[(SKILLS, &["agentctl"])]));
+    assert_eq!(set_up.skills, placed(&[(SKILLS, &["agentctl", "agent-definition"])]));
 }
 
 /// Claude Code that the platform does not launch, such as T3 Code's, approves Bash requests in bypass mode as sessions

@@ -55,6 +55,44 @@ impl Protected {
         }
         Ok(folder)
     }
+
+    /// Checks a folder that does not exist yet, which setup would create: it holds nothing yet, so
+    /// only being inside a protected folder rules it out.
+    pub(super) fn check_new(&self, folder: &Path) -> Result<(), String> {
+        let resolved = resolve(folder)?;
+        for protected in &self.inside {
+            let protected = resolve(protected).unwrap_or_else(|_| protected.clone());
+            if resolved.starts_with(&protected) {
+                return Err(format!(
+                    "{} is inside {}, which must stay out of agents",
+                    folder.display(),
+                    protected.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `path` in canonical form, though it need not exist: the part that exists is resolved, and the
+/// rest is kept as it is. `..` in that rest would climb out unresolved, so it is refused.
+fn resolve(path: &Path) -> Result<PathBuf, String> {
+    let mut existing = path;
+    let mut rest = Vec::new();
+    while !existing.exists() {
+        match (existing.parent(), existing.components().next_back()) {
+            (Some(parent), Some(std::path::Component::Normal(name))) => {
+                rest.push(name);
+                existing = parent;
+            }
+            _ => return Err(format!("{} is not a folder this machine can have", path.display())),
+        }
+    }
+    let mut resolved = existing
+        .canonicalize()
+        .map_err(|error| format!("{}: {error}", existing.display()))?;
+    resolved.extend(rest.iter().rev());
+    Ok(resolved)
 }
 
 /// The agent manifests in `folder`: in it, in its direct subfolders, and in `agents/*/`, where
@@ -716,13 +754,61 @@ pub(super) fn offer_found_manifests(answers: &Answers, folder: &Path) -> Command
     Ok(chosen)
 }
 
+/// Offers to create each folder the agent mounts that does not exist yet in the person's home
+/// folder, such as one an agent writes what it makes to, unless `protected` keeps it out of agents.
+/// Elsewhere, a missing folder is more likely a mistake, which [`check_mounts`] reports. A dry run
+/// creates none and says so, and while defaults are filled in for review none is created before
+/// the review is confirmed. Returns those not created.
+pub(super) fn create_missing_mounts(
+    answers: &Answers,
+    draft: &Draft,
+    protected: &Protected,
+    dry_run: bool,
+) -> CommandResult<Vec<PathBuf>> {
+    let Some(home) = agent::local::home::user_home_directory() else {
+        return Ok(Vec::new());
+    };
+    let mut left = Vec::new();
+    for (source, target) in bind_mounts(draft)? {
+        if source.exists() || !source.starts_with(&home) || protected.check_new(&source).is_err() {
+            continue;
+        }
+        if dry_run || answers.filling_in() {
+            if dry_run {
+                eprintln!(
+                    "The agent mounts {} at {target}, which setup offers to create.",
+                    source.display()
+                );
+            }
+            left.push(source);
+            continue;
+        }
+        let question = format!(
+            "The agent mounts {} at {target}, which does not exist yet. Create it?",
+            source.display()
+        );
+        if answers.confirm("--yes", &[&question], true)? {
+            std::fs::create_dir_all(&source).map_err(Error::from)?;
+        }
+    }
+    Ok(left)
+}
+
 /// Checks every folder the agent mounts before anything is written, those its definition names as
 /// well as those chosen here, since a definition fetched from GitHub is no more trusted than a
 /// folder typed in. agentd refuses a missing folder or a `.env` too, but only after the agent's
-/// folder is written, and it does not know the folders `protected` keeps out of agents.
-pub(super) fn check_mounts(draft: &Draft, protected: &Protected) -> CommandResult<()> {
+/// folder is written, and it does not know the folders `protected` keeps out of agents. A folder
+/// setup would create, one of `to_create`, holds nothing yet, so only where it is counts.
+pub(super) fn check_mounts(draft: &Draft, protected: &Protected, to_create: &[PathBuf]) -> CommandResult<()> {
     for (source, target) in bind_mounts(draft)? {
-        check_mount(&source, &target, protected).map_err(CommandError::Message)?;
+        let checked = if to_create.contains(&source) {
+            protected
+                .check_new(&source)
+                .map_err(|reason| format!("the agent may not mount {} at {target}: {reason}", source.display()))
+        } else {
+            check_mount(&source, &target, protected)
+        };
+        checked.map_err(CommandError::Message)?;
     }
     Ok(draft.agent.validate()?)
 }
@@ -854,6 +940,24 @@ mod tests {
         std::fs::write(project.join(".env"), "TOKEN=x\n").expect("a .env");
         let error = check_mount(&project, "/srv/project", &protected).expect_err("holds a .env");
         assert!(error.contains(".env"), "{error}");
+    }
+
+    #[test]
+    fn a_new_folder_may_be_anywhere_but_inside_a_protected_one() {
+        let home = tempfile::tempdir().expect("a home");
+        let agents = home.path().join("agents");
+        std::fs::create_dir_all(&agents).expect("an agents folder");
+        let protected = Protected {
+            user_home: Some(home.path().to_path_buf()),
+            inside: vec![agents.clone()],
+        };
+        assert!(protected.check_new(&home.path().join("repos/project")).is_ok());
+        assert!(protected.check_new(&agents.join("project")).is_err());
+        assert!(
+            protected
+                .check_new(&home.path().join("repos/../agents/project"))
+                .is_err()
+        );
     }
 
     fn agent_mounting(sources: &[&str]) -> agent::Agent {

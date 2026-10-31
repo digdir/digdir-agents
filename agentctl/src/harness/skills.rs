@@ -9,6 +9,7 @@ use sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
 use crate::{Error, sandbox::platform::files::write_if_changed};
 
 /// One skill directory read on the host, keyed by its directory name.
+#[derive(Clone)]
 pub(crate) struct Skill {
     pub(crate) name: String,
     /// Regular files below the skill directory, as `/`-separated relative paths.
@@ -16,23 +17,34 @@ pub(crate) struct Skill {
 }
 
 /// One regular file of a skill.
+#[derive(Clone)]
 pub(crate) struct SkillFile {
     pub(crate) relative_path: String,
     pub(crate) contents: Vec<u8>,
 }
 
-/// The skill every agent gets for driving agents with `agentctl`, nested ones included, which the
-/// agent sandbox section of its instructions points to.
-pub(crate) fn platform_skill() -> Skill {
-    Skill {
-        name: "agentctl".into(),
+/// The skills every agent gets: `agentctl`, for driving agents, nested ones included, which the agent
+/// sandbox section of its instructions points to, and `agent-definition`, for writing and changing
+/// the definitions agents are made from, its own included.
+pub(crate) fn platform_skills() -> Vec<Skill> {
+    // CI skips Markdown changes, except under agentctl/skills/. Bundling Markdown from elsewhere
+    // needs it added to `bundled` in ci.yml and the paths in agentctl-image.yml.
+    [
+        ("agentctl", include_bytes!("../../skills/agentctl/SKILL.md").as_slice()),
+        (
+            "agent-definition",
+            include_bytes!("../../skills/agent-definition/SKILL.md").as_slice(),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, contents)| Skill {
+        name: name.into(),
         files: vec![SkillFile {
             relative_path: "SKILL.md".into(),
-            // CI skips Markdown changes, except under agentctl/skills/. Bundling Markdown from
-            // elsewhere needs it added to `bundled` in ci.yml and the paths in agentctl-image.yml.
-            contents: include_bytes!("../../skills/agentctl/SKILL.md").to_vec(),
+            contents: contents.to_vec(),
         }],
-    }
+    })
+    .collect()
 }
 
 /// Places every skill below `root` as `root/<name>/<relative path>`, owned by the image user.

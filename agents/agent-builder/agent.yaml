@@ -1,0 +1,68 @@
+# The agent that makes agents, which `agentctl new` runs: it asks what the agent should do, writes its definition into
+# the repository's checkout or into a folder of your own, and tries it as a nested agent. `agentctl new` runs it for
+# you, mounts the checkout of the repository the agent is for, and removes it once your new agent is set up, so you
+# need not apply this yourself.
+#
+# Paths in a manifest resolve against the directory it is in, or against your home directory when they start with
+# `~/`.
+apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  # Setup runs it under a name of its own, which `get` and the TUI leave out.
+  name: agent-builder
+spec:
+  sandbox:
+    # The published image the sandbox boots, built from the Dockerfile beside this file, so the host needs no Docker.
+    image:
+      type: reference
+      reference: ghcr.io/digdir/digdir-agents/agent-agent-builder:latest
+    platform:
+      os: linux
+    resources:
+      # The agents it tries run inside it, and build their images there.
+      cpu: "8"
+      memory: "16Gi"
+      rootFilesystem:
+        capacity: "128Gi"
+        mode: direct
+      # Nested agents, to try what it writes. Without them it still writes agents, and says what it could not try.
+      nestedSandboxes: preferred
+    # Boot the image's own init system, systemd in the base images. It runs Podman and the SSH server.
+    initSystem: image
+    mounts:
+      # Where it writes personal agents, for setup to set up into ~/agents. Never ~/agents itself: setup owns those
+      # folders, and they hold every agent's secrets. Setup adds a mount of the repository's checkout.
+      - type: bind
+        source: ~/agent-definitions
+        target: /home/agent/agent-definitions
+        readOnly: false
+
+  # A directory copied over /home/agent every time agentd reconciles the agent.
+  home:
+    source: home
+
+  # What every harness is told: how to make an agent, step by step. The agent-definition skill, which every agent
+  # gets, holds the conventions.
+  instructions:
+    - source: instructions.md
+
+  harnesses:
+    - type: claudeCode
+      auth: mediated
+      default: true
+    - type: codex
+      auth: mediated
+      optional: true
+
+  # No GitHub token and no Git identity: it works on the checkout setup mounts, and leaves what it writes for you to
+  # review, commit and push.
+
+  access:
+    - type: ssh
+
+  network:
+    mode: mediated
+    allow: all
+    # Google Cloud's metadata service hands out the credentials of the VM it runs on.
+    deny:
+      - metadata.google.internal

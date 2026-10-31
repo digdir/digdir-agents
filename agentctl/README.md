@@ -79,7 +79,17 @@ it later.
 agentctl setup --non-interactive --yes --archetype dotnet-backend-developer --name api --github-token-stdin < token.txt
 ```
 
-To write an agent of your own, start from the [.NET example](../agents/examples/dotnet-dev/), an [agent definition](../GLOSSARY.md) whose manifest
+## A new agent
+
+When no agent fits your repository yet, `agentctl new` makes one with you. Name the repository by the folder of its
+checkout, or by its GitHub address, which agentctl clones with your git into a folder you choose. It starts the
+[agent builder](../agents/agent-builder/) on the checkout, a short-lived agent of agentctl's own like the one setup
+signs in from. You talk with the builder about what the new agent is for. It writes the agent's definition into the
+checkout for your team, or into `~/agent-definitions` for you alone, tries it, and leaves it for you to review. When
+you leave the conversation, `new` sets the agent up with setup's questions and removes the builder. Leave before it is
+done, and `agentctl new` goes back to the same conversation.
+
+To write an agent by hand, start from the [.NET example](../agents/examples/dotnet-dev/), an [agent definition](../GLOSSARY.md) whose manifest
 and image explain each line. Let an agent make it yours: ask Claude Code or Codex to copy it and change it for the
 tools and repositories your work needs. A coding agent working in an agent can apply what it writes as a nested agent
 and try it before you do.

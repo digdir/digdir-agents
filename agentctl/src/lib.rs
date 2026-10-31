@@ -4,10 +4,12 @@
 //! deliberately impossible in the workspace graph.
 
 pub mod authorization;
+pub mod builder;
 pub mod catalog;
 pub mod control_api;
 pub mod control_plane;
 mod controller;
+mod embedded;
 pub mod environment;
 pub mod harness;
 pub mod local;

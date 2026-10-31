@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use super::answers::Choice;
 use super::create::{OnFailure, create, write_contents};
 use super::existing::{Context, Existing, State, exchange, move_folder, swap};
-use super::mounts::{check_mounts, protected_folders, refuse_staged_mounts};
+use super::mounts::{check_mounts, create_missing_mounts, protected_folders, refuse_staged_mounts};
 use super::source::{standard_draft, team_draft_from};
 use super::{Draft, command_line, docker, edit, github, image, sign_in, values};
 use crate::{CommandError, CommandResult};
@@ -111,7 +111,8 @@ pub(super) async fn run(context: &Context<'_>, existing: &Existing) -> CommandRe
     keep_answers(&current, left_out, &existing.folder, &mut draft);
     refuse_staged_mounts(&draft, staging)?;
     let protected = protected_folders(existing.folder.parent().unwrap_or(&existing.folder), context.home);
-    check_mounts(&draft, &protected)?;
+    create_missing_mounts(answers, &draft, &protected, false)?;
+    check_mounts(&draft, &protected, &[])?;
     draft.access.known_values =
         agent::environment::read_or_empty(&existing.folder.join(agent::control_plane::ENV_FILE)).await?;
     values::collect(answers, None, &mut draft).await?;
@@ -133,7 +134,7 @@ pub(super) async fn run(context: &Context<'_>, existing: &Existing) -> CommandRe
             Review::Update => break (agent, !recreate.is_empty()),
             Review::Edit => {
                 edit::manifest(answers, &mut draft)?;
-                check_mounts(&draft, &protected)?;
+                check_mounts(&draft, &protected, &[])?;
             }
             Review::Stop => {
                 println!("Nothing was changed.");
@@ -211,7 +212,7 @@ fn keep_answers(current: &Agent, left_out: &LeftOut, folder: &Path, draft: &mut 
     }
 
     // A mount of the current agent stands in for the source's at the same place, since setup made
-    // its source absolute or chose the checkout behind it; the folder setup mounted is kept too.
+    // its source absolute or chose the checkout behind it. The folder setup mounted is kept too.
     spec.sandbox
         .mounts
         .retain(|mount| !left_out.shared.iter().any(|shared| shared == target(mount).as_str()));

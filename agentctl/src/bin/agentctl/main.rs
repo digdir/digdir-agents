@@ -91,7 +91,10 @@ enum Command {
         last: Option<usize>,
     },
     /// Set up an agent step by step: from a standard agent or your team's, ready in an editor.
-    Setup(setup::SetupArguments),
+    Setup(Box<setup::SetupArguments>),
+    /// Make a new agent for a repository with the agent builder, which asks what it is for, then set
+    /// it up.
+    New(setup::NewArguments),
     /// Create or update an agent from a manifest.
     Apply {
         /// Agent manifest path; defaults to ./agent.yaml.
@@ -572,6 +575,7 @@ fn run() -> CommandResult<ExitCode> {
                 | Command::Self_ { .. }
                 | Command::SshConfig { .. }
                 | Command::Setup(_)
+                | Command::New(_)
         ) {
             ensure_daemon(&home, &client).await?;
         }
@@ -602,7 +606,8 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         } => {
             login(client, home, agent::Harness::Codex, from_stdin.then(read_stdin_to_end)).await?;
         }
-        Command::Setup(arguments) => Box::pin(setup::run(arguments, home, client)).await?,
+        Command::Setup(arguments) => Box::pin(setup::run(*arguments, home, client)).await?,
+        Command::New(arguments) => Box::pin(setup::new(arguments, home, client)).await?,
         Command::Apply {
             filename,
             variant,
@@ -1830,7 +1835,7 @@ fn parse_variant_name(value: &str) -> Result<AgentVariantName, String> {
 /// The agents a listing shows: all but the short-lived ones `agentctl setup` signs in from, which
 /// `get` still shows by name.
 fn listed(mut agents: Vec<Agent>) -> Vec<Agent> {
-    agents.retain(|agent| !setup::sign_in::is_sign_in_agent(&agent.metadata.name));
+    agents.retain(|agent| !setup::is_setup_agent(&agent.metadata.name));
     agents
 }
 

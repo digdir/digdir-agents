@@ -1,0 +1,50 @@
+# Builds the agent builder's image from agents/agent-builder, as agentctl-agent-images.yml does every agent image.
+name: agentctl agent builder image
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed]
+    paths:
+      - agents/agent-builder/**
+      - images/agentctl-base/**
+      - docker-bake.hcl
+      - .github/workflows/agentctl-agent-builder-image.yml
+      - .github/workflows/agentctl-agent-images.yml
+      # Neither the image's .dockerignore nor the base's admits this Markdown. agentctl applies the agent builder's
+      # instructions itself.
+      - '!agents/agent-builder/**/*.md'
+      - '!images/agentctl-base/*.md'
+  push:
+    branches:
+      - main
+    paths:
+      - agents/agent-builder/**
+      - images/agentctl-base/**
+      - docker-bake.hcl
+      - .github/workflows/agentctl-agent-builder-image.yml
+      - .github/workflows/agentctl-agent-images.yml
+      # Neither the image's .dockerignore nor the base's admits this Markdown. agentctl applies the agent builder's
+      # instructions itself.
+      - '!agents/agent-builder/**/*.md'
+      - '!images/agentctl-base/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: agentctl-agent-builder-image-${{ github.event.pull_request.number || github.ref }}
+  # A cancelled publish could leave the images' tags pointing at different commits.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  images:
+    uses: ./.github/workflows/agentctl-agent-images.yml
+    with:
+      folder: agent-builder
+      group: builder
+      # The `agent-builder` bake target and the `agent-agent-builder` image.
+      images: agent-builder
+      target-prefix: ""
+      image-prefix: agent-

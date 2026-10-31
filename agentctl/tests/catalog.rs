@@ -1,7 +1,8 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
-//! The standard agents in `agents/standard/`, as `agentctl setup` offers them: each must resolve to
-//! a valid agent on a published image, built by a bake target of its own.
+//! The agents `agentctl setup` offers, the standard agents in `agents/standard/` and the agent
+//! builder in `agents/agent-builder/`: each must resolve to a valid agent on a published image,
+//! built by a bake target of its own.
 
 use std::path::Path;
 
@@ -81,4 +82,32 @@ fn the_embedded_catalog_matches_the_directory() {
     } else {
         assert_eq!(ids(&embedded), Vec::<String>::new());
     }
+}
+
+#[test]
+fn agentctl_carries_the_agent_builder_on_its_published_image_with_a_bake_target() {
+    let staging = tempfile::tempdir().expect("a staging directory");
+    let manifest = agent::builder::extract(staging.path()).expect("the agent builder should extract");
+    let agent = agent::manifest::resolve(&manifest)
+        .expect("the agent builder should resolve")
+        .agent;
+    let ImageSource::Reference { reference } = &agent.spec.sandbox.image else {
+        panic!("the agent builder must be on a published image, not built");
+    };
+    let bake = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../docker-bake.hcl"))
+        .expect("docker-bake.hcl should be readable");
+    assert!(
+        bake.contains("target \"agent-builder\""),
+        "docker-bake.hcl has no target agent-builder"
+    );
+    assert!(
+        reference.contains("agent-agent-builder"),
+        "its image {reference} is not the one its bake target publishes"
+    );
+    // Setup builds the image here from the Dockerfile it carries when the published one cannot be
+    // pulled.
+    assert!(
+        manifest.with_file_name("Dockerfile").is_file(),
+        "agentctl does not carry the Dockerfile of the agent builder's image"
+    );
 }

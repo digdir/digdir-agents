@@ -1,0 +1,3 @@
+# Checkout-local agent variants are private.
+agent.*.yaml
+!agent.nested.yaml

@@ -181,7 +181,7 @@ impl<'a> SignInAgent<'a> {
     }
 }
 
-fn rand_suffix() -> u16 {
+pub(super) fn rand_suffix() -> u16 {
     use rand_core::RngCore as _;
     let mut bytes = [0; 2];
     rand_core::OsRng.fill_bytes(&mut bytes);

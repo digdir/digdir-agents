@@ -130,7 +130,12 @@ pub(super) fn review(answers: &Answers, draft: &Draft, folder: &Path, filled_in:
                 read_only,
             } => {
                 let access = if *read_only { "read-only" } else { "read-write" };
-                Some(format!("{} ({access}), at {}", source.display(), target.as_str()))
+                let created = if source.exists() { "" } else { ", created here" };
+                Some(format!(
+                    "{} ({access}{created}), at {}",
+                    source.display(),
+                    target.as_str()
+                ))
             }
             agent::MountSpec::Tmpfs { .. } => None,
         })
