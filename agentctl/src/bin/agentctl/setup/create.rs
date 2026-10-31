@@ -188,7 +188,7 @@ fn harnesses(draft: &Draft) -> String {
             } else if draft.access.reused_logins.contains(&kind) {
                 notes.push("with the login agentctl holds".to_owned());
             } else if harness.auth == agent::HarnessAuthMode::Mediated {
-                notes.push(format!("waiting for `agentctl {} login`", login_command(kind)));
+                notes.push(format!("waiting for {}", login_command(&draft.agent, kind)));
             }
             if notes.is_empty() {
                 kind.display_name().to_owned()

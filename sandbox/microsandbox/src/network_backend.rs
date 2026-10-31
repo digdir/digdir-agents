@@ -50,6 +50,9 @@ pub struct SecretBinding {
 struct Driver {
     commands: mpsc::Sender<DriverCommand>,
     task: JoinHandle<()>,
+    sandbox_name: SandboxName,
+    /// The bindings the running data plane applies, fixed when it started.
+    secret_bindings: Vec<SecretBinding>,
 }
 
 #[derive(Clone, Copy)]
@@ -83,20 +86,37 @@ impl MicrosandboxNetworkBackend {
 
     /// Replaces the secret bindings applied when this named sandbox's network starts.
     ///
-    /// Returns whether the binding definition changed. Existing connections
-    /// keep their handshake configuration until the caller restarts the Network.
-    /// Secret material itself is resolved from the store for every authorized
-    /// use, so rotating a value behind an unchanged binding needs no restart.
+    /// A running Network keeps the bindings it started with until the caller
+    /// restarts it; see [`Self::has_stale_secret_bindings`]. Secret material
+    /// itself is resolved from the store for every authorized use, so rotating
+    /// a value behind an unchanged binding needs no restart.
     ///
     /// # Errors
     ///
     /// Returns an error when a binding is empty, duplicated, ambiguous, or
     /// unsafe for the Microsandbox control protocol.
-    pub fn set_secret_bindings(&self, sandbox_name: SandboxName, bindings: Vec<SecretBinding>) -> Result<bool, Error> {
+    pub fn set_secret_bindings(&self, sandbox_name: SandboxName, bindings: Vec<SecretBinding>) -> Result<(), Error> {
         validate_secret_bindings(&bindings)?;
-        let changed = self.secret_bindings.borrow().get(&sandbox_name) != Some(&bindings);
         self.secret_bindings.borrow_mut().insert(sandbox_name, bindings);
-        Ok(changed)
+        Ok(())
+    }
+
+    /// Whether this sandbox's running Network applies other secret bindings
+    /// than the ones now set for it, and so must restart to apply them.
+    ///
+    /// It compares with what the running Network applies rather than with the
+    /// bindings set before, so a restart that failed is still due on retry.
+    #[must_use]
+    pub fn has_stale_secret_bindings(&self, sandbox_id: &SandboxId) -> bool {
+        let drivers = self.drivers.borrow();
+        let Some(driver) = drivers.get(sandbox_id).filter(|driver| !driver.task.is_finished()) else {
+            return false;
+        };
+        self.secret_bindings
+            .borrow()
+            .get(&driver.sandbox_name)
+            .map_or(&[][..], Vec::as_slice)
+            != driver.secret_bindings.as_slice()
     }
 
     /// Removes the configured bindings for a named sandbox.
@@ -183,6 +203,8 @@ impl NetworkBackend for MicrosandboxNetworkBackend {
             let sandbox_id = request.sandbox_id.clone();
             let log_sandbox_id = sandbox_id.clone();
             let log_sandbox_name = request.sandbox_name.clone();
+            let driver_sandbox_name = request.sandbox_name.clone();
+            let driver_secret_bindings = secret_bindings.clone();
             let task = tokio::task::spawn_local(async move {
                 if let Err(error) = drive(
                     sandbox_id,
@@ -203,9 +225,15 @@ impl NetworkBackend for MicrosandboxNetworkBackend {
                     );
                 }
             });
-            self.drivers
-                .borrow_mut()
-                .insert(request.sandbox_id, Driver { commands, task });
+            self.drivers.borrow_mut().insert(
+                request.sandbox_id,
+                Driver {
+                    commands,
+                    task,
+                    sandbox_name: driver_sandbox_name,
+                    secret_bindings: driver_secret_bindings,
+                },
+            );
             Ok(())
         })
     }
@@ -1018,27 +1046,57 @@ mod tests {
         assert!(error.to_string().contains("environment-variable name"));
     }
 
-    #[test]
-    fn replacing_secret_bindings_reports_definition_changes() {
+    /// A restart is due while the running Network applies other bindings than those set, however
+    /// often they are set again, so a pass that failed before restarting it still restarts it.
+    #[tokio::test(flavor = "local")]
+    async fn bindings_are_stale_until_the_network_restarts_with_them() {
+        async fn start(
+            backend: &MicrosandboxNetworkBackend,
+            sandbox_id: &sandbox::SandboxId,
+            control: &TestControlEndpoint,
+        ) {
+            let controller = microsandbox_network::control::NetworkControlHost::bind(control.path.clone())
+                .await
+                .expect("bind Network control endpoint");
+            backend
+                .start(StartNetworkRequest {
+                    sandbox_id: sandbox_id.clone(),
+                    sandbox_name: sandbox_name(),
+                    endpoint: NetworkEndpoint::Control(
+                        crate::network_endpoint::open(controller).expect("open Network control endpoint"),
+                    ),
+                })
+                .await
+                .expect("start Network Backend");
+        }
+        let (first, second) = (TestControlEndpoint::new(), TestControlEndpoint::new());
         let backend = MicrosandboxNetworkBackend::new(Rc::new(StaticPolicy::allow_all()));
-        let sandbox = sandbox_name();
-        let binding = || SecretBinding::new("TOKEN", SecretReference::from_opaque("token")).expect("valid binding");
+        let sandbox_id = sandbox_id();
+        let binding = |reference: &str| {
+            vec![SecretBinding::new("TOKEN", SecretReference::from_opaque(reference)).expect("valid binding")]
+        };
+        backend
+            .set_secret_bindings(sandbox_name(), binding("private"))
+            .expect("initial binding");
+        assert!(!backend.has_stale_secret_bindings(&sandbox_id), "nothing runs yet");
+        start(&backend, &sandbox_id, &first).await;
+        assert!(!backend.has_stale_secret_bindings(&sandbox_id));
 
-        assert!(
+        for _ in 0..2 {
             backend
-                .set_secret_bindings(sandbox.clone(), vec![binding()])
-                .expect("initial binding")
-        );
-        assert!(
-            !backend
-                .set_secret_bindings(sandbox.clone(), vec![binding()])
-                .expect("unchanged binding")
-        );
-        assert!(
-            backend
-                .set_secret_bindings(sandbox, Vec::new())
-                .expect("removed binding")
-        );
+                .set_secret_bindings(sandbox_name(), binding("work"))
+                .expect("replacement binding");
+            assert!(backend.has_stale_secret_bindings(&sandbox_id));
+        }
+        backend.stop(&sandbox_id).await.expect("stop Network Backend");
+        start(&backend, &sandbox_id, &second).await;
+        assert!(!backend.has_stale_secret_bindings(&sandbox_id));
+
+        backend
+            .set_secret_bindings(sandbox_name(), Vec::new())
+            .expect("removed binding");
+        assert!(backend.has_stale_secret_bindings(&sandbox_id));
+        backend.stop(&sandbox_id).await.expect("stop Network Backend");
     }
 
     #[tokio::test(flavor = "local")]

@@ -24,6 +24,11 @@ A first install then starts `agentctl setup`, which creates your first agent and
 uses. `AGENT_SETUP_ARGS` passes it flags, and `AGENT_SETUP=0` skips it. An upgrade has agents already, so it starts
 setup only with `AGENT_SETUP=1`. `AGENT_INSTALL_MODE=standalone`, for images and CI jobs, never starts it.
 
+To keep more than one subscription, such as one for work and one of your own, store each under a name with
+`agentctl claude login work`, and set `login: work` on the harness in the manifests that should use it. With
+`login: [work, private]` or `login: any`, each agent gets whichever of them the fewest other running agents use, and
+keeps it. `agentctl claude list` shows the logins and the agents that use each.
+
 Update with `agentctl self update`. Agents and sessions carry over.
 
 ## Your first agent

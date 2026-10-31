@@ -608,6 +608,29 @@ fn an_omitted_authentication_mode_is_the_harness_own_and_is_stored() {
 }
 
 #[test]
+fn an_installation_names_a_login_a_list_of_them_or_any_and_the_default_login_otherwise() {
+    let bytes = manifest_with(&[(
+        CLAUDE_CODE,
+        "    - type: claudeCode\n      default: true\n      login: [work, private]\n    - type: codex\n      login: any\n    - type: pi\n",
+    )]);
+    let agent = manifest::decode(&bytes).expect("manifest");
+    let login = |harness| agent.spec.harness(harness).expect("installation").login.to_string();
+    assert_eq!(login(Harness::ClaudeCode), "work, private");
+    assert_eq!(login(Harness::Codex), "any");
+    assert_eq!(login(Harness::Pi), "default");
+    let value = serde_json::to_value(&agent).expect("Agent JSON");
+    assert_eq!(
+        value["spec"]["harnesses"][0]["login"],
+        serde_json::json!(["work", "private"])
+    );
+    assert_eq!(value["spec"]["harnesses"][1]["login"], "any");
+    assert!(
+        value["spec"]["harnesses"][2].get("login").is_none(),
+        "the default stays unwritten, so stored agents read back the same"
+    );
+}
+
+#[test]
 fn each_harness_accepts_only_its_own_authentication_mode_and_login_free_ones_are_never_optional() {
     for (harnesses, why) in [
         ("    - type: pi\n      auth: mediated\n", "Pi has no platform login"),
@@ -619,6 +642,11 @@ fn each_harness_accepts_only_its_own_authentication_mode_and_login_free_ones_are
         (
             "    - type: pi\n      auth: none\n      optional: true\n",
             "optional waits for a login",
+        ),
+        ("    - type: pi\n      login: work\n", "Pi has no login to name"),
+        (
+            "    - type: claudeCode\n      login: work/other\n",
+            "a login name names stored secrets",
         ),
     ] {
         let bytes = manifest_with(&[(CLAUDE_CODE, harnesses)]);

@@ -189,6 +189,7 @@ impl Provider for MemoryProvider {
                 .map_err(Error::from)?;
             Ok(ProviderEnsureOutcome {
                 sandbox,
+                logins: std::collections::BTreeMap::new(),
                 nested_sandboxes,
                 runtime_restarted: self.report_runtime_restart.replace(false) || was_stopped,
                 harnesses: record
@@ -1186,6 +1187,7 @@ async fn repeated_apply_is_idempotent_and_immutable_fields_are_rejected() {
     kind_set_change.agent.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
         version: Some("0.149.1".into()),
+        login: agent::harness::LoginSet::default(),
         auth: agent::HarnessAuthMode::Mediated,
         optional: false,
         default: false,

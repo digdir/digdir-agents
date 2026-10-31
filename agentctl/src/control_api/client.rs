@@ -7,14 +7,15 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, sessions};
 
 use super::protocol::{
-    DaemonInfo, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, MAX_RESPONSE_BYTES,
-    METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_STATUS, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE,
-    METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH,
-    METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET,
-    METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN,
-    METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, ProgressParams,
-    ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams,
-    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
+    DaemonInfo, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
+    MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_AUTH_STATUS,
+    METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS,
+    METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
+    METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
+    METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
+    METHOD_VNC_ACCESS, NameParams, ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams,
+    SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams,
+    ShutdownResult, read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -279,7 +280,7 @@ impl Client {
             .await
     }
 
-    /// Stores a host-acquired harness credential in the daemon.
+    /// Stores a host-acquired harness credential in the daemon as the login `login`.
     ///
     /// # Errors
     ///
@@ -287,6 +288,7 @@ impl Client {
     pub async fn auth_login(
         &self,
         harness: harness::Harness,
+        login: harness::LoginName,
         credential: String,
         imported: bool,
     ) -> Result<harness::ImportedAuthentication, Error> {
@@ -294,6 +296,7 @@ impl Client {
             METHOD_AUTH_LOGIN,
             LoginParams {
                 harness,
+                login,
                 credential,
                 imported,
             },
@@ -309,6 +312,25 @@ impl Client {
     /// Returns an error when transport, protocol validation, or reading the stored logins fails.
     pub async fn auth_status(&self) -> Result<Vec<harness::AuthenticationStatus>, Error> {
         self.call(METHOD_AUTH_STATUS, serde_json::json!({})).await
+    }
+
+    /// Forgets a harness's login `login`, returning whether it was stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the harness has no platform login or the daemon cannot forget it.
+    pub async fn auth_logout(&self, harness: harness::Harness, login: harness::LoginName) -> Result<bool, Error> {
+        let result: LogoutResult = self.call(METHOD_AUTH_LOGOUT, LogoutParams { harness, login }).await?;
+        Ok(result.forgotten)
+    }
+
+    /// Lists the stored harness logins, without their credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot read them.
+    pub async fn auth_logins(&self) -> Result<Vec<harness::StoredLogin>, Error> {
+        self.call(METHOD_AUTH_LOGINS, serde_json::json!({})).await
     }
 
     /// Creates or resolves one named session attach target.

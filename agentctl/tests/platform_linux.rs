@@ -113,6 +113,7 @@ fn placed_in(record: &mut AgentRecord, sandbox: &sandbox::SandboxHandle, skills:
         id: sandbox.snapshot().id.clone(),
         harnesses: Vec::new(),
         skills,
+        logins: std::collections::BTreeMap::new(),
     });
 }
 
@@ -147,6 +148,7 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
     resource.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
         version: None,
+        login: agent::harness::LoginSet::default(),
         auth: agent::HarnessAuthMode::Mediated,
         optional: true,
         default: false,
@@ -454,6 +456,7 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
         id: "3f978c33-4d43-4ea4-b58d-10b90ef166af".parse().expect("Sandbox ID"),
         harnesses: vec![agent::Harness::ClaudeCode],
         skills: placed(&[(SKILLS, &["image-own"])]),
+        logins: std::collections::BTreeMap::new(),
     });
     let executions = backend.execution_specs().len();
     platform
@@ -496,6 +499,7 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
     resource.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
         version: None,
+        login: agent::harness::LoginSet::default(),
         auth: agent::HarnessAuthMode::Mediated,
         optional: true,
         default: false,
@@ -787,6 +791,7 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     resource.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
         version: Some("0.149.1".into()),
+        login: agent::harness::LoginSet::default(),
         auth: agent::HarnessAuthMode::Mediated,
         optional: false,
         default: false,

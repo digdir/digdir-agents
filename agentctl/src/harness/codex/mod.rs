@@ -6,7 +6,9 @@ use sandbox::secret_store::SecretReference;
 
 use crate::{
     Error,
-    harness::{LaunchRequest, MediatedSecret, ProcessLaunch, SandboxSignIn, shell_single_quoted},
+    harness::{
+        LaunchRequest, LoginName, MediatedSecret, ProcessLaunch, SandboxSignIn, login::LoginStore, shell_single_quoted,
+    },
     persistence,
 };
 
@@ -19,6 +21,7 @@ const PROVIDER: &str = "codex";
 const ACCESS_SECRET: &str = "codex-access-token";
 const REFRESH_SECRET: &str = "codex-refresh-token";
 const ACCOUNT_SECRET: &str = "codex-account-id";
+pub(super) const LOGINS: LoginStore = LoginStore::new(PROVIDER, &[ACCESS_SECRET, REFRESH_SECRET, ACCOUNT_SECRET]);
 pub(super) const ACCESS_ENVIRONMENT: &str = "AGENT_CODEX_ACCESS_TOKEN";
 const ACCOUNT_ENVIRONMENT: &str = "AGENT_CODEX_ACCOUNT_ID";
 const ACCESS_PLACEHOLDER: &str = concat!(
@@ -39,8 +42,9 @@ const LOGIN_CONFIGURATION: [&str; 4] = [
 /// The Codex home of a sign-in in a sandbox, which exists only for that sign-in.
 const SIGN_IN_HOME: &str = "/tmp/agentctl-codex-sign-in";
 
-pub(super) fn owns_secret(reference: &SecretReference) -> bool {
-    reference.as_str() == ACCESS_SECRET
+/// The login whose access token `reference` names. That token is refreshed before it is resolved.
+pub(super) fn access_login(reference: &SecretReference) -> Option<LoginName> {
+    LOGINS.login_of(ACCESS_SECRET, reference)
 }
 
 /// Codex's global instruction file, which holds the agent's instructions.
@@ -53,29 +57,34 @@ pub(super) fn skills_directory(home: &str) -> String {
     format!("{home}/.agents/skills")
 }
 
-pub(super) async fn authentication_ready(database: &persistence::Database) -> Result<bool, Error> {
-    authentication::is_ready(database).await
+/// The stored Codex logins whose grant is complete.
+pub(super) async fn usable_logins(database: &persistence::Database) -> Result<Vec<LoginName>, Error> {
+    let mut usable = Vec::new();
+    for login in LOGINS.logins(database).await? {
+        if authentication::is_ready(database, &login).await? {
+            usable.push(login);
+        }
+    }
+    Ok(usable)
 }
 
-pub(super) async fn prepare(database: &persistence::Database) -> Result<Vec<MediatedSecret>, Error> {
-    if !authentication::is_ready(database).await? {
-        return Err(Error::Invalid(
-            "Codex authentication is not ready; run `agentctl codex login`".into(),
-        ));
+pub(super) async fn prepare(database: &persistence::Database, login: &LoginName) -> Result<Vec<MediatedSecret>, Error> {
+    if !authentication::is_ready(database, login).await? {
+        return Err(super::login_missing(super::Harness::Codex, login));
     }
     Ok(vec![
         MediatedSecret {
             environment: ACCESS_ENVIRONMENT,
             placeholder: ACCESS_PLACEHOLDER.into(),
-            reference: SecretReference::from_opaque(ACCESS_SECRET),
+            reference: LOGINS.secret(ACCESS_SECRET, login),
             allowed_hosts: vec![CHATGPT_HOST.into()],
         },
         MediatedSecret {
             environment: ACCOUNT_ENVIRONMENT,
             // The account ID is visible in authenticated workspace discovery. Codex 0.156
             // needs the selected ID locally to match that response before it can start.
-            placeholder: authentication::selected_account_id(database).await?,
-            reference: SecretReference::from_opaque(ACCOUNT_SECRET),
+            placeholder: authentication::selected_account_id(database, login).await?,
+            reference: LOGINS.secret(ACCOUNT_SECRET, login),
             allowed_hosts: vec![CHATGPT_HOST.into()],
         },
     ])

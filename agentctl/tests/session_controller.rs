@@ -71,6 +71,7 @@ impl Reconcile<AgentId> for BlockingAgentReady {
                                 .map_err(|error| Error::Database(format!("test sandbox ID: {error}")))?,
                             harnesses: record.agent.spec.harnesses.iter().map(|i| i.kind).collect(),
                             skills: std::collections::BTreeMap::new(),
+                            logins: std::collections::BTreeMap::new(),
                         }),
                         vec![Condition {
                             kind: "Ready".into(),
@@ -159,6 +160,7 @@ impl Provider for MemoryProvider {
                 .map_err(Error::from)?;
             Ok(ProviderEnsureOutcome {
                 sandbox,
+                logins: std::collections::BTreeMap::new(),
                 nested_sandboxes: None,
                 runtime_restarted: false,
                 harnesses: record
@@ -234,6 +236,7 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
             id: "3f978c33-4d43-4ea4-b58d-10b90ef166af".parse().expect("Sandbox ID"),
             harnesses: resource.spec.harnesses.iter().map(|i| i.kind).collect(),
             skills: std::collections::BTreeMap::new(),
+            logins: std::collections::BTreeMap::new(),
         }),
         vec![Condition {
             kind: "Ready".into(),
@@ -482,6 +485,7 @@ fn observing(record: &AgentRecord, harnesses: &[agent::Harness]) -> SandboxAssig
         id: id.clone(),
         harnesses: harnesses.to_vec(),
         skills: std::collections::BTreeMap::new(),
+        logins: std::collections::BTreeMap::new(),
     }
 }
 
@@ -535,6 +539,7 @@ async fn running_session(
         id: sandbox.id().clone(),
         harnesses: Vec::new(),
         skills: std::collections::BTreeMap::new(),
+        logins: std::collections::BTreeMap::new(),
     });
     observe_all_harnesses(&mut record);
     database.put(record, 0).await.expect("Agent");
@@ -1775,6 +1780,7 @@ async fn selection_fixture(directory: &TempDir) -> SelectionFixture {
     record.agent.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
         version: Some("0.149.1".into()),
+        login: agent::harness::LoginSet::default(),
         auth: agent::HarnessAuthMode::Mediated,
         optional: true,
         default: false,
@@ -1842,6 +1848,7 @@ async fn a_session_admitted_before_convergence_is_parked_until_its_optional_harn
     record.agent.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
         version: None,
+        login: agent::harness::LoginSet::default(),
         auth: agent::HarnessAuthMode::Mediated,
         optional: true,
         default: false,
@@ -1866,6 +1873,7 @@ async fn a_session_admitted_before_convergence_is_parked_until_its_optional_harn
         id: sandbox.id().clone(),
         harnesses: vec![agent::Harness::ClaudeCode],
         skills: std::collections::BTreeMap::new(),
+        logins: std::collections::BTreeMap::new(),
     });
     database.put(record.clone(), 0).await.expect("Agent");
     let provider: Rc<dyn Provider> = Rc::new(MemoryProvider {
@@ -2212,6 +2220,7 @@ async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() 
         id: sandbox.id().clone(),
         harnesses: Vec::new(),
         skills: std::collections::BTreeMap::new(),
+        logins: std::collections::BTreeMap::new(),
     });
     observe_all_harnesses(&mut record);
     database.put(record, 0).await.expect("Agent");

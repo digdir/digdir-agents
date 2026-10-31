@@ -8,11 +8,21 @@ use super::github::record_github;
 use super::{BrowserSignIn, Draft, SetupArguments, SignInChoice, staging};
 use crate::{CommandError, CommandResult};
 
-use std::{collections::BTreeSet, io::Write as _, path::Path, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::Write as _,
+    path::Path,
+    time::Duration,
+};
 
 use agent::{
-    Agent, Error, Harness, HarnessAuthMode, control_api::Client, control_plane::ApplyRequest,
-    control_plane::WaitPolicy, harness::SandboxSignIn, local::home::ControlPlaneHome, sandbox::ExecutionTarget,
+    Agent, Error, Harness, HarnessAuthMode,
+    control_api::Client,
+    control_plane::ApplyRequest,
+    control_plane::WaitPolicy,
+    harness::{LoginName, SandboxSignIn},
+    local::home::ControlPlaneHome,
+    sandbox::ExecutionTarget,
 };
 use bytes::Bytes;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -44,23 +54,45 @@ pub(super) struct Logins {
     pub(super) stored: Vec<Harness>,
 }
 
-/// Which logins `agent` needs, and which of them agentd holds.
+/// Which logins `agent` needs, and which of them agentd holds: a harness has one when a login its
+/// set names, or any for a set of any, is stored and usable.
 pub(super) async fn logins(client: &Client, agent: &Agent) -> Result<Logins, Error> {
-    let ready: BTreeSet<Harness> = client
+    let usable: BTreeMap<Harness, Vec<LoginName>> = client
         .auth_status()
         .await?
         .into_iter()
-        .filter(|status| status.ready)
-        .map(|status| status.harness)
+        .map(|status| (status.harness, status.usable))
         .collect();
-    let (stored, missing) = agent
+    let (stored, missing): (Vec<_>, Vec<_>) = agent
         .spec
         .harnesses
         .iter()
         .filter(|harness| harness.auth == HarnessAuthMode::Mediated && (harness.default || !harness.optional))
-        .map(|harness| harness.kind)
-        .partition(|harness| ready.contains(harness));
-    Ok(Logins { missing, stored })
+        .partition(|harness| {
+            let usable = usable.get(&harness.kind).map_or(&[][..], Vec::as_slice);
+            harness.login.choose(usable, None, &BTreeMap::new()).is_some()
+        });
+    let kinds = |harnesses: Vec<&agent::HarnessSpec>| harnesses.into_iter().map(|harness| harness.kind).collect();
+    Ok(Logins {
+        missing: kinds(missing),
+        stored: kinds(stored),
+    })
+}
+
+/// The login `harness` of `agent` signs in under: the first its set names, else the default one.
+fn login_of(agent: &Agent, harness: Harness) -> LoginName {
+    agent
+        .spec
+        .harnesses
+        .iter()
+        .find(|spec| spec.kind == harness)
+        .and_then(|spec| spec.login.first().cloned())
+        .unwrap_or_default()
+}
+
+/// The command that stores the login `harness` of `agent` signs in under, quoted for a message.
+pub(super) fn login_command(agent: &Agent, harness: Harness) -> String {
+    agent::harness::login_command(harness, &login_of(agent, harness))
 }
 
 /// A running sign-in agent, deleted by [`Self::finish`].
@@ -318,7 +350,7 @@ pub(super) async fn choose_logins(
         if !missing.is_empty() {
             let logins: Vec<_> = missing
                 .iter()
-                .map(|harness| format!("`agentctl {} login`", login_command(*harness)))
+                .map(|harness| login_command(&draft.agent, *harness))
                 .collect();
             eprintln!("warning: the agent waits until you run {}", logins.join(" and "));
         }
@@ -371,7 +403,7 @@ pub(super) async fn sign_in_where_needed(
     if !answers.interactive() {
         let logins: Vec<_> = harnesses
             .iter()
-            .map(|harness| format!("`agentctl {} login`", login_command(*harness)))
+            .map(|harness| login_command(&draft.agent, *harness))
             .collect();
         return Err(CommandError::Message(format!(
             "signing in needs a terminal and a browser; run setup at a terminal, or {} first",
@@ -393,7 +425,11 @@ pub(super) async fn sign_in_where_needed(
                 harness.display_name()
             );
             let credential = agent.run(&recipe).await?;
-            let stored = match client.auth_login(harness, credential.to_string(), false).await {
+            let login = login_of(&draft.agent, harness);
+            let stored = match client
+                .auth_login(harness, login.clone(), credential.to_string(), false)
+                .await
+            {
                 Ok(stored) => stored,
                 // A credential read off the sign-in's screen can come out garbled, while the person
                 // still sees it whole: let them paste it. One read from a file has no such cause.
@@ -407,7 +443,7 @@ pub(super) async fn sign_in_where_needed(
                         &["Copy the credential the sign-in printed above, all of it, and paste it here"],
                     )?;
                     let pasted: String = pasted.chars().filter(|character| !character.is_whitespace()).collect();
-                    client.auth_login(harness, pasted, false).await?
+                    client.auth_login(harness, login, pasted, false).await?
                 }
                 Err(error) => return Err(error.into()),
             };
@@ -436,15 +472,6 @@ pub(super) async fn remove_dead_sign_in_agents(client: &Client, agents: &[Agent]
         if dead && client.delete(name).await.is_ok() {
             eprintln!("Deleted {name}, left by a setup that did not finish.");
         }
-    }
-}
-
-/// The `agentctl` subcommand that stores a harness's login on this machine.
-pub(super) const fn login_command(harness: Harness) -> &'static str {
-    match harness {
-        Harness::ClaudeCode => "claude",
-        Harness::Codex => "codex",
-        Harness::Pi => "pi",
     }
 }
 

@@ -591,6 +591,13 @@ impl Spec {
                      declare the credentials as optional spec.secrets instead"
                 )));
             }
+            if !harness.login.is_default() && harness.auth == harness::HarnessAuthMode::None {
+                return Err(Error::Invalid(format!(
+                    "spec.harnesses[{index}].login needs a harness with a platform login; \
+                     {:?} has none",
+                    harness.kind.as_str()
+                )));
+            }
             if !harness_kinds.insert(harness.kind) {
                 duplicate_harness = Some(harness.kind);
             }

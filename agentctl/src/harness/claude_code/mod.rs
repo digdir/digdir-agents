@@ -4,10 +4,12 @@ use std::fmt::Write as _;
 
 use crate::{
     Error,
-    harness::{LaunchRequest, MediatedSecret, ProcessLaunch, SandboxSignIn, SignIn, shell_single_quoted},
+    harness::{
+        LaunchRequest, LoginName, MediatedSecret, ProcessLaunch, SandboxSignIn, SignIn, login::LoginStore,
+        shell_single_quoted,
+    },
     persistence,
 };
-use sandbox::secret_store::SecretReference;
 
 pub(super) mod authentication;
 mod bootstrap;
@@ -16,7 +18,8 @@ mod status_line;
 pub(super) mod transcript;
 
 const PROVIDER: &str = "claude";
-const ACCESS_SECRET: &str = "claude-access-token";
+pub(super) const ACCESS_SECRET: &str = "claude-access-token";
+pub(super) const LOGINS: LoginStore = LoginStore::new(PROVIDER, &[ACCESS_SECRET]);
 pub(super) const ACCESS_ENVIRONMENT: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 const ACCESS_PLACEHOLDER: &str = "sk-ant-oat01-agent-mediated-placeholder-not-a-real-credential";
 /// Second binding on the same credential, under a name the harness does not
@@ -52,27 +55,26 @@ pub(super) fn skills_directory(home: &str) -> String {
     format!("{home}/.claude/skills")
 }
 
-pub(super) async fn authentication_ready(database: &persistence::Database) -> Result<bool, Error> {
-    authentication::is_ready(database).await
+/// The stored Claude logins, each usable as soon as it is stored.
+pub(super) async fn usable_logins(database: &persistence::Database) -> Result<Vec<LoginName>, Error> {
+    LOGINS.logins(database).await
 }
 
-pub(super) async fn prepare(database: &persistence::Database) -> Result<Vec<MediatedSecret>, Error> {
-    if !authentication::is_ready(database).await? {
-        return Err(Error::Invalid(
-            "Claude Code authentication is not ready; run `agentctl claude login`".into(),
-        ));
+pub(super) async fn prepare(database: &persistence::Database, login: &LoginName) -> Result<Vec<MediatedSecret>, Error> {
+    if !authentication::is_ready(database, login).await? {
+        return Err(super::login_missing(super::Harness::ClaudeCode, login));
     }
     Ok(vec![
         MediatedSecret {
             environment: ACCESS_ENVIRONMENT,
             placeholder: ACCESS_PLACEHOLDER.into(),
-            reference: SecretReference::from_opaque(ACCESS_SECRET),
+            reference: LOGINS.secret(ACCESS_SECRET, login),
             allowed_hosts: vec![authentication::mediated_host().into()],
         },
         MediatedSecret {
             environment: NESTED_ENVIRONMENT,
             placeholder: NESTED_PLACEHOLDER.into(),
-            reference: SecretReference::from_opaque(ACCESS_SECRET),
+            reference: LOGINS.secret(ACCESS_SECRET, login),
             allowed_hosts: vec![authentication::mediated_host().into()],
         },
     ])
@@ -403,6 +405,57 @@ pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
+    use sandbox::secret_store::SecretStore as _;
+    use zeroize::Zeroizing;
+
+    use crate::harness::{AuthenticationManager, Harness, LoginName, StoredLogin};
+
+    #[tokio::test(flavor = "local")]
+    async fn each_login_mediates_its_own_token_behind_the_same_placeholders() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let database = crate::persistence::Database::open(&directory.path().join("agent.db")).expect("database");
+        let logins = ["private", "work"].map(|name| LoginName::new(name).expect("login name"));
+        for login in &logins {
+            super::LOGINS
+                .put(
+                    &database,
+                    login,
+                    vec![(
+                        super::ACCESS_SECRET,
+                        Zeroizing::new(format!("sk-ant-oat01-{login}").into_bytes()),
+                    )],
+                    r#"{"kind":"setupToken"}"#.into(),
+                )
+                .await
+                .expect("store login");
+        }
+        let manager = AuthenticationManager::new(database.clone());
+
+        for login in &logins {
+            let secrets = super::prepare(&database, login).await.expect("prepare");
+            assert_eq!(
+                secrets
+                    .iter()
+                    .map(|secret| secret.placeholder.as_str())
+                    .collect::<Vec<_>>(),
+                [super::ACCESS_PLACEHOLDER, super::NESTED_PLACEHOLDER],
+                "a login changes what the host substitutes, never what the guest holds"
+            );
+            for secret in secrets {
+                let resolved = manager.resolve(&secret.reference).await.expect("resolve");
+                assert_eq!(resolved.expose(), format!("sk-ant-oat01-{login}").as_bytes());
+            }
+        }
+        assert_eq!(
+            manager.logins().await.expect("logins"),
+            logins.map(|login| StoredLogin {
+                harness: Harness::ClaudeCode,
+                login,
+            })
+        );
+    }
 
     #[test]
     fn a_manifest_cannot_redeclare_either_claude_binding() {

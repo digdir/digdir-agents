@@ -14,14 +14,15 @@ use crate::{
 use super::protocol::{
     CODE_IMMUTABLE, CODE_INTERNAL, CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND,
     CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams,
-    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_STATUS, METHOD_CONVERGE,
-    METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS,
-    METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
-    METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
-    METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
-    METHOD_VNC_ACCESS, NameParams, PROTOCOL_VERSION, ProgressParams, ReadMessage, Request, ResourcesWatchParams,
-    Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
-    SessionTurnsParams, ShutdownParams, error_response, read_message,
+    LogoutParams, LogoutResult, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN,
+    METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_AUTH_STATUS, METHOD_CONVERGE, METHOD_DELETE,
+    METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
+    METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE,
+    METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE,
+    METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams,
+    PROTOCOL_VERSION, ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams,
+    SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams,
+    error_response, read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -122,34 +123,58 @@ impl AgentApi for control_plane::ControlPlane {
 
 /// Host-side authentication operations exposed through the local control API.
 pub trait AuthenticationApi {
-    /// Stores a credential for one harness; `imported` marks one supplied by the caller
-    /// instead of minted by the host login flow.
+    /// Stores a credential for one harness as the login `login`; `imported` marks one supplied by
+    /// the caller instead of minted by the host login flow.
     fn login<'a>(
         &'a self,
         harness: harness::Harness,
+        login: harness::LoginName,
         credential: &'a str,
         imported: bool,
     ) -> LocalFuture<'a, Result<harness::ImportedAuthentication, Error>>;
 
     /// Reports, for each harness that the platform signs in to, whether a usable login is stored.
     fn status(&self) -> LocalFuture<'_, Result<Vec<harness::AuthenticationStatus>, Error>>;
+
+    /// Forgets one harness's login `login`, returning whether it was stored.
+    fn logout<'a>(
+        &'a self,
+        harness: harness::Harness,
+        login: &'a harness::LoginName,
+    ) -> LocalFuture<'a, Result<bool, Error>>;
+
+    /// Lists the stored logins of every harness, without their credentials.
+    fn logins(&self) -> LocalFuture<'_, Result<Vec<harness::StoredLogin>, Error>>;
 }
 
 impl AuthenticationApi for harness::AuthenticationManager {
     fn login<'a>(
         &'a self,
         harness: harness::Harness,
+        login: harness::LoginName,
         credential: &'a str,
         imported: bool,
     ) -> LocalFuture<'a, Result<harness::ImportedAuthentication, Error>> {
         Box::pin(async move {
-            self.login(harness, zeroize::Zeroizing::new(credential.to_owned()), imported)
+            self.login(harness, login, zeroize::Zeroizing::new(credential.to_owned()), imported)
                 .await
         })
     }
 
     fn status(&self) -> LocalFuture<'_, Result<Vec<harness::AuthenticationStatus>, Error>> {
         Box::pin(Self::status(self))
+    }
+
+    fn logout<'a>(
+        &'a self,
+        harness: harness::Harness,
+        login: &'a harness::LoginName,
+    ) -> LocalFuture<'a, Result<bool, Error>> {
+        Box::pin(self.logout(harness, login))
+    }
+
+    fn logins(&self) -> LocalFuture<'_, Result<Vec<harness::StoredLogin>, Error>> {
+        Box::pin(self.logins())
     }
 }
 
@@ -579,6 +604,8 @@ impl Server {
             METHOD_VNC_ACCESS => self.handle_vnc_access(request.id, request.params).await,
             METHOD_AUTH_LOGIN => self.handle_auth_login(request.id, request.params).await,
             METHOD_AUTH_STATUS => result_response(request.id, self.authentication.status().await),
+            METHOD_AUTH_LOGOUT => self.handle_auth_logout(request.id, request.params).await,
+            METHOD_AUTH_LOGINS => result_response(request.id, self.authentication.logins().await),
             METHOD_SESSION_ENSURE => self.handle_session_ensure(request.id, request.params).await,
             METHOD_SESSION_GET => self.handle_session_get(request.id, request.params).await,
             METHOD_SESSION_LIST => self.handle_session_list(request.id, request.params).await,
@@ -804,16 +831,32 @@ impl Server {
         };
         let stored = self
             .authentication
-            .login(params.harness, &params.credential, params.imported)
+            .login(params.harness, params.login, &params.credential, params.imported)
             .await;
         if stored.is_ok() {
             // An agent may be waiting on this login, such as one whose optional installation of
             // the harness was left out, so it need not wait for its next periodic pass.
-            if let Err(error) = self.convergence.wake_all().await {
-                (self.on_error)(&error);
-            }
+            self.wake_all().await;
         }
         result_response(id, stored)
+    }
+
+    async fn handle_auth_logout(&self, id: u64, value: Value) -> Response {
+        let Ok(params) = serde_json::from_value::<LogoutParams>(value) else {
+            return error_response(id, CODE_INVALID_PARAMS, "harness and login are required");
+        };
+        let forgotten = self.authentication.logout(params.harness, &params.login).await;
+        if matches!(forgotten, Ok(true)) {
+            // The agents using the login lose it now rather than at their next periodic pass.
+            self.wake_all().await;
+        }
+        result_response(id, forgotten.map(|forgotten| LogoutResult { forgotten }))
+    }
+
+    async fn wake_all(&self) {
+        if let Err(error) = self.convergence.wake_all().await {
+            (self.on_error)(&error);
+        }
     }
 
     async fn handle_session_ensure(&self, id: u64, value: Value) -> Response {
@@ -945,6 +988,7 @@ fn is_mutating(method: &str) -> bool {
             | METHOD_START
             | METHOD_EXECUTION_ENSURE
             | METHOD_AUTH_LOGIN
+            | METHOD_AUTH_LOGOUT
             | METHOD_SESSION_ENSURE
             | METHOD_SESSION_PROMPT
             | METHOD_SESSION_DELETE
