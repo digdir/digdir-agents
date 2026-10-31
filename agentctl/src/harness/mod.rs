@@ -341,6 +341,12 @@ pub struct StoredLogin {
     pub login: LoginName,
 }
 
+/// Where each harness with a platform login keeps its logins.
+const LOGIN_STORES: [(Harness, &login::LoginStore); 2] = [
+    (Harness::ClaudeCode, &claude_code::LOGINS),
+    (Harness::Codex, &codex::LOGINS),
+];
+
 /// Dispatches host-side authentication to the selected harness adapter.
 pub struct AuthenticationManager {
     database: persistence::Database,
@@ -402,10 +408,7 @@ impl AuthenticationManager {
     /// Returns an error when the database cannot be read.
     pub async fn logins(&self) -> Result<Vec<StoredLogin>, Error> {
         let mut logins = Vec::new();
-        for (harness, store) in [
-            (Harness::ClaudeCode, &claude_code::LOGINS),
-            (Harness::Codex, &codex::LOGINS),
-        ] {
+        for (harness, store) in LOGIN_STORES {
             for login in store.logins(&self.database).await? {
                 logins.push(StoredLogin { harness, login });
             }

@@ -87,6 +87,9 @@ impl std::fmt::Display for LoginName {
 
 /// How one harness keeps its named logins: a provider account `<provider>/<login>` holding the
 /// login's metadata, and each of its secrets as `<secret>/<login>`.
+///
+/// A secret's name does not say whose it is, so each starts with `<provider>-`, which keeps the
+/// secrets of two stores apart.
 pub(super) struct LoginStore {
     provider: &'static str,
     secrets: &'static [&'static str],
@@ -170,5 +173,27 @@ impl LoginStore {
 
     fn account(&self, login: &LoginName) -> String {
         format!("{}/{login}", self.provider)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every store's secrets are stored under names that start with its provider, so no two stores
+    /// can name a secret alike, and each store's provider is its own.
+    #[test]
+    fn the_secrets_of_each_store_are_named_after_its_provider() {
+        let mut providers = std::collections::BTreeSet::new();
+        let mut names = std::collections::BTreeSet::new();
+        for (harness, store) in super::super::LOGIN_STORES {
+            assert!(providers.insert(store.provider), "{harness:?} shares its provider");
+            for name in store.secrets {
+                assert!(
+                    name.starts_with(&format!("{}-", store.provider)),
+                    "{harness:?} names a secret {name}, which must start with {}-",
+                    store.provider
+                );
+                assert!(names.insert(*name), "{name} names two secrets");
+            }
+        }
     }
 }
