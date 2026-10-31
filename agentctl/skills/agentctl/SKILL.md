@@ -24,7 +24,8 @@ command -v agentctl || curl -fsSL https://raw.githubusercontent.com/digdir/digdi
 
 **Log in** for each harness this agent has, before `apply`. They reuse this agent's login; for a harness it lacks,
 they fail rather than sign in. A nested manifest whose harness names a `login` needs a login of that name here, such
-as `agentctl claude login work`.
+as `agentctl claude login work`. For a list, such as `login: [work, private]`, one of them is enough, and `login: any`
+takes any login stored here.
 
 ```sh
 agentctl claude login

@@ -40,6 +40,7 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
     ready.agent.status = Status::observed(
         1,
         Some(Assignment::Materialized {
+            logins: std::collections::BTreeMap::new(),
             provider: ProviderId::new("memory").expect("Provider ID"),
             id: "3f978c33-4d43-4ea4-b58d-10b90ef166af".parse().expect("Sandbox ID"),
             harnesses: ready

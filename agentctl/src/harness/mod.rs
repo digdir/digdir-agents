@@ -16,7 +16,7 @@ const VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 const MAX_INITIAL_PROMPT_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_SELECTION_CHARACTERS: usize = 128;
 
-pub use login::LoginName;
+pub use login::{LoginName, LoginSet};
 pub(crate) use skills::{Skill, SkillFile, platform_skill, remove_linux as remove_skills_linux};
 
 /// Supported harnesses.
@@ -265,10 +265,10 @@ pub struct HarnessSpec {
     /// Exact version installed by the agent image; omitted when the image owns the version, so image bumps need no manifest change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// The host login whose credential this installation's requests carry. Changing it re-binds
-    /// the agent's mediation in place.
-    #[serde(default, skip_serializing_if = "LoginName::is_default")]
-    pub login: LoginName,
+    /// The host logins this installation's requests may carry the credential of; the agent keeps
+    /// one of them, see [`LoginSet::choose`]. Changing it re-binds the agent's mediation in place.
+    #[serde(default, skip_serializing_if = "LoginSet::is_default")]
+    pub login: LoginSet,
     /// Authentication delivery mode. A manifest may omit it, because each harness accepts exactly
     /// one ([`Harness::auth_mode`]); it is always stored.
     pub auth: HarnessAuthMode,
@@ -294,7 +294,7 @@ struct DeclaredHarnessSpec {
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
-    login: LoginName,
+    login: LoginSet,
     #[serde(default)]
     auth: Option<HarnessAuthMode>,
     #[serde(default)]
@@ -352,6 +352,10 @@ pub struct AuthenticationManager {
     database: persistence::Database,
     claude_code: claude_code::authentication::Authentication,
     codex: codex::authentication::Authentication,
+    /// The latest login each agent's harness was given here, whether or not the pass that chose it
+    /// went on to succeed; see [`Self::assign_login`].
+    assignments:
+        std::cell::RefCell<std::collections::BTreeMap<crate::AgentId, std::collections::BTreeMap<Harness, LoginName>>>,
 }
 
 impl AuthenticationManager {
@@ -362,6 +366,7 @@ impl AuthenticationManager {
             database: database.clone(),
             claude_code: claude_code::authentication::Authentication::new(database.clone()),
             codex: codex::authentication::Authentication::new(database),
+            assignments: std::cell::RefCell::default(),
         }
     }
 
@@ -414,6 +419,74 @@ impl AuthenticationManager {
             }
         }
         Ok(logins)
+    }
+
+    /// Chooses the host login `record`'s mediated `installation` uses and records the choice at
+    /// once; see [`LoginSet::choose`] for the rule. `None` when none of its set is usable.
+    ///
+    /// The choice counts every other running agent's login, including choices made moments ago for
+    /// agents whose sandboxes are still starting, so agents applied together spread out. Counting,
+    /// choosing and recording happen without an await between them, which on this single-threaded
+    /// runtime makes them one step. An agent's stored status supplies its login after a restart,
+    /// before any choice is made for it here.
+    ///
+    /// A choice counts from the moment it is made, even if its pass then fails or is abandoned: the
+    /// agent still runs, or is about to, and will use that login once a pass succeeds.
+    ///
+    /// An optional installation is omitted rather than failing provisioning without one, so this must
+    /// distinguish "no login here" from a genuine fault, which stays an error.
+    pub(crate) async fn assign_login(
+        &self,
+        record: &crate::control_plane::AgentRecord,
+        installation: &HarnessSpec,
+    ) -> Result<Option<LoginName>, Error> {
+        use crate::control_plane::AgentStore as _;
+
+        let usable = match installation.kind {
+            Harness::ClaudeCode => claude_code::usable_logins(&self.database).await?,
+            Harness::Codex => codex::usable_logins(&self.database).await?,
+            Harness::Pi => return Err(no_platform_login()),
+        };
+        let agents = self.database.list().await?;
+
+        // From here to the end, nothing awaits.
+        let mut assignments = self.assignments.borrow_mut();
+        assignments.retain(|id, _| agents.iter().any(|agent| agent.id == *id));
+        let login_of = |agent: &crate::control_plane::AgentRecord| {
+            assignments
+                .get(&agent.id)
+                .and_then(|logins| logins.get(&installation.kind))
+                .or_else(|| {
+                    agent
+                        .agent
+                        .status
+                        .sandbox
+                        .as_ref()
+                        .and_then(|assignment| assignment.login(installation.kind))
+                })
+                .cloned()
+        };
+        let mut in_use = std::collections::BTreeMap::<_, usize>::new();
+        for other in &agents {
+            // A stopped agent spends no quota, and one being deleted soon none.
+            if other.id == record.id
+                || other.agent.spec.is_stopped()
+                || other.agent.metadata.deletion_timestamp.is_some()
+            {
+                continue;
+            }
+            if let Some(login) = login_of(other) {
+                *in_use.entry(login).or_default() += 1;
+            }
+        }
+        let current = login_of(record);
+        let chosen = installation.login.choose(&usable, current.as_ref(), &in_use);
+        let logins = assignments.entry(record.id).or_default();
+        match &chosen {
+            Some(login) => logins.insert(installation.kind, login.clone()),
+            None => logins.remove(&installation.kind),
+        };
+        Ok(chosen)
     }
 }
 
@@ -504,11 +577,19 @@ pub fn login_command(harness: Harness, login: &LoginName) -> String {
 
 /// The error for an installation whose login `login` is not stored.
 pub(crate) fn login_missing(harness: Harness, login: &LoginName) -> Error {
-    Error::Invalid(format!(
-        "{} login \"{login}\" is not stored; run {}",
-        harness.display_name(),
-        login_command(harness, login)
-    ))
+    no_login_stored(harness, &LoginSet::one(login.clone()))
+}
+
+/// The error for an installation none of whose logins `set` is stored.
+pub(crate) fn no_login_stored(harness: Harness, set: &LoginSet) -> Error {
+    let name = harness.display_name();
+    let first = set.first().cloned().unwrap_or_default();
+    let message = match set.single() {
+        Some(login) => format!("{name} login \"{login}\" is not stored"),
+        None if set.first().is_some() => format!("none of the {name} logins {set} is stored"),
+        None => format!("no {name} login is stored"),
+    };
+    Error::Invalid(format!("{message}; run {}", login_command(harness, &first)))
 }
 
 /// Whether this process runs inside an agent's sandbox: in a session, an Execution or an SSH login.
@@ -554,29 +635,15 @@ fn no_agent_login(harness: Harness, reason: &str) -> Error {
     ))
 }
 
-/// Reports whether the host login this harness mediates is present and usable.
-///
-/// An optional installation is omitted rather than failing provisioning when this is false, so the
-/// check must distinguish "no login here" from a genuine fault, which stays an error.
-pub(crate) async fn authentication_ready(
-    installation: &HarnessSpec,
-    database: &persistence::Database,
-) -> Result<bool, Error> {
-    match installation.kind {
-        Harness::ClaudeCode => claude_code::authentication_ready(database, &installation.login).await,
-        Harness::Codex => codex::authentication_ready(database, &installation.login).await,
-        // No login to wait for: the agent supplies Pi's credentials itself.
-        Harness::Pi => Ok(true),
-    }
-}
-
+/// The mediated secrets an installation of `harness` gets from its host login `login`.
 pub(crate) async fn prepare(
-    installation: &HarnessSpec,
+    harness: Harness,
+    login: &LoginName,
     database: &persistence::Database,
 ) -> Result<Vec<MediatedSecret>, Error> {
-    match installation.kind {
-        Harness::ClaudeCode => claude_code::prepare(database, &installation.login).await,
-        Harness::Codex => codex::prepare(database, &installation.login).await,
+    match harness {
+        Harness::ClaudeCode => claude_code::prepare(database, login).await,
+        Harness::Codex => codex::prepare(database, login).await,
         Harness::Pi => Ok(Vec::new()),
     }
 }
@@ -782,6 +849,23 @@ pub(crate) const fn test_harness() -> Harness {
     Harness::ClaudeCode
 }
 
+/// Stores a login named `name` for [`test_harness`], with a credential no one accepts.
+#[cfg(test)]
+pub(crate) async fn store_test_login(name: &str, database: &persistence::Database) {
+    claude_code::LOGINS
+        .put(
+            database,
+            &LoginName::new(name).expect("login name"),
+            vec![(
+                claude_code::ACCESS_SECRET,
+                Zeroizing::new(b"not-a-real-credential".to_vec()),
+            )],
+            "{}".into(),
+        )
+        .await
+        .expect("store login");
+}
+
 /// A launch request for tests, with no model or effort selected.
 #[cfg(test)]
 #[cfg(unix)]
@@ -876,22 +960,29 @@ mod tests {
     }
 
     #[tokio::test(flavor = "local")]
-    async fn a_login_never_stored_or_forgotten_names_the_command_that_stores_it() {
+    async fn a_set_with_no_login_stored_names_the_command_that_stores_one() {
         let directory = tempfile::TempDir::new().expect("temporary directory");
         let database = persistence::Database::open(&directory.path().join("agent.db")).expect("database");
-        let installation = claude_code("work");
 
-        assert!(!authentication_ready(&installation, &database).await.expect("readiness"));
-        let Err(error) = prepare(&installation, &database).await else {
+        for (set, message, command) in [
+            ("work", "login \"work\" is not stored", "`agentctl claude login work`"),
+            (
+                "[work, private]",
+                "none of the Claude Code logins work, private is stored",
+                "`agentctl claude login work`",
+            ),
+            ("any", "no Claude Code login is stored", "`agentctl claude login`"),
+            ("default", "login \"default\" is not stored", "`agentctl claude login`"),
+        ] {
+            let installation = claude_code(set);
+            let error = no_login_stored(installation.kind, &installation.login).to_string();
+            assert!(error.contains(message), "{set}: {error}");
+            assert!(error.contains(command), "{set}: {error}");
+        }
+        let Err(error) = prepare(Harness::ClaudeCode, &LoginName::new("work").expect("name"), &database).await else {
             panic!("a missing login cannot be mediated");
         };
-        assert!(error.to_string().contains("login \"work\" is not stored"), "{error}");
         assert!(error.to_string().contains("`agentctl claude login work`"), "{error}");
-        let default = prepare(&claude_code("default"), &database)
-            .await
-            .err()
-            .expect("missing");
-        assert!(default.to_string().contains("`agentctl claude login`"), "{default}");
     }
 
     #[test]
@@ -899,7 +990,17 @@ mod tests {
         for name in ["work", "Private-2", "a"] {
             assert!(LoginName::new(name).is_ok(), "{name}");
         }
-        for name in ["", "-work", "work-", "work/other", "work.other", "a b", &"x".repeat(65)] {
+        for name in [
+            "",
+            "-work",
+            "work-",
+            "work/other",
+            "work.other",
+            "a b",
+            "any",
+            "Any",
+            &"x".repeat(65),
+        ] {
             assert!(LoginName::new(name).is_err(), "{name:?}");
         }
     }

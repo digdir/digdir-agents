@@ -104,6 +104,9 @@ pub enum Assignment {
         /// writes only the folders of the harnesses it sets up.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         skills: PlacedSkills,
+        /// The host login each installed harness with one uses, which later passes keep.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        logins: BTreeMap<crate::Harness, crate::harness::LoginName>,
     },
 }
 
@@ -122,6 +125,15 @@ impl Assignment {
         match self {
             Self::Selected { .. } => None,
             Self::Materialized { id, .. } => Some(id),
+        }
+    }
+
+    /// Returns the host login the installed `harness` uses, when it has one.
+    #[must_use]
+    pub fn login(&self, harness: crate::Harness) -> Option<&crate::harness::LoginName> {
+        match self {
+            Self::Selected { .. } => None,
+            Self::Materialized { logins, .. } => logins.get(&harness),
         }
     }
 
@@ -187,6 +199,8 @@ pub struct ProviderEnsureOutcome {
     pub runtime_restarted: bool,
     /// Harness installations this pass prepared.
     pub harnesses: Vec<crate::Harness>,
+    /// The host login each prepared installation with one uses.
+    pub logins: BTreeMap<crate::Harness, crate::harness::LoginName>,
     /// Whether the sandbox got the nested sandboxes the agent asks for, when it asks for them.
     pub nested_sandboxes: Option<NestedSandboxesOutcome>,
 }
@@ -230,6 +244,8 @@ pub struct EnsureOutcome {
     pub sandbox: SandboxHandle,
     /// Harness installations this pass prepared.
     pub harnesses: Vec<crate::Harness>,
+    /// The host login each prepared installation with one uses.
+    pub logins: BTreeMap<crate::Harness, crate::harness::LoginName>,
     /// Whether the sandbox got the nested sandboxes the agent asks for, when it asks for them.
     pub nested_sandboxes: Option<NestedSandboxesOutcome>,
     /// The optional instructions and skills setup left out because they do not exist.
@@ -364,6 +380,7 @@ impl Service {
             runtime_restarted: outcome.runtime_restarted,
             sandbox,
             harnesses: outcome.harnesses,
+            logins: outcome.logins,
             nested_sandboxes: outcome.nested_sandboxes,
             missing_sources: set_up.missing_sources,
             skills: set_up.skills,

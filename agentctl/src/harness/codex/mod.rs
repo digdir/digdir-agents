@@ -46,8 +46,15 @@ pub(super) fn skills_directory(home: &str) -> String {
     format!("{home}/.agents/skills")
 }
 
-pub(super) async fn authentication_ready(database: &persistence::Database, login: &LoginName) -> Result<bool, Error> {
-    authentication::is_ready(database, login).await
+/// The stored Codex logins whose grant is complete.
+pub(super) async fn usable_logins(database: &persistence::Database) -> Result<Vec<LoginName>, Error> {
+    let mut usable = Vec::new();
+    for login in LOGINS.logins(database).await? {
+        if authentication::is_ready(database, &login).await? {
+            usable.push(login);
+        }
+    }
+    Ok(usable)
 }
 
 pub(super) async fn prepare(database: &persistence::Database, login: &LoginName) -> Result<Vec<MediatedSecret>, Error> {
