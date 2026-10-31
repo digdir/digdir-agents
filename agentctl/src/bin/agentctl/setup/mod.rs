@@ -7,7 +7,7 @@
 
 use create::{Review, bundle_into, finish, manifest_text, review};
 use github::{choose_github, give_identity};
-use mounts::{check_mounts, choose_shared, mount_unless_mounted, protected_folders, refuse_staged_mounts};
+use mounts::{Protected, check_mounts, choose_shared, mount_unless_mounted, protected_folders, refuse_staged_mounts};
 use shape::{Names, Shape};
 use sign_in::{choose_logins, remove_dead_sign_in_agents, sign_in_where_needed};
 use source::{choose_draft, choose_image, team_draft};
@@ -373,7 +373,7 @@ async fn run_once(
     if !draft.agent.spec.access.contains(&AccessSpec::Ssh {}) {
         draft.agent.spec.access.push(AccessSpec::Ssh {});
     }
-    check_mounts(&draft, &protected)?;
+    check_host_paths(&draft, &protected)?;
     if arguments.dry_run {
         let mut preview = draft.agent.clone();
         bundle_into(&mut preview, &draft, staging.path().join("preview").as_path())?;
@@ -398,7 +398,7 @@ async fn run_once(
             }
             Review::Edit => {
                 edit::manifest(answers, &mut draft)?;
-                check_mounts(&draft, &protected)?;
+                check_host_paths(&draft, &protected)?;
             }
             Review::Stop => {
                 println!("Nothing was created.");
@@ -419,6 +419,13 @@ async fn run_once(
         docker::ensure().await?;
     }
     finish(arguments, answers, client, home, &staging, &mut draft, &folder).await
+}
+
+/// Checks what of this machine the agent gets, the folders it mounts and the files its definition
+/// copies into it, before anything is written.
+fn check_host_paths(draft: &Draft, protected: &Protected) -> CommandResult<()> {
+    check_mounts(draft, protected)?;
+    Ok(bundle::check_sources(&draft.agent, &draft.source, protected)?)
 }
 
 /// agentd's agents, and the definitions in ~/agents with their state. A dry run changes nothing,

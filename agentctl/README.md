@@ -53,6 +53,9 @@ it later.
 - **Shared folders** are folders on your machine that you and the agent both work on, so what it changes lands in
   them. Without one, the agent works on its own copies, which you reach over SSH or in an editor. Setup lists what the
   manifest shares and lets you keep it, share another checkout or folder (`--mount`), or leave one out (`--unshare`).
+  It never gives an agent your settings and credentials: not your whole home folder, the folders in it whose name
+  starts with a dot, `~/Library` or `AppData`, nor `~/agents` or agentctl's own state. That covers what a definition
+  shares, and the files it copies in from outside its repository, links followed.
 - **Sign-ins** run in a short-lived sandbox, so this machine needs no harness or `gh`. A harness login agentctl holds
   already, from `agentctl claude login` or an earlier setup, is used for every agent; setup asks whether to use it or
   sign in again (`--sign-in again`). A GitHub account is per agent, since each keeps its token in its own `.env`, so

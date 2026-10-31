@@ -16,8 +16,13 @@ use agent::{
 };
 use sandbox::SandboxPath;
 
-/// Directories that may not be mounted, nor any directory holding them: a mount of one would give
-/// the sandbox the person's keys, the control plane's state or every agent's secrets.
+/// The folders right below the home folder that hold settings and credentials, besides those whose
+/// name starts with a dot, such as `.ssh`, `.aws` and `.config`.
+const PRIVATE_IN_HOME: [&str; 2] = ["Library", "AppData"];
+
+/// What may not reach an agent, nor any folder holding it: the person's settings and credentials,
+/// the control plane's state and every agent's secrets. It applies to the folders an agent mounts
+/// and the files its definition copies into it, wherever on this machine those come from.
 pub(super) struct Protected {
     pub(super) user_home: Option<PathBuf>,
     pub(super) inside: Vec<PathBuf>,
@@ -26,34 +31,59 @@ pub(super) struct Protected {
 impl Protected {
     /// Checks `folder` and returns it in canonical form, or why it may not be mounted.
     pub(super) fn check(&self, folder: &Path) -> Result<PathBuf, String> {
-        let folder = folder
-            .canonicalize()
-            .map_err(|error| format!("{}: {error}", folder.display()))?;
+        let folder = self.check_path(folder)?;
         if !folder.is_dir() {
             return Err(format!("{} is not a folder", folder.display()));
         }
-        if folder.parent().is_none() {
+        Ok(folder)
+    }
+
+    /// Checks `path`, a folder or a file, and returns it in canonical form, or why it may not
+    /// reach an agent.
+    pub(super) fn check_path(&self, path: &Path) -> Result<PathBuf, String> {
+        let path = path
+            .canonicalize()
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if path.parent().is_none() {
             return Err("the root of the file system cannot be mounted".into());
         }
-        if let Some(home) = self.user_home.as_deref().and_then(|home| home.canonicalize().ok())
-            && home.starts_with(&folder)
-        {
-            return Err(format!(
-                "{} holds your whole home folder; choose a project folder inside it",
-                folder.display()
-            ));
+        if let Some(home) = self.user_home.as_deref().and_then(|home| home.canonicalize().ok()) {
+            if home.starts_with(&path) {
+                return Err(format!(
+                    "{} holds your whole home folder; choose a project folder inside it",
+                    path.display()
+                ));
+            }
+            if let Some(Component::Normal(first)) = path
+                .strip_prefix(&home)
+                .ok()
+                .and_then(|below| below.components().next())
+                && let first = first.to_string_lossy()
+                && (first.starts_with('.') || PRIVATE_IN_HOME.contains(&first.as_ref()))
+            {
+                let private = home.join(first.as_ref());
+                let place = if path == private {
+                    String::new()
+                } else {
+                    format!(" is in {}, which", private.display())
+                };
+                return Err(format!(
+                    "{}{place} holds settings and credentials and must stay out of agents",
+                    path.display()
+                ));
+            }
         }
         for protected in &self.inside {
             let protected = protected.canonicalize().unwrap_or_else(|_| protected.clone());
-            if folder.starts_with(&protected) || protected.starts_with(&folder) {
+            if path.starts_with(&protected) || protected.starts_with(&path) {
                 return Err(format!(
                     "{} overlaps {}, which must stay out of agents",
-                    folder.display(),
+                    path.display(),
                     protected.display()
                 ));
             }
         }
-        Ok(folder)
+        Ok(path)
     }
 }
 
@@ -229,17 +259,11 @@ pub(super) fn working_directory_target(os: &str, folder: &Path) -> Result<Sandbo
     Ok(SandboxPath::new(format!("{working}/{name}")))
 }
 
-/// The folders no agent may mount, nor any folder holding them.
+/// What no agent may mount or have copied in, nor any folder holding it.
 pub(super) fn protected_folders(agents_root: &Path, home: &ControlPlaneHome) -> Protected {
     Protected {
         user_home: agent::local::home::user_home_directory(),
-        inside: vec![
-            agents_root.to_path_buf(),
-            home.path().to_path_buf(),
-            agent::local::home::user_home_directory()
-                .map(|home| home.join(".ssh"))
-                .unwrap_or_default(),
-        ],
+        inside: vec![agents_root.to_path_buf(), home.path().to_path_buf()],
     }
 }
 
@@ -827,6 +851,13 @@ mod tests {
         assert!(protected.check(home.path()).is_err());
         assert!(protected.check(&agents.join("worker")).is_err());
         assert!(protected.check(&home.path().join("missing")).is_err());
+        for private in [".ssh", ".aws", ".config/gh", "Library/LaunchAgents", "AppData/Roaming"] {
+            let folder = home.path().join(private);
+            std::fs::create_dir_all(&folder).expect("a private folder");
+            let error = protected.check(&folder).expect_err("refused");
+            assert!(error.contains("settings and credentials"), "{error}");
+        }
+        assert!(protected.check(&project.join("..")).is_ok());
     }
 
     #[test]
