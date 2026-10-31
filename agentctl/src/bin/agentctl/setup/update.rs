@@ -215,13 +215,19 @@ fn keep_answers(current: &Agent, left_out: &LeftOut, folder: &Path, draft: &mut 
     spec.sandbox
         .mounts
         .retain(|mount| !left_out.shared.iter().any(|shared| shared == target(mount).as_str()));
-    let mut kept = current.spec.sandbox.mounts.clone();
+    // Mount targets are unique within an agent, so each place has at most one of each.
+    let current_mounts = &current.spec.sandbox.mounts;
     for mount in &mut spec.sandbox.mounts {
-        if let Some(index) = kept.iter().position(|current| target(current) == target(mount)) {
-            *mount = kept.remove(index);
+        if let Some(current) = current_mounts.iter().find(|current| target(current) == target(mount)) {
+            mount.clone_from(current);
         }
     }
-    spec.sandbox.mounts.extend(kept);
+    let added: Vec<MountSpec> = current_mounts
+        .iter()
+        .filter(|current| !spec.sandbox.mounts.iter().any(|mount| target(mount) == target(current)))
+        .cloned()
+        .collect();
+    spec.sandbox.mounts.extend(added);
 
     if current
         .spec
