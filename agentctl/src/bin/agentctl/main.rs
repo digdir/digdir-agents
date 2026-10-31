@@ -17,6 +17,7 @@ use agent::{
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
+mod discovery;
 mod format;
 mod launch;
 mod progress;
