@@ -16,7 +16,7 @@ use agent::{
     },
     control_plane::WaitPolicy,
     control_plane::{ApplyRequest, ControlPlane, memory::InMemoryAgentStore},
-    harness::{ImportedAuthentication, LoginName},
+    harness::{AuthenticationStatus, ImportedAuthentication, LoginName},
     resources::Changes,
 };
 use sandbox::LocalFuture;
@@ -147,6 +147,15 @@ impl AuthenticationApi for FakeAuthentication {
                 login,
                 ready: true,
             })
+        })
+    }
+
+    fn status(&self) -> LocalFuture<'_, Result<Vec<AuthenticationStatus>, Error>> {
+        Box::pin(async {
+            Ok(vec![AuthenticationStatus {
+                harness: agent::Harness::Codex,
+                usable: vec![LoginName::default()],
+            }])
         })
     }
 
@@ -601,6 +610,21 @@ async fn only_a_logout_that_forgets_a_login_wakes_the_agents() {
     assert!(forgotten);
     assert!(!unknown);
     assert_eq!(fixture.woken.get(), 1);
+}
+
+#[tokio::test(flavor = "local")]
+async fn the_daemon_reports_which_logins_it_holds() {
+    let fixture = api();
+
+    let status = fixture.client.auth_status().await.expect("status");
+
+    assert_eq!(
+        status,
+        [AuthenticationStatus {
+            harness: agent::Harness::Codex,
+            usable: vec![LoginName::default()],
+        }]
+    );
 }
 
 #[tokio::test(flavor = "local")]

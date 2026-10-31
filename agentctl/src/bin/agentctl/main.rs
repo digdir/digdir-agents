@@ -19,9 +19,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 mod format;
 mod launch;
+mod names;
 mod progress;
 mod prompt;
 mod self_update;
+mod setup;
 mod tui;
 mod watch;
 
@@ -88,6 +90,8 @@ enum Command {
         #[arg(long)]
         last: Option<usize>,
     },
+    /// Set up an agent step by step: from a standard agent or your team's, ready in an editor.
+    Setup(setup::SetupArguments),
     /// Create or update an agent from a manifest.
     Apply {
         /// Agent manifest path; defaults to ./agent.yaml.
@@ -590,7 +594,11 @@ fn run() -> CommandResult<ExitCode> {
         }
         if !matches!(
             arguments.command,
-            Command::Create { .. } | Command::Prompt { .. } | Command::Self_ { .. } | Command::SshConfig { .. }
+            Command::Create { .. }
+                | Command::Prompt { .. }
+                | Command::Self_ { .. }
+                | Command::SshConfig { .. }
+                | Command::Setup(_)
         ) {
             ensure_daemon(&home, &client).await?;
         }
@@ -625,6 +633,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 CodexCommand::Logout { name } => logout(client, harness, name).await?,
             }
         }
+        Command::Setup(arguments) => Box::pin(setup::run(arguments, home, client)).await?,
         Command::Apply {
             filename,
             variant,
@@ -817,13 +826,13 @@ async fn get_resources(
             let agents = if let Some(name) = &name {
                 vec![client.get(name).await?]
             } else {
-                client.list_agents().await?
+                listed(client.list_agents().await?)
             };
             if watch {
                 return watch::follow(
                     client,
                     |resources| {
-                        let mut agents = resources.agents;
+                        let mut agents = listed(resources.agents);
                         agents.retain(|agent| name.as_ref().is_none_or(|name| agent.metadata.name == *name));
                         render_watched(output, &agents, agents_table)
                     },
@@ -1847,6 +1856,13 @@ fn parse_effort(value: &str) -> Result<agent::Effort, String> {
 
 fn parse_variant_name(value: &str) -> Result<AgentVariantName, String> {
     value.parse().map_err(|error: Error| error.to_string())
+}
+
+/// The agents a listing shows: all but the short-lived ones `agentctl setup` signs in from, which
+/// `get` still shows by name.
+fn listed(mut agents: Vec<Agent>) -> Vec<Agent> {
+    agents.retain(|agent| !setup::sign_in::is_sign_in_agent(&agent.metadata.name));
+    agents
 }
 
 fn agents_table(agents: &[Agent]) -> Vec<String> {

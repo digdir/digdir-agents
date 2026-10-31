@@ -15,13 +15,14 @@ use super::protocol::{
     CODE_IMMUTABLE, CODE_INTERNAL, CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND,
     CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams,
     LogoutParams, LogoutResult, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN,
-    METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET,
-    METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
-    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, PROTOCOL_VERSION, ProgressParams,
-    ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams,
-    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
+    METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_AUTH_STATUS, METHOD_CONVERGE, METHOD_DELETE,
+    METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
+    METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE,
+    METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE,
+    METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams,
+    PROTOCOL_VERSION, ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams,
+    SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams,
+    error_response, read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -132,6 +133,9 @@ pub trait AuthenticationApi {
         imported: bool,
     ) -> LocalFuture<'a, Result<harness::ImportedAuthentication, Error>>;
 
+    /// Reports, for each harness that the platform signs in to, whether a usable login is stored.
+    fn status(&self) -> LocalFuture<'_, Result<Vec<harness::AuthenticationStatus>, Error>>;
+
     /// Forgets one harness's login `login`, returning whether it was stored.
     fn logout<'a>(
         &'a self,
@@ -155,6 +159,10 @@ impl AuthenticationApi for harness::AuthenticationManager {
             self.login(harness, login, zeroize::Zeroizing::new(credential.to_owned()), imported)
                 .await
         })
+    }
+
+    fn status(&self) -> LocalFuture<'_, Result<Vec<harness::AuthenticationStatus>, Error>> {
+        Box::pin(Self::status(self))
     }
 
     fn logout<'a>(
@@ -595,6 +603,7 @@ impl Server {
             METHOD_SSH_ACCESS => self.handle_ssh_access(request.id, request.params).await,
             METHOD_VNC_ACCESS => self.handle_vnc_access(request.id, request.params).await,
             METHOD_AUTH_LOGIN => self.handle_auth_login(request.id, request.params).await,
+            METHOD_AUTH_STATUS => result_response(request.id, self.authentication.status().await),
             METHOD_AUTH_LOGOUT => self.handle_auth_logout(request.id, request.params).await,
             METHOD_AUTH_LOGINS => result_response(request.id, self.authentication.logins().await),
             METHOD_SESSION_ENSURE => self.handle_session_ensure(request.id, request.params).await,

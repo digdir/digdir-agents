@@ -1382,8 +1382,23 @@ fn string_field(mapping: &serde_yaml_ng::Mapping, field: &str, path: &Path) -> R
 
 /// Resolves a manifest host path: `~` and `~/…` below the home directory, a relative path against the manifest's
 /// directory.
-pub(crate) fn resolve_host_path(source_directory: &Path, path: &Path, field: &str) -> Result<PathBuf, Error> {
+///
+/// # Errors
+///
+/// Returns an error naming `field` when the path starts with `~` and the home directory is not set.
+pub fn resolve_host_path(source_directory: &Path, path: &Path, field: &str) -> Result<PathBuf, Error> {
     resolve_host_path_with(source_directory, path, field, crate::local::home::user_home_directory)
+}
+
+/// Resolves a host path a person typed as a manifest path is resolved: `~` and `~/…` below the home directory, a
+/// relative path against the working directory.
+///
+/// # Errors
+///
+/// Returns an error when the path starts with `~` and the home directory is not set, or when the working directory
+/// cannot be read.
+pub fn expand_host_path(path: &Path) -> Result<PathBuf, Error> {
+    resolve_host_path(&std::env::current_dir()?, path, "path")
 }
 
 /// Resolves a manifest host path as [`resolve_host_path`] does, or `None` when the source is optional and the path

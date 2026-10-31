@@ -6,7 +6,9 @@ use sandbox::secret_store::SecretReference;
 
 use crate::{
     Error,
-    harness::{LaunchRequest, LoginName, MediatedSecret, ProcessLaunch, login::LoginStore, shell_single_quoted},
+    harness::{
+        LaunchRequest, LoginName, MediatedSecret, ProcessLaunch, SandboxSignIn, login::LoginStore, shell_single_quoted,
+    },
     persistence,
 };
 
@@ -30,6 +32,15 @@ const ACCESS_PLACEHOLDER: &str = concat!(
 const ACCOUNT_PLACEHOLDER: &str = "agent-mediated-codex-account-placeholder";
 const REFRESH_PLACEHOLDER: &str = "agent-mediated-codex-refresh-placeholder-not-a-real-token";
 const CHATGPT_HOST: &str = "chatgpt.com";
+/// Keeps a login's grant in its own `auth.json` file, minted by signing in to `ChatGPT`.
+const LOGIN_CONFIGURATION: [&str; 4] = [
+    "-c",
+    "cli_auth_credentials_store=\"file\"",
+    "-c",
+    "forced_login_method=\"chatgpt\"",
+];
+/// The Codex home of a sign-in in a sandbox, which exists only for that sign-in.
+const SIGN_IN_HOME: &str = "/tmp/agentctl-codex-sign-in";
 
 /// The login whose access token `reference` names. That token is refreshed before it is resolved.
 pub(super) fn access_login(reference: &SecretReference) -> Option<LoginName> {
@@ -140,13 +151,8 @@ pub(super) fn acquire_host_credential(
         .env_remove("CODEX_ACCESS_TOKEN")
         .env_remove("CODEX_API_KEY")
         .env_remove("OPENAI_API_KEY")
-        .args([
-            "-c",
-            "cli_auth_credentials_store=\"file\"",
-            "-c",
-            "forced_login_method=\"chatgpt\"",
-            "login",
-        ])
+        .args(LOGIN_CONFIGURATION)
+        .arg("login")
         .status()
         .map_err(|error| Error::Invalid(format!("could not start `codex login`: {error}")))?;
     if !status.success() {
@@ -165,6 +171,30 @@ pub(super) fn acquire_host_credential(
         return Err(Error::Invalid("`codex login` created an empty auth.json file".into()));
     }
     Ok(credential)
+}
+
+/// Creates a separate `ChatGPT` login grant with `codex login --device-auth` in a sandbox.
+///
+/// The device sign-in shows a link and a one-time code to enter there, so the
+/// person signs in with a browser anywhere. Codex leaves the grant in the
+/// `auth.json` of its home, which must exist before it starts.
+pub(super) fn sandbox_sign_in() -> SandboxSignIn {
+    let arguments = ["-c", r#"mkdir -p "$CODEX_HOME" && exec "$@""#, "sh", "codex"]
+        .into_iter()
+        .chain(LOGIN_CONFIGURATION)
+        .chain(["login", "--device-auth"])
+        .map(str::to_owned);
+    SandboxSignIn {
+        execution: sandbox::execution::ExecutionSpec::command(sandbox::SandboxPath::new("/bin/sh"), arguments)
+            .with_environment([("CODEX_HOME".into(), SIGN_IN_HOME.into())]),
+        artifact: Some(sandbox::SandboxPath::new(format!("{SIGN_IN_HOME}/auth.json"))),
+        credential: |_output, artifact| super::artifact_text("Codex", artifact),
+    }
+}
+
+/// Whether `url` is the page where a Codex device sign-in takes its one-time code.
+pub(super) fn is_sign_in_link(url: &reqwest::Url) -> bool {
+    url.host_str() == Some("auth.openai.com") && url.path().starts_with("/codex/device")
 }
 
 fn remove_stale_login_homes(temporary_root: &std::path::Path) {
@@ -295,6 +325,31 @@ pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
+
+    /// What `codex login --device-auth` prints.
+    const SIGN_IN_OUTPUT: &str = "\nWelcome to Codex [v\x1b[90m0.130.0\x1b[0m]\n\x1b[90mOpenAI's command-line coding agent\x1b[0m\n\n\
+        Follow these steps to sign in with ChatGPT using device code authorization:\n\n\
+        1. Open this link in your browser and sign in to your account\n   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n\n\
+        2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n   \x1b[94mBQ3T-XRW7K\x1b[0m\n";
+
+    #[test]
+    fn a_sandbox_sign_in_links_to_the_device_page_and_leaves_its_grant_in_a_file() {
+        let links = crate::harness::sign_in_links(SIGN_IN_OUTPUT.as_bytes());
+        assert_eq!(
+            links.iter().map(reqwest::Url::as_str).collect::<Vec<_>>(),
+            ["https://auth.openai.com/codex/device"]
+        );
+        let sign_in = super::sandbox_sign_in();
+        let credential = sign_in
+            .credential(SIGN_IN_OUTPUT.as_bytes(), Some(b"{\"auth_mode\":\"chatgpt\"}\n"))
+            .expect("credential");
+        assert_eq!(credential.as_str(), "{\"auth_mode\":\"chatgpt\"}");
+        for artifact in [None, Some(b"\n".as_slice())] {
+            sign_in
+                .credential(SIGN_IN_OUTPUT.as_bytes(), artifact)
+                .expect_err("a sign-in that left no file has no credential");
+        }
+    }
 
     #[test]
     fn inside_an_agent_a_login_takes_its_credential_file() {

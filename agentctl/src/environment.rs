@@ -33,7 +33,12 @@ pub(crate) async fn read(path: &std::path::Path) -> Result<BTreeMap<String, Zero
     parse(&bytes)
 }
 
-pub(crate) async fn read_or_empty(path: &std::path::Path) -> Result<BTreeMap<String, Zeroizing<String>>, Error> {
+/// Reads an agent environment file of `NAME=value` lines, or nothing when it does not exist.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read or a line is not `NAME=value`.
+pub async fn read_or_empty(path: &std::path::Path) -> Result<BTreeMap<String, Zeroizing<String>>, Error> {
     let Some(bytes) = read_if_exists(path).await? else {
         return Ok(BTreeMap::new());
     };

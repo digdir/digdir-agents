@@ -36,7 +36,7 @@ use crate::{
 
 pub use client_config::{
     CommandShell, HostEntry, IncludeOutcome, install_include, remove_known_host, render_config, render_include,
-    render_path, render_proxy_command, resolves_through_agentctl, upsert_known_host,
+    render_path, render_proxy_command, resolves_through_agentctl, shell_word, upsert_known_host,
 };
 pub use keys::KeyPair;
 
@@ -210,6 +210,9 @@ pub fn image_contract_missing(what: &str) -> String {
 /// and the in-guest server state.
 pub struct Access {
     home: SshHome,
+    /// The control-plane home the generated `ProxyCommand` names, so that it reaches this
+    /// `agentd` whatever environment `ssh` runs in.
+    control_home: PathBuf,
     agentctl: PathBuf,
     user_home: Option<PathBuf>,
     keys: Rc<dyn HostKeyStore>,
@@ -219,7 +222,7 @@ pub struct Access {
 impl Access {
     /// Creates the SSH access reconciler.
     ///
-    /// `agentctl` is the absolute executable the generated `ProxyCommand` runs.
+    /// `agentctl` is the absolute executable the generated `ProxyCommand` runs, on `home`.
     #[must_use]
     pub fn new(
         home: &ControlPlaneHome,
@@ -229,6 +232,7 @@ impl Access {
     ) -> Self {
         Self {
             home: SshHome::new(home),
+            control_home: home.path().to_path_buf(),
             agentctl,
             user_home: crate::local::home::user_home_directory(),
             keys,
@@ -284,7 +288,7 @@ impl Access {
             identity_file: self.home.identity_path(record.id),
             known_hosts_file: self.home.known_hosts_path(),
             config_file: self.home.config_path(),
-            proxy_command: render_proxy_command(&self.agentctl, name, CommandShell::host())?,
+            proxy_command: render_proxy_command(&self.agentctl, &self.control_home, name, CommandShell::host())?,
             working_directory: platform::WORKING_DIRECTORY.into(),
         })
     }
@@ -390,6 +394,7 @@ impl Access {
                     user: GUEST_USER.into(),
                     proxy_command: render_proxy_command(
                         &self.agentctl,
+                        &self.control_home,
                         &record.agent.metadata.name,
                         CommandShell::host(),
                     )?,

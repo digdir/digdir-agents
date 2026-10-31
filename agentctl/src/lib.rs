@@ -4,10 +4,11 @@
 //! deliberately impossible in the workspace graph.
 
 pub mod authorization;
+pub mod catalog;
 pub mod control_api;
 pub mod control_plane;
 mod controller;
-mod environment;
+pub mod environment;
 pub mod harness;
 pub mod local;
 pub mod manifest;

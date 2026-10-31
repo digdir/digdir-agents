@@ -23,6 +23,7 @@ pub(crate) const METHOD_CONVERGE: &str = "agents.v1.converge";
 pub(crate) const METHOD_SSH_ACCESS: &str = "agents.v1.sshAccess";
 pub(crate) const METHOD_VNC_ACCESS: &str = "agents.v1.vncAccess";
 pub(crate) const METHOD_AUTH_LOGIN: &str = "authentication.v1.login";
+pub(crate) const METHOD_AUTH_STATUS: &str = "authentication.v1.status";
 pub(crate) const METHOD_AUTH_LOGOUT: &str = "authentication.v1.logout";
 pub(crate) const METHOD_AUTH_LOGINS: &str = "authentication.v1.logins";
 pub(crate) const METHOD_SESSION_ENSURE: &str = "sessions.v1.ensure";

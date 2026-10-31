@@ -26,6 +26,8 @@ target_binaries="${files_root}/target-binaries"
 old_archive="${files_root}/old.tar.gz"
 target_archive="${files_root}/target.tar.gz"
 export AGENT_HOME="${smoke_root}/home"
+# The installer would otherwise hand over to `agentctl setup`, which waits for answers at a terminal.
+export AGENT_SETUP=0
 
 cleanup() {
   status=$?

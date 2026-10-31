@@ -1,0 +1,176 @@
+# Builds agent images from a bake group, on the agentctl base image built from the same commit, for the workflows that
+# call it. Pull requests only build them; main, including a manual run on main, also publishes them to GHCR as
+# `latest` and `sha-<commit>`. Each name in `images` is the bake target `<target-prefix><name>` and the image
+# `<image-prefix><name>` below the registry.
+name: agentctl agent images
+
+on:
+  workflow_call:
+    inputs:
+      folder:
+        description: The folder below agents/ the images are built from
+        required: true
+        type: string
+      group:
+        description: The bake group that builds every image
+        required: true
+        type: string
+      images:
+        description: The images' names, space-separated
+        required: true
+        type: string
+      target-prefix:
+        description: What each bake target's name starts with
+        required: true
+        type: string
+      image-prefix:
+        description: What each image's name starts with
+        required: true
+        type: string
+      cache-from-also:
+        description: >-
+          Further caches, as `<target>=<image>` pairs, space-separated, for an image built on another, whose layers it
+          shares
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  BASE_REPOSITORY: ghcr.io/digdir/agentctl-base
+  REGISTRY: ghcr.io/digdir/digdir-agents
+
+jobs:
+  # Each architecture builds on a native runner: under QEMU, the arm64 build of the self-dev image took more than 20
+  # minutes for the package layer alone. On main, each pushes its images by digest, and the publish job joins them
+  # into the tagged multi-platform images.
+  build:
+    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft) }}
+    name: Build images (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Cone mode also checks out the root's files, docker-bake.hcl among them.
+          sparse-checkout: |
+            agents/${{ inputs.folder }}
+            images/agentctl-base
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login to GHCR
+        if: github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      # All images are built in one bake, on the base image bake builds from this commit. The base's own cache serves
+      # the base layers.
+      - name: Build images
+        env:
+          ARCH: ${{ matrix.arch }}
+          PUBLISH: ${{ github.ref == 'refs/heads/main' }}
+          GROUP: ${{ inputs.group }}
+          IMAGES: ${{ inputs.images }}
+          TARGET_PREFIX: ${{ inputs.target-prefix }}
+          IMAGE_PREFIX: ${{ inputs.image-prefix }}
+          CACHE_FROM_ALSO: ${{ inputs.cache-from-also }}
+        run: |
+          set -eu
+
+          metadata="${RUNNER_TEMP}/metadata.json"
+          set -- --set "*.platform=linux/${ARCH}" \
+            --set "base-headless.cache-from=type=registry,ref=${BASE_REPOSITORY}:buildcache-headless-${ARCH}"
+          for pair in ${CACHE_FROM_ALSO}; do
+            set -- "$@" --set "${pair%%=*}.cache-from=type=registry,ref=${REGISTRY}/${pair#*=}:buildcache-${ARCH}"
+          done
+          for image in ${IMAGES}; do
+            target="${TARGET_PREFIX}${image}"
+            repository="${REGISTRY}/${IMAGE_PREFIX}${image}"
+            set -- "$@" --set "${target}.cache-from=type=registry,ref=${repository}:buildcache-${ARCH}"
+            if [ "${PUBLISH}" = "true" ]; then
+              # Without clearing the bake file's tags, buildx refuses to push by digest; the publish job tags.
+              set -- "$@" \
+                --set "${target}.tags=" \
+                --set "${target}.output=type=image,name=${repository},push-by-digest=true,name-canonical=true,push=true" \
+                --set "${target}.cache-to=type=registry,ref=${repository}:buildcache-${ARCH},mode=max,image-manifest=true"
+            fi
+          done
+
+          docker buildx bake --file docker-bake.hcl --provenance=false --sbom=false --metadata-file "${metadata}" \
+            "$@" "${GROUP}"
+
+          if [ "${PUBLISH}" = "true" ]; then
+            mkdir -p "${RUNNER_TEMP}/digests"
+            for image in ${IMAGES}; do
+              target="${TARGET_PREFIX}${image}"
+              digest="$(jq -r --arg target "${target}" '.[$target]."containerimage.digest"' "${metadata}")"
+              case "${digest}" in
+                sha256:*) printf '%s\n' "${digest}" > "${RUNNER_TEMP}/digests/${image}" ;;
+                *) echo "::error::no image digest for ${target} in ${metadata}"; exit 1 ;;
+              esac
+            done
+          fi
+
+      - name: Upload image digests
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: digests-${{ inputs.group }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    if: github.ref == 'refs/heads/main'
+    name: Publish images
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download image digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digests-${{ inputs.group }}-*
+          path: ${{ runner.temp }}/digests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Tag multi-platform images
+        env:
+          GROUP: ${{ inputs.group }}
+          IMAGES: ${{ inputs.images }}
+          IMAGE_PREFIX: ${{ inputs.image-prefix }}
+        run: |
+          set -eu
+
+          for image in ${IMAGES}; do
+            repository="${REGISTRY}/${IMAGE_PREFIX}${image}"
+            docker buildx imagetools create \
+              --tag "${repository}:sha-${GITHUB_SHA::10}" \
+              --tag "${repository}:latest" \
+              "${repository}@$(cat "${RUNNER_TEMP}/digests/digests-${GROUP}-amd64/${image}")" \
+              "${repository}@$(cat "${RUNNER_TEMP}/digests/digests-${GROUP}-arm64/${image}")"
+            docker buildx imagetools inspect "${repository}:sha-${GITHUB_SHA::10}"
+          done

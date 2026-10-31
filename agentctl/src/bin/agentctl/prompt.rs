@@ -14,8 +14,7 @@ pub(crate) fn interactive() -> bool {
 /// unless `NO_COLOR` is set, so questions stand apart from what is reported. Any further `lines`,
 /// such as what the question is about, follow indented under it, and `suffix` ends the last line.
 fn pose(lines: &[&str], suffix: &str) {
-    let colored = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty());
-    let marker = if colored { "\x1b[1;36m?\x1b[0m" } else { "?" };
+    let marker = if colored() { "\x1b[1;36m?\x1b[0m" } else { "?" };
     let mut text = String::from("\n");
     for (index, line) in lines.iter().enumerate() {
         if index == 0 {
@@ -56,6 +55,340 @@ pub(crate) fn confirm_lines(lines: &[&str]) -> Result<bool, Error> {
     }
 }
 
+/// What a person answered, that they asked to go back to the question before, or that they
+/// cancelled with Ctrl-C or Ctrl-D.
+pub(crate) enum Reply<T> {
+    Answer(T),
+    Back,
+    Cancel,
+}
+
+/// What an `inquire` prompt's result means here, with the line it left behind redrawn as
+/// [`settle`] does. `shown` is how the answer reads. Esc goes back when `back` allows it, and is
+/// otherwise asked again, as `None`.
+fn reply<T>(
+    question: &str,
+    result: Result<T, inquire::InquireError>,
+    shown: impl FnOnce(&T) -> String,
+    back: bool,
+) -> Result<Option<Reply<T>>, Error> {
+    match result {
+        Ok(answer) => {
+            let text = shown(&answer);
+            settle(
+                &format!("✔ {question} {text}"),
+                Some(("\x1b[32m✔\x1b[0m", question, &text)),
+            );
+            Ok(Some(Reply::Answer(answer)))
+        }
+        Err(inquire::InquireError::OperationCanceled) => {
+            let left = format!("? {question} {CANCELED}");
+            if back {
+                settle(&left, Some(("\x1b[2m↩\x1b[0m", question, "went back")));
+                Ok(Some(Reply::Back))
+            } else {
+                settle(&left, None);
+                Ok(None)
+            }
+        }
+        Err(inquire::InquireError::OperationInterrupted) => Ok(Some(Reply::Cancel)),
+        Err(error) => Err(Error::Invalid(error.to_string())),
+    }
+}
+
+/// What `inquire` writes after a question left with Esc.
+const CANCELED: &str = "<canceled>";
+
+/// Redraws the line `left`, the one `inquire` leaves for a finished question, as one that steps
+/// back from the question asked next: its mark, such as a check mark for an answer, the question
+/// dimmed and what became of it in colour. `None` removes the line. Without colour, `inquire`'s own
+/// line stays.
+fn settle(left: &str, finished: Option<(&str, &str, &str)>) {
+    if !colored() {
+        return;
+    }
+    let columns = crossterm::terminal::size()
+        .ok()
+        .filter(|(columns, _)| *columns > 0)
+        .map_or(80, |(columns, _)| usize::from(columns));
+    let rows = left.chars().count().max(1).div_ceil(columns);
+    let finished = finished.map_or_else(String::new, |(mark, question, outcome)| {
+        format!("{mark} \x1b[2m{question}\x1b[0m \x1b[36m{outcome}\x1b[0m\n")
+    });
+    eprint!("\x1b[{rows}A\r\x1b[J{finished}");
+    std::io::stderr().flush().ok();
+}
+
+/// Whether questions are drawn in colour: on a terminal, unless `NO_COLOR` asks for none.
+fn colored() -> bool {
+    std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
+}
+
+/// Starts a question after a blank line, which sets it apart from the answers above it, and
+/// shows the lines it is about, all but its last, which the prompt shows itself.
+fn context(lines: &[&str]) -> String {
+    eprintln!();
+    let Some((question, about)) = lines.split_last() else {
+        return String::new();
+    };
+    for line in about {
+        eprintln!("  {line}");
+    }
+    (*question).to_owned()
+}
+
+/// The look of every question: the one being asked stands out, with its question bold and the
+/// option it is on marked in colour, while answered ones show a check mark and the answer. Without
+/// colour when `NO_COLOR` asks for none.
+fn render_config() -> inquire::ui::RenderConfig<'static> {
+    use inquire::ui::{Attributes, Color, RenderConfig, StyleSheet, Styled};
+
+    if !colored() {
+        return RenderConfig::empty()
+            .with_answered_prompt_prefix(Styled::new("✔"))
+            .with_highlighted_option_prefix(Styled::new("❯"));
+    }
+    let mut config = RenderConfig::default_colored()
+        .with_prompt_prefix(Styled::new("?").with_fg(Color::LightCyan).with_attr(Attributes::BOLD))
+        .with_answered_prompt_prefix(Styled::new("✔").with_fg(Color::LightGreen))
+        .with_highlighted_option_prefix(Styled::new("❯").with_fg(Color::LightCyan))
+        .with_selected_option(Some(
+            StyleSheet::new().with_fg(Color::LightCyan).with_attr(Attributes::BOLD),
+        ))
+        .with_help_message(StyleSheet::new().with_fg(Color::DarkGrey))
+        .with_answer(StyleSheet::new().with_fg(Color::LightCyan));
+    config.prompt = StyleSheet::new().with_attr(Attributes::BOLD);
+    config
+}
+
+/// `label` cut to fit a row of the terminal beside an option's prefix, ending in `…` when cut, so a
+/// long option never wraps over rows mid-word.
+fn fitted(label: &str) -> String {
+    let columns = crossterm::terminal::size()
+        .ok()
+        .filter(|(columns, _)| *columns > 0)
+        .map_or(80, |(columns, _)| usize::from(columns));
+    let room = columns.saturating_sub(4).max(20);
+    if label.chars().count() <= room {
+        return label.to_owned();
+    }
+    let mut cut: String = label.chars().take(room - 1).collect();
+    cut.push('…');
+    cut
+}
+
+const fn hint(back: bool) -> &'static str {
+    if back {
+        "Type a number or use ↑/↓, Enter to confirm, Esc to go back"
+    } else {
+        "Type a number or use ↑/↓, Enter to confirm"
+    }
+}
+
+/// `options` as a menu shows them: numbered, with any lines after an option's first on its line.
+fn numbered_labels(options: &[String]) -> Vec<String> {
+    options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| {
+            fitted(&format!(
+                "{}. {}",
+                index + 1,
+                option.lines().collect::<Vec<_>>().join(" — ")
+            ))
+        })
+        .collect()
+}
+
+/// Matches a number typed to the option of that number, so an option is chosen without the arrow
+/// keys, and other text to the options whose labels hold it.
+fn numbered(input: &str, option: &String, label: &str, index: usize) -> Option<i64> {
+    if !input.is_empty() && input.bytes().all(|byte| byte.is_ascii_digit()) {
+        return (input == (index + 1).to_string()).then_some(0);
+    }
+    (inquire::Select::<String>::DEFAULT_SCORER)(input, option, label, index)
+}
+
+/// Asks to choose one of `options`, numbered, by typing its number or with the arrow keys, and
+/// Enter, starting at `default`. An option's lines after its first, such as a description, follow
+/// it on one line. Esc goes back when `back` allows it.
+///
+/// # Errors
+///
+/// Returns an error when the terminal cannot be read.
+pub(crate) fn menu(question: &str, options: &[String], default: usize, back: bool) -> Result<Reply<usize>, Error> {
+    let lines: Vec<&str> = question.lines().collect();
+    let question = context(&lines);
+    let labels = numbered_labels(options);
+    // An answered menu shows the option's first line only, such as a standard agent's title
+    // without its description.
+    let answered = |chosen: inquire::list_option::ListOption<&String>| {
+        options[chosen.index].lines().next().unwrap_or_default().to_owned()
+    };
+    loop {
+        let result = inquire::Select::new(&question, labels.clone())
+            .with_starting_cursor(default.min(labels.len().saturating_sub(1)))
+            .with_help_message(hint(back))
+            .with_scorer(&numbered)
+            .with_formatter(&answered)
+            .with_render_config(render_config())
+            .raw_prompt()
+            .map(|chosen| chosen.index);
+        let shown = |index: &usize| options[*index].lines().next().unwrap_or_default().to_owned();
+        if let Some(reply) = reply(&question, result, shown, back)? {
+            return Ok(reply);
+        }
+    }
+}
+
+/// Asks to choose one or more of `options`, numbered, starting with those at `defaults` chosen. A
+/// typed number, or the arrow keys, move to an option, Space chooses or clears it, and Enter
+/// confirms. Esc goes back when `back` allows it.
+///
+/// # Errors
+///
+/// Returns an error when the terminal cannot be read.
+pub(crate) fn multi_menu(
+    question: &str,
+    options: &[String],
+    defaults: &[usize],
+    back: bool,
+) -> Result<Reply<Vec<usize>>, Error> {
+    use inquire::{list_option::ListOption, validator::Validation};
+
+    let lines: Vec<&str> = question.lines().collect();
+    let question = context(&lines);
+    let labels = numbered_labels(options);
+    let first_lines = |indices: &mut dyn Iterator<Item = usize>| {
+        indices
+            .map(|index| options[index].lines().next().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let answered = |chosen: &[ListOption<&String>]| first_lines(&mut chosen.iter().map(|chosen| chosen.index));
+    let hint = if back {
+        "Type a number or use ↑/↓, Space to choose or clear, Enter to confirm, Esc to go back"
+    } else {
+        "Type a number or use ↑/↓, Space to choose or clear, Enter to confirm"
+    };
+    loop {
+        let result = inquire::MultiSelect::new(&question, labels.clone())
+            .with_default(defaults)
+            .with_help_message(hint)
+            .with_scorer(&numbered)
+            // A number typed to reach an option is cleared once Space chooses it.
+            .with_keep_filter(false)
+            .with_validator(|chosen: &[ListOption<&String>]| {
+                Ok(if chosen.is_empty() {
+                    Validation::Invalid("Choose at least one".into())
+                } else {
+                    Validation::Valid
+                })
+            })
+            .with_formatter(&answered)
+            .with_render_config(render_config())
+            .raw_prompt()
+            .map(|chosen| chosen.into_iter().map(|chosen| chosen.index).collect::<Vec<_>>());
+        let shown = |indices: &Vec<usize>| first_lines(&mut indices.iter().copied());
+        if let Some(reply) = reply(&question, result, shown, back)? {
+            return Ok(reply);
+        }
+    }
+}
+
+/// Asks for a line of text. Enter alone gives `default` when there is one, and an empty answer
+/// otherwise. Esc goes back when `back` allows it.
+///
+/// # Errors
+///
+/// Returns an error when the terminal cannot be read.
+pub(crate) fn line(lines: &[&str], default: Option<&str>, back: bool) -> Result<Reply<String>, Error> {
+    let question = context(lines);
+    let help = if back { "Esc to go back" } else { "" };
+    loop {
+        let mut prompt = inquire::Text::new(&question).with_render_config(render_config());
+        if let Some(default) = default.filter(|default| !default.is_empty()) {
+            prompt = prompt.with_default(default);
+        }
+        if back {
+            prompt = prompt.with_help_message(help);
+        }
+        let result = prompt.prompt().map(|answer| answer.trim().to_owned());
+        if let Some(reply) = reply(&question, result, String::clone, back)? {
+            return Ok(reply);
+        }
+    }
+}
+
+/// Asks a yes-or-no question, what it is about first and the question last. There is no default,
+/// so pressing Enter by reflex accepts nothing. Esc goes back when `back` allows it.
+///
+/// # Errors
+///
+/// Returns an error when the terminal cannot be read.
+pub(crate) fn yes_no(lines: &[&str], back: bool) -> Result<Reply<bool>, Error> {
+    let question = context(lines);
+    loop {
+        let mut prompt = inquire::Confirm::new(&question).with_render_config(render_config());
+        if back {
+            prompt = prompt.with_help_message("Esc to go back");
+        }
+        let shown = |answer: &bool| if *answer { "Yes" } else { "No" }.to_owned();
+        if let Some(reply) = reply(&question, prompt.prompt(), shown, back)? {
+            return Ok(reply);
+        }
+    }
+}
+
+/// Asks for a secret, such as a token, without showing what is typed or pasted. A paste counts
+/// whole, without its line breaks, so a token copied over several lines of a terminal arrives as
+/// one; Enter after it ends the answer. Esc goes back when `back` allows it.
+///
+/// # Errors
+///
+/// Returns an error when the terminal cannot be read.
+pub(crate) fn secret(lines: &[&str], back: bool) -> Result<Reply<zeroize::Zeroizing<String>>, Error> {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+    pose(lines, " (hidden): ");
+    crossterm::terminal::enable_raw_mode()?;
+    crossterm::execute!(std::io::stderr(), crossterm::event::EnableBracketedPaste).ok();
+    let mut value = zeroize::Zeroizing::new(String::new());
+    let reply = loop {
+        let event = match crossterm::event::read() {
+            Ok(event) => event,
+            Err(error) => break Err(error.into()),
+        };
+        if let Event::Paste(pasted) = &event {
+            value.extend(pasted.chars().filter(|character| !matches!(character, '\r' | '\n')));
+            continue;
+        }
+        let Event::Key(KeyEvent {
+            code, modifiers, kind, ..
+        }) = event
+        else {
+            continue;
+        };
+        if kind == KeyEventKind::Release {
+            continue;
+        }
+        match code {
+            KeyCode::Enter => break Ok(Reply::Answer(std::mem::take(&mut value))),
+            KeyCode::Esc if back => break Ok(Reply::Back),
+            KeyCode::Backspace => {
+                value.pop();
+            }
+            KeyCode::Char('c' | 'd') if modifiers.contains(KeyModifiers::CONTROL) => break Ok(Reply::Cancel),
+            KeyCode::Char(character) => value.push(character),
+            _ => {}
+        }
+    };
+    crossterm::execute!(std::io::stderr(), crossterm::event::DisableBracketedPaste).ok();
+    crossterm::terminal::disable_raw_mode().ok();
+    eprintln!();
+    reply
+}
+
 /// The answer `y`, `yes`, `n` or `no` gives, in any case; anything else is no answer.
 fn yes_or_no(answer: &str) -> Option<bool> {
     match answer.trim().to_ascii_lowercase().as_str() {
@@ -67,6 +400,16 @@ fn yes_or_no(answer: &str) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_typed_number_picks_its_option_and_text_filters_by_label() {
+        let option = String::new();
+        assert_eq!(super::numbered("2", &option, "2. Keep them", 1), Some(0));
+        assert_eq!(super::numbered("2", &option, "12. Twelve", 11), None);
+        assert_eq!(super::numbered("12", &option, "12. Twelve", 11), Some(0));
+        assert!(super::numbered("keep", &option, "1. Keep them", 0).is_some());
+        assert!(super::numbered("leave", &option, "1. Keep them", 0).is_none());
+    }
+
     use super::yes_or_no;
 
     #[test]
