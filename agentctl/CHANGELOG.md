@@ -19,6 +19,10 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 - Your terminal tab is named after the agent and session you are attached to, such as `builder/b1`, and reads `agentctl` again when you return to `agentctl tui`. ([#343](https://github.com/digdir/digdir-agents/pull/343))
 - `agentctl get agents --watch -o json` prints the agents as one JSON line, then again each time they change, so a tool can follow them without polling. It exits once an `agentd` upgrade makes it incompatible. `get sessions --watch` works the same way. ([#349](https://github.com/digdir/digdir-agents/issues/349))
 
+### Changed
+
+- Applying a manifest that adds, removes or renames instruction files or skills updates the agent in place, keeping its disk and sessions, instead of being refused. A skill the agent no longer declares is removed from its harnesses, while the skills its image ships stay.
+
 ### Fixed
 
 - `ssh agentctl-<name>`, `agentctl ssh` and editors connecting over SSH reach the right agent when it runs on another control-plane home than the default, such as one chosen with `--home`: the SSH configuration now names the home. `agentctl vnc-info` names it in its forwarding command too.

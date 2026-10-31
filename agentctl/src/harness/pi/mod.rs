@@ -25,7 +25,7 @@ fn platform_directory(home: &str) -> String {
 
 /// Where bootstrap installs skills: the Agent Skills directory Codex installs into, which Pi also
 /// reads, so an agent with both harnesses loads each skill once.
-fn skills_directory(home: &str) -> String {
+pub(super) fn skills_directory(home: &str) -> String {
     format!("{home}/.agents/skills")
 }
 

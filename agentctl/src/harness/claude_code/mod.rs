@@ -47,6 +47,11 @@ pub(super) fn instructions_path(home: &str) -> String {
     format!("{home}/.claude/CLAUDE.md")
 }
 
+/// Where Claude Code finds the user's skills, one folder each.
+pub(super) fn skills_directory(home: &str) -> String {
+    format!("{home}/.claude/skills")
+}
+
 pub(super) async fn authentication_ready(database: &persistence::Database) -> Result<bool, Error> {
     authentication::is_ready(database).await
 }

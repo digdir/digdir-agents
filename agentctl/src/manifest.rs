@@ -522,8 +522,8 @@ impl Spec {
     }
 
     /// The fields an existing agent cannot change, in manifest notation, that `desired` changes.
-    /// Each shapes what the agent was created from, such as its image or the files it reads, so
-    /// changing one takes creating the agent again.
+    /// Each shapes what the agent was created from, such as its image or its mounts, so changing
+    /// one takes creating the agent again.
     #[must_use]
     pub fn immutable_changes(&self, desired: &Self) -> Vec<&'static str> {
         let kinds = |spec: &Self| -> std::collections::BTreeSet<_> {
@@ -549,8 +549,6 @@ impl Spec {
             ),
             ("spec.sandbox.mounts", current.mounts != desired_sandbox.mounts),
             ("spec.home", self.home != desired.home),
-            ("spec.instructions", self.instructions != desired.instructions),
-            ("spec.skills", self.skills != desired.skills),
             ("spec.harnesses.type", kinds(self) != kinds(desired)),
             ("spec.harnesses.auth", auth(self) != auth(desired)),
         ]

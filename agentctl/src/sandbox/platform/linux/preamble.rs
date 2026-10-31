@@ -34,6 +34,11 @@ const BEGIN: &str = "<!-- agentd: Agent sandbox section, rewritten on every pass
 /// Closes the section.
 const END: &str = "<!-- agentd: end of Agent sandbox section -->\n";
 
+/// Opens the agent's own instructions below the section. The rest of the file is then setup's, so a
+/// later pass without instructions of the agent's own replaces it rather than keeping it as the
+/// image's or the home overlay's.
+const OWN: &str = "<!-- agentd: the agent's own instructions, from spec.instructions -->\n";
+
 /// The instruction file: the section, then `rest`, separated by a blank line.
 pub(super) fn place(section: &str, rest: &[u8]) -> Vec<u8> {
     let mut contents = section.as_bytes().to_vec();
@@ -44,14 +49,23 @@ pub(super) fn place(section: &str, rest: &[u8]) -> Vec<u8> {
     contents
 }
 
-/// What an instruction file holds besides a section an earlier pass placed at its top.
+/// The instruction file for an agent with instructions of its own: the section, then `own`.
+pub(super) fn place_own(section: &str, own: &[u8]) -> Vec<u8> {
+    let mut rest = OWN.as_bytes().to_vec();
+    rest.extend_from_slice(own);
+    place(section, &rest)
+}
+
+/// What an instruction file holds besides what an earlier pass placed: the section at its top, and
+/// the agent's own instructions below it.
 pub(super) fn without_section(existing: &[u8]) -> &[u8] {
     existing
         .strip_prefix(BEGIN.as_bytes())
         .and_then(|after| {
             let end = after.windows(END.len()).position(|window| window == END.as_bytes())?;
             let rest = &after[end + END.len()..];
-            Some(rest.strip_prefix(b"\n").unwrap_or(rest))
+            let rest = rest.strip_prefix(b"\n").unwrap_or(rest);
+            Some(if rest.starts_with(OWN.as_bytes()) { &[] } else { rest })
         })
         .unwrap_or(existing)
 }

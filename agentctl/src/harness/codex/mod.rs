@@ -48,6 +48,11 @@ pub(super) fn instructions_path(home: &str) -> String {
     format!("{home}/.codex/AGENTS.md")
 }
 
+/// Where Codex finds the user's Agent Skills, one folder each.
+pub(super) fn skills_directory(home: &str) -> String {
+    format!("{home}/.agents/skills")
+}
+
 pub(super) async fn authentication_ready(database: &persistence::Database) -> Result<bool, Error> {
     authentication::is_ready(database).await
 }

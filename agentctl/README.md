@@ -65,9 +65,8 @@ it later.
   and applies it with the agent's disk, sessions and `.env` kept (`--existing <name> --action update`). Your answers
   for its name, size, harnesses and shared folders carry over, so what you left out stays out while what the source
   adds comes in. The review lists the files that change first, and anything else you edited in its `agent.yaml` gives
-  way to the source. An existing agent cannot change some fields, such as its image or the list of skills it reads, so
-  an update that changes one creates the agent again, deleting its disk. Setup asks first, and a script passes
-  `--replace`.
+  way to the source. An existing agent cannot change some fields, such as its image, so an update that changes one
+  creates the agent again, deleting its disk. Setup asks first, and a script passes `--replace`.
 - **Editors:** setup opens the agent in VS Code or Zed. Other apps that work over SSH, such as JetBrains Gateway and
   the Claude desktop app's Code tab, connect to the SSH host `agentctl-<name>` that setup names, in the folder it
   names. The Claude desktop app copies its own Claude sign-in into the agent, while sessions agentctl starts never let
