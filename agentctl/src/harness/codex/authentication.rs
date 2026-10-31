@@ -433,7 +433,7 @@ mod tests {
     use std::{cell::Cell, rc::Rc};
 
     use tempfile::TempDir;
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncWriteExt as _;
 
     use super::*;
 
@@ -460,6 +460,36 @@ mod tests {
         )
     }
 
+    /// Reads one whole HTTP request from `stream`, so a test server answers only once it has all of
+    /// it: one answering earlier can close the connection on a body still being sent.
+    async fn read_test_request(stream: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt as _;
+
+        let mut received = Vec::new();
+        let mut buffer = [0; 4_096];
+        loop {
+            let read = stream.read(&mut buffer).await.expect("read request");
+            received.extend_from_slice(&buffer[..read]);
+            let text = String::from_utf8_lossy(&received).into_owned();
+            let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                assert_ne!(read, 0, "the request ended before its head");
+                continue;
+            };
+            let length = head
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>())
+                })
+                .and_then(Result::ok)
+                .unwrap_or_default();
+            if body.len() >= length || read == 0 {
+                return text;
+            }
+        }
+    }
+
     async fn serve_refresh(access_token: String, refresh_token: Option<&'static str>) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -467,9 +497,7 @@ mod tests {
         let endpoint = format!("http://{}/oauth/token", listener.local_addr().expect("local address"));
         tokio::task::spawn_local(async move {
             let (mut stream, _) = listener.accept().await.expect("accept");
-            let mut request = [0_u8; 4_096];
-            let read = stream.read(&mut request).await.expect("read request");
-            let request = String::from_utf8_lossy(&request[..read]);
+            let request = read_test_request(&mut stream).await;
             assert!(request.contains("refresh-canary"));
             assert!(request.contains(OAUTH_CLIENT_ID));
             let body = serde_json::json!({
@@ -502,8 +530,7 @@ mod tests {
         tokio::task::spawn_local(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.expect("accept");
-                let mut request = [0_u8; 4_096];
-                let _read = stream.read(&mut request).await.expect("read request");
+                read_test_request(&mut stream).await;
                 observed.set(observed.get() + 1);
                 stream
                     .write_all(
