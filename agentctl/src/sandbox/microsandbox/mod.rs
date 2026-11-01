@@ -55,6 +55,7 @@ pub const HOST_ALIAS: &str = "host.microsandbox.internal";
 /// Runtime-selectable agent adapter for a Microsandbox Provider.
 pub struct Adapter {
     id: ProviderId,
+    provider: Rc<MicrosandboxProvider>,
     service: SandboxService,
     preparation: Preparation,
     default_architecture: String,
@@ -75,20 +76,18 @@ impl Adapter {
         platform_port: u16,
     ) -> Result<Self, Error> {
         let network = Rc::new(MicrosandboxNetworkBackend::new(policy.clone()).with_secret_store(credentials.clone()));
-        let service = {
-            let provider = Rc::new(
-                MicrosandboxProvider::builder(home.join("microsandbox"))
-                    .remove_unused_images_after(UNUSED_IMAGE_RETENTION)
-                    .open()
-                    .await?,
-            );
-            tokio::task::spawn_local(remove_unused_images_periodically(Rc::downgrade(&provider)));
-            SandboxService::new(provider)
-        }
-        .with_network_backend(network.clone());
+        let provider = Rc::new(
+            MicrosandboxProvider::builder(home.join("microsandbox"))
+                .remove_unused_images_after(UNUSED_IMAGE_RETENTION)
+                .open()
+                .await?,
+        );
+        tokio::task::spawn_local(remove_unused_images_periodically(Rc::downgrade(&provider)));
+        let service = SandboxService::new(provider.clone()).with_network_backend(network.clone());
         policy.set_platform_endpoint(HOST_ALIAS, platform_port);
         Ok(Self {
             id: ProviderId::new(PROVIDER_ID)?,
+            provider,
             service,
             preparation: Preparation::new(database, credentials, policy, network),
             default_architecture: Platform::native("linux").architecture,
@@ -120,7 +119,10 @@ impl Adapter {
         {
             return Ok(Ok(()));
         }
-        Ok(Err(sandbox_microsandbox::nested_sandbox_support()
+        Ok(Err(self
+            .provider
+            .nested_sandbox_support()
+            .await
             .err()
             .unwrap_or_else(|| "this platform has no nested sandboxes".into())))
     }

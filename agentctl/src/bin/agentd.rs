@@ -98,6 +98,10 @@ fn reconciliation_errors<Key: std::fmt::Display + 'static>(resource: &'static st
     })
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the Adapter moves into the Provider list, which Clippy does not follow"
+)]
 async fn open_sandboxes(
     home: &ControlPlaneHome,
     database: &persistence::Database,
