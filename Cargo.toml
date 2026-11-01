@@ -24,11 +24,11 @@ futures-core = "0.3.34"
 futures-util = "0.3.34"
 flate2 = "1.1.9"
 ignore = "0.4.33"
-# Microsandbox fork commit tagged `v0.7.12-digdir.1`.
+# Microsandbox fork commit tagged `v0.7.12-digdir.2`.
 # Update all three revisions together with the runtime bundle digests.
-microsandbox = { git = "https://github.com/digdir/microsandbox.git", rev = "c3fa96cb4942c81a0aa5fd9f3fe2da921afbb0bc", default-features = false, features = ["local", "net"] }
-microsandbox-image = { git = "https://github.com/digdir/microsandbox.git", rev = "c3fa96cb4942c81a0aa5fd9f3fe2da921afbb0bc", package = "microsandbox-image" }
-microsandbox-network = { git = "https://github.com/digdir/microsandbox.git", rev = "c3fa96cb4942c81a0aa5fd9f3fe2da921afbb0bc", package = "microsandbox-network" }
+microsandbox = { git = "https://github.com/digdir/microsandbox.git", rev = "9b3264cdd27770769c3636000d1ad260a1dc0ea6", default-features = false, features = ["local", "net"] }
+microsandbox-image = { git = "https://github.com/digdir/microsandbox.git", rev = "9b3264cdd27770769c3636000d1ad260a1dc0ea6", package = "microsandbox-image" }
+microsandbox-network = { git = "https://github.com/digdir/microsandbox.git", rev = "9b3264cdd27770769c3636000d1ad260a1dc0ea6", package = "microsandbox-network" }
 mimalloc = "0.1.52"
 ratatui = "0.30.2"
 reqwest = { version = "0.13.4", features = ["json"] }
