@@ -20,13 +20,13 @@ use tokio::sync::OnceCell;
 
 use crate::{backend::RuntimeBundle, error};
 
-// Published runtime bundle digests for Microsandbox 0.7.11-digdir.1. Update these
+// Published runtime bundle digests for Microsandbox 0.7.12-digdir.2. Update these
 // together with the pinned Microsandbox revisions in the workspace manifest.
-const LINUX_X86_64_RUNTIME_SHA256: &str = "3f373f3d77ea339b6d0440f60a62f968783cdb4c01220edd6c862e7a8d2f3c65";
-const LINUX_AARCH64_RUNTIME_SHA256: &str = "519c161783bc29503d580c357c95f4101e816f9c7ed06ad42fad8dac2e1d99db";
-const MACOS_AARCH64_RUNTIME_SHA256: &str = "64b3239666ea02c69668fee1a6af4d80d1271fe436a153457e330667eb92c7ee";
-const WINDOWS_X86_64_RUNTIME_SHA256: &str = "55f4be7de4aa664994d9a8300eb627c29766f1b2f374f3968eb67d68636e45ed";
-const WINDOWS_AARCH64_RUNTIME_SHA256: &str = "9b9dfd1a27c3ecf39c91a29f7fc3d1b35d840dd0d82781555eb80e47f685821e";
+const LINUX_X86_64_RUNTIME_SHA256: &str = "5c4bd21a4409b252bf01121a0038f54e3eb34d4a1b6c5d84ea7d20190e56ca37";
+const LINUX_AARCH64_RUNTIME_SHA256: &str = "724e70dde88f70a98c55bd658fc383047e6c7b2df9ea567912733de3ab3fb470";
+const MACOS_AARCH64_RUNTIME_SHA256: &str = "b762700e8eaf700d792a555e2d8c1f3c955c874b60362770d113bf64a6b999ca";
+const WINDOWS_X86_64_RUNTIME_SHA256: &str = "4eaeae99719bc5c4e05a349e0e2d75b4ad363683154ab7c2d3e7b96248c64eeb";
+const WINDOWS_AARCH64_RUNTIME_SHA256: &str = "478063b561e7d49cf9e38e0f4bc3b6c32a964ea9cd45cdefcdfa33494dff159f";
 
 /// Keeps Microsandbox's thread-safe ownership model at the SDK boundary.
 #[derive(Clone)]
@@ -553,14 +553,14 @@ mod tests {
         assert_eq!(config.spec.resources.memory_mib, 768);
         assert_eq!(config.spec.image.oci_managed_root_disk_size_mib(), Some(4 * 1024));
         assert_eq!(config.spec.runtime.workdir, None);
-        assert!(!config.spec.resources.nested_virt);
+        assert_eq!(config.spec.resources.nested_virt, Some(false));
 
         let config = Box::pin(super::build_in_client_scope(
             Client::sandbox_builder("sandbox", "alpine", resources.with_nested_sandboxes(true))
                 .expect("resources should map to Microsandbox"),
         ))
         .await;
-        assert!(config.spec.resources.nested_virt);
+        assert_eq!(config.spec.resources.nested_virt, Some(true));
     }
 
     #[tokio::test(flavor = "local")]

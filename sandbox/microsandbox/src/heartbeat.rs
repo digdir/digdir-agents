@@ -1,16 +1,17 @@
-//! Guest heartbeats read from a running runtime's host-side directory.
+//! Guest heartbeats read from the directory a runtime shares with its guest.
 //!
-//! Microsandbox's guest agent replaces `heartbeat.json` in the runtime
-//! directory about once a second from a dedicated thread, and the runtime
-//! removes it before every boot. Reading the file needs no round trip to the
-//! guest, so a guest that stopped responding keeps reporting the sequence it
-//! last wrote. Only the sequence is read: the guest-written timestamps follow
-//! the guest clock, which falls behind the host's while the guest is stalled.
+//! Microsandbox's guest agent replaces `/.msb/heartbeat.json`, which is in the
+//! sandbox's `guest-state` directory on the host, about once a second from a
+//! dedicated thread, and the runtime removes it before every boot. Reading the
+//! file needs no round trip to the guest, so a guest that stopped responding
+//! keeps reporting the sequence it last wrote. Only the sequence is read: the
+//! guest-written timestamps follow the guest clock, which falls behind the
+//! host's while the guest is stalled.
 //!
 //! The guest writes the file through a directory it shares with the host, so
-//! anything in the guest can replace it, with up to the runtime directory's
-//! quota (16 MiB). It is read only as a small regular file, within a time
-//! bound, whatever the shared directory makes of a guest's special files.
+//! anything in the guest can replace it, with anything that directory admits.
+//! It is read only as a small regular file, within a time bound, whatever the
+//! shared directory makes of a guest's special files.
 
 use std::{io, path::Path, time::Duration};
 
@@ -34,8 +35,8 @@ struct HeartbeatFile {
 ///
 /// A missing or unreadable file reports no heartbeat rather than failing
 /// inspection: it is evidence about the guest, not about the sandbox.
-pub(crate) async fn read(runtime_directory: &Path) -> Option<GuestHeartbeat> {
-    let path = runtime_directory.join(HEARTBEAT_FILE);
+pub(crate) async fn read(guest_directory: &Path) -> Option<GuestHeartbeat> {
+    let path = guest_directory.join(HEARTBEAT_FILE);
     let read = tokio::time::timeout(READ_TIMEOUT, read_bounded(&path))
         .await
         .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "reading timed out")));

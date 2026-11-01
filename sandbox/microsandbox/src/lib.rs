@@ -23,18 +23,6 @@ mod volumes;
 
 pub use backend::{MicrosandboxProvider, MicrosandboxProviderBuilder};
 
-/// Checks whether this host can let a sandbox run sandboxes of its own.
-///
-/// [`SandboxFeature::NestedSandboxes`](sandbox::SandboxFeature) reports the same. A Microsandbox
-/// sandbox does so with hardware virtualization: the guest gets `/dev/kvm`.
-///
-/// # Errors
-///
-/// Returns why the host cannot.
-pub fn nested_sandbox_support() -> Result<(), String> {
-    microsandbox::runtime::nested_virt_host_support()
-}
-
 /// `RUST_LOG` directives that keep the Microsandbox runtime's helper processes quiet at the
 /// default level. The runtime's agent client logs every relay connection at INFO.
 pub const LOG_DIRECTIVES: &str = "microsandbox_agent_client=warn";

@@ -90,6 +90,25 @@ impl MicrosandboxProvider {
         Self::builder(home.as_ref().to_path_buf()).open().await
     }
 
+    /// Checks whether this host can let a sandbox run sandboxes of its own.
+    ///
+    /// [`SandboxFeature::NestedSandboxes`](sandbox::SandboxFeature) reports the same. A Microsandbox
+    /// sandbox does so with hardware virtualization: the guest gets `/dev/kvm`. The pinned runtime
+    /// answers, as it does when such a sandbox starts, so it is installed first.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the host cannot.
+    pub async fn nested_sandbox_support(&self) -> Result<(), String> {
+        self.client
+            .ensure_installed()
+            .await
+            .map_err(|error| error.to_string())?;
+        microsandbox::runtime::nested_virt_host_support(self.client.local().config())
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     async fn open_configured(
         home: PathBuf,
         cache_directory: Option<PathBuf>,
@@ -261,7 +280,7 @@ impl MicrosandboxProvider {
         // A starting, draining or paused guest is not expected to beat, so its
         // stale heartbeat is no evidence either way.
         let guest_heartbeat = if status == SandboxStatus::Running {
-            heartbeat::read(&self.runtime_directory(&record.runtime_name)).await
+            heartbeat::read(&self.guest_directory(&record.runtime_name)).await
         } else {
             None
         };
@@ -271,9 +290,13 @@ impl MicrosandboxProvider {
         })
     }
 
-    /// Host-side directory the runtime shares with its guest.
-    fn runtime_directory(&self, runtime_name: &str) -> PathBuf {
-        self.client.local().sandboxes_dir().join(runtime_name).join("runtime")
+    /// Host-side directory the runtime shares with its guest as `/.msb`.
+    fn guest_directory(&self, runtime_name: &str) -> PathBuf {
+        self.client
+            .local()
+            .sandboxes_dir()
+            .join(runtime_name)
+            .join("guest-state")
     }
 
     async fn update_sandbox_resources(
@@ -678,7 +701,7 @@ impl SandboxBackend for MicrosandboxProvider {
                 SandboxFeature::NestedContainers,
                 SandboxFeature::ImageInit,
             ]);
-            match crate::nested_sandbox_support() {
+            match self.nested_sandbox_support().await {
                 Ok(()) => features.insert(SandboxFeature::NestedSandboxes),
                 Err(reason) => tracing::debug!(%reason, "nested virtualization is unavailable on this host"),
             }
@@ -928,7 +951,8 @@ fn boot_changes(
             .max_memory(stored.max_memory_mib.max(desired.memory_mib));
         changed = true;
     }
-    if from.nested_virt != nested_sandboxes {
+    // An unset policy boots without nesting.
+    if from.nested_virt.unwrap_or(false) != nested_sandboxes {
         modification = modification.nested_virt(nested_sandboxes);
         changed = true;
     }
@@ -1145,7 +1169,7 @@ mod tests {
                 .await
                 .expect("Provider should open"),
         );
-        if crate::nested_sandbox_support().is_err() {
+        if provider.nested_sandbox_support().await.is_err() {
             return;
         }
         let service = SandboxService::new(provider.clone());
