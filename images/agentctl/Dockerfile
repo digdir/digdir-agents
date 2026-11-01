@@ -5,7 +5,7 @@
 
 # Bookworm's glibc is older than the distributions agent images build on, so the binaries run on all of them. The
 # toolchain itself is the one rust-toolchain.toml names, which rustup installs when this image's differs.
-FROM docker.io/library/rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS chef
+FROM docker.io/library/rust:1.99.1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS chef
 
 # libcap-ng, as the release builds install, and cargo-chef, which builds the dependencies apart from the workspace.
 ARG CARGO_CHEF_VERSION=0.1.78
