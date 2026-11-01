@@ -13,6 +13,16 @@
         "ghcr.io/digdir/agentctl-base"
       ],
       "enabled": false
+    },
+    {
+      "description": "rusqlite picks the SQLite linked into agentd, which follows the Microsandbox fork's lockfile, as the comment on it in Cargo.toml says. Move it by hand when the fork moves.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchPackageNames": [
+        "rusqlite"
+      ],
+      "enabled": false
     }
   ]
 }
