@@ -65,5 +65,6 @@ If the release fails, it has created no git tag or GitHub release, and the versi
 
 ## Maintenance
 
+- [docs/dependencies.md](docs/dependencies.md): what we update, how often and how.
 - [sandbox/docs/microsandbox-upgrade.md](sandbox/docs/microsandbox-upgrade.md): updating the Microsandbox pin.
 - [agentctl/docs/harness-upgrades.md](agentctl/docs/harness-upgrades.md): updating a harness installation or adapter.
