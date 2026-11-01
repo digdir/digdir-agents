@@ -280,7 +280,7 @@ impl MicrosandboxProvider {
         // A starting, draining or paused guest is not expected to beat, so its
         // stale heartbeat is no evidence either way.
         let guest_heartbeat = if status == SandboxStatus::Running {
-            heartbeat::read(&self.runtime_directory(&record.runtime_name)).await
+            heartbeat::read(&self.guest_directory(&record.runtime_name)).await
         } else {
             None
         };
@@ -290,9 +290,13 @@ impl MicrosandboxProvider {
         })
     }
 
-    /// Host-side directory the runtime shares with its guest.
-    fn runtime_directory(&self, runtime_name: &str) -> PathBuf {
-        self.client.local().sandboxes_dir().join(runtime_name).join("runtime")
+    /// Host-side directory the runtime shares with its guest as `/.msb`.
+    fn guest_directory(&self, runtime_name: &str) -> PathBuf {
+        self.client
+            .local()
+            .sandboxes_dir()
+            .join(runtime_name)
+            .join("guest-state")
     }
 
     async fn update_sandbox_resources(
