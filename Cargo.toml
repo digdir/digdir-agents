@@ -25,7 +25,7 @@ futures-util = "0.3.34"
 flate2 = "1.1.9"
 ignore = "0.4.33"
 # Microsandbox fork commit tagged `v0.7.12-digdir.2`.
-# Update all three revisions together with the runtime bundle digests.
+# Update all three revisions together with the runtime bundle digests, and check rusqlite below.
 microsandbox = { git = "https://github.com/digdir/microsandbox.git", rev = "9b3264cdd27770769c3636000d1ad260a1dc0ea6", default-features = false, features = ["local", "net"] }
 microsandbox-image = { git = "https://github.com/digdir/microsandbox.git", rev = "9b3264cdd27770769c3636000d1ad260a1dc0ea6", package = "microsandbox-image" }
 microsandbox-network = { git = "https://github.com/digdir/microsandbox.git", rev = "9b3264cdd27770769c3636000d1ad260a1dc0ea6", package = "microsandbox-network" }
@@ -33,7 +33,11 @@ mimalloc = "0.1.52"
 ratatui = "0.30.2"
 reqwest = { version = "0.13.4", features = ["json"] }
 rand_core = { version = "0.6.4", features = ["getrandom"] }
-rusqlite = "0.39.0"
+# rusqlite picks the SQLite linked into agentd, which Microsandbox's sqlx shares. Keep it on a version whose
+# libsqlite3-sys is the one the Microsandbox fork's Cargo.lock resolves, so that Microsandbox's database code runs on
+# the SQLite the fork tests it with, and agentd and the msb runtime open the Microsandbox database with the same
+# SQLite. Move it only after the fork has.
+rusqlite = "0.32.1"
 sandbox = { path = "sandbox/core" }
 sandbox-microsandbox = { path = "sandbox/microsandbox" }
 serde = { version = "1.0.229", features = ["derive"] }
