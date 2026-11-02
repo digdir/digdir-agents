@@ -35,7 +35,7 @@ pub enum Harness {
 }
 
 impl Harness {
-    /// Every supported harness.
+    /// Every supported harness, in the order agentctl lists them.
     pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Pi];
 
     /// The only authentication mode the harness accepts in a manifest.

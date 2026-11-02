@@ -23,6 +23,7 @@ mod progress;
 mod prompt;
 mod self_update;
 mod skills;
+mod status;
 mod tui;
 mod watch;
 
@@ -49,6 +50,12 @@ struct Arguments {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Show agentd, the harness logins and this directory's agent, with what to run next.
+    Status {
+        /// Print a JSON object whose keys stay stable, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+    },
     /// Open the terminal UI with every agent and session.
     Tui,
     /// Create or attach to a named session in an agent sandbox.
@@ -808,6 +815,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         } => prompt_session(home, client, target, input, completion).await?,
         Command::Turns { target, last } => turns(client, target, last).await?,
         Command::Tui => return tui::run(home, client).await,
+        Command::Status { json } => status::run(home, client, json).await?,
         Command::Wait {
             condition,
             timeout,
@@ -2250,7 +2258,11 @@ mod tests {
             .take_while(|line| !line.trim().is_empty())
             .filter_map(|line| line.split_whitespace().next())
             .collect::<Vec<_>>();
-        assert_eq!(commands[..5], ["tui", "attach", "stop", "kill", "start"], "{help}");
+        assert_eq!(
+            commands[..6],
+            ["status", "tui", "attach", "stop", "kill", "start"],
+            "{help}"
+        );
         for hidden in ["ssh-proxy", "vnc-proxy"] {
             assert!(!commands.contains(&hidden), "{help}");
         }
@@ -2258,6 +2270,16 @@ mod tests {
             Arguments::try_parse_from(["agentctl", "ssh-proxy", "worker"]).is_ok(),
             "OpenSSH still runs the hidden command"
         );
+    }
+
+    #[test]
+    fn status_prints_text_or_json() {
+        let parse = |arguments: &[&str]| match Arguments::try_parse_from(arguments).expect("status").command {
+            Command::Status { json } => json,
+            _ => panic!("not status"),
+        };
+        assert!(!parse(&["agentctl", "status"]));
+        assert!(parse(&["agentctl", "status", "--json"]));
     }
 
     #[test]
