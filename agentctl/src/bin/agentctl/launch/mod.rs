@@ -54,7 +54,7 @@ impl Editor {
 
     /// Finds the editor's launcher on `path`, a `PATH`-style variable.
     pub(crate) fn locate(self, path: Option<&OsStr>) -> Option<PathBuf> {
-        host::find_executable(path, self.executables())
+        agent::local::process::find_executable(path, self.executables())
     }
 
     /// How to open `directory` in the agent reached as the OpenSSH `alias`, given the launcher
@@ -163,6 +163,14 @@ mod test_support {
 
     use std::ffi::OsString;
 
+    /// Writes an empty program at `path` that may be run, as one found on `PATH` must be.
+    #[cfg(unix)]
+    pub(super) fn command(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::write(path, "").expect("command");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("make runnable");
+    }
+
     /// An environment holding only `pairs`.
     pub(super) fn only(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
         move |variable: &str| {
@@ -197,7 +205,7 @@ mod test_support {
     #[cfg(target_os = "linux")]
     pub(super) fn windows_path() -> tempfile::TempDir {
         let windows = tempfile::tempdir().expect("windows directory");
-        std::fs::write(windows.path().join(super::host::WSL_OPENER), "").expect("opener");
+        command(&windows.path().join(super::host::WSL_OPENER));
         windows
     }
 }
@@ -206,6 +214,8 @@ mod test_support {
 mod tests {
     #![allow(clippy::expect_used)]
 
+    #[cfg(unix)]
+    use super::test_support::command;
     use super::*;
 
     #[test]
@@ -254,11 +264,14 @@ mod tests {
     fn launchers_are_found_under_any_of_their_names_in_path_order() {
         let first = tempfile::tempdir().expect("directory");
         let second = tempfile::tempdir().expect("directory");
-        std::fs::write(second.path().join("zeditor"), "").expect("zeditor");
+        command(&second.path().join("zeditor"));
         let path = std::env::join_paths([first.path(), Path::new("relative"), second.path()]).expect("PATH");
 
         assert_eq!(Editor::Zed.locate(Some(&path)), Some(second.path().join("zeditor")));
+        // A file that may not be run is not the launcher, as it is not for a shell.
         std::fs::write(first.path().join("zed"), "").expect("zed");
+        assert_eq!(Editor::Zed.locate(Some(&path)), Some(second.path().join("zeditor")));
+        command(&first.path().join("zed"));
         assert_eq!(Editor::Zed.locate(Some(&path)), Some(first.path().join("zed")));
         assert_eq!(Editor::VsCode.locate(Some(&path)), None);
         assert_eq!(Editor::VsCode.locate(None), None);
