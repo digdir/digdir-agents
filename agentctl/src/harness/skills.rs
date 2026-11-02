@@ -94,9 +94,10 @@ fn executable(_metadata: &std::fs::Metadata) -> bool {
     false
 }
 
-/// Whether `name` can name a skill's directory: one path component.
+/// Whether `name` can name a skill's directory: one path component that is not hidden, since some
+/// harnesses skip hidden directories when they look for skills.
 pub(crate) fn valid_name(name: &str) -> bool {
-    !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
+    !name.is_empty() && !name.starts_with('.') && !name.contains('/') && !name.contains('\\')
 }
 
 /// The skill every agent gets for driving agents with `agentctl`, nested ones included, which the

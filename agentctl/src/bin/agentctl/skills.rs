@@ -87,8 +87,15 @@ pub(crate) fn execute(command: SkillsCommand) -> CommandResult<()> {
             skill.name()
         )));
     }
-    apply(&skill, &placements)?;
+    // Each as it is done, so a failure leaves no doubt about what was already written.
     for placement in &placements {
+        apply(&skill, placement).map_err(|error| {
+            CommandError::Message(format!(
+                "could not install {} in {}: {error}",
+                skill.name(),
+                placement.directory.display()
+            ))
+        })?;
         println!("{}", describe(skill.name(), placement));
     }
     Ok(())

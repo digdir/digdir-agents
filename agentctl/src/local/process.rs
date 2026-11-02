@@ -17,7 +17,8 @@ pub fn configure_logging(command: &mut std::process::Command) {
 }
 
 /// Finds the first of `names` in `path`, a `PATH`-style variable, trying every
-/// absolute directory for one name before the next.
+/// absolute directory for one name before the next. On Unix, as a shell does, a file only counts
+/// when it may be run.
 #[must_use]
 pub fn find_executable(path: Option<&std::ffi::OsStr>, names: &[&str]) -> Option<std::path::PathBuf> {
     let directories = path
@@ -30,8 +31,19 @@ pub fn find_executable(path: Option<&std::ffi::OsStr>, names: &[&str]) -> Option
             .iter()
             .filter(|directory| directory.is_absolute())
             .map(|directory| directory.join(name))
-            .find(|candidate| candidate.is_file())
+            .find(|candidate| runnable(candidate))
     })
+}
+
+#[cfg(unix)]
+fn runnable(candidate: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(candidate).is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn runnable(candidate: &std::path::Path) -> bool {
+    candidate.is_file()
 }
 
 /// Configures a child daemon to run independently of the invoking terminal.

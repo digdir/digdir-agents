@@ -20,7 +20,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 - Claude Code and Codex logins have names, so you can keep one per subscription, such as work and private:
   - `agentctl claude login work` and `agentctl codex login work` store one, and `list` and `logout` show and forget them. Your existing logins become `default`. ([#356](https://github.com/digdir/digdir-agents/pull/356))
   - `login: work` on a harness in an agent's manifest picks one. `login: [work, private]` or `login: any` gives the agent whichever the fewest other running agents use, and it keeps that one while it stays allowed and stored. ([#357](https://github.com/digdir/digdir-agents/pull/357))
-- `agentctl skills install` puts a skill where the coding agents on your machine, such as Claude Code, Codex and Pi, find it, for you with `--user` or for a repository with `--repo`. `--bundled agentctl` gives them the skill for driving agents. Running it again updates the skill it installed, and a skill it did not install, or one edited since, is only replaced with `--force`. ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#340](https://github.com/digdir/digdir-agents/pull/340))
+- `agentctl skills install` puts a skill where the coding agents on your machine, such as Claude Code, Codex and Pi, find it, for you with `--user` or for a repository with `--repo`, and running it again updates it. `--bundled agentctl` gives them the skill for driving agents. ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#340](https://github.com/digdir/digdir-agents/pull/340))
 
 ### Changed
 

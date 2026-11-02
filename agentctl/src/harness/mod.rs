@@ -1060,7 +1060,15 @@ mod tests {
         } else {
             executable.to_owned()
         };
-        std::fs::write(commands.join(command), "").expect("command");
+        let command = commands.join(command);
+        std::fs::write(&command, "").expect("command");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            // A file named after Pi that may not be run does not show Pi is installed.
+            std::fs::write(commands.join(Harness::Pi.footprint().executable), "").expect("not a command");
+            std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755)).expect("make runnable");
+        }
         std::fs::create_dir_all(home.join(Harness::ClaudeCode.footprint().directory)).expect("own directory");
 
         let found = Harness::ALL
