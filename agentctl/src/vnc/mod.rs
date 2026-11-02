@@ -9,7 +9,12 @@
 //! and could enable the units itself. The sandbox boundary, and forwarding that only the host can
 //! start, protect the desktop, as they do every guest loopback port.
 
-use std::{cell::RefCell, collections::BTreeMap, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use ::sandbox::SandboxHandle;
 use serde::{Deserialize, Serialize};
@@ -17,7 +22,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AgentId, Error,
     control_plane::{AgentRecord, AgentStore},
+    local::home::ControlPlaneHome,
     sandbox::platform,
+    ssh::CommandShell,
 };
 
 /// Guest loopback port carrying the RFB stream. The image declares the same ports, and a mismatch
@@ -48,6 +55,18 @@ pub struct AccessInfo {
     pub forward_command: String,
 }
 
+/// How the commands printed for a person to paste begin: `agentctl` on `home`.
+///
+/// It runs the `agentctl` on their `PATH`, since PowerShell would read a leading quoted path as a
+/// string rather than a command, and quotes the home for their terminal.
+#[must_use]
+pub fn agentctl_command(home: &Path) -> String {
+    format!(
+        "agentctl --home {}",
+        crate::ssh::directory_word(home, CommandShell::terminal())
+    )
+}
+
 /// Builds the message given when the agent's image cannot serve VNC access. The image cannot
 /// change for the incarnation, so it names the only fixes.
 #[must_use]
@@ -61,7 +80,8 @@ pub fn image_contract_missing(what: &str) -> String {
 
 /// Reconciles VNC access for agents by enabling or disabling the units their image declares.
 pub struct Access {
-    agentctl: PathBuf,
+    /// The control-plane home the forwarding command names.
+    control_home: PathBuf,
     agents: Rc<dyn AgentStore>,
     /// What the last successful pass left in each agent's guest, so that describing an agent needs
     /// no call into its sandbox and a resync can skip a withdrawal that already succeeded. Not
@@ -79,11 +99,11 @@ enum Applied {
 }
 
 impl Access {
-    /// Creates the VNC access reconciler; `agentctl` is the executable the forwarding command names.
+    /// Creates the VNC access reconciler for the agents on `home`.
     #[must_use]
-    pub fn new(agentctl: PathBuf, agents: Rc<dyn AgentStore>) -> Self {
+    pub fn new(home: &ControlPlaneHome, agents: Rc<dyn AgentStore>) -> Self {
         Self {
-            agentctl,
+            control_home: home.path().to_path_buf(),
             agents,
             applied: RefCell::new(BTreeMap::new()),
         }
@@ -122,7 +142,10 @@ impl Access {
                 Some(Applied::Withdrawn) | None => None,
             },
             // `:PORT` binds a free local port, as `agentctl vnc` does: 5900 is often taken locally.
-            forward_command: format!("{} port-forward agent/{name} :{GUEST_PORT}", self.agentctl.display()),
+            forward_command: format!(
+                "{} port-forward agent/{name} :{GUEST_PORT}",
+                agentctl_command(&self.control_home)
+            ),
         }
     }
 
