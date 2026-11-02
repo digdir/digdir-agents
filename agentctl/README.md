@@ -45,6 +45,10 @@ update the skill as well.
 
 ## Your first agent
 
+`agentctl status` shows whether agentd answers, which harness logins are stored, the current directory's agent and a
+count of every agent, with the commands to run next. `agentctl status --json` prints the same as a JSON object whose
+keys stay stable, for agents and scripts that check their own setup.
+
 Start from the [.NET example](../agents/examples/dotnet-dev/), an [agent definition](../GLOSSARY.md) whose manifest
 and image explain each line. Let an agent make it yours: ask Claude Code or Codex to copy it and change it for the
 tools and repositories your work needs. A coding agent working in an agent can apply what it writes as a nested agent
