@@ -137,11 +137,23 @@ pub fn directory_word(path: &Path, shell: CommandShell) -> String {
     shell_word(&without_trailing_separator(path).to_string_lossy(), shell)
 }
 
-/// `path` rebuilt from its components: without a separator it ends with, unless that separator is
-/// its root, as in `C:\` or `/`, and on Windows with `\` between components, so `D:/agents/` is
-/// named `D:\agents`.
-fn without_trailing_separator(path: &Path) -> PathBuf {
-    path.components().collect()
+/// `path` without the separators it ends with, unless they are its root, as in `C:\` or `/`, and
+/// otherwise spelled as given.
+///
+/// Rebuilding the path from its components would also drop `.` and repeated separators, but
+/// `agentctl` opens an agent's runtime at a directory named for the exact bytes of the home it
+/// is given, so `/srv/./agents` must reach it spelled as `agentd` spells it.
+fn without_trailing_separator(path: &Path) -> &Path {
+    let Some(mut text) = path.to_str() else {
+        return path;
+    };
+    while let Some(shorter) = text.strip_suffix(std::path::is_separator) {
+        if Path::new(text).parent().is_none() {
+            break;
+        }
+        text = shorter;
+    }
+    Path::new(text)
 }
 
 /// Renders the `ProxyCommand` value dialing one agent through `agentctl`, on the control-plane
@@ -163,7 +175,7 @@ fn without_trailing_separator(path: &Path) -> PathBuf {
 /// Returns an error when either path is not UTF-8 or contains a line break or NUL.
 pub fn render_proxy_command(agentctl: &Path, home: &Path, agent: &str, shell: CommandShell) -> Result<String, Error> {
     let executable = command_word(agentctl, "agentctl path", shell)?;
-    let home = command_word(&without_trailing_separator(home), "agent home", shell)?;
+    let home = command_word(without_trailing_separator(home), "agent home", shell)?;
     Ok(format!("{executable} --home {home} {}", proxy_arguments(agent)))
 }
 
@@ -556,23 +568,29 @@ mod tests {
         }
     }
 
-    /// A home given with a trailing separator is named without it, so no reader has to tell a
-    /// backslash before the closing quote from an escaped quote.
+    /// A home given with trailing separators is named without them, so no reader has to tell a
+    /// backslash before the closing quote from an escaped quote, but otherwise as given, since the
+    /// agent's runtime directory is named for the home's exact spelling.
     #[cfg(unix)]
     #[test]
-    fn a_home_is_named_without_its_trailing_separator() {
+    fn a_home_is_named_without_its_trailing_separators_only() {
         let rendered = render_proxy_command(
             Path::new(AGENTCTL),
-            Path::new("/home/someone/my agents/"),
+            Path::new("/home/someone/./my agents//"),
             "worker",
             CommandShell::Posix,
         )
         .expect("posix");
         assert_eq!(
             rendered,
-            "/usr/local/bin/agentctl --home '/home/someone/my agents' ssh-proxy agent/worker"
+            "/usr/local/bin/agentctl --home '/home/someone/./my agents' ssh-proxy agent/worker"
+        );
+        assert_eq!(
+            directory_word(Path::new("/srv//agents/"), CommandShell::Posix),
+            "/srv//agents"
         );
         assert_eq!(directory_word(Path::new("/"), CommandShell::Posix), "/");
+        assert_eq!(directory_word(Path::new("//"), CommandShell::Posix), "//");
     }
 
     /// On Windows, `C:\my $agents\` would otherwise end in a backslash that Windows PowerShell 5.1
@@ -597,6 +615,10 @@ mod tests {
             )
             .expect("windows"),
             r#""C:\Agent\agentctl.exe" --home "C:\agents" ssh-proxy agent/worker"#
+        );
+        assert_eq!(
+            directory_word(Path::new("D:/agents/./x/"), CommandShell::PowerShell),
+            "D:/agents/./x"
         );
         assert_eq!(directory_word(Path::new(r"C:\"), CommandShell::Windows), r#""C:\\""#);
     }

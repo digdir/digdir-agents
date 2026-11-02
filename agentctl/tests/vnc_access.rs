@@ -319,7 +319,7 @@ async fn describing_an_agent_without_declared_access_names_the_remedy() {
         "which ports the image offers is observed, so it is unknown until a pass has looked"
     );
     // A home given without a drive is on the current one on Windows, so it is compared resolved,
-    // and named as every command names a home, with Windows separators there.
+    // and named as every command names a home.
     let home = agent::local::home::ControlPlaneHome::resolve(Some(std::path::Path::new(HOME))).expect("home");
     let home = agent::ssh::directory_word(home.path(), agent::ssh::CommandShell::terminal());
     assert_eq!(
