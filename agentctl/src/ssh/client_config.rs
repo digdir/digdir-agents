@@ -98,6 +98,16 @@ impl CommandShell {
     }
 }
 
+/// `text` as one word of a command line `shell` reads, quoted only when it needs to be, for a
+/// command printed for a person to run.
+#[must_use]
+pub fn shell_word(text: &str, shell: CommandShell) -> String {
+    match shell {
+        CommandShell::Posix => posix_quote(text),
+        CommandShell::Windows => windows_quote(text),
+    }
+}
+
 /// Renders the `ProxyCommand` value dialing one agent through `agentctl`.
 ///
 /// The executable is always absolute: the shell running the command on Unix

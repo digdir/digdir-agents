@@ -95,6 +95,13 @@ impl ResponseError {
     pub const fn is_not_found(&self) -> bool {
         self.code == CODE_NOT_FOUND
     }
+
+    /// Returns whether the daemon cannot make an existing resource match the request, as for a
+    /// field an agent cannot change once created.
+    #[must_use]
+    pub const fn is_immutable(&self) -> bool {
+        self.code == CODE_IMMUTABLE
+    }
 }
 
 #[derive(Deserialize, Serialize)]

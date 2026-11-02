@@ -36,7 +36,7 @@ use crate::{
 
 pub use client_config::{
     CommandShell, HostEntry, IncludeOutcome, install_include, remove_known_host, render_config, render_include,
-    render_path, render_proxy_command, resolves_through_agentctl, upsert_known_host,
+    render_path, render_proxy_command, resolves_through_agentctl, shell_word, upsert_known_host,
 };
 pub use keys::KeyPair;
 

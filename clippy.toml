@@ -3,3 +3,5 @@ allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-unwrap-in-consts = true
 allow-unwrap-in-tests = true
+# Product names that docs and `--help` text spell as their makers do.
+doc-valid-idents = ["JetBrains", "IntelliJ", ".."]
