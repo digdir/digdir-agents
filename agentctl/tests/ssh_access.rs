@@ -252,6 +252,7 @@ async fn access_is_idempotent_and_only_public_material_enters_the_guest() {
                 .map(str::to_owned)
         };
         assert_eq!(setting("user").as_deref(), Some("agent"));
+        assert_eq!(setting("setenv").as_deref(), Some("TERM=xterm-256color"));
         assert_eq!(setting("hostkeyalias"), Some(format!("agent-{}", record.id)));
         assert_eq!(
             setting("identityfile").map(PathBuf::from),
