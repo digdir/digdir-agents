@@ -137,7 +137,9 @@ pub fn directory_word(path: &Path, shell: CommandShell) -> String {
     shell_word(&without_trailing_separator(path).to_string_lossy(), shell)
 }
 
-/// `path` without a separator it ends with, unless that separator is its root, as in `C:\` or `/`.
+/// `path` rebuilt from its components: without a separator it ends with, unless that separator is
+/// its root, as in `C:\` or `/`, and on Windows with `\` between components, so `D:/agents/` is
+/// named `D:\agents`.
 fn without_trailing_separator(path: &Path) -> PathBuf {
     path.components().collect()
 }

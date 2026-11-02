@@ -133,11 +133,11 @@ impl Fixture {
     /// The `ProxyCommand` the generated configuration gives `agent`, which names this home. Its
     /// words are quoted for this host's shell, with `%` doubled for OpenSSH.
     fn proxy_command(&self, agent: &str) -> String {
-        let word = |text: &str| agent::ssh::shell_word(text, agent::ssh::CommandShell::host()).replace('%', "%%");
+        let shell = agent::ssh::CommandShell::host();
         format!(
             "{} --home {} ssh-proxy agent/{agent}",
-            word(AGENTCTL),
-            word(&self.home.path().to_string_lossy())
+            agent::ssh::shell_word(AGENTCTL, shell).replace('%', "%%"),
+            agent::ssh::directory_word(self.home.path(), shell).replace('%', "%%")
         )
     }
 
