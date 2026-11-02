@@ -112,16 +112,20 @@ exec sleep 120
   client = undefined;
   console.log("PASS: wheel events reach a fullscreen application that requests mouse input");
 
-  // The runtime's attach environment renders UTF-8, and its detach keys end the client, not the session.
+  // The runtime's attach environment renders UTF-8 and hyperlinks, and its detach keys end the client, not the
+  // session.
   const text = "blåbærsyltetøy ✓";
-  tmux("new-session", "-d", "-x", "80", "-y", "10", "-s", "utf8", `printf '%s\\n' '${text}'; exec sleep 120`);
-  await until(() => tmux("capture-pane", "-p", "-t", "=utf8:").includes(text));
+  const link = "\\033]8;;https://example.com/linked\\033\\\\linked-text\\033]8;;\\033\\\\";
+  tmux("new-session", "-d", "-x", "80", "-y", "10", "-s", "utf8", `printf '%s\\n${link}\\n' '${text}'; exec sleep 120`);
+  await until(() => tmux("capture-pane", "-p", "-t", "=utf8:").includes("linked-text"));
   const utf8Attach = attach.map((arg) => arg.replace(session, "utf8"));
   const utf8Command = ["tmux", "-S", socket, ...utf8Attach].map(quote).join(" ");
   client = spawn("script", ["-q", "-c", utf8Command, "/dev/null"], { env: clientEnv, stdio: ["pipe", "pipe", "ignore"] });
   let drawn = Buffer.alloc(0);
   client.stdout.on("data", (data) => { drawn = Buffer.concat([drawn, data]); });
-  await until(() => format("=utf8:", "session_attached") === "1" && drawn.toString("utf8").includes(text));
+  await until(() => format("=utf8:", "session_attached") === "1" && drawn.toString("utf8").includes("linked-text"));
+  assert.ok(drawn.toString("utf8").includes(text));
+  assert.match(drawn.toString("utf8"), /\x1b\]8;[^;]*;https:\/\/example\.com\/linked/, "the link reaches the terminal");
   const detached = new Promise((resolve) => client.once("exit", resolve));
   client.stdin.write(detachBytes);
   const timedOut = setTimeout(5000).then(() => assert.fail("the detach keys did not end the client"));
@@ -129,7 +133,7 @@ exec sleep 120
   client = undefined;
   assert.equal(format("=utf8:", "session_attached"), "0");
   assert.ok(tmux("capture-pane", "-p", "-t", "=utf8:").includes(text), "the session survives detaching");
-  console.log("PASS: the attach environment renders UTF-8; the detach keys detach and the session survives");
+  console.log("PASS: the attach environment renders UTF-8 and hyperlinks; the detach keys detach and the session survives");
 
 } finally {
   client?.kill();
