@@ -1,18 +1,30 @@
 //! Where an agent comes from: one the repository setup runs in defines, or a team's from a path or
-//! a GitHub address, which setup clones, with the manifest chosen among those it holds. The person's variant of it may exist already, from an earlier
-//! setup, in which case setup changes it.
+//! a GitHub address, with the manifest chosen among those it holds. The person's variant of it may
+//! exist already, from an earlier setup, in which case setup changes it.
+//!
+//! A definition from GitHub is downloaded, and kept in the control-plane home once the agent is
+//! made, as agentd reads its home, instructions and skills from it on every pass. One that mounts
+//! its own repository, as a worktree variant does, works on a checkout the person keeps instead.
 
 use super::answers::{Answers, Choice};
 use super::sizing::Whole;
-use super::{Access, Draft, SetupArguments, Source, SourceChoice, fetch};
+use super::{Access, Copy, Draft, SetupArguments, Source, SourceChoice, fetch};
 use crate::{CommandError, CommandResult};
 use agent::{Agent, AgentVariantName, Error, manifest};
 use std::path::{Path, PathBuf};
+
+/// Where setup puts what it downloads: this run's folder, until the agent is made, and the folder
+/// that keeps the copies agents are made from.
+pub(super) struct Downloads<'a> {
+    pub(super) staging: &'a Path,
+    pub(super) kept: &'a Path,
+}
 
 /// The agent, from where it comes from, with the person's choices to be saved as `save_as`.
 pub(super) async fn choose_draft(
     arguments: &SetupArguments,
     answers: &Answers,
+    downloads: &Downloads<'_>,
     source: SourceChoice,
     save_as: &AgentVariantName,
 ) -> CommandResult<Draft> {
@@ -23,10 +35,10 @@ pub(super) async fn choose_draft(
             let found = crate::discovery::working_tree_manifests(&directory);
             let manifest = choose_among(answers, arguments.variant.as_ref(), root, found)?;
             answers.record("--from", &[&manifest.display().to_string()]);
-            let save_as = choose_save_as(arguments, answers, &manifest, save_as)?;
+            let save_as = choose_save_as(arguments, answers, &manifest, save_as, &git_owner)?;
             team_draft(&manifest, &manifest.display().to_string(), &save_as)
         }
-        SourceChoice::Team => team_source(arguments, answers, save_as).await,
+        SourceChoice::Team => team_source(arguments, answers, downloads, save_as).await,
     }
 }
 
@@ -36,6 +48,7 @@ pub(super) async fn choose_draft(
 async fn team_source(
     arguments: &SetupArguments,
     answers: &Answers,
+    downloads: &Downloads<'_>,
     save_as: &AgentVariantName,
 ) -> CommandResult<Draft> {
     loop {
@@ -48,7 +61,7 @@ async fn team_source(
                 check_team_source,
             )?,
         };
-        match team_draft_from(arguments, answers, &from, save_as).await {
+        match team_draft_from(arguments, answers, downloads, &from, save_as).await {
             Err(error) if arguments.from.is_none() && answers.interactive() && !answers.went_back() => {
                 // What went wrong with the address, without the prefix a manifest's own errors carry.
                 match error {
@@ -88,50 +101,168 @@ pub(super) fn check_team_source(answer: &str) -> Result<(), String> {
     }
 }
 
-/// The team's agent at `from`, a GitHub address, which is cloned first, or a path, its manifest
-/// chosen when it holds several.
+/// The team's agent at `from`: a path, its manifest chosen when it holds several, or a GitHub
+/// address, which is downloaded first.
 async fn team_draft_from(
     arguments: &SetupArguments,
     answers: &Answers,
+    downloads: &Downloads<'_>,
     from: &str,
     save_as: &AgentVariantName,
 ) -> CommandResult<Draft> {
-    let github = fetch::GithubSource::parse(from);
-    let path = if let Some(mut github) = github.clone() {
-        let checkout = if let Some(folder) = &arguments.clone_into {
-            manifest::expand_host_path(folder)?
-        } else {
-            let default = std::env::current_dir().map_err(Error::from)?.join(&github.repository);
-            let question = format!("Where should setup clone {}/{}?", github.owner, github.repository);
-            let default = default.display().to_string();
-            let answer = answers.text("--clone-into", &question, Some(&default), |_| Ok(()))?;
-            manifest::expand_host_path(Path::new(answer.trim()))?
-        };
-        answers.record("--from", &[from]);
-        github.checkout(&checkout).await?
-    } else {
-        manifest::expand_host_path(Path::new(from))?
-    };
-    let manifest = choose_manifest(answers, arguments.variant.as_ref(), &path)?;
-    if github.is_none() {
+    let Some(mut github) = fetch::GithubSource::parse(from) else {
+        let path = manifest::expand_host_path(Path::new(from))?;
+        let manifest = choose_manifest(answers, arguments.variant.as_ref(), &path)?;
         answers.record("--from", &[&manifest.display().to_string()]);
         answers.forget("--variant");
+        let save_as = choose_save_as(arguments, answers, &manifest, save_as, &git_owner)?;
+        return team_draft(&manifest, &manifest.display().to_string(), &save_as);
+    };
+    answers.record("--from", &[from]);
+    let copy = downloads.staging.join("download");
+    if copy.exists() {
+        // From an address tried before in this run.
+        std::fs::remove_dir_all(&copy).map_err(Error::from)?;
     }
-    let save_as = choose_save_as(arguments, answers, &manifest, save_as)?;
-    team_draft(&manifest, &manifest.display().to_string(), &save_as)
+    github.download(&copy).await?;
+    let found = github.found_in(&copy)?;
+    let manifest = if found.is_file() {
+        found
+    } else {
+        let manifests = crate::discovery::repository_manifests(&copy)
+            .into_iter()
+            .filter(|manifest| manifest.starts_with(&found))
+            .collect();
+        choose_among(answers, arguments.variant.as_ref(), &found, manifests)?
+    };
+    let relative = manifest
+        .strip_prefix(&copy)
+        .map_err(|_| Error::Invalid(format!("{} is not in the download", manifest.display())))?;
+    if mounts_its_repository(&manifest, &copy)? {
+        let checkout = clone_into(arguments, answers, &github)?;
+        if arguments.dry_run {
+            // The download stands in for the checkout, so a dry run clones nothing.
+            let save_as = arguments.save_as.clone().unwrap_or_else(|| save_as.clone());
+            let mut draft = team_draft(&manifest, &github.describe(), &save_as)?;
+            draft.source.copy = Some(Copy {
+                root: copy,
+                kept: checkout,
+            });
+            return Ok(draft);
+        }
+        github.checkout(&checkout).await?;
+        let manifest = checkout.join(relative);
+        if !manifest.is_file() {
+            return Err(Error::Invalid(format!("{} has no {}", checkout.display(), relative.display())).into());
+        }
+        let save_as = choose_save_as(arguments, answers, &manifest, save_as, &git_owner)?;
+        return team_draft(&manifest, &github.describe(), &save_as);
+    }
+    let kept = downloads.kept.join(github.kept_folder());
+    let carried = carry_over(&kept, &copy)?;
+    let owner = |path: &Path| {
+        if carried.iter().any(|carried| carried == path) {
+            Some(true)
+        } else {
+            path.exists().then_some(false)
+        }
+    };
+    let save_as = choose_save_as(arguments, answers, &manifest, save_as, &owner)?;
+    let mut draft = team_draft(&manifest, &github.describe(), &save_as)?;
+    draft.source.copy = Some(Copy { root: copy, kept });
+    Ok(draft)
+}
+
+/// Where the checkout of the repository `github` names goes, which a definition that mounts its
+/// repository works on: `--clone-into`, else a folder the person names, here unless they say
+/// otherwise.
+fn clone_into(arguments: &SetupArguments, answers: &Answers, github: &fetch::GithubSource) -> CommandResult<PathBuf> {
+    if let Some(folder) = &arguments.clone_into {
+        return Ok(manifest::expand_host_path(folder)?);
+    }
+    let default = std::env::current_dir().map_err(Error::from)?.join(&github.repository);
+    let question = format!(
+        "This agent works on a checkout of {}/{} on this machine.\nWhere should setup clone it?",
+        github.owner, github.repository
+    );
+    let default = default.display().to_string();
+    let answer = answers.text("--clone-into", &question, Some(&default), |_| Ok(()))?;
+    Ok(manifest::expand_host_path(Path::new(answer.trim()))?)
+}
+
+/// Whether the agent `manifest` defines mounts the repository it is in at `root`, or a folder of
+/// it, by a path relative to the manifest, as a worktree variant does. One that reaches outside
+/// the repository that way is refused, since it would mount whatever is beside the copy.
+fn mounts_its_repository(manifest: &Path, root: &Path) -> CommandResult<bool> {
+    let agent = manifest::resolve(manifest)?.agent;
+    let directory = parent(manifest)?;
+    let root = root.canonicalize().map_err(Error::from)?;
+    let mut mounts = false;
+    for mount in &agent.spec.sandbox.mounts {
+        let agent::MountSpec::Bind { source, .. } = mount else {
+            continue;
+        };
+        if !source.is_relative() || source.starts_with("~") {
+            continue;
+        }
+        let resolved = directory.join(source);
+        let inside = resolved
+            .canonicalize()
+            .is_ok_and(|resolved| resolved.starts_with(&root));
+        if !inside {
+            return Err(CommandError::Message(format!(
+                "{} mounts {}, relative to the repository it is in but outside it; clone the repository and \
+                 pass its folder to --from",
+                file_name(manifest)?,
+                source.display()
+            )));
+        }
+        mounts = true;
+    }
+    Ok(mounts)
+}
+
+/// Copies the person's variants from an earlier setup, which `kept` holds and a download does not,
+/// into the download at `copy`, and returns where they are in it.
+fn carry_over(kept: &Path, copy: &Path) -> CommandResult<Vec<PathBuf>> {
+    let mut carried = Vec::new();
+    if !kept.is_dir() {
+        return Ok(carried);
+    }
+    let walk = ignore::WalkBuilder::new(kept)
+        .standard_filters(false)
+        .follow_links(false)
+        .build();
+    for entry in walk.filter_map(Result::ok) {
+        let path = entry.path();
+        let variant =
+            entry.file_type().is_some_and(|kind| kind.is_file()) && manifest::variant_from_filename(path).is_some();
+        let Ok(relative) = path.strip_prefix(kept) else {
+            continue;
+        };
+        let target = copy.join(relative);
+        if !variant || target.exists() || !target.parent().is_some_and(Path::is_dir) {
+            continue;
+        }
+        std::fs::copy(path, &target).map_err(Error::from)?;
+        carried.push(target);
+    }
+    Ok(carried)
 }
 
 /// The variant beside `manifest` the person's choices are saved as: `manifest` itself when it is
-/// a variant Git ignores, which an earlier setup wrote, else `--save-as` or the person's answer,
+/// a variant of theirs, which an earlier setup wrote, else `--save-as` or the person's answer,
 /// `default` unless they name another. A variant the team's files hold is not theirs to write.
+/// `owner` says whether a file is the person's, the team's, or cannot tell.
 fn choose_save_as(
     arguments: &SetupArguments,
     answers: &Answers,
     manifest: &Path,
     default: &AgentVariantName,
+    owner: &dyn Fn(&Path) -> Option<bool>,
 ) -> CommandResult<AgentVariantName> {
     if let Some(variant) = manifest::variant_from_filename(manifest)
-        && super::create::git_ignores(manifest) == Some(true)
+        && owner(manifest) == Some(true)
     {
         return Ok(variant);
     }
@@ -142,7 +273,7 @@ fn choose_save_as(
     let check = |answer: &str| {
         let variant: AgentVariantName = answer.trim().parse().map_err(|error: Error| error.to_string())?;
         let path = directory.join(variant.filename());
-        if path.is_file() && super::create::git_ignores(&path) == Some(false) {
+        if path.is_file() && owner(&path) == Some(false) {
             Err(format!("{} is the team's; choose another name", variant.filename()))
         } else {
             Ok(())
@@ -154,6 +285,11 @@ fn choose_save_as(
     );
     let answer = answers.text("--save-as", &question, Some(default.as_ref()), check)?;
     Ok(answer.trim().parse()?)
+}
+
+/// Whose a file in a checkout is: the person's when Git ignores it, the team's when it does not.
+fn git_owner(path: &Path) -> Option<bool> {
+    super::create::git_ignores(path)
 }
 
 /// One manifest out of `path`: the file itself, or one of those a folder holds, chosen by name.
@@ -243,6 +379,7 @@ pub(super) fn team_draft(manifest_path: &Path, origin: &str, save_as: &AgentVari
         extends: file_name(manifest_path)?,
         directory,
         origin: origin.to_owned(),
+        copy: None,
     };
     let (minimum, recommended) = team_sizes(&base);
     Ok(draft(agent, base, source, minimum, recommended))
@@ -263,6 +400,7 @@ fn variant_draft(variant: &Path) -> CommandResult<Draft> {
         directory,
         extends,
         origin: variant.display().to_string(),
+        copy: None,
     };
     let (minimum, recommended) = team_sizes(&base);
     let mut draft = draft(agent, base, source, minimum, recommended);
@@ -310,7 +448,7 @@ fn file_name(path: &Path) -> Result<String, Error> {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::{choose_save_as, manifest_label};
+    use super::{carry_over, choose_save_as, git_owner, manifest_label, mounts_its_repository};
     use crate::setup::{SetupArguments, answers::Answers};
     use clap::{Args, FromArgMatches};
 
@@ -367,8 +505,14 @@ mod tests {
         let mine = "mine".parse().expect("a variant name");
         let nested = "nested".parse().expect("a variant name");
         let chosen = |manifest: &str, default, answers: &Answers| {
-            choose_save_as(&arguments, answers, &repository.path().join(manifest), default)
-                .map(|variant| variant.to_string())
+            choose_save_as(
+                &arguments,
+                answers,
+                &repository.path().join(manifest),
+                default,
+                &git_owner,
+            )
+            .map(|variant| variant.to_string())
         };
 
         let defaults = Answers::new(false, true);
@@ -382,5 +526,64 @@ mod tests {
             chosen("agent.mine.yaml", &nested, &unasked).expect("the person's own"),
             "mine"
         );
+    }
+
+    const BASE: &str = "apiVersion: agents.platform/v1alpha1\nkind: Agent\nmetadata: {name: worker}\nspec:\n  sandbox:\n    \
+                        image: {type: reference, reference: example.com/agent:latest}\n    platform: {os: linux}\n    \
+                        resources: {cpu: '2', memory: 4Gi, rootFilesystem: {capacity: 20Gi, mode: layered}}\n  \
+                        home: {source: home}\n  harnesses: [{type: pi}]\n  network: {mode: mediated, allow: all}\n";
+
+    fn variant_mounting(source: &str) -> String {
+        format!(
+            "apiVersion: agents.platform/v1alpha1\nkind: AgentVariant\nextends: agent.yaml\nmetadata: {{name: \
+             worker-x}}\nspec:\n  sandbox:\n    mounts:\n      - {{type: bind, source: {source}, target: \
+             /workspace/repo, readOnly: false}}\n"
+        )
+    }
+
+    #[test]
+    fn a_definition_that_mounts_its_own_repository_needs_a_checkout() {
+        let repository = tempfile::tempdir().expect("a repository");
+        let folder = repository.path().join("agents/worker");
+        std::fs::create_dir_all(folder.join("home")).expect("folders");
+        std::fs::write(folder.join("agent.yaml"), BASE).expect("a manifest");
+        std::fs::write(folder.join("agent.worktree.yaml"), variant_mounting("../..")).expect("a variant");
+        std::fs::write(folder.join("agent.outside.yaml"), variant_mounting("../../..")).expect("a variant");
+        std::fs::write(folder.join("agent.absolute.yaml"), variant_mounting("/srv/data")).expect("a variant");
+
+        assert!(!mounts_its_repository(&folder.join("agent.yaml"), repository.path()).expect("resolves"));
+        assert!(mounts_its_repository(&folder.join("agent.worktree.yaml"), repository.path()).expect("resolves"));
+        assert!(!mounts_its_repository(&folder.join("agent.absolute.yaml"), repository.path()).expect("resolves"));
+        assert!(
+            mounts_its_repository(&folder.join("agent.outside.yaml"), repository.path()).is_err(),
+            "a relative mount outside the repository would mount whatever is beside the copy"
+        );
+    }
+
+    #[test]
+    fn the_persons_variants_carry_over_to_a_new_download() {
+        let kept = tempfile::tempdir().expect("a kept copy");
+        let copy = tempfile::tempdir().expect("a download");
+        for root in [kept.path(), copy.path()] {
+            std::fs::create_dir_all(root.join("agents/worker")).expect("folders");
+            std::fs::write(root.join("agents/worker/agent.yaml"), "team").expect("the team's manifest");
+            std::fs::write(root.join("agents/worker/agent.nested.yaml"), "team").expect("the team's variant");
+        }
+        std::fs::write(kept.path().join("agents/worker/agent.mine.yaml"), "mine").expect("the person's variant");
+        std::fs::write(kept.path().join("agents/worker/notes.md"), "old").expect("another file");
+        std::fs::create_dir_all(kept.path().join("agents/gone")).expect("a folder the team removed");
+        std::fs::write(kept.path().join("agents/gone/agent.mine.yaml"), "mine").expect("a variant of it");
+
+        let carried = carry_over(kept.path(), copy.path()).expect("carried over");
+        assert_eq!(carried, [copy.path().join("agents/worker/agent.mine.yaml")]);
+        assert_eq!(
+            std::fs::read_to_string(copy.path().join("agents/worker/agent.mine.yaml")).expect("read"),
+            "mine"
+        );
+        assert!(
+            !copy.path().join("agents/worker/notes.md").exists(),
+            "only variants carry over"
+        );
+        assert!(!copy.path().join("agents/gone").exists());
     }
 }

@@ -18,39 +18,48 @@ pub(crate) fn repository_root(directory: &Path) -> Option<&Path> {
 
 /// Lists agents and their variant manifests for `directory`.
 ///
-/// Inside a git repository the whole repository is walked, honoring ignore files;
-/// outside one only `directory/agent.yaml` and `directory/agents/*/agent.yaml` are
-/// checked, so running from a home directory never walks it. Each agent directory
-/// is then enumerated directly so checkout-local, ignored `agent.<variant>.yaml`
-/// siblings remain discoverable.
+/// Inside a git repository the whole repository is walked, as [`repository_manifests`] does;
+/// outside one only `directory/agent.yaml` and `directory/agents/*/agent.yaml` are checked, so
+/// running from a home directory never walks it.
 pub(crate) fn working_tree_manifests(directory: &Path) -> Vec<PathBuf> {
-    let agents: Vec<PathBuf> = repository_root(directory).map_or_else(
+    repository_root(directory).map_or_else(
         || {
-            std::iter::once(directory.join(MANIFEST_FILE))
-                .chain(
-                    std::fs::read_dir(directory.join("agents"))
-                        .into_iter()
-                        .flatten()
-                        .filter_map(Result::ok)
-                        .map(|entry| entry.path().join(MANIFEST_FILE)),
-                )
-                .filter(|path| path.is_file())
-                .collect()
+            with_variants(
+                std::iter::once(directory.join(MANIFEST_FILE))
+                    .chain(
+                        std::fs::read_dir(directory.join("agents"))
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Result::ok)
+                            .map(|entry| entry.path().join(MANIFEST_FILE)),
+                    )
+                    .filter(|path| path.is_file())
+                    .collect(),
+            )
         },
-        |root| {
-            WalkBuilder::new(root)
-                .max_depth(Some(DISCOVERY_DEPTH))
-                .require_git(false)
-                .follow_links(false)
-                .build()
-                .filter_map(Result::ok)
-                .filter(|entry| {
-                    entry.file_type().is_some_and(|kind| kind.is_file()) && entry.file_name() == MANIFEST_FILE
-                })
-                .map(ignore::DirEntry::into_path)
-                .collect()
-        },
-    );
+        repository_manifests,
+    )
+}
+
+/// Lists agents and their variant manifests in the repository at `root`, such as a copy of one
+/// that has no `.git`, walking it whole and honoring its ignore files.
+pub(crate) fn repository_manifests(root: &Path) -> Vec<PathBuf> {
+    with_variants(
+        WalkBuilder::new(root)
+            .max_depth(Some(DISCOVERY_DEPTH))
+            .require_git(false)
+            .follow_links(false)
+            .build()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()) && entry.file_name() == MANIFEST_FILE)
+            .map(ignore::DirEntry::into_path)
+            .collect(),
+    )
+}
+
+/// The `agents` manifests with the variants beside each, enumerated directly so checkout-local,
+/// ignored `agent.<variant>.yaml` siblings remain discoverable.
+fn with_variants(agents: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = agents
         .into_iter()
         .flat_map(|base| {

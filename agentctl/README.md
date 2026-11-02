@@ -46,7 +46,11 @@ its makers keep it, and their changes keep reaching your agent.
   variant, as `agent.*.yaml` in the folder's `.gitignore` does. Pick your variant later to change it.
 - **Start from an agent definition elsewhere**: a manifest or a folder on disk, or a GitHub address such as
   `https://github.com/Altinn/altinn-studio//agents/minimal`, or the address GitHub shows for a folder or a manifest.
-  Setup clones the repository into a folder you choose (`--clone-into`), or uses the checkout already there.
+  Setup downloads it, with your `git` when you have it, else as GitHub's archive of a public repository, and keeps it
+  in agentctl's home, such as `~/.agent/sources/github.com/Altinn/altinn-studio/`, since the agent reads its home,
+  instructions and skills from there. Running setup on the address again downloads it again and keeps your variant.
+  An agent that works on a checkout of its repository, as a worktree variant does, gets a clone in a folder you
+  choose (`--clone-into`), or uses the checkout already there.
 
 The recommended answers usually fit, so setup fills them in and shows them before it writes anything: a name, a size
 measured against your machine (or the CPUs, memory and disk you choose, also with `--cpus`, `--memory-gib` and

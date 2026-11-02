@@ -338,7 +338,8 @@ pub(super) fn bind_mounts(draft: &Draft) -> Result<Vec<(PathBuf, String)>, Error
             agent::MountSpec::Tmpfs { .. } => None,
         })
         .map(|(source, target)| {
-            let source = manifest::resolve_host_path(&draft.source.directory, source, "spec.sandbox.mounts")?;
+            // Where the agent is applied from, as a download moves.
+            let source = manifest::resolve_host_path(&draft.final_directory(), source, "spec.sandbox.mounts")?;
             Ok((source.canonicalize().unwrap_or(source), target.as_str().to_owned()))
         })
         .collect()
@@ -364,6 +365,15 @@ fn mount_unless_mounted(draft: &mut Draft, folder: &Path) -> CommandResult<()> {
 /// folder typed in. agentd does not know the folders `protected` keeps out of agents.
 pub(super) fn check_mounts(draft: &Draft, protected: &Protected) -> CommandResult<()> {
     for (source, target) in bind_mounts(draft)? {
+        // A dry run's stand-in for a clone not made yet has nothing there to check.
+        let not_made = draft
+            .source
+            .copy
+            .as_ref()
+            .is_some_and(|copy| !copy.kept.exists() && source.starts_with(&copy.kept));
+        if not_made {
+            continue;
+        }
         check_mount(&source, &target, protected).map_err(CommandError::Message)?;
     }
     Ok(draft.agent.validate()?)
@@ -387,7 +397,12 @@ pub(super) fn check_sources(draft: &Draft, protected: &Protected) -> CommandResu
         sources.push((format!("spec.skills[{index}].source"), &skill.source, skill.optional));
     }
     let directory = &draft.source.directory;
-    let root = own_root(directory, protected);
+    // A download has no `.git` that tells where its repository starts.
+    let root = draft
+        .source
+        .copy
+        .as_ref()
+        .map_or_else(|| own_root(directory, protected), |copy| copy.root.canonicalize().ok());
     for (field, source, optional) in sources {
         let resolved = manifest::resolve_host_path(directory, source, &field)?;
         if optional && !resolved.exists() {

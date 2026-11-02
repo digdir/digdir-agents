@@ -42,6 +42,9 @@ use crate::{CommandError, CommandResult, command_line};
 use answers::{Answers, Choice};
 use sizing::Whole;
 
+/// The folder in the control-plane home that keeps the definitions setup downloads.
+const SOURCES_FOLDER: &str = "sources";
+
 /// The variant setup writes the person's choices to, unless `--save-as` names another.
 const PERSONAL_VARIANT: &str = "mine";
 
@@ -69,8 +72,9 @@ pub(crate) struct SetupArguments {
     /// folder or a manifest at any branch, tag or commit, which setup clones.
     #[arg(long)]
     from: Option<String>,
-    /// Where to clone the repository a GitHub `--from` names; a checkout of it there is used as it
-    /// is. Defaults to a folder named after the repository here.
+    /// Where to clone the repository a GitHub `--from` names, for an agent that works on a
+    /// checkout of it, as a worktree variant does; a checkout of it there is used as it is.
+    /// Defaults to a folder named after the repository here. Other agents need no checkout.
     #[arg(long)]
     clone_into: Option<PathBuf>,
     /// Variant of a team's agent to start from, such as `nested` for its `agent.nested.yaml`.
@@ -219,6 +223,25 @@ struct Draft {
 }
 
 impl Draft {
+    /// Where the person's variant ends up: beside the manifest it extends, in the copy setup keeps
+    /// for a download.
+    fn variant_path(&self) -> PathBuf {
+        self.finally(&self.source.variant)
+    }
+
+    /// The folder of the manifest the variant extends, where it ends up.
+    fn final_directory(&self) -> PathBuf {
+        self.finally(&self.source.directory)
+    }
+
+    /// Where `path`, in a download, ends up once it is moved where setup keeps it.
+    fn finally(&self, path: &std::path::Path) -> PathBuf {
+        self.source.copy.as_ref().map_or_else(
+            || path.to_path_buf(),
+            |copy| copy.kept.join(path.strip_prefix(&copy.root).unwrap_or(path)),
+        )
+    }
+
     /// Where the agent's values end up: the file it reads them from already, else one named after
     /// it in the control-plane home, outside any checkout.
     fn values_path(&self, home: &ControlPlaneHome) -> PathBuf {
@@ -238,6 +261,17 @@ struct Source {
     variant: PathBuf,
     /// What the agent came from, as the review names it.
     origin: String,
+    /// For a definition downloaded from GitHub, the copy of its repository.
+    copy: Option<Copy>,
+}
+
+/// A download of a repository, in this run's folder until the agent is made, then moved where
+/// setup keeps it, replacing the copy an earlier setup kept there.
+struct Copy {
+    /// The download, which `Source`'s paths are in.
+    root: PathBuf,
+    /// Where it is kept.
+    kept: PathBuf,
 }
 
 /// An agent's values and logins, gathered before it is created.
@@ -316,7 +350,12 @@ async fn run_once(
         .map(|directory| crate::discovery::working_tree_manifests(&directory))
         .unwrap_or_default();
     let source = choose_source(arguments, answers, !here.is_empty())?;
-    let mut draft = choose_draft(arguments, answers, source, &save_as).await?;
+    let kept = home.path().join(SOURCES_FOLDER);
+    let downloads = source::Downloads {
+        staging: staging.path(),
+        kept: &kept,
+    };
+    let mut draft = choose_draft(arguments, answers, &downloads, source, &save_as).await?;
     if draft.changing {
         // agentd remembers the values file the agent was applied with, which may be another.
         draft.values_file = agents
@@ -345,9 +384,9 @@ async fn run_once(
     }
     check_host_paths(&draft, &protected)?;
     if arguments.dry_run {
-        let path = &draft.source.variant;
+        let path = draft.variant_path();
         println!("# {}", path.display());
-        print!("{}", create::variant_text(&draft, path)?);
+        print!("{}", create::variant_text(&draft, &path)?);
         return Ok(());
     }
     if let Some(env_file) = &arguments.env_file {

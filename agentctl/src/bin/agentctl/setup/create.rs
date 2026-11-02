@@ -20,13 +20,17 @@ pub(super) async fn finish(
     draft: &Draft,
 ) -> CommandResult<()> {
     let cli = command_line(home);
-    let variant = draft.source.variant.clone();
+    let variant = draft.variant_path();
     let values = draft.values_path(home);
     // What this run creates, removed again should the agent not be created.
     let mut created = Vec::new();
-    if !draft.changing {
-        ensure_ignored(answers, &variant)?;
-        created.push(variant.clone());
+    match &draft.source.copy {
+        Some(copy) if !copy.kept.exists() => created.push(copy.kept.clone()),
+        None if !draft.changing => {
+            ensure_ignored(answers, &variant)?;
+            created.push(variant.clone());
+        }
+        _ => {}
     }
     if !values.exists() {
         created.push(values.clone());
@@ -38,8 +42,16 @@ pub(super) async fn finish(
             kept.push((name, value));
         }
     }
-    let written = std::fs::write(&variant, variant_text(draft, &variant)?)
+    // A download's variant is written in it, then the download replaces the copy kept before.
+    let written = std::fs::write(&draft.source.variant, variant_text(draft, &variant)?)
         .map_err(Error::from)
+        .and_then(|()| {
+            draft
+                .source
+                .copy
+                .as_ref()
+                .map_or(Ok(()), |copy| keep(&copy.root, &copy.kept))
+        })
         .and_then(|()| env_file::write(&values, &kept));
     if let Err(error) = written {
         remove(&created);
@@ -112,6 +124,34 @@ pub(super) fn git_ignores(path: &Path) -> Option<bool> {
         Some(1) => Some(false),
         _ => None,
     }
+}
+
+/// Moves the download at `copy` to `kept`, replacing what an earlier setup kept there, which the
+/// download holds the person's variants of already. The old copy goes only once the new one is in
+/// place, and comes back should the move fail.
+fn keep(copy: &Path, kept: &Path) -> Result<(), Error> {
+    let parent = kept
+        .parent()
+        .ok_or_else(|| Error::Invalid(format!("{} has no parent folder", kept.display())))?;
+    std::fs::create_dir_all(parent)?;
+    let replaced = kept.exists().then(|| {
+        let mut name = kept.file_name().unwrap_or_default().to_os_string();
+        name.push(format!(".replaced-{}", std::process::id()));
+        parent.join(name)
+    });
+    if let Some(replaced) = &replaced {
+        std::fs::rename(kept, replaced)?;
+    }
+    if let Err(error) = std::fs::rename(copy, kept) {
+        if let Some(replaced) = &replaced {
+            std::fs::rename(replaced, kept).ok();
+        }
+        return Err(error.into());
+    }
+    if let Some(replaced) = &replaced {
+        std::fs::remove_dir_all(replaced).ok();
+    }
+    Ok(())
 }
 
 /// Removes what `created` names, after a failure.
@@ -232,7 +272,7 @@ pub(super) fn review(
             unset.join(", ")
         ));
     }
-    let variant = &draft.source.variant;
+    let variant = &draft.variant_path();
     let verb = if draft.changing { "Changes" } else { "Writes" };
     lines.push(format!(
         "{verb}:{:width$}{}",
@@ -522,5 +562,26 @@ mod tests {
         assert!(!text.contains("harnesses"), "only what differs is written:\n{text}");
         assert_eq!(git_ignores(&variant), Some(true));
         assert_eq!(git_ignores(&folder.join("agent.yaml")), Some(false));
+    }
+
+    #[test]
+    fn a_download_replaces_the_copy_kept_before() {
+        let home = tempfile::tempdir().expect("a home");
+        let kept = home.path().join("sources/github.com/team/agents");
+        std::fs::create_dir_all(&kept).expect("an earlier copy");
+        std::fs::write(kept.join("old.md"), "old").expect("an old file");
+        let copy = home.path().join("run-1/download");
+        std::fs::create_dir_all(&copy).expect("a download");
+        std::fs::write(copy.join("new.md"), "new").expect("a new file");
+
+        super::keep(&copy, &kept).expect("kept");
+        assert!(kept.join("new.md").is_file());
+        assert!(!kept.join("old.md").exists());
+        assert!(!copy.exists());
+        let left: Vec<_> = std::fs::read_dir(kept.parent().expect("a parent"))
+            .expect("listed")
+            .map(|entry| entry.expect("an entry").file_name())
+            .collect();
+        assert_eq!(left, ["agents"], "the old copy is removed");
     }
 }

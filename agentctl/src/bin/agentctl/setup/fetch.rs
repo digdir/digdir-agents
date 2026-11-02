@@ -1,6 +1,7 @@
-//! A team's agent definition on GitHub, in a checkout on this machine: one there already, or a
-//! clone setup makes with the person's own `git`. The person's variant is written in it, beside
-//! the team's manifest, as for any checkout.
+//! A team's agent definition on GitHub, on this machine. Setup downloads it, with the person's own
+//! `git` when there is one, which reads what their Git can, else as GitHub's archive of a public
+//! repository. A definition that mounts its own repository, as a worktree variant does, needs a
+//! checkout the person keeps instead: one there already, or a clone setup makes.
 
 use std::{
     path::{Path, PathBuf},
@@ -116,15 +117,21 @@ impl GithubSource {
                 )));
             }
             eprintln!("Cloning {} into {}.", self.describe(), folder.display());
-            self.clone_with_git(folder).await?;
+            self.clone_with_git(folder, false).await?;
         }
+        self.found_in(folder)
+    }
+
+    /// The folder, or the manifest, the agent definition is in, in a copy of the repository at
+    /// `root`.
+    pub(super) fn found_in(&self, root: &Path) -> Result<PathBuf, Error> {
         let found = self
             .subdirectory
             .as_ref()
-            .map_or_else(|| folder.to_path_buf(), |subdirectory| folder.join(subdirectory));
-        // Canonical paths, so that `..` in the address cannot lead out of the checkout.
-        let inside = match (found.canonicalize(), folder.canonicalize()) {
-            (Ok(found), Ok(folder)) => found.starts_with(folder),
+            .map_or_else(|| root.to_path_buf(), |subdirectory| root.join(subdirectory));
+        // Canonical paths, so that `..` in the address cannot lead out of the copy.
+        let inside = match (found.canonicalize(), root.canonicalize()) {
+            (Ok(found), Ok(root)) => found.starts_with(root),
             _ => false,
         };
         if !inside {
@@ -134,6 +141,137 @@ impl GithubSource {
             )));
         }
         Ok(found)
+    }
+
+    /// Where the copy of the repository setup keeps is, below the folder that holds them: one for
+    /// each repository and ref, as agents made from it share it.
+    pub(super) fn kept_folder(&self) -> PathBuf {
+        let mut repository = self.repository.clone();
+        if let Some(reference) = &self.reference {
+            repository.push('@');
+            repository.push_str(&reference.replace(['/', '\\'], "-"));
+        }
+        PathBuf::from("github.com").join(&self.owner).join(repository)
+    }
+
+    /// Downloads the repository into `copy`, which must not exist, as a plain copy of its files.
+    /// The person's `git` clones it when there is one, reading what their Git can. Without one,
+    /// or should it fail, GitHub's archive of it is downloaded, which only a public repository,
+    /// or one `GH_TOKEN` can read, gives.
+    pub(super) async fn download(&mut self, copy: &Path) -> Result<(), Error> {
+        eprintln!("Downloading the agent definition from {}.", self.describe());
+        let mut cloned = None;
+        if git_available().await {
+            let mut attempt = self.clone();
+            match attempt.clone_with_git(copy, true).await {
+                Ok(()) => {
+                    *self = attempt;
+                    // A copy, not a checkout to commit in.
+                    std::fs::remove_dir_all(copy.join(".git")).ok();
+                    return Ok(());
+                }
+                Err(error) => {
+                    std::fs::remove_dir_all(copy).ok();
+                    cloned = Some(match error {
+                        Error::Invalid(reason) => reason,
+                        other => other.to_string(),
+                    });
+                }
+            }
+        }
+        if self.readable_through_api().await? {
+            return self.download_archive(copy).await;
+        }
+        Err(Error::Invalid(cloned.map_or_else(
+            || {
+                format!(
+                    "GitHub gives no archive of {} without signing in, as for a private repository. Install \
+                     git, make sure it can read the repository, and run setup again",
+                    self.describe()
+                )
+            },
+            |error| format!("{error}, and GitHub gives no archive of it without signing in"),
+        )))
+    }
+
+    /// Downloads the repository as an archive from GitHub's API, after splitting a `/tree/` or
+    /// `/blob/` address at the longest ref GitHub knows. Without a ref, GitHub gives the default
+    /// branch.
+    async fn download_archive(&mut self, copy: &Path) -> Result<(), Error> {
+        if let Some(ref_and_path) = self.ref_and_path.clone() {
+            let mut known = None;
+            for (reference, path) in splits(&ref_and_path).into_iter().rev() {
+                if self.knows(&reference).await? {
+                    known = Some((reference, path));
+                    break;
+                }
+            }
+            let (reference, path) = known.ok_or_else(|| {
+                Error::Invalid(format!(
+                    "{}/{} has no branch, tag or commit that {ref_and_path} starts with",
+                    self.owner, self.repository
+                ))
+            })?;
+            self.ref_and_path = None;
+            self.reference = Some(reference);
+            self.subdirectory = Some(path).filter(|path| !path.is_empty());
+        }
+        let mut address = format!(
+            "https://api.github.com/repos/{}/{}/tarball",
+            self.owner, self.repository
+        );
+        if let Some(reference) = &self.reference {
+            address.push('/');
+            address.push_str(reference);
+        }
+        let response = github_request(&address)
+            .send()
+            .await
+            .map_err(|error| Error::Invalid(format!("could not download {}: {error}", self.describe())))?;
+        if !response.status().is_success() {
+            return Err(Error::Invalid(format!(
+                "GitHub answered {} for {}",
+                response.status(),
+                self.describe()
+            )));
+        }
+        let archive = response
+            .bytes()
+            .await
+            .map_err(|error| Error::Invalid(format!("the download of {} failed: {error}", self.describe())))?;
+        unpack(&archive, copy)
+    }
+
+    /// Whether GitHub's API shows the repository to this machine, as it does a public one, or a
+    /// private one `GH_TOKEN` can read. It answers a private repository it does not show as one
+    /// that does not exist.
+    async fn readable_through_api(&self) -> Result<bool, Error> {
+        let address = format!("https://api.github.com/repos/{}/{}", self.owner, self.repository);
+        let response = github_request(&address)
+            .send()
+            .await
+            .map_err(|error| Error::Invalid(format!("could not reach GitHub: {error}")))?;
+        Ok(response.status().is_success())
+    }
+
+    /// Whether GitHub knows `reference` as a branch, a tag or a commit of the repository.
+    async fn knows(&self, reference: &str) -> Result<bool, Error> {
+        let address = format!(
+            "https://api.github.com/repos/{}/{}/commits/{reference}",
+            self.owner, self.repository
+        );
+        let response = github_request(&address)
+            .send()
+            .await
+            .map_err(|error| Error::Invalid(format!("could not reach GitHub: {error}")))?;
+        match response.status() {
+            status if status.is_success() => Ok(true),
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::UNPROCESSABLE_ENTITY => Ok(false),
+            status => Err(Error::Invalid(format!(
+                "GitHub answered {status} for {}",
+                self.describe()
+            ))),
+        }
     }
 
     /// Refuses a checkout at `folder` of another repository than this one.
@@ -160,9 +298,10 @@ impl GithubSource {
         }
     }
 
-    /// Clones the repository with `git`, at its ref when it has one. A `/tree/` or `/blob/`
-    /// address is split at the longest branch or tag it starts with that the clone finds.
-    async fn clone_with_git(&mut self, checkout: &Path) -> Result<(), Error> {
+    /// Clones the repository with `git`, at its ref when it has one, and only its last commit when
+    /// `shallow`. A `/tree/` or `/blob/` address is split at the longest branch or tag it starts
+    /// with that the clone finds.
+    async fn clone_with_git(&mut self, checkout: &Path, shallow: bool) -> Result<(), Error> {
         let candidates = match self.ref_and_path.take() {
             Some(ref_and_path) => splits(&ref_and_path)
                 .into_iter()
@@ -174,6 +313,9 @@ impl GithubSource {
         for (reference, subdirectory) in candidates {
             let mut command = tokio::process::Command::new("git");
             command.args(["clone", "--quiet"]);
+            if shallow {
+                command.args(["--depth", "1"]);
+            }
             if let Some(reference) = &reference {
                 command.args(["--branch", reference]);
             }
@@ -199,6 +341,58 @@ impl GithubSource {
     }
 }
 
+/// A request to GitHub's API, with the token in this machine's environment when there is one,
+/// which a private repository needs.
+fn github_request(address: &str) -> reqwest::RequestBuilder {
+    let request = reqwest::Client::new()
+        .get(address)
+        .header(
+            reqwest::header::USER_AGENT,
+            concat!("agentctl/", env!("CARGO_PKG_VERSION")),
+        )
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json");
+    let token = ["GH_TOKEN", "GITHUB_TOKEN"]
+        .into_iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()));
+    match token {
+        Some(token) => request.bearer_auth(token),
+        None => request,
+    }
+}
+
+/// Unpacks a GitHub archive, whose entries all sit in one top folder, into `copy`. Entries that
+/// would land outside it are refused, and only files and folders are made.
+fn unpack(archive: &[u8], copy: &Path) -> Result<(), Error> {
+    std::fs::create_dir_all(copy)?;
+    let mut entries = tar::Archive::new(flate2::read::GzDecoder::new(archive));
+    for entry in entries.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        let relative: PathBuf = path.components().skip(1).collect();
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        let safe = relative
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)));
+        if !safe {
+            return Err(Error::Invalid(format!(
+                "the archive holds an unsafe path {}",
+                path.display()
+            )));
+        }
+        let kind = entry.header().entry_type();
+        if kind.is_dir() || kind.is_file() {
+            let target = copy.join(&relative);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            entry.unpack(&target)?;
+        }
+    }
+    Ok(())
+}
+
 /// Every way to split `ref_and_path` into a ref and a path, the shortest ref first.
 fn splits(ref_and_path: &str) -> Vec<(String, String)> {
     let parts: Vec<&str> = ref_and_path.split('/').collect();
@@ -222,7 +416,7 @@ async fn git_available() -> bool {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::{GithubSource, splits};
+    use super::{GithubSource, splits, unpack};
 
     fn source(owner: &str, repository: &str, subdirectory: Option<&str>, reference: Option<&str>) -> GithubSource {
         GithubSource {
@@ -287,6 +481,39 @@ mod tests {
                 ("feature/x".to_owned(), "agents".to_owned()),
                 ("feature/x/agents".to_owned(), String::new()),
             ]
+        );
+    }
+
+    #[test]
+    fn an_archive_unpacks_below_its_top_folder_only() {
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
+        let contents = b"kind: Agent\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "repo-abc123/agents/minimal/agent.yaml", &contents[..])
+            .expect("appended");
+        let archive = builder.into_inner().expect("finished").finish().expect("compressed");
+
+        let copy = tempfile::tempdir().expect("a folder");
+        unpack(&archive, &copy.path().join("copy")).expect("unpacked");
+        assert!(copy.path().join("copy/agents/minimal/agent.yaml").is_file());
+    }
+
+    #[test]
+    fn each_repository_and_ref_has_a_copy_of_its_own() {
+        let mut address =
+            GithubSource::parse("https://github.com/Altinn/altinn-studio//agents/minimal").expect("an address");
+        assert_eq!(
+            address.kept_folder(),
+            std::path::Path::new("github.com/Altinn/altinn-studio")
+        );
+        address.reference = Some("feature/x".to_owned());
+        assert_eq!(
+            address.kept_folder(),
+            std::path::Path::new("github.com/Altinn/altinn-studio@feature-x")
         );
     }
 }
