@@ -3,10 +3,52 @@
 //! Harnesses read skills from a directory below the user's home or a repository's root, and
 //! several share one, so a skill is copied once into each distinct directory the chosen harnesses
 //! read. It is a copy rather than a link, so it works on every host and outlives its source.
+//!
+//! Each copy holds a record of what was installed, so installing again can bring agentctl's own
+//! copy up to date, while a skill it did not install, or one edited since, is only replaced when
+//! asked to. The record sits in the skill itself, so it moves and goes with it, and anyone who
+//! clones a repository sees the same.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fmt::Write as _,
+    path::{Path, PathBuf},
+};
 
-use crate::{Error, Harness, harness::Skill};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+
+use crate::{
+    Error, Harness,
+    harness::{INSTALL_RECORD, Skill, SkillFile},
+};
+
+/// What [`INSTALL_RECORD`] holds.
+#[derive(Deserialize, Serialize)]
+struct Record {
+    /// [`digest`] of the files installed.
+    digest: String,
+}
+
+/// A digest of a skill's files and their paths, to tell whether they changed. It leaves out
+/// executable bits, which Windows does not have, so a copy in a repository installed on one host
+/// still counts as unedited on another.
+fn digest(files: &[SkillFile]) -> String {
+    let mut digest = Sha256::new();
+    for file in files {
+        // Lengths keep one file's bytes from reading as another's path.
+        for part in [file.relative_path.as_bytes(), &file.contents] {
+            digest.update((part.len() as u64).to_le_bytes());
+            digest.update(part);
+        }
+    }
+    digest
+        .finalize()
+        .iter()
+        .fold(String::with_capacity(64), |mut output, byte| {
+            let _infallible = write!(output, "{byte:02x}");
+            output
+        })
+}
 
 /// The root of the repository holding `directory`: the nearest directory with a `.git`, which is
 /// a file in a worktree.
@@ -23,9 +65,13 @@ pub fn repository_root(directory: &Path) -> Option<PathBuf> {
 pub enum Change {
     /// Nothing is there yet.
     Install,
-    /// Something else is there, which the skill replaces whole.
+    /// agentctl's own copy is there, unchanged since, or the same files without a record of it.
+    /// The skill replaces it whole, which loses nothing.
+    Update,
+    /// A skill agentctl did not install is there, or one edited since, or something else. The
+    /// skill would replace it whole, so this needs the person's consent.
     Replace,
-    /// The skill is there with exactly these files.
+    /// The skill is there with exactly these files, as agentctl installed it.
     None,
 }
 
@@ -59,14 +105,8 @@ pub fn plan(skill: &Skill, root: &Path, harnesses: &[Harness]) -> Result<Vec<Pla
         let change = match std::fs::symlink_metadata(&directory) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Change::Install,
             Err(error) => return Err(error.into()),
-            // Whatever cannot be read as a skill, such as a link, differs from this one.
-            Ok(metadata) if metadata.is_dir() => {
-                let field = directory.display().to_string();
-                match Skill::read(skill.name().to_owned(), &directory, &field) {
-                    Ok(existing) if existing == *skill => Change::None,
-                    _ => Change::Replace,
-                }
-            }
+            Ok(metadata) if metadata.is_dir() => compare(skill, &directory),
+            // A link, say, is not a copy agentctl made.
             Ok(_) => Change::Replace,
         };
         placements.push(Placement {
@@ -76,6 +116,26 @@ pub fn plan(skill: &Skill, root: &Path, harnesses: &[Harness]) -> Result<Vec<Pla
         });
     }
     Ok(placements)
+}
+
+/// What installing `skill` does to the skill directory `directory`.
+fn compare(skill: &Skill, directory: &Path) -> Change {
+    let field = directory.display().to_string();
+    // Whatever cannot be read as a skill differs from this one.
+    let Ok(existing) = Skill::read(skill.name().to_owned(), directory, &field) else {
+        return Change::Replace;
+    };
+    let recorded = std::fs::read(directory.join(INSTALL_RECORD))
+        .ok()
+        .and_then(|record| serde_json::from_slice::<Record>(&record).ok())
+        .map(|record| record.digest);
+    let installed = digest(&existing.files);
+    match recorded {
+        Some(recorded) if recorded == installed && existing == *skill => Change::None,
+        Some(recorded) if recorded == installed => Change::Update,
+        _ if existing == *skill => Change::Update,
+        _ => Change::Replace,
+    }
 }
 
 /// Makes the changes `placements` from [`plan`] describe.
@@ -99,7 +159,8 @@ pub fn apply(skill: &Skill, placements: &[Placement]) -> Result<(), Error> {
         let staging = parent.join(format!(".{}.agentctl-{}", skill.name(), std::process::id()));
         remove_if_present(&staging)?;
         if let Err(error) = stage(skill, &staging).and_then(|()| swap_in(&staging, directory)) {
-            remove_if_present(&staging)?;
+            // What went wrong matters more than a leftover the next install clears.
+            let _ignored = remove_if_present(&staging);
             return Err(error);
         }
     }
@@ -116,8 +177,20 @@ fn stage(skill: &Skill, staging: &Path) -> Result<(), Error> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, &file.contents)?;
+        std::fs::write(&path, &file.contents)?;
+        #[cfg(unix)]
+        if file.executable {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mut permissions = std::fs::metadata(&path)?.permissions();
+            // Runnable by whoever may read it, as `chmod +x` with the usual umask does.
+            permissions.set_mode(permissions.mode() | (permissions.mode() & 0o444) >> 2);
+            std::fs::set_permissions(&path, permissions)?;
+        }
     }
+    let record = Record {
+        digest: digest(&skill.files),
+    };
+    std::fs::write(staging.join(INSTALL_RECORD), serde_json::to_vec_pretty(&record)?)?;
     Ok(())
 }
 
@@ -172,10 +245,11 @@ mod tests {
         placements
     }
 
+    /// The skill's own files below `directory`, without the install record.
     fn files_below(directory: &Path) -> Vec<(String, String)> {
         let mut files = Vec::new();
         crate::local::files::walk_source(directory, "installed", |relative, path, is_dir| {
-            if !is_dir {
+            if !is_dir && relative != Path::new(INSTALL_RECORD) {
                 let contents = std::fs::read_to_string(path).expect("contents");
                 files.push((relative.to_string_lossy().replace('\\', "/"), contents));
             }
@@ -235,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn a_different_skill_of_the_same_name_is_replaced_whole() {
+    fn an_installed_skill_is_updated_whole() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let old = skill_in(temporary.path(), &[("SKILL.md", "old"), ("stale.md", "gone")]);
         let home = temporary.path().join("home");
@@ -245,11 +319,67 @@ mod tests {
 
         let placements = install(&new, &home, &[Harness::ALL[1]]);
 
-        assert_eq!(placements[0].change, Change::Replace);
+        assert_eq!(placements[0].change, Change::Update);
         assert_eq!(
             files_below(&placements[0].directory),
             [("SKILL.md".into(), "new".into())]
         );
+        assert_eq!(
+            plan(&new, &home, &[Harness::ALL[1]]).expect("plan")[0].change,
+            Change::None
+        );
+    }
+
+    #[test]
+    fn an_installed_skill_edited_since_is_only_replaced_when_asked() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let old = skill_in(temporary.path(), &[("SKILL.md", "old")]);
+        let home = temporary.path().join("home");
+        let placements = install(&old, &home, &[Harness::ALL[0]]);
+        std::fs::write(placements[0].directory.join("notes.md"), "mine").expect("edit");
+        std::fs::remove_dir_all(temporary.path().join("source")).expect("remove source");
+        let new = skill_in(temporary.path(), &[("SKILL.md", "new")]);
+
+        let placements = plan(&new, &home, &[Harness::ALL[0]]).expect("plan");
+
+        assert_eq!(placements[0].change, Change::Replace);
+    }
+
+    #[test]
+    fn a_skill_agentctl_did_not_install_is_only_replaced_when_asked_unless_it_is_the_same() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let skill = skill_in(temporary.path(), &[("SKILL.md", "review")]);
+        let home = temporary.path().join("home");
+        let existing = home.join(Harness::ALL[0].skills_directory()).join("review");
+        std::fs::create_dir_all(&existing).expect("existing directory");
+
+        for (contents, change) in [("theirs", Change::Replace), ("review", Change::Update)] {
+            std::fs::write(existing.join("SKILL.md"), contents).expect("existing skill");
+            let placements = plan(&skill, &home, &[Harness::ALL[0]]).expect("plan");
+            assert_eq!(placements[0].change, change, "{contents}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_can_be_run_still_can_once_installed() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let source = temporary.path().join("source").join("review").join("run.sh");
+        let mode = |path: &Path| std::fs::metadata(path).expect("metadata").permissions().mode() & 0o111;
+        let old = skill_in(temporary.path(), &[("SKILL.md", "review"), ("run.sh", "echo")]);
+        let home = temporary.path().join("home");
+        let placements = install(&old, &home, &[Harness::ALL[0]]);
+        let installed = placements[0].directory.join("run.sh");
+        assert_eq!(mode(&installed), 0);
+
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o755)).expect("make runnable");
+        let new = Skill::read("review".into(), source.parent().expect("skill"), "source").expect("skill");
+        let placements = install(&new, &home, &[Harness::ALL[0]]);
+
+        assert_eq!(placements[0].change, Change::Update);
+        assert_ne!(mode(&installed), 0);
     }
 
     #[test]

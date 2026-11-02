@@ -18,9 +18,10 @@ use super::{CommandError, CommandResult, parse_harness};
 pub(crate) enum SkillsCommand {
     /// Install a skill where the harnesses on this machine discover it.
     ///
-    /// The skill is copied, so later changes to its source need another install. Without
-    /// `--harness`, it is installed for each harness found on this machine: its command on
-    /// `PATH`, or its own directory in your home.
+    /// The skill is copied, so later changes to its source need another install, which updates
+    /// the copy. A skill of the same name that agentctl did not install, or that was edited since,
+    /// is only replaced with `--force`. Without `--harness`, it is installed for each harness found
+    /// on this machine: its command on `PATH`, or its own directory in your home.
     Install(Install),
 }
 
@@ -45,7 +46,7 @@ pub(crate) struct Install {
     /// Name to install the skill as, instead of its directory's name.
     #[arg(long)]
     name: Option<String>,
-    /// Replace a different skill of the same name.
+    /// Replace a skill of the same name that agentctl did not install, or that was edited since.
     #[arg(long)]
     force: bool,
 }
@@ -80,9 +81,10 @@ pub(crate) fn execute(command: SkillsCommand) -> CommandResult<()> {
         .collect::<Vec<_>>();
     if !install.force && !conflicts.is_empty() {
         return Err(CommandError::Message(format!(
-            "a different skill named {} is already in {}; pass --force to replace it",
-            skill.name(),
-            conflicts.join(" and ")
+            "{} already holds a skill named {} that agentctl did not install, or that was edited since; \
+             pass --force to replace it",
+            conflicts.join(" and "),
+            skill.name()
         )));
     }
     apply(&skill, &placements)?;
@@ -147,6 +149,7 @@ fn describe(name: &str, placement: &Placement) -> String {
     let harnesses = display_names(&placement.harnesses);
     match placement.change {
         Change::Install => format!("installed {name} in {directory} for {harnesses}"),
+        Change::Update => format!("updated {name} in {directory} for {harnesses}"),
         Change::Replace => format!("replaced {name} in {directory} for {harnesses}"),
         Change::None => format!("{name} in {directory} is already up to date for {harnesses}"),
     }

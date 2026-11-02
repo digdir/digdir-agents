@@ -40,7 +40,8 @@ agentctl skills install --bundled agentctl --user
 
 `agentctl skills install --help` shows how to install your own skills for yourself or a repository.
 
-Update with `agentctl self update`. Agents and sessions carry over.
+Update with `agentctl self update`. Agents and sessions carry over. Run the `skills install` command above again to
+update the skill as well.
 
 ## Your first agent
 

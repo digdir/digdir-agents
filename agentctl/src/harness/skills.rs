@@ -24,10 +24,18 @@ pub struct Skill {
 pub(crate) struct SkillFile {
     pub(crate) relative_path: String,
     pub(crate) contents: Vec<u8>,
+    /// Whether it can be run, as a skill's scripts often are. Windows has no such bit, so there
+    /// it is never set.
+    pub(crate) executable: bool,
 }
 
+/// The file `agentctl skills install` writes into each skill it installs. Reading a skill leaves
+/// it out, so a skill copied from an installed one does not carry it along.
+pub(crate) const INSTALL_RECORD: &str = ".agentctl-skill.json";
+
 impl Skill {
-    /// Reads the skill in `source` to install as `name`. `field` names the source in errors.
+    /// Reads the skill in `source` to install as `name`, except an [`INSTALL_RECORD`] at its root.
+    /// `field` names the source in errors.
     ///
     /// # Errors
     ///
@@ -42,7 +50,7 @@ impl Skill {
         }
         let mut files = Vec::new();
         walk_source(source, field, |relative, path, is_dir| {
-            if is_dir {
+            if is_dir || relative == Path::new(INSTALL_RECORD) {
                 return Ok(());
             }
             let relative_path = relative
@@ -54,6 +62,7 @@ impl Skill {
             files.push(SkillFile {
                 relative_path,
                 contents: std::fs::read(path)?,
+                executable: executable(&std::fs::metadata(path)?),
             });
             Ok(())
         })?;
@@ -74,6 +83,17 @@ impl Skill {
     }
 }
 
+#[cfg(unix)]
+fn executable(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn executable(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
 /// Whether `name` can name a skill's directory: one path component.
 pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
@@ -89,11 +109,13 @@ pub(crate) fn platform_skill() -> Skill {
             // CI skips Markdown changes, except under agentctl/skills/. Bundling Markdown from
             // elsewhere needs it added to `bundled` in ci.yml and the paths in agentctl-image.yml.
             contents: include_bytes!("../../skills/agentctl/SKILL.md").to_vec(),
+            executable: false,
         }],
     }
 }
 
-/// Places every skill below `root` as `root/<name>/<relative path>`, owned by the image user.
+/// Places every skill below `root` as `root/<name>/<relative path>`, owned by the image user,
+/// with the executable bit each file has on the host.
 ///
 /// Harnesses watch their skill directories live, so a file whose contents are already in place
 /// is left alone rather than rewritten. Directories are created as the image user. Runtime file
@@ -104,6 +126,7 @@ pub(super) async fn install_linux(sandbox: &SandboxHandle, root: &str, skills: &
         let target = format!("{root}/{}", skill.name);
         run_checked(sandbox, "/usr/bin/mkdir", ["-p".to_owned(), target.clone()]).await?;
         let mut managed = Vec::with_capacity(skill.files.len());
+        let (mut executable, mut plain) = (Vec::new(), Vec::new());
         for file in &skill.files {
             let path = format!("{target}/{}", file.relative_path);
             if let Some((parent, _)) = file.relative_path.rsplit_once('/') {
@@ -115,6 +138,7 @@ pub(super) async fn install_linux(sandbox: &SandboxHandle, root: &str, skills: &
                 .await?;
             }
             write_if_changed(sandbox, &path, &file.contents).await?;
+            if file.executable { &mut executable } else { &mut plain }.push(path.clone());
             managed.push(path);
         }
         if managed.is_empty() {
@@ -123,6 +147,14 @@ pub(super) async fn install_linux(sandbox: &SandboxHandle, root: &str, skills: &
         let mut chown = vec!["/usr/bin/chown".to_owned(), "agent:agent".to_owned()];
         chown.extend(managed);
         run_checked(sandbox, "/usr/bin/sudo", chown).await?;
+        // Both ways, since a file left alone keeps the mode an earlier pass gave it.
+        for (mode, paths) in [("a+x", executable), ("a-x", plain)] {
+            if !paths.is_empty() {
+                let mut chmod = vec!["/usr/bin/chmod".to_owned(), mode.to_owned(), "--".to_owned()];
+                chmod.extend(paths);
+                run_checked(sandbox, "/usr/bin/sudo", chmod).await?;
+            }
+        }
     }
     Ok(())
 }
