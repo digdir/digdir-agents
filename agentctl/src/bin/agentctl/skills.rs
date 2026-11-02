@@ -29,10 +29,11 @@ pub(crate) enum SkillsCommand {
 #[command(group(ArgGroup::new("skill").required(true).args(["source", "bundled"])))]
 #[command(group(ArgGroup::new("scope").required(true).args(["user", "repo"])))]
 pub(crate) struct Install {
-    /// Directory holding the skill's `SKILL.md`.
+    /// Directory holding the skill's `SKILL.md`. The skill is installed under the name its
+    /// `SKILL.md` gives, or else the directory's.
     source: Option<PathBuf>,
     /// A skill built into agentctl, such as `agentctl`, instead of a directory.
-    #[arg(long, value_name = "NAME", conflicts_with = "name")]
+    #[arg(long, value_name = "NAME")]
     bundled: Option<String>,
     /// Install for you, in your home directory, so it is there in every repository.
     #[arg(long)]
@@ -43,9 +44,6 @@ pub(crate) struct Install {
     /// Harness to install for, as a manifest names it, such as `codex`. Repeat it for several.
     #[arg(long = "harness", value_name = "HARNESS", value_parser = parse_harness)]
     harnesses: Vec<Harness>,
-    /// Name to install the skill as, instead of its directory's name.
-    #[arg(long)]
-    name: Option<String>,
     /// Replace a skill of the same name that agentctl did not install, or that was edited since.
     #[arg(long)]
     force: bool,
@@ -55,7 +53,7 @@ pub(crate) fn execute(command: SkillsCommand) -> CommandResult<()> {
     let SkillsCommand::Install(install) = command;
     let skill = match (&install.source, &install.bundled) {
         (_, Some(name)) => bundled(name)?,
-        (Some(source), None) => read(source, install.name)?,
+        (Some(source), None) => read(source)?,
         (None, None) => unreachable!("clap requires a source or --bundled"),
     };
     let root = match &install.repo {
@@ -112,10 +110,15 @@ fn bundled(name: &str) -> CommandResult<Skill> {
     })
 }
 
-fn read(source: &Path, name: Option<String>) -> CommandResult<Skill> {
+fn read(source: &Path) -> CommandResult<Skill> {
     let shown = source.display().to_string();
     let source = std::fs::canonicalize(source).map_err(|error| CommandError::Message(format!("{shown}: {error}")))?;
-    let name = match name {
+    // The Agent Skills spec names a skill's directory after the name in its frontmatter, so that
+    // name wins over the one of the folder it comes from, such as a checkout's.
+    let declared = std::fs::read_to_string(source.join("SKILL.md"))
+        .ok()
+        .and_then(|skill| declared_name(&skill));
+    let name = match declared {
         Some(name) => name,
         None => source
             .file_name()
@@ -128,6 +131,21 @@ fn read(source: &Path, name: Option<String>) -> CommandResult<Skill> {
         agent::Error::Invalid(message) => CommandError::Message(message),
         error => error.into(),
     })
+}
+
+/// The `name` in the YAML frontmatter that opens `skill`, a `SKILL.md`. Frontmatter that YAML
+/// cannot read gives none, as harnesses differ in how strictly they read it.
+fn declared_name(skill: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Frontmatter {
+        name: Option<String>,
+    }
+    let rest = skill
+        .strip_prefix("---")?
+        .trim_start_matches([' ', '\t', '\r'])
+        .strip_prefix('\n')?;
+    let end = rest.find("\n---")?;
+    serde_yaml_ng::from_str::<Frontmatter>(&rest[..end]).ok()?.name
 }
 
 fn user_home() -> CommandResult<PathBuf> {
@@ -170,5 +188,23 @@ fn display_names(harnesses: &[Harness]) -> String {
     match names.split_last() {
         Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
         _ => names.concat(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::declared_name;
+
+    #[test]
+    fn the_name_comes_from_the_frontmatter_when_it_gives_one() {
+        for (skill, name) in [
+            ("---\nname: review\ndescription: Reviews.\n---\nBody\n", Some("review")),
+            ("---\r\nname: \"review\"\r\ndescription: x\r\n---\r\n", Some("review")),
+            ("---\ndescription: No name.\n---\n", None),
+            ("# No frontmatter\nname: review\n", None),
+            ("---\nname: [unclosed\n---\n", None),
+        ] {
+            assert_eq!(declared_name(skill).as_deref(), name, "{skill:?}");
+        }
     }
 }
