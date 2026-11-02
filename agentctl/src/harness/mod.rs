@@ -34,9 +34,6 @@ pub enum Harness {
 }
 
 impl Harness {
-    /// Every harness.
-    pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Pi];
-
     /// The only authentication mode the harness accepts in a manifest.
     #[must_use]
     pub const fn auth_mode(self) -> HarnessAuthMode {
@@ -625,8 +622,8 @@ fn artifact_text(service: &str, artifact: Option<&[u8]>) -> Result<Zeroizing<Str
 
 /// The sign-in pages that a sign-in's terminal `output` links to, for the host to open in a browser.
 ///
-/// Only the pages of the sign-ins here count, so a program cannot send the person's browser
-/// anywhere else. Call it again as output arrives: it returns every link so far, so the caller
+/// Only the sign-in pages of the services here count, by host and path, so a program cannot send
+/// the person's browser to another site. What a page is asked for, in its query, is the program's. Call it again as output arrives: it returns every link so far, so the caller
 /// remembers which it has opened, and leaves out a link until the output shows where it ends.
 #[must_use]
 pub fn sign_in_links(output: &[u8]) -> Vec<reqwest::Url> {

@@ -7,7 +7,7 @@
 //! its sign-in agent there, so the next run knows a dead run's leftovers from a live one's and
 //! removes them.
 
-use std::{fs::File, path::Path};
+use std::{fs::File, path::Path, time::Duration};
 
 use agent::Error;
 
@@ -17,6 +17,9 @@ const PREFIX: &str = "run-";
 const LOCK_FILE: &str = ".lock";
 /// The sign-in agent the run started, for a later run to delete if this one could not.
 const SIGN_IN_AGENT_FILE: &str = ".sign-in-agent";
+/// How long a new folder is taken to belong to a live run, lock or not, so that another run does
+/// not remove it in the moment between making it and locking it.
+const GRACE: Duration = Duration::from_mins(1);
 
 /// One run's staging folder, removed when it is dropped.
 pub(crate) struct Staging {
@@ -32,7 +35,7 @@ impl Staging {
         let directory = tempfile::Builder::new().prefix(PREFIX).tempdir_in(home)?;
         let lock = File::create(directory.path().join(LOCK_FILE))?;
         lock.try_lock()
-            .map_err(|error| Error::Invalid(format!("could not lock the setup folder: {error}")))?;
+            .map_err(|error| Error::Invalid(format!("could not lock this run's folder: {error}")))?;
         Ok(Self { _lock: lock, directory })
     }
 
@@ -50,12 +53,13 @@ impl Staging {
 /// What other runs left below `home`.
 #[derive(Debug, Default, Eq, PartialEq)]
 pub(crate) struct Leftovers {
-    /// Sign-in agents of runs that are still going, which must be left alone.
-    pub(crate) live_sign_in_agents: Vec<String>,
+    /// Sign-in agents of runs that ended before they could delete them. Only these are deleted,
+    /// so neither a live run's nor a person's own agent of a similar name is.
+    pub(crate) dead_sign_in_agents: Vec<String>,
 }
 
 /// Removes the staging folders of runs that ended without removing them, and reports the sign-in
-/// agents that runs still going own. A folder whose lock nobody holds is a dead run's.
+/// agents they left. A folder whose lock nobody holds is a dead run's.
 pub(crate) fn sweep(home: &Path) -> Leftovers {
     let mut leftovers = Leftovers::default();
     let Ok(entries) = std::fs::read_dir(home) else {
@@ -67,10 +71,9 @@ pub(crate) fn sweep(home: &Path) -> Leftovers {
         if !ours {
             continue;
         }
-        let sign_in_agent = std::fs::read_to_string(folder.join(SIGN_IN_AGENT_FILE)).ok();
-        if alive(&folder) {
-            leftovers.live_sign_in_agents.extend(sign_in_agent);
-        } else {
+        if !alive(&folder) {
+            let sign_in_agent = std::fs::read_to_string(folder.join(SIGN_IN_AGENT_FILE)).ok();
+            leftovers.dead_sign_in_agents.extend(sign_in_agent);
             std::fs::remove_dir_all(&folder).ok();
         }
     }
@@ -79,9 +82,12 @@ pub(crate) fn sweep(home: &Path) -> Leftovers {
 
 /// Whether the run that made `folder` still holds its lock.
 fn alive(folder: &Path) -> bool {
-    // Taking the lock proves its run has ended; it is let go again when the file closes. A folder
-    // without a lock is one an earlier agentctl made, or one half made.
-    File::open(folder.join(LOCK_FILE)).is_ok_and(|lock| lock.try_lock().is_err())
+    let new = std::fs::metadata(folder)
+        .and_then(|metadata| metadata.modified())
+        .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age < GRACE));
+    // Taking the lock proves its run has ended; it is let go again when the file closes. An older
+    // folder without a lock is one an earlier agentctl made, or one left half made.
+    new || File::open(folder.join(LOCK_FILE)).is_ok_and(|lock| lock.try_lock().is_err())
 }
 
 #[cfg(test)]
@@ -99,12 +105,19 @@ mod tests {
         std::fs::create_dir_all(&dead).expect("a dead run's folder");
         std::fs::write(dead.join(".lock"), "").expect("its lock file, held by nobody");
         std::fs::write(dead.join(".sign-in-agent"), "agentctl-signin-dead").expect("its sign-in agent");
+        let an_hour_ago = std::time::SystemTime::now() - std::time::Duration::from_hours(1);
+        std::fs::File::open(&dead)
+            .and_then(|folder| folder.set_modified(an_hour_ago))
+            .expect("made an hour ago");
+        let unlocked = home.path().join("run-new");
+        std::fs::create_dir_all(&unlocked).expect("a folder a run has made but not locked yet");
 
         let leftovers = sweep(home.path());
 
         assert!(!dead.exists(), "the dead run's folder is removed");
         assert!(live.path().exists(), "the live run's folder is kept");
-        assert_eq!(leftovers.live_sign_in_agents, ["agentctl-signin-live"]);
+        assert!(unlocked.exists(), "a new folder is kept, lock or not");
+        assert_eq!(leftovers.dead_sign_in_agents, ["agentctl-signin-dead"]);
         let path = live.path().to_path_buf();
         drop(live);
         assert!(!path.exists(), "a run removes its own folder when it ends");

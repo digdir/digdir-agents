@@ -92,11 +92,22 @@ impl<'a> SignInAgent<'a> {
                 agent,
             })
             .await?;
-        let started = async {
+        let starting = async {
             crate::wait_until_converged(client, &name, timeout).await?;
             Ok::<_, crate::CommandError>(client.ensure_execution(&name, WaitPolicy::UntilConverged).await?)
-        }
-        .await;
+        };
+        // Starting can take long, as when the image is pulled the first time, and an agent left
+        // behind keeps running unseen, so Ctrl-C deletes it.
+        let started = tokio::select! {
+            started = starting => started,
+            _ = tokio::signal::ctrl_c() => Err(CommandError::Message("signing in was cancelled".into())),
+        };
+        // Listening for Ctrl-C keeps it from ending agentctl, so it ends agentctl again from here on.
+        tokio::spawn(async {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                std::process::exit(130);
+            }
+        });
         match started {
             Ok(target) => Ok(Self {
                 client,
@@ -183,20 +194,37 @@ async fn relay(
     let started =
         agent::sandbox::start_terminal_execution(home, &target.sandbox, StartTerminalExecutionRequest::new(spec, size))
             .await?;
-    crossterm::terminal::enable_raw_mode()?;
+    let raw = RawMode::enable()?;
     let result = pump(started).await;
-    crossterm::terminal::disable_raw_mode().ok();
-    // The program may have hidden the cursor or turned on modes this terminal keeps after it.
-    print!("\x1b[?25h\x1b[?2004l\x1b[0m");
-    std::io::stdout().flush().ok();
+    drop(raw);
     let (output, status) = result?;
     if !status.success() {
         return Err(Error::Invalid(format!(
-            "the sign-in ended without signing in ({})",
+            "the sign-in ended without signing in (exit code {})",
             status.code
         )));
     }
     Ok(output)
+}
+
+/// This terminal in raw mode, as the relayed program needs it, until dropped, which happens on a
+/// panic too.
+struct RawMode;
+
+impl RawMode {
+    fn enable() -> std::io::Result<Self> {
+        crossterm::terminal::enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        crossterm::terminal::disable_raw_mode().ok();
+        // The program may have hidden the cursor or turned on modes this terminal keeps after it.
+        print!("\x1b[?25h\x1b[?2004l\x1b[0m");
+        std::io::stdout().flush().ok();
+    }
 }
 
 async fn pump(
@@ -205,6 +233,8 @@ async fn pump(
     let mut output = Zeroizing::new(Vec::new());
     let mut opened = BTreeSet::new();
     let mut copied = false;
+    // Where a browser here would not reach the person, such as over SSH, they open the link.
+    let blocked = crate::launch::launch_blocked(|name| std::env::var_os(name));
     let mut keys = EventStream::new();
     let mut stdout = std::io::stdout();
     loop {
@@ -224,7 +254,15 @@ async fn pump(
                             copied = true;
                             copy_code(&mut stdout, &device.code).await?;
                         }
-                        crate::launch::open_url(link.as_str()).await.ok();
+                        match &blocked {
+                            Some(reason) => {
+                                write!(stdout, "\r\n(agentctl does not open the link here: {reason}. Open it in your browser.)\r\n")?;
+                                stdout.flush()?;
+                            }
+                            None => {
+                                crate::launch::open_url(link.as_str()).await.ok();
+                            }
+                        }
                     }
                 }
                 Some(TerminalEvent::Exited(status)) => return Ok((output, status)),
@@ -267,11 +305,16 @@ fn key_bytes(key: KeyEvent) -> Option<Vec<u8>> {
     if key.kind == KeyEventKind::Release {
         return None;
     }
+    // Windows reports a character typed with AltGr, such as `@` on a Norwegian keyboard, as one
+    // with Control and Alt held.
+    let control = key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT);
+    let alt = key.modifiers.contains(KeyModifiers::ALT) && !key.modifiers.contains(KeyModifiers::CONTROL);
     let bytes = match key.code {
-        KeyCode::Char(character) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char(character) if control => {
             let byte = u8::try_from(character.to_ascii_lowercase()).ok()?;
             vec![byte & 0x1f]
         }
+        KeyCode::Char(character) if alt => format!("\x1b{character}").into_bytes(),
         KeyCode::Char(character) => character.to_string().into_bytes(),
         KeyCode::Enter => b"\r".to_vec(),
         KeyCode::Backspace => vec![0x7f],
@@ -281,19 +324,23 @@ fn key_bytes(key: KeyEvent) -> Option<Vec<u8>> {
         KeyCode::Down => b"\x1b[B".to_vec(),
         KeyCode::Right => b"\x1b[C".to_vec(),
         KeyCode::Left => b"\x1b[D".to_vec(),
+        KeyCode::Home => b"\x1b[H".to_vec(),
+        KeyCode::End => b"\x1b[F".to_vec(),
+        KeyCode::Delete => b"\x1b[3~".to_vec(),
+        KeyCode::PageUp => b"\x1b[5~".to_vec(),
+        KeyCode::PageDown => b"\x1b[6~".to_vec(),
+        KeyCode::BackTab => b"\x1b[Z".to_vec(),
         _ => return None,
     };
     Some(bytes)
 }
 
 /// Deletes the sign-in agents of runs that ended before they could, such as one stopped with
-/// Ctrl-C while its sign-in agent booted. Those of runs still going are left alone.
+/// Ctrl-C while its sign-in agent booted. Only those the dead runs named go.
 pub(crate) async fn remove_dead_sign_in_agents(client: &Client, agents: &[Agent], leftovers: &Leftovers) {
     for agent in agents {
         let name = &agent.metadata.name;
-        let dead = is_sign_in_agent(name)
-            && agent.metadata.deletion_timestamp.is_none()
-            && !leftovers.live_sign_in_agents.contains(name);
+        let dead = agent.metadata.deletion_timestamp.is_none() && leftovers.dead_sign_in_agents.contains(name);
         if dead && client.delete(name).await.is_ok() {
             eprintln!("Deleted {name}, left by a sign-in that did not finish.");
         }
@@ -329,18 +376,27 @@ pub(crate) async fn store_login(
     );
     let credential = agent.run(&recipe).await;
     agent.finish().await;
-    let stored = client
-        .auth_login(harness, login.clone(), credential?.to_string(), false)
-        .await;
-    match stored {
-        Ok(stored) => Ok(stored),
-        // A credential read off the sign-in's screen can come out garbled while the person still
-        // sees it whole, so they can paste it instead.
-        Err(error) if recipe.artifact.is_none() => Err(CommandError::Message(format!(
-            "the {} credential read from the screen was refused: {error}; paste the one it printed into {} \
-             with --from-stdin",
-            harness.display_name(),
+    // A credential read off the sign-in's screen can be missed or come out garbled while the person
+    // still sees it whole, so they can paste it instead.
+    let paste = |what: String| {
+        CommandError::Message(format!(
+            "{what}; paste the one it printed into {} with --from-stdin",
             agent::harness::login_command(harness, &login)
+        ))
+    };
+    let credential = match credential {
+        Ok(credential) => credential,
+        Err(Error::Invalid(reason)) if recipe.artifact.is_none() => return Err(paste(reason)),
+        Err(error) => return Err(error.into()),
+    };
+    match client
+        .auth_login(harness, login.clone(), credential.to_string(), false)
+        .await
+    {
+        Ok(stored) => Ok(stored),
+        Err(error) if recipe.artifact.is_none() => Err(paste(format!(
+            "the {} credential read from the screen was refused: {error}",
+            harness.display_name()
         ))),
         Err(error) => Err(error.into()),
     }
@@ -370,6 +426,19 @@ mod tests {
         assert_eq!(
             key_bytes(press(KeyCode::Left, KeyModifiers::NONE)),
             Some(b"\x1b[D".to_vec())
+        );
+        assert_eq!(
+            key_bytes(press(KeyCode::Char('@'), KeyModifiers::CONTROL | KeyModifiers::ALT)),
+            Some(b"@".to_vec()),
+            "AltGr on Windows types the character"
+        );
+        assert_eq!(
+            key_bytes(press(KeyCode::Char('b'), KeyModifiers::ALT)),
+            Some(b"\x1bb".to_vec())
+        );
+        assert_eq!(
+            key_bytes(press(KeyCode::Delete, KeyModifiers::NONE)),
+            Some(b"\x1b[3~".to_vec())
         );
         let mut release = press(KeyCode::Char('a'), KeyModifiers::NONE);
         release.kind = KeyEventKind::Release;
