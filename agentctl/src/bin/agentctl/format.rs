@@ -37,10 +37,7 @@ pub(crate) fn ssh_access_lines(access: &agent::ssh::AccessInfo) -> Vec<String> {
 /// Renders a VNC access descriptor as aligned `key: value` lines. The commands it suggests name
 /// `home`, the control-plane home the agent belongs to, as the forwarding command does.
 pub(crate) fn vnc_access_lines(access: &agent::vnc::AccessInfo, home: &Path) -> Vec<String> {
-    let agentctl = format!(
-        "agentctl --home {}",
-        agent::ssh::shell_word(&home.to_string_lossy(), agent::ssh::CommandShell::host())
-    );
+    let agentctl = agent::vnc::agentctl_command(home);
     vec![
         format!("Type:        {}", access.kind),
         format!("Agent:       {}", access.agent),
@@ -404,10 +401,7 @@ mod tests {
     #[test]
     fn vnc_info_commands_name_the_home() {
         let home = Path::new("/home/ada lovelace/.agent");
-        let agentctl = format!(
-            "agentctl --home {}",
-            agent::ssh::shell_word(&home.to_string_lossy(), agent::ssh::CommandShell::host())
-        );
+        let agentctl = agent::vnc::agentctl_command(home);
         let access = agent::vnc::AccessInfo {
             kind: "vnc".into(),
             agent: "viewer".into(),

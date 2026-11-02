@@ -320,7 +320,7 @@ async fn describing_an_agent_without_declared_access_names_the_remedy() {
     );
     // A home given without a drive is on the current one on Windows, so it is compared resolved.
     let home = agent::local::home::ControlPlaneHome::resolve(Some(std::path::Path::new(HOME))).expect("home");
-    let home = agent::ssh::shell_word(&home.path().to_string_lossy(), agent::ssh::CommandShell::host());
+    let home = agent::ssh::shell_word(&home.path().to_string_lossy(), agent::ssh::CommandShell::terminal());
     assert_eq!(
         info.forward_command,
         format!("agentctl --home {home} port-forward agent/viewer :5900"),

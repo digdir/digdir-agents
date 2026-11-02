@@ -9,7 +9,12 @@
 //! and could enable the units itself. The sandbox boundary, and forwarding that only the host can
 //! start, protect the desktop, as they do every guest loopback port.
 
-use std::{cell::RefCell, collections::BTreeMap, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use ::sandbox::SandboxHandle;
 use serde::{Deserialize, Serialize};
@@ -48,6 +53,18 @@ pub struct AccessInfo {
     pub web_guest_port: Option<u16>,
     /// Complete command forwarding the RFB port to the caller's machine.
     pub forward_command: String,
+}
+
+/// How the commands printed for a person to paste begin: `agentctl` on `home`.
+///
+/// It runs the `agentctl` on their `PATH`, since PowerShell would read a leading quoted path as a
+/// string rather than a command, and quotes the home for their terminal.
+#[must_use]
+pub fn agentctl_command(home: &Path) -> String {
+    format!(
+        "agentctl --home {}",
+        crate::ssh::shell_word(&home.to_string_lossy(), CommandShell::terminal())
+    )
 }
 
 /// Builds the message given when the agent's image cannot serve VNC access. The image cannot
@@ -125,12 +142,9 @@ impl Access {
                 Some(Applied::Withdrawn) | None => None,
             },
             // `:PORT` binds a free local port, as `agentctl vnc` does: 5900 is often taken locally.
-            // The command is printed for a person, so it runs the `agentctl` on their `PATH`, as the
-            // other commands `agentctl vnc-info` prints do. A quoted executable path would not run
-            // in PowerShell, which treats a leading quoted word as a string, not a command.
             forward_command: format!(
-                "agentctl --home {} port-forward agent/{name} :{GUEST_PORT}",
-                crate::ssh::shell_word(&self.control_home.to_string_lossy(), CommandShell::host()),
+                "{} port-forward agent/{name} :{GUEST_PORT}",
+                agentctl_command(&self.control_home)
             ),
         }
     }

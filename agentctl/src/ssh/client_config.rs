@@ -81,7 +81,8 @@ pub fn render_path(path: &Path, user_home: Option<&Path>) -> String {
     quote_config_value(&text).replace('%', "%%")
 }
 
-/// How the host runs the string OpenSSH hands to `ProxyCommand`.
+/// What reads a command line: how the host runs the string OpenSSH hands to
+/// `ProxyCommand`, or the terminal a person pastes a printed command into.
 ///
 /// Unix OpenSSH runs it through `/bin/sh -c`; Win32-OpenSSH hands it to
 /// `CreateProcess`, which knows only double quotes. `agentd` generates the
@@ -92,23 +93,33 @@ pub enum CommandShell {
     Posix,
     /// `CreateProcess` command-line rules: double quotes, no expansion.
     Windows,
+    /// PowerShell, or cmd, where a person on Windows pastes a command: double quotes, which both
+    /// read, unless the word has a `$` or a backtick, which PowerShell expands inside them. Such a
+    /// word is single-quoted, which PowerShell reads literally and cmd does not read at all.
+    PowerShell,
 }
 
 impl CommandShell {
-    /// Returns the shell of the host this binary runs on.
+    /// Returns the shell running a `ProxyCommand` on the host this binary runs on.
     #[must_use]
     pub const fn host() -> Self {
         if cfg!(windows) { Self::Windows } else { Self::Posix }
     }
+
+    /// Returns the shell a person on the host this binary runs on pastes a printed command into.
+    #[must_use]
+    pub const fn terminal() -> Self {
+        if cfg!(windows) { Self::PowerShell } else { Self::Posix }
+    }
 }
 
-/// `text` as one word of a command line `shell` reads, quoted only when it needs to be, for a
-/// command printed for a person to run.
+/// `text` as one word of a command line `shell` reads, quoted only when it needs to be.
 #[must_use]
 pub fn shell_word(text: &str, shell: CommandShell) -> String {
     match shell {
         CommandShell::Posix => posix_quote(text),
-        CommandShell::Windows => windows_quote(text),
+        CommandShell::PowerShell if text.contains(['$', '`']) => format!("'{}'", text.replace('\'', "''")),
+        CommandShell::Windows | CommandShell::PowerShell => windows_quote(text),
     }
 }
 
@@ -461,6 +472,22 @@ mod tests {
             (r#"C:\odd\"name"#, r#""C:\odd\\\"name""#),
         ] {
             assert_eq!(shell_word(text, CommandShell::Windows), quoted, "{text}");
+        }
+    }
+
+    /// PowerShell expands `$` and backticks inside double quotes, so a home such as
+    /// `C:\Users\adm$ada` would lose `$ada`; only such words are single-quoted, so cmd still reads
+    /// the rest.
+    #[test]
+    fn powershell_words_keep_dollars_and_backticks_literal() {
+        for (text, quoted) in [
+            (r"C:\Users\adm$ada\.agent", r"'C:\Users\adm$ada\.agent'"),
+            (r"C:\Users\it's $ada\.agent", r"'C:\Users\it''s $ada\.agent'"),
+            (r"C:\Users\a`b\.agent", r"'C:\Users\a`b\.agent'"),
+            (r"C:\Users\Ada Lovelace\.agent", r#""C:\Users\Ada Lovelace\.agent""#),
+            ("agentctl", "agentctl"),
+        ] {
+            assert_eq!(shell_word(text, CommandShell::PowerShell), quoted, "{text}");
         }
     }
 
