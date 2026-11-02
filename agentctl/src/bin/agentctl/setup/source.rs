@@ -202,7 +202,9 @@ fn mounts_its_repository(manifest: &Path, root: &Path) -> CommandResult<bool> {
         let agent::MountSpec::Bind { source, .. } = mount else {
             continue;
         };
-        if !source.is_relative() || source.starts_with("~") {
+        // A path from a root, such as `/srv/data` on Windows, is not relative to the manifest
+        // either, though Windows does not count it as absolute without a drive.
+        if !source.is_relative() || source.has_root() || source.starts_with("~") {
             continue;
         }
         let resolved = directory.join(source);
@@ -536,7 +538,7 @@ mod tests {
     fn variant_mounting(source: &str) -> String {
         format!(
             "apiVersion: agents.platform/v1alpha1\nkind: AgentVariant\nextends: agent.yaml\nmetadata: {{name: \
-             worker-x}}\nspec:\n  sandbox:\n    mounts:\n      - {{type: bind, source: {source}, target: \
+             worker-x}}\nspec:\n  sandbox:\n    mounts:\n      - {{type: bind, source: '{source}', target: \
              /workspace/repo, readOnly: false}}\n"
         )
     }
@@ -549,7 +551,10 @@ mod tests {
         std::fs::write(folder.join("agent.yaml"), BASE).expect("a manifest");
         std::fs::write(folder.join("agent.worktree.yaml"), variant_mounting("../..")).expect("a variant");
         std::fs::write(folder.join("agent.outside.yaml"), variant_mounting("../../..")).expect("a variant");
-        std::fs::write(folder.join("agent.absolute.yaml"), variant_mounting("/srv/data")).expect("a variant");
+        // An absolute path on this system, which `/srv/data` is not on Windows.
+        let elsewhere = tempfile::tempdir().expect("a folder elsewhere");
+        let absolute = variant_mounting(&elsewhere.path().display().to_string());
+        std::fs::write(folder.join("agent.absolute.yaml"), absolute).expect("a variant");
 
         assert!(!mounts_its_repository(&folder.join("agent.yaml"), repository.path()).expect("resolves"));
         assert!(mounts_its_repository(&folder.join("agent.worktree.yaml"), repository.path()).expect("resolves"));
