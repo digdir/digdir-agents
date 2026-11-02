@@ -94,8 +94,8 @@ pub enum CommandShell {
     /// `CreateProcess` command-line rules: double quotes, no expansion.
     Windows,
     /// PowerShell, or cmd, where a person on Windows pastes a command: double quotes, which both
-    /// read, unless the word has a `$` or a backtick, which PowerShell expands inside them. Such a
-    /// word is single-quoted, which PowerShell reads literally and cmd does not read at all.
+    /// read, unless PowerShell would expand the word inside them, as it does `$`; then single
+    /// quotes, which PowerShell reads literally and cmd does not read at all.
     PowerShell,
 }
 
@@ -118,8 +118,8 @@ impl CommandShell {
 pub fn shell_word(text: &str, shell: CommandShell) -> String {
     match shell {
         CommandShell::Posix => posix_quote(text),
-        CommandShell::PowerShell if text.contains(['$', '`']) => format!("'{}'", text.replace('\'', "''")),
-        CommandShell::Windows | CommandShell::PowerShell => windows_quote(text),
+        CommandShell::Windows => windows_quote(text),
+        CommandShell::PowerShell => powershell_quote(text),
     }
 }
 
@@ -183,12 +183,51 @@ pub fn resolves_through_agentctl(resolved: &str, agent: &str) -> bool {
     })
 }
 
-/// Quotes one word for `/bin/sh`: single quotes, with an embedded `'` written as `'\''`.
+/// Quotes one word for `/bin/sh`: single quotes, with an embedded `'` written as `'\''` and a
+/// backslash as `'\\'`.
+///
+/// The shell reads a backslash inside single quotes literally, but OpenSSH, which checks the
+/// quotes of every configuration line before it runs the command, reads one before `'` or `\` as
+/// an escape. A home such as `/tmp/agents\` would leave the quote open for OpenSSH, which then
+/// refuses the whole configuration. Outside the quotes both read `\'` and `\\` alike.
 fn posix_quote(text: &str) -> String {
     if is_plain(text) {
         return text.to_owned();
     }
-    format!("'{}'", text.replace('\'', r"'\''"))
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('\'');
+    for character in text.chars() {
+        match character {
+            '\'' => quoted.push_str(r"'\''"),
+            '\\' => quoted.push_str(r"'\\'"),
+            _ => quoted.push(character),
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+/// Quotes one word for PowerShell, or cmd, where a person on Windows pastes a command.
+///
+/// Double quotes, as for `CreateProcess`, which both read, unless the word has what PowerShell
+/// expands or ends a string on inside them: `$`, a backtick or a typographic double quote. Such a
+/// word is single-quoted, which PowerShell reads literally once each kind of single quote in it is
+/// doubled, and which cmd does not read at all.
+fn powershell_quote(text: &str) -> String {
+    const SINGLE_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
+    if !text.contains(['$', '`', '\u{201C}', '\u{201D}', '\u{201E}']) {
+        return windows_quote(text);
+    }
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('\'');
+    for character in text.chars() {
+        if SINGLE_QUOTES.contains(&character) {
+            quoted.push(character);
+        }
+        quoted.push(character);
+    }
+    quoted.push('\'');
+    quoted
 }
 
 /// Quotes one word for `CreateProcess` command-line parsing: double quotes, in
@@ -484,6 +523,10 @@ mod tests {
             (r"C:\Users\adm$ada\.agent", r"'C:\Users\adm$ada\.agent'"),
             (r"C:\Users\it's $ada\.agent", r"'C:\Users\it''s $ada\.agent'"),
             (r"C:\Users\a`b\.agent", r"'C:\Users\a`b\.agent'"),
+            (
+                "C:\\Users\\\u{201C}Ada\u{201D}\u{2019}s\\.agent",
+                "'C:\\Users\\\u{201C}Ada\u{201D}\u{2019}\u{2019}s\\.agent'",
+            ),
             (r"C:\Users\Ada Lovelace\.agent", r#""C:\Users\Ada Lovelace\.agent""#),
             ("agentctl", "agentctl"),
         ] {
@@ -491,19 +534,36 @@ mod tests {
         }
     }
 
-    /// The Unix form survives the real shell: what `sh` sees after OpenSSH has
-    /// undone `%%` is exactly the installed path and the home, as separate words.
+    /// The Unix form survives OpenSSH and the real shell: OpenSSH accepts the line's quotes, and
+    /// what `sh` sees after OpenSSH has undone `%%` is exactly the installed path and the home, as
+    /// separate words.
     #[cfg(unix)]
     #[test]
-    fn posix_proxy_command_round_trips_through_sh() {
+    fn posix_proxy_command_round_trips_through_ssh_and_sh() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let config = directory.path().join("config");
         for path in [
             "/opt/agent tools/agentctl",
             "/home/we$ird;u'ser/`id`/agentctl",
             "/home/100%/agent\"quote/agentctl",
+            r"/home/back\slash\'quote\\/agentctl\",
         ] {
             let home = path.replace("agentctl", "agent home");
             let rendered =
                 render_proxy_command(Path::new(path), Path::new(&home), "worker", CommandShell::Posix).expect("posix");
+            std::fs::write(&config, format!("Host worker\n  ProxyCommand {rendered}\n")).expect("config");
+            let resolved = std::process::Command::new("ssh")
+                .arg("-F")
+                .arg(&config)
+                .arg("-G")
+                .arg("worker")
+                .output()
+                .expect("ssh");
+            assert!(
+                resolved.status.success(),
+                "OpenSSH refuses {rendered:?}: {}",
+                String::from_utf8_lossy(&resolved.stderr)
+            );
             let command = rendered.replace("%%", "%");
             let words = command.strip_suffix(" ssh-proxy agent/worker").expect("suffix");
             let output = std::process::Command::new("sh")
