@@ -110,14 +110,9 @@ impl GithubSource {
                 self.describe()
             )));
         } else {
-            if !git_available().await {
-                return Err(Error::Invalid(format!(
-                    "cloning {} needs git; clone it yourself and pass its folder to --from",
-                    self.describe()
-                )));
-            }
-            eprintln!("Cloning {} into {}.", self.describe(), folder.display());
-            self.clone_with_git(folder, false).await?;
+            ensure_git(&self.describe()).await?;
+            let message = format!("Cloning {} into {}", self.describe(), folder.display());
+            crate::prompt::spinning(&message, self.clone_with_git(folder, false)).await?;
         }
         self.found_in(folder)
     }
@@ -154,20 +149,22 @@ impl GithubSource {
         PathBuf::from("github.com").join(&self.owner).join(repository)
     }
 
-    /// Downloads the repository into `copy`, which must not exist, as a plain copy of its files.
-    /// The person's `git` clones it when there is one, reading what their Git can. Without one,
-    /// or should it fail, GitHub's archive of it is downloaded, which only a public repository,
-    /// or one `GH_TOKEN` can read, gives.
+    /// Downloads the repository into `copy`, which must not exist. The person's `git` clones its
+    /// last commit when there is one, reading what their Git can, and the copy keeps its `.git`,
+    /// so it can become the person's checkout. Without one, or should it fail, GitHub's archive of
+    /// it is downloaded, which only a public repository, or one `GH_TOKEN` can read, gives.
     pub(super) async fn download(&mut self, copy: &Path) -> Result<(), Error> {
-        eprintln!("Downloading the agent definition from {}.", self.describe());
+        let message = format!("Downloading the agent definition from {}", self.describe());
+        crate::prompt::spinning(&message, self.download_into(copy)).await
+    }
+
+    async fn download_into(&mut self, copy: &Path) -> Result<(), Error> {
         let mut cloned = None;
         if git_available().await {
             let mut attempt = self.clone();
             match attempt.clone_with_git(copy, true).await {
                 Ok(()) => {
                     *self = attempt;
-                    // A copy, not a checkout to commit in.
-                    std::fs::remove_dir_all(copy.join(".git")).ok();
                     return Ok(());
                 }
                 Err(error) => {
@@ -341,6 +338,35 @@ impl GithubSource {
     }
 }
 
+/// Makes the download at `copy`, a clone of the last commit, the person's checkout at `folder`,
+/// so a large repository is not cloned twice. Its remote is set to fetch every branch, as a
+/// clone's does. Returns whether it did: not when `folder` holds files, or `copy` is an archive,
+/// or cannot be moved there, as across disks.
+pub(super) fn adopt(copy: &Path, folder: &Path) -> bool {
+    let holds_files = std::fs::read_dir(folder).is_ok_and(|mut entries| entries.next().is_some());
+    if holds_files || !copy.join(".git").is_dir() {
+        return false;
+    }
+    let parent = folder.parent().unwrap_or(folder);
+    std::fs::remove_dir(folder).ok();
+    if std::fs::create_dir_all(parent).is_err() || std::fs::rename(copy, folder).is_err() {
+        return false;
+    }
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(folder)
+        .args(["remote", "set-branches", "origin", "*"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok();
+    eprintln!(
+        "Moved the download to {}. It holds the latest commit; `git fetch --unshallow` there brings its history.",
+        folder.display()
+    );
+    true
+}
+
 /// A request to GitHub's API, with the token in this machine's environment when there is one,
 /// which a private repository needs.
 fn github_request(address: &str) -> reqwest::RequestBuilder {
@@ -401,6 +427,28 @@ fn splits(ref_and_path: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// What to install, for this system, when there is no `git`.
+const GIT_ADVICE: &str = if cfg!(target_os = "macos") {
+    "Install it with `xcode-select --install`, or `brew install git`, and run setup again."
+} else if cfg!(windows) {
+    "Install it with `winget install Git.Git`, and run setup again."
+} else {
+    "Install it from your distribution (for example `sudo apt install git`, or `sudo dnf install git`), and run \
+     setup again."
+};
+
+/// Checks that `git` runs, which an agent that works on a checkout of `repository` needs, saying
+/// what to install otherwise.
+pub(super) async fn ensure_git(repository: &str) -> Result<(), Error> {
+    if git_available().await {
+        Ok(())
+    } else {
+        Err(Error::Invalid(format!(
+            "this agent works on a checkout of {repository}, which needs git. {GIT_ADVICE}"
+        )))
+    }
+}
+
 async fn git_available() -> bool {
     tokio::process::Command::new("git")
         .arg("--version")
@@ -416,7 +464,7 @@ async fn git_available() -> bool {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::{GithubSource, splits, unpack};
+    use super::{GithubSource, adopt, splits, unpack};
 
     fn source(owner: &str, repository: &str, subdirectory: Option<&str>, reference: Option<&str>) -> GithubSource {
         GithubSource {
@@ -515,5 +563,36 @@ mod tests {
             address.kept_folder(),
             std::path::Path::new("github.com/Altinn/altinn-studio@feature-x")
         );
+    }
+
+    #[test]
+    fn a_clone_downloaded_for_a_worktree_becomes_the_checkout() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let download = |name: &str, git: bool| {
+            let copy = folder.path().join(name);
+            std::fs::create_dir_all(copy.join("agents")).expect("a download");
+            if git {
+                std::fs::create_dir_all(copy.join(".git")).expect("its .git");
+            }
+            copy
+        };
+
+        let clone = download("clone", true);
+        let checkout = folder.path().join("repos/checkout");
+        assert!(adopt(&clone, &checkout));
+        assert!(checkout.join("agents").is_dir() && !clone.exists());
+
+        let archive = download("archive", false);
+        assert!(
+            !adopt(&archive, &folder.path().join("from-archive")),
+            "an archive is no checkout"
+        );
+
+        let another = download("another", true);
+        let taken = folder.path().join("taken");
+        std::fs::create_dir_all(&taken).expect("a folder");
+        std::fs::write(taken.join("notes.md"), "mine").expect("a file in it");
+        assert!(!adopt(&another, &taken), "a folder that holds files is left alone");
+        assert!(another.exists());
     }
 }

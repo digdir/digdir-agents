@@ -397,6 +397,33 @@ pub(crate) fn secret(lines: &[&str], back: bool) -> Result<Reply<zeroize::Zeroiz
     reply
 }
 
+/// Awaits `work`, showing `message` with a spinner meanwhile when standard error is a terminal,
+/// and the message with how long it took once it is done.
+pub(crate) async fn spinning<T>(message: &str, work: impl Future<Output = T>) -> T {
+    use std::io::{IsTerminal as _, Write as _};
+
+    const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    if !std::io::stderr().is_terminal() {
+        eprintln!("{message}.");
+        return work.await;
+    }
+    let started = std::time::Instant::now();
+    let mut work = std::pin::pin!(work);
+    let mut ticks = tokio::time::interval(std::time::Duration::from_millis(100));
+    let mut frames = FRAMES.iter().cycle();
+    let output = loop {
+        tokio::select! {
+            output = &mut work => break output,
+            _ = ticks.tick() => {
+                eprint!("\r{} {message}", frames.next().unwrap_or(&' '));
+                std::io::stderr().flush().ok();
+            }
+        }
+    };
+    eprintln!("\r\x1b[2K{message} ({}s).", started.elapsed().as_secs());
+    output
+}
+
 /// The answer `y`, `yes`, `n` or `no` gives, in any case; anything else is no answer.
 fn yes_or_no(answer: &str) -> Option<bool> {
     match answer.trim().to_ascii_lowercase().as_str() {

@@ -139,6 +139,8 @@ async fn team_draft_from(
         .strip_prefix(&copy)
         .map_err(|_| Error::Invalid(format!("{} is not in the download", manifest.display())))?;
     if mounts_its_repository(&manifest, &copy)? {
+        // Before asking where the checkout goes, which is of no use without git.
+        fetch::ensure_git(&format!("{}/{}", github.owner, github.repository)).await?;
         let checkout = clone_into(arguments, answers, &github)?;
         if arguments.dry_run {
             // The download stands in for the checkout, so a dry run clones nothing.
@@ -150,7 +152,9 @@ async fn team_draft_from(
             });
             return Ok(draft);
         }
-        github.checkout(&checkout).await?;
+        if !fetch::adopt(&copy, &checkout) {
+            github.checkout(&checkout).await?;
+        }
         let manifest = checkout.join(relative);
         if !manifest.is_file() {
             return Err(Error::Invalid(format!("{} has no {}", checkout.display(), relative.display())).into());
@@ -158,6 +162,8 @@ async fn team_draft_from(
         let save_as = choose_save_as(arguments, answers, &manifest, save_as, &git_owner)?;
         return team_draft(&manifest, &github.describe(), &save_as);
     }
+    // A copy, not a checkout to commit in.
+    std::fs::remove_dir_all(copy.join(".git")).ok();
     let kept = downloads.kept.join(github.kept_folder());
     let carried = carry_over(&kept, &copy)?;
     let owner = |path: &Path| {
