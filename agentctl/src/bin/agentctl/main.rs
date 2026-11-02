@@ -750,7 +750,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             agent,
             variant,
             output,
-        } => vnc_info(client, resource, agent, variant, output).await?,
+        } => vnc_info(home, client, resource, agent, variant, output).await?,
         Command::Create {
             target,
             selection,
@@ -1302,6 +1302,7 @@ async fn vnc_proxy(home: &ControlPlaneHome, client: &Client, resource: String) -
 }
 
 async fn vnc_info(
+    home: &ControlPlaneHome,
     client: &Client,
     resource: Option<String>,
     agent: Option<String>,
@@ -1313,7 +1314,7 @@ async fn vnc_info(
     match output {
         OutputFormat::Json => print_json(&access)?,
         OutputFormat::Table => {
-            for line in format::vnc_access_lines(&access) {
+            for line in format::vnc_access_lines(&access, home.path()) {
                 println!("{line}");
             }
         }
