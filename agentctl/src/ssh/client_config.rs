@@ -181,13 +181,35 @@ fn posix_quote(text: &str) -> String {
 }
 
 /// Quotes one word for `CreateProcess` command-line parsing: double quotes, in
-/// which a backslash is literal unless it precedes a `"`; `"` is not valid in a
-/// Windows path, so it is escaped defensively.
+/// which a backslash is literal unless it precedes a `"`. The backslashes
+/// before a `"`, including the closing one after a directory such as `C:\agents\`,
+/// are doubled so they stay literal and the quote still ends the word. `"` is
+/// not valid in a Windows path, so it is escaped defensively.
 fn windows_quote(text: &str) -> String {
     if is_plain(text) {
         return text.to_owned();
     }
-    format!("\"{}\"", text.replace('"', "\\\""))
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    let mut backslashes = 0;
+    for character in text.chars() {
+        match character {
+            '\\' => backslashes += 1,
+            '"' => {
+                quoted.extend(std::iter::repeat_n('\\', 2 * backslashes + 1));
+                quoted.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                quoted.extend(std::iter::repeat_n('\\', backslashes));
+                quoted.push(character);
+                backslashes = 0;
+            }
+        }
+    }
+    quoted.extend(std::iter::repeat_n('\\', 2 * backslashes));
+    quoted.push('"');
+    quoted
 }
 
 /// Whether a token needs no quoting under any of the parsers involved.
@@ -385,7 +407,7 @@ mod tests {
 
     use super::{
         CommandShell, IncludeOutcome, install_include, remove_known_host, render_proxy_command,
-        resolves_through_agentctl, upsert_known_host,
+        resolves_through_agentctl, shell_word, upsert_known_host,
     };
 
     const AGENTCTL: &str = "/usr/local/bin/agentctl";
@@ -426,6 +448,20 @@ mod tests {
             rendered,
             r#""C:\Program Files\Agent\agentctl.exe" --home "C:\Users\Ada Lovelace\100%%\.agent" ssh-proxy agent/worker"#
         );
+    }
+
+    /// Backslashes are literal for `CreateProcess` except before a `"`, so only those are
+    /// doubled. Otherwise a directory ending in `\` would escape the closing quote, and OpenSSH
+    /// would refuse the whole configuration for its unbalanced quotes.
+    #[test]
+    fn windows_words_double_only_the_backslashes_before_a_quote() {
+        for (text, quoted) in [
+            (r"C:\agents\", r#""C:\agents\\""#),
+            (r"\\server\share\my agents\\", r#""\\server\share\my agents\\\\""#),
+            (r#"C:\odd\"name"#, r#""C:\odd\\\"name""#),
+        ] {
+            assert_eq!(shell_word(text, CommandShell::Windows), quoted, "{text}");
+        }
     }
 
     /// The Unix form survives the real shell: what `sh` sees after OpenSSH has

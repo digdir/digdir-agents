@@ -130,9 +130,8 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// The `ProxyCommand` the generated configuration gives `agent`, which names this home.
-    /// The `ProxyCommand` for `agent`, its words quoted for this host's shell and `%` doubled for
-    /// OpenSSH.
+    /// The `ProxyCommand` the generated configuration gives `agent`, which names this home. Its
+    /// words are quoted for this host's shell, with `%` doubled for OpenSSH.
     fn proxy_command(&self, agent: &str) -> String {
         let word = |text: &str| agent::ssh::shell_word(text, agent::ssh::CommandShell::host()).replace('%', "%%");
         format!(
