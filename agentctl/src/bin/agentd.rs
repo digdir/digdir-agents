@@ -70,10 +70,10 @@ fn acquire_home_lock(home: &ControlPlaneHome) -> Result<agent::local::home::Lock
 
 type ErrorHandler<Key> = Rc<dyn Fn(Option<Key>, &Error)>;
 
-/// Wires SSH and VNC access around the `agentctl` installed beside this
-/// daemon, which generated SSH client configuration and reported forwarding
-/// commands dial agents through. SSH keeps its host keys in the database; VNC
-/// holds no key material and generates no client configuration.
+/// Wires SSH and VNC access. The generated SSH client configuration dials
+/// agents through the `agentctl` installed beside this daemon, and SSH keeps
+/// its host keys in the database. VNC holds no key material and generates no
+/// client configuration.
 fn access(
     home: &ControlPlaneHome,
     database: &persistence::Database,
@@ -83,8 +83,8 @@ fn access(
     let sibling = agentd.with_file_name(format!("agentctl{}", std::env::consts::EXE_SUFFIX));
     let agentctl = agent::ssh::stable_agentctl_path(&sibling, std::env::var_os("PATH").as_deref());
     let host_keys: Rc<dyn agent::ssh::HostKeyStore> = Rc::new(database.clone());
-    let ssh = agent::ssh::Access::new(home, agentctl.clone(), host_keys, store.clone());
-    Ok((Rc::new(ssh), Rc::new(agent::vnc::Access::new(home, agentctl, store))))
+    let ssh = agent::ssh::Access::new(home, agentctl, host_keys, store.clone());
+    Ok((Rc::new(ssh), Rc::new(agent::vnc::Access::new(home, store))))
 }
 
 /// Logs recoverable reconciliation errors for one durable resource kind.

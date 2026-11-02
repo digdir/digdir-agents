@@ -15,7 +15,6 @@ use sandbox::{
     memory,
 };
 
-const AGENTCTL: &str = "/usr/local/bin/agentctl";
 const HOME: &str = "/home/someone/.agent";
 const DESCRIPTOR: &str = "/etc/agent-access.d/vnc.conf";
 const UNITS: [&str; 2] = ["agent-vnc.socket", "agent-vnc-web.service"];
@@ -125,7 +124,7 @@ impl Fixture {
     fn new() -> Self {
         let store = Rc::new(InMemoryAgentStore::new());
         let home = agent::local::home::ControlPlaneHome::resolve(Some(std::path::Path::new(HOME))).expect("home");
-        let access = Access::new(&home, PathBuf::from(AGENTCTL), store.clone());
+        let access = Access::new(&home, store.clone());
         Self {
             store,
             access,
@@ -321,13 +320,10 @@ async fn describing_an_agent_without_declared_access_names_the_remedy() {
     );
     // A home given without a drive is on the current one on Windows, so it is compared resolved.
     let home = agent::local::home::ControlPlaneHome::resolve(Some(std::path::Path::new(HOME))).expect("home");
-    let word = |text: &str| agent::ssh::shell_word(text, agent::ssh::CommandShell::host());
+    let home = agent::ssh::shell_word(&home.path().to_string_lossy(), agent::ssh::CommandShell::host());
     assert_eq!(
         info.forward_command,
-        format!(
-            "{} --home {} port-forward agent/viewer :5900",
-            word(AGENTCTL),
-            word(&home.path().to_string_lossy())
-        )
+        format!("agentctl --home {home} port-forward agent/viewer :5900"),
+        "a person runs it, with the `agentctl` on their `PATH`, in whichever shell they use"
     );
 }

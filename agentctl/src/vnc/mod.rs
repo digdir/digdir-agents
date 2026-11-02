@@ -63,7 +63,6 @@ pub fn image_contract_missing(what: &str) -> String {
 
 /// Reconciles VNC access for agents by enabling or disabling the units their image declares.
 pub struct Access {
-    agentctl: PathBuf,
     /// The control-plane home the forwarding command names.
     control_home: PathBuf,
     agents: Rc<dyn AgentStore>,
@@ -83,12 +82,10 @@ enum Applied {
 }
 
 impl Access {
-    /// Creates the VNC access reconciler; `agentctl` is the executable the forwarding command names,
-    /// on `home`.
+    /// Creates the VNC access reconciler for the agents on `home`.
     #[must_use]
-    pub fn new(home: &ControlPlaneHome, agentctl: PathBuf, agents: Rc<dyn AgentStore>) -> Self {
+    pub fn new(home: &ControlPlaneHome, agents: Rc<dyn AgentStore>) -> Self {
         Self {
-            agentctl,
             control_home: home.path().to_path_buf(),
             agents,
             applied: RefCell::new(BTreeMap::new()),
@@ -128,9 +125,11 @@ impl Access {
                 Some(Applied::Withdrawn) | None => None,
             },
             // `:PORT` binds a free local port, as `agentctl vnc` does: 5900 is often taken locally.
+            // The command is printed for a person, so it runs the `agentctl` on their `PATH`, as the
+            // other commands `agentctl vnc-info` prints do. A quoted executable path would not run
+            // in PowerShell, which treats a leading quoted word as a string, not a command.
             forward_command: format!(
-                "{} --home {} port-forward agent/{name} :{GUEST_PORT}",
-                crate::ssh::shell_word(&self.agentctl.to_string_lossy(), CommandShell::host()),
+                "agentctl --home {} port-forward agent/{name} :{GUEST_PORT}",
                 crate::ssh::shell_word(&self.control_home.to_string_lossy(), CommandShell::host()),
             ),
         }
