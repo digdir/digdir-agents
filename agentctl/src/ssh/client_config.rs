@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::Error;
+use crate::{Error, sandbox::platform::PORTABLE_TERMINAL};
 
 /// One `Host` block in the generated client configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,15 +37,19 @@ pub fn render_config(entries: &[HostEntry], user_home: Option<&Path>) -> String 
          # Include it from your own client configuration with `agentctl ssh-config install`.\n",
     );
     for entry in entries {
+        // `SetEnv TERM` replaces the terminal type ssh sends with one the guest knows, as attaching
+        // does: the host's, such as `xterm-ghostty`, may not be installed there. OpenSSH 8.7 and
+        // later honor it.
         let _infallible = writeln!(
             text,
-            "\nHost {}\n    User {}\n    ProxyCommand {}\n    HostKeyAlias {}\n    IdentityFile {}\n    UserKnownHostsFile {}\n    IdentitiesOnly yes",
+            "\nHost {}\n    User {}\n    ProxyCommand {}\n    HostKeyAlias {}\n    IdentityFile {}\n    UserKnownHostsFile {}\n    IdentitiesOnly yes\n    SetEnv TERM={}",
             entry.alias,
             entry.user,
             entry.proxy_command,
             entry.host_key_alias,
             render_path(&entry.identity_file, user_home),
             render_path(&entry.known_hosts_file, user_home),
+            PORTABLE_TERMINAL,
         );
     }
     text
