@@ -61,6 +61,11 @@ pub(crate) struct Leftovers {
 /// Removes the staging folders of runs that ended without removing them, and reports the sign-in
 /// agents they left. A folder whose lock nobody holds is a dead run's.
 pub(crate) fn sweep(home: &Path) -> Leftovers {
+    sweep_older_than(home, GRACE)
+}
+
+/// Sweeps as [`sweep`] does, taking a folder younger than `grace` to be a live run's.
+fn sweep_older_than(home: &Path, grace: Duration) -> Leftovers {
     let mut leftovers = Leftovers::default();
     let Ok(entries) = std::fs::read_dir(home) else {
         return leftovers;
@@ -71,7 +76,7 @@ pub(crate) fn sweep(home: &Path) -> Leftovers {
         if !ours {
             continue;
         }
-        if !alive(&folder) {
+        if !alive(&folder, grace) {
             let sign_in_agent = std::fs::read_to_string(folder.join(SIGN_IN_AGENT_FILE)).ok();
             leftovers.dead_sign_in_agents.extend(sign_in_agent);
             std::fs::remove_dir_all(&folder).ok();
@@ -81,10 +86,10 @@ pub(crate) fn sweep(home: &Path) -> Leftovers {
 }
 
 /// Whether the run that made `folder` still holds its lock.
-fn alive(folder: &Path) -> bool {
+fn alive(folder: &Path, grace: Duration) -> bool {
     let new = std::fs::metadata(folder)
         .and_then(|metadata| metadata.modified())
-        .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age < GRACE));
+        .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age < grace));
     // Taking the lock proves its run has ended; it is let go again when the file closes. An older
     // folder without a lock is one an earlier agentctl made, or one left half made.
     new || File::open(folder.join(LOCK_FILE)).is_ok_and(|lock| lock.try_lock().is_err())
@@ -94,7 +99,7 @@ fn alive(folder: &Path) -> bool {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::{Staging, sweep};
+    use super::{GRACE, Staging, sweep_older_than};
 
     #[test]
     fn a_dead_runs_folder_is_removed_and_a_live_ones_kept() {
@@ -105,18 +110,16 @@ mod tests {
         std::fs::create_dir_all(&dead).expect("a dead run's folder");
         std::fs::write(dead.join(".lock"), "").expect("its lock file, held by nobody");
         std::fs::write(dead.join(".sign-in-agent"), "agentctl-signin-dead").expect("its sign-in agent");
-        let an_hour_ago = std::time::SystemTime::now() - std::time::Duration::from_hours(1);
-        std::fs::File::open(&dead)
-            .and_then(|folder| folder.set_modified(an_hour_ago))
-            .expect("made an hour ago");
         let unlocked = home.path().join("run-new");
         std::fs::create_dir_all(&unlocked).expect("a folder a run has made but not locked yet");
 
-        let leftovers = sweep(home.path());
+        let young = sweep_older_than(home.path(), GRACE);
+        assert!(dead.exists() && unlocked.exists(), "a new folder is kept, lock or not");
+        assert_eq!(young.dead_sign_in_agents, Vec::<String>::new());
 
+        let leftovers = sweep_older_than(home.path(), std::time::Duration::ZERO);
         assert!(!dead.exists(), "the dead run's folder is removed");
         assert!(live.path().exists(), "the live run's folder is kept");
-        assert!(unlocked.exists(), "a new folder is kept, lock or not");
         assert_eq!(leftovers.dead_sign_in_agents, ["agentctl-signin-dead"]);
         let path = live.path().to_path_buf();
         drop(live);
