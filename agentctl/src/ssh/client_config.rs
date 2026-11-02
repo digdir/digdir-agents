@@ -84,18 +84,21 @@ pub fn render_path(path: &Path, user_home: Option<&Path>) -> String {
 /// What reads a command line: how the host runs the string OpenSSH hands to
 /// `ProxyCommand`, or the terminal a person pastes a printed command into.
 ///
-/// Unix OpenSSH runs it through `/bin/sh -c`; Win32-OpenSSH hands it to
-/// `CreateProcess`, which knows only double quotes. `agentd` generates the
-/// configuration on the host that runs `ssh`, so it picks the host's shell.
+/// Unix OpenSSH runs it through the user's `$SHELL -c`, or `/bin/sh -c` without
+/// one; Win32-OpenSSH hands it to `CreateProcess`, which knows only double
+/// quotes. `agentd` generates the configuration on the host that runs `ssh`, so
+/// it picks the host's shell.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandShell {
-    /// `/bin/sh`: single quotes make every character literal.
+    /// `/bin/sh`, or a shell such as bash, zsh or fish: single quotes, with every backslash kept
+    /// outside them, make every character literal in each.
     Posix,
     /// `CreateProcess` command-line rules: double quotes, no expansion.
     Windows,
     /// PowerShell, or cmd, where a person on Windows pastes a command: double quotes, which both
     /// read, unless PowerShell would expand the word inside them, as it does `$`; then single
-    /// quotes, which PowerShell reads literally and cmd does not read at all.
+    /// quotes, which PowerShell reads literally and cmd does not read at all. Not for a
+    /// `ProxyCommand`, which `CreateProcess` reads.
     PowerShell,
 }
 
@@ -123,6 +126,22 @@ pub fn shell_word(text: &str, shell: CommandShell) -> String {
     }
 }
 
+/// A directory as one word of a command line `shell` reads, without a separator it ends with.
+///
+/// `C:\agents\` and `C:\agents` name the same directory, but only the first leaves the word
+/// depending on its reader: `CreateProcess` needs the backslash before the closing quote doubled,
+/// PowerShell keeps the doubled one, and Windows PowerShell 5.1 passes a single-quoted word with
+/// a space on in double quotes whose closing quote the backslash then escapes.
+#[must_use]
+pub fn directory_word(path: &Path, shell: CommandShell) -> String {
+    shell_word(&without_trailing_separator(path).to_string_lossy(), shell)
+}
+
+/// `path` without a separator it ends with, unless that separator is its root, as in `C:\` or `/`.
+fn without_trailing_separator(path: &Path) -> PathBuf {
+    path.components().collect()
+}
+
 /// Renders the `ProxyCommand` value dialing one agent through `agentctl`, on the control-plane
 /// `home` the agent belongs to.
 ///
@@ -142,7 +161,7 @@ pub fn shell_word(text: &str, shell: CommandShell) -> String {
 /// Returns an error when either path is not UTF-8 or contains a line break or NUL.
 pub fn render_proxy_command(agentctl: &Path, home: &Path, agent: &str, shell: CommandShell) -> Result<String, Error> {
     let executable = command_word(agentctl, "agentctl path", shell)?;
-    let home = command_word(home, "agent home", shell)?;
+    let home = command_word(&without_trailing_separator(home), "agent home", shell)?;
     Ok(format!("{executable} --home {home} {}", proxy_arguments(agent)))
 }
 
@@ -212,7 +231,8 @@ fn posix_quote(text: &str) -> String {
 /// Double quotes, as for `CreateProcess`, which both read, unless the word has what PowerShell
 /// expands or ends a string on inside them: `$`, a backtick or a typographic double quote. Such a
 /// word is single-quoted, which PowerShell reads literally once each kind of single quote in it is
-/// doubled, and which cmd does not read at all.
+/// doubled, and which cmd does not read at all. cmd also expands `%NAME%` inside double quotes,
+/// which no quoting prevents, so only PowerShell reads every word as written.
 fn powershell_quote(text: &str) -> String {
     const SINGLE_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
     if !text.contains(['$', '`', '\u{201C}', '\u{201D}', '\u{201E}']) {
@@ -456,7 +476,7 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        CommandShell, IncludeOutcome, install_include, remove_known_host, render_proxy_command,
+        CommandShell, IncludeOutcome, directory_word, install_include, remove_known_host, render_proxy_command,
         resolves_through_agentctl, shell_word, upsert_known_host,
     };
 
@@ -532,6 +552,51 @@ mod tests {
         ] {
             assert_eq!(shell_word(text, CommandShell::PowerShell), quoted, "{text}");
         }
+    }
+
+    /// A home given with a trailing separator is named without it, so no reader has to tell a
+    /// backslash before the closing quote from an escaped quote.
+    #[cfg(unix)]
+    #[test]
+    fn a_home_is_named_without_its_trailing_separator() {
+        let rendered = render_proxy_command(
+            Path::new(AGENTCTL),
+            Path::new("/home/someone/my agents/"),
+            "worker",
+            CommandShell::Posix,
+        )
+        .expect("posix");
+        assert_eq!(
+            rendered,
+            "/usr/local/bin/agentctl --home '/home/someone/my agents' ssh-proxy agent/worker"
+        );
+        assert_eq!(directory_word(Path::new("/"), CommandShell::Posix), "/");
+    }
+
+    /// On Windows, `C:\my $agents\` would otherwise end in a backslash that Windows PowerShell 5.1
+    /// passes on before a closing double quote, and that `CreateProcess` needs doubled.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_home_is_named_without_its_trailing_separator() {
+        assert_eq!(
+            directory_word(Path::new(r"C:\my $agents\"), CommandShell::PowerShell),
+            r"'C:\my $agents'"
+        );
+        assert_eq!(
+            directory_word(Path::new(r"C:\my agents\"), CommandShell::PowerShell),
+            r#""C:\my agents""#
+        );
+        assert_eq!(
+            render_proxy_command(
+                Path::new(r"C:\Agent\agentctl.exe"),
+                Path::new(r"C:\agents\"),
+                "worker",
+                CommandShell::Windows
+            )
+            .expect("windows"),
+            r#""C:\Agent\agentctl.exe" --home "C:\agents" ssh-proxy agent/worker"#
+        );
+        assert_eq!(directory_word(Path::new(r"C:\"), CommandShell::Windows), r#""C:\\""#);
     }
 
     /// The Unix form survives OpenSSH and the real shell: OpenSSH accepts the line's quotes, and

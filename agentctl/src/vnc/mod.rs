@@ -63,7 +63,7 @@ pub struct AccessInfo {
 pub fn agentctl_command(home: &Path) -> String {
     format!(
         "agentctl --home {}",
-        crate::ssh::shell_word(&home.to_string_lossy(), CommandShell::terminal())
+        crate::ssh::directory_word(home, CommandShell::terminal())
     )
 }
 
