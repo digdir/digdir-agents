@@ -21,6 +21,11 @@ impl Shape<'_> {
     pub(super) fn apply(&self, draft: &mut Draft) -> CommandResult<()> {
         if !draft.changing {
             choose_name(self.arguments, self.answers, draft, self.names)?;
+        } else if self.arguments.name.is_some() {
+            eprintln!(
+                "warning: --name is left out: changing agent {} keeps its name",
+                draft.agent.metadata.name
+            );
         }
         choose_size(self.arguments, self.answers, draft, self.storage)?;
         choose_harnesses(self.arguments, self.answers, draft)
@@ -92,7 +97,7 @@ pub(super) fn choose_size(
     let offered = if draft.changing {
         choices.insert(
             0,
-            Choice::new(Sized::Preset(current), format!("As it is: {}", current.describe())).suggested(),
+            Choice::new(Sized::Keep, format!("As it is: {}", current.describe())).suggested(),
         );
         current
     } else {
@@ -110,6 +115,8 @@ pub(super) fn choose_size(
             match answers.choose("--size", "How large should the agent's machine be?", choices, default)? {
                 Sized::Preset(size) => size,
                 Sized::Custom => own_size(arguments, answers, &host, minimum, offered)?,
+                // Exactly as it is, which `current` only rounds to whole processors and gibibytes.
+                Sized::Keep => return Ok(()),
             }
         }
     };
@@ -122,6 +129,7 @@ pub(super) fn choose_size(
 enum Sized {
     Preset(Whole),
     Custom,
+    Keep,
 }
 
 /// A size of the person's own: each part from its flag, else asked for, offering `offered`'s. A
@@ -291,10 +299,21 @@ pub(super) fn choose_harnesses(arguments: &SetupArguments, answers: &Answers, dr
             current,
         )?,
     };
-    for harness in &mut harnesses {
-        harness.default = harness.kind == chosen;
-        // The default is always installed, so its login is never skipped.
-        harness.optional &= harness.kind != chosen;
+    // Left as they are when they name the chosen one already, so the variant does not restate the
+    // harnesses, which would keep the team's later changes to them from reaching the agent.
+    let marked = match harnesses.as_slice() {
+        [only] => Some(only.kind),
+        harnesses => harnesses
+            .iter()
+            .find(|harness| harness.default)
+            .map(|harness| harness.kind),
+    };
+    if marked != Some(chosen) {
+        for harness in &mut harnesses {
+            harness.default = harness.kind == chosen;
+            // The default is always installed, so its login is never skipped.
+            harness.optional &= harness.kind != chosen;
+        }
     }
     draft.agent.spec.harnesses = harnesses;
     Ok(())

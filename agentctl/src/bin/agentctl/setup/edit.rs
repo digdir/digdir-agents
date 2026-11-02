@@ -16,6 +16,9 @@ pub(super) fn variant(answers: &Answers, draft: &mut Draft) -> CommandResult<()>
         create::ensure_ignored(answers, &path)?;
     }
     let before = draft.agent.clone();
+    if draft.edited.is_none() {
+        draft.edited = Some(std::fs::read(&path).map_or(Before::Absent, Before::Held));
+    }
     std::fs::write(&path, create::variant_text(draft, &path)?).map_err(Error::from)?;
     loop {
         open_editor(&path)?;
@@ -33,6 +36,27 @@ pub(super) fn variant(answers: &Answers, draft: &mut Draft) -> CommandResult<()>
                 }
             }
         }
+    }
+}
+
+/// The person's variant before they edited it here.
+pub(super) enum Before {
+    Absent,
+    Held(Vec<u8>),
+}
+
+/// Puts the person's variant back as it was before they edited it here, as when they decide to
+/// write nothing: removed if there was none.
+pub(super) fn undo(draft: &Draft) {
+    let path = &draft.source.variant;
+    match &draft.edited {
+        Some(Before::Held(contents)) => {
+            std::fs::write(path, contents).ok();
+        }
+        Some(Before::Absent) => {
+            std::fs::remove_file(path).ok();
+        }
+        None => {}
     }
 }
 

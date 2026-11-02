@@ -46,11 +46,15 @@ pub(super) async fn finish(
     let written = std::fs::write(&draft.source.variant, variant_text(draft, &variant)?)
         .map_err(Error::from)
         .and_then(|()| {
-            draft
-                .source
-                .copy
-                .as_ref()
-                .map_or(Ok(()), |copy| keep(&copy.root, &copy.kept))
+            draft.source.copy.as_ref().map_or(Ok(()), |copy| {
+                let relative = draft
+                    .source
+                    .variant
+                    .strip_prefix(&copy.root)
+                    .unwrap_or(&draft.source.variant);
+                super::source::list_variants(&copy.root, &[relative.to_path_buf()])?;
+                keep(&copy.root, &copy.kept)
+            })
         })
         .and_then(|()| env_file::write(&values, &kept));
     if let Err(error) = written {
@@ -70,7 +74,7 @@ pub(super) async fn finish(
     let mut request = crate::read_apply_request(variant, Some(values.clone()))?;
     request.create_only = !draft.changing;
     let name = apply(answers, client, &cli, request, arguments, &created).await?;
-    print_next(&cli, &name);
+    print_next(&cli, &name, draft.agent.spec.ssh_access());
     print_repeat(&cli, answers, draft, home);
     Ok(())
 }
@@ -202,13 +206,14 @@ pub(super) fn print_repeat(cli: &str, answers: &Answers, draft: &Draft, home: &C
 }
 
 /// Prints the commands that come next for a ready agent.
-pub(super) fn print_next(cli: &str, name: &str) {
+pub(super) fn print_next(cli: &str, name: &str, ssh: bool) {
     println!("\nagent/{name} is ready!\n\nNext steps:");
-    let next = [
-        (format!("{cli} attach session/main --agent {name}"), "start a session"),
-        (format!("{cli} ssh {name}"), "open a shell"),
-        (format!("{cli} tui"), "see every agent"),
-    ];
+    let mut next = vec![(format!("{cli} attach session/main --agent {name}"), "start a session")];
+    // `agentctl ssh` reaches only an agent whose manifest declares SSH access.
+    if ssh {
+        next.push((format!("{cli} ssh {name}"), "open a shell"));
+    }
+    next.push((format!("{cli} tui"), "see every agent"));
     let width = next.iter().map(|(command, _)| command.len()).max().unwrap_or_default();
     for (command, what) in next {
         println!("  {command:<width$}   {what}");
@@ -297,6 +302,10 @@ pub(super) fn review(
         ),
         Choice::new(Review::Stop, "No, write nothing"),
     ]);
+    // What the agent gets of this machine is shown even when nothing is asked.
+    if answers.assumes_defaults() {
+        println!("{}", lines[..lines.len() - 1].join("\n"));
+    }
     Ok(answers.choose("--yes", &lines.join("\n"), choices, 0)?)
 }
 

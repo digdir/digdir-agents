@@ -65,11 +65,12 @@ may not reach. Change it later and run `agentctl apply -f agent.mine.yaml` besid
   fill them in all at once in your editor (`--edit-values`) instead of answering a question for each, and the review
   opens them again.
 - **Shared folders** are folders on your machine that you and the agent both work on, so what it changes lands in
-  them. Without one, the agent works on its own copies, which you reach over SSH. Setup lists what the
-  manifest shares and lets you keep it, share another folder (`--mount`), or leave one out (`--unshare`). It never
-  gives an agent your settings and credentials: not your whole home folder, the folders in it whose name starts with a
-  dot, `~/Library` or `AppData`, nor agentctl's own state. That covers what a definition shares, and its
-  home, instructions and skills from outside its repository.
+  them. Without one, the agent works on its own copies, in its sandbox. Setup lists what the manifest shares and lets
+  you keep it, share another folder (`--mount`), or leave one out (`--unshare`), and shows it even with `--yes`. It
+  never gives an agent your settings and credentials: not your whole home folder, the folders in it whose name starts
+  with a dot, `~/Library` or `AppData`, nor agentctl's own state. That covers what a definition shares, and its home,
+  instructions and skills from outside its repository. A definition from GitHub gets no home, instructions or skills
+  from outside its repository at all.
 - **Logins** agentctl holds are used, and when you keep several, setup asks which the agent uses (`--login`). It signs
   you in to those missing as `agentctl claude login` does. When the manifest declares `GITHUB_TOKEN`, setup signs in to
   GitHub through the browser in a short-lived agent, so this machine needs no `gh`, or checks a token you paste.

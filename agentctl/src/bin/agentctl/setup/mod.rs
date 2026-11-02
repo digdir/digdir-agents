@@ -31,10 +31,7 @@ mod values;
 
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
-use agent::{
-    AccessSpec, Agent, AgentVariantName, Harness, control_api::Client, harness::LoginName,
-    local::home::ControlPlaneHome,
-};
+use agent::{Agent, AgentVariantName, Harness, control_api::Client, harness::LoginName, local::home::ControlPlaneHome};
 use clap::{Args, ValueEnum};
 use zeroize::Zeroizing;
 
@@ -220,6 +217,9 @@ struct Draft {
     changing: bool,
     /// The file the agent reads its values from, when one is known already.
     values_file: Option<PathBuf>,
+    /// What the person's variant was before they edited it here, so that writing nothing can put
+    /// it back.
+    edited: Option<edit::Before>,
 }
 
 impl Draft {
@@ -263,6 +263,9 @@ struct Source {
     origin: String,
     /// For a definition downloaded from GitHub, the copy of its repository.
     copy: Option<Copy>,
+    /// The checkout setup made of a definition's repository, for a worktree variant, which stays
+    /// whatever the person decides.
+    checkout_made: Option<PathBuf>,
 }
 
 /// A download of a repository, in this run's folder until the agent is made, then moved where
@@ -376,9 +379,6 @@ async fn run_once(
     shape.apply(&mut draft)?;
     let protected = protected_folders(home);
     choose_shared(arguments, answers, &mut draft, &protected)?;
-    if !draft.agent.spec.access.contains(&AccessSpec::Ssh {}) {
-        draft.agent.spec.access.push(AccessSpec::Ssh {});
-    }
     if arguments.edit {
         edit::variant(answers, &mut draft)?;
     }
@@ -387,6 +387,7 @@ async fn run_once(
         let path = draft.variant_path();
         println!("# {}", path.display());
         print!("{}", create::variant_text(&draft, &path)?);
+        edit::undo(&draft);
         return Ok(());
     }
     if let Some(env_file) = &arguments.env_file {
@@ -408,6 +409,8 @@ async fn run_once(
         match review(answers, &draft, home, fill_in)? {
             Review::Create => break,
             Review::Change => {
+                // Answered again from the start, as the variant was before.
+                edit::undo(&draft);
                 answers.start_over();
                 return Ok(());
             }
@@ -417,14 +420,18 @@ async fn run_once(
             }
             Review::EditValues => values::edit(answers, staging.path(), &mut draft).await?,
             Review::Stop => {
-                println!("Nothing was written.");
+                edit::undo(&draft);
+                match &draft.source.checkout_made {
+                    Some(checkout) => println!("Nothing was written, besides the checkout in {}.", checkout.display()),
+                    None => println!("Nothing was written."),
+                }
                 return Ok(());
             }
         }
     }
     answers.no_way_back();
-    sign_in_where_needed(arguments, answers, client, home, &staging, &mut draft).await?;
-    // What can fail before anything is written is done first, so a failure leaves nothing behind.
+    // What can fail before anything is written or signed in to is done first, so a failure leaves
+    // nothing behind.
     let builds = matches!(
         draft.agent.spec.sandbox.image,
         sandbox::image::ImageSource::Build { .. }
@@ -432,6 +439,7 @@ async fn run_once(
     if builds && !arguments.no_apply {
         docker::ensure().await?;
     }
+    sign_in_where_needed(arguments, answers, client, home, &staging, &mut draft).await?;
     finish(arguments, answers, client, home, &draft).await
 }
 
@@ -465,8 +473,9 @@ async fn list_agents(
 /// own variant, from an earlier setup, which setup then changes.
 fn choose_source(arguments: &SetupArguments, answers: &Answers, offer_here: bool) -> CommandResult<SourceChoice> {
     let flagged = match (arguments.source, arguments.from.as_deref()) {
+        // A manifest `--from` names is the one, wherever it is.
+        (Some(SourceChoice::Here) | None, Some(_)) => Some(SourceChoice::Team),
         (Some(source), _) => Some(source),
-        (None, Some(_)) => Some(SourceChoice::Team),
         (None, None) => None,
     };
     if let Some(source) = flagged {

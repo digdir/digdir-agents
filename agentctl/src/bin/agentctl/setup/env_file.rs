@@ -39,13 +39,18 @@ pub(super) fn assign(contents: &mut String, name: &str, value: &str) -> Result<(
     Ok(())
 }
 
-/// Writes `contents` to `path`, readable only by its owner, since it may hold secrets.
+/// Writes `contents` to `path`, readable only by its owner, since it may hold secrets. A file
+/// that exists already is made so before anything is written to it, as it may have been readable
+/// by others.
 pub(super) fn write_private(path: &Path, contents: &str) -> Result<(), Error> {
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     let mut file = options.open(path)?;
+    #[cfg(unix)]
+    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    file.set_len(0)?;
     file.write_all(contents.as_bytes())?;
     Ok(())
 }
@@ -78,5 +83,20 @@ mod tests {
         }
         let broken = vec![("X".to_owned(), Zeroizing::new("a\nb".to_owned()))];
         assert!(write(&path, &broken).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_values_file_others_could_read_is_made_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let folder = tempfile::tempdir().expect("a folder");
+        let path = folder.path().join("worker.env");
+        std::fs::write(&path, "OLD=value that is longer than what replaces it\n").expect("an earlier file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("readable by others");
+        super::write_private(&path, "NEW=1\n").expect("written");
+        let mode = std::fs::metadata(&path).expect("metadata").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "NEW=1\n");
     }
 }

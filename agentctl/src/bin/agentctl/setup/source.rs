@@ -34,6 +34,8 @@ pub(super) async fn choose_draft(
             let root = crate::discovery::repository_root(&directory).unwrap_or(&directory);
             let found = crate::discovery::working_tree_manifests(&directory);
             let manifest = choose_among(answers, arguments.variant.as_ref(), root, found)?;
+            // Named by its path, so the repeated command sets up this one and no other.
+            answers.record("--source", &["team"]);
             answers.record("--from", &[&manifest.display().to_string()]);
             let save_as = choose_save_as(arguments, answers, &manifest, save_as, &git_owner)?;
             team_draft(&manifest, &manifest.display().to_string(), &save_as)
@@ -152,6 +154,7 @@ async fn team_draft_from(
             });
             return Ok(draft);
         }
+        let made = !checkout.join(".git").exists();
         if !fetch::adopt(&copy, &checkout) {
             github.checkout(&checkout).await?;
         }
@@ -160,7 +163,12 @@ async fn team_draft_from(
             return Err(Error::Invalid(format!("{} has no {}", checkout.display(), relative.display())).into());
         }
         let save_as = choose_save_as(arguments, answers, &manifest, save_as, &git_owner)?;
-        return team_draft(&manifest, &github.describe(), &save_as);
+        let mut draft = team_draft(&manifest, &github.describe(), &save_as)?;
+        draft.source.checkout_made = made.then_some(checkout);
+        return Ok(draft);
+    }
+    if arguments.clone_into.is_some() {
+        eprintln!("warning: --clone-into is left out: this agent needs no checkout of its repository");
     }
     // A copy, not a checkout to commit in.
     std::fs::remove_dir_all(copy.join(".git")).ok();
@@ -230,32 +238,99 @@ fn mounts_its_repository(manifest: &Path, root: &Path) -> CommandResult<bool> {
     Ok(mounts)
 }
 
-/// Copies the person's variants from an earlier setup, which `kept` holds and a download does not,
-/// into the download at `copy`, and returns where they are in it.
+/// The file in a kept copy that lists the variants setup wrote there for the person, one path
+/// relative to the copy a line, as the team's own `agent.*.yaml` files look the same.
+pub(super) const VARIANTS_FILE: &str = ".agentctl-variants";
+
+/// The person's variants an earlier setup wrote in the kept copy at `kept`: those it lists, or, in
+/// a copy made before it listed them, those a download at `copy` does not have.
+fn persons_variants(kept: &Path, copy: &Path) -> Vec<PathBuf> {
+    if let Ok(listed) = std::fs::read_to_string(kept.join(VARIANTS_FILE)) {
+        return listed
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(PathBuf::from)
+            .filter(|relative| {
+                relative
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_)))
+            })
+            .collect();
+    }
+    ignore::WalkBuilder::new(kept)
+        .standard_filters(false)
+        .follow_links(false)
+        .build()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
+        .filter(|entry| manifest::variant_from_filename(entry.path()).is_some())
+        .filter_map(|entry| entry.path().strip_prefix(kept).ok().map(Path::to_path_buf))
+        .filter(|relative| !copy.join(relative).exists())
+        .collect()
+}
+
+/// Copies the person's variants from an earlier setup, which `kept` holds, into the download at
+/// `copy`, lists them there for the next one, and returns where they are in it.
 fn carry_over(kept: &Path, copy: &Path) -> CommandResult<Vec<PathBuf>> {
     let mut carried = Vec::new();
     if !kept.is_dir() {
         return Ok(carried);
     }
-    let walk = ignore::WalkBuilder::new(kept)
-        .standard_filters(false)
-        .follow_links(false)
-        .build();
-    for entry in walk.filter_map(Result::ok) {
-        let path = entry.path();
-        let variant =
-            entry.file_type().is_some_and(|kind| kind.is_file()) && manifest::variant_from_filename(path).is_some();
-        let Ok(relative) = path.strip_prefix(kept) else {
-            continue;
-        };
-        let target = copy.join(relative);
-        if !variant || target.exists() || !target.parent().is_some_and(Path::is_dir) {
+    let mut listed = Vec::new();
+    for relative in persons_variants(kept, copy) {
+        let source = kept.join(&relative);
+        let target = copy.join(&relative);
+        if !source.is_file() {
             continue;
         }
-        std::fs::copy(path, &target).map_err(Error::from)?;
+        if target.exists() {
+            eprintln!(
+                "warning: the team's {} now has your variant's name, so your copy of it is not kept",
+                relative.display()
+            );
+            continue;
+        }
+        // Kept where the team removed its folder too, for the agents made from it to say so.
+        let parent = target.parent().unwrap_or(copy);
+        if !parent.is_dir() {
+            eprintln!(
+                "warning: the team removed {}, which your variant {} extends",
+                parent.strip_prefix(copy).unwrap_or(parent).display(),
+                relative.display()
+            );
+            std::fs::create_dir_all(parent).map_err(Error::from)?;
+        }
+        std::fs::copy(&source, &target).map_err(Error::from)?;
+        listed.push(relative);
         carried.push(target);
     }
+    list_variants(copy, &listed)?;
     Ok(carried)
+}
+
+/// Lists `variants`, relative to the copy at `copy`, as the person's, with those it lists already.
+pub(super) fn list_variants(copy: &Path, variants: &[PathBuf]) -> Result<(), Error> {
+    let file = copy.join(VARIANTS_FILE);
+    let mut lines: Vec<String> = std::fs::read_to_string(&file)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    for variant in variants {
+        let line = variant
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    let mut text = lines.join("\n");
+    text.push('\n');
+    std::fs::write(file, text)?;
+    Ok(())
 }
 
 /// The variant beside `manifest` the person's choices are saved as: `manifest` itself when it is
@@ -271,28 +346,43 @@ fn choose_save_as(
 ) -> CommandResult<AgentVariantName> {
     if let Some(variant) = manifest::variant_from_filename(manifest)
         && owner(manifest) == Some(true)
+        && is_variant(manifest)
     {
         return Ok(variant);
-    }
-    if let Some(save_as) = &arguments.save_as {
-        return Ok(save_as.clone());
     }
     let directory = parent(manifest)?;
     let check = |answer: &str| {
         let variant: AgentVariantName = answer.trim().parse().map_err(|error: Error| error.to_string())?;
         let path = directory.join(variant.filename());
-        if path.is_file() && owner(&path) == Some(false) {
+        if !path.is_file() {
+            Ok(())
+        } else if owner(&path) == Some(false) {
             Err(format!("{} is the team's; choose another name", variant.filename()))
+        } else if !is_variant(&path) {
+            Err(format!(
+                "{} is a manifest of its own, not a variant; choose another name",
+                variant.filename()
+            ))
         } else {
             Ok(())
         }
     };
+    if let Some(save_as) = &arguments.save_as {
+        check(save_as.as_ref()).map_err(|reason| Error::Invalid(format!("--save-as {save_as}: {reason}")))?;
+        return Ok(save_as.clone());
+    }
     let question = format!(
         "Setup saves your choices as a variant, agent.<variant>.yaml beside {}, which Git should ignore.\nWhich variant?",
         file_name(manifest)?
     );
     let answer = answers.text("--save-as", &question, Some(default.as_ref()), check)?;
     Ok(answer.trim().parse()?)
+}
+
+/// Whether the file at `path` is an agent variant, which extends another manifest, rather than a
+/// manifest of its own.
+fn is_variant(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|text| serde_yaml_ng::from_str::<manifest::AgentVariant>(&text).is_ok())
 }
 
 /// Whose a file in a checkout is: the person's when Git ignores it, the team's when it does not.
@@ -388,6 +478,7 @@ pub(super) fn team_draft(manifest_path: &Path, origin: &str, save_as: &AgentVari
         directory,
         origin: origin.to_owned(),
         copy: None,
+        checkout_made: None,
     };
     let (minimum, recommended) = team_sizes(&base);
     Ok(draft(agent, base, source, minimum, recommended))
@@ -409,6 +500,7 @@ fn variant_draft(variant: &Path) -> CommandResult<Draft> {
         extends,
         origin: variant.display().to_string(),
         copy: None,
+        checkout_made: None,
     };
     let (minimum, recommended) = team_sizes(&base);
     let mut draft = draft(agent, base, source, minimum, recommended);
@@ -437,6 +529,7 @@ fn draft(agent: Agent, base: Agent, source: Source, minimum: Whole, recommended:
         access: Access::default(),
         changing: false,
         values_file: None,
+        edited: None,
     }
 }
 
@@ -456,7 +549,7 @@ fn file_name(path: &Path) -> Result<String, Error> {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::{carry_over, choose_save_as, git_owner, manifest_label, mounts_its_repository};
+    use super::{VARIANTS_FILE, carry_over, choose_save_as, git_owner, manifest_label, mounts_its_repository};
     use crate::setup::{SetupArguments, answers::Answers};
     use clap::{Args, FromArgMatches};
 
@@ -504,12 +597,27 @@ mod tests {
         if !initialized.is_ok_and(|status| status.success()) {
             return;
         }
-        std::fs::write(repository.path().join(".gitignore"), "agent.mine.yaml\n").expect("an ignore file");
-        for file in ["agent.yaml", "agent.nested.yaml", "agent.mine.yaml"] {
+        std::fs::write(
+            repository.path().join(".gitignore"),
+            "agent.mine.yaml\nagent.local.yaml\n",
+        )
+        .expect("an ignore file");
+        for file in ["agent.yaml", "agent.nested.yaml", "agent.local.yaml"] {
             std::fs::write(repository.path().join(file), "kind: Agent\n").expect("a manifest");
         }
-        let command = SetupArguments::augment_args(clap::Command::new("setup"));
-        let arguments = SetupArguments::from_arg_matches(&command.get_matches_from(["setup"])).expect("no arguments");
+        std::fs::write(
+            repository.path().join("agent.mine.yaml"),
+            "apiVersion: agents.platform/v1alpha1\nkind: AgentVariant\nextends: agent.yaml\nmetadata: {name: mine}\n",
+        )
+        .expect("the person's variant");
+        let parse = |flags: &[&str]| {
+            let command = SetupArguments::augment_args(clap::Command::new("setup"));
+            SetupArguments::from_arg_matches(
+                &command.get_matches_from(std::iter::once("setup").chain(flags.iter().copied())),
+            )
+            .expect("arguments")
+        };
+        let arguments = parse(&[]);
         let mine = "mine".parse().expect("a variant name");
         let nested = "nested".parse().expect("a variant name");
         let chosen = |manifest: &str, default, answers: &Answers| {
@@ -533,6 +641,27 @@ mod tests {
         assert_eq!(
             chosen("agent.mine.yaml", &nested, &unasked).expect("the person's own"),
             "mine"
+        );
+        assert!(
+            chosen("agent.local.yaml", &mine, &unasked).is_err(),
+            "a manifest of the person's own is not a variant to change, so setup asks"
+        );
+        let local = "local".parse().expect("a variant name");
+        assert!(
+            chosen("agent.yaml", &local, &defaults).is_err(),
+            "agent.local.yaml is no variant"
+        );
+        let flagged = parse(&["--save-as", "nested"]);
+        assert!(
+            choose_save_as(
+                &flagged,
+                &defaults,
+                &repository.path().join("agent.yaml"),
+                &mine,
+                &git_owner
+            )
+            .is_err(),
+            "--save-as is checked as the question is"
         );
     }
 
@@ -586,7 +715,13 @@ mod tests {
         std::fs::write(kept.path().join("agents/gone/agent.mine.yaml"), "mine").expect("a variant of it");
 
         let carried = carry_over(kept.path(), copy.path()).expect("carried over");
-        assert_eq!(carried, [copy.path().join("agents/worker/agent.mine.yaml")]);
+        assert_eq!(
+            carried,
+            [
+                copy.path().join("agents/gone/agent.mine.yaml"),
+                copy.path().join("agents/worker/agent.mine.yaml")
+            ]
+        );
         assert_eq!(
             std::fs::read_to_string(copy.path().join("agents/worker/agent.mine.yaml")).expect("read"),
             "mine"
@@ -595,6 +730,30 @@ mod tests {
             !copy.path().join("agents/worker/notes.md").exists(),
             "only variants carry over"
         );
-        assert!(!copy.path().join("agents/gone").exists());
+    }
+
+    #[test]
+    fn the_variants_setup_listed_carry_over_and_the_teams_do_not() {
+        let kept = tempfile::tempdir().expect("a kept copy");
+        let copy = tempfile::tempdir().expect("a download");
+        for root in [kept.path(), copy.path()] {
+            std::fs::create_dir_all(root.join("agents/worker")).expect("folders");
+            std::fs::write(root.join("agents/worker/agent.yaml"), "team").expect("the team's manifest");
+            std::fs::write(root.join("agents/worker/agent.build.yaml"), "team").expect("the team's variant");
+        }
+        std::fs::write(kept.path().join("agents/worker/agent.old.yaml"), "team, since removed").expect("a variant");
+        std::fs::write(kept.path().join("agents/worker/agent.mine.yaml"), "mine").expect("the person's variant");
+        std::fs::write(kept.path().join(VARIANTS_FILE), "agents/worker/agent.mine.yaml\n").expect("the list");
+
+        let carried = carry_over(kept.path(), copy.path()).expect("carried over");
+        assert_eq!(carried, [copy.path().join("agents/worker/agent.mine.yaml")]);
+        assert!(
+            !copy.path().join("agents/worker/agent.old.yaml").exists(),
+            "a variant the team removed is not the person's"
+        );
+        assert_eq!(
+            std::fs::read_to_string(copy.path().join(VARIANTS_FILE)).expect("the new list"),
+            "agents/worker/agent.mine.yaml\n"
+        );
     }
 }

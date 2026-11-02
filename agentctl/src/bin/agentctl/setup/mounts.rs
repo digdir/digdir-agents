@@ -243,7 +243,7 @@ fn ask_shares(
         if listed.is_empty() {
             let lines = [
                 "You and the agent then work on the same files, and what it changes lands in your folder.",
-                "Without one, it works on its own copies, which you reach over SSH.",
+                "Without one, it works on its own copies, in its sandbox.",
                 "Share a folder on this machine with the agent?",
             ];
             let share = answers.choose(
@@ -411,11 +411,20 @@ pub(super) fn check_sources(draft: &Draft, protected: &Protected) -> CommandResu
         let inside = resolved
             .canonicalize()
             .is_ok_and(|canonical| root.as_ref().is_some_and(|root| canonical.starts_with(root)));
-        if !inside {
-            protected.check_path(&resolved).map_err(|reason| {
-                CommandError::Message(format!("{field} gives the agent {}, but {reason}", resolved.display()))
-            })?;
+        if inside {
+            continue;
         }
+        // A definition fetched from GitHub is no one's on this machine, so it gets nothing of it.
+        if draft.source.copy.is_some() {
+            return Err(CommandError::Message(format!(
+                "{field} would give the agent {} from this machine, but a definition from GitHub gets only what \
+                 its repository holds",
+                resolved.display()
+            )));
+        }
+        protected.check_path(&resolved).map_err(|reason| {
+            CommandError::Message(format!("{field} gives the agent {}, but {reason}", resolved.display()))
+        })?;
     }
     Ok(())
 }
@@ -571,6 +580,19 @@ mod tests {
         instructions: &str,
         skill: &str,
     ) -> Result<(), String> {
+        check_from(home, folder, home_source, instructions, skill, None)
+    }
+
+    /// Checks the definition as [`check`] does, as one downloaded into the repository at
+    /// `downloaded` when given.
+    fn check_from(
+        home: &std::path::Path,
+        folder: &str,
+        home_source: &str,
+        instructions: &str,
+        skill: &str,
+        downloaded: Option<&str>,
+    ) -> Result<(), String> {
         let folder = home.join(folder);
         let manifest = format!(
             "apiVersion: agents.platform/v1alpha1\nkind: Agent\nmetadata: {{name: x}}\nspec:\n  sandbox:\n    \
@@ -582,12 +604,46 @@ mod tests {
         );
         std::fs::write(folder.join("agent.yaml"), manifest).expect("a manifest");
         let save_as = "mine".parse().expect("a variant name");
-        let draft = team_draft(&folder.join("agent.yaml"), "a test", &save_as).expect("a draft");
+        let mut draft = team_draft(&folder.join("agent.yaml"), "a test", &save_as).expect("a draft");
+        draft.source.copy = downloaded.map(|root| crate::setup::Copy {
+            root: home.join(root),
+            kept: home.join("kept"),
+        });
         let protected = Protected {
             user_home: Some(home.to_path_buf()),
             inside: vec![home.join("agents")],
         };
         check_sources(&draft, &protected).map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn a_definition_from_github_gets_nothing_from_outside_its_repository() {
+        let home = machine();
+        let home = home.path();
+        let everywhere = home.join("agent-instructions/everywhere.md").display().to_string();
+        let team = "code/team/agents/x";
+        let downloaded = Some("code/team");
+        assert_eq!(
+            check_from(
+                home,
+                team,
+                "../../home",
+                "instructions.md",
+                "../../_skills/review",
+                downloaded
+            ),
+            Ok(())
+        );
+        let error = check_from(
+            home,
+            team,
+            "../../home",
+            &everywhere,
+            "../../_skills/review",
+            downloaded,
+        )
+        .expect_err("refused");
+        assert!(error.contains("a definition from GitHub"), "{error}");
     }
 
     #[test]

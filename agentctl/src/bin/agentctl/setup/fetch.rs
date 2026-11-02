@@ -46,12 +46,18 @@ impl GithubSource {
             None => (rest, None),
         };
         let mut parts = repository_path.trim_matches('/').splitn(3, '/');
-        let owner = parts.next().filter(|part| !part.is_empty())?.to_owned();
-        let repository = parts
-            .next()
-            .filter(|part| !part.is_empty())?
-            .trim_end_matches(".git")
-            .to_owned();
+        let owner = parts.next().filter(|part| github_name(part))?.to_owned();
+        let repository = parts.next()?.trim_end_matches(".git").to_owned();
+        if !github_name(&repository) {
+            return None;
+        }
+        // A ref names a folder of setup's copy too, so it may not climb out of it.
+        if reference
+            .as_deref()
+            .is_some_and(|reference| reference.contains('\\') || reference.split('/').any(|part| part == ".."))
+        {
+            return None;
+        }
         let ref_and_path = match (parts.next(), &subdirectory, &reference) {
             (Some(browsed), None, None) => {
                 let ref_and_path = browsed
@@ -236,7 +242,10 @@ impl GithubSource {
             .bytes()
             .await
             .map_err(|error| Error::Invalid(format!("the download of {} failed: {error}", self.describe())))?;
-        unpack(&archive, copy)
+        let copy = copy.to_path_buf();
+        tokio::task::spawn_blocking(move || unpack(&archive, &copy))
+            .await
+            .map_err(|error| Error::Invalid(format!("unpacking the download failed: {error}")))?
     }
 
     /// Whether GitHub's API shows the repository to this machine, as it does a public one, or a
@@ -284,7 +293,12 @@ impl GithubSource {
             .map_err(|error| Error::Invalid(format!("could not run git: {error}")))?;
         let origin = String::from_utf8_lossy(&output.stdout).to_lowercase();
         let wanted = format!("{}/{}", self.owner, self.repository).to_lowercase();
-        if origin.trim_end().trim_end_matches(".git").ends_with(&wanted) {
+        // The whole owner, after the `/` of an address or the `:` of an SSH remote.
+        let origin = origin.trim_end().trim_end_matches(".git");
+        let same = origin
+            .strip_suffix(&wanted)
+            .is_some_and(|before| before.ends_with('/') || before.ends_with(':'));
+        if same {
             Ok(())
         } else {
             Err(Error::Invalid(format!(
@@ -307,6 +321,8 @@ impl GithubSource {
                 .collect(),
             None => vec![(self.reference.clone(), self.subdirectory.clone())],
         };
+        // What git said the last time it failed, such as that it could not sign in.
+        let mut said = String::new();
         for (reference, subdirectory) in candidates {
             let mut command = tokio::process::Command::new("git");
             command.args(["clone", "--quiet"]);
@@ -316,23 +332,34 @@ impl GithubSource {
             if let Some(reference) = &reference {
                 command.args(["--branch", reference]);
             }
-            let status = command
+            let output = command
                 .arg(format!("https://github.com/{}/{}.git", self.owner, self.repository))
                 .arg(checkout)
                 .env("GIT_TERMINAL_PROMPT", "0")
                 .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
+                .stdout(Stdio::null())
+                .output()
                 .await
                 .map_err(|error| Error::Invalid(format!("could not run git: {error}")))?;
-            if status.success() {
+            if output.status.success() {
                 self.reference = reference;
                 self.subdirectory = subdirectory;
                 return Ok(());
             }
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .rfind(|line| !line.trim().is_empty())
+                .unwrap_or_default()
+                .trim()
+                .clone_into(&mut said);
         }
+        let said = if said.is_empty() {
+            String::new()
+        } else {
+            format!(" ({said})")
+        };
         Err(Error::Invalid(format!(
-            "git could not clone {}; check the address, the branch or tag, and that your git can read it",
+            "git could not clone {}{said}; check the address, the branch or tag, and that your git can read it",
             self.describe()
         )))
     }
@@ -417,6 +444,17 @@ fn unpack(archive: &[u8], copy: &Path) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// Whether `name` can be a GitHub owner or repository, which also name folders of setup's copy:
+/// letters, digits, `.`, `_` and `-`, and not `.` or `..`.
+fn github_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
 }
 
 /// Every way to split `ref_and_path` into a ref and a path, the shortest ref first.
@@ -518,6 +556,13 @@ mod tests {
         assert_eq!(GithubSource::parse("./agents/minimal"), None);
         assert_eq!(GithubSource::parse("https://gitlab.com/a/b"), None);
         assert_eq!(GithubSource::parse("https://github.com/only-owner"), None);
+        assert_eq!(
+            GithubSource::parse(r"github.com/..\..\repos\digdir/digdir-agents"),
+            None,
+            "a name that is a path on Windows"
+        );
+        assert_eq!(GithubSource::parse("github.com/digdir/..@main"), None);
+        assert_eq!(GithubSource::parse("github.com/digdir/agents@../../x"), None);
     }
 
     #[test]
