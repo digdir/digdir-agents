@@ -24,7 +24,7 @@ use super::{
 pub(crate) use command::run_checked;
 use command::{checked_output, path_exists};
 use home::{archive_home, sync_home};
-use kvm::grant_kvm;
+use kvm::prepare_nested_sandboxes;
 use podman::{configure_podman, point_podman_at_socket};
 use sources::{read_instructions, read_skills};
 use systemd::{SYSTEMCTL, SYSTEMD_RUNNING, systemd_available, wait_for_systemd};
@@ -144,7 +144,7 @@ impl Linux {
         let step = steps.start_step("Prepare workspace and Podman").await;
         run_checked(sandbox, "/usr/bin/install", ["-d", "-m", "0755", WORKING_DIRECTORY]).await?;
         let podman = configure_podman(sandbox).await?;
-        let kvm = grant_kvm(sandbox).await?;
+        let kvm = prepare_nested_sandboxes(sandbox).await?;
         step.complete().await;
         mount_writable_volumes(record, sandbox, steps).await?;
         let step = steps.start_step("Sync home").await;

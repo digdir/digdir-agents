@@ -56,6 +56,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 - At a terminal, agentctl's questions take a single key, without Enter, and ignore keys typed before they appear: ([#310](https://github.com/digdir/digdir-agents/pull/310))
   - Yes/no questions take `y` or `n`. Enter on its own answers nothing.
 - Chromium on the shared images no longer offers to translate pages or underlines misspelled words, which covered pages in screenshots and recordings. ([#418](https://github.com/digdir/digdir-agents/pull/418))
+- Agents with `nestedSandboxes` give the agents they start huge pages for their memory, so memory-heavy work such as builds and package restores runs faster in nested agents. Existing agents get this on their next start. ([#173](https://github.com/digdir/digdir-agents/issues/173))
 
 ### Fixed
 
