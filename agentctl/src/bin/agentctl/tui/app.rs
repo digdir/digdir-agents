@@ -933,11 +933,9 @@ impl CreateForm {
 
 /// Returns `name-N` for the lowest N from 1 that no agent uses, or `name` itself when no numbered name fits.
 fn numbered_name(name: &str, agents: &[Agent]) -> String {
-    (1..=u32::MAX)
-        .map(|number| format!("{name}-{number}"))
-        .take_while(|numbered| numbered.len() <= ::sandbox::MAX_SANDBOX_NAME_BYTES)
-        .find(|numbered| agents.iter().all(|agent| agent.metadata.name != *numbered))
-        .unwrap_or_else(|| name.to_owned())
+    crate::names::numbered_name(name, |numbered| {
+        agents.iter().any(|agent| agent.metadata.name == numbered)
+    })
 }
 
 fn wrapped_index(current: usize, length: usize, delta: isize) -> usize {

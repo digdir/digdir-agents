@@ -17,11 +17,14 @@ use agent::{
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
+mod discovery;
 mod format;
 mod launch;
+mod names;
 mod progress;
 mod prompt;
 mod self_update;
+mod setup;
 mod sign_in;
 mod skills;
 mod tui;
@@ -95,6 +98,9 @@ enum Command {
         #[arg(long)]
         last: Option<usize>,
     },
+    /// Set up an agent step by step and make it yours: from your repository's agents or another
+    /// definition.
+    Setup(Box<setup::SetupArguments>),
     /// Create or update an agent from a manifest.
     Apply {
         /// Agent manifest path; defaults to ./agent.yaml.
@@ -604,6 +610,7 @@ fn run() -> CommandResult<ExitCode> {
                 | Command::Self_ { .. }
                 | Command::Skills { .. }
                 | Command::SshConfig { .. }
+                | Command::Setup(_)
         ) {
             ensure_daemon(&home, &client).await?;
         }
@@ -639,6 +646,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 CodexCommand::Logout { name } => logout(client, harness, name).await?,
             }
         }
+        Command::Setup(arguments) => Box::pin(setup::run(*arguments, home, client)).await?,
         Command::Apply {
             filename,
             variant,
@@ -2017,7 +2025,7 @@ fn apply_manifest_path(filename: Option<PathBuf>, variant: Option<AgentVariantNa
     }
 }
 
-fn read_apply_request(filename: PathBuf, env_file: Option<PathBuf>) -> Result<ApplyRequest, Error> {
+pub(crate) fn read_apply_request(filename: PathBuf, env_file: Option<PathBuf>) -> Result<ApplyRequest, Error> {
     read_apply_request_in(std::env::current_dir, filename, env_file)
 }
 
@@ -2043,15 +2051,20 @@ fn read_apply_request_in(
     })
 }
 
-/// How to run agentctl on `home`, as a hint: with `--home` when a plain `agentctl` would reach
-/// another one. It assumes the `agentctl` on `PATH` is this one.
+/// How to run agentctl on `home`: with `--home` when a plain `agentctl` would reach another one, so
+/// commands agentctl suggests work as printed. It assumes the `agentctl` on `PATH` is this one.
 pub(crate) fn command_line(home: &ControlPlaneHome) -> String {
     let plain = ControlPlaneHome::resolve(None).is_ok_and(|plain| plain == *home);
     if plain {
         "agentctl".to_owned()
     } else {
-        format!("agentctl --home {}", home.path().display())
+        agent::vnc::agentctl_command(home.path())
     }
+}
+
+/// `word` as one word of a command printed for the person to paste into this machine's terminal.
+pub(crate) fn shell_word(word: &str) -> String {
+    agent::ssh::shell_word(word, agent::ssh::CommandShell::terminal())
 }
 
 /// Stores a harness login: the credential on standard input when given, else, inside an agent with

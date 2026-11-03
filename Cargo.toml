@@ -24,6 +24,7 @@ futures-core = "0.3.34"
 futures-util = "0.3.34"
 flate2 = "1.1.9"
 ignore = "0.4.33"
+inquire = { version = "0.9.4", default-features = false, features = ["crossterm"] }
 # Microsandbox fork commit tagged `v0.7.13-digdir.1`.
 # Update all three revisions together with the runtime bundle digests, and check rusqlite below.
 microsandbox = { git = "https://github.com/digdir/microsandbox.git", rev = "4d7610bf2472aa0338801957cf1641251b695da7", default-features = false, features = ["local", "net"] }
@@ -46,6 +47,7 @@ serde_yaml_ng = "0.10.0"
 semver = "1.0.27"
 sha2 = "0.11.0"
 ssh-key = { version = "0.6.7", default-features = false, features = ["ed25519", "rand_core", "std"] }
+sysinfo = { version = "0.40.0", default-features = false, features = ["disk", "system"] }
 tar = "0.4.46"
 tempfile = "3.27.0"
 thiserror = "2.0.20"
