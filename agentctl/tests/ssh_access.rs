@@ -130,6 +130,17 @@ struct Fixture {
 }
 
 impl Fixture {
+    /// The `ProxyCommand` the generated configuration gives `agent`, which names this home. Its
+    /// words are quoted for this host's shell, with `%` doubled for OpenSSH.
+    fn proxy_command(&self, agent: &str) -> String {
+        let shell = agent::ssh::CommandShell::host();
+        format!(
+            "{} --home {} ssh-proxy agent/{agent}",
+            agent::ssh::shell_word(AGENTCTL, shell).replace('%', "%%"),
+            agent::ssh::directory_word(self.home.path(), shell).replace('%', "%%")
+        )
+    }
+
     fn new() -> Self {
         let directory = TempDir::new().expect("temporary directory");
         let home = ControlPlaneHome::resolve(Some(&directory.path().join("agent-home"))).expect("home");
@@ -252,6 +263,7 @@ async fn access_is_idempotent_and_only_public_material_enters_the_guest() {
                 .map(str::to_owned)
         };
         assert_eq!(setting("user").as_deref(), Some("agent"));
+        assert_eq!(setting("setenv").as_deref(), Some("TERM=xterm-256color"));
         assert_eq!(setting("hostkeyalias"), Some(format!("agent-{}", record.id)));
         assert_eq!(
             setting("identityfile").map(PathBuf::from),
@@ -269,7 +281,7 @@ async fn access_is_idempotent_and_only_public_material_enters_the_guest() {
     let info = fixture.access.describe("worker").await.expect("descriptor");
     assert_eq!(info.alias, "agentctl-worker");
     assert_eq!(info.identity_file, ssh_home.identity_path(record.id));
-    assert_eq!(info.proxy_command, format!("{AGENTCTL} ssh-proxy agent/worker"));
+    assert_eq!(info.proxy_command, fixture.proxy_command("worker"));
 
     assert!(fixture.access.reconcile(&record, &sandbox).await.expect("second pass"));
     assert_eq!(
@@ -556,7 +568,7 @@ async fn descriptor_json_is_the_documented_shape() {
     assert_eq!(value["agentId"], "38f41de4-6ff7-4679-ae46-678bc61e4dcb");
     assert_eq!(value["alias"], "agentctl-worker");
     assert_eq!(value["user"], "agent");
-    assert_eq!(value["proxyCommand"], format!("{AGENTCTL} ssh-proxy agent/worker"));
+    assert_eq!(value["proxyCommand"], fixture.proxy_command("worker"));
     assert_eq!(value["workingDirectory"], "/home/agent/code");
     let decoded: ssh::AccessInfo = serde_json::from_value(value).expect("round trip");
     assert_eq!(decoded, info);

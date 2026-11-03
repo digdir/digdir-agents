@@ -22,11 +22,19 @@ agents. The Rust workspace version is a build detail and is not tracked here.
   - `agentctl claude login work` and `agentctl codex login work` store one, and `list` and `logout` show and forget them. Your existing logins become `default`. ([#356](https://github.com/digdir/digdir-agents/pull/356))
   - `login: work` on a harness in an agent's manifest picks one. `login: [work, private]` or `login: any` gives the agent whichever the fewest other running agents use, and it keeps that one while it stays allowed and stored. ([#357](https://github.com/digdir/digdir-agents/pull/357))
 - `agentctl claude login` and `agentctl codex login` work without Claude Code or Codex on this machine: they sign in in a short-lived agent, through this machine's browser. ([#377](https://github.com/digdir/digdir-agents/pull/377))
+- `agentctl skills install` puts a skill where the coding agents on your machine, such as Claude Code, Codex and Pi, find it, for you with `--user` or for a repository with `--repo`, and running it again updates it. `--bundled agentctl` gives them the skill for driving agents. ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#340](https://github.com/digdir/digdir-agents/pull/340))
 
 ### Changed
 
 - Applying a manifest that adds, removes or renames instruction files or skills updates the agent in place, keeping its disk and sessions, instead of being refused. A skill the agent no longer declares is removed from its harnesses, while the skills its image ships stay.
 - The Agent sandbox section at the top of an agent's instructions now tells the agent that what it sends through the host, such as pushes, pull requests, comments and API calls, reaches real services and people. ([#372](https://github.com/digdir/digdir-agents/pull/372))
+- Newly created agents using the shared images ship Claude Code 2.1.316, Codex CLI 0.166.0 and Pi 1.5.0. ([#392](https://github.com/digdir/digdir-agents/pull/392))
+
+### Fixed
+
+- `clear`, `less` and editors no longer fail with `unknown terminal type` over `agentctl ssh`, the SSH shell in `agentctl tui` or plain `ssh agentctl-<name>` from a terminal such as Ghostty. ([#391](https://github.com/digdir/digdir-agents/pull/391))
+- `ssh agentctl-<name>`, `agentctl ssh`, editors connecting over SSH and the commands `agentctl vnc-info` prints now reach agents on a home chosen with `--home` or `AGENT_HOME`, instead of not finding them. ([#375](https://github.com/digdir/digdir-agents/pull/375))
+- Links that Claude Code and other harnesses print in a session can be clicked in terminals that support them, such as Ghostty, iTerm2 and WezTerm. Hold Shift with the usual modifier, as in ⇧⌘-click in Ghostty on macOS. ([#390](https://github.com/digdir/digdir-agents/pull/390))
 
 ## [0.1.0-preview.13] - 2026-10-26
 

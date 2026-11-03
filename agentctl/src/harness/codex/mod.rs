@@ -18,6 +18,12 @@ mod hooks;
 pub(super) mod transcript;
 
 const PROVIDER: &str = "codex";
+/// Codex keeps its settings in `~/.codex` and reads skills from the Agent Skills directory.
+pub(super) const FOOTPRINT: super::Footprint = super::Footprint {
+    executable: "codex",
+    directory: ".codex",
+    skills_directory: ".agents/skills",
+};
 const ACCESS_SECRET: &str = "codex-access-token";
 const REFRESH_SECRET: &str = "codex-refresh-token";
 const ACCOUNT_SECRET: &str = "codex-account-id";
@@ -50,11 +56,6 @@ pub(super) fn access_login(reference: &SecretReference) -> Option<LoginName> {
 /// Codex's global instruction file, which holds the agent's instructions.
 pub(super) fn instructions_path(home: &str) -> String {
     format!("{home}/.codex/AGENTS.md")
-}
-
-/// Where Codex finds the user's Agent Skills, one folder each.
-pub(super) fn skills_directory(home: &str) -> String {
-    format!("{home}/.agents/skills")
 }
 
 /// The stored Codex logins whose grant is complete.

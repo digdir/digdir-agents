@@ -26,6 +26,7 @@ mod prompt;
 mod self_update;
 mod setup;
 mod sign_in;
+mod skills;
 mod tui;
 mod watch;
 
@@ -61,6 +62,11 @@ enum Command {
     Codex {
         #[command(subcommand)]
         command: CodexCommand,
+    },
+    /// Manage the skills of the harnesses on this machine, outside any agent.
+    Skills {
+        #[command(subcommand)]
+        command: skills::SkillsCommand,
     },
     /// Create a session and wait until its harness is ready, without attaching.
     Create {
@@ -602,6 +608,7 @@ fn run() -> CommandResult<ExitCode> {
             Command::Create { .. }
                 | Command::Prompt { .. }
                 | Command::Self_ { .. }
+                | Command::Skills { .. }
                 | Command::SshConfig { .. }
                 | Command::Setup(_)
         ) {
@@ -618,6 +625,7 @@ fn run() -> CommandResult<ExitCode> {
 async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> CommandResult<ExitCode> {
     match command {
         Command::Self_ { command } => self_update::execute(command, home).await?,
+        Command::Skills { command } => skills::execute(command)?,
         Command::Claude { command } => {
             let harness = agent::Harness::ClaudeCode;
             match command {
@@ -764,7 +772,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             agent,
             variant,
             output,
-        } => vnc_info(client, resource, agent, variant, output).await?,
+        } => vnc_info(home, client, resource, agent, variant, output).await?,
         Command::Create {
             target,
             selection,
@@ -1316,6 +1324,7 @@ async fn vnc_proxy(home: &ControlPlaneHome, client: &Client, resource: String) -
 }
 
 async fn vnc_info(
+    home: &ControlPlaneHome,
     client: &Client,
     resource: Option<String>,
     agent: Option<String>,
@@ -1327,7 +1336,7 @@ async fn vnc_info(
     match output {
         OutputFormat::Json => print_json(&access)?,
         OutputFormat::Table => {
-            for line in format::vnc_access_lines(&access) {
+            for line in format::vnc_access_lines(&access, home.path()) {
                 println!("{line}");
             }
         }
@@ -2049,13 +2058,13 @@ pub(crate) fn command_line(home: &ControlPlaneHome) -> String {
     if plain {
         "agentctl".to_owned()
     } else {
-        format!("agentctl --home {}", shell_word(&home.path().to_string_lossy()))
+        agent::vnc::agentctl_command(home.path())
     }
 }
 
-/// `word` as one word of a command printed for this machine's shell.
+/// `word` as one word of a command printed for the person to paste into this machine's terminal.
 pub(crate) fn shell_word(word: &str) -> String {
-    agent::ssh::shell_word(word, agent::ssh::CommandShell::host())
+    agent::ssh::shell_word(word, agent::ssh::CommandShell::terminal())
 }
 
 /// Stores a harness login: the credential on standard input when given, else, inside an agent with

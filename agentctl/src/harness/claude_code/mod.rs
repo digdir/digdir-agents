@@ -18,6 +18,12 @@ mod status_line;
 pub(super) mod transcript;
 
 const PROVIDER: &str = "claude";
+/// Claude Code keeps its settings and skills in `~/.claude`, and reads a repository's from its `.claude`.
+pub(super) const FOOTPRINT: super::Footprint = super::Footprint {
+    executable: "claude",
+    directory: ".claude",
+    skills_directory: ".claude/skills",
+};
 pub(super) const ACCESS_SECRET: &str = "claude-access-token";
 pub(super) const LOGINS: LoginStore = LoginStore::new(PROVIDER, &[ACCESS_SECRET]);
 pub(super) const ACCESS_ENVIRONMENT: &str = "CLAUDE_CODE_OAUTH_TOKEN";
@@ -48,11 +54,6 @@ pub(super) const MODEL_LAUNCHED_BEFORE_SELECTION: &str = "fable";
 /// Claude Code's user instruction file, which holds the agent's instructions.
 pub(super) fn instructions_path(home: &str) -> String {
     format!("{home}/.claude/CLAUDE.md")
-}
-
-/// Where Claude Code finds the user's skills, one folder each.
-pub(super) fn skills_directory(home: &str) -> String {
-    format!("{home}/.claude/skills")
 }
 
 /// The stored Claude logins, each usable as soon as it is stored.
