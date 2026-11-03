@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::Error;
+use crate::{Error, sandbox::platform::PORTABLE_TERMINAL};
 
 /// One `Host` block in the generated client configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,15 +37,19 @@ pub fn render_config(entries: &[HostEntry], user_home: Option<&Path>) -> String 
          # Include it from your own client configuration with `agentctl ssh-config install`.\n",
     );
     for entry in entries {
+        // `SetEnv TERM` replaces the terminal type ssh sends with one the guest knows, as attaching
+        // does: the host's, such as `xterm-ghostty`, may not be installed there. OpenSSH 8.7 and
+        // later honor it.
         let _infallible = writeln!(
             text,
-            "\nHost {}\n    User {}\n    ProxyCommand {}\n    HostKeyAlias {}\n    IdentityFile {}\n    UserKnownHostsFile {}\n    IdentitiesOnly yes",
+            "\nHost {}\n    User {}\n    ProxyCommand {}\n    HostKeyAlias {}\n    IdentityFile {}\n    UserKnownHostsFile {}\n    IdentitiesOnly yes\n    SetEnv TERM={}",
             entry.alias,
             entry.user,
             entry.proxy_command,
             entry.host_key_alias,
             render_path(&entry.identity_file, user_home),
             render_path(&entry.known_hosts_file, user_home),
+            PORTABLE_TERMINAL,
         );
     }
     text
@@ -77,57 +81,118 @@ pub fn render_path(path: &Path, user_home: Option<&Path>) -> String {
     quote_config_value(&text).replace('%', "%%")
 }
 
-/// How the host runs the string OpenSSH hands to `ProxyCommand`.
+/// What reads a command line: how the host runs the string OpenSSH hands to
+/// `ProxyCommand`, or the terminal a person pastes a printed command into.
 ///
-/// Unix OpenSSH runs it through `/bin/sh -c`; Win32-OpenSSH hands it to
-/// `CreateProcess`, which knows only double quotes. `agentd` generates the
-/// configuration on the host that runs `ssh`, so it picks the host's shell.
+/// Unix OpenSSH runs it through the user's `$SHELL -c`, or `/bin/sh -c` without
+/// one; Win32-OpenSSH hands it to `CreateProcess`, which knows only double
+/// quotes. `agentd` generates the configuration on the host that runs `ssh`, so
+/// it picks the host's shell.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandShell {
-    /// `/bin/sh`: single quotes make every character literal.
+    /// `/bin/sh`, or a shell such as bash, zsh or fish: single quotes, with every backslash kept
+    /// outside them, make every character literal in each.
     Posix,
     /// `CreateProcess` command-line rules: double quotes, no expansion.
     Windows,
+    /// PowerShell, or cmd, where a person on Windows pastes a command: double quotes, which both
+    /// read, unless PowerShell would expand the word inside them, as it does `$`; then single
+    /// quotes, which PowerShell reads literally and cmd does not read at all. Not for a
+    /// `ProxyCommand`, which `CreateProcess` reads.
+    PowerShell,
 }
 
 impl CommandShell {
-    /// Returns the shell of the host this binary runs on.
+    /// Returns the shell running a `ProxyCommand` on the host this binary runs on.
     #[must_use]
     pub const fn host() -> Self {
         if cfg!(windows) { Self::Windows } else { Self::Posix }
     }
+
+    /// Returns the shell a person on the host this binary runs on pastes a printed command into.
+    #[must_use]
+    pub const fn terminal() -> Self {
+        if cfg!(windows) { Self::PowerShell } else { Self::Posix }
+    }
 }
 
-/// Renders the `ProxyCommand` value dialing one agent through `agentctl`.
+/// `text` as one word of a command line `shell` reads, quoted only when it needs to be.
+#[must_use]
+pub fn shell_word(text: &str, shell: CommandShell) -> String {
+    match shell {
+        CommandShell::Posix => posix_quote(text),
+        CommandShell::Windows => windows_quote(text),
+        CommandShell::PowerShell => powershell_quote(text),
+    }
+}
+
+/// A directory as one word of a command line `shell` reads, without a separator it ends with.
+///
+/// `C:\agents\` and `C:\agents` name the same directory, but only the first leaves the word
+/// depending on its reader: `CreateProcess` needs the backslash before the closing quote doubled,
+/// PowerShell keeps the doubled one, and Windows PowerShell 5.1 passes a single-quoted word with
+/// a space on in double quotes whose closing quote the backslash then escapes.
+#[must_use]
+pub fn directory_word(path: &Path, shell: CommandShell) -> String {
+    shell_word(&without_trailing_separator(path).to_string_lossy(), shell)
+}
+
+/// `path` without the separators it ends with, unless they are its root, as in `C:\` or `/`, and
+/// otherwise spelled as given.
+///
+/// Rebuilding the path from its components would also drop `.` and repeated separators, but
+/// `agentctl` opens an agent's runtime at a directory named for the exact bytes of the home it
+/// is given, so `/srv/./agents` must reach it spelled as `agentd` spells it.
+fn without_trailing_separator(path: &Path) -> &Path {
+    let Some(mut text) = path.to_str() else {
+        return path;
+    };
+    while let Some(shorter) = text.strip_suffix(std::path::is_separator) {
+        if Path::new(text).parent().is_none() {
+            break;
+        }
+        text = shorter;
+    }
+    Path::new(text)
+}
+
+/// Renders the `ProxyCommand` value dialing one agent through `agentctl`, on the control-plane
+/// `home` the agent belongs to.
 ///
 /// The executable is always absolute: the shell running the command on Unix
 /// would expand `~`, Win32-OpenSSH would not, and neither has `agentctl` on a
-/// predictable `PATH`. Three parsers see the value: OpenSSH percent-expands it
+/// predictable `PATH`. The home is named too, because OpenSSH runs the command
+/// in whatever environment `ssh` was started from, such as an editor's, where
+/// `AGENT_HOME` may name another home or none, and `agentctl` would then reach
+/// another `agentd`. Three parsers see the value: OpenSSH percent-expands it
 /// (`%h`, `%p`, so a literal `%` becomes `%%`), then the host's shell splits
-/// it. Quoting for that shell makes `$`, backticks, `;`, spaces and quotes in
-/// a user's directory name literal, so such paths work rather than being
-/// refused; only characters no configuration line can carry are rejected.
+/// it. Quoting each path for that shell makes `$`, backticks, `;`, spaces and
+/// quotes in a user's directory names literal, so such paths work rather than
+/// being refused; only characters no configuration line can carry are rejected.
 ///
 /// # Errors
 ///
-/// Returns an error when the path is not UTF-8 or contains a line break or NUL.
-pub fn render_proxy_command(agentctl: &Path, agent: &str, shell: CommandShell) -> Result<String, Error> {
-    let Some(executable) = agentctl.to_str() else {
+/// Returns an error when either path is not UTF-8 or contains a line break or NUL.
+pub fn render_proxy_command(agentctl: &Path, home: &Path, agent: &str, shell: CommandShell) -> Result<String, Error> {
+    let executable = command_word(agentctl, "agentctl path", shell)?;
+    let home = command_word(without_trailing_separator(home), "agent home", shell)?;
+    Ok(format!("{executable} --home {home} {}", proxy_arguments(agent)))
+}
+
+/// One path of a `ProxyCommand`, quoted for the host's shell and for OpenSSH's `%` expansion.
+fn command_word(path: &Path, what: &str, shell: CommandShell) -> Result<String, Error> {
+    let Some(text) = path.to_str() else {
         return Err(Error::Invalid(format!(
-            "agentctl path {} is not valid UTF-8 and cannot be written to the SSH client configuration",
-            agentctl.display()
+            "{what} {} is not valid UTF-8 and cannot be written to the SSH client configuration",
+            path.display()
         )));
     };
-    if executable.contains(['\n', '\r', '\0']) {
+    if text.contains(['\n', '\r', '\0']) {
         return Err(Error::Invalid(format!(
-            "agentctl path {executable:?} contains a line break, which no SSH configuration line can carry"
+            "{what} {text:?} contains a line break, which no SSH configuration line can carry"
         )));
     }
-    let quoted = match shell {
-        CommandShell::Posix => posix_quote(executable),
-        CommandShell::Windows => windows_quote(executable),
-    };
-    Ok(format!("{} {}", quoted.replace('%', "%%"), proxy_arguments(agent)))
+    Ok(shell_word(text, shell).replace('%', "%%"))
 }
 
 /// The arguments every agent's `ProxyCommand` ends with, whatever the executable.
@@ -151,22 +216,84 @@ pub fn resolves_through_agentctl(resolved: &str, agent: &str) -> bool {
     })
 }
 
-/// Quotes one word for `/bin/sh`: single quotes, with an embedded `'` written as `'\''`.
+/// Quotes one word for `/bin/sh`: single quotes, with an embedded `'` written as `'\''` and a
+/// backslash as `'\\'`.
+///
+/// The shell reads a backslash inside single quotes literally, but OpenSSH, which checks the
+/// quotes of every configuration line before it runs the command, reads one before `'` or `\` as
+/// an escape. A home such as `/tmp/agents\` would leave the quote open for OpenSSH, which then
+/// refuses the whole configuration. Outside the quotes both read `\'` and `\\` alike.
 fn posix_quote(text: &str) -> String {
     if is_plain(text) {
         return text.to_owned();
     }
-    format!("'{}'", text.replace('\'', r"'\''"))
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('\'');
+    for character in text.chars() {
+        match character {
+            '\'' => quoted.push_str(r"'\''"),
+            '\\' => quoted.push_str(r"'\\'"),
+            _ => quoted.push(character),
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+/// Quotes one word for PowerShell, or cmd, where a person on Windows pastes a command.
+///
+/// Double quotes, as for `CreateProcess`, which both read, unless the word has what PowerShell
+/// expands or ends a string on inside them: `$`, a backtick or a typographic double quote. Such a
+/// word is single-quoted, which PowerShell reads literally once each kind of single quote in it is
+/// doubled, and which cmd does not read at all. cmd also expands `%NAME%` inside double quotes,
+/// which no quoting prevents, so only PowerShell reads every word as written.
+fn powershell_quote(text: &str) -> String {
+    const SINGLE_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
+    if !text.contains(['$', '`', '\u{201C}', '\u{201D}', '\u{201E}']) {
+        return windows_quote(text);
+    }
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('\'');
+    for character in text.chars() {
+        if SINGLE_QUOTES.contains(&character) {
+            quoted.push(character);
+        }
+        quoted.push(character);
+    }
+    quoted.push('\'');
+    quoted
 }
 
 /// Quotes one word for `CreateProcess` command-line parsing: double quotes, in
-/// which a backslash is literal unless it precedes a `"`; `"` is not valid in a
-/// Windows path, so it is escaped defensively.
+/// which a backslash is literal unless it precedes a `"`. The backslashes
+/// before a `"`, including the closing one after a directory such as `C:\agents\`,
+/// are doubled so they stay literal and the quote still ends the word. `"` is
+/// not valid in a Windows path, so it is escaped defensively.
 fn windows_quote(text: &str) -> String {
     if is_plain(text) {
         return text.to_owned();
     }
-    format!("\"{}\"", text.replace('"', "\\\""))
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    let mut backslashes = 0;
+    for character in text.chars() {
+        match character {
+            '\\' => backslashes += 1,
+            '"' => {
+                quoted.extend(std::iter::repeat_n('\\', 2 * backslashes + 1));
+                quoted.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                quoted.extend(std::iter::repeat_n('\\', backslashes));
+                quoted.push(character);
+                backslashes = 0;
+            }
+        }
+    }
+    quoted.extend(std::iter::repeat_n('\\', 2 * backslashes));
+    quoted.push('"');
+    quoted
 }
 
 /// Whether a token needs no quoting under any of the parsers involved.
@@ -363,39 +490,178 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        CommandShell, IncludeOutcome, install_include, remove_known_host, render_proxy_command,
-        resolves_through_agentctl, upsert_known_host,
+        CommandShell, IncludeOutcome, directory_word, install_include, remove_known_host, render_proxy_command,
+        resolves_through_agentctl, shell_word, upsert_known_host,
     };
+
+    const AGENTCTL: &str = "/usr/local/bin/agentctl";
+    const HOME: &str = "/home/someone/.agent";
 
     #[test]
     fn a_proxy_command_that_cannot_be_written_on_one_line_is_refused() {
         for impossible in ["/opt/line\nbreak/agentctl", "/opt/nul\0/agentctl"] {
             assert!(
-                render_proxy_command(Path::new(impossible), "worker", CommandShell::Posix).is_err(),
+                render_proxy_command(Path::new(impossible), Path::new(HOME), "worker", CommandShell::Posix).is_err(),
                 "{impossible:?} cannot be written on one configuration line"
+            );
+            assert!(
+                render_proxy_command(
+                    Path::new(AGENTCTL),
+                    Path::new(impossible),
+                    "worker",
+                    CommandShell::Posix
+                )
+                .is_err(),
+                "a home of {impossible:?} cannot be written on one configuration line"
             );
         }
     }
 
-    /// The Unix form survives the real shell: what `sh` sees after OpenSSH has
-    /// undone `%%` is exactly the installed path.
+    /// The Windows form quotes each path for `CreateProcess`, so a home with spaces stays one
+    /// argument, and doubles `%` for OpenSSH.
+    #[test]
+    fn windows_proxy_command_quotes_the_executable_and_the_home() {
+        let rendered = render_proxy_command(
+            Path::new(r"C:\Program Files\Agent\agentctl.exe"),
+            Path::new(r"C:\Users\Ada Lovelace\100%\.agent"),
+            "worker",
+            CommandShell::Windows,
+        )
+        .expect("windows");
+        assert_eq!(
+            rendered,
+            r#""C:\Program Files\Agent\agentctl.exe" --home "C:\Users\Ada Lovelace\100%%\.agent" ssh-proxy agent/worker"#
+        );
+    }
+
+    /// Backslashes are literal for `CreateProcess` except before a `"`, so only those are
+    /// doubled. Otherwise a directory ending in `\` would escape the closing quote, and OpenSSH
+    /// would refuse the whole configuration for its unbalanced quotes.
+    #[test]
+    fn windows_words_double_only_the_backslashes_before_a_quote() {
+        for (text, quoted) in [
+            (r"C:\agents\", r#""C:\agents\\""#),
+            (r"\\server\share\my agents\\", r#""\\server\share\my agents\\\\""#),
+            (r#"C:\odd\"name"#, r#""C:\odd\\\"name""#),
+        ] {
+            assert_eq!(shell_word(text, CommandShell::Windows), quoted, "{text}");
+        }
+    }
+
+    /// PowerShell expands `$` and backticks inside double quotes, so a home such as
+    /// `C:\Users\adm$ada` would lose `$ada`; only such words are single-quoted, so cmd still reads
+    /// the rest.
+    #[test]
+    fn powershell_words_keep_dollars_and_backticks_literal() {
+        for (text, quoted) in [
+            (r"C:\Users\adm$ada\.agent", r"'C:\Users\adm$ada\.agent'"),
+            (r"C:\Users\it's $ada\.agent", r"'C:\Users\it''s $ada\.agent'"),
+            (r"C:\Users\a`b\.agent", r"'C:\Users\a`b\.agent'"),
+            (
+                "C:\\Users\\\u{201C}Ada\u{201D}\u{2019}s\\.agent",
+                "'C:\\Users\\\u{201C}Ada\u{201D}\u{2019}\u{2019}s\\.agent'",
+            ),
+            (r"C:\Users\Ada Lovelace\.agent", r#""C:\Users\Ada Lovelace\.agent""#),
+            ("agentctl", "agentctl"),
+        ] {
+            assert_eq!(shell_word(text, CommandShell::PowerShell), quoted, "{text}");
+        }
+    }
+
+    /// A home given with trailing separators is named without them, so no reader has to tell a
+    /// backslash before the closing quote from an escaped quote, but otherwise as given, since the
+    /// agent's runtime directory is named for the home's exact spelling.
     #[cfg(unix)]
     #[test]
-    fn posix_proxy_command_round_trips_through_sh() {
+    fn a_home_is_named_without_its_trailing_separators_only() {
+        let rendered = render_proxy_command(
+            Path::new(AGENTCTL),
+            Path::new("/home/someone/./my agents//"),
+            "worker",
+            CommandShell::Posix,
+        )
+        .expect("posix");
+        assert_eq!(
+            rendered,
+            "/usr/local/bin/agentctl --home '/home/someone/./my agents' ssh-proxy agent/worker"
+        );
+        assert_eq!(
+            directory_word(Path::new("/srv//agents/"), CommandShell::Posix),
+            "/srv//agents"
+        );
+        assert_eq!(directory_word(Path::new("/"), CommandShell::Posix), "/");
+        assert_eq!(directory_word(Path::new("//"), CommandShell::Posix), "//");
+    }
+
+    /// On Windows, `C:\my $agents\` would otherwise end in a backslash that Windows PowerShell 5.1
+    /// passes on before a closing double quote, and that `CreateProcess` needs doubled.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_home_is_named_without_its_trailing_separator() {
+        assert_eq!(
+            directory_word(Path::new(r"C:\my $agents\"), CommandShell::PowerShell),
+            r"'C:\my $agents'"
+        );
+        assert_eq!(
+            directory_word(Path::new(r"C:\my agents\"), CommandShell::PowerShell),
+            r#""C:\my agents""#
+        );
+        assert_eq!(
+            render_proxy_command(
+                Path::new(r"C:\Agent\agentctl.exe"),
+                Path::new(r"C:\agents\"),
+                "worker",
+                CommandShell::Windows
+            )
+            .expect("windows"),
+            r#""C:\Agent\agentctl.exe" --home "C:\agents" ssh-proxy agent/worker"#
+        );
+        assert_eq!(
+            directory_word(Path::new("D:/agents/./x/"), CommandShell::PowerShell),
+            "D:/agents/./x"
+        );
+        assert_eq!(directory_word(Path::new(r"C:\"), CommandShell::Windows), r#""C:\\""#);
+    }
+
+    /// The Unix form survives OpenSSH and the real shell: OpenSSH accepts the line's quotes, and
+    /// what `sh` sees after OpenSSH has undone `%%` is exactly the installed path and the home, as
+    /// separate words.
+    #[cfg(unix)]
+    #[test]
+    fn posix_proxy_command_round_trips_through_ssh_and_sh() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let config = directory.path().join("config");
         for path in [
             "/opt/agent tools/agentctl",
             "/home/we$ird;u'ser/`id`/agentctl",
             "/home/100%/agent\"quote/agentctl",
+            r"/home/back\slash\'quote\\/agentctl\",
         ] {
-            let rendered = render_proxy_command(Path::new(path), "worker", CommandShell::Posix).expect("posix");
+            let home = path.replace("agentctl", "agent home");
+            let rendered =
+                render_proxy_command(Path::new(path), Path::new(&home), "worker", CommandShell::Posix).expect("posix");
+            std::fs::write(&config, format!("Host worker\n  ProxyCommand {rendered}\n")).expect("config");
+            let resolved = std::process::Command::new("ssh")
+                .arg("-F")
+                .arg(&config)
+                .arg("-G")
+                .arg("worker")
+                .output()
+                .expect("ssh");
+            assert!(
+                resolved.status.success(),
+                "OpenSSH refuses {rendered:?}: {}",
+                String::from_utf8_lossy(&resolved.stderr)
+            );
             let command = rendered.replace("%%", "%");
-            let word = command.strip_suffix(" ssh-proxy agent/worker").expect("suffix");
+            let words = command.strip_suffix(" ssh-proxy agent/worker").expect("suffix");
             let output = std::process::Command::new("sh")
                 .arg("-c")
-                .arg(format!("printf '%s' {word}"))
+                .arg(format!("printf '%s\\n' {words}"))
                 .output()
                 .expect("sh");
-            assert_eq!(String::from_utf8(output.stdout).expect("UTF-8"), path);
+            let printed = String::from_utf8(output.stdout).expect("UTF-8");
+            assert_eq!(printed.lines().collect::<Vec<_>>(), [path, "--home", home.as_str()]);
         }
     }
 
@@ -522,8 +788,13 @@ mod tests {
 
     #[test]
     fn a_resolved_alias_reaches_the_agent_only_through_its_own_proxy_command() {
-        let proxy = render_proxy_command(Path::new("/opt/my tools/100%/agentctl"), "worker", CommandShell::Posix)
-            .expect("proxy command");
+        let proxy = render_proxy_command(
+            Path::new("/opt/my tools/100%/agentctl"),
+            Path::new(HOME),
+            "worker",
+            CommandShell::Posix,
+        )
+        .expect("proxy command");
         let resolved = format!("user agent\nproxycommand {proxy}\nhostkeyalias agent-1\n");
 
         assert!(resolves_through_agentctl(&resolved, "worker"));

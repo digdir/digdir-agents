@@ -1,10 +1,7 @@
 //! Whether an application started here reaches the person, and the program
 //! that opens addresses on this operating system.
 
-use std::{
-    ffi::{OsStr, OsString},
-    path::PathBuf,
-};
+use std::ffi::{OsStr, OsString};
 
 /// The opener under WSL, a Windows program reached through the Windows `PATH`.
 pub(super) const WSL_OPENER: &str = "rundll32.exe";
@@ -46,7 +43,7 @@ pub(crate) async fn copy_to_clipboard(text: &str) -> Result<&'static str, String
     let path = variable("PATH");
     let (program, arguments) = copiers(variable)
         .into_iter()
-        .find(|(program, _)| find_executable(path.as_deref(), &[program]).is_some())
+        .find(|(program, _)| agent::local::process::find_executable(path.as_deref(), &[program]).is_some())
         .ok_or_else(|| "no clipboard program for this session is installed".to_owned())?;
     let mut child = tokio::process::Command::new(program)
         .args(arguments)
@@ -150,7 +147,7 @@ pub(crate) fn launch_blocked(variable: impl Fn(&str) -> Option<OsString>) -> Opt
         if set("SSH_CONNECTION") || set("SSH_TTY") {
             return Some("this terminal is reached over SSH, so it would open on that machine".into());
         }
-        (wsl && find_executable(variable("PATH").as_deref(), &[WSL_OPENER]).is_none())
+        (wsl && agent::local::process::find_executable(variable("PATH").as_deref(), &[WSL_OPENER]).is_none())
             .then(|| format!("{WSL_OPENER} is not on PATH, so nothing here reaches the Windows desktop"))
     } else {
         (!set("DISPLAY") && !set("WAYLAND_DISPLAY")).then(|| "this terminal has no display to open windows on".into())
@@ -165,23 +162,6 @@ pub(super) fn wsl(variable: impl Fn(&str) -> Option<OsString>) -> bool {
 
 pub(super) fn set(variable: &impl Fn(&str) -> Option<OsString>, name: &str) -> bool {
     variable(name).is_some_and(|value| !value.is_empty())
-}
-
-/// Finds the first of `names` in `path`, a `PATH`-style variable, trying every
-/// absolute directory for one name before the next.
-pub(super) fn find_executable(path: Option<&OsStr>, names: &[&str]) -> Option<PathBuf> {
-    let directories = path
-        .map(std::env::split_paths)
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    names.iter().find_map(|name| {
-        directories
-            .iter()
-            .filter(|directory| directory.is_absolute())
-            .map(|directory| directory.join(name))
-            .find(|candidate| candidate.is_file())
-    })
 }
 
 #[cfg(test)]

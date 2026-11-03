@@ -90,10 +90,12 @@ fn terminal_options() -> Vec<String> {
         "extended-keys-format",
         "csi-u",
         ";",
+        // tmux passes OSC 8 hyperlinks, such as the links a harness prints, only to terminals with
+        // the hyperlinks feature, and shows just their text everywhere else.
         "set-option",
         "-s",
         "terminal-features[99]",
-        "xterm*:extkeys",
+        "xterm*:extkeys:hyperlinks",
         ";",
         "bind-key",
         "-n",

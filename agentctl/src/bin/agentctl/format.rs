@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use agent::{Agent, ConditionStatus};
 
 /// Lists the declared access capabilities, or `-` when there are none.
@@ -32,8 +34,10 @@ pub(crate) fn ssh_access_lines(access: &agent::ssh::AccessInfo) -> Vec<String> {
     ]
 }
 
-/// Renders a VNC access descriptor as aligned `key: value` lines.
-pub(crate) fn vnc_access_lines(access: &agent::vnc::AccessInfo) -> Vec<String> {
+/// Renders a VNC access descriptor as aligned `key: value` lines. The commands it suggests name
+/// `home`, the control-plane home the agent belongs to, as the forwarding command does.
+pub(crate) fn vnc_access_lines(access: &agent::vnc::AccessInfo, home: &Path) -> Vec<String> {
+    let agentctl = agent::vnc::agentctl_command(home);
     vec![
         format!("Type:        {}", access.kind),
         format!("Agent:       {}", access.agent),
@@ -41,10 +45,10 @@ pub(crate) fn vnc_access_lines(access: &agent::vnc::AccessInfo) -> Vec<String> {
         format!("Guest port:  {}", access.guest_port),
         access.web_guest_port.map_or_else(
             || "Web port:    - (none, or unknown until the agent is next reconciled)".to_owned(),
-            |port| format!("Web port:    {port}  (agentctl vnc --web {})", access.agent),
+            |port| format!("Web port:    {port}  ({agentctl} vnc --web {})", access.agent),
         ),
         format!("Forward:     {}", access.forward_command),
-        format!("Connect:     agentctl vnc {}", access.agent),
+        format!("Connect:     {agentctl} vnc {}", access.agent),
     ]
 }
 
@@ -390,6 +394,32 @@ mod tests {
             lines
                 .iter()
                 .any(|line| line.contains("SandboxReconcileFailed") && line.contains(" 3m "))
+        );
+    }
+
+    /// Pasted, every command `vnc-info` suggests reaches the agent's own home, not the default.
+    #[test]
+    fn vnc_info_commands_name_the_home() {
+        let home = Path::new("/home/ada lovelace/.agent");
+        let agentctl = agent::vnc::agentctl_command(home);
+        let access = agent::vnc::AccessInfo {
+            kind: "vnc".into(),
+            agent: "viewer".into(),
+            agent_id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
+            guest_port: 5900,
+            web_guest_port: Some(6080),
+            forward_command: format!("{agentctl} port-forward agent/viewer :5900"),
+        };
+
+        let lines = vnc_access_lines(&access, home);
+
+        assert!(
+            lines.contains(&format!("Web port:    6080  ({agentctl} vnc --web viewer)")),
+            "{lines:#?}"
+        );
+        assert!(
+            lines.contains(&format!("Connect:     {agentctl} vnc viewer")),
+            "{lines:#?}"
         );
     }
 }

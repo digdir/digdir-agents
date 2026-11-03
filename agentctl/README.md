@@ -32,7 +32,16 @@ To keep more than one subscription, such as one for work and one of your own, st
 `login: [work, private]` or `login: any`, each agent gets whichever of them the fewest other running agents use, and
 keeps it. `agentctl claude list` shows the logins and the agents that use each.
 
-Update with `agentctl self update`. Agents and sessions carry over.
+Give the coding agents on your machine, such as Claude Code, Codex and Pi, the skill for driving agents:
+
+```sh
+agentctl skills install --bundled agentctl --user
+```
+
+`agentctl skills install --help` shows how to install your own skills for yourself or a repository.
+
+Update with `agentctl self update`. Agents and sessions carry over. Run the `skills install` command above again to
+update the skill as well.
 
 ## Your first agent
 
