@@ -232,17 +232,11 @@ impl Client {
         let root_filesystem_mode = resources.root_filesystem().mode();
         let nested_sandboxes = resources.nested_sandboxes();
         let resources = RuntimeResources::try_from(resources)?;
-        let mut builder = microsandbox::sandbox::SandboxBuilder::new(name)
+        let builder = microsandbox::sandbox::SandboxBuilder::new(name)
             .image(image.into())
             .cpus(resources.cpus)
             .memory(resources.memory_mib)
             .nested_virt(nested_sandboxes);
-        if nested_sandboxes {
-            // Backing nested VMs with huge pages lets the guest's KVM map their memory in 2 MiB blocks.
-            // Under Hypervisor.framework every 4 KiB mapping a nested VM holds makes each of its later
-            // memory faults slower. The policy is fixed when the sandbox is created.
-            builder = builder.thp(microsandbox::sandbox::TransparentHugePagePolicy::Always);
-        }
         Ok(match root_filesystem_mode {
             sandbox::RootFilesystemMode::Layered => builder.root_disk(resources.root_filesystem_mib),
             sandbox::RootFilesystemMode::Direct => {
@@ -560,10 +554,6 @@ mod tests {
         assert_eq!(config.spec.image.oci_managed_root_disk_size_mib(), Some(4 * 1024));
         assert_eq!(config.spec.runtime.workdir, None);
         assert_eq!(config.spec.resources.nested_virt, Some(false));
-        assert_eq!(
-            config.spec.resources.thp,
-            microsandbox::sandbox::TransparentHugePagePolicy::Madvise
-        );
 
         let config = Box::pin(super::build_in_client_scope(
             Client::sandbox_builder("sandbox", "alpine", resources.with_nested_sandboxes(true))
@@ -571,10 +561,6 @@ mod tests {
         ))
         .await;
         assert_eq!(config.spec.resources.nested_virt, Some(true));
-        assert_eq!(
-            config.spec.resources.thp,
-            microsandbox::sandbox::TransparentHugePagePolicy::Always
-        );
     }
 
     #[tokio::test(flavor = "local")]
