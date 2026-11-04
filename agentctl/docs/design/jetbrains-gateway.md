@@ -15,7 +15,7 @@ tab, `host-app-over-ssh.md`, can share.
 Once, in a checkout with an agent definition, the user states their own preference:
 
 ```sh
-agentctl apply --local ide:jetbrains
+agentctl setup --client jetbrains
 ```
 
 Then, whenever they want the IDE:
@@ -144,16 +144,18 @@ does not depend on the image.
 
 ## Proposal
 
-**`agentctl` writes the local variant.** `agentctl apply --local ide:jetbrains` welds the repository's definition and
-the user's preference. It writes or updates `agent.me.yaml` beside the manifest, extending it, keeps the file out of
-git through `.git/info/exclude` rather than the repository's `.gitignore`, and applies it. It computes the merged
-lists itself, so the variant is right when written, and copies a preference kept elsewhere into the file with its
-source noted, so the agent definition stays in one directory. Running it again picks up changes on either side. It
-also records the client for the agent on the host, so `connect` needs no flags.
+**`agentctl setup` writes the choice into the person's variant.** `setup`
+([#359](https://github.com/digdir/digdir-agents/pull/359)) already writes `agent.mine.yaml`, a variant beside the
+repository's manifest that git ignores and that holds only what the person's answers change. `--client jetbrains`
+adds `access: ssh` and the IDE's memory to it, and records `jetbrains` as the agent's default client, so `connect`
+needs no flags. A preference kept elsewhere is copied into the variant with its source noted, so the agent definition
+stays in one directory.
 
-**Lists of keyed entries merge by key.** If a variant merged `access` by `type`, `environment` by `name` and
-`secrets` by `environment`, a variant could add an entry without repeating the base's, and would not go stale. That
-changes what existing variants mean, so it is a decision of its own. Until then, `apply --local` has to recompute.
+**Keyed lists merge by key.** A variant merges each entry of `access` and `harnesses` by `type`, `environment` by
+`name`, `secrets` by `environment`, `skills` by name and `sandbox.mounts` by `target`, the keys the manifest already
+requires to be unique. Inherited entries keep their place and new ones follow. A variant then adds `ssh` to `access`
+with one entry, and an entry the team adds later still reaches the agent. Without it, `setup` has to restate the whole
+list, which is the one place its variant stops following the team's manifest.
 
 **`agentd` provides a Java trust store.** The host holds the mediated CA. `agentd` can write a PKCS12 trust store with
 it at a fixed path in every agent at boot, beside the system bundle, so no image has to build one. Whatever installs
@@ -167,7 +169,8 @@ in `/etc/agent-access.d/jetbrains.conf`, as the `desktop` feature describes its 
 code, the build and the path. A repository that wants it offers a Dockerfile stage with the feature, which a local
 variant selects with `target`.
 
-**One verb opens any client.** The TUI's open menu and the Claude app proposal share it:
+**One verb opens any client** ([#386](https://github.com/digdir/digdir-agents/issues/386)). The TUI's open menu and
+the Claude app proposal share it:
 
 ```sh
 agentctl connect <agent> [--client gateway|claude-app|vscode|zed] [--project <path>] [--ide <product>]
