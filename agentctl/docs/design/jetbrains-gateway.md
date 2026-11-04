@@ -151,11 +151,12 @@ adds `access: ssh` and the IDE's memory to it, and records `jetbrains` as the ag
 needs no flags. A preference kept elsewhere is copied into the variant with its source noted, so the agent definition
 stays in one directory.
 
-**Keyed lists merge by key.** A variant merges each entry of `access` and `harnesses` by `type`, `environment` by
-`name`, `secrets` by `environment`, `skills` by name and `sandbox.mounts` by `target`, the keys the manifest already
-requires to be unique. Inherited entries keep their place and new ones follow. A variant then adds `ssh` to `access`
-with one entry, and an entry the team adds later still reaches the agent. Without it, `setup` has to restate the whole
-list, which is the one place its variant stops following the team's manifest.
+**Keyed lists merge by key** ([#395](https://github.com/digdir/digdir-agents/issues/395)). A variant merges each
+entry of `access` and `harnesses` by `type`, `environment` by `name`, `secrets` by `environment`, `skills` by name and
+`sandbox.mounts` by `target`, the keys the manifest already requires to be unique. Inherited entries keep their place
+and new ones follow. A variant then adds `ssh` to `access` with one entry, and an entry the team adds later still
+reaches the agent. Without it, `setup` has to restate the whole list, which is the one place its variant stops
+following the team's manifest.
 
 **`agentd` provides a Java trust store.** The host holds the mediated CA. `agentd` can write a PKCS12 trust store with
 it at a fixed path in every agent at boot, beside the system bundle, so no image has to build one. Whatever installs
