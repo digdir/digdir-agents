@@ -28,6 +28,10 @@ ignore = [
   { id = "RUSTSEC-2026-0391", reason = "zstd 0.13 with_context reuse; Microsandbox and msb_krun_vmm do not use with_context" },
   { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7 Seekable::decompress; the seekable feature is not enabled" },
   { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7 legacy decompress_stream into a Vec; Microsandbox and msb_krun_vmm use read::Decoder, which is not affected" },
+  # astral-tokio-tar is unmaintained and has no successor release. Microsandbox uses it to unpack image layers and to
+  # write and read snapshot archives; the advisory reports no vulnerability. Moving Microsandbox to another tar crate,
+  # such as tar-codec, removes this entry.
+  { id = "RUSTSEC-2026-0440", reason = "unmaintained astral-tokio-tar used by Microsandbox; no known vulnerability or safe upgrade" },
 ]
 
 [sources]
