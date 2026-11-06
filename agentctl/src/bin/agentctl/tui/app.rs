@@ -6,7 +6,7 @@ use std::{
 };
 
 use agent::{
-    Agent, Condition, ConditionStatus, Effort, FailureKind, Harness, HarnessSpec, Model, ModelSelection, RunState,
+    Agent, AgentPhase, Condition, Effort, Harness, HarnessSpec, Model, ModelSelection, RunState,
     sessions::{Session, SessionName, State, Turn},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -2001,7 +2001,7 @@ impl App {
                 self.modal = Some(Modal::ConfirmDelete { agent: name, sessions });
             }
             // Starting before the stop is recorded would cancel it, so wait for it.
-            KeyCode::Char('x') if stop_pending(agent) => {}
+            KeyCode::Char('x') if agent.stop_pending() => {}
             KeyCode::Char('x') if agent.spec.is_stopped() => {
                 return Action::SetRunState {
                     agent: name,
@@ -2848,7 +2848,7 @@ impl App {
         }
         match self.selected_row() {
             Some(Row::Agent(group)) => match self.group_agent(group) {
-                Some(agent) if stop_pending(agent) => &STOPPING_AGENT_HINTS,
+                Some(agent) if agent.stop_pending() => &STOPPING_AGENT_HINTS,
                 Some(agent) if agent.spec.is_stopped() => &STOPPED_AGENT_HINTS,
                 _ => &AGENT_HINTS,
             },
@@ -2885,89 +2885,52 @@ struct AgentState {
     since: Option<OffsetDateTime>,
 }
 
-/// Reads an agent's state from its typed status: deletion first, then the
-/// class of the last failure, the pass in progress and readiness.
+/// Shows an agent's [`AgentPhase`] with its tone, the detail beside it and when it entered it.
 ///
-/// A failure holds while its generation is current, so an agent that is
-/// retrying stays Retrying through each retry, and time in state is how long
-/// `Ready` has been in its current state. A pass for a newer generation is
-/// provisioning the change, and its time in state is the pass's own.
+/// Time in state is how long `Ready` has been in its current state, except while a pass provisions a change, when it
+/// is the pass's own. A detail that explains why the agent is not ready is a failure, whose cause is at its end.
 fn agent_state(agent: &Agent) -> AgentState {
-    let state = |tone, label, detail, since| AgentState {
+    let phase = agent.phase();
+    let state = |tone, detail, since| AgentState {
         tone,
-        label,
+        label: phase.as_str(),
         detail,
         failure: false,
         since,
     };
-    let failed = |tone, label, detail, since| AgentState {
+    let failed = |tone, detail, since| AgentState {
         failure: true,
-        ..state(tone, label, detail, since)
+        ..state(tone, detail, since)
     };
-    if let Some(deleted) = agent.metadata.deletion_timestamp {
-        return state(Tone::Red, "Terminating", String::new(), Some(deleted));
-    }
     let ready = agent.status.ready_condition();
     let entered = ready.and_then(|ready| ready.last_transition_time);
     let message = || ready.map_or_else(String::new, |ready| ready.detail().trim_end().to_owned());
-    let failure = agent
-        .status
-        .failure
-        .filter(|_| agent.status.observed_generation == agent.metadata.generation);
-    let changing = if agent.spec.is_stopped() {
-        if !stop_pending(agent) {
-            return state(Tone::Gray, "Stopped", String::new(), entered);
-        }
-        // A failed stop reads as Retrying below, like any other failed pass.
-        failure.is_none().then_some("Stopping")
-    } else if agent.restart_pending() {
-        // Until its sandbox has stopped; a failed stop reads as Retrying below.
-        failure.is_none().then_some("Restarting")
-    } else {
-        // A running agent recorded stopped, as a start or a restart leaves it, starts next.
-        ready
-            .is_some_and(|ready| {
-                [Condition::REASON_STARTING, Condition::REASON_STOPPED].contains(&ready.reason.as_str())
-            })
-            .then_some("Starting")
-    };
-    if let Some(label) = changing {
-        let detail = provisioning(agent).map_or_else(String::new, progress_summary);
-        return state(Tone::Cyan, label, detail, entered);
-    }
-    // Retried like any transient failure, but nothing reaches the guest until it responds again.
-    if agent.status.unresponsive().is_some() {
-        return failed(Tone::Red, "Unresponsive", message(), entered);
-    }
-    // Nothing is provisioned until the volumes it mounts have a copy, so it says which and why.
-    if failure.is_none() && ready.is_some_and(|ready| ready.reason == Condition::REASON_WAITING_FOR_VOLUMES) {
-        return state(Tone::Yellow, "Waiting", message(), entered);
-    }
-    match (failure, provisioning(agent)) {
-        (Some(FailureKind::Invalid), _) => failed(Tone::Red, "Failed", message(), entered),
-        (Some(FailureKind::Transient), Some(progress)) => {
-            state(Tone::Yellow, "Retrying", progress_summary(progress), entered)
-        }
-        (Some(FailureKind::Transient), None) => failed(Tone::Yellow, "Retrying", message(), entered),
-        (None, Some(progress)) => state(
-            Tone::Cyan,
-            "Provisioning",
-            progress_summary(progress),
-            Some(pass_started(progress)),
+    let progress = || provisioning(agent).map_or_else(String::new, progress_summary);
+    match phase {
+        AgentPhase::Terminating => state(Tone::Red, String::new(), agent.metadata.deletion_timestamp),
+        AgentPhase::Stopped => state(Tone::Gray, String::new(), entered),
+        // Starting a stopped sandbox shows the pass; a sandbox that is up but not ready yet says why.
+        AgentPhase::Starting if ready.is_some_and(|ready| !starting(ready)) => failed(Tone::Cyan, message(), entered),
+        AgentPhase::Starting | AgentPhase::Stopping | AgentPhase::Restarting => state(Tone::Cyan, progress(), entered),
+        AgentPhase::Unresponsive | AgentPhase::Failed => failed(Tone::Red, message(), entered),
+        AgentPhase::Retrying => provisioning(agent).map_or_else(
+            || failed(Tone::Yellow, message(), entered),
+            |progress| state(Tone::Yellow, progress_summary(progress), entered),
         ),
-        (None, None) => match ready.map(|ready| ready.status) {
-            None => state(Tone::Gray, "Pending", String::new(), None),
-            Some(ConditionStatus::True) => state(Tone::Green, "Ready", String::new(), entered),
-            Some(_) => failed(Tone::Cyan, "Starting", message(), entered),
-        },
+        // Nothing is provisioned until the volumes it mounts have a copy, so it says which and why.
+        AgentPhase::Waiting => state(Tone::Yellow, message(), entered),
+        AgentPhase::Provisioning => provisioning(agent).map_or_else(
+            || state(Tone::Cyan, String::new(), entered),
+            |progress| state(Tone::Cyan, progress_summary(progress), Some(pass_started(progress))),
+        ),
+        AgentPhase::Pending => state(Tone::Gray, String::new(), None),
+        AgentPhase::Ready => state(Tone::Green, String::new(), entered),
     }
 }
 
-/// Whether the agent was asked to stop and no pass for that generation has
-/// recorded it stopped yet.
-fn stop_pending(agent: &Agent) -> bool {
-    agent.spec.is_stopped()
-        && !(agent.status.observed_generation == agent.metadata.generation && agent.status.is_stopped())
+/// Whether a `Ready` condition records a start under way, or a stop that a start comes after.
+fn starting(ready: &Condition) -> bool {
+    [Condition::REASON_STARTING, Condition::REASON_STOPPED].contains(&ready.reason.as_str())
 }
 
 /// When a pass started: before the phase in progress by the time its
@@ -3081,6 +3044,7 @@ pub(crate) mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+    use agent::{ConditionStatus, FailureKind};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
