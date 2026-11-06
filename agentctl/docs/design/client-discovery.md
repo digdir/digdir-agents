@@ -21,7 +21,7 @@ The rest, clients work out themselves:
 
 | What | Who works it out | What goes wrong |
 | --- | --- | --- |
-| Whether an agent can be used now | The TUI, and T3 Code with a copy of the TUI's rules | The answer combines deletion, run state, conditions, failure and progress into ten states. There are two copies already, and a tray or GUI would make a third. |
+| Whether an agent can be used now | The TUI, and T3 Code with a copy of the TUI's rules | The answer combines deletion, run state, conditions, failure and progress into eleven states. There are two copies already, and a tray or GUI would make a third. |
 | Which agents a client should touch | Nobody | The only signal is `access: ssh`, which says that an agent can be reached, not whom it is for. A T3 Code server on a host started itself in every agent with SSH, including one a person had open in Rider. |
 | Whether an agent is the one the client knew | Nobody | A resource carries only its name, and a deleted agent's name can come back as a new agent ([#301](https://github.com/digdir/digdir-agents/issues/301)). Gateway's and the Claude app's host lists and T3 Code's environments keep a reference longer than an agent may live. |
 | The project to open | Nobody | `ssh-info` always says `/home/agent/code`. The repository the image clones is below it, so every editor opens beside the project rather than in it. |
