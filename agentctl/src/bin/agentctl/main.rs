@@ -152,6 +152,13 @@ enum Command {
         /// Keep printing the resources each time they change, as one line each with `-o json`.
         #[arg(short = 'w', long)]
         watch: bool,
+        /// Only the agents whose labels match, in Kubernetes' syntax, such as `client=t3code`, `!managed-by` or
+        /// `client in (t3code,jetbrains)`. Requirements separated by commas must all match.
+        #[arg(short = 'l', long, value_parser = parse_selector)]
+        selector: Option<agent::labels::Selector>,
+        /// Show the value of these labels as columns. Separate several with commas, or repeat the flag.
+        #[arg(short = 'L', long = "label-columns", value_name = "KEY", value_delimiter = ',')]
+        label_columns: Vec<String>,
         /// Output format.
         #[arg(short = 'o', long, default_value = "table", value_enum)]
         output: OutputFormat,
@@ -687,6 +694,8 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             all_agents,
             archived,
             watch,
+            selector,
+            label_columns,
             output,
         } => {
             let scope = SessionScope {
@@ -695,7 +704,11 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 all_agents,
                 archived,
             };
-            get_resources(client, &resource, name, scope, watch, output).await?;
+            let labels = LabelView {
+                selector,
+                columns: label_columns,
+            };
+            get_resources(client, &resource, name, scope, &labels, watch, output).await?;
         }
         Command::Describe { resource, name, output } => describe(client, &resource, name, output).await?,
         Command::Label { resource, changes } => {
@@ -839,11 +852,30 @@ impl SessionFilter {
     }
 }
 
+/// Which agents `get` shows by their labels, and which labels it shows as columns.
+struct LabelView {
+    selector: Option<agent::labels::Selector>,
+    columns: Vec<String>,
+}
+
+impl LabelView {
+    fn selects(&self, agent: &Agent) -> bool {
+        self.selector
+            .as_ref()
+            .is_none_or(|selector| selector.matches(&agent.metadata.labels))
+    }
+
+    fn table(&self, agents: &[Agent]) -> Vec<String> {
+        agents_table(agents, &self.columns)
+    }
+}
+
 async fn get_resources(
     client: &Client,
     resource: &str,
     name: Option<String>,
     scope: SessionScope,
+    labels: &LabelView,
     watch: bool,
     output: OutputFormat,
 ) -> CommandResult<()> {
@@ -852,18 +884,24 @@ async fn get_resources(
     match resource {
         Resource::Agent => {
             reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
-            let agents = if let Some(name) = &name {
+            if name.is_some() && labels.selector.is_some() {
+                return Err(Error::Invalid("a name and a --selector cannot be given together".into()).into());
+            }
+            let mut agents = if let Some(name) = &name {
                 vec![client.get(name).await?]
             } else {
                 client.list_agents().await?
             };
+            agents.retain(|agent| labels.selects(agent));
             if watch {
                 return watch::follow(
                     client,
                     |resources| {
                         let mut agents = resources.agents;
-                        agents.retain(|agent| name.as_ref().is_none_or(|name| agent.metadata.name == *name));
-                        render_watched(output, &agents, agents_table)
+                        agents.retain(|agent| {
+                            name.as_ref().is_none_or(|name| agent.metadata.name == *name) && labels.selects(agent)
+                        });
+                        render_watched(output, &agents, |agents| labels.table(agents))
                     },
                     &mut std::io::stdout(),
                 )
@@ -871,10 +909,13 @@ async fn get_resources(
             }
             match output {
                 OutputFormat::Json => print_json(&agents)?,
-                OutputFormat::Table => print_table(&agents_table(&agents)),
+                OutputFormat::Table => print_table(&labels.table(&agents)),
             }
         }
         Resource::Session => {
+            if labels.selector.is_some() || !labels.columns.is_empty() {
+                return Err(Error::Invalid("--selector and --label-columns apply only to agents".into()).into());
+            }
             let name = name.map(SessionName::new).transpose()?;
             if name.is_some() && scope.all_agents {
                 return Err(
@@ -1599,6 +1640,11 @@ fn resource_reference(resource: &str, name: Option<String>) -> Result<(Resource,
     Ok((resource, embedded_name.or(name)))
 }
 
+/// Parses `get --selector`.
+fn parse_selector(value: &str) -> Result<agent::labels::Selector, String> {
+    value.parse().map_err(|error: Error| error.to_string())
+}
+
 /// Parses `KEY=VALUE` for `apply --label`.
 fn parse_label(value: &str) -> Result<(String, String), String> {
     let (key, value) = value
@@ -1922,7 +1968,8 @@ fn parse_variant_name(value: &str) -> Result<AgentVariantName, String> {
     value.parse().map_err(|error: Error| error.to_string())
 }
 
-fn agents_table(agents: &[Agent]) -> Vec<String> {
+/// The `get agents` table, with a column for each label in `label_columns`.
+fn agents_table(agents: &[Agent], label_columns: &[String]) -> Vec<String> {
     let rows = agents
         .iter()
         .map(|agent| {
@@ -1935,16 +1982,30 @@ fn agents_table(agents: &[Agent]) -> Vec<String> {
                 .sandbox
                 .as_ref()
                 .map_or("-", |assignment| assignment.provider().as_str());
-            vec![
+            let mut row = vec![
                 agent.metadata.name.clone(),
                 ready_value.into(),
                 status.into(),
                 harnesses,
                 provider.into(),
-            ]
+            ];
+            row.extend(
+                label_columns
+                    .iter()
+                    .map(|key| agent.metadata.labels.get(key).cloned().unwrap_or_default()),
+            );
+            row
         })
         .collect::<Vec<_>>();
-    table_lines(&["NAME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows)
+    let label_headers = label_columns
+        .iter()
+        .map(|key| key.rsplit('/').next().unwrap_or(key).to_ascii_uppercase())
+        .collect::<Vec<_>>();
+    let headers = ["NAME", "READY", "STATUS", "HARNESSES", "PROVIDER"]
+        .into_iter()
+        .chain(label_headers.iter().map(String::as_str))
+        .collect::<Vec<_>>();
+    table_lines(&headers, &rows)
 }
 
 fn print_agent_description(agent: &Agent) {
@@ -2535,6 +2596,63 @@ mod tests {
         assert_eq!(shown(Some("worker"), Some("old"), false), ["old"]);
         assert_eq!(shown(Some("builder"), Some("s1"), false), Vec::<String>::new());
         assert_eq!(shown(None, None, false), ["s1", "b1"]);
+    }
+
+    #[test]
+    fn get_agents_selects_by_label_and_shows_label_columns() {
+        const MANIFEST: &str = "apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  name: worker
+spec:
+  sandbox:
+    image: {type: build, context: ., dockerfile: Dockerfile}
+    platform: {os: linux}
+    resources: {cpu: '1', memory: 1Gi, rootFilesystem: {capacity: 8Gi, mode: layered}}
+  home: {source: home}
+  harnesses: [{type: claudeCode, version: 1.0.0, auth: mediated}]
+  network: {mode: mediated, allow: all}
+";
+        let agent = |name: &str, labels: &[(&str, &str)]| {
+            let mut agent = agent::manifest::decode(MANIFEST.as_bytes()).expect("test manifest");
+            agent.metadata.name = name.into();
+            agent.metadata.labels = labels
+                .iter()
+                .map(|&(key, value)| (key.to_owned(), value.to_owned()))
+                .collect();
+            agent
+        };
+        let agents = [
+            agent("worker", &[("client", "t3code"), ("managed-by", "t3code")]),
+            agent("mine", &[("client", "jetbrains")]),
+            agent("plain", &[]),
+        ];
+        let view = LabelView {
+            selector: Some(parse_selector("!managed-by").expect("selector")),
+            columns: vec!["client".into(), "agentctl.digdir.no/tier".into()],
+        };
+        let selected = agents
+            .iter()
+            .filter(|agent| view.selects(agent))
+            .cloned()
+            .collect::<Vec<_>>();
+        let table = view.table(&selected);
+        assert!(
+            table[0]
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .ends_with(&["CLIENT", "TIER"]),
+            "{}",
+            table[0]
+        );
+        assert!(
+            table[1].starts_with("mine") && table[1].contains("jetbrains"),
+            "{}",
+            table[1]
+        );
+        assert!(table[2].starts_with("plain"), "{}", table[2]);
+        assert_eq!(table.len(), 3);
+        assert!(parse_selector("client in (a").is_err());
     }
 
     #[test]

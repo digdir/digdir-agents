@@ -135,6 +135,131 @@ pub struct LabelChange {
     pub remove: BTreeSet<String>,
 }
 
+/// Which agents a client works with, by their labels, in Kubernetes' selector syntax: requirements separated by
+/// commas, all of which an agent's labels must meet.
+///
+/// - `key=value` or `key==value`, and `key!=value`, which an agent without the label also meets.
+/// - `key in (a,b)`, and `key notin (a,b)`, which an agent without the label also meets.
+/// - `key`, the label is set, and `!key`, it is not.
+///
+/// An empty selector selects every agent.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Selector(Vec<Requirement>);
+
+/// One requirement of a [`Selector`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Requirement {
+    In(String, BTreeSet<String>),
+    NotIn(String, BTreeSet<String>),
+    Exists(String),
+    DoesNotExist(String),
+}
+
+impl Selector {
+    /// Returns whether `labels` meet every requirement.
+    #[must_use]
+    pub fn matches(&self, labels: &Labels) -> bool {
+        self.0.iter().all(|requirement| match requirement {
+            Requirement::In(key, values) => labels.get(key).is_some_and(|value| values.contains(value)),
+            Requirement::NotIn(key, values) => labels.get(key).is_none_or(|value| !values.contains(value)),
+            Requirement::Exists(key) => labels.contains_key(key),
+            Requirement::DoesNotExist(key) => !labels.contains_key(key),
+        })
+    }
+}
+
+impl std::str::FromStr for Selector {
+    type Err = Error;
+
+    fn from_str(selector: &str) -> Result<Self, Self::Err> {
+        let invalid =
+            |requirement: &str, why: &str| Error::Invalid(format!("selector requirement {requirement:?}: {why}"));
+        let key = |requirement: &str, key: &str| {
+            let key = key.trim();
+            validate(key, "").map_err(|_| invalid(requirement, "the key is not a valid label key"))?;
+            Ok::<_, Error>(key.to_owned())
+        };
+        let value = |requirement: &str, key: &str, value: &str| {
+            let value = value.trim();
+            validate(key, value).map_err(|_| invalid(requirement, "the value is not a valid label value"))?;
+            Ok::<_, Error>(value.to_owned())
+        };
+        let mut requirements = Vec::new();
+        for requirement in split_requirements(selector)? {
+            let requirement = requirement.trim();
+            if requirement.is_empty() {
+                if selector.trim().is_empty() {
+                    continue;
+                }
+                return Err(invalid(requirement, "a requirement is empty"));
+            }
+            if let Some(open) = requirement.find('(') {
+                let Some(values) = requirement[open + 1..].strip_suffix(')') else {
+                    return Err(invalid(requirement, "a set must end with `)`"));
+                };
+                let mut words = requirement[..open].split_whitespace();
+                let (Some(name), Some(operator), None) = (words.next(), words.next(), words.next()) else {
+                    return Err(invalid(
+                        requirement,
+                        "a set requirement is `KEY in (VALUES)` or `KEY notin (VALUES)`",
+                    ));
+                };
+                let name = key(requirement, name)?;
+                let values = values
+                    .split(',')
+                    .map(|item| value(requirement, &name, item))
+                    .collect::<Result<BTreeSet<_>, _>>()?;
+                requirements.push(match operator {
+                    "in" => Requirement::In(name, values),
+                    "notin" => Requirement::NotIn(name, values),
+                    _ => return Err(invalid(requirement, "the operator before a set is `in` or `notin`")),
+                });
+            } else if let Some((name, item)) = requirement.split_once("!=") {
+                let name = key(requirement, name)?;
+                let item = value(requirement, &name, item)?;
+                requirements.push(Requirement::NotIn(name, [item].into()));
+            } else if let Some((name, item)) = requirement.split_once("==").or_else(|| requirement.split_once('=')) {
+                let name = key(requirement, name)?;
+                let item = value(requirement, &name, item)?;
+                requirements.push(Requirement::In(name, [item].into()));
+            } else if let Some(name) = requirement.strip_prefix('!') {
+                requirements.push(Requirement::DoesNotExist(key(requirement, name)?));
+            } else {
+                requirements.push(Requirement::Exists(key(requirement, requirement)?));
+            }
+        }
+        Ok(Self(requirements))
+    }
+}
+
+/// Splits a selector at the commas between requirements, leaving those inside a set.
+fn split_requirements(selector: &str) -> Result<Vec<&str>, Error> {
+    let mut requirements = Vec::new();
+    let mut start = 0;
+    let mut in_set = false;
+    for (index, character) in selector.char_indices() {
+        match character {
+            '(' if !in_set => in_set = true,
+            ')' if in_set => in_set = false,
+            '(' | ')' => {
+                return Err(Error::Invalid(format!(
+                    "selector {selector:?}: parentheses do not match"
+                )));
+            }
+            ',' if !in_set => {
+                requirements.push(&selector[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if in_set {
+        return Err(Error::Invalid(format!("selector {selector:?}: a set is not closed")));
+    }
+    requirements.push(&selector[start..]);
+    Ok(requirements)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{LabelChange, Labels, StoredLabels, validate};
@@ -205,5 +330,43 @@ mod tests {
             ..LabelChange::default()
         });
         assert_eq!(stored.effective(), labels(&[("managed-by", "t3code")]));
+    }
+
+    #[test]
+    fn selectors_follow_kubernetes() {
+        let worker = labels(&[("client", "t3code"), ("managed-by", "t3code")]);
+        let mine = labels(&[("client", "jetbrains")]);
+        let plain = Labels::new();
+        for (selector, selected) in [
+            ("", [true, true, true]),
+            ("client=t3code", [true, false, false]),
+            ("client==jetbrains", [false, true, false]),
+            ("client!=t3code", [false, true, true]),
+            ("client in (t3code, jetbrains)", [true, true, false]),
+            ("client notin (t3code)", [false, true, true]),
+            ("managed-by", [true, false, false]),
+            ("!managed-by", [false, true, true]),
+            ("!managed-by,client", [false, true, false]),
+            (" client in (jetbrains,rider) , !managed-by ", [false, true, false]),
+        ] {
+            let parsed: super::Selector = selector.parse().expect(selector);
+            assert_eq!(
+                [&worker, &mine, &plain].map(|labels| parsed.matches(labels)),
+                selected,
+                "{selector}"
+            );
+        }
+        for invalid in [
+            "client in (a",
+            "client in a)",
+            "client within (a)",
+            "client,,tier",
+            "client=has space",
+            "-client",
+            "client in (a,b) x",
+            "!",
+        ] {
+            assert!(invalid.parse::<super::Selector>().is_err(), "{invalid}");
+        }
     }
 }
