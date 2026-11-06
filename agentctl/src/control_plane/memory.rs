@@ -22,6 +22,7 @@ pub struct InMemoryAgentStore {
 struct State {
     records: BTreeMap<AgentId, AgentRecord>,
     active_names: BTreeMap<String, AgentId>,
+    labels: BTreeMap<AgentId, crate::labels::StoredLabels>,
 }
 
 impl InMemoryAgentStore {
@@ -91,6 +92,13 @@ impl AgentStore for InMemoryAgentStore {
                         return Err(Error::Conflict);
                     }
                     state.active_names.insert(name, id);
+                    state.labels.insert(
+                        id,
+                        crate::labels::StoredLabels {
+                            declared: record.agent.metadata.labels.clone(),
+                            ..crate::labels::StoredLabels::default()
+                        },
+                    );
                     state.records.insert(id, record);
                     return Ok(());
                 }
@@ -105,6 +113,7 @@ impl AgentStore for InMemoryAgentStore {
                 {
                     return Err(Error::Conflict);
                 }
+                record.agent.metadata.labels = std::mem::take(&mut current.agent.metadata.labels);
                 *current = record;
                 Ok(())
             })();
@@ -173,6 +182,35 @@ impl AgentStore for InMemoryAgentStore {
                 }
                 state.active_names.remove(&name);
                 Ok(())
+            })();
+            self.changed(result)
+        })
+    }
+
+    fn change_labels(
+        &self,
+        id: AgentId,
+        change: crate::labels::LabelChange,
+    ) -> LocalFuture<'_, Result<crate::labels::StoredLabels, Error>> {
+        Box::pin(async move {
+            let result = (|| {
+                let mut state = self.state.borrow_mut();
+                let State {
+                    records,
+                    active_names,
+                    labels,
+                } = &mut *state;
+                let record = records.get_mut(&id).ok_or(Error::NotFound)?;
+                if active_names.get(&record.agent.metadata.name) != Some(&id) {
+                    return Err(Error::NotFound);
+                }
+                if record.agent.metadata.deletion_timestamp.is_some() {
+                    return Err(Error::Conflict);
+                }
+                let stored = labels.entry(id).or_default();
+                stored.apply(&change);
+                record.agent.metadata.labels = stored.effective();
+                Ok(stored.clone())
             })();
             self.changed(result)
         })

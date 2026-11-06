@@ -22,6 +22,10 @@ pub struct ApplyRequest {
     /// Fail instead of updating when the name already identifies an agent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub create_only: bool,
+    /// Labels set from the host, as `agentctl label` sets them, on top of those the manifest declares. A later
+    /// `apply` keeps them whether or not it repeats them.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub labels: crate::labels::Labels,
     /// Agent manifest to store.
     pub agent: Agent,
 }
@@ -138,8 +142,16 @@ impl ControlPlane {
         desired.clear_managed_fields();
         resolve_mount_sources(&mut desired, &request.source_directory).await?;
         desired.validate()?;
+        crate::labels::validate_all(&request.labels)?;
         reject_dot_env_in_bind_mounts(&desired).await?;
         let run_state = desired.spec.run_state;
+        let declared = std::mem::take(&mut desired.metadata.labels);
+        // An update keeps the stored labels and changes them in a write of their own.
+        let update_labels = crate::labels::LabelChange {
+            declared: Some(declared.clone()),
+            set: request.labels.clone(),
+            ..crate::labels::LabelChange::default()
+        };
 
         loop {
             let result = match self.store.get_by_name(&desired.metadata.name).await {
@@ -171,6 +183,9 @@ impl ControlPlane {
                         && current.manifest_path == manifest_path
                         && current.env_file == env_file
                     {
+                        let mut current = current;
+                        current.agent.metadata.labels =
+                            self.store.change_labels(current.id, update_labels).await?.effective();
                         self.notifier.notify(current.id);
                         return Ok(self.resource(current));
                     }
@@ -191,11 +206,15 @@ impl ControlPlane {
                             expected_generation,
                         )
                         .await
-                        .map(|()| (current.id, manifest_path, env_file))
+                        .map(|()| (current.id, manifest_path, env_file, update_labels.clone()))
                 }
                 Err(Error::NotFound) => {
                     let id = AgentId::generate();
                     desired.metadata.generation = 1;
+                    // Created with every label, so that no reader sees it without them. Those from the host are
+                    // then marked as set from the host, which keeps them through a later `apply`.
+                    desired.metadata.labels.clone_from(&declared);
+                    desired.metadata.labels.extend(request.labels.clone());
                     desired.spec.set_run_state(applied_run_state(run_state, None));
                     self.reject_exposed_secret_files(
                         id,
@@ -216,7 +235,13 @@ impl ControlPlane {
                             0,
                         )
                         .await
-                        .map(|()| (id, request.manifest_path.clone(), request.env_file.clone()))
+                        .map(|()| {
+                            let host = crate::labels::LabelChange {
+                                set: request.labels.clone(),
+                                ..crate::labels::LabelChange::default()
+                            };
+                            (id, request.manifest_path.clone(), request.env_file.clone(), host)
+                        })
                 }
                 Err(error) => return Err(error),
             };
@@ -224,7 +249,8 @@ impl ControlPlane {
             match result {
                 Err(Error::Conflict) => {}
                 Err(error) => return Err(error),
-                Ok((id, manifest_path, env_file)) => {
+                Ok((id, manifest_path, env_file, labels)) => {
+                    desired.metadata.labels = self.store.change_labels(id, labels).await?.effective();
                     self.notifier.notify(id);
                     desired.metadata.uid = Some(id);
                     desired.status.provenance = Some(crate::Provenance {
@@ -513,6 +539,36 @@ impl ControlPlane {
             self.notifier.notify(record.id);
             return Ok(record);
         }
+    }
+
+    /// Sets labels on an agent from the host and removes the `remove` keys, and returns the agent as stored. It changes
+    /// no generation, so the reconciler has nothing to do.
+    ///
+    /// Labels set here outlive an `apply` that does not repeat them. A removed key is gone until a manifest that
+    /// declares it is applied again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a label is invalid, the agent does not exist or is being deleted, or the change cannot
+    /// be stored.
+    pub async fn label(
+        &self,
+        name: &str,
+        set: crate::labels::Labels,
+        remove: std::collections::BTreeSet<String>,
+    ) -> Result<Agent, Error> {
+        crate::labels::validate_all(&set)?;
+        if let Some(key) = remove.iter().find(|key| set.contains_key(*key)) {
+            return Err(Error::Invalid(format!("label {key:?} is both set and removed")));
+        }
+        let mut record = self.store.get_by_name(name).await?;
+        let change = crate::labels::LabelChange {
+            set,
+            remove,
+            ..crate::labels::LabelChange::default()
+        };
+        record.agent.metadata.labels = self.store.change_labels(record.id, change).await?.effective();
+        Ok(self.resource(record))
     }
 
     /// Marks an agent for asynchronous release. Repeated deletion is safe.

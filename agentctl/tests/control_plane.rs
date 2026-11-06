@@ -442,6 +442,7 @@ fn apply_request_in(name: &str, source_directory: PathBuf) -> agent::control_pla
         env_file: None,
         source_directory,
         create_only: false,
+        labels: agent::labels::Labels::new(),
         agent: agent(name),
     }
 }
@@ -3121,6 +3122,14 @@ impl AgentStore for HeldStore {
     fn finalize_deletion(&self, id: AgentId, generation: u64) -> LocalFuture<'_, Result<(), Error>> {
         self.inner.finalize_deletion(id, generation)
     }
+
+    fn change_labels(
+        &self,
+        id: AgentId,
+        change: agent::labels::LabelChange,
+    ) -> LocalFuture<'_, Result<agent::labels::StoredLabels, Error>> {
+        self.inner.change_labels(id, change)
+    }
 }
 
 #[tokio::test(flavor = "local")]
@@ -3761,6 +3770,14 @@ impl AgentStore for DeleteBeforeStarting {
     fn finalize_deletion(&self, id: AgentId, generation: u64) -> LocalFuture<'_, Result<(), Error>> {
         self.inner.finalize_deletion(id, generation)
     }
+
+    fn change_labels(
+        &self,
+        id: AgentId,
+        change: agent::labels::LabelChange,
+    ) -> LocalFuture<'_, Result<agent::labels::StoredLabels, Error>> {
+        self.inner.change_labels(id, change)
+    }
 }
 
 #[tokio::test(flavor = "local")]
@@ -3794,4 +3811,82 @@ async fn a_delete_just_before_a_restart_starts_the_agent_keeps_it_from_booting_a
         sandbox::SandboxState::Stopped,
         "the Starting write fails, so the pass the delete woke releases it instead"
     );
+}
+
+fn labels(pairs: &[(&str, &str)]) -> agent::labels::Labels {
+    pairs
+        .iter()
+        .map(|&(key, value)| (key.to_owned(), value.to_owned()))
+        .collect()
+}
+
+/// `apply` replaces the labels its manifest declares and keeps those set from the host, and no label change is a new
+/// generation.
+#[tokio::test(flavor = "local")]
+async fn labels_from_the_manifest_follow_it_and_labels_from_the_host_stay() {
+    let fixture = fixture();
+    let mut request = apply_request("worker");
+    request.agent.metadata.labels = labels(&[("client", "jetbrains"), ("tier", "dev")]);
+    request.labels = labels(&[("managed-by", "t3code")]);
+    let created = fixture.control_plane.apply(request.clone()).await.expect("create");
+    assert_eq!(
+        created.metadata.labels,
+        labels(&[("client", "jetbrains"), ("managed-by", "t3code"), ("tier", "dev")])
+    );
+    assert_eq!(created.metadata.generation, 1);
+
+    // A person applies the same definition by hand, with their variant changed.
+    request.agent.metadata.labels = labels(&[("client", "t3code")]);
+    request.labels.clear();
+    let applied = fixture.control_plane.apply(request.clone()).await.expect("re-apply");
+    assert_eq!(
+        applied.metadata.labels,
+        labels(&[("client", "t3code"), ("managed-by", "t3code")]),
+        "the manifest's labels are replaced and the host's kept"
+    );
+    assert_eq!(applied.metadata.generation, 1, "a label is no change to the agent");
+
+    let labelled = fixture
+        .control_plane
+        .label(
+            "worker",
+            labels(&[("client", "rider")]),
+            ["managed-by".to_owned()].into(),
+        )
+        .await
+        .expect("label");
+    assert_eq!(labelled.metadata.labels, labels(&[("client", "rider")]));
+    assert_eq!(labelled.metadata.generation, 1);
+
+    request.agent.spec.harnesses[0].version = Some("2.1.240".into());
+    let updated = fixture.control_plane.apply(request).await.expect("update");
+    assert_eq!(updated.metadata.generation, 2);
+    assert_eq!(
+        updated.metadata.labels,
+        labels(&[("client", "rider")]),
+        "a label set from the host wins over the manifest's"
+    );
+    for listed in [
+        fixture.control_plane.get("worker").await.expect("get"),
+        fixture.control_plane.list().await.expect("list").remove(0),
+    ] {
+        assert_eq!(listed.metadata.labels, updated.metadata.labels);
+    }
+
+    let error = fixture
+        .control_plane
+        .label(
+            "worker",
+            labels(&[("client", "has space")]),
+            std::collections::BTreeSet::new(),
+        )
+        .await
+        .expect_err("an invalid value is refused");
+    assert!(matches!(error, Error::Invalid(_)), "{error}");
+    let mut invalid = apply_request("other");
+    invalid.labels = labels(&[("-client", "x")]);
+    assert!(matches!(
+        fixture.control_plane.apply(invalid).await,
+        Err(Error::Invalid(_))
+    ));
 }

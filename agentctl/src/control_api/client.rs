@@ -7,15 +7,15 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, sessions};
 
 use super::protocol::{
-    DaemonInfo, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
-    MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE,
-    METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS,
-    METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
-    METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
-    METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
-    METHOD_VNC_ACCESS, NameParams, ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams,
-    SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams,
-    ShutdownResult, read_message,
+    DaemonInfo, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LabelParams, LoginParams, LogoutParams,
+    LogoutResult, MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT,
+    METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LABEL, METHOD_LIST,
+    METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE,
+    METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT,
+    METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP,
+    METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, ProgressParams, ReadMessage, Request, ResourcesWatchParams,
+    Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
+    SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -278,6 +278,28 @@ impl Client {
     pub async fn restart(&self, name: &str, now: bool) -> Result<Agent, Error> {
         self.call(METHOD_RESTART, RestartParams { name: name.into(), now })
             .await
+    }
+
+    /// Sets labels on an agent from the host and removes the `remove` keys. Returns the agent as stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the control-plane operation fails.
+    pub async fn label(
+        &self,
+        name: &str,
+        set: crate::labels::Labels,
+        remove: std::collections::BTreeSet<String>,
+    ) -> Result<Agent, Error> {
+        self.call(
+            METHOD_LABEL,
+            LabelParams {
+                name: name.into(),
+                set,
+                remove,
+            },
+        )
+        .await
     }
 
     /// Stores a host-acquired harness credential in the daemon as the login `login`.

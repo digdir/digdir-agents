@@ -433,6 +433,21 @@ impl crate::control_plane::AgentStore for Database {
             .await
         })
     }
+
+    fn change_labels(
+        &self,
+        id: AgentId,
+        change: crate::labels::LabelChange,
+    ) -> sandbox::LocalFuture<'_, Result<crate::labels::StoredLabels, Error>> {
+        Box::pin(async move {
+            self.request(|response| Command::ChangeLabels {
+                id,
+                change: Box::new(change),
+                response,
+            })
+            .await
+        })
+    }
 }
 
 impl sandbox::secret_store::SecretStore for Database {
@@ -542,6 +557,11 @@ enum Command {
         id: AgentId,
         generation: u64,
         response: oneshot::Sender<Result<(), Error>>,
+    },
+    ChangeLabels {
+        id: AgentId,
+        change: Box<crate::labels::LabelChange>,
+        response: oneshot::Sender<Result<crate::labels::StoredLabels, Error>>,
     },
     SetSecret {
         name: String,
@@ -680,6 +700,7 @@ impl Command {
             | Self::UpdateStatus { .. }
             | Self::MarkDeleting { .. }
             | Self::FinalizeDeletion { .. }
+            | Self::ChangeLabels { .. }
             | Self::EnsureSession { .. }
             | Self::UpdateSessionLifecycle { .. }
             | Self::ActivateSession { .. }
@@ -842,6 +863,9 @@ fn execute(connection: &mut Connection, command: Command) {
             response,
         } => {
             let _ = response.send(agents::finalize_deletion(connection, id, generation));
+        }
+        Command::ChangeLabels { id, change, response } => {
+            let _ = response.send(agents::change_labels(connection, id, &change));
         }
         Command::DeleteSecret { name, response } => {
             let _ignored = response.send(secrets::delete_secret(connection, &name));

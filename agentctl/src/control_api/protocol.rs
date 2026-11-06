@@ -18,6 +18,7 @@ pub(crate) const METHOD_DELETE: &str = "agents.v1.delete";
 pub(crate) const METHOD_STOP: &str = "agents.v1.stop";
 pub(crate) const METHOD_STOP_NOW: &str = "agents.v1.stopNow";
 pub(crate) const METHOD_RESTART: &str = "agents.v1.restart";
+pub(crate) const METHOD_LABEL: &str = "agents.v1.label";
 pub(crate) const METHOD_START: &str = "agents.v1.start";
 pub(crate) const METHOD_CONVERGE: &str = "agents.v1.converge";
 pub(crate) const METHOD_SSH_ACCESS: &str = "agents.v1.sshAccess";
@@ -101,6 +102,18 @@ impl ResponseError {
 #[serde(deny_unknown_fields)]
 pub(crate) struct NameParams {
     pub name: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LabelParams {
+    pub name: String,
+    /// Labels to set from the host.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub set: crate::labels::Labels,
+    /// Keys to remove.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub remove: std::collections::BTreeSet<String>,
 }
 
 #[derive(Deserialize, Serialize)]

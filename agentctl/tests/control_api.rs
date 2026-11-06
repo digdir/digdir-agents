@@ -962,6 +962,7 @@ fn request(name: &str) -> ApplyRequest {
         manifest_path: None,
         env_file: None,
         create_only: false,
+        labels: agent::labels::Labels::new(),
         agent: agent(name),
     }
 }
@@ -993,6 +994,17 @@ async fn client_and_server_exchange_versioned_agent_operations() {
         .await
         .expect_err("missing session");
     assert!(matches!(session_error, Error::Rpc(error) if error.code == -32004));
+
+    let labelled = client
+        .label(
+            "worker",
+            [("client".to_owned(), "t3code".to_owned())].into(),
+            std::collections::BTreeSet::new(),
+        )
+        .await
+        .expect("label");
+    assert_eq!(labelled.metadata.labels["client"], "t3code");
+    assert_eq!(labelled.metadata.generation, applied.metadata.generation);
 
     client.delete("worker").await.expect("delete request");
     let deleting = client.get("worker").await.expect("marked resource");
