@@ -15,6 +15,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ### Added
 
+- `agentctl get agents -l SELECTOR` lists only the agents whose labels match, with Kubernetes' selector syntax, such as `-l managed-by=t3code`, `-l '!managed-by'` or `-l 'client in (t3code,jetbrains)'`. With `--watch`, a client follows only its own agents. `-L client` shows a label's value as a column. The bundled agentctl skill has coding agents label the agents they create with `managed-by`. ([#405](https://github.com/digdir/digdir-agents/issues/405))
 - Agent labels say what an agent is for, such as `client: t3code`: ([client discovery](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/design/client-discovery.md#labels), [#405](https://github.com/digdir/digdir-agents/issues/405))
   - set them in a manifest's `metadata.labels`, or from the host with `agentctl label agent/NAME KEY=VALUE` and `agentctl apply --label`, which a later `apply` keeps
   - `KEY-` removes one, and no change restarts the agent
