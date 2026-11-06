@@ -226,6 +226,7 @@ impl ControlPlane {
                 Err(error) => return Err(error),
                 Ok((id, manifest_path, env_file)) => {
                     self.notifier.notify(id);
+                    desired.metadata.uid = Some(id);
                     desired.status.provenance = Some(crate::Provenance {
                         source_directory: request.source_directory,
                         manifest_path,
@@ -581,6 +582,7 @@ impl ControlPlane {
     /// provisioning progress and provenance into status.
     fn resource(&self, record: AgentRecord) -> Agent {
         let mut agent = record.agent;
+        agent.metadata.uid = Some(record.id);
         agent.status.progress = self.provisioning.summary(record.id);
         agent.status.provenance = Some(crate::Provenance {
             source_directory: record.source_directory,
