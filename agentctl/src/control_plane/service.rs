@@ -232,6 +232,7 @@ impl ControlPlane {
                         manifest_path,
                         env_file,
                     });
+                    desired.status.phase = Some(desired.phase());
                     return Ok(desired);
                 }
             }
@@ -589,6 +590,7 @@ impl ControlPlane {
             manifest_path: record.manifest_path,
             env_file: record.env_file,
         });
+        agent.status.phase = Some(agent.phase());
         agent
     }
 }

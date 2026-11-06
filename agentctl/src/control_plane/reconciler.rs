@@ -525,11 +525,8 @@ impl Reconciler {
             .or(record.agent.status.observed_restart_timestamp);
         // A resync that observes what is already stored writes nothing, so it
         // advances no revision and wakes no watcher.
-        let stored = Status {
-            progress: None,
-            provenance: None,
-            ..record.agent.status.clone()
-        };
+        let mut stored = record.agent.status.clone();
+        stored.scrub_projected();
         let mut unchanged = status.clone();
         unchanged.stamp_transitions(&stored, time::OffsetDateTime::UNIX_EPOCH);
         if unchanged == stored {

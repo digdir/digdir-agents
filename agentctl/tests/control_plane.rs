@@ -520,6 +520,43 @@ async fn an_agent_keeps_its_uid_until_it_is_deleted_and_a_new_one_with_its_name_
 }
 
 #[tokio::test(flavor = "local")]
+async fn every_resource_carries_the_phase_and_the_store_keeps_none() {
+    let fixture = fixture();
+    let applied = fixture
+        .control_plane
+        .apply(apply_request("worker"))
+        .await
+        .expect("apply");
+    assert_eq!(applied.status.phase, Some(agent::AgentPhase::Pending));
+
+    reconcile(&fixture, "worker").await;
+    let ready = fixture.control_plane.get("worker").await.expect("get");
+    assert_eq!(ready.status.phase, Some(ready.phase()));
+    assert_eq!(ready.status.phase, Some(agent::AgentPhase::Ready));
+    assert_eq!(
+        fixture.control_plane.list().await.expect("list")[0].status.phase,
+        Some(agent::AgentPhase::Ready)
+    );
+    assert_eq!(stored(&fixture, "worker").await.agent.status.phase, None);
+
+    fixture
+        .control_plane
+        .set_run_state("worker", agent::RunState::Stopped)
+        .await
+        .expect("stop");
+    assert_eq!(
+        fixture.control_plane.get("worker").await.expect("get").status.phase,
+        Some(agent::AgentPhase::Stopping)
+    );
+
+    fixture.control_plane.delete("worker").await.expect("delete");
+    assert_eq!(
+        fixture.control_plane.get("worker").await.expect("get").status.phase,
+        Some(agent::AgentPhase::Terminating)
+    );
+}
+
+#[tokio::test(flavor = "local")]
 async fn lists_agents_and_resolves_the_nearest_unique_source_directory() {
     let fixture = fixture();
     let root = std::env::temp_dir().join("agent-platform-sources");
