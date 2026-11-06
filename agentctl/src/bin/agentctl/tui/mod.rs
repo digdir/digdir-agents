@@ -632,7 +632,7 @@ fn spawn_open(
                         .map_err(|error| error.to_string())?;
                     let access = client.ssh_access(&agent).await.map_err(|error| error.to_string())?;
                     let launch = editor
-                        .launch(launcher.as_deref(), &access.alias, &access.working_directory)
+                        .launch(launcher.as_deref(), &access.alias, &access.project_directory)
                         .ok_or_else(|| {
                             format!("{}: {}", editor.label(), editor.missing_launcher().unwrap_or_default())
                         })?;

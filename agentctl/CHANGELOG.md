@@ -14,6 +14,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Added
 
+- Editors you open from `agentctl tui` open the repository the agent's image clones, when it clones one, instead of `/home/agent/code`. `agentctl ssh-info` gives that folder as `projectDirectory`, and `agentctl get agents -o json` lists every repository the image clones under `status.sandbox.projects`. ([#405](https://github.com/digdir/digdir-agents/issues/405))
 - `status.phase` in `agentctl get agents -o json` says in one word what you can do with an agent now, such as `Ready`, `Provisioning`, `Stopped` or `Retrying`, the same state `agentctl tui` shows. The `STATUS` column of `agentctl get agents` shows it too. ([#405](https://github.com/digdir/digdir-agents/issues/405))
 - `agentctl get agents -o json` gives each agent a `metadata.uid` that stays the same until the agent is deleted, so a tool that remembers an agent can tell when one with the same name is a new agent. ([#301](https://github.com/digdir/digdir-agents/issues/301))
 - `optional: true` in `spec.instructions` and `spec.skills` leaves out a source that does not exist, so a committed manifest can name your own files, such as `~/agent-instructions/everywhere.md`. `agentctl describe` names what was left out, and the agent gets it once it exists. ([#331](https://github.com/digdir/digdir-agents/issues/331))

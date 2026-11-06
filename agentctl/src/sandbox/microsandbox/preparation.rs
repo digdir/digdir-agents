@@ -257,6 +257,7 @@ spec:
             harnesses: prepared.harnesses.clone(),
             skills: std::collections::BTreeMap::new(),
             logins: prepared.logins.clone(),
+            projects: Vec::new(),
         });
         let status = record.agent.status.clone();
         database.put(record.clone(), 0).await.expect("store agent");

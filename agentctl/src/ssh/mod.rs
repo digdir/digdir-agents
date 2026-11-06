@@ -168,8 +168,25 @@ pub struct AccessInfo {
     pub config_file: PathBuf,
     /// Complete `ProxyCommand` value dialing the agent through `agentctl`.
     pub proxy_command: String,
-    /// Guest directory sessions open in, which editors open as their folder.
+    /// Guest directory sessions open in.
     pub working_directory: String,
+    /// Guest directory editors open as their folder: the checkout of the repository the image clones when it clones
+    /// exactly one, and the working directory otherwise. `status.sandbox.projects` on the agent lists them all.
+    pub project_directory: String,
+}
+
+/// The directory an editor opens: the only checkout the agent's image clones, or the working directory.
+fn project_directory(record: &AgentRecord) -> String {
+    let projects = record
+        .agent
+        .status
+        .sandbox
+        .as_ref()
+        .map_or(&[][..], crate::sandbox::Assignment::projects);
+    match projects {
+        [project] => project.clone(),
+        _ => platform::WORKING_DIRECTORY.into(),
+    }
 }
 
 /// Persists each agent incarnation's SSH host key.
@@ -290,6 +307,7 @@ impl Access {
             config_file: self.home.config_path(),
             proxy_command: render_proxy_command(&self.agentctl, &self.control_home, name, CommandShell::host())?,
             working_directory: platform::WORKING_DIRECTORY.into(),
+            project_directory: project_directory(record),
         })
     }
 
