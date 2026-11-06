@@ -617,6 +617,7 @@ impl ControlPlane {
 /// projected into status.
 fn projected(record: AgentRecord) -> Agent {
     let mut agent = record.agent;
+    agent.metadata.uid = Some(record.id);
     agent.status.volumes = agent
         .spec
         .sandbox

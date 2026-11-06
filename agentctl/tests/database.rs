@@ -347,6 +347,7 @@ fn volumes_are_stored_by_name_and_replaced_only_at_their_current_version() {
                 kind: agent::volumes::KIND.into(),
                 metadata: agent::Metadata {
                     name: name.into(),
+                    uid: None,
                     generation: 1,
                     deletion_timestamp: None,
                     restart_timestamp: None,
