@@ -3175,6 +3175,7 @@ pub(crate) mod tests {
             kind: agent::volumes::KIND.into(),
             metadata: agent::Metadata {
                 name: name.into(),
+                uid: None,
                 generation: 1,
                 deletion_timestamp: None,
                 restart_timestamp: None,
