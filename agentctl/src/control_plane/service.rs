@@ -1,5 +1,11 @@
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, HashMap},
+    path::PathBuf,
+    rc::Rc,
+};
 
+use ::sandbox::{SandboxPath, mount::Mount};
 use ignore::WalkBuilder;
 
 use crate::{Agent, AgentId, Error, MountSpec, progress::ProvisioningState};
@@ -136,9 +142,8 @@ impl ControlPlane {
 
         let mut desired = request.agent;
         desired.clear_managed_fields();
-        resolve_mount_sources(&mut desired, &request.source_directory).await?;
+        let optional_mount_sources = resolve_mount_sources(&mut desired, &request.source_directory).await?;
         desired.validate()?;
-        reject_dot_env_in_bind_mounts(&desired).await?;
         let run_state = desired.spec.run_state;
 
         loop {
@@ -160,11 +165,12 @@ impl ControlPlane {
                     desired.spec.set_run_state(applied_run_state(run_state, Some(&current)));
                     let manifest_path = request.manifest_path.clone().or_else(|| current.manifest_path.clone());
                     let env_file = request.env_file.clone().or_else(|| current.env_file.clone());
-                    self.reject_exposed_secret_files(
+                    self.reject_exposed_secrets(
                         current.id,
                         &request.source_directory,
                         env_file.as_deref(),
                         &desired,
+                        &current.optional_mount_sources,
                     )
                     .await?;
                     if current.agent.spec == desired.spec
@@ -187,6 +193,7 @@ impl ControlPlane {
                                 manifest_path: manifest_path.clone(),
                                 env_file: env_file.clone(),
                                 agent: desired.clone(),
+                                optional_mount_sources: current.optional_mount_sources,
                             },
                             expected_generation,
                         )
@@ -197,11 +204,12 @@ impl ControlPlane {
                     let id = AgentId::generate();
                     desired.metadata.generation = 1;
                     desired.spec.set_run_state(applied_run_state(run_state, None));
-                    self.reject_exposed_secret_files(
+                    self.reject_exposed_secrets(
                         id,
                         &request.source_directory,
                         request.env_file.as_deref(),
                         &desired,
+                        &optional_mount_sources,
                     )
                     .await?;
                     self.store
@@ -212,6 +220,7 @@ impl ControlPlane {
                                 manifest_path: request.manifest_path.clone(),
                                 env_file: request.env_file.clone(),
                                 agent: desired.clone(),
+                                optional_mount_sources: optional_mount_sources.clone(),
                             },
                             0,
                         )
@@ -237,20 +246,24 @@ impl ControlPlane {
         }
     }
 
-    /// Rejects desired state that would expose a selected secret file inside a sandbox.
+    /// Rejects desired state that would expose a `.env` file or a selected secret file inside a sandbox.
     ///
     /// Secret files hold the real values that mediation exists to keep out of sandboxes. A bind
-    /// mount whose source contains this agent's selected non-default secret file or another active
-    /// agent's selected secret file would hand those values to the guest, so the combination is
-    /// refused at apply time. Default `.env` files are covered by the bind-source scan above. Bind
-    /// mount sources are canonical by this point.
-    async fn reject_exposed_secret_files(
+    /// mount whose source contains a `.env` file, this agent's selected non-default secret file or
+    /// another active agent's selected secret file would hand those values to the guest, so the
+    /// combination is refused at apply time. Bind mount sources are canonical by this point.
+    /// `optional_mount_sources` holds the optional ones the agent's sandbox gets: those it was
+    /// created with, which an optional source that has since moved, such as through a symbolic
+    /// link, does not change.
+    async fn reject_exposed_secrets(
         &self,
         id: AgentId,
         source_directory: &std::path::Path,
         env_file: Option<&std::path::Path>,
         desired: &Agent,
+        optional_mount_sources: &BTreeMap<SandboxPath, PathBuf>,
     ) -> Result<(), Error> {
+        reject_dot_env_in_bind_mounts(bind_mount_sources(desired, optional_mount_sources)).await?;
         let mut secret_files = Vec::new();
         if !desired.spec.secrets.is_empty() {
             let path = env_file.map_or_else(|| source_directory.join(super::resource::ENV_FILE), PathBuf::from);
@@ -258,7 +271,7 @@ impl ControlPlane {
                 secret_files.push((desired.metadata.name.clone(), canonical_secret_file(&path).await));
             }
         }
-        let mut mounts = bind_mount_sources(desired);
+        let mut mounts = bind_mount_sources(desired, optional_mount_sources);
         for other in self.store.list().await? {
             if other.id == id || other.agent.metadata.deletion_timestamp.is_some() {
                 continue;
@@ -271,7 +284,7 @@ impl ControlPlane {
             }
             if !desired.spec.secrets.is_empty() {
                 mounts.extend(
-                    bind_mount_sources(&other.agent)
+                    bind_mount_sources(&other.agent, &other.optional_mount_sources)
                         .into_iter()
                         .map(|(_, source)| (format!("Agent {:?}", other.agent.metadata.name), source)),
                 );
@@ -368,7 +381,7 @@ impl ControlPlane {
         for record in self.store.list().await? {
             let mut closest_depth: Option<usize> = None;
             for source in association_directories(&record) {
-                let source = canonical_or_original(source).await;
+                let source = canonical_or_original(&source).await;
                 if directory.starts_with(&source) {
                     closest_depth = Some(closest_depth.unwrap_or_default().max(source.components().count()));
                 }
@@ -534,11 +547,14 @@ impl ControlPlane {
 ///
 /// Filesystem traversal is blocking and may cover a whole checkout, so it stays off the local
 /// async runtime. Directories named `.env` are allowed. Symbolic links are not followed, but a
-/// link itself named `.env` is rejected.
-async fn reject_dot_env_in_bind_mounts(agent: &Agent) -> Result<(), Error> {
-    let mounts = bind_mount_sources(agent);
+/// link itself named `.env` is rejected. A source that no longer exists, as an optional one may
+/// not, exposes nothing.
+async fn reject_dot_env_in_bind_mounts(mounts: Vec<(String, PathBuf)>) -> Result<(), Error> {
     tokio::task::spawn_blocking(move || {
         for (field, source) in mounts {
+            if matches!(source.try_exists(), Ok(false)) {
+                continue;
+            }
             for result in WalkBuilder::new(&source)
                 .hidden(false)
                 .ignore(false)
@@ -655,31 +671,52 @@ fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) -> Result<(
     Ok(())
 }
 
-async fn resolve_mount_sources(agent: &mut Agent, source_directory: &std::path::Path) -> Result<(), Error> {
+/// Resolves each bind mount's source, returning the canonical sources of the optional ones that exist. A required
+/// source is replaced by its canonical form, so the sandbox keeps the directory it was created with. An optional one
+/// keeps the path it declares, so that applying the same manifest again compares equal whether the directory has
+/// since appeared or disappeared.
+async fn resolve_mount_sources(
+    agent: &mut Agent,
+    source_directory: &std::path::Path,
+) -> Result<BTreeMap<SandboxPath, PathBuf>, Error> {
+    let mut optional_sources = BTreeMap::new();
     for (index, mount) in agent.spec.sandbox.mounts.iter_mut().enumerate() {
-        let MountSpec::Bind { source, .. } = mount else {
+        let MountSpec::Bind {
+            source,
+            target,
+            optional,
+            ..
+        } = mount
+        else {
             continue;
         };
-        let unresolved = crate::manifest::resolve_host_path(
-            source_directory,
-            source,
-            &format!("spec.sandbox.mounts[{index}].source"),
-        )?;
-        let resolved = tokio::fs::canonicalize(&unresolved).await.map_err(|error| {
-            Error::Invalid(format!(
-                "spec.sandbox.mounts[{index}].source {} cannot be resolved: {error}",
-                unresolved.display()
-            ))
-        })?;
+        let field = format!("spec.sandbox.mounts[{index}].source");
+        let unresolved = crate::manifest::resolve_host_path(source_directory, source, &field)?;
+        if *optional {
+            source.clone_from(&unresolved);
+            let present = tokio::fs::try_exists(&unresolved).await.map_err(|error| {
+                Error::Invalid(format!("{field} {} cannot be checked: {error}", unresolved.display()))
+            })?;
+            if !present {
+                continue;
+            }
+        }
+        let resolved = tokio::fs::canonicalize(&unresolved)
+            .await
+            .map_err(|error| Error::Invalid(format!("{field} {} cannot be resolved: {error}", unresolved.display())))?;
         if !tokio::fs::metadata(&resolved).await?.is_dir() {
             return Err(Error::Invalid(format!(
-                "spec.sandbox.mounts[{index}].source {} must identify a directory",
+                "{field} {} must identify a directory",
                 resolved.display()
             )));
         }
-        *source = resolved;
+        if *optional {
+            optional_sources.insert(target.clone(), resolved);
+        } else {
+            *source = resolved;
+        }
     }
-    Ok(())
+    Ok(optional_sources)
 }
 
 fn validate_request_paths(request: &ApplyRequest) -> Result<(), Error> {
@@ -701,16 +738,18 @@ fn validate_request_paths(request: &ApplyRequest) -> Result<(), Error> {
     Ok(())
 }
 
-fn bind_mount_sources(agent: &Agent) -> Vec<(String, PathBuf)> {
+/// The canonical source of each bind mount the agent's sandbox gets, named by its field.
+fn bind_mount_sources(
+    agent: &Agent,
+    optional_mount_sources: &BTreeMap<SandboxPath, PathBuf>,
+) -> Vec<(String, PathBuf)> {
     agent
         .spec
         .sandbox
-        .mounts
-        .iter()
-        .enumerate()
+        .resolved_mounts(optional_mount_sources)
         .filter_map(|(index, mount)| match mount {
-            MountSpec::Bind { source, .. } => Some((format!("spec.sandbox.mounts[{index}]"), source.clone())),
-            MountSpec::Tmpfs { .. } => None,
+            Mount::Bind { source, .. } => Some((format!("spec.sandbox.mounts[{index}]"), source)),
+            _ => None,
         })
         .collect()
 }
@@ -746,11 +785,10 @@ async fn canonical_secret_file(path: &std::path::Path) -> PathBuf {
     }
 }
 
-fn association_directories(record: &AgentRecord) -> impl Iterator<Item = &std::path::Path> {
-    std::iter::once(record.source_directory.as_path()).chain(record.agent.spec.sandbox.mounts.iter().filter_map(
-        |mount| match mount {
-            MountSpec::Bind { source, .. } => Some(source.as_path()),
-            MountSpec::Tmpfs { .. } => None,
-        },
-    ))
+fn association_directories(record: &AgentRecord) -> impl Iterator<Item = PathBuf> {
+    std::iter::once(record.source_directory.clone()).chain(
+        bind_mount_sources(&record.agent, &record.optional_mount_sources)
+            .into_iter()
+            .map(|(_, source)| source),
+    )
 }

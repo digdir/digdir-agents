@@ -240,6 +240,7 @@ spec:
             manifest_path: None,
             env_file: None,
             agent,
+            optional_mount_sources: std::collections::BTreeMap::new(),
         }
     }
 

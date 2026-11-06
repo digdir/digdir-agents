@@ -45,6 +45,7 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     }
 }
 

@@ -1,6 +1,9 @@
 //! Declarative agent manifest and observed resource status.
 
-use std::path::{Component, Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Component, Path, PathBuf},
+};
 
 use time::OffsetDateTime;
 
@@ -363,10 +366,36 @@ impl SandboxManifestSpec {
         self.retention_policy.unwrap_or(RetentionPolicy::Delete)
     }
 
-    /// Converts validated, absolute agent mount inputs to the generic Sandbox SDK representation.
-    #[must_use]
-    pub fn resolved_mounts(&self) -> Vec<Mount> {
-        self.mounts.iter().map(MountSpec::to_sandbox_mount).collect()
+    /// Converts the mounts the sandbox gets to the generic Sandbox SDK representation, each with its index in
+    /// `mounts`. An optional bind mount takes its source from `optional_sources`, which holds those whose source
+    /// existed when the agent was created, and is left out when it has none there.
+    pub fn resolved_mounts<'a>(
+        &'a self,
+        optional_sources: &'a BTreeMap<SandboxPath, PathBuf>,
+    ) -> impl Iterator<Item = (usize, Mount)> + 'a {
+        self.mounts.iter().enumerate().filter_map(|(index, mount)| {
+            let mount = match mount {
+                MountSpec::Bind {
+                    source,
+                    target,
+                    read_only,
+                    optional,
+                } => Mount::Bind {
+                    source: if *optional {
+                        optional_sources.get(target)?.clone()
+                    } else {
+                        source.clone()
+                    },
+                    target: target.clone(),
+                    read_only: *read_only,
+                },
+                MountSpec::Tmpfs { target, capacity } => Mount::Tmpfs {
+                    target: target.clone(),
+                    capacity: *capacity,
+                },
+            };
+            Some((index, mount))
+        })
     }
 }
 
@@ -387,6 +416,11 @@ pub enum MountSpec {
         target: SandboxPath,
         /// Whether the sandbox may modify the host directory.
         read_only: bool,
+        /// Whether a missing source leaves the mount out rather than failing apply. A sandbox's mounts cannot
+        /// change, so whether the source exists is decided when the agent is created: a source that appears or
+        /// disappears later changes nothing until the agent is recreated.
+        #[serde(default, skip_serializing_if = "is_false")]
+        optional: bool,
     },
     /// Anonymous in-memory storage with an explicit capacity.
     Tmpfs {
@@ -401,24 +435,6 @@ impl MountSpec {
     const fn target(&self) -> &SandboxPath {
         match self {
             Self::Bind { target, .. } | Self::Tmpfs { target, .. } => target,
-        }
-    }
-
-    fn to_sandbox_mount(&self) -> Mount {
-        match self {
-            Self::Bind {
-                source,
-                target,
-                read_only,
-            } => Mount::Bind {
-                source: source.clone(),
-                target: target.clone(),
-                read_only: *read_only,
-            },
-            Self::Tmpfs { target, capacity } => Mount::Tmpfs {
-                target: target.clone(),
-                capacity: *capacity,
-            },
         }
     }
 }
@@ -1029,7 +1045,7 @@ impl Condition {
     pub const SANDBOX_RESPONSIVE: &'static str = "SandboxResponsive";
     /// Condition type for whether the sandbox runs the nested sandboxes its agent asks for.
     pub const NESTED_SANDBOXES: &'static str = "NestedSandboxes";
-    /// Condition type for whether the optional instructions and skills an agent declares exist.
+    /// Condition type for whether the optional bind mounts, instructions and skills an agent declares exist.
     pub const OPTIONAL_SOURCES: &'static str = "OptionalSources";
     /// Condition type for declared SSH access underneath `Ready`.
     pub const SSH_READY: &'static str = "SshReady";

@@ -8,7 +8,7 @@ use crate::Error;
 
 use super::database_error;
 
-pub(crate) const VERSION: u32 = 6;
+pub(crate) const VERSION: u32 = 7;
 
 const PREVIEW_1_SQL: &str = "
     CREATE TABLE agents (
@@ -72,6 +72,10 @@ const SESSION_ARCHIVE_COLUMN_SQL: &str = "
     ALTER TABLE sessions ADD COLUMN archived_at INTEGER;
 ";
 
+const AGENT_OPTIONAL_MOUNTS_COLUMN_SQL: &str = "
+    ALTER TABLE agents ADD COLUMN optional_mount_sources_json TEXT NOT NULL DEFAULT '{}';
+";
+
 struct Migration {
     version: u32,
     name: &'static str,
@@ -115,6 +119,12 @@ const MIGRATIONS: &[Migration] = &[
         name: "named harness logins",
         schema: &[],
         apply: name_harness_logins,
+    },
+    Migration {
+        version: 7,
+        name: "optional bind mounts",
+        schema: &[AGENT_OPTIONAL_MOUNTS_COLUMN_SQL],
+        apply: add_agent_optional_mounts,
     },
 ];
 
@@ -238,6 +248,17 @@ fn add_session_archive(transaction: &Transaction<'_>) -> Result<(), Error> {
     }
     transaction
         .execute_batch(SESSION_ARCHIVE_COLUMN_SQL)
+        .map_err(database_error)
+}
+
+/// Adds the sources of an agent's optional bind mounts that existed when it was created. Agents from earlier
+/// schemas could not declare optional mounts, so every existing row has none.
+fn add_agent_optional_mounts(transaction: &Transaction<'_>) -> Result<(), Error> {
+    if schema_difference(transaction, 7)?.is_none() {
+        return Ok(());
+    }
+    transaction
+        .execute_batch(AGENT_OPTIONAL_MOUNTS_COLUMN_SQL)
         .map_err(database_error)
 }
 

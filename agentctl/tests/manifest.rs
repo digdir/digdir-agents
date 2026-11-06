@@ -422,12 +422,16 @@ fn decodes_each_part_of_a_manifest_and_serializes_only_what_it_sets() {
             manifest_with(&[(
                 ROOT_FILESYSTEM_MODE,
                 "        mode: layered\n    mounts:\n      - type: bind\n        source: ../..\n        \
-                 target: /home/agent/code/altinn-studio\n        readOnly: false\n      - type: tmpfs\n        \
+                 target: /home/agent/code/altinn-studio\n        readOnly: false\n      - type: bind\n        \
+                 source: ~/altinn-apps\n        target: /home/agent/code/.reference/altinn-apps\n        \
+                 readOnly: true\n        optional: true\n      - type: tmpfs\n        \
                  target: /tmp\n        capacity: \"1Gi\"\n",
             )]),
             |_, value| {
                 assert_eq!(value["spec"]["sandbox"]["mounts"][0]["source"], "../..");
-                assert_eq!(value["spec"]["sandbox"]["mounts"][1]["capacity"], "1Gi");
+                assert!(value["spec"]["sandbox"]["mounts"][0].get("optional").is_none());
+                assert_eq!(value["spec"]["sandbox"]["mounts"][1]["optional"], true);
+                assert_eq!(value["spec"]["sandbox"]["mounts"][2]["capacity"], "1Gi");
             },
         ),
         (
@@ -520,6 +524,17 @@ fn optional_instructions_and_skills_are_decoded_and_serialized_only_when_set() {
     assert!(value["spec"]["instructions"][0].get("optional").is_none());
     assert_eq!(value["spec"]["instructions"][1]["optional"], true);
     assert_eq!(value["spec"]["skills"][0]["optional"], true);
+}
+
+/// Only a bind mount has a source that can be missing.
+#[test]
+fn a_tmpfs_mount_cannot_be_optional() {
+    let bytes = manifest_with(&[(
+        ROOT_FILESYSTEM_MODE,
+        "        mode: layered\n    mounts:\n      - type: tmpfs\n        target: /tmp\n        \
+         capacity: \"1Gi\"\n        optional: true\n",
+    )]);
+    manifest::decode(&bytes).expect_err("optional on a tmpfs mount");
 }
 
 #[test]

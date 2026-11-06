@@ -182,7 +182,7 @@ impl Provider for MemoryProvider {
                 .ensure(
                     &EnsureSandboxRequest::new(record.sandbox_name()?, spec)
                         .with_hostname(record.sandbox_hostname()?)
-                        .with_mounts(record.agent.spec.sandbox.resolved_mounts())
+                        .with_mounts(record.sandbox_mounts())
                         .with_environment(environment),
                 )
                 .await
@@ -596,6 +596,7 @@ async fn bind_mounts_resolve_from_the_manifest_and_drive_directory_inference_and
         source: PathBuf::from("../.."),
         target: SandboxPath::new("/home/agent/code/altinn-studio"),
         read_only: false,
+        optional: false,
     });
 
     let applied = fixture.control_plane.apply(request).await.expect("apply");
@@ -621,7 +622,7 @@ async fn bind_mounts_resolve_from_the_manifest_and_drive_directory_inference_and
         .find(&sandbox_name(&record))
         .await
         .expect("materialized sandbox");
-    assert_eq!(materialized.mounts, record.agent.spec.sandbox.resolved_mounts());
+    assert_eq!(materialized.mounts, record.sandbox_mounts());
 }
 
 #[tokio::test(flavor = "local")]
@@ -635,6 +636,7 @@ async fn a_bind_mount_source_starting_with_a_tilde_resolves_below_the_home_direc
         source: support::via_home(&workspace),
         target: SandboxPath::new("/home/agent/code/workspace"),
         read_only: false,
+        optional: false,
     });
 
     let applied = fixture.control_plane.apply(request).await.expect("apply");
@@ -774,6 +776,7 @@ async fn changing_a_mount_is_rejected_for_an_existing_agent() {
         source: PathBuf::from("."),
         target: SandboxPath::new("/home/agent/code/first"),
         read_only: false,
+        optional: false,
     });
     fixture
         .control_plane
@@ -784,6 +787,7 @@ async fn changing_a_mount_is_rejected_for_an_existing_agent() {
         source: PathBuf::from("."),
         target: SandboxPath::new("/home/agent/code/second"),
         read_only: false,
+        optional: false,
     };
 
     let error = fixture
@@ -793,6 +797,157 @@ async fn changing_a_mount_is_rejected_for_an_existing_agent() {
         .expect_err("Mounts are immutable");
 
     assert!(matches!(error, Error::Immutable("spec.sandbox.mounts")));
+}
+
+/// Whether an optional mount's source exists is decided when the agent is created. Applying its manifest again, with
+/// a change the agent takes in place, works whether the directory has since appeared or disappeared, and its sandbox,
+/// or one that replaces it, has the mounts the agent was created with.
+#[tokio::test(flavor = "local")]
+async fn an_optional_mount_is_decided_when_the_agent_is_created() {
+    let fixture = fixture();
+    let root = TempDirectory::new("optional-mount");
+    let present = root.path().join("present");
+    let missing = root.path().join("missing");
+    std::fs::create_dir(&present).expect("present source");
+    let mut request = apply_request_in("worker", root.path().to_path_buf());
+    for name in ["present", "missing"] {
+        request.agent.spec.sandbox.mounts.push(MountSpec::Bind {
+            source: PathBuf::from(name),
+            target: SandboxPath::new(format!("/home/agent/code/{name}")),
+            read_only: true,
+            optional: true,
+        });
+    }
+    let observe = async || {
+        reconcile(&fixture, "worker").await;
+        let record = stored(&fixture, "worker").await;
+        assert!(record.agent.status.is_ready(), "{:?}", record.agent.status);
+        let optional_sources = record
+            .agent
+            .status
+            .conditions
+            .iter()
+            .find(|condition| condition.kind == Condition::OPTIONAL_SOURCES)
+            .map(|condition| (condition.status, condition.reason.clone(), condition.message.clone()))
+            .expect("OptionalSources condition");
+        let sandbox = fixture
+            .backend
+            .find(&sandbox_name(&record))
+            .await
+            .expect("materialized sandbox");
+        (sandbox.mounts, optional_sources)
+    };
+    let created = (
+        vec![sandbox::mount::Mount::Bind {
+            source: std::fs::canonicalize(&present).expect("canonical source"),
+            target: SandboxPath::new("/home/agent/code/present"),
+            read_only: true,
+        }],
+        (
+            ConditionStatus::False,
+            "Missing".to_owned(),
+            format!("left out spec.sandbox.mounts[1].source {}", missing.display()),
+        ),
+    );
+
+    fixture
+        .control_plane
+        .apply(request.clone())
+        .await
+        .expect("a missing optional source is left out");
+    assert_eq!(observe().await, created);
+
+    std::fs::create_dir(&missing).expect("missing source appears");
+    std::fs::remove_dir(&present).expect("present source disappears");
+    request.agent.spec.sandbox.retention_policy = Some(RetentionPolicy::Delete);
+    let updated = fixture
+        .control_plane
+        .apply(request)
+        .await
+        .expect("an update that keeps the mounts as declared");
+    assert_eq!(updated.metadata.generation, 2);
+    assert_eq!(observe().await, created);
+
+    let record = stored(&fixture, "worker").await;
+    let sandbox = fixture
+        .backend
+        .find(&sandbox_name(&record))
+        .await
+        .expect("materialized sandbox");
+    fixture.backend.delete(&sandbox.id).await.expect("sandbox lost");
+    assert_eq!(observe().await, created, "a replacement sandbox gets the same mounts");
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_optional_mount_is_checked_for_dot_env_files_when_its_source_exists() {
+    let fixture = fixture();
+    let checkout = tempfile::tempdir().expect("checkout");
+    std::fs::write(checkout.path().join(".env"), "PRIVATE=value\n").expect("environment file");
+    let source = tempfile::tempdir().expect("manifest directory");
+    let mut request = apply_request_in("worker", source.path().to_path_buf());
+    request.agent.spec.sandbox.mounts.push(MountSpec::Bind {
+        source: checkout.path().to_path_buf(),
+        target: SandboxPath::new("/home/agent/code/checkout"),
+        read_only: true,
+        optional: true,
+    });
+
+    let error = fixture
+        .control_plane
+        .apply(request)
+        .await
+        .expect_err("an optional mount exposes .env as a required one does");
+    assert!(
+        matches!(&error, Error::Invalid(message) if message.contains("spec.sandbox.mounts[0]")),
+        "{error}"
+    );
+}
+
+/// An optional source that moves after the agent is created, here by retargeting a symbolic link, leaves its sandbox
+/// with the directory it was created with, so that is the directory checked for secrets.
+#[cfg(unix)]
+#[tokio::test(flavor = "local")]
+async fn an_optional_mount_is_checked_for_secrets_where_the_sandbox_has_it() {
+    let fixture = fixture();
+    let root = tempfile::tempdir().expect("temporary directory");
+    let (mounted, moved) = (root.path().join("mounted"), root.path().join("moved"));
+    std::fs::create_dir(&mounted).expect("mounted directory");
+    std::fs::create_dir(&moved).expect("moved directory");
+    let link = root.path().join("reference");
+    std::os::unix::fs::symlink(&mounted, &link).expect("reference link");
+    let mut request = apply_request_in("worker", root.path().join("manifest"));
+    request.agent.spec.sandbox.mounts.push(MountSpec::Bind {
+        source: link.clone(),
+        target: SandboxPath::new("/home/agent/code/reference"),
+        read_only: true,
+        optional: true,
+    });
+    fixture.control_plane.apply(request.clone()).await.expect("apply");
+    std::fs::remove_file(&link).expect("remove reference link");
+    std::os::unix::fs::symlink(&moved, &link).expect("retarget reference link");
+    request.agent.spec.sandbox.retention_policy = Some(RetentionPolicy::Delete);
+
+    std::fs::write(mounted.join(".env"), "PRIVATE=value\n").expect("environment file");
+    fixture
+        .control_plane
+        .apply(request.clone())
+        .await
+        .expect_err("a .env in the directory the sandbox has");
+    std::fs::remove_file(mounted.join(".env")).expect("remove environment file");
+
+    request.agent.spec.secrets.push(SecretSpec {
+        environment: "GITHUB_TOKEN".into(),
+        optional: false,
+        placeholder: None,
+        allowed_hosts: vec!["github.com".into()],
+        source: None,
+    });
+    request.env_file = Some(mounted.join("worker.env"));
+    fixture
+        .control_plane
+        .apply(request)
+        .await
+        .expect_err("a secret file in the directory the sandbox has");
 }
 
 #[tokio::test(flavor = "local")]
@@ -1308,6 +1463,7 @@ async fn selected_secret_file_inside_a_bind_mount_is_rejected() {
         source: root.path().to_path_buf(),
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
+        optional: false,
     });
 
     let initial = fixture
@@ -1381,6 +1537,7 @@ async fn git_ignored_nested_dot_env_is_rejected_case_insensitively_without_decla
         source: checkout.path().to_path_buf(),
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
+        optional: false,
     });
 
     let error = fixture
@@ -1407,6 +1564,7 @@ async fn a_directory_named_dot_env_is_allowed() {
         source: checkout.path().to_path_buf(),
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
+        optional: false,
     });
 
     fixture
@@ -1429,6 +1587,7 @@ async fn a_dot_env_symlink_is_rejected() {
         source: checkout.path().to_path_buf(),
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
+        optional: false,
     });
 
     fixture
@@ -1459,6 +1618,7 @@ async fn existing_default_env_outside_bind_mount_is_allowed() {
         source: checkout.path().to_path_buf(),
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
+        optional: false,
     });
 
     fixture
@@ -1490,6 +1650,7 @@ async fn secret_file_reached_through_a_symlinked_ancestor_is_still_rejected() {
         source: checkout.path().to_path_buf(),
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
+        optional: false,
     });
     // Neither the file nor its two parent directories exist yet, and the path enters the
     // mounted checkout through a symlink.
@@ -1529,6 +1690,7 @@ async fn bind_mount_exposing_another_agents_secret_file_is_rejected() {
         source: root.path().to_path_buf(),
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
+        optional: false,
     });
 
     let error = fixture

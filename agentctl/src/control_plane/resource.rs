@@ -51,6 +51,10 @@ pub struct AgentRecord {
     pub env_file: Option<std::path::PathBuf>,
     /// Desired state and most recently observed status.
     pub agent: Agent,
+    /// Canonical sources of the optional bind mounts whose source existed when the agent was created, by target.
+    /// The others are left out of its sandbox, whose mounts cannot change, until the agent is recreated.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub optional_mount_sources: std::collections::BTreeMap<::sandbox::SandboxPath, std::path::PathBuf>,
 }
 
 /// Default environment file name, resolved in the source directory.
@@ -63,6 +67,18 @@ impl AgentRecord {
         self.env_file
             .clone()
             .unwrap_or_else(|| self.source_directory.join(ENV_FILE))
+    }
+
+    /// Returns the mounts the agent's sandbox gets, which leave out the optional bind mounts whose source did not
+    /// exist when the agent was created.
+    #[must_use]
+    pub fn sandbox_mounts(&self) -> Vec<::sandbox::mount::Mount> {
+        self.agent
+            .spec
+            .sandbox
+            .resolved_mounts(&self.optional_mount_sources)
+            .map(|(_, mount)| mount)
+            .collect()
     }
 
     /// Derives the Provider-independent sandbox name for this agent incarnation.
