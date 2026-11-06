@@ -122,17 +122,23 @@ An agent declares the web UIs it serves in the manifest, under `access`, as #387
 ```yaml
 access:
   - type: web
-    name: T3 Code
+    name: t3code
     port: 3773
     path: /
 ```
 
 The manifest is read on the host, so a sandbox cannot add views. The resource carries them, so a client lists an
-agent's views without knowing its image. Reaching a view, with a forward and a sign-in link, stays in #387.
+agent's views without knowing its image. Reaching a view, with a forward and a sign-in link, stays in #387. The name
+is written like a label value, such as `t3code`, since commands such as `connect` take it.
 
 Two things about `access` change with it. Today an access type takes no fields, and a view needs some. And
 [#395](https://github.com/digdir/digdir-agents/issues/395) merges `access` in variants by `type`, which allows one
 entry per type. Views need `type` and `name` together as the key.
+
+A view needs no sign-in of the platform's own. Its forward listens on the host's loopback interface, which only the
+host reaches, not others on the host's network. Sign-in through a reverse proxy, such as with a device passkey, can
+come later as a `login` field on the view, with `login: none` for what exists now. `access: vnc` stays the direct VNC
+connection. A desktop in the browser, such as noVNC, is a `web` view.
 
 ### Agent definitions on disk
 
