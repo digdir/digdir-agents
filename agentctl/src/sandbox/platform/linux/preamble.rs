@@ -247,20 +247,35 @@ fn network(network: &NetworkSpec) -> String {
 }
 
 fn access(spec: &Spec, name: &str) -> Option<String> {
-    let commands = spec
-        .access
-        .iter()
-        .map(|access| match access {
-            AccessSpec::Ssh {} => format!("`agentctl ssh {name}`"),
-            AccessSpec::Vnc {} => format!("`agentctl vnc {name}`"),
-        })
-        .collect::<Vec<_>>();
-    (!commands.is_empty()).then(|| {
-        format!(
+    let mut commands = Vec::new();
+    let mut views = Vec::new();
+    for access in &spec.access {
+        match access {
+            AccessSpec::Ssh {} => commands.push(format!("`agentctl ssh {name}`")),
+            AccessSpec::Vnc {} => commands.push(format!("`agentctl vnc {name}`")),
+            AccessSpec::Web { name: view, port, path } => views.push(format!("`{view}` on port {port} at `{path}`")),
+        }
+    }
+    let mut sentences = Vec::new();
+    if !commands.is_empty() {
+        sentences.push(format!(
             "people on the host reach this computer with {}.",
             commands.join(" and ")
-        )
-    })
+        ));
+    }
+    if !views.is_empty() {
+        sentences.push(format!(
+            "{} open the web views you serve in their browser: {}.",
+            // The first sentence of a bullet starts in lowercase.
+            if commands.is_empty() {
+                "people on the host"
+            } else {
+                "They"
+            },
+            views.join(", ")
+        ));
+    }
+    (!sentences.is_empty()).then(|| sentences.join(" "))
 }
 
 const fn nested_agents(spec: &Spec, observed: &Observed<'_>) -> &'static str {
