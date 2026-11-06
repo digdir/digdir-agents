@@ -8,7 +8,7 @@ use crate::Error;
 
 use super::database_error;
 
-pub(crate) const VERSION: u32 = 6;
+pub(crate) const VERSION: u32 = 7;
 
 const PREVIEW_1_SQL: &str = "
     CREATE TABLE agents (
@@ -72,6 +72,10 @@ const SESSION_ARCHIVE_COLUMN_SQL: &str = "
     ALTER TABLE sessions ADD COLUMN archived_at INTEGER;
 ";
 
+const AGENT_LABELS_COLUMN_SQL: &str = "
+    ALTER TABLE agents ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}';
+";
+
 struct Migration {
     version: u32,
     name: &'static str,
@@ -115,6 +119,12 @@ const MIGRATIONS: &[Migration] = &[
         name: "named harness logins",
         schema: &[],
         apply: name_harness_logins,
+    },
+    Migration {
+        version: 7,
+        name: "agent labels",
+        schema: &[AGENT_LABELS_COLUMN_SQL],
+        apply: add_agent_labels,
     },
 ];
 
@@ -251,6 +261,16 @@ fn name_harness_logins(transaction: &Transaction<'_>) -> Result<(), Error> {
             "UPDATE provider_accounts SET provider = provider || '/default' WHERE instr(provider, '/') = 0;
              UPDATE secrets SET name = name || '/default' WHERE instr(name, '/') = 0;",
         )
+        .map_err(database_error)
+}
+
+/// Adds the labels that say what an agent is for. Agents from earlier schemas had none.
+fn add_agent_labels(transaction: &Transaction<'_>) -> Result<(), Error> {
+    if schema_difference(transaction, 7)?.is_none() {
+        return Ok(());
+    }
+    transaction
+        .execute_batch(AGENT_LABELS_COLUMN_SQL)
         .map_err(database_error)
 }
 

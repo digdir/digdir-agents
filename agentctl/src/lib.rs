@@ -9,6 +9,7 @@ pub mod control_plane;
 mod controller;
 mod environment;
 pub mod harness;
+pub mod labels;
 pub mod local;
 pub mod manifest;
 pub mod persistence;

@@ -636,7 +636,7 @@ fn released_preview_1_database_migrates_without_losing_state() {
         connection
             .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("schema version"),
-        6
+        7
     );
     assert_migrated_session_selections(&connection, 2, 2);
     assert_eq!(
@@ -788,7 +788,7 @@ fn preview_1_home_opened_by_the_expanded_version_1_build_migrates() {
     });
     drop(database);
 
-    assert_eq!(schema_snapshot(&path).0, 6);
+    assert_eq!(schema_snapshot(&path).0, 7);
     assert_eq!(
         connection_value(&path, EXPANDED_AGENT_ID, "desired_json"),
         expanded_desired,
@@ -845,7 +845,7 @@ fn version_2_home_records_the_model_existing_claude_code_sessions_launched_with(
         assert!(sessions[1].model_selection.is_empty());
     });
     drop(database);
-    assert_eq!(schema_snapshot(&path).0, 6);
+    assert_eq!(schema_snapshot(&path).0, 7);
     assert!(
         directory.path().join("backups").is_dir(),
         "a pending migration is backed up first"
@@ -886,23 +886,32 @@ fn expanded_version_1_schema_is_adopted_without_losing_state() {
     drop(database);
 
     let after = schema_snapshot(&path);
-    assert_eq!(after.0, 6);
+    assert_eq!(after.0, 7);
     let unchanged = |snapshot: &[(String, String)]| {
         snapshot
             .iter()
-            .filter(|(name, _)| name != "table:sessions")
+            .filter(|(name, _)| name != "table:sessions" && name != "table:agents")
             .cloned()
             .collect::<Vec<_>>()
     };
     assert_eq!(unchanged(&after.1), unchanged(&before));
-    let sessions_sql = |snapshot: &[(String, String)]| {
+    let table_sql = |snapshot: &[(String, String)], table: &str| {
         snapshot
             .iter()
-            .find(|(name, _)| name == "table:sessions")
+            .find(|(name, _)| name == table)
             .map(|(_, sql)| sql.clone())
-            .expect("sessions table")
+            .expect("table")
     };
-    let (before_sessions, after_sessions) = (sessions_sql(&before), sessions_sql(&after.1));
+    let before_agents = table_sql(&before, "table:agents");
+    assert_eq!(
+        table_sql(&after.1, "table:agents").replace(", labels_json TEXT NOT NULL DEFAULT '{}'", ""),
+        before_agents,
+        "agents gain only the labels column"
+    );
+    let (before_sessions, after_sessions) = (
+        table_sql(&before, "table:sessions"),
+        table_sql(&after.1, "table:sessions"),
+    );
     assert!(!before_sessions.contains("model TEXT"));
     assert!(
         after_sessions.contains("model TEXT") && after_sessions.contains("effort TEXT"),
@@ -1598,5 +1607,57 @@ fn archiving_a_session_is_recorded_once_and_survives_reopening() {
             store.set_session_archived("worker", &name, true).await,
             Err(Error::NotFound)
         ));
+    });
+}
+
+/// Labels have a write of their own: a desired-state write keeps them, and changing them changes no generation.
+#[test]
+fn labels_survive_desired_state_writes_and_reopening() {
+    let directory = TempDir::new().expect("temporary directory");
+    let path = directory.path().join("control-plane.db");
+    let labels = |pairs: &[(&str, &str)]| -> agent::labels::Labels {
+        pairs
+            .iter()
+            .map(|&(key, value)| (key.to_owned(), value.to_owned()))
+            .collect()
+    };
+    let first = persistence::Database::open(&path).expect("open database");
+    LocalRuntime::new().expect("local runtime").block_on(async {
+        let mut created = record("worker", 1);
+        created.agent.metadata.labels = labels(&[("client", "jetbrains")]);
+        first.put(created, 0).await.expect("create");
+        let stored = first
+            .change_labels(
+                test_agent_id(),
+                agent::labels::LabelChange {
+                    set: labels(&[("managed-by", "t3code")]),
+                    ..agent::labels::LabelChange::default()
+                },
+            )
+            .await
+            .expect("set a label");
+        assert_eq!(stored.declared, labels(&[("client", "jetbrains")]));
+        assert_eq!(stored.host, labels(&[("managed-by", "t3code")]));
+
+        let mut updated = record("worker", 2);
+        updated.agent.metadata.labels = labels(&[("ignored", "by-put")]);
+        first.put(updated, 1).await.expect("update desired state");
+    });
+    drop(first);
+
+    let second = persistence::Database::open(&path).expect("reopen database");
+    LocalRuntime::new().expect("local runtime").block_on(async {
+        let record = second.get(test_agent_id()).await.expect("record");
+        assert_eq!(record.agent.metadata.generation, 2);
+        assert_eq!(
+            record.agent.metadata.labels,
+            labels(&[("client", "jetbrains"), ("managed-by", "t3code")])
+        );
+        second.mark_deleting("worker").await.expect("mark deleting");
+        let error = second
+            .change_labels(test_agent_id(), agent::labels::LabelChange::default())
+            .await
+            .expect_err("a deleting agent keeps its labels");
+        assert!(matches!(error, Error::Conflict));
     });
 }

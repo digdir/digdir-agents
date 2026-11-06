@@ -9,7 +9,7 @@ use super::{database_error, secrets};
 pub(super) fn get(connection: &Connection, id: AgentId) -> Result<AgentRecord, Error> {
     connection
         .query_row(
-            "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json
+            "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json, labels_json
              FROM agents WHERE id = ?1 AND active_name IS NOT NULL",
             [id.to_string()],
             decode_row,
@@ -22,7 +22,7 @@ pub(super) fn get(connection: &Connection, id: AgentId) -> Result<AgentRecord, E
 pub(super) fn get_by_name(connection: &Connection, name: &str) -> Result<AgentRecord, Error> {
     let record = connection
         .query_row(
-            "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json
+            "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json, labels_json
              FROM agents WHERE active_name = ?1",
             [name],
             decode_row,
@@ -42,7 +42,7 @@ pub(super) fn get_by_name(connection: &Connection, name: &str) -> Result<AgentRe
 pub(super) fn list(connection: &Connection) -> Result<Vec<AgentRecord>, Error> {
     let mut statement = connection
         .prepare(
-            "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json
+            "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json, labels_json
              FROM agents WHERE active_name IS NOT NULL ORDER BY active_name",
         )
         .map_err(database_error)?;
@@ -67,15 +67,19 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
         transaction
             .execute(
                 "INSERT OR IGNORE INTO agents
-                 (id, active_name, source_directory, desired_json, deletion_timestamp, status_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 (id, active_name, source_directory, desired_json, deletion_timestamp, status_json, labels_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     id.to_string(),
                     name,
                     source,
                     desired,
                     deletion_timestamp(&record.agent),
-                    encode_status(&record.agent.status)?
+                    encode_status(&record.agent.status)?,
+                    serde_json::to_string(&crate::labels::StoredLabels {
+                        declared: record.agent.metadata.labels.clone(),
+                        ..crate::labels::StoredLabels::default()
+                    })?
                 ],
             )
             .map_err(database_error)?
@@ -99,6 +103,36 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
         return Err(Error::Conflict);
     }
     transaction.commit().map_err(database_error)
+}
+
+pub(super) fn change_labels(
+    connection: &mut Connection,
+    id: AgentId,
+    change: &crate::labels::LabelChange,
+) -> Result<crate::labels::StoredLabels, Error> {
+    let transaction = connection.transaction().map_err(database_error)?;
+    let (labels, deleting) = transaction
+        .query_row(
+            "SELECT labels_json, deletion_timestamp FROM agents WHERE id = ?1 AND active_name IS NOT NULL",
+            [id.to_string()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .optional()
+        .map_err(database_error)?
+        .ok_or(Error::NotFound)?;
+    if deleting.is_some() {
+        return Err(Error::Conflict);
+    }
+    let mut labels = serde_json::from_str::<crate::labels::StoredLabels>(&labels)?;
+    labels.apply(change);
+    transaction
+        .execute(
+            "UPDATE agents SET labels_json = ?1 WHERE id = ?2",
+            params![serde_json::to_string(&labels)?, id.to_string()],
+        )
+        .map_err(database_error)?;
+    transaction.commit().map_err(database_error)?;
+    Ok(labels)
 }
 
 pub(super) fn update_status(
@@ -170,6 +204,8 @@ pub(super) fn finalize_deletion(connection: &mut Connection, id: AgentId, genera
 fn encode_desired(agent: &Agent) -> Result<String, Error> {
     let mut desired = agent.clone();
     desired.metadata.deletion_timestamp = None;
+    // Kept in their own column, which only label changes write.
+    desired.metadata.labels.clear();
     desired.status = Status::default();
     serde_json::to_string(&desired).map_err(Error::from)
 }
@@ -209,6 +245,7 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
     let desired = row.get::<_, String>(3)?;
     let deletion = row.get::<_, Option<i64>>(4)?;
     let status = row.get::<_, String>(5)?;
+    let labels = row.get::<_, String>(6)?;
     let id = id.parse::<AgentId>().map_err(conversion_error)?;
     let (source_directory, manifest_path, env_file) = match serde_json::from_str(&source).map_err(conversion_error)? {
         StoredSource::Provenance(provenance) => (
@@ -227,6 +264,9 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
         .transpose()
         .map_err(conversion_error)?;
     agent.status = serde_json::from_str(&status).map_err(conversion_error)?;
+    agent.metadata.labels = serde_json::from_str::<crate::labels::StoredLabels>(&labels)
+        .map_err(conversion_error)?
+        .effective();
     Ok(AgentRecord {
         id,
         source_directory,
