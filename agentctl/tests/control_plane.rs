@@ -1655,6 +1655,29 @@ async fn the_skills_setup_placed_are_recorded_in_the_agents_status() {
     );
 }
 
+/// The checkouts the image clones are recorded with the sandbox, where clients and `ssh-info` find them.
+#[tokio::test(flavor = "local")]
+async fn the_checkouts_the_image_clones_are_recorded_in_the_agents_status() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let provider: Rc<dyn Provider> = Rc::new(MemoryProvider::new(Rc::new(sandbox_memory::Provider::new())));
+    let platform = Rc::new(ReportingPlatform::default());
+    let service = Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service");
+    let reconciler = Reconciler::new(store.clone(), Rc::new(service), ProvisioningState::default());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    platform.set_up.borrow_mut().projects = vec!["/home/agent/code/digdir-agents".into()];
+
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let id = store.get_by_name("worker").await.expect("Agent").id;
+    reconciler.reconcile(id).await.expect("reconcile");
+
+    let agent = control_plane.get("worker").await.expect("Agent");
+    let status = serde_json::to_value(&agent.status).expect("status JSON");
+    assert_eq!(
+        status["sandbox"]["projects"],
+        serde_json::json!(["/home/agent/code/digdir-agents"])
+    );
+}
+
 #[tokio::test(flavor = "local")]
 async fn releasing_a_deleted_agent_notifies_its_sessions() {
     let store = Rc::new(memory::InMemoryAgentStore::new());

@@ -120,6 +120,7 @@ fn placed_in(record: &mut AgentRecord, sandbox: &sandbox::SandboxHandle, skills:
         harnesses: Vec::new(),
         skills,
         logins: std::collections::BTreeMap::new(),
+        projects: Vec::new(),
     });
 }
 
@@ -534,6 +535,7 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
         harnesses: vec![agent::Harness::ClaudeCode],
         skills: placed(&[(SKILLS, &["image-own"])]),
         logins: std::collections::BTreeMap::new(),
+        projects: Vec::new(),
     });
     let executions = backend.execution_specs().len();
     platform
@@ -1933,4 +1935,58 @@ async fn linux_setup_commits_as_the_agents_account_unless_the_manifest_names_som
         ]
     );
     assert_eq!(git_settings_written(&[], &NO_ACCOUNTS).await, []);
+}
+
+/// Whether `spec` prints the image's workspace lists.
+fn is_workspace_lists(spec: &sandbox::execution::ExecutionSpec) -> bool {
+    matches!(
+        spec.program(),
+        Program::Command { executable, args }
+            if executable.as_str() == "/bin/sh" && args.last().is_some_and(|script| script.contains("/etc/agent-workspace.d/"))
+    )
+}
+
+/// Setup reports the checkouts the image's workspace lists name, for `ssh-info` and clients to open.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_reports_the_checkouts_the_image_clones() {
+    let directory = TempDir::new().expect("temporary directory");
+    let home = directory.path().join("home");
+    std::fs::create_dir_all(&home).expect("home directory");
+    std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home = Some(HomeSpec { source: home });
+    let record = AgentRecord {
+        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
+        source_directory: PathBuf::from(directory.path()),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
+        volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
+        exposed_files: std::collections::BTreeSet::new(),
+    };
+    let backend = Rc::new(memory::Provider::new());
+    backend.queue_execution_events_matching(
+        is_workspace_lists,
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stdout("digdir/digdir-agents\n\naltinn/altinn-profile profile # renamed\n".into()),
+            ExecutionEvent::Exited(ExitStatus { code: 0 }),
+        ],
+    );
+    let sandbox = claude_sandbox_on(backend, &record, 1).await;
+
+    let set_up = Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("setup");
+
+    assert_eq!(
+        set_up.projects,
+        ["/home/agent/code/digdir-agents", "/home/agent/code/profile"]
+    );
 }
