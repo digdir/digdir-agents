@@ -5,5 +5,4 @@
 | [image-contract.md](image-contract.md) | What an agent image must provide that `agent-image-check` cannot check |
 | [harness-upgrades.md](harness-upgrades.md) | Updating a harness installation or adapter, and the test plan for it |
 | [design/client-discovery.md](design/client-discovery.md) | What the agent resource and the Control API could add so that every client finds the agents meant for it the same way |
-| [design/jetbrains-gateway.md](design/jetbrains-gateway.md) | What JetBrains Gateway needs to work against an agent, and what a feature for it should provide |
 | [design/jetbrains-gateway.md](design/jetbrains-gateway.md) | How `agentctl` and the base images could open an agent in JetBrains Gateway without manual steps |
