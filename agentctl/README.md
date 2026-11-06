@@ -45,6 +45,10 @@ update the skill as well.
 
 ## Your first agent
 
+At a terminal, `attach`, `exec` and `ssh` offer to start the agent here when it is stopped, and
+`agentctl attach` without a session opens the agent's only session, starts one named after its harness, such as
+`claude-1`, when it has none, or asks which.
+
 `agentctl status` shows whether agentd answers, which harness logins are stored, the current directory's agent and a
 count of every agent, with the commands to run next. `agentctl status --json` prints the same as a JSON object whose
 keys stay stable, for agents and scripts that check their own setup.
