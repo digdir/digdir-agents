@@ -66,10 +66,10 @@ slightly wrong.
 ### The project
 
 `agentd` reads which repositories the image clones, from `/etc/agent-workspace.d/*.list` as the
-[base images](../../../images/agentctl-base/README.md) do, once the sandbox is up. The agent's status lists them as
-paths in the sandbox. `ssh-info` gets `projectDirectory`: the repository's checkout when the image clones exactly
-one, and the working directory otherwise. Editors and `connect` open that, and a client can offer the list when there
-are several.
+[base images](../../../images/agentctl-base/README.md) do, once the sandbox is up. `status.sandbox.projects` lists
+them as paths in the sandbox. `ssh-info` gets `projectDirectory`: the repository's checkout when the image clones
+exactly one, and the working directory otherwise. Editors open that, and a client can offer the list when there are
+several.
 
 ### Labels
 
