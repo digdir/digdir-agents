@@ -21,6 +21,7 @@ pub(crate) fn agent(name: &str) -> Agent {
         kind: KIND.into(),
         metadata: Metadata {
             name: name.into(),
+            uid: None,
             generation: 0,
             deletion_timestamp: None,
             restart_timestamp: None,

@@ -478,6 +478,48 @@ async fn apply_stores_desired_state_without_running_inline() {
 }
 
 #[tokio::test(flavor = "local")]
+async fn an_agent_keeps_its_uid_until_it_is_deleted_and_a_new_one_with_its_name_gets_another() {
+    let fixture = fixture();
+    let applied = fixture
+        .control_plane
+        .apply(apply_request("worker"))
+        .await
+        .expect("apply");
+    let uid = applied.metadata.uid.expect("uid on the applied agent");
+    assert_eq!(uid, stored(&fixture, "worker").await.id);
+
+    let mut changed = apply_request("worker");
+    changed.agent.spec.sandbox.resources.cpu = "3".parse().expect("CPU");
+    // A uid in a manifest is not the client's to choose, so apply ignores it as it ignores a generation.
+    changed.agent.metadata.uid = Some("00000000-0000-4000-8000-000000000000".parse().expect("uid"));
+    let reapplied = fixture.control_plane.apply(changed).await.expect("reapply");
+    assert_eq!(reapplied.metadata.uid, Some(uid));
+    assert_eq!(
+        fixture.control_plane.get("worker").await.expect("get").metadata.uid,
+        Some(uid)
+    );
+    assert_eq!(
+        fixture.control_plane.list().await.expect("list")[0].metadata.uid,
+        Some(uid)
+    );
+
+    fixture.control_plane.delete("worker").await.expect("delete");
+    reconcile(&fixture, "worker").await;
+    let recreated = fixture
+        .control_plane
+        .apply(apply_request("worker"))
+        .await
+        .expect("apply again");
+    let new_uid = recreated.metadata.uid.expect("uid on the new agent");
+    assert_ne!(new_uid, uid);
+    assert_eq!(new_uid, stored(&fixture, "worker").await.id);
+    assert!(
+        stored(&fixture, "worker").await.agent.metadata.uid.is_none(),
+        "the store keeps the id beside the agent, not in it"
+    );
+}
+
+#[tokio::test(flavor = "local")]
 async fn lists_agents_and_resolves_the_nearest_unique_source_directory() {
     let fixture = fixture();
     let root = std::env::temp_dir().join("agent-platform-sources");
