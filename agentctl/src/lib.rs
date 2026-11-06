@@ -7,6 +7,7 @@ pub mod authorization;
 pub mod control_api;
 pub mod control_plane;
 mod controller;
+pub mod definitions;
 mod environment;
 pub mod harness;
 pub mod labels;
