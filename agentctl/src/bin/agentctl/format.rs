@@ -10,8 +10,9 @@ pub(crate) fn format_access(spec: &agent::Spec) -> String {
     spec.access
         .iter()
         .map(|capability| match capability {
-            agent::AccessSpec::Ssh {} => "ssh",
-            agent::AccessSpec::Vnc {} => "vnc",
+            agent::AccessSpec::Ssh {} => "ssh".to_owned(),
+            agent::AccessSpec::Vnc {} => "vnc".to_owned(),
+            agent::AccessSpec::Web { name, port, .. } => format!("web/{name}:{port}"),
         })
         .collect::<Vec<_>>()
         .join(",")
