@@ -80,7 +80,10 @@ fn mappings_merge_while_arrays_replace_and_empty_arrays_clear() {
     assert_eq!(agent.spec.instructions, []);
     assert_eq!(agent.spec.harnesses.len(), 1);
     assert_eq!(agent.spec.harnesses[0].kind, agent::Harness::Codex);
-    assert_eq!(agent.spec.home.source, Path::new("home"));
+    assert_eq!(
+        agent.spec.home.as_ref().map(|home| home.source.as_path()),
+        Some(Path::new("home"))
+    );
 }
 
 #[test]
@@ -202,6 +205,41 @@ fn base_errors_include_the_complete_inheritance_chain() {
     let message = error.to_string();
     assert!(message.contains("inheritance chain:"), "{message}");
     assert!(message.contains("agent.leaf.yaml\n  extends agent.parent.yaml\n  extends agent.missing.yaml"));
+}
+
+/// A validation error names the manifest's file and says what is wrong, and nothing more.
+#[test]
+fn a_validation_error_names_only_the_file() {
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.empty.yaml",
+        &variant("agent.yaml", "empty", "spec:\n  home:\n    source: \"\"\n"),
+    );
+    let error = manifest::resolve(&directory.path().join("agent.empty.yaml")).expect_err("empty home source");
+    let agent::Error::Invalid(message) = &error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(
+        message,
+        "agent.empty.yaml: spec.home.source must not be empty\ninheritance chain:\nagent.empty.yaml\n  extends agent.yaml"
+    );
+
+    write(
+        directory.path(),
+        "agent.parent.yaml",
+        &variant("agent.missing.yaml", "parent", ""),
+    );
+    write(
+        directory.path(),
+        "agent.leaf.yaml",
+        &variant("agent.parent.yaml", "leaf", ""),
+    );
+    let error = manifest::resolve(&directory.path().join("agent.leaf.yaml")).expect_err("missing base");
+    let agent::Error::Invalid(message) = &error else {
+        panic!("{error:?}");
+    };
+    assert!(!message.contains("invalid Agent"), "{message}");
 }
 
 #[test]
