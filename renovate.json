@@ -5,12 +5,14 @@
   ],
   "packageRules": [
     {
-      "description": "The self-dev images build on the agentctl base image from the same commit, so their FROM names the tag alone.",
+      "description": "agentctl's own agents' images follow the platform they run on, so they name the tags alone: they build on the agentctl base image from the same commit, and the agent builder copies agentctl from main.",
       "matchFileNames": [
-        "agents/self-dev/Dockerfile"
+        "agents/self-dev/Dockerfile",
+        "agents/agent-builder/Dockerfile"
       ],
       "matchPackageNames": [
-        "ghcr.io/digdir/agentctl-base"
+        "ghcr.io/digdir/agentctl-base",
+        "ghcr.io/digdir/agentctl"
       ],
       "enabled": false
     },

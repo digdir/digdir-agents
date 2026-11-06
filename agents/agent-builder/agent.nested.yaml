@@ -1,0 +1,23 @@
+# The agent builder as a nested agent, with its image built from the checkout this file is in, so a change to it can
+# be tried before CI publishes the image. Apply it from a worktree of digdir-agents inside another agent, as its
+# instructions describe. The nested agent writes no personal agents, so it mounts no folder for them.
+apiVersion: agents.platform/v1alpha1
+kind: AgentVariant
+extends: agent.yaml
+metadata:
+  name: agent-builder-nested
+spec:
+  sandbox:
+    image:
+      type: build
+      context: .
+      dockerfile: Dockerfile
+    resources:
+      cpu: "2"
+      memory: "4Gi"
+      rootFilesystem:
+        capacity: "32Gi"
+        mode: direct
+      # A nested agent runs no agents of its own.
+      nestedSandboxes: null
+    mounts: null

@@ -19,6 +19,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 mod format;
 mod launch;
+mod new;
 mod progress;
 mod prompt;
 mod self_update;
@@ -94,6 +95,9 @@ enum Command {
         #[arg(long)]
         last: Option<usize>,
     },
+    /// Make a new agent for a repository with the agent builder, which asks what it is for and writes
+    /// its definition.
+    New(new::NewArguments),
     /// Create or update an agent from a manifest.
     Apply {
         /// Agent manifest path; defaults to ./agent.yaml.
@@ -636,6 +640,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 CodexCommand::Logout { name } => logout(client, harness, name).await?,
             }
         }
+        Command::New(arguments) => new::new(arguments, home, client).await?,
         Command::Apply {
             filename,
             variant,

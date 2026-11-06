@@ -18,9 +18,12 @@ on:
       - images/agentctl/**
       - docker-bake.hcl
       - .github/workflows/agentctl-image.yml
-      # Markdown is not built into the binaries, except the skill agentctl bundles.
+      # Markdown is not built into the binaries, except the skills and the agent builder's definition agentctl bundles.
       - '!**/*.md'
       - agentctl/skills/**
+      - agents/agent-builder/agent.yaml
+      - agents/agent-builder/instructions.md
+      - agents/agent-builder/home/.claude/settings.json
   # The same paths as pull requests, so that each commit on main that can change the image has a tag to pin.
   push:
     branches:
@@ -37,6 +40,9 @@ on:
       - .github/workflows/agentctl-image.yml
       - '!**/*.md'
       - agentctl/skills/**
+      - agents/agent-builder/agent.yaml
+      - agents/agent-builder/instructions.md
+      - agents/agent-builder/home/.claude/settings.json
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -117,6 +123,7 @@ jobs:
             commit="$(git log -1 --format=%H -- \
               .cargo/config.toml Cargo.toml Cargo.lock rust-toolchain.toml \
               agentctl/Cargo.toml agentctl/src agentctl/skills \
+              agents/agent-builder/agent.yaml agents/agent-builder/instructions.md agents/agent-builder/home/.claude/settings.json \
               sandbox/authorization/Cargo.toml sandbox/authorization/src \
               sandbox/core/Cargo.toml sandbox/core/src \
               sandbox/microsandbox/Cargo.toml sandbox/microsandbox/src \

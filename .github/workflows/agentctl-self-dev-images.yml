@@ -1,6 +1,6 @@
-# Builds the self-development agent's images from agents/self-dev, on the agentctl base images built from the same
-# commit. Pull requests only build them; main, including a manual run on main, also publishes them to GHCR as `latest`
-# and `sha-<commit>`.
+# Builds the images of agentctl's own agents, the self-development agent in agents/self-dev and the agent builder in
+# agents/agent-builder, on the agentctl base images built from the same commit. Pull requests only build them; main,
+# including a manual run on main, also publishes them to GHCR as `latest` and `sha-<commit>`.
 name: agentctl self-dev images
 
 on:
@@ -8,22 +8,26 @@ on:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed]
     paths:
       - agents/self-dev/**
+      - agents/agent-builder/**
       - images/agentctl-base/**
       - docker-bake.hcl
       - .github/workflows/agentctl-self-dev-images.yml
-      # Neither this image's .dockerignore nor the base's admits this Markdown. agentctl applies the self-dev agent's from its manifest.
+      # Neither these images' .dockerignore nor the base's admits this Markdown. agentctl applies it from the manifests.
       - '!agents/self-dev/**/*.md'
+      - '!agents/agent-builder/**/*.md'
       - '!images/agentctl-base/*.md'
   push:
     branches:
       - main
     paths:
       - agents/self-dev/**
+      - agents/agent-builder/**
       - images/agentctl-base/**
       - docker-bake.hcl
       - .github/workflows/agentctl-self-dev-images.yml
-      # Neither this image's .dockerignore nor the base's admits this Markdown. agentctl applies the self-dev agent's from its manifest.
+      # Neither these images' .dockerignore nor the base's admits this Markdown. agentctl applies it from the manifests.
       - '!agents/self-dev/**/*.md'
+      - '!agents/agent-builder/**/*.md'
       - '!images/agentctl-base/*.md'
   workflow_dispatch:
 
@@ -33,12 +37,14 @@ permissions:
 
 concurrency:
   group: agentctl-self-dev-images-${{ github.event.pull_request.number || github.ref }}
-  # A cancelled publish could leave the two images' tags pointing at different commits.
+  # A cancelled publish could leave the images' tags pointing at different commits.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   BASE_REPOSITORY: ghcr.io/digdir/agentctl-base
   REGISTRY: ghcr.io/digdir/digdir-agents
+  # The bake targets, each published as agentctl-<target>.
+  TARGETS: self-dev-minimal self-dev-full agent-builder
 
 jobs:
   # Each architecture builds on a native runner: under QEMU, the arm64 build took more than 20 minutes for the
@@ -65,6 +71,7 @@ jobs:
           # Cone mode also checks out the root's files, docker-bake.hcl among them.
           sparse-checkout: |
             agents/self-dev
+            agents/agent-builder
             images/agentctl-base
 
       - name: Set up Docker Buildx
@@ -76,7 +83,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
 
-      # Both images are built in one bake, on the base image bake builds from this commit: full is minimal plus the
+      # The self-dev images are built in one bake, on the base image bake builds from this commit: full is minimal plus the
       # desktop, so it publishes the minimal layers with the same digests, and a host that has minimal only pulls the
       # full layers. The base's own cache serves the base layers.
       - name: Build images
@@ -90,28 +97,29 @@ jobs:
           set -- --set "*.platform=linux/${ARCH}" \
             --set "base-headless.cache-from=type=registry,ref=${BASE_REPOSITORY}:buildcache-headless-${ARCH}" \
             --set "self-dev-full.cache-from=type=registry,ref=${REGISTRY}/agentctl-self-dev-minimal:buildcache-${ARCH}"
-          for target in minimal full; do
-            repository="${REGISTRY}/agentctl-self-dev-${target}"
-            set -- "$@" --set "self-dev-${target}.cache-from=type=registry,ref=${repository}:buildcache-${ARCH}"
+          for target in ${TARGETS}; do
+            repository="${REGISTRY}/agentctl-${target}"
+            set -- "$@" --set "${target}.cache-from=type=registry,ref=${repository}:buildcache-${ARCH}"
             if [ "${PUBLISH}" = "true" ]; then
               # Without clearing the bake file's tags, buildx refuses to push by digest; the publish job tags.
               set -- "$@" \
-                --set "self-dev-${target}.tags=" \
-                --set "self-dev-${target}.output=type=image,name=${repository},push-by-digest=true,name-canonical=true,push=true" \
-                --set "self-dev-${target}.cache-to=type=registry,ref=${repository}:buildcache-${ARCH},mode=max,image-manifest=true"
+                --set "${target}.tags=" \
+                --set "${target}.output=type=image,name=${repository},push-by-digest=true,name-canonical=true,push=true" \
+                --set "${target}.cache-to=type=registry,ref=${repository}:buildcache-${ARCH},mode=max,image-manifest=true"
             fi
           done
 
+          # shellcheck disable=SC2086 # TARGETS is a list of bake targets.
           docker buildx bake --file docker-bake.hcl --provenance=false --sbom=false --metadata-file "${metadata}" \
-            "$@" self-dev
+            "$@" ${TARGETS}
 
           if [ "${PUBLISH}" = "true" ]; then
             mkdir -p "${RUNNER_TEMP}/digests"
-            for target in minimal full; do
-              digest="$(jq -r --arg target "self-dev-${target}" '.[$target]."containerimage.digest"' "${metadata}")"
+            for target in ${TARGETS}; do
+              digest="$(jq -r --arg target "${target}" '.[$target]."containerimage.digest"' "${metadata}")"
               case "${digest}" in
                 sha256:*) printf '%s\n' "${digest}" > "${RUNNER_TEMP}/digests/${target}" ;;
-                *) echo "::error::no image digest for self-dev-${target} in ${metadata}"; exit 1 ;;
+                *) echo "::error::no image digest for ${target} in ${metadata}"; exit 1 ;;
               esac
             done
           fi
@@ -150,8 +158,8 @@ jobs:
         run: |
           set -eu
 
-          for target in minimal full; do
-            repository="${REGISTRY}/agentctl-self-dev-${target}"
+          for target in ${TARGETS}; do
+            repository="${REGISTRY}/agentctl-${target}"
             docker buildx imagetools create \
               --tag "${repository}:sha-${GITHUB_SHA::10}" \
               --tag "${repository}:latest" \

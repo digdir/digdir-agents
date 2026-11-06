@@ -95,6 +95,12 @@ impl ResponseError {
     pub const fn is_not_found(&self) -> bool {
         self.code == CODE_NOT_FOUND
     }
+
+    /// Returns whether the request changed a field that is fixed once the agent is created.
+    #[must_use]
+    pub const fn is_immutable(&self) -> bool {
+        self.code == CODE_IMMUTABLE
+    }
 }
 
 #[derive(Deserialize, Serialize)]
