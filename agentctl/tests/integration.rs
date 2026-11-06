@@ -7,6 +7,7 @@ mod architecture;
 mod control_api;
 mod control_plane;
 mod database;
+mod definitions;
 mod home;
 mod manifest;
 mod platform_api;

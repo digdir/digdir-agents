@@ -62,6 +62,8 @@ agentctl apply -f path/to/agent.yaml --env-file ENV_FILE --wait
 agentctl apply --variant nested --env-file ENV_FILE --wait
 ```
 
+- **Manifest:** `agentctl definitions` lists the manifests and variants in this repository, and the agents applied
+  from each.
 - **Name:** `apply` updates the agent of the manifest's name, and refuses one first applied from another directory.
   Others may share this `agentctl`, such as the user on a host or other sessions in an agent: check
   `agentctl get agents` first, and pass `--name` to give yours a name of its own.

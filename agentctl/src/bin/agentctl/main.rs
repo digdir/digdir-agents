@@ -251,6 +251,17 @@ enum Command {
         #[arg(required = true, value_name = "KEY=VALUE|KEY-")]
         changes: Vec<String>,
     },
+    /// List the agent definitions under a directory, and the agents applied from each.
+    ///
+    /// It finds them as `agentctl tui` does: anywhere in the directory's git repository or, outside one, in
+    /// `agent.yaml` and `agents/<name>/`, with the variants beside each.
+    Definitions {
+        /// Where to look; defaults to the current directory.
+        directory: Option<PathBuf>,
+        /// Output format.
+        #[arg(short = 'o', long, default_value = "table", value_enum)]
+        output: OutputFormat,
+    },
     /// Display one or more resources.
     Get {
         /// Resource kind, optionally combined with a name (for example `agent/worker`).
@@ -719,6 +730,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             get_resources(client, &resource, name, scope, &labels, watch, output).await?;
         }
         Command::Describe { resource, name, output } => describe(client, &resource, name, output).await?,
+        Command::Definitions { directory, output } => definitions(client, directory, output).await?,
         Command::Label { resource, changes } => {
             let (name, changes) = label_target(&resource, &changes)?;
             let (set, remove) = parse_label_changes(changes)?;
@@ -1636,6 +1648,63 @@ async fn stream_execution(
 
 fn exit_code(code: i32) -> ExitCode {
     u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
+}
+
+async fn definitions(client: &Client, directory: Option<PathBuf>, output: OutputFormat) -> CommandResult<()> {
+    let directory = match directory {
+        Some(directory) => absolute(std::env::current_dir, directory)?,
+        None => std::env::current_dir().map_err(Error::from)?,
+    };
+    let applied = client.list_agents().await?;
+    let found = {
+        let directory = directory.clone();
+        tokio::task::spawn_blocking(move || agent::definitions::list(&directory, &applied))
+            .await
+            .map_err(|error| Error::Invalid(format!("looking for agent definitions failed: {error}")))?
+    };
+    match output {
+        OutputFormat::Json => print_json(&found)?,
+        OutputFormat::Table => {
+            if found.is_empty() {
+                println!("No agent definitions found.");
+            } else {
+                print_table(&definitions_table(&found, &directory));
+            }
+            for definition in &found {
+                if let Some(error) = &definition.error {
+                    eprintln!("{}: {error}", shown_path(&definition.path, &directory));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `path` relative to `directory` when it is below it.
+fn shown_path(path: &Path, directory: &Path) -> String {
+    path.strip_prefix(directory).unwrap_or(path).display().to_string()
+}
+
+fn definitions_table(definitions: &[agent::definitions::Definition], directory: &Path) -> Vec<String> {
+    let rows = definitions
+        .iter()
+        .map(|definition| {
+            vec![
+                shown_path(&definition.path, directory),
+                definition
+                    .variant
+                    .as_ref()
+                    .map_or_else(|| "default".to_owned(), |variant| variant.as_str().to_owned()),
+                definition.name.clone().unwrap_or_else(|| "-".into()),
+                if definition.agents.is_empty() {
+                    "-".into()
+                } else {
+                    definition.agents.join(",")
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    table_lines(&["PATH", "VARIANT", "NAME", "AGENTS"], &rows)
 }
 
 async fn describe(client: &Client, resource: &str, name: Option<String>, output: OutputFormat) -> CommandResult<()> {

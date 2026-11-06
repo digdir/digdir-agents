@@ -1,13 +1,16 @@
 //! The agent definitions on disk: the manifests and variants a person or client can apply, and the definition sources
 //! that hold them.
 //!
-//! Every client that offers to create an agent looks for them the same way, so they offer the same ones.
+//! Every client that offers to create an agent looks for them the same way, so they offer the same ones. The files are
+//! not resources in `agentd`, which knows only the agents applied from them.
 
 use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
+use serde::{Deserialize, Serialize};
 
 use crate::{
+    Agent, AgentVariantName,
     local::repository_root,
     manifest::{self, MANIFEST_FILE},
 };
@@ -175,6 +178,72 @@ fn declares_volume(path: &Path) -> bool {
             .ok()
             .and_then(|bytes| serde_yaml_ng::from_slice::<serde_yaml_ng::Value>(&bytes).ok())
             .is_some_and(|value| value.get("kind").and_then(serde_yaml_ng::Value::as_str) == Some(crate::volumes::KIND))
+}
+
+/// One agent definition on disk.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Definition {
+    /// The manifest file.
+    pub path: PathBuf,
+    /// The variant the file is, absent for an agent's `agent.yaml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<AgentVariantName>,
+    /// The `metadata.name` it declares, once its variants are resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Why it cannot be applied as it is, when it cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The root of the Git repository it is in, as [`repository_root`] counts one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<PathBuf>,
+    /// The names of the applied agents that came from this file. `apply --name` makes more than one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<String>,
+}
+
+/// Lists the definitions [`manifests`] finds for `directory`, with the agents in `applied` that came from each.
+///
+/// Reads the filesystem, so it blocks.
+#[must_use]
+pub fn list(directory: &Path, applied: &[Agent]) -> Vec<Definition> {
+    let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let applied_from: Vec<(PathBuf, &str)> = applied
+        .iter()
+        .filter(|agent| agent.metadata.deletion_timestamp.is_none())
+        .filter_map(|agent| {
+            let provenance = agent.status.provenance.as_ref()?;
+            Some((
+                canonical(&provenance.manifest_or_default()),
+                agent.metadata.name.as_str(),
+            ))
+        })
+        .collect();
+    manifests(directory)
+        .into_iter()
+        .map(|path| {
+            let file = canonical(&path);
+            let (name, error) = match manifest::resolve(&path) {
+                Ok(resolved) => (Some(resolved.agent.metadata.name), None),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            let mut agents: Vec<String> = applied_from
+                .iter()
+                .filter(|(from, _)| *from == file)
+                .map(|(_, name)| (*name).to_owned())
+                .collect();
+            agents.sort();
+            Definition {
+                variant: manifest::variant_from_filename(&path),
+                repository: repository_root(&path).map(Path::to_path_buf),
+                path,
+                name,
+                error,
+                agents,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

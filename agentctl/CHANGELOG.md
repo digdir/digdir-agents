@@ -14,6 +14,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Added
 
+- `agentctl definitions [DIR]` lists the agent manifests and variants that `agentctl tui` offers: anywhere in the directory's repository or, outside one, in `agent.yaml` and `agents/<name>/`. Each one shows the name it declares and the agents applied from it, and `-o json` gives the same to a tool. ([#405](https://github.com/digdir/digdir-agents/issues/405))
 - An agent declares the web UIs it serves, such as T3 Code, under `access` as `{type: web, name: t3code, port: 3773}`, with an optional `path`. `agentctl get agents -o json` and `describe` list them, so a client can offer an agent's views without knowing its image. A variant changes or removes one by its `name`. Opening a view from `agentctl` comes later. ([#387](https://github.com/digdir/digdir-agents/issues/387))
 - Agent labels say what an agent is for, such as `client: t3code`: ([client discovery](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/design/client-discovery.md#labels), [#405](https://github.com/digdir/digdir-agents/issues/405))
   - declare them in `metadata.labels`, or set them with `agentctl label agent/NAME KEY=VALUE` or `apply --label`, which a later `apply` keeps
