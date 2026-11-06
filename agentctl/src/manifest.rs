@@ -180,6 +180,68 @@ impl Agent {
         self.metadata.restart_timestamp.is_some()
             && self.metadata.restart_timestamp != self.status.observed_restart_timestamp
     }
+
+    /// Returns whether the agent was asked to stop and no pass for that generation has recorded it stopped yet.
+    #[must_use]
+    pub fn stop_pending(&self) -> bool {
+        self.spec.is_stopped()
+            && !(self.status.observed_generation == self.metadata.generation && self.status.is_stopped())
+    }
+
+    /// Works out the agent's [`AgentPhase`]: deletion first, then a stop, restart or start under way, then the class
+    /// of the last failure, the pass in progress and readiness.
+    ///
+    /// A failure counts only while its generation is current, so an agent stays `Retrying` through each retry, and a
+    /// pass for a newer generation shows as `Provisioning` the change. A failed stop or restart reads as `Retrying`,
+    /// like any other failed pass.
+    #[must_use]
+    pub fn phase(&self) -> AgentPhase {
+        if self.metadata.deletion_timestamp.is_some() {
+            return AgentPhase::Terminating;
+        }
+        let ready = self.status.ready_condition();
+        let failure = self
+            .status
+            .failure
+            .filter(|_| self.status.observed_generation == self.metadata.generation);
+        let changing = if self.spec.is_stopped() {
+            if !self.stop_pending() {
+                return AgentPhase::Stopped;
+            }
+            failure.is_none().then_some(AgentPhase::Stopping)
+        } else if self.restart_pending() {
+            failure.is_none().then_some(AgentPhase::Restarting)
+        } else {
+            // A running agent recorded stopped, as a start or a restart leaves it, starts next.
+            ready
+                .is_some_and(|ready| {
+                    [Condition::REASON_STARTING, Condition::REASON_STOPPED].contains(&ready.reason.as_str())
+                })
+                .then_some(AgentPhase::Starting)
+        };
+        if let Some(phase) = changing {
+            return phase;
+        }
+        if self.status.unresponsive().is_some() {
+            return AgentPhase::Unresponsive;
+        }
+        if failure.is_none() && ready.is_some_and(|ready| ready.reason == Condition::REASON_WAITING_FOR_VOLUMES) {
+            return AgentPhase::Waiting;
+        }
+        let provisioning = self.status.progress.as_ref().is_some_and(|provisioning| {
+            *provisioning.progress.status() == ::sandbox::progress::OperationStatus::Running
+        });
+        match (failure, provisioning) {
+            (Some(crate::FailureKind::Invalid), _) => AgentPhase::Failed,
+            (Some(crate::FailureKind::Transient), _) => AgentPhase::Retrying,
+            (None, true) => AgentPhase::Provisioning,
+            (None, false) => match ready.map(|ready| ready.status) {
+                None => AgentPhase::Pending,
+                Some(ConditionStatus::True) => AgentPhase::Ready,
+                Some(_) => AgentPhase::Starting,
+            },
+        }
+    }
 }
 
 /// Agent resource identity and API-managed metadata.
@@ -1271,6 +1333,10 @@ pub struct Status {
     /// onto API responses from the stored agent record; stores scrub it, so it is never persisted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<MountedVolume>,
+    /// What a person or client can do with the agent now, from [`Agent::phase`]. Projected onto API responses;
+    /// stores scrub it, so it is never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<AgentPhase>,
 }
 
 /// The revision of a volume an agent mounts, chosen when its sandbox is created.
@@ -1284,6 +1350,60 @@ pub struct MountedVolume {
     /// The revision mounted, or none for an optional volume left out until the agent is recreated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<u64>,
+}
+
+/// One word for what a person or client can do with an agent now.
+///
+/// It sums up the run state, conditions, failure and pass in progress. Every client shows the same summary, so it is
+/// worked out once, by [`Agent::phase`]. The conditions stay the detail: a client that needs SSH checks `SshReady` too.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum AgentPhase {
+    /// Applied, and no pass has reported on it yet.
+    Pending,
+    /// A pass is building the image or preparing the sandbox. `status.progress` says which step.
+    Provisioning,
+    /// Nothing is provisioned until something outside the agent is there, such as a copy of a volume it mounts.
+    /// The `Ready` condition says what.
+    Waiting,
+    /// The sandbox is starting, or a pass has not found the agent ready yet.
+    Starting,
+    /// The agent can serve sessions and executions.
+    Ready,
+    /// A pass failed in a way another pass may not, and `agentd` tries again.
+    Retrying,
+    /// The sandbox has stopped making progress. `agentd` keeps trying, but nothing reaches the guest until it does.
+    Unresponsive,
+    /// The manifest cannot be provisioned as written. Applying a fixed one is the way out.
+    Failed,
+    /// A stop was asked for, and the sandbox has not stopped yet.
+    Stopping,
+    /// A restart was asked for, and the sandbox has not stopped for it yet.
+    Restarting,
+    /// Stopped by request, with its disk kept.
+    Stopped,
+    /// Deletion was asked for.
+    Terminating,
+}
+
+impl AgentPhase {
+    /// The phase as `status.phase` writes it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "Pending",
+            Self::Provisioning => "Provisioning",
+            Self::Waiting => "Waiting",
+            Self::Starting => "Starting",
+            Self::Ready => "Ready",
+            Self::Retrying => "Retrying",
+            Self::Unresponsive => "Unresponsive",
+            Self::Failed => "Failed",
+            Self::Stopping => "Stopping",
+            Self::Restarting => "Restarting",
+            Self::Stopped => "Stopped",
+            Self::Terminating => "Terminating",
+        }
+    }
 }
 
 impl Status {
@@ -1306,6 +1426,7 @@ impl Status {
             lifetime: None,
             bindings: BTreeMap::new(),
             volumes: Vec::new(),
+            phase: None,
         }
     }
 
@@ -1325,6 +1446,7 @@ impl Status {
         self.lifetime = None;
         self.bindings.clear();
         self.volumes.clear();
+        self.phase = None;
     }
 
     fn is_empty(&self) -> bool {
@@ -1339,6 +1461,7 @@ impl Status {
             && self.lifetime.is_none()
             && self.bindings.is_empty()
             && self.volumes.is_empty()
+            && self.phase.is_none()
     }
 
     /// Carries each condition's transition time forward from `previous`, the

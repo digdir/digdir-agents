@@ -15,6 +15,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ### Added
 
+- `status.phase` in `agentctl get agents -o json` says in one word what you can do with an agent now, such as `Ready`, `Provisioning`, `Stopped` or `Retrying`, the same state `agentctl tui` shows. The `STATUS` column of `agentctl get agents` shows it too. ([#405](https://github.com/digdir/digdir-agents/issues/405))
 - `agentctl get agents -o json` gives each agent a `metadata.uid` that stays the same until the agent is deleted, so a tool that remembers an agent can tell when one with the same name is a new agent. ([#301](https://github.com/digdir/digdir-agents/issues/301))
 
 ### Changed

@@ -38,10 +38,11 @@ pub use control_plane::AgentId;
 pub use controller::{FailureKind, ReconcileFailure};
 pub use harness::{Effort, Harness, HarnessAuthMode, HarnessSpec, Model, ModelSelection};
 pub use manifest::{
-    API_VERSION, AccessSpec, AccountSpec, Agent, AgentVariant, AgentVariantName, Condition, ConditionStatus,
-    EnvironmentSpec, HomeSpec, InstructionsSpec, KIND, Lifetime, Metadata, MountSpec, MountedVolume, NestedSandboxes,
-    NetworkAllow, NetworkMode, NetworkSpec, Origin, PlatformManifestSpec, Provenance, ResolvedManifest,
-    ResourcesManifestSpec, RunState, SandboxManifestSpec, SecretSpec, SkillSpec, Spec, Status, VARIANT_KIND,
+    API_VERSION, AccessSpec, AccountSpec, Agent, AgentPhase, AgentVariant, AgentVariantName, Condition,
+    ConditionStatus, EnvironmentSpec, HomeSpec, InstructionsSpec, KIND, Lifetime, Metadata, MountSpec, MountedVolume,
+    NestedSandboxes, NetworkAllow, NetworkMode, NetworkSpec, Origin, PlatformManifestSpec, Provenance,
+    ResolvedManifest, ResourcesManifestSpec, RunState, SandboxManifestSpec, SecretSpec, SkillSpec, Spec, Status,
+    VARIANT_KIND,
 };
 pub use reference::DefinitionReference;
 
