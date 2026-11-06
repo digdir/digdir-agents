@@ -183,8 +183,7 @@ fn encode_status(status: &Status) -> Result<String, Error> {
 
 /// Removes what is projected onto responses and never stored.
 fn scrub(status: &mut Status) {
-    status.progress = None;
-    status.provenance = None;
+    status.scrub_projected();
 }
 
 /// Source-column payload: current writes store [`crate::Provenance`]; rows

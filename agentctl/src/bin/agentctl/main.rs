@@ -1867,11 +1867,7 @@ fn agents_table(agents: &[Agent]) -> Vec<String> {
         .map(|agent| {
             let ready = agent.status.ready_condition();
             let ready_value = ready.map_or("Unknown", |condition| condition_status(condition.status));
-            let status = if agent.metadata.deletion_timestamp.is_some() {
-                "Terminating"
-            } else {
-                ready.map_or("Pending", |condition| condition.reason.as_str())
-            };
+            let status = agent.phase().as_str();
             let harnesses = format_harnesses(&agent.spec);
             let provider = agent
                 .status
