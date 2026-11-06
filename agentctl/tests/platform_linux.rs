@@ -163,7 +163,14 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         name: "GIT_USER_NAME".into(),
         source: None,
     }];
-    resource.spec.access = vec![agent::AccessSpec::Ssh {}];
+    resource.spec.access = vec![
+        agent::AccessSpec::Ssh {},
+        agent::AccessSpec::Web {
+            name: "t3code".into(),
+            port: 3773,
+            path: "/".into(),
+        },
+    ];
     resource.spec.network.deny = vec!["metadata.google.internal".into()];
     let record = AgentRecord {
         id: agent_id,
@@ -240,7 +247,8 @@ persist real values.
 - **Plain environment:** `GIT_USER_NAME`.
 - **Network:** all traffic passes through the host, which intercepts TLS with a CA that the system store and \
 `NODE_EXTRA_CA_CERTS` trust. Denied: `metadata.google.internal`.
-- **Access:** people on the host reach this computer with `agentctl ssh worker`.
+- **Access:** people on the host reach this computer with `agentctl ssh worker`. They open the web views you serve \
+in their browser: `t3code` on port 3773 at `/`.
 - **Nested agents:** available (`/dev/kvm`, no Podman, so only manifests with an image `reference`); see the \
 `agentctl` skill.
 <!-- agentd: end of Agent sandbox section -->

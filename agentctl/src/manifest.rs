@@ -320,12 +320,14 @@ pub enum RunState {
     Stopped,
 }
 
-/// One access capability the platform provides to the agent's user.
+/// One way the agent's user reaches it from the host.
 ///
-/// Access is an agent-level capability like `harnesses` and `secrets`: the
-/// platform owns the guest user, the transport and the key material, so a
-/// variant carries no tunables.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+/// Access is an agent-level capability like `harnesses` and `secrets`. For `ssh` and `vnc` the platform owns the
+/// guest user, the transport and the key material, so they carry no tunables. A `web` view names what the image
+/// serves, which only the manifest knows.
+///
+/// The manifest is read on the host, so a sandbox cannot add access of its own.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase", tag = "type")]
 pub enum AccessSpec {
     /// OpenSSH access as the platform-owned guest user, reached through `agentctl ssh`.
@@ -333,8 +335,60 @@ pub enum AccessSpec {
     /// A struct variant so that `deny_unknown_fields` rejects tunables; serde
     /// does not enforce it for unit variants of an internally tagged enum.
     Ssh {},
-    /// VNC access to the desktop the image runs, reached through `agentctl vnc`.
+    /// Direct VNC access to the desktop the image runs, reached through `agentctl vnc`. A desktop in the browser,
+    /// such as noVNC, is a `web` view.
     Vnc {},
+    /// A web UI the image serves, such as T3 Code, which clients list and open in a browser through a forward to its
+    /// port. The forward is on the host's loopback interface, where only the host reaches it, so the view needs no
+    /// sign-in of the platform's own.
+    Web {
+        /// Names the view among the agent's views, such as `t3code`. Clients and commands refer to it by this name.
+        name: String,
+        /// The port the view listens on in the sandbox.
+        port: u16,
+        /// The path the view opens at.
+        #[serde(default = "root_path", skip_serializing_if = "is_root_path")]
+        path: String,
+    },
+}
+
+fn root_path() -> String {
+    "/".into()
+}
+
+fn is_root_path(path: &str) -> bool {
+    path == "/"
+}
+
+impl AccessSpec {
+    /// Checks a web view's name, port and path.
+    fn validate(&self, index: usize) -> Result<(), Error> {
+        let Self::Web { name, port, path } = self else {
+            return Ok(());
+        };
+        let field = format!("spec.access[{index}]");
+        let bytes = name.as_bytes();
+        if bytes.is_empty()
+            || bytes.len() > 63
+            || !bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+            || !bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+            || !bytes
+                .iter()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+        {
+            return Err(Error::Invalid(format!(
+                "{field}.name {name:?} must be 1 to 63 lowercase letters, digits and `-`, starting and ending with a \
+                 letter or digit, such as `t3code`"
+            )));
+        }
+        if *port == 0 {
+            return Err(Error::Invalid(format!("{field}.port must be from 1 to 65535")));
+        }
+        if !path.starts_with('/') {
+            return Err(Error::Invalid(format!("{field}.path {path:?} must start with `/`")));
+        }
+        Ok(())
+    }
 }
 
 /// Sandbox settings as supplied by an agent manifest.
@@ -686,11 +740,18 @@ impl Spec {
         }
         self.validate_environment()?;
         self.validate_secrets()?;
+        // Keyed as variants merge the list, so that a manifest cannot declare what a variant could not address.
         let mut access = std::collections::BTreeSet::new();
-        if let Some(index) = self.access.iter().position(|capability| !access.insert(*capability)) {
-            return Err(Error::Invalid(format!(
-                "spec.access[{index}] duplicates an access capability"
-            )));
+        for (index, entry) in self.access.iter().enumerate() {
+            entry.validate(index)?;
+            let key = match entry {
+                AccessSpec::Ssh {} => "ssh".to_owned(),
+                AccessSpec::Vnc {} => "vnc".to_owned(),
+                AccessSpec::Web { name, .. } => format!("web view {name:?}"),
+            };
+            if !access.insert(key.clone()) {
+                return Err(Error::Invalid(format!("spec.access[{index}] declares {key} twice")));
+            }
         }
         if self.network.deny.iter().any(|host| !valid_host_pattern(host)) {
             return Err(Error::Invalid(
@@ -1480,7 +1541,7 @@ const PATCH_FIELD: &str = "$patch";
 /// what validation already requires to be unique in the list, so an entry in a variant names one inherited entry.
 /// Other lists replace the inherited one whole: a list of strings has no key, and `instructions` may repeat a source.
 const KEYED_LISTS: &[(&[&str], ListKey)] = &[
-    (&["spec", "access"], ListKey::Field("type")),
+    (&["spec", "access"], ListKey::TypeAndName),
     (&["spec", "harnesses"], ListKey::Field("type")),
     (&["spec", "environment"], ListKey::Field("name")),
     (&["spec", "secrets"], ListKey::Field("environment")),
@@ -1495,6 +1556,8 @@ enum ListKey {
     Field(&'static str),
     /// A skill's `name`, else its source directory's name, as [`SkillSpec::name`] reads it.
     Skill,
+    /// `type`, with `name` for the types that have one, such as `web`, which an agent declares several of.
+    TypeAndName,
 }
 
 impl ListKey {
@@ -1508,6 +1571,10 @@ impl ListKey {
         let key = match self {
             Self::Field(name) => field(name),
             Self::Skill => field("name").or_else(|| Path::new(field("source")?).file_name()?.to_str()),
+            Self::TypeAndName => {
+                let kind = field("type")?;
+                return Some(field("name").map_or_else(|| kind.to_owned(), |name| format!("{kind}/{name}")));
+            }
         };
         key.map(str::to_owned)
     }
@@ -1516,6 +1583,7 @@ impl ListKey {
         match self {
             Self::Field(name) => name,
             Self::Skill => "name or source",
+            Self::TypeAndName => "type, and name for a web view",
         }
     }
 
