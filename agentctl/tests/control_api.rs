@@ -54,6 +54,7 @@ impl SshAccessApi for FakeSshAccess {
                 config_file: "/home/me/.agent/ssh/config".into(),
                 proxy_command: "/usr/local/bin/agentctl ssh-proxy agent/worker".into(),
                 working_directory: "/home/agent/code".into(),
+                project_directory: "/home/agent/code".into(),
             })
         })
     }
@@ -325,6 +326,7 @@ impl ExecutionApi for FakeExecutions {
                     harnesses: Vec::new(),
                     skills: std::collections::BTreeMap::new(),
                     logins: std::collections::BTreeMap::new(),
+                    projects: Vec::new(),
                 },
                 operating_system: "linux".into(),
             })

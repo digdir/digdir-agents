@@ -72,6 +72,7 @@ impl Reconcile<AgentId> for BlockingAgentReady {
                             harnesses: record.agent.spec.harnesses.iter().map(|i| i.kind).collect(),
                             skills: std::collections::BTreeMap::new(),
                             logins: std::collections::BTreeMap::new(),
+                            projects: Vec::new(),
                         }),
                         vec![Condition {
                             kind: "Ready".into(),
@@ -237,6 +238,7 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
             harnesses: resource.spec.harnesses.iter().map(|i| i.kind).collect(),
             skills: std::collections::BTreeMap::new(),
             logins: std::collections::BTreeMap::new(),
+            projects: Vec::new(),
         }),
         vec![Condition {
             kind: "Ready".into(),
@@ -486,6 +488,7 @@ fn observing(record: &AgentRecord, harnesses: &[agent::Harness]) -> SandboxAssig
         harnesses: harnesses.to_vec(),
         skills: std::collections::BTreeMap::new(),
         logins: std::collections::BTreeMap::new(),
+        projects: Vec::new(),
     }
 }
 
@@ -540,6 +543,7 @@ async fn running_session(
         harnesses: Vec::new(),
         skills: std::collections::BTreeMap::new(),
         logins: std::collections::BTreeMap::new(),
+        projects: Vec::new(),
     });
     observe_all_harnesses(&mut record);
     database.put(record, 0).await.expect("Agent");
@@ -1874,6 +1878,7 @@ async fn a_session_admitted_before_convergence_is_parked_until_its_optional_harn
         harnesses: vec![agent::Harness::ClaudeCode],
         skills: std::collections::BTreeMap::new(),
         logins: std::collections::BTreeMap::new(),
+        projects: Vec::new(),
     });
     database.put(record.clone(), 0).await.expect("Agent");
     let provider: Rc<dyn Provider> = Rc::new(MemoryProvider {
@@ -2221,6 +2226,7 @@ async fn idle_stop_uses_guest_activity_age_and_explicit_activation_relaunches() 
         harnesses: Vec::new(),
         skills: std::collections::BTreeMap::new(),
         logins: std::collections::BTreeMap::new(),
+        projects: Vec::new(),
     });
     observe_all_harnesses(&mut record);
     database.put(record, 0).await.expect("Agent");

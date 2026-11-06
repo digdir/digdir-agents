@@ -9,6 +9,7 @@ mod sources;
 pub(crate) mod ssh;
 mod systemd;
 pub(crate) mod vnc;
+mod workspace;
 
 use std::collections::BTreeSet;
 
@@ -111,6 +112,7 @@ impl PlatformAdapter for Linux {
 impl Linux {
     /// Sets up only the harnesses preparation reported installing, so setup and preparation
     /// cannot disagree about an optional installation whose host login was absent.
+    #[allow(clippy::too_many_lines)]
     async fn setup(
         &self,
         record: &control_plane::AgentRecord,
@@ -135,7 +137,7 @@ impl Linux {
             step.complete().await;
         }
         let step = steps.start_step("Prepare workspace and Podman").await;
-        run_checked(sandbox, "/usr/bin/install", ["-d", "-m", "0755", WORKING_DIRECTORY]).await?;
+        let projects = workspace::prepare(sandbox).await?;
         let podman = configure_podman(sandbox).await?;
         let kvm = grant_kvm(sandbox).await?;
         step.complete().await;
@@ -228,6 +230,7 @@ impl Linux {
         Ok(PlatformSetup {
             missing_sources: missing,
             skills: placed,
+            projects,
         })
     }
 }
