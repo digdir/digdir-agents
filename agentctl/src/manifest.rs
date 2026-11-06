@@ -1166,8 +1166,10 @@ pub fn decode(bytes: &[u8]) -> Result<Agent, Error> {
 /// Expands a complete agent or chained agent variant from `path`.
 ///
 /// Variant bases are restricted to conventional sibling filenames. Mappings
-/// merge recursively, arrays and scalars replace inherited values, and `null`
-/// removes inherited fields.
+/// merge recursively, and `null` removes inherited fields. The lists in
+/// [`KEYED_LISTS`] merge entry by entry on their key, an entry with
+/// `$patch: delete` removes the inherited one, and an empty list clears them.
+/// Other lists and scalars replace inherited values.
 ///
 /// # Errors
 ///
@@ -1266,7 +1268,8 @@ fn resolve_value(
                 serde_yaml_ng::Value::String("kind".into()),
                 serde_yaml_ng::Value::String(KIND.into()),
             );
-            merge_value(&mut inherited, overlay);
+            merge_value(&mut inherited, overlay, &mut Vec::new())
+                .map_err(|message| Error::Invalid(format!("{}: {message}", display_leaf(path))))?;
             let expanded = serde_yaml_ng::to_string(&inherited).map_err(Error::Yaml)?;
             decode(expanded.as_bytes()).map_err(|error| manifest_error(path, "expanded variant", &error))?;
             Ok(inherited)
@@ -1336,7 +1339,68 @@ fn sibling_base(path: &Path, extends: &str) -> Result<PathBuf, Error> {
     Ok(parent.join(base))
 }
 
-fn merge_value(base: &mut serde_yaml_ng::Value, patch: serde_yaml_ng::Value) {
+/// The field a variant's list entry carries to remove the inherited entry with its key, as in Kubernetes' strategic
+/// merge patch.
+const PATCH_FIELD: &str = "$patch";
+
+/// The lists a variant merges entry by entry, by the field names that lead to them, with each entry's key. The key is
+/// what validation already requires to be unique in the list, so an entry in a variant names one inherited entry.
+/// Other lists replace the inherited one whole: a list of strings has no key, and `instructions` may repeat a source.
+const KEYED_LISTS: &[(&[&str], ListKey)] = &[
+    (&["spec", "access"], ListKey::Field("type")),
+    (&["spec", "harnesses"], ListKey::Field("type")),
+    (&["spec", "environment"], ListKey::Field("name")),
+    (&["spec", "secrets"], ListKey::Field("environment")),
+    (&["spec", "skills"], ListKey::Skill),
+    (&["spec", "sandbox", "mounts"], ListKey::Field("target")),
+];
+
+/// How an entry of a keyed list names itself.
+#[derive(Clone, Copy)]
+enum ListKey {
+    /// A string field.
+    Field(&'static str),
+    /// A skill's `name`, else its source directory's name, as [`SkillSpec::name`] reads it.
+    Skill,
+}
+
+impl ListKey {
+    fn of(self, entry: &serde_yaml_ng::Value) -> Option<String> {
+        let mapping = entry.as_mapping()?;
+        let field = |name: &str| {
+            mapping
+                .get(serde_yaml_ng::Value::String(name.into()))
+                .and_then(serde_yaml_ng::Value::as_str)
+        };
+        let key = match self {
+            Self::Field(name) => field(name),
+            Self::Skill => field("name").or_else(|| Path::new(field("source")?).file_name()?.to_str()),
+        };
+        key.map(str::to_owned)
+    }
+
+    const fn field(self) -> &'static str {
+        match self {
+            Self::Field(name) => name,
+            Self::Skill => "name or source",
+        }
+    }
+
+    fn at(fields: &[String]) -> Option<Self> {
+        KEYED_LISTS
+            .iter()
+            .find(|(list, _)| list.iter().copied().eq(fields.iter().map(String::as_str)))
+            .map(|(_, key)| *key)
+    }
+}
+
+/// Merges a variant's `patch` into the inherited `base`. `fields` holds the field names that lead to `base`, so a keyed
+/// list is recognised where it sits. Errors name the field but not the file, which the caller adds.
+fn merge_value(
+    base: &mut serde_yaml_ng::Value,
+    patch: serde_yaml_ng::Value,
+    fields: &mut Vec<String>,
+) -> Result<(), String> {
     if let (Some(base_mapping), Some(patch_mapping)) = (base.as_mapping(), patch.as_mapping()) {
         let discriminator = serde_yaml_ng::Value::String("type".into());
         if let (Some(base_type), Some(patch_type)) = (
@@ -1348,28 +1412,106 @@ fn merge_value(base: &mut serde_yaml_ng::Value, patch: serde_yaml_ng::Value) {
             // Changing the discriminator replaces the whole mapping so fields
             // belonging to the previous variant cannot leak into the new one.
             *base = patch;
-            return;
+            return Ok(());
         }
     }
     match (base, patch) {
         (serde_yaml_ng::Value::Mapping(base), serde_yaml_ng::Value::Mapping(patch)) => {
             for (key, value) in patch {
-                if value.is_null() {
-                    if base.remove(&key).is_none() {
-                        // Preserve a null for fields absent from the concrete base.
-                        // Known optional fields still decode successfully, while
-                        // strict deserialization rejects unknown null-valued fields.
-                        base.insert(key, value);
-                    }
-                } else if let Some(inherited) = base.get_mut(&key) {
-                    merge_value(inherited, value);
-                } else {
-                    base.insert(key, value);
+                fields.push(key.as_str().unwrap_or_default().to_owned());
+                let merged = merge_field(base, key, value, fields);
+                fields.pop();
+                merged?;
+            }
+            Ok(())
+        }
+        (serde_yaml_ng::Value::Sequence(base), serde_yaml_ng::Value::Sequence(patch)) => {
+            match ListKey::at(fields) {
+                // An empty list clears the inherited one, since that is what `[]` reads as.
+                Some(key) if !patch.is_empty() => merge_list(base, patch, key, fields),
+                _ => {
+                    *base = patch;
+                    Ok(())
                 }
             }
         }
-        (base, patch) => *base = patch,
+        (base, patch) => {
+            *base = patch;
+            Ok(())
+        }
     }
+}
+
+fn merge_field(
+    base: &mut serde_yaml_ng::Mapping,
+    key: serde_yaml_ng::Value,
+    value: serde_yaml_ng::Value,
+    fields: &mut Vec<String>,
+) -> Result<(), String> {
+    if value.is_null() {
+        if base.remove(&key).is_none() {
+            // Preserve a null for fields absent from the concrete base.
+            // Known optional fields still decode successfully, while
+            // strict deserialization rejects unknown null-valued fields.
+            base.insert(key, value);
+        }
+    } else if let Some(inherited) = base.get_mut(&key) {
+        merge_value(inherited, value, fields)?;
+    } else if value.is_sequence() && ListKey::at(fields).is_some() {
+        // Merging into an empty list consumes the removal markers, which would otherwise fail decoding.
+        let mut list = serde_yaml_ng::Value::Sequence(Vec::new());
+        merge_value(&mut list, value, fields)?;
+        base.insert(key, list);
+    } else {
+        base.insert(key, value);
+    }
+    Ok(())
+}
+
+/// Merges each entry of a variant's keyed list into the inherited entry with its key, keeping the inherited order and
+/// adding new keys after it. An entry marked `$patch: delete` removes the inherited one instead. Removing a key the
+/// base does not have is not an error, so a variant keeps working after its base drops the entry.
+fn merge_list(
+    base: &mut Vec<serde_yaml_ng::Value>,
+    patch: Vec<serde_yaml_ng::Value>,
+    key: ListKey,
+    fields: &mut Vec<String>,
+) -> Result<(), String> {
+    let field = fields.join(".");
+    for mut entry in patch {
+        let marker = entry
+            .as_mapping_mut()
+            .and_then(|mapping| mapping.remove(serde_yaml_ng::Value::String(PATCH_FIELD.into())));
+        let Some(name) = key.of(&entry) else {
+            if marker.is_some() {
+                return Err(format!(
+                    "{field}: an entry with {PATCH_FIELD} must name the entry it removes by its {}",
+                    key.field()
+                ));
+            }
+            // Decoding reports what the entry lacks.
+            base.push(entry);
+            continue;
+        };
+        let inherited = base
+            .iter()
+            .position(|candidate| key.of(candidate).as_deref() == Some(&name));
+        match (marker, inherited) {
+            (Some(serde_yaml_ng::Value::String(operation)), inherited) if operation == "delete" => {
+                if let Some(index) = inherited {
+                    base.remove(index);
+                }
+            }
+            (Some(_), _) => {
+                return Err(format!(
+                    "{field}: {PATCH_FIELD} on {name:?} must be \"delete\", the only operation a variant supports"
+                ));
+            }
+            (None, Some(index)) => merge_value(&mut base[index], entry, fields)?,
+            (None, None) => base.push(entry),
+        }
+    }
+    Ok(())
 }
 
 fn string_field(mapping: &serde_yaml_ng::Mapping, field: &str, path: &Path) -> Result<String, Error> {

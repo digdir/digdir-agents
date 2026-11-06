@@ -649,7 +649,7 @@ spec:
     resources:
       cpu: "8"
       memory: "16Gi"
-  harnesses:                 # arrays replace, not merge
+  harnesses:                 # merged by type with the base's
     - type: claudeCode
       auth: mediated
       default: true
