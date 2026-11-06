@@ -12,10 +12,11 @@ tab, `host-app-over-ssh.md`, can share.
 
 ## The flow we want
 
-Once, in a checkout with an agent definition, the user states their own preference:
+Once, in a checkout with an agent definition, the user states their own preference in a variant of their own,
+`agent.mine.yaml`, and applies it:
 
 ```sh
-agentctl setup --client jetbrains
+agentctl apply --variant mine
 ```
 
 Then, whenever they want the IDE:
@@ -87,6 +88,7 @@ nor whether Toolbox follows the `Include`.
 **The project's path.** `agentctl` knows only the platform's working directory, `/home/agent/code`. An image that
 clones repositories names them in `/etc/agent-workspace.d/*.list`, where each line's destination below
 `/home/agent/code` defaults to the repository's name. When there is one, it is the project to open.
+[client-discovery.md](client-discovery.md#the-project) proposes that `agentd` reports it.
 
 **A trust store with the mediated CA.** The mediated network intercepts every TLS connection, with a CA that is
 generated for each host and that Microsandbox appends to the guest's system bundle at boot (see
@@ -144,19 +146,20 @@ does not depend on the image.
 
 ## Proposal
 
-**`agentctl setup` writes the choice into the person's variant.** `setup`
-([#359](https://github.com/digdir/digdir-agents/pull/359)) already writes `agent.mine.yaml`, a variant beside the
-repository's manifest that git ignores and that holds only what the person's answers change. `--client jetbrains`
-adds `access: ssh` and the IDE's memory to it, and records `jetbrains` as the agent's default client, so `connect`
-needs no flags. A preference kept elsewhere is copied into the variant with its source noted, so the agent definition
-stays in one directory.
+**The choice goes in the person's variant.** `agent.mine.yaml` is a variant beside the repository's manifest that
+git ignores and that holds only what the person changes. The person can write it by hand, or a tool can, such as
+`agentctl setup` ([#359](https://github.com/digdir/digdir-agents/pull/359)) or a GUI. For JetBrains it adds
+`access: ssh` and the IDE's memory, and labels the agent `client: jetbrains`, as
+[client-discovery.md](client-discovery.md#labels) proposes. The label makes Gateway the agent's default client, so
+`connect` needs no flags, and puts the agent in Gateway's host list. A preference kept elsewhere is copied into the
+variant with its source noted, so the agent definition stays in one directory.
 
 **Keyed lists merge by key** ([#395](https://github.com/digdir/digdir-agents/issues/395)). A variant merges each
 entry of `access` and `harnesses` by `type`, `environment` by `name`, `secrets` by `environment`, `skills` by name and
 `sandbox.mounts` by `target`, the keys the manifest already requires to be unique. Inherited entries keep their place
 and new ones follow. A variant then adds `ssh` to `access` with one entry, and an entry the team adds later still
-reaches the agent. Without it, `setup` has to restate the whole list, which is the one place its variant stops
-following the team's manifest.
+reaches the agent. Without it, the variant has to restate the whole list, and stops
+following the team's manifest there.
 
 **`agentd` provides a Java trust store.** The host holds the mediated CA. `agentd` can write a PKCS12 trust store with
 it at a fixed path in every agent at boot, beside the system bundle, so no image has to build one. Whatever installs
@@ -183,13 +186,14 @@ It sets up what the client needs and opens it:
 2. Starts the agent if it is stopped, and waits for `SshReady`.
 3. Writes the client's connection entry, `agentctl-<agent>`, where the client needs one: Gateway's `sshConfigs.xml`,
    the Claude app's `ssh_configs.json`.
-4. Chooses the project: `--project`, else the one repository the image clones, else `/home/agent/code`.
+4. Chooses the project: `--project`, else `projectDirectory` from `ssh-info`, which is the one repository the image
+   clones, else `/home/agent/code`.
 5. Opens the client. For Gateway that is a `deploy=false` link to the backend `jetbrains.conf` names, or, on an image
    without one, a `deploy=true` link for the product and build `--ide` selects.
 
 The TUI's open menu gets "JetBrains Gateway" next to VS Code and Zed, and runs the same steps. The Claude app
 proposal's standing subscription, `agentctl ssh-config install --client`, can keep entries current for every agent
-in clients whose own UI lists hosts. `connect` then needs to write only the one entry it opens.
+labelled for a client whose own UI lists hosts. `connect` then needs to write only the one entry it opens.
 
 The user agreement stays a step the user takes once per host. `connect` can say so before the first connect, and point
 at the standalone start that has no timer.
