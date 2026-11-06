@@ -20,6 +20,7 @@ pub(crate) fn agent(name: &str) -> Agent {
         api_version: API_VERSION.into(),
         kind: KIND.into(),
         metadata: Metadata {
+            labels: agent::labels::Labels::new(),
             name: name.into(),
             uid: None,
             generation: 0,

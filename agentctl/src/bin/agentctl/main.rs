@@ -94,6 +94,10 @@ enum Command {
         /// Maximum wait with `--wait`, written as seconds, minutes, or hours (for example `10m`).
         #[arg(long, default_value = "10m", value_parser = parse_duration, requires = "wait")]
         timeout: Duration,
+        /// Label to set from the host, as `agentctl label` does, on top of those the manifest declares. A later
+        /// `apply` keeps it without repeating it. Repeat for more.
+        #[arg(long = "label", value_name = "KEY=VALUE", value_parser = parse_label)]
+        labels: Vec<(String, String)>,
     },
     /// Make an agent from a definition and attach to a session in it.
     ///
@@ -317,6 +321,17 @@ enum Command {
         /// Print only the last N turns.
         #[arg(long)]
         last: Option<usize>,
+    },
+    /// Set or remove an agent's labels, which say what it is for, such as the client to open it in.
+    ///
+    /// `KEY=VALUE` sets a label, which a later `apply` keeps. `KEY-` removes one, until a manifest that declares it
+    /// is applied again. Labels change no generation and restart nothing.
+    Label {
+        /// The agent, as `agent/NAME`.
+        resource: String,
+        /// Changes, as `KEY=VALUE` or `KEY-`.
+        #[arg(required = true, value_name = "KEY=VALUE|KEY-")]
+        changes: Vec<String>,
     },
     /// Display one or more resources.
     Get {
@@ -801,6 +816,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             allow_env_files,
             wait,
             timeout,
+            labels,
         } => {
             let directory = std::env::current_dir().map_err(Error::from)?;
             let filename = match from {
@@ -823,6 +839,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             if let Some(name) = name {
                 request.agent.metadata.name = name;
             }
+            request.labels = labels.into_iter().collect();
             request.binds = absolute_binds(mounts)?;
             let reader = format!("agent/{}", request.agent.metadata.name);
             let ask = consent::Ask {
@@ -878,6 +895,16 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             get_resources(client, &resource, name, scope, watch, output).await?;
         }
         Command::Describe { resource, name, output } => describe(client, &resource, name, output).await?,
+        Command::Label { resource, changes } => {
+            let (resource, name) = resource_reference(&resource, None)?;
+            if resource != Resource::Agent {
+                return Err(Error::Invalid("label supports only agent resources".into()).into());
+            }
+            let name = require_name(name, "Agent")?;
+            let (set, remove) = parse_label_changes(&changes)?;
+            client.label(&name, set, remove).await?;
+            println!("agent/{name} labeled");
+        }
         Command::Delete {
             resource,
             name,
@@ -1993,6 +2020,40 @@ fn resource_reference(resource: &str, name: Option<String>) -> Result<(Resource,
     Ok((resource, embedded_name.or(name)))
 }
 
+/// Parses `KEY=VALUE` for `apply --label`.
+fn parse_label(value: &str) -> Result<(String, String), String> {
+    let (key, value) = value
+        .split_once('=')
+        .ok_or_else(|| format!("{value:?} is not KEY=VALUE"))?;
+    agent::labels::validate(key, value).map_err(|error| error.to_string())?;
+    Ok((key.to_owned(), value.to_owned()))
+}
+
+/// Parses `agentctl label` changes: `KEY=VALUE` sets a label and `KEY-` removes one.
+fn parse_label_changes(
+    changes: &[String],
+) -> Result<(agent::labels::Labels, std::collections::BTreeSet<String>), Error> {
+    let mut set = agent::labels::Labels::new();
+    let mut remove = std::collections::BTreeSet::new();
+    for change in changes {
+        if let Some(key) = change.strip_suffix('-')
+            && !change.contains('=')
+        {
+            agent::labels::validate(key, "")?;
+            remove.insert(key.to_owned());
+        } else {
+            let (key, value) = parse_label(change).map_err(|_| {
+                Error::Invalid(format!(
+                    "{change:?} is neither KEY=VALUE, which sets a label, nor KEY-, which removes one"
+                ))
+            })?;
+            agent::labels::validate(&key, &value)?;
+            set.insert(key, value);
+        }
+    }
+    Ok((set, remove))
+}
+
 fn require_name(name: Option<String>, resource: &str) -> Result<String, Error> {
     name.ok_or_else(|| Error::Invalid(format!("{resource} name is required")))
 }
@@ -2660,6 +2721,7 @@ fn read_apply_request_in(
         binds: Vec::new(),
         create_only: false,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        labels: agent::labels::Labels::new(),
         agent,
     })
 }
@@ -3529,6 +3591,25 @@ mod tests {
         assert_eq!(shown(Some("worker"), Some("old"), false), ["old"]);
         assert_eq!(shown(Some("builder"), Some("s1"), false), Vec::<String>::new());
         assert_eq!(shown(None, None, false), ["s1", "b1"]);
+    }
+
+    #[test]
+    fn label_changes_follow_kubectl() {
+        let changes = ["client=t3code", "managed-by-", "tier="].map(String::from);
+        let (set, remove) = parse_label_changes(&changes).expect("label changes");
+        assert_eq!(
+            set,
+            [
+                ("client".to_owned(), "t3code".to_owned()),
+                ("tier".to_owned(), String::new())
+            ]
+            .into()
+        );
+        assert_eq!(remove, ["managed-by".to_owned()].into());
+        for invalid in ["client", "client=has space", "-"] {
+            assert!(parse_label_changes(&[invalid.to_owned()]).is_err(), "{invalid}");
+        }
+        assert!(parse_label("client=a=b").is_err(), "a value cannot hold `=`");
     }
 
     #[test]

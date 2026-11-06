@@ -37,6 +37,10 @@ pub struct ApplyRequest {
     /// other, also on an update, unless the agent was allowed to read it before.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub allow_exposed_files: BTreeSet<PathBuf>,
+    /// Labels set from the host, as `agentctl label` sets them, on top of those the manifest declares. A later
+    /// `apply` keeps them whether or not it repeats them.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub labels: crate::labels::Labels,
     /// Agent manifest to store.
     pub agent: Agent,
 }
@@ -163,6 +167,7 @@ impl ControlPlane {
     /// Returns an error when the request is invalid, changes an immutable field, conflicts with deletion,
     /// or cannot be stored.
     pub async fn apply(&self, request: ApplyRequest) -> Result<Agent, Error> {
+        crate::labels::validate_all(&request.labels)?;
         let given = self.validate_bind_sources(&request.binds).await?;
         // Boxed, as preparing reads the filesystem through several steps that would otherwise
         // make every caller's future as large.
@@ -175,6 +180,12 @@ impl ControlPlane {
         .await?;
         let name = prepared.agent.metadata.name.clone();
         let run_state = prepared.agent.spec.run_state;
+        // An update keeps the stored labels and changes them in a write of their own.
+        let update_labels = crate::labels::LabelChange {
+            declared: Some(prepared.agent.metadata.labels.clone()),
+            set: request.labels.clone(),
+            ..crate::labels::LabelChange::default()
+        };
 
         loop {
             let result = match self.store.get_by_name(&name).await {
@@ -235,6 +246,9 @@ impl ControlPlane {
                         && current.bindings == record.bindings
                         && current.exposed_files == record.exposed_files
                     {
+                        let mut current = current;
+                        current.agent.metadata.labels =
+                            self.store.change_labels(current.id, update_labels).await?.effective();
                         self.notifier.notify(current.id);
                         return Ok(self.resource(current));
                     }
@@ -246,13 +260,22 @@ impl ControlPlane {
                     self.store
                         .put(record.clone(), expected_generation)
                         .await
-                        .map(|()| record)
+                        .map(|()| (record, update_labels.clone()))
                 }
                 Err(Error::NotFound) => {
                     let mut new = prepared.clone();
                     Box::pin(new.bind(&given)).await?;
                     new.agent.spec.set_run_state(applied_run_state(run_state, None));
-                    Box::pin(self.create(&new, crate::Lifetime::UntilDeleted, &request.allow_exposed_files)).await
+                    // Created with every label, so that no reader sees it without them. Those from the host are
+                    // then marked as set from the host, which keeps them through a later `apply`.
+                    new.agent.metadata.labels.extend(request.labels.clone());
+                    let host = crate::labels::LabelChange {
+                        set: request.labels.clone(),
+                        ..crate::labels::LabelChange::default()
+                    };
+                    Box::pin(self.create(&new, crate::Lifetime::UntilDeleted, &request.allow_exposed_files))
+                        .await
+                        .map(|record| (record, host))
                 }
                 Err(error) => return Err(error),
             };
@@ -260,9 +283,11 @@ impl ControlPlane {
             match result {
                 Err(Error::Conflict) => {}
                 Err(error) => return Err(error),
-                Ok(record) => {
+                Ok((record, labels)) => {
+                    let labels = self.store.change_labels(record.id, labels).await?.effective();
                     self.notifier.notify(record.id);
                     let mut agent = projected(record);
+                    agent.metadata.labels = labels;
                     agent.status.phase = Some(agent.phase());
                     return Ok(agent);
                 }
@@ -585,6 +610,36 @@ impl ControlPlane {
             self.notifier.notify(record.id);
             return Ok(record);
         }
+    }
+
+    /// Sets labels on an agent from the host and removes the `remove` keys, and returns the agent as stored. It changes
+    /// no generation, so the reconciler has nothing to do.
+    ///
+    /// Labels set here outlive an `apply` that does not repeat them. A removed key is gone until a manifest that
+    /// declares it is applied again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a label is invalid, the agent does not exist or is being deleted, or the change cannot
+    /// be stored.
+    pub async fn label(
+        &self,
+        name: &str,
+        set: crate::labels::Labels,
+        remove: std::collections::BTreeSet<String>,
+    ) -> Result<Agent, Error> {
+        crate::labels::validate_all(&set)?;
+        if let Some(key) = remove.iter().find(|key| set.contains_key(*key)) {
+            return Err(Error::Invalid(format!("label {key:?} is both set and removed")));
+        }
+        let mut record = self.store.get_by_name(name).await?;
+        let change = crate::labels::LabelChange {
+            set,
+            remove,
+            ..crate::labels::LabelChange::default()
+        };
+        record.agent.metadata.labels = self.store.change_labels(record.id, change).await?.effective();
+        Ok(self.resource(record))
     }
 
     /// Marks an agent for asynchronous release. Repeated deletion is safe.

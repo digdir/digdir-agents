@@ -159,6 +159,8 @@ impl Agent {
         }
         SandboxName::new(self.metadata.name.clone())
             .map_err(|error| Error::Invalid(format!("metadata.name: {error}")))?;
+        crate::labels::validate_all(&self.metadata.labels)
+            .map_err(|error| Error::Invalid(format!("metadata.labels: {error}")))?;
         self.spec
             .sandbox
             .validate()
@@ -254,6 +256,14 @@ pub struct Metadata {
     /// again, and a different uid tells a client that holds on to an agent that this is a new one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uid: Option<crate::AgentId>,
+    /// What the agent is for, such as the client a person opens it in. A manifest declares its own, and the host can
+    /// set more with `apply --label` and `agentctl label`. Changing them changes no generation and restarts nothing.
+    #[serde(
+        default,
+        deserialize_with = "null_as_default",
+        skip_serializing_if = "std::collections::BTreeMap::is_empty"
+    )]
+    pub labels: crate::labels::Labels,
     /// Desired-state revision managed by the control plane.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub generation: u64,

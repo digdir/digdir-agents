@@ -8,19 +8,19 @@ use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, ses
 
 use super::protocol::{
     AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, CODE_EXPOSED_FILES, DaemonInfo,
-    DefinitionListParams, DirectoryParams, ExecutionEnsureParams, ExposedFilesParams, JSON_RPC_VERSION, LoginParams,
-    LogoutParams, LogoutResult, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT,
-    METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_AUTH_SIGN_IN_AGENT,
-    METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_EXPOSED_FILES, METHOD_GET,
-    METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
-    METHOD_RUN, METHOD_SECRET_LIST, METHOD_SECRET_REMOVE, METHOD_SECRET_SET, METHOD_SESSION_ARCHIVE,
-    METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT,
-    METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP,
-    METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET,
-    METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, ProgressParams, ReadMessage, Request,
-    ResourcesWatchParams, Response, RestartParams, SecretRemoveResult, SecretSetParams, SessionEnsureParams,
-    SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult,
-    SignInAgentParams, read_message,
+    DefinitionListParams, DirectoryParams, ExecutionEnsureParams, ExposedFilesParams, JSON_RPC_VERSION, LabelParams,
+    LoginParams, LogoutParams, LogoutResult, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN,
+    METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT,
+    METHOD_AUTH_SIGN_IN_AGENT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE, METHOD_EXECUTION_ENSURE,
+    METHOD_EXPOSED_FILES, METHOD_GET, METHOD_HEALTH, METHOD_LABEL, METHOD_LIST, METHOD_PROGRESS,
+    METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SECRET_LIST,
+    METHOD_SECRET_REMOVE, METHOD_SECRET_SET, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE,
+    METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE,
+    METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS,
+    METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS,
+    ManifestListParams, NameParams, ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response,
+    RestartParams, SecretRemoveResult, SecretSetParams, SessionEnsureParams, SessionListParams, SessionParams,
+    SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, SignInAgentParams, read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -410,6 +410,28 @@ impl Client {
     pub async fn restart(&self, name: &str, now: bool) -> Result<Agent, Error> {
         self.call(METHOD_RESTART, RestartParams { name: name.into(), now })
             .await
+    }
+
+    /// Sets labels on an agent from the host and removes the `remove` keys. Returns the agent as stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the control-plane operation fails.
+    pub async fn label(
+        &self,
+        name: &str,
+        set: crate::labels::Labels,
+        remove: std::collections::BTreeSet<String>,
+    ) -> Result<Agent, Error> {
+        self.call(
+            METHOD_LABEL,
+            LabelParams {
+                name: name.into(),
+                set,
+                remove,
+            },
+        )
+        .await
     }
 
     /// Stores a host-acquired harness credential in the daemon as the login `login`.

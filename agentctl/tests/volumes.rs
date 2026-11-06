@@ -86,6 +86,7 @@ pub(crate) fn volume_request(name: &str, source: PathBuf) -> ApplyVolumeRequest 
             metadata: agent::Metadata {
                 name: name.into(),
                 uid: None,
+                labels: agent::labels::Labels::new(),
                 generation: 0,
                 deletion_timestamp: None,
                 restart_timestamp: None,
@@ -599,6 +600,7 @@ fn mounting_agent(name: &str, volume: &str) -> ApplyRequest {
         binds: Vec::new(),
         create_only: false,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        labels: agent::labels::Labels::new(),
         agent,
     }
 }
@@ -950,6 +952,7 @@ async fn an_agent_cannot_select_a_secret_file_inside_an_earlier_source_of_a_volu
             binds: Vec::new(),
             create_only: false,
             allow_exposed_files: std::collections::BTreeSet::new(),
+            labels: agent::labels::Labels::new(),
             agent: request,
         })
         .await
