@@ -142,6 +142,25 @@ pub(crate) fn confirm_lines(lines: &[&str]) -> Result<bool, Error> {
     }
 }
 
+/// Says what happens next on standard error, laid out like a question, and waits for Enter to
+/// `action`.
+///
+/// # Errors
+///
+/// Returns an error when standard input cannot be read or ends, or Ctrl-C cancels.
+pub(crate) fn proceed(lines: &[&str], action: &str) -> Result<(), Error> {
+    pose(lines, &format!("\n  Press Enter to {action}, or Ctrl-C to cancel. "));
+    if std::io::stdin().is_terminal() {
+        return read_key(enter_key, |()| String::new());
+    }
+    read_answer().map(drop)
+}
+
+/// The answer a single key gives to a request to press Enter: Enter only.
+fn enter_key(code: KeyCode) -> Option<()> {
+    (code == KeyCode::Enter).then_some(())
+}
+
 /// Asks for a line of text on standard error, what it is about first and the label last; Enter
 /// alone takes `default`, shown in brackets, when there is one.
 ///
@@ -255,7 +274,7 @@ fn yes_or_no(answer: &str) -> Option<bool> {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-    use super::{Pressed, option_key, option_number, pressed, single_key_menu, yes_or_no, yes_or_no_key};
+    use super::{Pressed, enter_key, option_key, option_number, pressed, single_key_menu, yes_or_no, yes_or_no_key};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -284,6 +303,15 @@ mod tests {
         ] {
             assert_eq!(pressed(&key(code), yes_or_no_key), Pressed::Ignore, "{code:?}");
         }
+    }
+
+    #[test]
+    fn only_enter_proceeds() {
+        assert_eq!(pressed(&key(KeyCode::Enter), enter_key), Pressed::Answer(()));
+        for code in [KeyCode::Char('y'), KeyCode::Char(' '), KeyCode::Esc] {
+            assert_eq!(pressed(&key(code), enter_key), Pressed::Ignore, "{code:?}");
+        }
+        assert_eq!(pressed(&control('c'), enter_key), Pressed::Cancel);
     }
 
     #[test]
