@@ -85,6 +85,7 @@ pub(crate) fn volume_request(name: &str, source: PathBuf) -> ApplyVolumeRequest 
             metadata: agent::Metadata {
                 name: name.into(),
                 uid: None,
+                labels: agent::labels::Labels::new(),
                 generation: 0,
                 deletion_timestamp: None,
                 restart_timestamp: None,
@@ -502,6 +503,7 @@ fn mounting_agent(name: &str, volume: &str) -> ApplyRequest {
         manifest_path: None,
         env_file: None,
         create_only: false,
+        labels: agent::labels::Labels::new(),
         agent,
     }
 }
@@ -850,6 +852,7 @@ async fn an_agent_cannot_select_a_secret_file_inside_an_earlier_source_of_a_volu
             manifest_path: None,
             env_file: Some(earlier.join("credentials.env")),
             create_only: false,
+            labels: agent::labels::Labels::new(),
             agent: request,
         })
         .await

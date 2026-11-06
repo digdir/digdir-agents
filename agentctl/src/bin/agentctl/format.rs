@@ -99,10 +99,22 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
         .uid
         .as_ref()
         .map_or_else(|| "-".into(), ToString::to_string);
+    let labels = if agent.metadata.labels.is_empty() {
+        "-".to_owned()
+    } else {
+        agent
+            .metadata
+            .labels
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
 
     let mut lines = vec![
         format!("Name:       {}", agent.metadata.name),
         format!("UID:        {uid}"),
+        format!("Labels:     {labels}"),
         format!("Generation: {}", agent.metadata.generation),
         format!("Run state:  {:?}", agent.spec.run_state()),
         format!("Source:     {source}"),

@@ -449,6 +449,21 @@ impl crate::control_plane::AgentStore for Database {
             .await
         })
     }
+
+    fn change_labels(
+        &self,
+        id: AgentId,
+        change: crate::labels::LabelChange,
+    ) -> sandbox::LocalFuture<'_, Result<crate::labels::StoredLabels, Error>> {
+        Box::pin(async move {
+            self.request(|response| Command::ChangeLabels {
+                id,
+                change: Box::new(change),
+                response,
+            })
+            .await
+        })
+    }
 }
 
 impl crate::volumes::VolumeStore for Database {
@@ -641,6 +656,11 @@ enum Command {
         revisions: crate::volumes::VolumePins,
         response: oneshot::Sender<Result<(), Error>>,
     },
+    ChangeLabels {
+        id: AgentId,
+        change: Box<crate::labels::LabelChange>,
+        response: oneshot::Sender<Result<crate::labels::StoredLabels, Error>>,
+    },
     SetSecret {
         name: String,
         value: Zeroizing<Vec<u8>>,
@@ -781,6 +801,7 @@ impl Command {
             | Self::MarkDeleting { .. }
             | Self::FinalizeDeletion { .. }
             | Self::SetVolumeRevisions { .. }
+            | Self::ChangeLabels { .. }
             | Self::EnsureSession { .. }
             | Self::UpdateSessionLifecycle { .. }
             | Self::ActivateSession { .. }
@@ -911,6 +932,7 @@ fn sync_directory(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn execute(connection: &mut Connection, command: Command) {
     match command {
         Command::GetVolume { id, response } => {
@@ -976,6 +998,9 @@ fn execute(connection: &mut Connection, command: Command) {
             response,
         } => {
             let _ = response.send(agents::set_volume_revisions(connection, id, &revisions));
+        }
+        Command::ChangeLabels { id, change, response } => {
+            let _ = response.send(agents::change_labels(connection, id, &change));
         }
         Command::DeleteSecret { name, response } => {
             let _ignored = response.send(secrets::delete_secret(connection, &name));

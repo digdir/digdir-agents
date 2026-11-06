@@ -10,6 +10,7 @@ mod controller;
 pub mod definitions;
 mod environment;
 pub mod harness;
+pub mod labels;
 pub mod local;
 pub mod manifest;
 pub mod persistence;
@@ -29,9 +30,8 @@ pub use harness::{Effort, Harness, HarnessAuthMode, HarnessSpec, Model, ModelSel
 pub use manifest::{
     API_VERSION, AccessSpec, Agent, AgentPhase, AgentVariant, AgentVariantName, Condition, ConditionStatus,
     EnvironmentSpec, HomeSpec, InstructionsSpec, KIND, Metadata, MountSpec, MountedVolume, NestedSandboxes,
-    NetworkAllow, NetworkMode,
-    NetworkSpec, PlatformManifestSpec, Provenance, ResolvedManifest, ResourcesManifestSpec, RunState,
-    SandboxManifestSpec, SecretSpec, SkillSpec, Spec, Status, VARIANT_KIND,
+    NetworkAllow, NetworkMode, NetworkSpec, PlatformManifestSpec, Provenance, ResolvedManifest, ResourcesManifestSpec,
+    RunState, SandboxManifestSpec, SecretSpec, SkillSpec, Spec, Status, VARIANT_KIND,
 };
 
 /// Version embedded in a matched `agentctl`/`agentd` build.

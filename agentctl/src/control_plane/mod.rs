@@ -52,6 +52,15 @@ pub trait AgentStore {
         id: AgentId,
         revisions: crate::volumes::VolumePins,
     ) -> LocalFuture<'_, Result<(), Error>>;
+
+    /// Applies `change` to an active agent's labels in one write, and returns its labels as stored. Labels have a
+    /// write of their own because changing them changes no generation: [`Self::put`] keeps the stored ones, and
+    /// creates an agent with the labels of its record as declared.
+    fn change_labels(
+        &self,
+        id: AgentId,
+        change: crate::labels::LabelChange,
+    ) -> LocalFuture<'_, Result<crate::labels::StoredLabels, Error>>;
 }
 
 pub(crate) type SharedAgentStore = Rc<dyn AgentStore>;

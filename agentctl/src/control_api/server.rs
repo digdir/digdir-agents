@@ -13,16 +13,16 @@ use crate::{
 
 use super::protocol::{
     CODE_IMMUTABLE, CODE_INTERNAL, CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND,
-    CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams,
-    LogoutParams, LogoutResult, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN,
+    CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LabelParams,
+    LoginParams, LogoutParams, LogoutResult, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN,
     METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET,
-    METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
-    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
-    METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, PROTOCOL_VERSION, ProgressParams, ReadMessage, Request,
-    ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams,
-    SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
+    METHOD_HEALTH, METHOD_LABEL, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH,
+    METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET,
+    METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN,
+    METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY,
+    METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, PROTOCOL_VERSION, ProgressParams,
+    ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams,
+    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -105,6 +105,14 @@ pub trait AgentApi {
     /// Records a restart of an agent; see [`control_plane::ControlPlane::restart`].
     fn restart<'a>(&'a self, name: &'a str, now: bool) -> LocalFuture<'a, Result<Agent, Error>>;
 
+    /// Sets and removes an agent's labels; see [`control_plane::ControlPlane::label`].
+    fn label<'a>(
+        &'a self,
+        name: &'a str,
+        set: crate::labels::Labels,
+        remove: std::collections::BTreeSet<String>,
+    ) -> LocalFuture<'a, Result<Agent, Error>>;
+
     /// Reads an agent's stored status and its latest pass's progress, with
     /// only the output after `output` when it names the same pass.
     fn progress<'a>(
@@ -149,6 +157,15 @@ impl AgentApi for control_plane::ControlPlane {
 
     fn restart<'a>(&'a self, name: &'a str, now: bool) -> LocalFuture<'a, Result<Agent, Error>> {
         Box::pin(async move { Self::restart(self, name, now).await })
+    }
+
+    fn label<'a>(
+        &'a self,
+        name: &'a str,
+        set: crate::labels::Labels,
+        remove: std::collections::BTreeSet<String>,
+    ) -> LocalFuture<'a, Result<Agent, Error>> {
+        Box::pin(async move { Self::label(self, name, set, remove).await })
     }
 
     fn progress<'a>(
@@ -641,6 +658,7 @@ impl Server {
             }
             METHOD_STOP_NOW => self.handle_stop_now(request.id, request.params).await,
             METHOD_RESTART => self.handle_restart(request.id, request.params).await,
+            METHOD_LABEL => self.handle_label(request.id, request.params).await,
             METHOD_SSH_ACCESS => self.handle_ssh_access(request.id, request.params).await,
             METHOD_VNC_ACCESS => self.handle_vnc_access(request.id, request.params).await,
             METHOD_AUTH_LOGIN => self.handle_auth_login(request.id, request.params).await,
@@ -823,6 +841,16 @@ impl Server {
             return error_response(id, CODE_INVALID_PARAMS, "name is required");
         };
         result_response(id, self.agents.restart(&params.name, params.now).await)
+    }
+
+    async fn handle_label(&self, id: u64, value: Value) -> Response {
+        let Some(params) = serde_json::from_value::<LabelParams>(value)
+            .ok()
+            .filter(|params| !params.name.is_empty())
+        else {
+            return error_response(id, CODE_INVALID_PARAMS, "name is required");
+        };
+        result_response(id, self.agents.label(&params.name, params.set, params.remove).await)
     }
 
     async fn handle_ssh_access(&self, id: u64, value: Value) -> Response {
@@ -1068,6 +1096,7 @@ fn is_mutating(method: &str) -> bool {
             | METHOD_STOP
             | METHOD_STOP_NOW
             | METHOD_RESTART
+            | METHOD_LABEL
             | METHOD_START
             | METHOD_EXECUTION_ENSURE
             | METHOD_AUTH_LOGIN

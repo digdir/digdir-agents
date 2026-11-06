@@ -3057,6 +3057,7 @@ pub(crate) mod tests {
             metadata: agent::Metadata {
                 name: name.into(),
                 uid: None,
+                labels: agent::labels::Labels::new(),
                 generation: 1,
                 deletion_timestamp: None,
                 restart_timestamp: None,
