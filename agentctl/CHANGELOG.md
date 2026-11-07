@@ -25,6 +25,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Changed
 
+- Breaking: lists in an agent variant, such as `harnesses`, `access` and `sandbox.mounts`, now change the base's entry with the same `type`, `name` or `target` and keep the others, so a variant adds one access type without restating the list. Write an entry with `$patch: delete` to drop an inherited one. ([#395](https://github.com/digdir/digdir-agents/issues/395))
 - Applying a manifest that adds, removes or renames instruction files or skills updates the agent in place, keeping its disk and sessions, instead of being refused. A skill the agent no longer declares is removed from its harnesses, while the skills its image ships stay.
 - The Agent sandbox section at the top of an agent's instructions now tells the agent that what it sends through the host, such as pushes, pull requests, comments and API calls, reaches real services and people. ([#372](https://github.com/digdir/digdir-agents/pull/372))
 - Newly created agents using the shared images ship Claude Code 2.1.316, Codex CLI 0.166.0 and Pi 1.5.0. ([#392](https://github.com/digdir/digdir-agents/pull/392))

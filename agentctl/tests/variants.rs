@@ -60,27 +60,215 @@ fn resolves_one_level_and_multilevel_variants_from_the_base_outward() {
     );
 }
 
+/// A team variant that fills every keyed list, for a personal variant to change one entry of each.
+const TEAM_SPEC: &str = "spec:
+  access:
+    - type: ssh
+    - type: vnc
+  harnesses:
+    - type: codex
+      auth: mediated
+      default: true
+  environment:
+    - name: A
+    - name: B
+      source: B_FILE
+  secrets:
+    - environment: TOKEN
+      allowedHosts: [api.github.com]
+  skills:
+    - source: skills/review
+  sandbox:
+    mounts:
+      - type: tmpfs
+        target: /tmp
+        capacity: 1Gi
+";
+
 #[test]
-fn mappings_merge_while_arrays_replace_and_empty_arrays_clear() {
+fn keyed_lists_merge_by_key_while_other_lists_replace() {
     let directory = agent_directory();
     write(
         directory.path(),
-        "agent.arrays.yaml",
+        "agent.team.yaml",
+        &variant("agent.yaml", "team", TEAM_SPEC),
+    );
+    write(
+        directory.path(),
+        "agent.mine.yaml",
         &variant(
-            "agent.yaml",
-            "arrays",
-            "spec:\n  sandbox:\n    mounts:\n      - type: tmpfs\n        target: /tmp\n        capacity: 2Gi\n  instructions: []\n  harnesses:\n    - type: codex\n      auth: mediated\n",
+            "agent.team.yaml",
+            "mine",
+            "spec:
+  instructions:
+    - source: mine.md
+  harnesses:
+    - type: claudeCode
+      optional: true
+  environment:
+    - name: B
+      source: null
+    - name: C
+  secrets:
+    - environment: TOKEN
+      optional: true
+  skills:
+    - name: review
+      optional: true
+  sandbox:
+    mounts:
+      - type: bind
+        target: /work
+        source: work
+        readOnly: true
+      - type: tmpfs
+        target: /tmp
+        capacity: 2Gi
+",
         ),
     );
 
-    let agent = manifest::resolve(&directory.path().join("agent.arrays.yaml"))
-        .expect("array variant")
+    let agent = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect("keyed variant")
         .agent;
-    assert_eq!(agent.spec.sandbox.mounts.len(), 1);
+    let value = serde_json::to_value(&agent).expect("Agent JSON");
+    let spec = &value["spec"];
+    // The base's Claude Code keeps its place and its version, and the team's Codex follows it.
+    assert_eq!(spec["harnesses"][0]["type"], "claudeCode");
+    assert_eq!(spec["harnesses"][0]["version"], "2.1.266");
+    assert_eq!(spec["harnesses"][0]["optional"], true);
+    assert_eq!(spec["harnesses"][1]["type"], "codex");
+    assert_eq!(
+        spec["environment"],
+        serde_json::json!([{"name": "A"}, {"name": "B"}, {"name": "C"}])
+    );
+    assert_eq!(
+        spec["secrets"][0]["allowedHosts"],
+        serde_json::json!(["api.github.com"])
+    );
+    assert_eq!(spec["secrets"][0]["optional"], true);
+    assert_eq!(
+        spec["skills"],
+        serde_json::json!([{"source": "skills/review", "name": "review", "optional": true}])
+    );
+    assert_eq!(spec["sandbox"]["mounts"][0]["target"], "/tmp");
+    assert_eq!(spec["sandbox"]["mounts"][0]["capacity"], "2Gi");
+    assert_eq!(spec["sandbox"]["mounts"][1]["target"], "/work");
+    assert_eq!(spec["access"], serde_json::json!([{"type": "ssh"}, {"type": "vnc"}]));
+    assert_eq!(spec["instructions"], serde_json::json!([{"source": "mine.md"}]));
+}
+
+#[test]
+fn a_patch_delete_entry_removes_the_inherited_one_and_an_empty_list_clears_them() {
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.team.yaml",
+        &variant("agent.yaml", "team", TEAM_SPEC),
+    );
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.team.yaml",
+            "mine",
+            "spec:
+  access:
+    - type: vnc
+      $patch: delete
+  environment:
+    - name: A
+      $patch: delete
+    - name: GONE_FROM_THE_BASE
+      $patch: delete
+  skills: []
+  instructions: []
+",
+        ),
+    );
+
+    let agent = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect("removing variant")
+        .agent;
+    assert_eq!(agent.spec.access, [agent::manifest::AccessSpec::Ssh {}]);
+    assert_eq!(
+        agent
+            .spec
+            .environment
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["B"]
+    );
+    assert_eq!(agent.spec.skills, []);
     assert_eq!(agent.spec.instructions, []);
-    assert_eq!(agent.spec.harnesses.len(), 1);
-    assert_eq!(agent.spec.harnesses[0].kind, agent::Harness::Codex);
     assert_eq!(agent.spec.home.source, Path::new("home"));
+}
+
+#[test]
+fn a_keyed_entry_of_another_type_replaces_the_inherited_one_whole() {
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.team.yaml",
+        &variant("agent.yaml", "team", TEAM_SPEC),
+    );
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.team.yaml",
+            "mine",
+            "spec:\n  sandbox:\n    mounts:\n      - type: bind\n        target: /tmp\n        source: tmp\n        readOnly: false\n",
+        ),
+    );
+
+    let agent = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect("retyped mount")
+        .agent;
+    assert!(matches!(
+        agent.spec.sandbox.mounts.as_slice(),
+        [agent::manifest::MountSpec::Bind { read_only: false, .. }]
+    ));
+}
+
+#[test]
+fn refuses_patch_markers_a_variant_cannot_apply() {
+    let directory = agent_directory();
+    for (name, spec, expected) in [
+        (
+            "replace",
+            "spec:\n  access:\n    - type: ssh\n      $patch: replace\n",
+            "must be \"delete\"",
+        ),
+        (
+            "nameless",
+            "spec:\n  environment:\n    - $patch: delete\n",
+            "spec.environment: an entry with $patch must name the entry it removes by its name",
+        ),
+        (
+            "unkeyed",
+            "spec:\n  instructions:\n    - source: a.md\n      $patch: delete\n",
+            "$patch",
+        ),
+    ] {
+        let file = format!("agent.{name}.yaml");
+        write(directory.path(), &file, &variant("agent.yaml", name, spec));
+        let error = manifest::resolve(&directory.path().join(&file)).expect_err(name);
+        assert!(error.to_string().contains(expected), "{name}: {error}");
+        assert!(error.to_string().contains(&file), "{name}: {error}");
+    }
+
+    // A complete agent manifest has nothing to remove from, so a marker in it is an unknown field.
+    let mut base = serde_yaml_ng::to_value(support::agent("complete")).expect("agent YAML");
+    base["spec"]["access"] = serde_yaml_ng::from_str("[{type: ssh, $patch: delete}]").expect("access");
+    std::fs::write(
+        directory.path().join("agent.yaml"),
+        serde_yaml_ng::to_string(&base).expect("agent YAML"),
+    )
+    .expect("complete manifest");
+    let error = manifest::resolve(&directory.path().join("agent.yaml")).expect_err("marker in a complete agent");
+    assert!(error.to_string().contains("$patch"), "{error}");
 }
 
 #[test]
