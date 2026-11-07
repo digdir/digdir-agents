@@ -1493,6 +1493,10 @@ async fn repeated_apply_is_idempotent_and_immutable_fields_are_rejected() {
         .await
         .expect_err("Sandbox platform should be immutable");
     assert!(matches!(error, Error::Immutable("spec.sandbox.platform")));
+    assert_eq!(
+        error.to_string(),
+        "spec.sandbox.platform cannot change on an existing agent. Delete the agent and apply again, which starts its disk over"
+    );
 
     let mut init_system_change = updated_request.clone();
     init_system_change.agent.spec.sandbox.init_system = InitSystem::Image;

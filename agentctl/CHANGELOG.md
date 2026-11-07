@@ -32,7 +32,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 - A manifest may leave out `spec.home` and `spec.network`: without `home` nothing is copied into `/home/agent`, and without `network` all traffic goes through the host's network mediator. ([#309](https://github.com/digdir/digdir-agents/pull/309))
 - agentctl's help starts with what it is for and lists the commands people use first. ([#309](https://github.com/digdir/digdir-agents/pull/309))
 - agentctl's error messages: ([#309](https://github.com/digdir/digdir-agents/pull/309))
-  - no longer begin with `invalid Agent:` or `Agent Control API error:`
+  - no longer begin with `invalid agent:` or `Control API error:`
   - for a field only a new agent takes, such as `spec.sandbox.image`, say how to create the agent again
   - for a name another directory's agent has, ask for another name
 

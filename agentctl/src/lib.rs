@@ -58,8 +58,9 @@ pub enum Error {
     /// The requested agent does not exist.
     #[error("Agent not found")]
     NotFound,
-    /// An immutable desired-state field changed.
-    #[error("immutable agent field changed: {0}")]
+    /// A desired-state field that only a new agent takes changed. The message says how to change it, since the
+    /// person applying it has to.
+    #[error("{0} cannot change on an existing agent. Delete the agent and apply again, which starts its disk over")]
     Immutable(&'static str),
     /// A compare-and-swap operation observed a newer generation.
     #[error("Agent resource changed concurrently")]
