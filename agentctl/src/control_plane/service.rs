@@ -382,7 +382,13 @@ impl ControlPlane {
                     "no agent associated with this directory was applied from {filename}"
                 )));
             }
-        } else if matches.len() > 1 {
+        } else if matches.len() > 1
+            && matches
+                .iter()
+                .all(|(record, _)| record.source_directory == matches[0].0.source_directory)
+        {
+            // Variants of one definition prefer its `agent.yaml`. Agents from different
+            // definitions stay ambiguous, as nothing says which one is meant.
             let defaults = matches
                 .iter()
                 .enumerate()

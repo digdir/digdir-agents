@@ -579,6 +579,48 @@ async fn an_agent_defined_in_a_subdirectory_resolves_from_anywhere_in_its_reposi
 }
 
 #[tokio::test(flavor = "local")]
+async fn agents_from_different_definitions_in_one_repository_are_ambiguous_from_elsewhere_in_it() {
+    let fixture = fixture();
+    let temporary = tempfile::TempDir::new().expect("temporary directory");
+    let root = temporary.path().join("repository");
+    std::fs::create_dir_all(root.join(".git")).expect("repository");
+    for directory in ["agents/one", "agents/two"] {
+        std::fs::create_dir_all(root.join(directory)).expect("agent directory");
+    }
+    fixture
+        .control_plane
+        .apply(apply_request_in("one", root.join("agents/one")))
+        .await
+        .expect("apply");
+    let mut two = apply_request_in("two", root.join("agents/two"));
+    two.manifest_path = Some(root.join("agents/two/agent.gpu.yaml"));
+    fixture.control_plane.apply(two).await.expect("apply");
+
+    let shared = fixture.control_plane.resolve_directory(&root).await;
+    assert!(
+        matches!(
+            &shared,
+            Err(Error::Invalid(message))
+                if message == "more than one agent is found here (one, two); pass --agent NAME or --variant VARIANT"
+        ),
+        "only one is applied from agent.yaml, but they are different definitions: {shared:?}"
+    );
+    let gpu = agent::AgentVariantName::new("gpu").expect("variant");
+    let resolved = fixture
+        .control_plane
+        .resolve_directory_variant(&root, Some(&gpu))
+        .await
+        .expect("the variant picks one");
+    assert_eq!(resolved.metadata.name, "two");
+    let resolved = fixture
+        .control_plane
+        .resolve_directory(&root.join("agents/two"))
+        .await
+        .expect("its own directory");
+    assert_eq!(resolved.metadata.name, "two");
+}
+
+#[tokio::test(flavor = "local")]
 async fn an_agent_in_agents_outside_a_repository_resolves_from_the_folder_holding_it_but_not_below() {
     let fixture = fixture();
     let temporary = tempfile::TempDir::new().expect("temporary directory");
