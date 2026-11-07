@@ -3,12 +3,55 @@
 #
 #   media-preview FILE [FILE...]
 #
-# Prints dimensions, duration and size for each file. For a video or GIF it also writes
-# FILE.preview.png, a contact sheet of eight evenly spaced frames, which an agent can read as an
-# image to see what the clip actually shows.
+# Prints dimensions, duration and size for each file. For a video or GIF it also prints when the
+# picture stays still long enough to read, which is all a viewer gets to read, and writes
+# FILE.preview.png, a contact sheet an agent can read as an image: the last frame of each of those
+# times, labelled with it. A clip that stays still fewer than three times, such as a scrolling
+# terminal, gets eight evenly spaced frames instead.
 set -euo pipefail
 
-[ $# -ge 1 ] || { sed -n '2,8p' "$0" >&2; exit 64; }
+usage() { sed -n '2,10p' "$0" >&2; exit 64; }
+
+case ${1:---help} in
+    --help | -h) usage ;;
+    --*) echo "media-preview: unknown option $1" >&2; usage ;;
+esac
+
+# Each part of the picture is compared with the same part half a second earlier, so that a pointer
+# travelling or a word being typed counts as change however small it is beside the whole screen.
+# A part is a square this many pixels wide, and a change below this level, out of 255, is noise: a
+# blinking text caret stays below it, and a few typed characters do not. It compares brightness, so
+# a change of colour alone, such as a red badge turning green, counts as still.
+part_pixels=32
+still_noise=6
+lag_seconds=0.5
+# A hold has to last this long for a viewer to read part of it.
+still_seconds=0.5
+
+# Prints "START END" for each time FILE holds still, with END empty when it holds until the end.
+# Fails if ffmpeg cannot analyse FILE.
+holds() {
+    local analysis
+    # The delayed copy runs half a second past the end, so the comparison stops with the clip.
+    analysis=$(ffmpeg -hide_banner -nostats -i "$1" -an -filter_complex "[0:v]fps=10,format=gray,split[now][then];
+        [then]setpts=PTS+${lag_seconds}/TB[then];
+        [now][then]blend=all_mode=difference:shortest=1,scale=iw/${part_pixels}:ih/${part_pixels}:flags=area,
+        format=gray,signalstats,metadata=print:key=lavfi.signalstats.YMAX:file=-" -f null - 2>/dev/null) || return 1
+    awk -v noise="$still_noise" -v lag="$lag_seconds" -v least="$still_seconds" '
+            # Until the comparison has a frame half a second back, it compares with black.
+            /pts_time/ { split($3, field, ":"); t = field[2] + 0; next }
+            !/YMAX/ || t < lag - 0.001 { next }
+            { split($0, field, "="); still = field[2] + 0 < noise }
+            # A frame that matches the one half a second earlier has held since then, so a single
+            # changed frame can leave holds that overlap, which are one.
+            still && !open { open = 1; if (n && t - lag < end[n]) { n-- } else { start[n + 1] = t - lag } }
+            !still && open { open = 0; end[++n] = t - 0.1 }
+            END {
+                if (open) end[++n] = ""
+                for (i = 1; i <= n; i++)
+                    if ((end[i] == "" ? t : end[i]) - start[i] >= least) print start[i], end[i]
+            }' <<<"$analysis"
+}
 
 status=0
 for file in "$@"; do
@@ -32,12 +75,50 @@ for file in "$@"; do
 
     frames="$(ffprobe -v error -count_frames -select_streams v:0 \
         -show_entries stream=nb_read_frames -of csv=p=0 "$file" 2>/dev/null || echo 1)"
-    if [ "${frames:-1}" -gt 1 ]; then
-        sheet="${file}.preview.png"
+    [ "${frames:-1}" -gt 1 ] || continue
+
+    if ! analysis=$(holds "$file"); then
+        echo "media-preview: ffmpeg cannot analyse $file" >&2
+        status=65
+        continue
+    fi
+    still=()
+    [ -z "$analysis" ] || mapfile -t still <<<"$analysis"
+    if [ ${#still[@]} -eq 0 ]; then
+        printf '  never still for %s s, so a viewer cannot read it\n' "$still_seconds"
+    else
+        printf '  still long enough to read: %s\n' "$(printf '%s\n' "${still[@]}" \
+            | awk '{ printf "%s%.1f %s", (NR > 1 ? ", " : ""), $1, ($2 == "" ? "s to the end" : sprintf("to %.1f s", $2)) }')"
+    fi
+
+    # Frames two to a row, large enough to read most text, each with its time in a strip above it
+    # rather than over the picture.
+    frame="scale=800:-2,pad=iw:ih+32:0:32:color=gray"
+    label="fontsize=22:fontcolor=white:x=8:y=5"
+    tile="padding=8:color=gray"
+    sheet="${file}.preview.png"
+    if [ ${#still[@]} -ge 3 ]; then
+        scratch="$(mktemp -d)"
+        index=0
+        for hold in "${still[@]}"; do
+            read -r start end <<<"$hold"
+            # The end of the hold, when everything that settles in it is showing.
+            at="$(awk -v e="${end:-${duration:-0}}" 'BEGIN { printf "%.3f", (e > 0.2 ? e - 0.2 : 0) }')"
+            text="$(awk -v s="$start" -v e="${end:-}" 'BEGIN { printf "%.1f %s", s, (e == "" ? "s to the end" : sprintf("to %.1f s", e)) }')"
+            index=$((index + 1))
+            ffmpeg -hide_banner -loglevel error -y -ss "$at" -i "$file" -frames:v 1 \
+                -vf "${frame},drawtext=text='${text}':${label}" "$(printf '%s/%03d.png' "$scratch" "$index")"
+        done
+        ffmpeg -hide_banner -loglevel error -y -i "$scratch/%03d.png" \
+            -vf "tile=2x$(((index + 1) / 2)):${tile}" -frames:v 1 "$sheet"
+        rm -rf "$scratch"
+        printf '  contact sheet: %s (the last frame of each of those %d times)\n' "$sheet" "$index"
+    else
         step=$(( (frames + 7) / 8 ))
         ffmpeg -hide_banner -loglevel error -y -i "$file" \
-            -vf "select=not(mod(n\,${step})),scale=480:-1,tile=4x2" -frames:v 1 "$sheet"
-        printf '  contact sheet: %s (%d frames sampled every %d)\n' "$sheet" "$frames" "$step"
+            -vf "select=not(mod(n\,${step})),${frame},drawtext=text='%{eif\:t\:d}.%{eif\:mod(t*10\,10)\:d} s':${label},tile=2x4:${tile}" \
+            -frames:v 1 "$sheet"
+        printf '  contact sheet: %s (evenly spaced frames)\n' "$sheet"
     fi
 done
 exit "$status"
