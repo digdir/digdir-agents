@@ -24,6 +24,9 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 - `agentctl skills install` puts a skill where the coding agents on your machine, such as Claude Code, Codex and Pi, find it, for you with `--user` or for a repository with `--repo`, and running it again updates it. `--bundled agentctl` gives them the skill for driving agents. ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#340](https://github.com/digdir/digdir-agents/pull/340))
 - A manifest can leave out `spec.home`, to copy nothing into `/home/agent`, and `spec.network`, which then sends all traffic through the host's network mediator. ([#309](https://github.com/digdir/digdir-agents/pull/309))
 - `agentctl status` shows whether agentd answers, the stored harness logins, the current directory's agent and how many agents run or wait for you, with the commands to run next; `--json` prints the same for coding agents and scripts. ([Your first agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#240](https://github.com/digdir/digdir-agents/issues/240))
+- `spec.accounts` gives an agent a GitHub account, with a token stored under a name the manifest asks for, such as `altinn-studio`: ([#316](https://github.com/digdir/digdir-agents/pull/316))
+  - `agentctl github login NAME --from-stdin`, `list` and `logout` store, show and forget tokens
+  - without a token the agent runs without GitHub access, and `agentctl status` names the login
 
 ### Changed
 
