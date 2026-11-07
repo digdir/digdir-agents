@@ -30,6 +30,10 @@ agents. The Rust workspace version is a build detail and is not tracked here.
   - `login: work` on a harness in an agent's manifest picks one. `login: [work, private]` or `login: any` gives the agent whichever the fewest other running agents use, and it keeps that one while it stays allowed and stored. ([#357](https://github.com/digdir/digdir-agents/pull/357))
 - `agentctl skills install` puts a skill where the coding agents on your machine, such as Claude Code, Codex and Pi, find it, for you with `--user` or for a repository with `--repo`, and running it again updates it. `--bundled agentctl` gives them the skill for driving agents. ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#340](https://github.com/digdir/digdir-agents/pull/340))
 - A manifest can leave out `spec.home`, to copy nothing into `/home/agent`, and `spec.network`, which then sends all traffic through the host's network mediator. ([#309](https://github.com/digdir/digdir-agents/pull/309))
+- Agents on the shared images can record what they do for someone to watch: ([#418](https://github.com/digdir/digdir-agents/pull/418))
+  - Every agent gets the `recording` skill, for recording a terminal, a web page or the desktop so that someone who was not there can follow it.
+  - On agents with the desktop, `desktop record start` and `desktop record stop` record the screen.
+  - `media check` shows when a recording holds still long enough to read, and `media frames` shows any moment at full size.
 
 ### Changed
 
@@ -45,6 +49,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
   - Applying a name that an agent from another directory already has asks you to choose another name.
 - At a terminal, agentctl's questions take a single key, without Enter, and ignore keys typed before they appear: ([#310](https://github.com/digdir/digdir-agents/pull/310))
   - Yes/no questions take `y` or `n`. Enter on its own answers nothing.
+- Chromium on the shared images no longer offers to translate pages or underlines misspelled words, which covered pages in screenshots and recordings. ([#418](https://github.com/digdir/digdir-agents/pull/418))
 
 ### Fixed
 
@@ -52,6 +57,10 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 - `clear`, `less` and editors no longer fail with `unknown terminal type` over `agentctl ssh`, the SSH shell in `agentctl tui` or plain `ssh agentctl-<name>` from a terminal such as Ghostty. ([#391](https://github.com/digdir/digdir-agents/pull/391))
 - `ssh agentctl-<name>`, `agentctl ssh`, editors connecting over SSH and the commands `agentctl vnc-info` prints now reach agents on a home chosen with `--home` or `AGENT_HOME`, instead of not finding them. ([#375](https://github.com/digdir/digdir-agents/pull/375))
 - Links that Claude Code and other harnesses print in a session can be clicked in terminals that support them, such as Ghostty, iTerm2 and WezTerm. Hold Shift with the usual modifier, as in ⇧⌘-click in Ghostty on macOS. ([#390](https://github.com/digdir/digdir-agents/pull/390))
+
+### Removed
+
+- Breaking: the shared images no longer have `media-preview` and `video-to-gif`. Check a recording with `media check` instead, and attach a page or desktop recording as WebM or MP4, which GitHub plays, rather than as a GIF. ([#418](https://github.com/digdir/digdir-agents/pull/418))
 
 ## [0.1.0-preview.13] - 2026-10-26
 
