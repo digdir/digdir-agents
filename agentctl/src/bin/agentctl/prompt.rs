@@ -15,7 +15,7 @@ pub(crate) fn interactive() -> bool {
 /// Starts a question after a blank line, behind a `?` marker that is bold and cyan on a terminal
 /// unless `NO_COLOR` is set, so questions stand apart from what is reported. Any further `lines`,
 /// such as what the question is about, follow indented under it, and `suffix` ends the last line.
-fn pose(lines: &[&str], suffix: &str) {
+fn question(lines: &[&str], suffix: &str) -> String {
     let colored = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty());
     let marker = if colored { "\x1b[1;36m?\x1b[0m" } else { "?" };
     let mut text = String::from("\n");
@@ -28,7 +28,13 @@ fn pose(lines: &[&str], suffix: &str) {
         }
         text.push_str(line);
     }
-    eprint!("{text}{suffix}");
+    text.push_str(suffix);
+    text
+}
+
+/// Shows a question made by [`question`] on standard error.
+fn pose(lines: &[&str], suffix: &str) {
+    eprint!("{}", question(lines, suffix));
     std::io::stderr().flush().ok();
 }
 
@@ -76,11 +82,23 @@ fn yes_or_no_key(code: KeyCode) -> Option<bool> {
     }
 }
 
-/// Reads one key at the terminal that `answer` accepts, ignoring keys typed before the question,
-/// and echoes what it answered as `shown` gives it, so the scrollback keeps the answer.
-fn read_key<T>(answer: impl Fn(KeyCode) -> Option<T>, shown: impl FnOnce(&T) -> String) -> Result<T, Error> {
+/// Shows `question` and reads one key at the terminal that `answer` accepts, then echoes what it
+/// answered as `shown` gives it, so the scrollback keeps the answer.
+///
+/// Keys typed before the question are discarded. That happens before the question is shown, so an
+/// answer typed as soon as it appears, as a program driving the terminal does, still counts. Raw
+/// mode does not return the carriage at a line break, so the question's breaks get one.
+fn read_key<T>(
+    question: &str,
+    answer: impl Fn(KeyCode) -> Option<T>,
+    shown: impl FnOnce(&T) -> String,
+) -> Result<T, Error> {
     crossterm::terminal::enable_raw_mode()?;
-    let read = next_key(answer);
+    let read = discard_typed().and_then(|()| {
+        eprint!("{}", question.replace('\n', "\r\n"));
+        std::io::stderr().flush().ok();
+        next_key(answer)
+    });
     let _ = crossterm::terminal::disable_raw_mode();
     match &read {
         Ok(value) => eprintln!("{}", shown(value)),
@@ -89,10 +107,15 @@ fn read_key<T>(answer: impl Fn(KeyCode) -> Option<T>, shown: impl FnOnce(&T) -> 
     read
 }
 
-fn next_key<T>(answer: impl Fn(KeyCode) -> Option<T>) -> Result<T, Error> {
+/// Discards the input waiting at the terminal.
+fn discard_typed() -> Result<(), Error> {
     while crossterm::event::poll(Duration::ZERO)? {
         crossterm::event::read()?;
     }
+    Ok(())
+}
+
+fn next_key<T>(answer: impl Fn(KeyCode) -> Option<T>) -> Result<T, Error> {
     loop {
         let Event::Key(event) = crossterm::event::read()? else {
             continue;
@@ -114,10 +137,13 @@ fn next_key<T>(answer: impl Fn(KeyCode) -> Option<T>) -> Result<T, Error> {
 ///
 /// Returns an error when standard input cannot be read or ends, or Ctrl-C cancels.
 pub(crate) fn confirm_lines(lines: &[&str]) -> Result<bool, Error> {
-    pose(lines, " (y/n) ");
+    let suffix = " (y/n) ";
     if std::io::stdin().is_terminal() {
-        return read_key(yes_or_no_key, |&answer| if answer { "yes" } else { "no" }.to_owned());
+        return read_key(&question(lines, suffix), yes_or_no_key, |&answer| {
+            if answer { "yes" } else { "no" }.to_owned()
+        });
     }
+    pose(lines, suffix);
     loop {
         if let Some(answer) = yes_or_no(&read_answer()?) {
             return Ok(answer);
