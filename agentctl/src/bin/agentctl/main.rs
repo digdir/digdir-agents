@@ -26,7 +26,7 @@ mod skills;
 mod tui;
 mod watch;
 
-use format::{condition_status, format_age, format_harnesses, session_state};
+use format::{format_age, format_harnesses, session_state};
 use futures_util::StreamExt as _;
 use sandbox::{execution::ExecutionEvent, terminal::TerminalAttachOutcome};
 use tokio::io::AsyncWriteExt as _;
@@ -1933,9 +1933,14 @@ fn agents_table(agents: &[Agent]) -> Vec<String> {
     let rows = agents
         .iter()
         .map(|agent| {
-            let ready = agent.status.ready_condition();
-            let ready_value = ready.map_or("Unknown", |condition| condition_status(condition.status));
-            let status = agent.phase().as_str();
+            // READY follows the phase, so it cannot say True beside a STATUS such as Terminating.
+            let phase = agent.phase();
+            let ready_value = if phase == agent::AgentPhase::Ready {
+                "True"
+            } else {
+                "False"
+            };
+            let status = phase.as_str();
             let harnesses = format_harnesses(&agent.spec);
             let provider = agent
                 .status
@@ -2379,6 +2384,28 @@ mod tests {
             Arguments::try_parse_from(["agentctl", "ssh-proxy", "worker"]).is_ok(),
             "OpenSSH still runs the hidden command"
         );
+    }
+
+    #[test]
+    fn get_agents_says_ready_only_in_the_ready_phase() {
+        let mut agent: Agent =
+            serde_yaml_ng::from_str(include_str!("../../../tests/fixtures/agent.yaml")).expect("fixture manifest");
+        agent.status.observed_generation = agent.metadata.generation;
+        agent.status.conditions = vec![agent::Condition {
+            kind: agent::Condition::READY.into(),
+            status: agent::ConditionStatus::True,
+            reason: "SandboxReady".into(),
+            message: String::new(),
+            last_transition_time: None,
+        }];
+        let mut terminating = agent.clone();
+        terminating.metadata.deletion_timestamp = Some(time::OffsetDateTime::now_utc());
+
+        let lines = agents_table(&[agent, terminating]);
+        let columns = |line: &String| line.split_whitespace().take(3).map(str::to_owned).collect::<Vec<_>>();
+
+        assert_eq!(columns(&lines[1]), ["minimal", "True", "Ready"], "{lines:#?}");
+        assert_eq!(columns(&lines[2]), ["minimal", "False", "Terminating"], "{lines:#?}");
     }
 
     #[test]
