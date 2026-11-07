@@ -1,5 +1,5 @@
 .PHONY: help build user-install clean fmt lint lint-fix test test-e2e check check-platforms deps deps-check \
-	changelog-validate changelog-test install-test
+	changelog-validate changelog-test install-test desktop-test
 .DEFAULT_GOAL := help
 
 USER_INSTALL_VERSION := v0.0.1-dev.$(shell date -u +%Y%m%d%H%M%S)
@@ -59,7 +59,7 @@ lint-fix: ## Apply safe Clippy fixes
 	@cargo clippy $(PACKAGES) --all-targets --all-features --fix --allow-dirty --locked
 	@echo "✓ Lint fixes applied"
 
-test: changelog-test install-test ## Run all tests; requires Node.js, and the OpenSSH client on Unix
+test: changelog-test install-test desktop-test ## Run all tests; requires Node.js, Python 3, and the OpenSSH client on Unix
 	@echo "Testing Rust crates..."
 	@cargo test $(PACKAGES) --all-targets --locked
 	@echo "✓ Tests passed"
@@ -72,6 +72,9 @@ changelog-test: ## Run the changelog.sh tests
 
 install-test: ## Run the install.sh release lookup tests
 	@./agentctl/install_test.sh
+
+desktop-test: ## Run the tests of the desktop image's `desktop` helper
+	@python3 -B -m unittest discover -q -s images/agentctl-base/features/desktop/tests
 
 test-e2e: ## Run integration tests that require Docker, Internet access, KVM, Node.js, tmux and script
 	@echo "Running end-to-end tests..."
