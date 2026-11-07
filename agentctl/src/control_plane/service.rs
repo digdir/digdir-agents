@@ -133,10 +133,6 @@ impl ControlPlane {
     ///
     /// Returns an error when the request is invalid, changes an immutable field, conflicts with deletion,
     /// or cannot be stored.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one retry loop over creating and updating, which share the validated desired state"
-    )]
     pub async fn apply(&self, request: ApplyRequest) -> Result<Agent, Error> {
         validate_request_paths(&request)?;
 
@@ -163,69 +159,46 @@ impl ControlPlane {
                     }
                     validate_immutable_fields(&current, &desired)?;
                     desired.spec.set_run_state(applied_run_state(run_state, Some(&current)));
-                    let manifest_path = request.manifest_path.clone().or_else(|| current.manifest_path.clone());
-                    let env_file = request.env_file.clone().or_else(|| current.env_file.clone());
-                    self.reject_exposed_secrets(
-                        current.id,
-                        &request.source_directory,
-                        env_file.as_deref(),
-                        &desired,
-                        &current.optional_mount_sources,
-                    )
-                    .await?;
-                    if current.agent.spec == desired.spec
-                        && current.manifest_path == manifest_path
-                        && current.env_file == env_file
+                    let mut record = AgentRecord {
+                        id: current.id,
+                        source_directory: request.source_directory.clone(),
+                        manifest_path: request.manifest_path.clone().or_else(|| current.manifest_path.clone()),
+                        env_file: request.env_file.clone().or_else(|| current.env_file.clone()),
+                        agent: desired.clone(),
+                        // Decided when the agent was created.
+                        optional_mount_sources: current.optional_mount_sources.clone(),
+                    };
+                    self.reject_exposed_secrets(&record).await?;
+                    if current.agent.spec == record.agent.spec
+                        && current.manifest_path == record.manifest_path
+                        && current.env_file == record.env_file
                     {
                         self.notifier.notify(current.id);
                         return Ok(self.resource(current));
                     }
 
                     let expected_generation = current.agent.metadata.generation;
-                    desired.metadata.generation = expected_generation + 1;
-                    desired.metadata.restart_timestamp = current.agent.metadata.restart_timestamp;
-                    desired.status = current.agent.status;
+                    record.agent.metadata.generation = expected_generation + 1;
+                    record.agent.metadata.restart_timestamp = current.agent.metadata.restart_timestamp;
+                    record.agent.status = current.agent.status;
                     self.store
-                        .put(
-                            AgentRecord {
-                                id: current.id,
-                                source_directory: request.source_directory.clone(),
-                                manifest_path: manifest_path.clone(),
-                                env_file: env_file.clone(),
-                                agent: desired.clone(),
-                                optional_mount_sources: current.optional_mount_sources,
-                            },
-                            expected_generation,
-                        )
+                        .put(record.clone(), expected_generation)
                         .await
-                        .map(|()| (current.id, manifest_path, env_file))
+                        .map(|()| record)
                 }
                 Err(Error::NotFound) => {
-                    let id = AgentId::generate();
-                    desired.metadata.generation = 1;
                     desired.spec.set_run_state(applied_run_state(run_state, None));
-                    self.reject_exposed_secrets(
-                        id,
-                        &request.source_directory,
-                        request.env_file.as_deref(),
-                        &desired,
-                        &optional_mount_sources,
-                    )
-                    .await?;
-                    self.store
-                        .put(
-                            AgentRecord {
-                                id,
-                                source_directory: request.source_directory.clone(),
-                                manifest_path: request.manifest_path.clone(),
-                                env_file: request.env_file.clone(),
-                                agent: desired.clone(),
-                                optional_mount_sources: optional_mount_sources.clone(),
-                            },
-                            0,
-                        )
-                        .await
-                        .map(|()| (id, request.manifest_path.clone(), request.env_file.clone()))
+                    let mut record = AgentRecord {
+                        id: AgentId::generate(),
+                        source_directory: request.source_directory.clone(),
+                        manifest_path: request.manifest_path.clone(),
+                        env_file: request.env_file.clone(),
+                        agent: desired.clone(),
+                        optional_mount_sources: optional_mount_sources.clone(),
+                    };
+                    record.agent.metadata.generation = 1;
+                    self.reject_exposed_secrets(&record).await?;
+                    self.store.put(record.clone(), 0).await.map(|()| record)
                 }
                 Err(error) => return Err(error),
             };
@@ -233,14 +206,15 @@ impl ControlPlane {
             match result {
                 Err(Error::Conflict) => {}
                 Err(error) => return Err(error),
-                Ok((id, manifest_path, env_file)) => {
-                    self.notifier.notify(id);
-                    desired.status.provenance = Some(crate::Provenance {
-                        source_directory: request.source_directory,
-                        manifest_path,
-                        env_file,
+                Ok(record) => {
+                    self.notifier.notify(record.id);
+                    let mut agent = record.agent;
+                    agent.status.provenance = Some(crate::Provenance {
+                        source_directory: record.source_directory,
+                        manifest_path: record.manifest_path,
+                        env_file: record.env_file,
                     });
-                    return Ok(desired);
+                    return Ok(agent);
                 }
             }
         }
@@ -251,29 +225,22 @@ impl ControlPlane {
     /// Secret files hold the real values that mediation exists to keep out of sandboxes. A bind
     /// mount whose source contains a `.env` file, this agent's selected non-default secret file or
     /// another active agent's selected secret file would hand those values to the guest, so the
-    /// combination is refused at apply time. Bind mount sources are canonical by this point.
-    /// `optional_mount_sources` holds the optional ones the agent's sandbox gets: those it was
-    /// created with, which an optional source that has since moved, such as through a symbolic
-    /// link, does not change.
-    async fn reject_exposed_secrets(
-        &self,
-        id: AgentId,
-        source_directory: &std::path::Path,
-        env_file: Option<&std::path::Path>,
-        desired: &Agent,
-        optional_mount_sources: &BTreeMap<SandboxPath, PathBuf>,
-    ) -> Result<(), Error> {
-        reject_dot_env_in_bind_mounts(bind_mount_sources(desired, optional_mount_sources)).await?;
+    /// combination is refused at apply time. The mounts checked are those the agent's sandbox
+    /// gets, with canonical sources: an optional source that has since moved, such as through a
+    /// symbolic link, keeps the directory the agent was created with.
+    async fn reject_exposed_secrets(&self, record: &AgentRecord) -> Result<(), Error> {
+        let desired = &record.agent;
+        reject_dot_env_in_bind_mounts(bind_mount_sources(record)).await?;
         let mut secret_files = Vec::new();
         if !desired.spec.secrets.is_empty() {
-            let path = env_file.map_or_else(|| source_directory.join(super::resource::ENV_FILE), PathBuf::from);
-            if env_file.is_some() || tokio::fs::try_exists(&path).await? {
+            let path = record.env_file_path();
+            if record.env_file.is_some() || tokio::fs::try_exists(&path).await? {
                 secret_files.push((desired.metadata.name.clone(), canonical_secret_file(&path).await));
             }
         }
-        let mut mounts = bind_mount_sources(desired, optional_mount_sources);
+        let mut mounts = bind_mount_sources(record);
         for other in self.store.list().await? {
-            if other.id == id || other.agent.metadata.deletion_timestamp.is_some() {
+            if other.id == record.id || other.agent.metadata.deletion_timestamp.is_some() {
                 continue;
             }
             if !other.agent.spec.secrets.is_empty() {
@@ -284,7 +251,7 @@ impl ControlPlane {
             }
             if !desired.spec.secrets.is_empty() {
                 mounts.extend(
-                    bind_mount_sources(&other.agent, &other.optional_mount_sources)
+                    bind_mount_sources(&other)
                         .into_iter()
                         .map(|(_, source)| (format!("Agent {:?}", other.agent.metadata.name), source)),
                 );
@@ -739,14 +706,9 @@ fn validate_request_paths(request: &ApplyRequest) -> Result<(), Error> {
 }
 
 /// The canonical source of each bind mount the agent's sandbox gets, named by its field.
-fn bind_mount_sources(
-    agent: &Agent,
-    optional_mount_sources: &BTreeMap<SandboxPath, PathBuf>,
-) -> Vec<(String, PathBuf)> {
-    agent
-        .spec
-        .sandbox
-        .resolved_mounts(optional_mount_sources)
+fn bind_mount_sources(record: &AgentRecord) -> Vec<(String, PathBuf)> {
+    record
+        .indexed_sandbox_mounts()
         .filter_map(|(index, mount)| match mount {
             Mount::Bind { source, .. } => Some((format!("spec.sandbox.mounts[{index}]"), source)),
             _ => None,
@@ -786,9 +748,6 @@ async fn canonical_secret_file(path: &std::path::Path) -> PathBuf {
 }
 
 fn association_directories(record: &AgentRecord) -> impl Iterator<Item = PathBuf> {
-    std::iter::once(record.source_directory.clone()).chain(
-        bind_mount_sources(&record.agent, &record.optional_mount_sources)
-            .into_iter()
-            .map(|(_, source)| source),
-    )
+    std::iter::once(record.source_directory.clone())
+        .chain(bind_mount_sources(record).into_iter().map(|(_, source)| source))
 }

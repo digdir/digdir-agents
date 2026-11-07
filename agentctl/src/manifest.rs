@@ -1,15 +1,12 @@
 //! Declarative agent manifest and observed resource status.
 
-use std::{
-    collections::BTreeMap,
-    path::{Component, Path, PathBuf},
-};
+use std::path::{Component, Path, PathBuf};
 
 use time::OffsetDateTime;
 
 use ::sandbox::{
     ByteQuantity, CpuQuantity, Platform, RetentionPolicy, RootFilesystem, SandboxName, SandboxPath, SandboxResources,
-    image::ImageSource, init::InitSystem, mount::Mount,
+    image::ImageSource, init::InitSystem,
 };
 use serde::{Deserialize, Serialize};
 
@@ -364,38 +361,6 @@ impl SandboxManifestSpec {
     #[must_use]
     pub fn resolved_retention_policy(&self) -> RetentionPolicy {
         self.retention_policy.unwrap_or(RetentionPolicy::Delete)
-    }
-
-    /// Converts the mounts the sandbox gets to the generic Sandbox SDK representation, each with its index in
-    /// `mounts`. An optional bind mount takes its source from `optional_sources`, which holds those whose source
-    /// existed when the agent was created, and is left out when it has none there.
-    pub fn resolved_mounts<'a>(
-        &'a self,
-        optional_sources: &'a BTreeMap<SandboxPath, PathBuf>,
-    ) -> impl Iterator<Item = (usize, Mount)> + 'a {
-        self.mounts.iter().enumerate().filter_map(|(index, mount)| {
-            let mount = match mount {
-                MountSpec::Bind {
-                    source,
-                    target,
-                    read_only,
-                    optional,
-                } => Mount::Bind {
-                    source: if *optional {
-                        optional_sources.get(target)?.clone()
-                    } else {
-                        source.clone()
-                    },
-                    target: target.clone(),
-                    read_only: *read_only,
-                },
-                MountSpec::Tmpfs { target, capacity } => Mount::Tmpfs {
-                    target: target.clone(),
-                    capacity: *capacity,
-                },
-            };
-            Some((index, mount))
-        })
     }
 }
 

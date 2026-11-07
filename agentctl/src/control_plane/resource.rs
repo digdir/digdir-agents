@@ -1,9 +1,10 @@
 //! Internal identity and persisted representation of an agent resource.
 
+use ::sandbox::mount::Mount;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{Agent, Error};
+use crate::{Agent, Error, MountSpec};
 
 /// Immutable identity of one agent incarnation.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -72,13 +73,42 @@ impl AgentRecord {
     /// Returns the mounts the agent's sandbox gets, which leave out the optional bind mounts whose source did not
     /// exist when the agent was created.
     #[must_use]
-    pub fn sandbox_mounts(&self) -> Vec<::sandbox::mount::Mount> {
+    pub fn sandbox_mounts(&self) -> Vec<Mount> {
+        self.indexed_sandbox_mounts().map(|(_, mount)| mount).collect()
+    }
+
+    /// Returns [`Self::sandbox_mounts`], each with its index in `spec.sandbox.mounts`. An optional bind mount takes
+    /// the source it had when the agent was created.
+    pub(crate) fn indexed_sandbox_mounts(&self) -> impl Iterator<Item = (usize, Mount)> + '_ {
         self.agent
             .spec
             .sandbox
-            .resolved_mounts(&self.optional_mount_sources)
-            .map(|(_, mount)| mount)
-            .collect()
+            .mounts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, mount)| {
+                let mount = match mount {
+                    MountSpec::Bind {
+                        source,
+                        target,
+                        read_only,
+                        optional,
+                    } => Mount::Bind {
+                        source: if *optional {
+                            self.optional_mount_sources.get(target)?.clone()
+                        } else {
+                            source.clone()
+                        },
+                        target: target.clone(),
+                        read_only: *read_only,
+                    },
+                    MountSpec::Tmpfs { target, capacity } => Mount::Tmpfs {
+                        target: target.clone(),
+                        capacity: *capacity,
+                    },
+                };
+                Some((index, mount))
+            })
     }
 
     /// Derives the Provider-independent sandbox name for this agent incarnation.
