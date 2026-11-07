@@ -1,7 +1,9 @@
 """Pointing: moving the pointer, clicking, dragging and scrolling."""
 
 import json
+import math
 
+from . import record
 from .geometry import scale
 from .session import DesktopError, integer
 
@@ -14,12 +16,40 @@ def location(session):
     return int(position['X']), int(position['Y'])
 
 
-def move_to(session, x, y):
+def glide_steps(start, end):
+    """Where the pointer passes on its way from START to END, and how long it takes over each step: a fraction of a
+    second, eased in and out, so that someone watching can follow it."""
+    (x0, y0), (x1, y1) = start, end
+    seconds = min(max(math.hypot(x1 - x0, y1 - y0) / 1500, 0.3), 0.8)
+    steps = int(seconds * 60)
+    points = []
+    for i in range(1, steps + 1):
+        s = i / steps
+        s = s * s * (3 - 2 * s)
+        points.append((int(x0 + (x1 - x0) * s + 0.5), int(y0 + (y1 - y0) * s + 0.5)))
+    return points, seconds / steps
+
+
+def to(session, x, y, glide=False):
+    """Moves the pointer to display pixels X Y: at once, or in a glide that someone watching can follow if GLIDE is
+    set or a recording is running."""
+    if not glide and not record.running(session):
+        session.run('xdotool', 'mousemove', '--', str(x), str(y))
+        return
+    points, pause = glide_steps(location(session), (x, y))
+    # One xdotool call that alternates moves and sleeps.
+    command = ['xdotool']
+    for px, py in points:
+        command += ['mousemove', '--', str(px), str(py), 'sleep', f'{pause:.4f}']
+    session.run(*command)
+
+
+def move_to(session, x, y, glide=False):
     """Moves the pointer to X Y in the pixels of the last observation."""
     addressed = session.addressed()
     x, y = integer(x, 'x'), integer(y, 'y')
-    session.run('xdotool', 'mousemove', '--', str(scale(x, addressed.sent_width, addressed.width)),
-                str(scale(y, addressed.sent_height, addressed.height)))
+    to(session, scale(x, addressed.sent_width, addressed.width), scale(y, addressed.sent_height, addressed.height),
+       glide)
 
 
 def click(session, button, args):
@@ -60,19 +90,16 @@ def drag(session, args):
     if len(args) != 4:
         raise DesktopError('drag takes X1 Y1 X2 Y2')
     # Checked before pressing, so that a bad drop point cannot leave the button held.
-    x1, y1, x2, y2 = (integer(value, name) for value, name in zip(args, ('x', 'y', 'x', 'y')))
+    for value, name in zip(args, ('x', 'y', 'x', 'y')):
+        integer(value, name)
     move_to(session, args[0], args[1])
     # Whatever happens from the press on, even a signal while xdotool presses, the button is released, so that a failed
     # or interrupted drag cannot leave it held.
     try:
         session.run('xdotool', 'mousedown', '1')
-        # Intermediate motion: applications that track drags ignore a single jump.
-        addressed = session.addressed()
-        for step in (1, 2, 3):
-            x = int((x1 + (x2 - x1) * step / 4) * addressed.width / addressed.sent_width + 0.5)
-            y = int((y1 + (y2 - y1) * step / 4) * addressed.height / addressed.sent_height + 0.5)
-            session.run('xdotool', 'mousemove', '--', str(x), str(y))
-        move_to(session, args[2], args[3])
+        # A glide, since applications that track drags, such as HTML drag and drop, ignore a jump. It glides whether or
+        # not a recording is running, so that a drag behaves the same in a recording as in the warm-up before it.
+        move_to(session, args[2], args[3], glide=True)
     finally:
         session.run('xdotool', 'mouseup', '1', check=False)
     session.sync()

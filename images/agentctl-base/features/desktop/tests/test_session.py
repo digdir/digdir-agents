@@ -25,6 +25,7 @@ class SettingsTest(unittest.TestCase):
         session = Session({'DISPLAY': ':5', 'DESKTOP_CAPTURES': '/x', 'AGENT_SESSION_ID': 's1'})
         self.assertEqual(session.display, ':5')
         self.assertEqual(session.observed, '/x/.screenshot-geometry.s1')
+        self.assertEqual(session.recording_state, '/x/.recording:5')
         self.assertEqual(session.tool_environ['LC_ALL'], 'C.UTF-8')
         self.assertEqual(Session({'DESKTOP_DISPLAY': ':2', 'DISPLAY': ':1'}).display, ':2')
 

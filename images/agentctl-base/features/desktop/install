@@ -1,5 +1,6 @@
 #!/bin/sh
-# An X11 desktop with VNC access, the `desktop` helper and the computer-use skill; requires browser.
+# An X11 desktop with VNC access, the `desktop` helper and the computer-use skill. It requires browser, whose ffmpeg
+# captures screenshots and recordings and whose `media` checks them.
 #
 # Run by `agent-feature install desktop` as root, with a scratch HOME. The VNC access units ship disabled: agentd
 # enables the ones /etc/agent-access.d/vnc.conf names when an agent declares `access: [{type: vnc}]`.

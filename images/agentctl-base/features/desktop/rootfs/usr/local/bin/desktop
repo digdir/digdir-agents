@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Drives the agent's X11 desktop: observe it, point at it, type into it. `desktop help` lists the commands.
+"""Drives the agent's X11 desktop: observe it, point at it, type into it, record it. `desktop help` lists the commands.
 
 The system Python, isolated from the environment's: `desktop tree` needs the AT-SPI bindings only it has.
 """

@@ -34,6 +34,8 @@ class Session:
         # sessions with different harnesses get screenshots at different sizes.
         session = environ.get('AGENT_SESSION_ID')
         self.observed = os.path.join(self.captures, '.screenshot-geometry' + (f'.{session}' if session else ''))
+        # The recording on this display, running or not yet rendered, if any: one per display rather than per session.
+        self.recording_state = os.path.join(self.captures, '.recording' + self.display)
         try:
             self.budget = geometry.budget(environ)
         except geometry.BudgetError as error:

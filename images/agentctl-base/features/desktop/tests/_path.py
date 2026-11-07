@@ -1,7 +1,9 @@
-"""Puts the `desktop` helper's package, as the feature installs it, on the path of the tests."""
+"""Puts the `desktop` helper's package, and the `media` command's it uses, as the features install them, on the path of
+the tests."""
 
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'rootfs', 'usr', 'local', 'lib',
-                                'agent-tools'))
+features = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
+for feature in ('desktop', 'browser'):
+    sys.path.insert(0, os.path.join(features, feature, 'rootfs', 'usr', 'local', 'lib', 'agent-tools'))

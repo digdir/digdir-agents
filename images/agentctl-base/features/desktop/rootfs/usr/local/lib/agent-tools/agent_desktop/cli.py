@@ -41,6 +41,10 @@ Windows and session
   resize WIDTH HEIGHT            resize the display with RandR
   wait SECONDS                   pause
 
+Record
+  record start OUT.mp4           record the display until `record stop`; meanwhile the pointer glides and typing slows
+  record stop [--width PIXELS]   stop, encode OUT.mp4, 1280 px wide by default, and check it as `media check` does
+
 Batch
   batch [--no-screenshot]        read one command per line from stdin and run them in order
 
@@ -72,6 +76,7 @@ COMMANDS = {
     'focus': ('windows', 'focus'),
     'resize': ('windows', 'resize'),
     'wait': ('windows', 'wait'),
+    'record': ('record', 'record'),
     'batch': ('cli', 'batch'),
 }
 

@@ -1,4 +1,7 @@
+import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
 import _path  # noqa: F401
 from agent_desktop import keyboard
@@ -42,6 +45,26 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(keyboard.plan('æ', set(), ['8']), [('æ', [])])
 
 
+class TypeTest(unittest.TestCase):
+    def typing_delay(self, recording):
+        """The delay `type` gives xdotool."""
+        with tempfile.TemporaryDirectory() as captures:
+            session = Session({'DESKTOP_CAPTURES': captures})
+            session.run = lambda *command, check=True: KEYMAP
+            session.sync = lambda: None
+            typing = mock.Mock(returncode=0)
+            typing.communicate.return_value = ('', '')
+            with mock.patch.object(keyboard.record, 'running', return_value=recording), \
+                    mock.patch.object(subprocess, 'Popen', return_value=typing) as popen:
+                keyboard.type_text(session, ['qa'])
+        command = popen.call_args[0][0]
+        return command[command.index('--delay') + 1]
+
+    def test_types_slowly_enough_to_read_along_while_recording(self):
+        self.assertEqual(self.typing_delay(False), '12')
+        self.assertEqual(self.typing_delay(True), '180')
+
+
 class TypeBoundTest(unittest.TestCase):
     def test_a_signal_while_binding_still_unbinds(self):
         session = Session({})
@@ -56,7 +79,7 @@ class TypeBoundTest(unittest.TestCase):
 
         session.run = run
         with self.assertRaises(SystemExit):
-            keyboard.type_bound(session, 'æ', [('93', 0xe6)])
+            keyboard.type_bound(session, 'æ', [('93', 0xe6)], keyboard.TYPE_DELAY)
         self.assertEqual(calls[-1], ('xmodmap', '-e', 'keycode 93 ='))
 
 

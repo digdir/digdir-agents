@@ -5,8 +5,13 @@ import os
 import re
 import subprocess
 
+from . import record
 from .session import DesktopError, integer
 
+# xdotool's delay between typed characters, in milliseconds, and while recording, slow enough that someone watching can
+# read along. xdotool types a character in about half of it.
+TYPE_DELAY = 12
+RECORDING_TYPE_DELAY = 180
 
 
 def keysym(character):
@@ -53,6 +58,7 @@ def type_text(session, args):
     if not args:
         raise DesktopError('type takes the text to enter')
     text = ' '.join(args)
+    delay = RECORDING_TYPE_DELAY if record.running(session) else TYPE_DELAY
     os.makedirs(session.captures, exist_ok=True)
     # Concurrent types would pick the same spare keycodes.
     with open(os.path.join(session.captures, '.type.lock'), 'w') as lock:
@@ -62,11 +68,11 @@ def type_text(session, args):
         except DesktopError:
             raise DesktopError(f'cannot read the keyboard map of display {session.display}') from None
         for segment, bindings in plan(text, *keymap(output)):
-            type_bound(session, segment, bindings)
+            type_bound(session, segment, bindings, delay)
     session.sync()
 
 
-def type_bound(session, text, bindings):
+def type_bound(session, text, bindings, delay):
     """Types TEXT with BINDINGS in place. An interrupted type leaves no key bound and no xdotool typing."""
     bind, unbind = [], []
     for keycode, symbol in bindings:
@@ -80,7 +86,7 @@ def type_bound(session, text, bindings):
                 session.run('xmodmap', *bind)
             except DesktopError:
                 raise DesktopError(f'cannot bind keys on display {session.display}') from None
-        typing = subprocess.Popen(['xdotool', 'type', '--delay', '12', '--', text], env=session.tool_environ,
+        typing = subprocess.Popen(['xdotool', 'type', '--delay', str(delay), '--', text], env=session.tool_environ,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         _, error = typing.communicate()
         if typing.returncode != 0:
