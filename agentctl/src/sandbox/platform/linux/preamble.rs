@@ -194,7 +194,7 @@ fn access(spec: &Spec, name: &str) -> Option<String> {
     }
     if !views.is_empty() {
         sentences.push(format!(
-            "{} open the web views you serve in their browser: {}.",
+            "{} can open the web views you serve in their browser: {}.",
             // The first sentence of a bullet starts in lowercase.
             if commands.is_empty() {
                 "people on the host"
