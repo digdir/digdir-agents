@@ -214,7 +214,7 @@ impl Reconciler {
             responsive_condition(self.sandboxes.reports_heartbeat(&ensured.sandbox.snapshot().id)),
         );
         conditions.extend(nested_sandboxes_condition(ensured.nested_sandboxes.as_ref()));
-        conditions.extend(optional_sources_condition(&record.agent.spec, &ensured.missing_sources));
+        conditions.extend(optional_sources_condition(record, &ensured.missing_sources));
         conditions.push(condition(Condition::READY, ConditionStatus::True, "SandboxReady", ""));
         let status = Status::observed(record.agent.metadata.generation, Some(assignment), conditions);
         // As on failure, readiness is stored before followers see the pass end.
@@ -610,14 +610,31 @@ fn nested_sandboxes_condition(outcome: Option<&crate::sandbox::NestedSandboxesOu
     })
 }
 
-/// Reports whether the agent's optional instructions and skills exist, naming those setup left out;
-/// nothing when it declares none.
-fn optional_sources_condition(spec: &crate::Spec, missing: &[String]) -> Option<Condition> {
-    let declares = spec.instructions.iter().any(|instructions| instructions.optional)
+/// Reports whether the agent's optional bind mounts, instructions and skills exist, naming the mounts
+/// left out when it was created and the files setup left out; nothing when it declares none.
+fn optional_sources_condition(record: &AgentRecord, missing_files: &[String]) -> Option<Condition> {
+    let spec = &record.agent.spec;
+    let mut declares = spec.instructions.iter().any(|instructions| instructions.optional)
         || spec.skills.iter().any(|skill| skill.optional);
+    let mut missing = Vec::new();
+    for (index, mount) in spec.sandbox.mounts.iter().enumerate() {
+        if let crate::MountSpec::Bind {
+            source,
+            target,
+            optional: true,
+            ..
+        } = mount
+        {
+            declares = true;
+            if !record.optional_mount_sources.contains_key(target) {
+                missing.push(format!("spec.sandbox.mounts[{index}].source {}", source.display()));
+            }
+        }
+    }
     if !declares {
         return None;
     }
+    missing.extend_from_slice(missing_files);
     Some(if missing.is_empty() {
         condition(Condition::OPTIONAL_SOURCES, ConditionStatus::True, "Found", "")
     } else {

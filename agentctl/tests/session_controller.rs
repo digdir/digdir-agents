@@ -252,6 +252,7 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     }
 }
 
@@ -2372,6 +2373,7 @@ async fn session_ensure_persists_intent_before_waiting_for_agent_convergence() {
                 manifest_path: None,
                 env_file: None,
                 agent: resource,
+                optional_mount_sources: std::collections::BTreeMap::new(),
             },
             0,
         )

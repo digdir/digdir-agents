@@ -9,7 +9,8 @@ use super::{database_error, secrets};
 pub(super) fn get(connection: &Connection, id: AgentId) -> Result<AgentRecord, Error> {
     connection
         .query_row(
-            "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json
+            "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
+                    optional_mount_sources_json
              FROM agents WHERE id = ?1 AND active_name IS NOT NULL",
             [id.to_string()],
             decode_row,
@@ -22,7 +23,8 @@ pub(super) fn get(connection: &Connection, id: AgentId) -> Result<AgentRecord, E
 pub(super) fn get_by_name(connection: &Connection, name: &str) -> Result<AgentRecord, Error> {
     let record = connection
         .query_row(
-            "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json
+            "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
+                    optional_mount_sources_json
              FROM agents WHERE active_name = ?1",
             [name],
             decode_row,
@@ -42,7 +44,8 @@ pub(super) fn get_by_name(connection: &Connection, name: &str) -> Result<AgentRe
 pub(super) fn list(connection: &Connection) -> Result<Vec<AgentRecord>, Error> {
     let mut statement = connection
         .prepare(
-            "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json
+            "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
+                    optional_mount_sources_json
              FROM agents WHERE active_name IS NOT NULL ORDER BY active_name",
         )
         .map_err(database_error)?;
@@ -67,15 +70,17 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
         transaction
             .execute(
                 "INSERT OR IGNORE INTO agents
-                 (id, active_name, source_directory, desired_json, deletion_timestamp, status_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 (id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
+                  optional_mount_sources_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     id.to_string(),
                     name,
                     source,
                     desired,
                     deletion_timestamp(&record.agent),
-                    encode_status(&record.agent.status)?
+                    encode_status(&record.agent.status)?,
+                    serde_json::to_string(&record.optional_mount_sources)?
                 ],
             )
             .map_err(database_error)?
@@ -210,6 +215,7 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
     let desired = row.get::<_, String>(3)?;
     let deletion = row.get::<_, Option<i64>>(4)?;
     let status = row.get::<_, String>(5)?;
+    let optional_mount_sources = row.get::<_, String>(6)?;
     let id = id.parse::<AgentId>().map_err(conversion_error)?;
     let (source_directory, manifest_path, env_file) = match serde_json::from_str(&source).map_err(conversion_error)? {
         StoredSource::Provenance(provenance) => (
@@ -234,6 +240,7 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
         manifest_path,
         env_file,
         agent,
+        optional_mount_sources: serde_json::from_str(&optional_mount_sources).map_err(conversion_error)?,
     })
 }
 

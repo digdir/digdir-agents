@@ -126,10 +126,6 @@ impl Adapter {
             .err()
             .unwrap_or_else(|| "this platform has no nested sandboxes".into())))
     }
-
-    fn sandbox_mounts(record: &AgentRecord) -> Vec<::sandbox::mount::Mount> {
-        record.agent.spec.sandbox.resolved_mounts()
-    }
 }
 
 impl Provider for Adapter {
@@ -140,7 +136,8 @@ impl Provider for Adapter {
     fn supports<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<bool, Error>> {
         Box::pin(async move {
             match self.service.capabilities(&self.sandbox_spec(record)?.platform).await {
-                Ok(capabilities) => Ok(Self::sandbox_mounts(record)
+                Ok(capabilities) => Ok(record
+                    .sandbox_mounts()
                     .iter()
                     .all(|mount| capabilities.mount_kinds().contains(mount.kind()))),
                 Err(error) if error.kind() == ErrorKind::Unsupported => Ok(false),
@@ -190,7 +187,7 @@ impl Provider for Adapter {
             };
             let request = EnsureSandboxRequest::new(sandbox_name, spec)
                 .with_hostname(record.sandbox_hostname()?)
-                .with_mounts(Self::sandbox_mounts(record))
+                .with_mounts(record.sandbox_mounts())
                 .with_environment(environment);
             let mut sandbox = self.service.ensure(&request).forward(&progress).await?;
             if self.preparation.network_is_stale(sandbox.id()) {

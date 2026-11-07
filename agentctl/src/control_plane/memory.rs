@@ -106,6 +106,8 @@ impl AgentStore for InMemoryAgentStore {
                 {
                     return Err(Error::Conflict);
                 }
+                // As in the database, they are decided when the agent is created.
+                record.optional_mount_sources = std::mem::take(&mut current.optional_mount_sources);
                 *current = record;
                 Ok(())
             })();

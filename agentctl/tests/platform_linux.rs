@@ -170,6 +170,7 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     };
 
     let backend = Rc::new(memory::Provider::new());
@@ -278,6 +279,7 @@ async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
@@ -380,6 +382,7 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..3 {
@@ -512,6 +515,7 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..4 {
@@ -679,6 +683,7 @@ async fn linux_setup_approves_claude_bash_requests_in_bypass_mode_for_every_clau
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
@@ -803,6 +808,7 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     };
 
     let backend = Rc::new(memory::Provider::new());
@@ -912,6 +918,7 @@ async fn linux_setup_waits_for_systemd_and_restores_managed_podman_configuration
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
@@ -998,6 +1005,7 @@ async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
@@ -1049,6 +1057,7 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
@@ -1115,6 +1124,7 @@ async fn linux_setup_rejects_partial_git_identity() {
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
@@ -1164,6 +1174,7 @@ async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injectio
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
@@ -1237,6 +1248,7 @@ async fn linux_setup_reads_home_instructions_and_skills_below_the_home_directory
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
@@ -1316,6 +1328,7 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
@@ -1413,6 +1426,7 @@ fn optional_sources_record(directory: &std::path::Path, instructions: &str, skil
         manifest_path: None,
         env_file: None,
         agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
     }
 }
 
