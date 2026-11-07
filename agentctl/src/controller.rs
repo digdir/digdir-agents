@@ -79,10 +79,7 @@ impl ReconcileFailure {
             } else {
                 FailureKind::Transient
             },
-            message: match error {
-                Error::Invalid(message) => message.clone(),
-                error => error.to_string(),
-            },
+            message: error.to_string(),
         }
     }
 }

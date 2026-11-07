@@ -52,9 +52,10 @@ use thiserror::Error;
 /// Errors exposed by the agent control plane.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// The agent resource is invalid: desired state must change before another
-    /// reconciliation pass can succeed, so waiters fail fast and nothing retries.
-    #[error("invalid agent: {0}")]
+    /// A request or the agent resource is invalid: desired state must change before another
+    /// reconciliation pass can succeed, so waiters fail fast and nothing retries. The message says
+    /// what is wrong on its own, as it is shown without a prefix.
+    #[error("{0}")]
     Invalid(String),
     /// The requested agent does not exist.
     #[error("Agent not found")]
@@ -100,7 +101,7 @@ pub enum Error {
     /// A YAML manifest was invalid.
     #[error("invalid YAML: {0}")]
     Yaml(#[from] serde_yaml_ng::Error),
-    /// The Control API returned a protocol-level error.
-    #[error("Control API error: {0}")]
+    /// The Control API returned an error. agentd's message is shown as it is.
+    #[error("{0}")]
     Rpc(#[from] control_api::ResponseError),
 }

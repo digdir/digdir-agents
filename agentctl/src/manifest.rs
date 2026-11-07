@@ -1452,11 +1452,7 @@ fn with_chain(error: Error, chain: &[PathBuf]) -> Error {
         .chain(lines.map(|line| format!("  extends {line}")))
         .collect::<Vec<_>>()
         .join("\n");
-    let message = match error {
-        Error::Invalid(message) => message,
-        error => error.to_string(),
-    };
-    Error::Invalid(format!("{message}\ninheritance chain:\n{diagnostic}"))
+    Error::Invalid(format!("{error}\ninheritance chain:\n{diagnostic}"))
 }
 
 #[cfg(test)]

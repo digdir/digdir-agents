@@ -582,20 +582,9 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("{}", error_text(&error));
+            eprintln!("agentctl: {error}");
             ExitCode::FAILURE
         }
-    }
-}
-
-/// What agentctl prints for a failed command.
-fn error_text(error: &CommandError) -> String {
-    match error {
-        // agentd's message is the whole story.
-        CommandError::Agent(Error::Rpc(error)) => format!("agentctl: {}", error.message),
-        // Most of agentctl's own refusals are `Invalid`, and few are about an agent.
-        CommandError::Agent(Error::Invalid(message)) => format!("agentctl: {message}"),
-        error => format!("agentctl: {error}"),
     }
 }
 
@@ -2741,28 +2730,17 @@ mod tests {
             }))
         };
         assert_eq!(
-            error_text(&rpc(-32602, "spec.harnesses must not be empty")),
-            "agentctl: spec.harnesses must not be empty"
+            rpc(-32602, "spec.harnesses must not be empty").to_string(),
+            "spec.harnesses must not be empty"
         );
         assert_eq!(
-            error_text(&rpc(-32603, "Agent Sandbox setup failed: no space left")),
-            "agentctl: Agent Sandbox setup failed: no space left",
+            rpc(-32603, "Agent sandbox setup failed: no space left").to_string(),
+            "Agent sandbox setup failed: no space left",
             "an internal error from agentd is shown as agentd wrote it"
         );
         assert_eq!(
-            error_text(&CommandError::Agent(Error::Invalid(
-                "at least one port mapping is required".into()
-            ))),
-            "agentctl: at least one port mapping is required"
-        );
-        assert_eq!(
-            error_text(&rpc(-32009, "Agent resource changed concurrently")),
-            "agentctl: Agent resource changed concurrently",
-            "a conflict shares the code but is not about an immutable field"
-        );
-        assert_eq!(
-            error_text(&CommandError::Agent(Error::NotFound)),
-            "agentctl: Agent not found"
+            CommandError::Agent(Error::Invalid("at least one port mapping is required".into())).to_string(),
+            "at least one port mapping is required"
         );
     }
 
