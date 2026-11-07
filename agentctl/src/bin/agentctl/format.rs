@@ -336,6 +336,108 @@ fn row_line(values: &[String], widths: &[usize]) -> String {
     line
 }
 
+/// One row per volume: its latest revision, its state, and how many agents use it. The state of a
+/// copy being taken or failed names the revision it becomes, such as `Failed (3)` beside revision 2,
+/// so it doesn't read as the state of the revision shown.
+pub(crate) fn volumes_table(volumes: &[agent::volumes::Volume]) -> Vec<String> {
+    if volumes.is_empty() {
+        return Vec::new();
+    }
+    let rows = volumes
+        .iter()
+        .map(|volume| {
+            let latest = volume.status.latest();
+            let state = match (&volume.status.copy, latest) {
+                _ if volume.metadata.deletion_timestamp.is_some() => "Terminating".to_owned(),
+                (Some(copy), Some(_)) => format!("{} ({})", copy_state(copy), copy.number),
+                (Some(copy), None) => copy_state(copy),
+                (None, Some(_)) => "Ready".to_owned(),
+                (None, None) => "-".to_owned(),
+            };
+            vec![
+                volume.metadata.name.clone(),
+                latest.map_or_else(|| "-".into(), |revision| revision.number.to_string()),
+                state,
+                latest.map_or_else(|| "-".into(), |revision| revision.files.to_string()),
+                latest.map_or_else(|| "-".into(), |revision| crate::progress::bytes(revision.bytes)),
+                volume.status.agents().len().to_string(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    table_lines(&["NAME", "REVISION", "STATE", "FILES", "SIZE", "AGENTS"], &rows)
+}
+
+/// A volume's source, the copy being taken or failed, and every revision agentd keeps, with the
+/// agents using each.
+pub(crate) fn describe_volume_lines(volume: &agent::volumes::Volume) -> Vec<String> {
+    let agent::volumes::VolumeSpec::Copy { source } = &volume.spec;
+    let mut lines = vec![
+        format!("Name:      {}", volume.metadata.name),
+        "Type:      copy".to_owned(),
+        format!("Source:    {}", source.display()),
+    ];
+    if let Some(manifest) = volume.status.manifest_path() {
+        lines.push(format!("Manifest:  {}", manifest.display()));
+    }
+    if volume.metadata.deletion_timestamp.is_some() {
+        lines.push("Deleting:  once no agent uses it".to_owned());
+    }
+    if let Some(copy) = &volume.status.copy {
+        let state = copy.failure.as_ref().map_or_else(
+            || copy_state(copy).to_lowercase(),
+            |failure| format!("failed: {failure}"),
+        );
+        lines.push(format!("Copy:      revision {}, {state}", copy.number));
+    }
+    lines.push("Revisions:".to_owned());
+    if volume.status.revisions.is_empty() {
+        lines.push("  None".to_owned());
+        return lines;
+    }
+    let latest = volume.status.latest().map(|revision| revision.number);
+    let rows = volume
+        .status
+        .revisions
+        .iter()
+        .map(|revision| {
+            let number = if Some(revision.number) == latest {
+                format!("{} (latest)", revision.number)
+            } else {
+                revision.number.to_string()
+            };
+            vec![
+                number,
+                format_age(revision.created),
+                revision.files.to_string(),
+                crate::progress::bytes(revision.bytes),
+                if revision.agents.is_empty() {
+                    "-".into()
+                } else {
+                    revision.agents.join(", ")
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    lines.extend(table_lines(&["REVISION", "AGE", "FILES", "SIZE", "AGENTS"], &rows));
+    lines
+}
+
+/// The state of a copy, with how much of it is done while it is taken, such as `Copying 42%`.
+pub(crate) fn copy_state(copy: &agent::volumes::CopyStatus) -> String {
+    if copy.failure.is_some() {
+        return "Failed".to_owned();
+    }
+    let done = copy
+        .progress
+        .as_ref()
+        .and_then(|copy| copy.progress.current_step()?.measurement)
+        .and_then(|measurement| {
+            let total = measurement.total.filter(|total| *total > 0)?;
+            Some(measurement.completed.min(total) * 100 / total)
+        });
+    done.map_or_else(|| "Copying".to_owned(), |percent| format!("Copying {percent}%"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -51,9 +51,9 @@ struct Arguments {
 enum Command {
     /// Open the terminal UI with every agent and session.
     Tui,
-    /// Create or update an agent from a manifest.
+    /// Create or update an agent, or a volume, from a manifest.
     Apply {
-        /// Agent manifest path; defaults to ./agent.yaml.
+        /// Agent or volume manifest path; defaults to ./agent.yaml.
         #[arg(short = 'f', long = "filename", conflicts_with = "variant")]
         filename: Option<PathBuf>,
         /// Variant of the agent in the current directory.
@@ -365,6 +365,7 @@ enum Command {
 enum Resource {
     Agent,
     Session,
+    Volume,
 }
 
 /// The agent `start` or `restart` acts on: `agent/NAME` or `agent NAME`, and how long to wait.
@@ -648,6 +649,10 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         } => {
             let directory = std::env::current_dir().map_err(Error::from)?;
             let filename = apply_manifest_path(filename, variant, &directory)?;
+            if manifest_kind(&filename).as_deref() == Some(agent::volumes::KIND) {
+                apply_volume(client, filename, name, env_file, wait.then_some(timeout)).await?;
+                return Ok(ExitCode::SUCCESS);
+            }
             let mut request = read_apply_request(filename, env_file)?;
             if let Some(name) = name {
                 request.agent.metadata.name = name;
@@ -691,16 +696,39 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             variant,
         } => {
             let (resource, name) = resource_reference(&resource, name)?;
-            if resource == Resource::Agent {
-                reject_session_scope(agent.as_deref(), variant.as_ref(), false)?;
-                let name = require_name(name, "Agent")?;
-                client.delete(&name).await?;
-                println!("agent/{name} deleted");
-            } else {
-                let name = SessionName::new(require_name(name, "Session")?)?;
-                let agent = resolve_agent_name(client, agent, variant).await?;
-                client.delete_session(&agent, name.clone()).await?;
-                println!("session/{agent}/{name} deleted");
+            match resource {
+                Resource::Agent => {
+                    reject_session_scope(agent.as_deref(), variant.as_ref(), false)?;
+                    let name = require_name(name, "Agent")?;
+                    client.delete(&name).await?;
+                    println!("agent/{name} deleted");
+                }
+                Resource::Volume => {
+                    reject_session_scope(agent.as_deref(), variant.as_ref(), false)?;
+                    let name = require_name(name, "Volume")?;
+                    client.delete_volume(&name).await?;
+                    // A volume goes once no agent uses it, so name the agents keeping it.
+                    let volume = match client.get_volume(&name).await {
+                        Ok(volume) => Some(volume),
+                        Err(Error::Rpc(error)) if error.is_not_found() => None,
+                        Err(error) => return Err(error.into()),
+                    };
+                    let users = volume.as_ref().map(|volume| volume.status.agents()).unwrap_or_default();
+                    if users.is_empty() {
+                        println!("volume/{name} deleted");
+                    } else {
+                        println!(
+                            "volume/{name} is deleted once no agent uses it; used by {}",
+                            users.join(", ")
+                        );
+                    }
+                }
+                Resource::Session => {
+                    let name = SessionName::new(require_name(name, "Session")?)?;
+                    let agent = resolve_agent_name(client, agent, variant).await?;
+                    client.delete_session(&agent, name.clone()).await?;
+                    println!("session/{agent}/{name} deleted");
+                }
             }
         }
         Command::Stop { target } => stop(client, target).await?,
@@ -848,6 +876,30 @@ async fn get_resources(
             match output {
                 OutputFormat::Json => print_json(&agents)?,
                 OutputFormat::Table => print_table(&agents_table(&agents)),
+            }
+        }
+        Resource::Volume => {
+            reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
+            let volumes = if let Some(name) = &name {
+                vec![client.get_volume(name).await?]
+            } else {
+                client.list_volumes().await?
+            };
+            if watch {
+                return watch::follow(
+                    client,
+                    |resources| {
+                        let mut volumes = resources.volumes;
+                        volumes.retain(|volume| name.as_ref().is_none_or(|name| volume.metadata.name == *name));
+                        render_watched(output, &volumes, format::volumes_table)
+                    },
+                    &mut std::io::stdout(),
+                )
+                .await;
+            }
+            match output {
+                OutputFormat::Json => print_json(&volumes)?,
+                OutputFormat::Table => print_table(&format::volumes_table(&volumes)),
             }
         }
         Resource::Session => {
@@ -1512,8 +1564,20 @@ fn exit_code(code: i32) -> ExitCode {
 
 async fn describe(client: &Client, resource: &str, name: Option<String>, output: OutputFormat) -> CommandResult<()> {
     let (resource, name) = resource_reference(resource, name)?;
+    if resource == Resource::Volume {
+        let volume = client.get_volume(&require_name(name, "Volume")?).await?;
+        match output {
+            OutputFormat::Json => print_json(&volume)?,
+            OutputFormat::Table => {
+                for line in format::describe_volume_lines(&volume) {
+                    println!("{line}");
+                }
+            }
+        }
+        return Ok(());
+    }
     if resource != Resource::Agent {
-        return Err(Error::Invalid("describe currently supports only agent resources".into()).into());
+        return Err(Error::Invalid("describe supports agent and volume resources".into()).into());
     }
     let agent = client.get(&require_name(name, "Agent")?).await?;
     match output {
@@ -1570,6 +1634,7 @@ fn resource_reference(resource: &str, name: Option<String>) -> Result<(Resource,
     let resource = match kind.to_ascii_lowercase().as_str() {
         "agent" | "agents" | "ag" => Resource::Agent,
         "session" | "sessions" => Resource::Session,
+        "volume" | "volumes" | "vol" => Resource::Volume,
         _ => return Err(Error::Invalid(format!("unknown resource type {kind:?}"))),
     };
     Ok((resource, embedded_name.or(name)))
@@ -2041,6 +2106,97 @@ fn found_manifests(directory: &Path) -> Vec<PathBuf> {
         .into_iter()
         .filter(|path| path.file_name() == Some(std::ffi::OsStr::new(manifest::MANIFEST_FILE)))
         .collect()
+}
+
+/// The `kind` a manifest declares, when it can be read.
+fn manifest_kind(filename: &Path) -> Option<String> {
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_slice(&std::fs::read(filename).ok()?).ok()?;
+    value.get("kind")?.as_str().map(str::to_owned)
+}
+
+/// Applies a volume manifest and, with `wait`, follows its newest revision until its copy is ready or failed.
+async fn apply_volume(
+    client: &Client,
+    filename: PathBuf,
+    name: Option<String>,
+    env_file: Option<PathBuf>,
+    wait: Option<Duration>,
+) -> CommandResult<()> {
+    if env_file.is_some() {
+        return Err(Error::Invalid("--env-file applies only to agents".into()).into());
+    }
+    let mut request = read_volume_request(filename)?;
+    if let Some(name) = name {
+        request.volume.metadata.name = name;
+    }
+    let applied = client.apply_volume(request).await?;
+    let name = applied.metadata.name;
+    println!("volume/{name} applied");
+    let Some(timeout) = wait else {
+        return Ok(());
+    };
+    let mut renderer = progress::Renderer::stderr();
+    let copied = tokio::time::timeout(timeout, async {
+        let mut after = None;
+        loop {
+            // Each reply follows a change, such as the copy advancing.
+            let resources = client.watch_resources(after).await?;
+            after = Some(resources.revision);
+            let status = resources
+                .volumes
+                .into_iter()
+                .find(|volume| volume.metadata.name == name)
+                .ok_or_else(|| Error::VolumeNotFound(name.clone()))?
+                .status;
+            // A copy that is done has become the latest revision, which keeps its progress.
+            let progress = status.copy.as_ref().map_or_else(
+                || status.latest().and_then(|revision| revision.progress.as_ref()),
+                |copy| copy.progress.as_ref(),
+            );
+            if let Some(progress) = progress {
+                renderer.render_copy(progress);
+            }
+            let Some(copy) = &status.copy else {
+                return Ok(status.latest().map(|revision| revision.number));
+            };
+            if let Some(failure) = &copy.failure {
+                return Err(Error::Invalid(format!(
+                    "volume/{name} revision {} failed: {failure}",
+                    copy.number
+                )));
+            }
+        }
+    })
+    .await;
+    renderer.finish();
+    let copied = copied.map_err(|_| {
+        Error::Invalid(format!(
+            "timed out waiting for volume {name:?} to finish copying; agentd keeps copying it"
+        ))
+    })??;
+    match copied {
+        Some(number) => println!("volume/{name} ready (revision {number})"),
+        None => println!("volume/{name} ready"),
+    }
+    Ok(())
+}
+
+/// Reads a volume manifest into the request that applies it, resolving its source against the manifest's
+/// directory.
+fn read_volume_request(filename: PathBuf) -> Result<agent::volumes::ApplyVolumeRequest, Error> {
+    let filename = absolute(std::env::current_dir, filename)?;
+    let bytes = std::fs::read(&filename)
+        .map_err(|error| Error::Invalid(format!("{}: could not read manifest: {error}", filename.display())))?;
+    let volume = agent::volumes::decode(&bytes)?;
+    let source_directory = filename
+        .parent()
+        .ok_or_else(|| Error::Invalid("manifest path has no parent directory".into()))?
+        .to_path_buf();
+    Ok(agent::volumes::ApplyVolumeRequest {
+        source_directory,
+        manifest_path: Some(filename),
+        volume,
+    })
 }
 
 fn read_apply_request(filename: PathBuf, env_file: Option<PathBuf>) -> Result<ApplyRequest, Error> {
@@ -2552,6 +2708,10 @@ mod tests {
         assert_eq!(
             resource_reference("session", Some("s1".into())).expect("Session reference"),
             (Resource::Session, Some("s1".into()))
+        );
+        assert_eq!(
+            resource_reference("vol/apps", None).expect("Volume reference"),
+            (Resource::Volume, Some("apps".into()))
         );
         assert!(resource_reference("agent/worker", Some("other".into())).is_err());
         assert!(resource_reference("pods", None).is_err());

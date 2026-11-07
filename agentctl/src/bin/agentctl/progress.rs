@@ -17,7 +17,7 @@ use std::{
 use agent::{
     FailureKind,
     control_api::Client,
-    progress::{AgentProgress, OutputPosition},
+    progress::{AgentProgress, OutputPosition, Provisioning},
     resources::Revision,
 };
 use sandbox::progress::{Measurement, OperationStatus, Outcome, ProgressCursor, ProgressUnit, Update};
@@ -175,6 +175,13 @@ impl<W: Write> Renderer<W> {
         let _ignored = self.render_inner(progress);
     }
 
+    /// Renders the progress of a volume's copy. A failed copy is not retried, so the command
+    /// reports its failure.
+    pub(crate) fn render_copy(&mut self, copy: &Provisioning) {
+        let following_began = !std::mem::replace(&mut self.started, true);
+        let _ignored = self.render_pass(copy, following_began, false);
+    }
+
     pub(crate) fn finish(&mut self) {
         let _ignored = self.clear_active_line();
     }
@@ -190,6 +197,14 @@ impl<W: Write> Renderer<W> {
         let Some(provisioning) = &progress.provisioning else {
             return Ok(());
         };
+        // A stalled guest ends the wait like an invalid agent does; the command reports both itself.
+        let retried = progress.status.failure.unwrap_or(FailureKind::Transient) == FailureKind::Transient
+            && progress.status.unresponsive().is_none();
+        self.render_pass(provisioning, following_began, retried)
+    }
+
+    /// Renders one pass's progress. `retried` tells whether agentd retries a failed pass.
+    fn render_pass(&mut self, provisioning: &Provisioning, following_began: bool, retried: bool) -> io::Result<()> {
         if self.pass != Some(provisioning.pass) {
             self.pass = Some(provisioning.pass);
             self.cursor = ProgressCursor::new();
@@ -243,10 +258,6 @@ impl<W: Write> Renderer<W> {
                     .map_or(("Provision sandbox", 0), |phase| {
                         (phase.phase.label.as_ref(), phase.elapsed_ms)
                     });
-                // A stalled guest ends the wait like an invalid agent does; the
-                // command reports both itself.
-                let retried = progress.status.failure.unwrap_or(FailureKind::Transient) == FailureKind::Transient
-                    && progress.status.unresponsive().is_none();
                 self.phase_failed(phase, detail, retried, elapsed_ms)
             }
             OperationStatus::Running => {
@@ -438,7 +449,7 @@ pub(crate) fn format_measurement(Measurement { unit, completed, total }: Measure
     }
 }
 
-fn bytes(value: u64) -> String {
+pub(crate) fn bytes(value: u64) -> String {
     const KIB: u64 = 1_024;
     const MIB: u64 = KIB * 1_024;
     const GIB: u64 = MIB * 1_024;
@@ -619,6 +630,64 @@ mod tests {
             Mode::Plain
         };
         Renderer::new(Vec::new(), mode)
+    }
+
+    #[test]
+    fn a_copy_shows_the_bytes_copied_and_fails_without_a_retry_hint() {
+        use agent::volumes::{COPY_SOURCE, VERIFY_SOURCE};
+
+        let pass = Changes::new().revision();
+        let copy = |progress: &Progress| Provisioning {
+            pass,
+            progress: progress.clone(),
+        };
+        let mut progress = Progress::new();
+        let step = StepId::generate();
+        let total = Some(2 << 20);
+        progress.apply(&ProgressEvent::PhaseStarted { phase: COPY_SOURCE });
+        progress.apply(&ProgressEvent::StepStarted {
+            id: step.clone(),
+            name: "Read files".into(),
+            unit: Some(ProgressUnit::Bytes),
+            total,
+        });
+        progress.apply(&ProgressEvent::StepProgress {
+            id: step.clone(),
+            completed: 1 << 20,
+            total,
+        });
+        let mut renderer = renderer(true);
+        renderer.render_copy(&copy(&progress));
+        progress.apply(&ProgressEvent::StepEnded {
+            id: step,
+            outcome: Outcome::Completed,
+            elapsed: Duration::from_millis(1_200),
+        });
+        progress.apply(&ProgressEvent::PhaseEnded {
+            phase: COPY_SOURCE,
+            outcome: Outcome::Completed,
+            elapsed: Duration::from_millis(1_300),
+        });
+        progress.apply(&ProgressEvent::PhaseStarted { phase: VERIFY_SOURCE });
+        progress.apply(&ProgressEvent::PhaseEnded {
+            phase: VERIFY_SOURCE,
+            outcome: Outcome::Failed,
+            elapsed: Duration::from_millis(40),
+        });
+        progress.fail("the source changed while it was copied");
+        renderer.render_copy(&copy(&progress));
+        renderer.finish();
+
+        assert_eq!(
+            lines(renderer),
+            vec![
+                "→ Copy source: Read files: 1.0 MiB / 2.0 MiB",
+                "  ✓ Read files (1.2s)",
+                "✓ Copy source (1.3s)",
+                "✗ Check source is unchanged (40ms)",
+            ],
+            "the command reports why the copy failed"
+        );
     }
 
     #[test]
