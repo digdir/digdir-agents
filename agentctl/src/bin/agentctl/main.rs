@@ -2046,10 +2046,9 @@ fn default_manifest(directory: &Path) -> Result<PathBuf, Error> {
     }))
 }
 
-/// The manifests `agentctl tui` would offer in `directory`: anywhere in its repository or, outside
-/// one, in `agents/<name>/`; variants left out.
+/// The manifests [`agent::definitions::manifests`] finds for `directory`, variants left out.
 fn found_manifests(directory: &Path) -> Vec<PathBuf> {
-    tui::working_tree_manifests(directory)
+    agent::definitions::manifests(directory)
         .into_iter()
         .filter(|path| path.file_name() == Some(std::ffi::OsStr::new(manifest::MANIFEST_FILE)))
         .collect()
