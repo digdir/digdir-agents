@@ -18,8 +18,7 @@ For an interaction, record the scenario with pauses long enough to follow each a
 playwright-cli video-start browser.webm
 playwright-cli run-code --filename=scenario.js
 playwright-cli video-stop
-video-to-gif browser.webm result.gif
-media-preview result.gif
+media check browser.webm
 playwright-cli close
 ```
 
@@ -28,11 +27,4 @@ playwright-cli close
 `NODE_PATH="$(npm root -g)" node script.js`, and in an ES module load Playwright with
 `createRequire(import.meta.url)('playwright')`, since `import` ignores `NODE_PATH`.
 
-`video-to-gif` supports `--start`, `--duration`, `--width` and `--fps`. Trim irrelevant waits or reduce dimensions/frame
-rate without sacrificing readability. For longer interactions, prefer MP4:
-
-```sh
-ffmpeg -i browser.webm -c:v libx264 -pix_fmt yuv420p -movflags +faststart -an result.mp4
-```
-
-Inspect the screenshot or the contact sheet produced by `media-preview` before attaching.
+Inspect the screenshot or the contact sheet produced by `media check` before attaching.

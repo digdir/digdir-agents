@@ -73,8 +73,9 @@ changelog-test: ## Run the changelog.sh tests
 install-test: ## Run the install.sh release lookup tests
 	@./agentctl/install_test.sh
 
-image-tools-test: ## Run the unit tests of the base image's Python tools, such as `desktop`
+image-tools-test: ## Run the unit tests of the base image's `desktop` and `media` commands
 	@python3 -B -m unittest discover -q -s images/agentctl-base/features/desktop/tests
+	@python3 -B -m unittest discover -q -s images/agentctl-base/features/browser/tests
 
 test-e2e: ## Run integration tests that require Docker, Internet access, KVM, Node.js, tmux and script
 	@echo "Running end-to-end tests..."
