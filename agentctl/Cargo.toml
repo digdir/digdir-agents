@@ -13,6 +13,7 @@ path = "tests/integration.rs"
 
 [dependencies]
 base64.workspace = true
+bytes.workspace = true
 sandbox = { path = "../sandbox/core" }
 sandbox-authorization = { path = "../sandbox/authorization" }
 sandbox-microsandbox = { path = "../sandbox/microsandbox" }
@@ -41,6 +42,7 @@ tracing-subscriber.workspace = true
 tempfile.workspace = true
 zeroize.workspace = true
 uuid.workspace = true
+vt100.workspace = true
 whoami.workspace = true
 
 [dev-dependencies]
