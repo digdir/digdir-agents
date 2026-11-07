@@ -8,7 +8,7 @@ use std::{
 use ::sandbox::{SandboxPath, mount::Mount};
 use ignore::WalkBuilder;
 
-use crate::{Agent, AgentId, Error, MountSpec, progress::ProvisioningState};
+use crate::{Agent, AgentId, Error, MountSpec, definitions::DefinitionSource, progress::ProvisioningState};
 
 use super::{AgentRecord, SharedAgentStore, Wakeup};
 
@@ -345,15 +345,15 @@ impl ControlPlane {
         }
         let directory = canonical_or_original(directory).await;
         let records = self.store.list().await?;
-        let holding_folders = holding_folders(&records, &directory).await?;
+        let definition_sources = definition_sources(&records, &directory).await?;
         let mut matches = Vec::new();
-        for (record, holding) in records.into_iter().zip(holding_folders) {
-            // How close a match is: its depth, then whether it is one of the Agent's own
-            // directories rather than the folder holding them, which loses a tie.
+        for (record, definition_source) in records.into_iter().zip(definition_sources) {
+            // How close a match is: its depth, then whether it is one of the agent's own
+            // directories rather than its definition source, which loses a tie.
             let mut closest: Option<(usize, bool)> = None;
             let sources = association_directories(&record)
                 .map(|source| (source, true))
-                .chain(holding.map(|source| (source, false)));
+                .chain(definition_source.map(|source| (source, false)));
             for (source, own) in sources {
                 let source = canonical_or_original(&source).await;
                 if directory.starts_with(&source) {
@@ -762,12 +762,15 @@ async fn canonical_secret_file(path: &std::path::Path) -> PathBuf {
     }
 }
 
-/// The folder each Agent in `records` is also found from besides its own directories, when
-/// `directory` is in it: the repository it is defined in or, outside one, the folder holding its
-/// `agents/`. That one only from the folder itself, as the folders below it are anyone's.
+/// The definition source of each agent in `records`, as [`crate::definitions::source`] finds it, when the agent is
+/// found from `directory` through it: from anywhere in a repository, but from a folder holding `agents/` only when
+/// `directory` is that folder.
 ///
-/// Finding a repository reads the filesystem, so it stays off the local async runtime.
-async fn holding_folders(records: &[AgentRecord], directory: &std::path::Path) -> Result<Vec<Option<PathBuf>>, Error> {
+/// Finding a source reads the filesystem, so it stays off the local async runtime.
+async fn definition_sources(
+    records: &[AgentRecord],
+    directory: &std::path::Path,
+) -> Result<Vec<Option<PathBuf>>, Error> {
     let sources = records
         .iter()
         .map(|record| record.source_directory.clone())
@@ -776,26 +779,17 @@ async fn holding_folders(records: &[AgentRecord], directory: &std::path::Path) -
     tokio::task::spawn_blocking(move || {
         sources
             .iter()
-            .map(|source| {
-                if let Some(repository) = crate::local::repository_root(source) {
-                    return Some(repository.to_path_buf());
+            .map(|source| match crate::definitions::source(source)? {
+                DefinitionSource::Repository(root) => Some(root.to_path_buf()),
+                DefinitionSource::Folder(folder) => {
+                    let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+                    (directory == folder).then_some(folder)
                 }
-                let holder = agents_holder(source)?;
-                let holder = std::fs::canonicalize(holder).unwrap_or_else(|_| holder.to_path_buf());
-                (directory == holder).then_some(holder)
             })
             .collect()
     })
     .await
-    .map_err(|error| Error::Daemon(format!("finding the folders holding agents failed: {error}")))
-}
-
-/// The folder holding the `agents/` directory an Agent outside any repository is defined in, as
-/// `agents/<name>/`. An Agent set up for a folder such as the home directory is found from that
-/// folder itself, but not from the folders below it.
-fn agents_holder(source: &std::path::Path) -> Option<&std::path::Path> {
-    let agents = source.parent()?;
-    (agents.file_name()? == "agents").then(|| agents.parent()).flatten()
+    .map_err(|error| Error::Daemon(format!("finding the agents' definition sources failed: {error}")))
 }
 
 fn association_directories(record: &AgentRecord) -> impl Iterator<Item = PathBuf> {

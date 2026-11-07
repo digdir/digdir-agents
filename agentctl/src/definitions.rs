@@ -1,4 +1,5 @@
-//! The agent definitions on disk: the manifests and variants a person or client can apply.
+//! The agent definitions on disk: the manifests and variants a person or client can apply, and the definition sources
+//! that hold them.
 //!
 //! Every client that offers to create an agent looks for them the same way, so they offer the same ones.
 
@@ -10,6 +11,45 @@ use crate::{
     local::repository_root,
     manifest::{self, MANIFEST_FILE},
 };
+
+/// A definition source: a folder that holds agent definitions, as the glossary has it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DefinitionSource<'a> {
+    /// A Git repository, as [`repository_root`] counts one. Its agents are found from anywhere in it.
+    Repository(&'a Path),
+    /// The folder holding `agents/<name>/` outside any repository, such as the home directory. Its agents are found
+    /// only from the folder itself, as the folders below it are anyone's.
+    Folder(&'a Path),
+}
+
+impl<'a> DefinitionSource<'a> {
+    /// The source's folder.
+    #[must_use]
+    pub const fn path(self) -> &'a Path {
+        match self {
+            Self::Repository(path) | Self::Folder(path) => path,
+        }
+    }
+}
+
+/// Returns the definition source holding the agent definition in `definition`, the directory an agent was applied
+/// from.
+///
+/// That is the repository holding it or, outside one, the folder holding its `agents/`. It is inferred from the
+/// folders, as agentd does not keep definition sources of its own yet.
+///
+/// Reads the filesystem, so it blocks.
+#[must_use]
+pub fn source(definition: &Path) -> Option<DefinitionSource<'_>> {
+    if let Some(root) = repository_root(definition) {
+        return Some(DefinitionSource::Repository(root));
+    }
+    let agents = definition.parent()?;
+    (agents.file_name()? == "agents")
+        .then(|| agents.parent())
+        .flatten()
+        .map(DefinitionSource::Folder)
+}
 
 /// How deep below a repository's root manifests are looked for.
 const DISCOVERY_DEPTH: usize = 8;
@@ -77,4 +117,30 @@ pub fn manifests(directory: &Path) -> Vec<PathBuf> {
         )
     });
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DefinitionSource, source};
+
+    #[test]
+    fn a_definition_source_is_the_repository_or_the_folder_holding_agents() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let repository = temporary.path().join("repository");
+        std::fs::create_dir_all(repository.join(".git")).expect("repository");
+        std::fs::create_dir_all(repository.join("agents/worker")).expect("agent in the repository");
+        let folder = temporary.path().join("folder");
+        std::fs::create_dir_all(folder.join("agents/notes")).expect("agent outside a repository");
+        std::fs::create_dir_all(temporary.path().join("loose/helper")).expect("agent outside agents/");
+
+        assert_eq!(
+            source(&repository.join("agents/worker")),
+            Some(DefinitionSource::Repository(&repository))
+        );
+        assert_eq!(
+            source(&folder.join("agents/notes")),
+            Some(DefinitionSource::Folder(&folder))
+        );
+        assert_eq!(source(&temporary.path().join("loose/helper")), None);
+    }
 }
