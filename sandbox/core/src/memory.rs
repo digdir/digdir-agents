@@ -91,6 +91,12 @@ impl Provider {
         self.state.borrow().by_id.len()
     }
 
+    /// Returns the number of materialized Volumes.
+    #[must_use]
+    pub fn volume_count(&self) -> usize {
+        self.state.borrow().volumes_by_id.len()
+    }
+
     /// Supplies the events returned by the next Execution started by this Provider.
     pub fn queue_execution_events(&self, events: Vec<execution::ExecutionEvent>) {
         self.state.borrow_mut().queued_execution_events.push_back(events);
@@ -634,21 +640,31 @@ impl SandboxBackend for Provider {
         })
     }
 
-    fn ensure_volume(&self, request: volume::EnsureVolumeRequest) -> LocalFuture<'_, Result<volume::Volume, Error>> {
-        Box::pin(async move {
-            let (id, name) = request.into_parts();
-            let mut storage = self.state.borrow_mut();
-            if let Some(existing_id) = storage.volumes_by_name.get(&name) {
-                return storage
-                    .volumes_by_id
-                    .get(existing_id)
-                    .cloned()
-                    .ok_or_else(|| Error::not_found(ResourceKind::Volume, existing_id));
-            }
-            let volume = volume::Volume { id: id.clone(), name };
-            storage.volumes_by_name.insert(volume.name.clone(), id.clone());
-            storage.volumes_by_id.insert(id, volume.clone());
-            Ok(volume)
+    fn ensure_volume(&self, request: volume::EnsureVolumeRequest) -> PendingOperation<'_, volume::Volume> {
+        PendingOperation::run(|_| {
+            Box::pin(async move {
+                let (id, name, contents) = request.into_parts();
+                let mut storage = self.state.borrow_mut();
+                if let Some(existing_id) = storage.volumes_by_name.get(&name) {
+                    let existing = storage
+                        .volumes_by_id
+                        .get(existing_id)
+                        .cloned()
+                        .ok_or_else(|| Error::not_found(ResourceKind::Volume, existing_id))?;
+                    if existing.contents != contents {
+                        return Err(Error::Immutable("contents"));
+                    }
+                    return Ok(existing);
+                }
+                let volume = volume::Volume {
+                    id: id.clone(),
+                    name,
+                    contents,
+                };
+                storage.volumes_by_name.insert(volume.name.clone(), id.clone());
+                storage.volumes_by_id.insert(id, volume.clone());
+                Ok(volume)
+            })
         })
     }
 
@@ -670,6 +686,15 @@ impl SandboxBackend for Provider {
     fn delete_volume<'a>(&'a self, id: &'a volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             let mut storage = self.state.borrow_mut();
+            let mounted = storage.by_id.values().any(|sandbox| {
+                sandbox
+                    .mounts
+                    .iter()
+                    .any(|mount| matches!(mount, crate::mount::Mount::Volume { id: mounted, .. } if mounted == id))
+            });
+            if mounted {
+                return Err(Error::VolumeInUse(id.clone()));
+            }
             let volume = storage
                 .volumes_by_id
                 .remove(id)

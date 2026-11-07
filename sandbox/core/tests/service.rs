@@ -5,13 +5,14 @@ use std::{future::poll_fn, path::PathBuf, pin::Pin, rc::Rc};
 use bytes::Bytes;
 use futures_core::Stream as _;
 use sandbox::{
-    ByteQuantity, CpuQuantity, EnsureSandboxRequest, Error, Hostname, OperationEvent, PendingOperation, Platform,
-    ProgressEvent, RetentionPolicy, RootFilesystem, RootFilesystemMode, SandboxFeature, SandboxName, SandboxPath,
-    SandboxPhase, SandboxResources, SandboxService, SandboxSpec,
+    ByteQuantity, CpuQuantity, EnsureSandboxRequest, Error, ErrorKind, Hostname, OperationEvent, PendingOperation,
+    Platform, ProgressEvent, RetentionPolicy, RootFilesystem, RootFilesystemMode, SandboxFeature, SandboxName,
+    SandboxPath, SandboxPhase, SandboxResources, SandboxService, SandboxSpec,
     execution::{ExecutionEvent, ExecutionSpec, ExitStatus},
     image::{self, ImageSource},
     memory,
     network::{NetworkAttachment, NetworkBackend as _, NetworkBackendId, NetworkEndpointSelection, PacketMedium},
+    volume,
 };
 
 fn spec() -> SandboxSpec {
@@ -786,4 +787,57 @@ async fn ensure_rejects_a_root_mode_the_image_backend_cannot_materialize() {
         }
     ));
     assert_eq!(provider.backend.count(), 0);
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_directory_copy_volume_keeps_its_contents_and_outlives_no_sandbox_that_mounts_it() {
+    let backend = Rc::new(memory::Provider::new());
+    let service = SandboxService::new(backend.clone());
+    let name = volume::VolumeName::new("apps").expect("Volume name");
+    let created = service
+        .ensure_volume(volume::EnsureVolumeRequest::new(name.clone()).with_contents(
+            volume::VolumeContents::DirectoryCopy {
+                source: std::env::temp_dir().join("apps"),
+                owner: volume::Owner::default(),
+            },
+        ))
+        .await
+        .expect("directory copy");
+    assert!(created.contents.is_read_only());
+    let changed = service
+        .ensure_volume(volume::EnsureVolumeRequest::new(name.clone()))
+        .await
+        .expect_err("a Volume's contents are fixed");
+    assert_eq!(changed.kind(), ErrorKind::Immutable);
+    let relative = service
+        .ensure_volume(
+            volume::EnsureVolumeRequest::new(name).with_contents(volume::VolumeContents::DirectoryCopy {
+                source: PathBuf::from("apps"),
+                owner: volume::Owner::default(),
+            }),
+        )
+        .await
+        .expect_err("a copy's source is absolute");
+    assert_eq!(relative.kind(), ErrorKind::InvalidRequest);
+
+    let sandbox = service
+        .ensure(&request().with_mounts([sandbox::mount::Mount::Volume {
+            id: created.id.clone(),
+            target: SandboxPath::new("/data"),
+            read_only: true,
+        }]))
+        .await
+        .expect("sandbox mounting the copy");
+    let in_use = service
+        .delete_volume(&created.id)
+        .await
+        .expect_err("a mounted Volume stays");
+    assert_eq!(in_use.kind(), ErrorKind::InUse);
+    sandbox::backend::SandboxBackend::delete(backend.as_ref(), sandbox.id())
+        .await
+        .expect("delete sandbox");
+    service
+        .delete_volume(&created.id)
+        .await
+        .expect("an unmounted Volume is deleted");
 }

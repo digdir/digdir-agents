@@ -46,6 +46,8 @@ const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Microsandbox Provider pairing its sandbox backend with its Image Backend.
 pub struct MicrosandboxProvider {
     pub(crate) client: Client,
+    /// Images holding the directory copies of read-only Volumes, one per Volume.
+    pub(crate) volume_copies: PathBuf,
     images: ImageCache,
     image_backend: MicrosandboxImageBackend,
     pub(crate) state: StateStore,
@@ -59,6 +61,7 @@ pub struct MicrosandboxProviderBuilder {
     unused_image_retention: Option<std::time::Duration>,
     registry_authentication: Option<sandbox::image::RegistryAuthentication>,
     runtime_bundle: Option<RuntimeBundle>,
+    remove_unclaimed_volume_copies: bool,
 }
 
 #[derive(Clone)]
@@ -77,6 +80,7 @@ impl MicrosandboxProvider {
             unused_image_retention: None,
             registry_authentication: None,
             runtime_bundle: None,
+            remove_unclaimed_volume_copies: false,
         }
     }
 
@@ -115,6 +119,7 @@ impl MicrosandboxProvider {
         unused_image_retention: Option<std::time::Duration>,
         registry_authentication: Option<sandbox::image::RegistryAuthentication>,
         runtime_bundle: Option<RuntimeBundle>,
+        remove_unclaimed_volume_copies: bool,
     ) -> Result<Self, Error> {
         if home.as_os_str().is_empty() {
             return Err(Error::invalid("provider.home", "must not be empty"));
@@ -156,11 +161,15 @@ impl MicrosandboxProvider {
         let image_backend = MicrosandboxImageBackend::new(client.clone(), images.clone(), registry_authentication);
         let provider = Self {
             client,
+            volume_copies: home.join("volume-copies"),
             images,
             image_backend,
             state,
             executions: Rc::new(RefCell::new(HashMap::new())),
         };
+        if remove_unclaimed_volume_copies && let Err(error) = provider.remove_unclaimed_volume_copies().await {
+            tracing::warn!(%error, "failed to remove unclaimed Volume copies; retrying when the Provider next opens");
+        }
         if unused_image_retention.is_some() {
             if let Err(error) = Box::pin(provider.migrate_images()).await {
                 tracing::warn!(%error, "failed to migrate the Microsandbox image catalog; retrying when the Provider next opens");
@@ -588,10 +597,23 @@ impl MicrosandboxProvider {
                 Mount::Volume { id, target, read_only } => {
                     let volume = self.state.volume_by_id(id).await?;
                     self.ensure_volume_runtime(&volume).await?;
-                    RuntimeMount::Volume {
-                        name: volume.runtime_name,
-                        target: target.as_str().to_string(),
-                        read_only: *read_only,
+                    if volume.contents.is_read_only() {
+                        if !*read_only {
+                            return Err(Error::invalid(
+                                "mount.volume.readOnly",
+                                "must be true for a Volume holding a directory copy",
+                            ));
+                        }
+                        RuntimeMount::DiskImage {
+                            source: self.volume_copy_path(&volume),
+                            target: target.as_str().to_string(),
+                        }
+                    } else {
+                        RuntimeMount::Volume {
+                            name: volume.runtime_name,
+                            target: target.as_str().to_string(),
+                            read_only: *read_only,
+                        }
                     }
                 }
                 Mount::Bind {
@@ -637,6 +659,18 @@ impl MicrosandboxProviderBuilder {
         self
     }
 
+    /// Removes, each time the Provider opens, the Volume copies no Volume record claims: images
+    /// whose build or record write was interrupted, and the temporary files of a build.
+    ///
+    /// Enable this only for the Provider that creates Volumes, and before it creates any. A
+    /// copy is built before its record is saved, so another Provider opened during a build
+    /// would remove it.
+    #[must_use]
+    pub const fn remove_unclaimed_volume_copies(mut self) -> Self {
+        self.remove_unclaimed_volume_copies = true;
+        self
+    }
+
     /// Supplies transient credentials used to resolve OCI registry references.
     #[must_use]
     pub fn registry_authentication(mut self, authentication: sandbox::image::RegistryAuthentication) -> Self {
@@ -670,6 +704,7 @@ impl MicrosandboxProviderBuilder {
             self.unused_image_retention,
             self.registry_authentication,
             self.runtime_bundle,
+            self.remove_unclaimed_volume_copies,
         )
         .await
     }
@@ -857,8 +892,8 @@ impl SandboxBackend for MicrosandboxProvider {
         Box::pin(self.write_file_stream(sandbox_id, path, contents))
     }
 
-    fn ensure_volume(&self, request: volume::EnsureVolumeRequest) -> LocalFuture<'_, Result<volume::Volume, Error>> {
-        Box::pin(self.ensure_volume_record(request))
+    fn ensure_volume(&self, request: volume::EnsureVolumeRequest) -> PendingOperation<'_, volume::Volume> {
+        PendingOperation::run(|progress| Box::pin(self.ensure_volume_record(request, progress)))
     }
 
     fn find_volume<'a>(&'a self, name: &'a volume::VolumeName) -> LocalFuture<'a, Result<volume::Volume, Error>> {
@@ -903,6 +938,11 @@ enum RuntimeMount {
         target: String,
         capacity_mib: u32,
     },
+    /// A read-only EROFS image attached as a disk.
+    DiskImage {
+        source: std::path::PathBuf,
+        target: String,
+    },
 }
 
 impl RuntimeMount {
@@ -925,6 +965,9 @@ impl RuntimeMount {
                 if read_only { mount.readonly() } else { mount }
             }),
             Self::Tmpfs { target, capacity_mib } => builder.volume(target, |mount| mount.tmpfs().size(capacity_mib)),
+            Self::DiskImage { source, target } => {
+                builder.volume(target, |mount| mount.disk(source).fstype("erofs").readonly())
+            }
         }
     }
 }

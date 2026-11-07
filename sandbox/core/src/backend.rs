@@ -309,7 +309,8 @@ pub trait SandboxBackend {
     ) -> LocalFuture<'a, Result<(), Error>>;
 
     /// Creates or returns a named Volume, using the SDK-assigned identity when materializing it.
-    fn ensure_volume(&self, request: volume::EnsureVolumeRequest) -> LocalFuture<'_, Result<volume::Volume, Error>>;
+    /// Taking a directory copy reports its steps in the caller's phase.
+    fn ensure_volume(&self, request: volume::EnsureVolumeRequest) -> PendingOperation<'_, volume::Volume>;
 
     /// Finds a Volume by name.
     fn find_volume<'a>(&'a self, name: &'a volume::VolumeName) -> LocalFuture<'a, Result<volume::Volume, Error>>;
