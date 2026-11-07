@@ -12,7 +12,8 @@ pub(crate) fn format_access(spec: &agent::Spec) -> String {
         .map(|capability| match capability {
             agent::AccessSpec::Ssh {} => "ssh".to_owned(),
             agent::AccessSpec::Vnc {} => "vnc".to_owned(),
-            agent::AccessSpec::Web { name, port, .. } => format!("web/{name}:{port}"),
+            agent::AccessSpec::Web { name, port, path } if path == "/" => format!("web/{name}:{port}"),
+            agent::AccessSpec::Web { name, port, path } => format!("web/{name}:{port}{path}"),
         })
         .collect::<Vec<_>>()
         .join(",")
@@ -532,6 +533,27 @@ mod tests {
             lines.contains(&"UID:        38f41de4-6ff7-4679-ae46-678bc61e4dcb".to_owned()),
             "{lines:#?}"
         );
+    }
+
+    #[test]
+    fn access_shows_a_web_view_s_path_unless_it_is_the_root() {
+        let mut agent: Agent =
+            serde_yaml_ng::from_str(include_str!("../../../tests/fixtures/agent.yaml")).expect("fixture manifest");
+        agent.spec.access = vec![
+            agent::AccessSpec::Ssh {},
+            agent::AccessSpec::Web {
+                name: "t3code".into(),
+                port: 3773,
+                path: "/".into(),
+            },
+            agent::AccessSpec::Web {
+                name: "docs".into(),
+                port: 8080,
+                path: "/docs".into(),
+            },
+        ];
+
+        assert_eq!(format_access(&agent.spec), "ssh,web/t3code:3773,web/docs:8080/docs");
     }
 
     /// Pasted, every command `vnc-info` suggests reaches the agent's own home, not the default.
