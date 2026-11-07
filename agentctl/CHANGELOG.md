@@ -38,6 +38,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Fixed
 
+- `agentctl tui` no longer searches your whole home directory for manifests when the home directory is a Git repository, such as one for dotfiles. ([#309](https://github.com/digdir/digdir-agents/pull/309))
 - `clear`, `less` and editors no longer fail with `unknown terminal type` over `agentctl ssh`, the SSH shell in `agentctl tui` or plain `ssh agentctl-<name>` from a terminal such as Ghostty. ([#391](https://github.com/digdir/digdir-agents/pull/391))
 - `ssh agentctl-<name>`, `agentctl ssh`, editors connecting over SSH and the commands `agentctl vnc-info` prints now reach agents on a home chosen with `--home` or `AGENT_HOME`, instead of not finding them. ([#375](https://github.com/digdir/digdir-agents/pull/375))
 - Links that Claude Code and other harnesses print in a session can be clicked in terminals that support them, such as Ghostty, iTerm2 and WezTerm. Hold Shift with the usual modifier, as in ⇧⌘-click in Ghostty on macOS. ([#390](https://github.com/digdir/digdir-agents/pull/390))

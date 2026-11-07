@@ -851,22 +851,16 @@ fn manifest_candidates_blocking(current_directory: Option<&Path>, agents: &[Agen
     candidates
 }
 
-/// Returns the root of the git repository containing `directory`, if any.
-///
-/// A linked worktree keeps `.git` as a file, so only presence is checked.
-pub(crate) fn repository_root(directory: &Path) -> Option<&Path> {
-    directory.ancestors().find(|ancestor| ancestor.join(".git").exists())
-}
-
 /// Lists agents and their variant manifests for `directory`.
 ///
-/// Inside a git repository the whole repository is walked, honoring ignore files;
-/// outside one only `directory/agent.yaml` and `directory/agents/*/agent.yaml` are
-/// checked, so running from a home directory never walks it. Each agent directory
+/// Inside a project's git repository, as [`agent::local::project_root`] finds one, the whole
+/// repository is walked, honoring ignore files; outside one only `directory/agent.yaml`
+/// and `directory/agents/*/agent.yaml` are checked, so running from a home directory
+/// never walks it. Each agent directory
 /// is then enumerated directly so checkout-local, ignored `agent.<variant>.yaml`
 /// siblings remain discoverable.
 pub(crate) fn working_tree_manifests(directory: &Path) -> Vec<PathBuf> {
-    let agents: Vec<PathBuf> = repository_root(directory).map_or_else(
+    let agents: Vec<PathBuf> = agent::local::project_root(directory).map_or_else(
         || {
             std::iter::once(directory.join(MANIFEST_FILE))
                 .chain(

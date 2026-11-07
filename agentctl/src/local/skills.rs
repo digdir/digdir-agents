@@ -67,16 +67,6 @@ impl Record {
     }
 }
 
-/// The root of the repository holding `directory`: the nearest directory with a `.git`, which is
-/// a file in a worktree.
-#[must_use]
-pub fn repository_root(directory: &Path) -> Option<PathBuf> {
-    directory
-        .ancestors()
-        .find(|ancestor| ancestor.join(".git").exists())
-        .map(Path::to_path_buf)
-}
-
 /// What installing a skill does to one directory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Change {
@@ -451,17 +441,5 @@ mod tests {
         let placements = plan(&skill, &home, &[Harness::ALL[2]]).expect("plan");
 
         assert_eq!(placements[0].change, Change::Replace);
-    }
-
-    #[test]
-    fn the_repository_root_is_the_nearest_directory_with_git() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let repository = temporary.path().join("repository");
-        let nested = repository.join("a").join("b");
-        std::fs::create_dir_all(&nested).expect("nested directory");
-        std::fs::create_dir(repository.join(".git")).expect("git directory");
-
-        assert_eq!(repository_root(&nested), Some(repository.clone()));
-        assert_eq!(repository_root(&repository), Some(repository));
     }
 }

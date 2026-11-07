@@ -7,7 +7,8 @@ use agent::{
     harness::Skill,
     local::{
         home::user_home_directory,
-        skills::{Change, Placement, apply, plan, repository_root},
+        repository_root,
+        skills::{Change, Placement, apply, plan},
     },
 };
 use clap::{ArgGroup, Args, Subcommand};
@@ -60,8 +61,12 @@ pub(crate) fn execute(command: SkillsCommand) -> CommandResult<()> {
         Some(directory) => {
             let directory = std::fs::canonicalize(directory)
                 .map_err(|error| CommandError::Message(format!("{}: {error}", directory.display())))?;
-            repository_root(&directory)
-                .ok_or_else(|| CommandError::Message(format!("{} is not in a git repository", directory.display())))?
+            repository_root(&directory).map(Path::to_path_buf).ok_or_else(|| {
+                CommandError::Message(format!(
+                    "{} is not in a git repository other than your home directory's; --user installs it for you",
+                    directory.display()
+                ))
+            })?
         }
         None => user_home()?,
     };

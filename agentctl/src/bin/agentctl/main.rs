@@ -2053,7 +2053,7 @@ fn default_manifest(directory: &Path) -> Result<PathBuf, Error> {
     let found = found_manifests(directory);
     let shown = |path: &PathBuf| path.strip_prefix(directory).unwrap_or(path).display().to_string();
     Err(Error::Invalid(match found.as_slice() {
-        [] if tui::repository_root(directory).is_some() => {
+        [] if agent::local::repository_root(directory).is_some() => {
             "no agent.yaml in this repository; name a manifest with --filename".into()
         }
         [] => "no agent.yaml here or in agents/<name>/; name a manifest with --filename".into(),

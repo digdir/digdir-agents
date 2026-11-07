@@ -344,22 +344,13 @@ impl ControlPlane {
             return Err(Error::Invalid("directory must be absolute".into()));
         }
         let directory = canonical_or_original(directory).await;
+        let records = self.store.list().await?;
+        let holding_folders = holding_folders(&records, &directory).await?;
         let mut matches = Vec::new();
-        for record in self.store.list().await? {
+        for (record, holding) in records.into_iter().zip(holding_folders) {
             // How close a match is: its depth, then whether it is one of the Agent's own
             // directories rather than the folder holding them, which loses a tie.
             let mut closest: Option<(usize, bool)> = None;
-            let holding = match repository_root(&record.source_directory).await {
-                Some(repository) => Some(repository),
-                // Only the holding folder itself, not the folders below it, which are anyone's.
-                None => match agents_holder(&record.source_directory) {
-                    Some(holder) => {
-                        let holder = canonical_or_original(holder).await;
-                        (directory == holder).then_some(holder)
-                    }
-                    None => None,
-                },
-            };
             let sources = association_directories(&record)
                 .map(|source| (source, true))
                 .chain(holding.map(|source| (source, false)));
@@ -771,17 +762,32 @@ async fn canonical_secret_file(path: &std::path::Path) -> PathBuf {
     }
 }
 
-/// The Git working tree that holds `directory`, found by its `.git` entry: a directory in a
-/// checkout, a file in a linked worktree. An Agent is also associated with it, as its least
-/// specific directory, so an Agent defined in `agents/<name>/` is found from anywhere in the
-/// checkout.
-async fn repository_root(directory: &std::path::Path) -> Option<std::path::PathBuf> {
-    for ancestor in directory.ancestors() {
-        if tokio::fs::try_exists(ancestor.join(".git")).await.unwrap_or(false) {
-            return Some(ancestor.to_path_buf());
-        }
-    }
-    None
+/// The folder each Agent in `records` is also found from besides its own directories, when
+/// `directory` is in it: the repository it is defined in or, outside one, the folder holding its
+/// `agents/`. That one only from the folder itself, as the folders below it are anyone's.
+///
+/// Finding a repository reads the filesystem, so it stays off the local async runtime.
+async fn holding_folders(records: &[AgentRecord], directory: &std::path::Path) -> Result<Vec<Option<PathBuf>>, Error> {
+    let sources = records
+        .iter()
+        .map(|record| record.source_directory.clone())
+        .collect::<Vec<_>>();
+    let directory = directory.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        sources
+            .iter()
+            .map(|source| {
+                if let Some(repository) = crate::local::repository_root(source) {
+                    return Some(repository.to_path_buf());
+                }
+                let holder = agents_holder(source)?;
+                let holder = std::fs::canonicalize(holder).unwrap_or_else(|_| holder.to_path_buf());
+                (directory == holder).then_some(holder)
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| Error::Daemon(format!("finding the folders holding agents failed: {error}")))
 }
 
 /// The folder holding the `agents/` directory an Agent outside any repository is defined in, as
