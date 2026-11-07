@@ -155,7 +155,12 @@ impl AuthenticationApi for FakeAuthentication {
     }
 
     fn logins(&self) -> LocalFuture<'_, Result<Vec<agent::harness::StoredLogin>, Error>> {
-        Box::pin(async { Ok(Vec::new()) })
+        Box::pin(async {
+            Ok(vec![agent::harness::StoredLogin {
+                harness: agent::Harness::ClaudeCode,
+                login: LoginName::new("work")?,
+            }])
+        })
     }
 }
 
@@ -748,6 +753,18 @@ async fn an_interrupted_prompt_is_still_delivered() {
     })
     .await
     .expect("the delivery runs to completion without its client");
+}
+
+#[tokio::test(flavor = "local")]
+async fn harness_logins_cross_the_wire_without_credentials() {
+    let fixture = api();
+    assert_eq!(
+        fixture.client.auth_logins().await.expect("logins"),
+        [agent::harness::StoredLogin {
+            harness: agent::Harness::ClaudeCode,
+            login: LoginName::new("work").expect("login name"),
+        }]
+    );
 }
 
 #[tokio::test(flavor = "local")]
