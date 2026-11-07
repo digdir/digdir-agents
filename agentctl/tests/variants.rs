@@ -476,6 +476,12 @@ fn refuses_patches_a_variant_cannot_apply_unambiguously() {
             "spec.environment: an entry with $patch: delete must name the entry it removes by its name",
         ),
         (
+            "unnamed-view",
+            "spec:\n  access:\n    - type: web\n      $patch: delete\n",
+            "spec.access: an entry with $patch: delete must name the entry it removes by its type, and name for a web \
+             view",
+        ),
+        (
             "empty",
             "spec:\n  access: []\n",
             "spec.access: an empty list changes nothing in a variant",
