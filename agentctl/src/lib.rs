@@ -7,6 +7,7 @@ pub mod authorization;
 pub mod control_api;
 pub mod control_plane;
 mod controller;
+pub mod definitions;
 mod environment;
 pub mod harness;
 pub mod local;
@@ -51,15 +52,17 @@ use thiserror::Error;
 /// Errors exposed by the agent control plane.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// The agent resource is invalid: desired state must change before another
-    /// reconciliation pass can succeed, so waiters fail fast and nothing retries.
-    #[error("invalid agent: {0}")]
+    /// A request or the agent resource is invalid: desired state must change before another
+    /// reconciliation pass can succeed, so waiters fail fast and nothing retries. The message says
+    /// what is wrong on its own, as it is shown without a prefix.
+    #[error("{0}")]
     Invalid(String),
     /// The requested agent does not exist.
     #[error("Agent not found")]
     NotFound,
-    /// An immutable desired-state field changed.
-    #[error("immutable agent field changed: {0}")]
+    /// A desired-state field that only a new agent takes changed. The message says how to change it, since the
+    /// person applying it has to.
+    #[error("{0} cannot change on an existing agent. Delete the agent and apply again, which starts its disk over")]
     Immutable(&'static str),
     /// A compare-and-swap operation observed a newer generation.
     #[error("Agent resource changed concurrently")]
@@ -98,7 +101,7 @@ pub enum Error {
     /// A YAML manifest was invalid.
     #[error("invalid YAML: {0}")]
     Yaml(#[from] serde_yaml_ng::Error),
-    /// The Control API returned a protocol-level error.
-    #[error("Control API error: {0}")]
+    /// The Control API returned an error. agentd's message is shown as it is.
+    #[error("{0}")]
     Rpc(#[from] control_api::ResponseError),
 }

@@ -552,7 +552,7 @@ fn concurrent_creation_only_conflicts_on_explicit_selections() {
             .expect_err("a loser that explicitly chose differently is told");
         assert_eq!(
             conflict.to_string(),
-            "invalid agent: Session \"raced\" already uses model \"opus\", not \"sonnet\""
+            "Session \"raced\" already uses model \"opus\", not \"sonnet\""
         );
         let unselected = store
             .ensure_session(

@@ -8,7 +8,7 @@ use std::{
 use ::sandbox::{SandboxPath, mount::Mount};
 use ignore::WalkBuilder;
 
-use crate::{Agent, AgentId, Error, MountSpec, progress::ProvisioningState};
+use crate::{Agent, AgentId, Error, MountSpec, definitions::DefinitionSource, progress::ProvisioningState};
 
 use super::{AgentRecord, SharedAgentStore, Wakeup};
 
@@ -155,7 +155,7 @@ impl ControlPlane {
                         return Err(Error::Conflict);
                     }
                     if current.source_directory != request.source_directory {
-                        return Err(Error::Immutable("sourceDirectory"));
+                        return Err(name_clash(&desired.metadata.name, &current.source_directory));
                     }
                     validate_immutable_fields(&current, &desired)?;
                     desired.spec.set_run_state(applied_run_state(run_state, Some(&current)));
@@ -319,8 +319,8 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// Returns an error when no agent matches, multiple agents share the closest
-    /// source directory, or storage cannot be read.
+    /// Returns an error when no agent matches, several are found equally close, or
+    /// storage cannot be read.
     pub async fn resolve_directory(&self, directory: &std::path::Path) -> Result<Agent, Error> {
         self.resolve_directory_variant(directory, None).await
     }
@@ -344,23 +344,30 @@ impl ControlPlane {
             return Err(Error::Invalid("directory must be absolute".into()));
         }
         let directory = canonical_or_original(directory).await;
+        let records = self.store.list().await?;
+        let definition_sources = definition_sources(&records, &directory).await?;
         let mut matches = Vec::new();
-        for record in self.store.list().await? {
-            let mut closest_depth: Option<usize> = None;
-            for source in association_directories(&record) {
+        for (record, definition_source) in records.into_iter().zip(definition_sources) {
+            // How close a match is: its depth, then whether it is one of the agent's own
+            // directories rather than its definition source, which loses a tie.
+            let mut closest: Option<(usize, bool)> = None;
+            let sources = association_directories(&record)
+                .map(|source| (source, true))
+                .chain(definition_source.map(|source| (source, false)));
+            for (source, own) in sources {
                 let source = canonical_or_original(&source).await;
                 if directory.starts_with(&source) {
-                    closest_depth = Some(closest_depth.unwrap_or_default().max(source.components().count()));
+                    closest = closest.max(Some((source.components().count(), own)));
                 }
             }
-            if let Some(depth) = closest_depth {
-                matches.push((record, depth));
+            if let Some(closeness) = closest {
+                matches.push((record, closeness));
             }
         }
-        let Some(depth) = matches.iter().map(|(_, depth)| *depth).max() else {
+        let Some(closest) = matches.iter().map(|(_, closeness)| *closeness).max() else {
             return Err(Error::NotFound);
         };
-        matches.retain(|(_, candidate_depth)| *candidate_depth == depth);
+        matches.retain(|(_, closeness)| *closeness == closest);
         if let Some(variant) = variant {
             let filename = variant.filename();
             matches.retain(|(record, _)| {
@@ -375,7 +382,13 @@ impl ControlPlane {
                     "no agent associated with this directory was applied from {filename}"
                 )));
             }
-        } else if matches.len() > 1 {
+        } else if matches.len() > 1
+            && matches
+                .iter()
+                .all(|(record, _)| record.source_directory == matches[0].0.source_directory)
+        {
+            // Variants of one definition prefer its `agent.yaml`. Agents from different
+            // definitions stay ambiguous, as nothing says which one is meant.
             let defaults = matches
                 .iter()
                 .enumerate()
@@ -399,7 +412,7 @@ impl ControlPlane {
                 .collect::<Vec<_>>();
             names.sort();
             return Err(Error::Invalid(format!(
-                "multiple agents were applied from this directory ({}); specify --agent or --variant",
+                "more than one agent is found here ({}); pass --agent NAME or --variant VARIANT",
                 names.join(", ")
             )));
         }
@@ -638,6 +651,14 @@ fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) -> Result<(
     Ok(())
 }
 
+/// Another directory's agent has the name: nothing about this agent changed, so it is not an immutable field.
+fn name_clash(name: &str, other_directory: &std::path::Path) -> Error {
+    Error::Invalid(format!(
+        "an agent named {name:?} was already applied from {}; choose another name in metadata.name or pass `--name`",
+        other_directory.display()
+    ))
+}
+
 /// Resolves each bind mount's source, returning the canonical sources of the optional ones that exist. A required
 /// source is replaced by its canonical form, so the sandbox keeps the directory it was created with. An optional one
 /// keeps the path it declares, so that applying the same manifest again compares equal whether the directory has
@@ -745,6 +766,36 @@ async fn canonical_secret_file(path: &std::path::Path) -> PathBuf {
             _ => return path.to_path_buf(),
         }
     }
+}
+
+/// The definition source of each agent in `records`, as [`crate::definitions::source`] finds it, when the agent is
+/// found from `directory` through it: from anywhere in a repository, but from a folder holding `agents/` only when
+/// `directory` is that folder.
+///
+/// Finding a source reads the filesystem, so it stays off the local async runtime.
+async fn definition_sources(
+    records: &[AgentRecord],
+    directory: &std::path::Path,
+) -> Result<Vec<Option<PathBuf>>, Error> {
+    let sources = records
+        .iter()
+        .map(|record| record.source_directory.clone())
+        .collect::<Vec<_>>();
+    let directory = directory.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        sources
+            .iter()
+            .map(|source| match crate::definitions::source(source)? {
+                DefinitionSource::Repository(root) => Some(root.to_path_buf()),
+                DefinitionSource::Folder(folder) => {
+                    let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+                    (directory == folder).then_some(folder)
+                }
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| Error::Daemon(format!("finding the agents' definition sources failed: {error}")))
 }
 
 fn association_directories(record: &AgentRecord) -> impl Iterator<Item = PathBuf> {
