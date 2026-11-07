@@ -181,8 +181,11 @@ fn declares_volume(path: &Path) -> bool {
 }
 
 /// One agent definition on disk.
+///
+/// Clients decode it from `agentctl definitions -o json`, so unknown fields are tolerated: a client reads what a newer
+/// `agentctl` writes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub struct Definition {
     /// The manifest file.
     pub path: PathBuf,
