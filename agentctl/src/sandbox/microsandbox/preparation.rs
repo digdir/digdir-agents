@@ -241,6 +241,7 @@ spec:
             env_file: None,
             agent,
             optional_mount_sources: std::collections::BTreeMap::new(),
+            volume_revisions: std::collections::BTreeMap::new(),
         }
     }
 

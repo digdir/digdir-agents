@@ -10,7 +10,7 @@ pub(super) fn get(connection: &Connection, id: AgentId) -> Result<AgentRecord, E
     connection
         .query_row(
             "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
-                    optional_mount_sources_json
+                    optional_mount_sources_json, volume_revisions_json
              FROM agents WHERE id = ?1 AND active_name IS NOT NULL",
             [id.to_string()],
             decode_row,
@@ -24,7 +24,7 @@ pub(super) fn get_by_name(connection: &Connection, name: &str) -> Result<AgentRe
     let record = connection
         .query_row(
             "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
-                    optional_mount_sources_json
+                    optional_mount_sources_json, volume_revisions_json
              FROM agents WHERE active_name = ?1",
             [name],
             decode_row,
@@ -45,7 +45,7 @@ pub(super) fn list(connection: &Connection) -> Result<Vec<AgentRecord>, Error> {
     let mut statement = connection
         .prepare(
             "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
-                    optional_mount_sources_json
+                    optional_mount_sources_json, volume_revisions_json
              FROM agents WHERE active_name IS NOT NULL ORDER BY active_name",
         )
         .map_err(database_error)?;
@@ -71,8 +71,8 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
             .execute(
                 "INSERT OR IGNORE INTO agents
                  (id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
-                  optional_mount_sources_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                  optional_mount_sources_json, volume_revisions_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     id.to_string(),
                     name,
@@ -80,7 +80,8 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
                     desired,
                     deletion_timestamp(&record.agent),
                     encode_status(&record.agent.status)?,
-                    serde_json::to_string(&record.optional_mount_sources)?
+                    serde_json::to_string(&record.optional_mount_sources)?,
+                    serde_json::to_string(&record.volume_revisions)?
                 ],
             )
             .map_err(database_error)?
@@ -152,6 +153,23 @@ pub(super) fn mark_deleting(connection: &mut Connection, name: &str) -> Result<A
     Ok(record)
 }
 
+pub(super) fn set_volume_revisions(
+    connection: &Connection,
+    id: AgentId,
+    revisions: &crate::volumes::VolumePins,
+) -> Result<(), Error> {
+    let updated = connection
+        .execute(
+            "UPDATE agents SET volume_revisions_json = ?2 WHERE id = ?1",
+            params![id.to_string(), serde_json::to_string(revisions)?],
+        )
+        .map_err(database_error)?;
+    if updated == 0 {
+        return Err(Error::NotFound);
+    }
+    Ok(())
+}
+
 pub(super) fn finalize_deletion(connection: &mut Connection, id: AgentId, generation: u64) -> Result<(), Error> {
     let transaction = connection.transaction().map_err(database_error)?;
     let record = get(&transaction, id)?;
@@ -179,7 +197,7 @@ fn encode_desired(agent: &Agent) -> Result<String, Error> {
     serde_json::to_string(&desired).map_err(Error::from)
 }
 
-/// Serializes status for storage, scrubbing API-projected progress and provenance.
+/// Serializes status for storage, scrubbing what is API-projected.
 fn encode_status(status: &Status) -> Result<String, Error> {
     let mut status = status.clone();
     scrub(&mut status);
@@ -190,6 +208,7 @@ fn encode_status(status: &Status) -> Result<String, Error> {
 fn scrub(status: &mut Status) {
     status.progress = None;
     status.provenance = None;
+    status.volumes.clear();
 }
 
 /// Source-column payload: current writes store [`crate::Provenance`]; rows
@@ -216,6 +235,7 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
     let deletion = row.get::<_, Option<i64>>(4)?;
     let status = row.get::<_, String>(5)?;
     let optional_mount_sources = row.get::<_, String>(6)?;
+    let volume_revisions = row.get::<_, String>(7)?;
     let id = id.parse::<AgentId>().map_err(conversion_error)?;
     let (source_directory, manifest_path, env_file) = match serde_json::from_str(&source).map_err(conversion_error)? {
         StoredSource::Provenance(provenance) => (
@@ -241,6 +261,7 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
         env_file,
         agent,
         optional_mount_sources: serde_json::from_str(&optional_mount_sources).map_err(conversion_error)?,
+        volume_revisions: serde_json::from_str(&volume_revisions).map_err(conversion_error)?,
     })
 }
 

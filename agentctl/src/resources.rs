@@ -1,4 +1,4 @@
-//! Level-triggered change notification for the agent and session resources.
+//! Level-triggered change notification for the agent, session and volume resources.
 //!
 //! Every durable agent or session write and every provisioning update advances
 //! one daemon-wide revision. Watchers never receive the changes themselves:
@@ -130,6 +130,9 @@ pub struct Resources {
     pub agents: Vec<crate::Agent>,
     /// Durable sessions of those agents.
     pub sessions: Vec<crate::sessions::Session>,
+    /// Volumes, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<crate::volumes::Volume>,
 }
 
 #[cfg(test)]

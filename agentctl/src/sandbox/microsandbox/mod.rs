@@ -79,6 +79,7 @@ impl Adapter {
         let provider = Rc::new(
             MicrosandboxProvider::builder(home.join("microsandbox"))
                 .remove_unused_images_after(UNUSED_IMAGE_RETENTION)
+                .remove_unclaimed_volume_copies()
                 .open()
                 .await?,
         );
@@ -223,6 +224,39 @@ impl Provider for Adapter {
                 .open(id, record.agent.spec.sandbox.resolved_retention_policy())
                 .await
                 .map_err(Error::from)
+        })
+    }
+
+    fn ensure_directory_copy<'a>(
+        &'a self,
+        name: &'a ::sandbox::volume::VolumeName,
+        source: &'a Path,
+        progress: ::sandbox::ProgressReporter,
+    ) -> LocalFuture<'a, Result<::sandbox::volume::VolumeId, Error>> {
+        Box::pin(async move {
+            match self.service.find_volume(name).await {
+                Ok(interrupted) => self.service.delete_volume(&interrupted.id).await?,
+                Err(error) if error.is_not_found() => {}
+                Err(error) => return Err(error.into()),
+            }
+            let request = ::sandbox::volume::EnsureVolumeRequest::new(name.clone()).with_contents(
+                ::sandbox::volume::VolumeContents::DirectoryCopy {
+                    source: source.to_path_buf(),
+                    owner: super::platform::linux::USER_OWNER,
+                },
+            );
+            Ok(self.service.ensure_volume(request).forward(&progress).await?.id)
+        })
+    }
+
+    fn delete_volume<'a>(&'a self, id: &'a ::sandbox::volume::VolumeId) -> LocalFuture<'a, Result<bool, Error>> {
+        Box::pin(async move {
+            match self.service.delete_volume(id).await {
+                Ok(()) => Ok(true),
+                Err(error) if error.kind() == ErrorKind::InUse => Ok(false),
+                Err(error) if error.is_not_found() => Ok(true),
+                Err(error) => Err(error.into()),
+            }
         })
     }
 

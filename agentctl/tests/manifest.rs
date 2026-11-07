@@ -450,13 +450,16 @@ fn decodes_each_part_of_a_manifest_and_serializes_only_what_it_sets() {
                  target: /home/agent/code/altinn-studio\n        readOnly: false\n      - type: bind\n        \
                  source: ~/altinn-apps\n        target: /home/agent/code/.reference/altinn-apps\n        \
                  readOnly: true\n        optional: true\n      - type: tmpfs\n        \
-                 target: /tmp\n        capacity: \"1Gi\"\n",
+                 target: /tmp\n        capacity: \"1Gi\"\n      - type: volume\n        volume: altinn-apps\n        \
+                 target: /home/agent/code/altinn-apps\n        readOnly: true\n",
             )]),
             |_, value| {
                 assert_eq!(value["spec"]["sandbox"]["mounts"][0]["source"], "../..");
                 assert!(value["spec"]["sandbox"]["mounts"][0].get("optional").is_none());
                 assert_eq!(value["spec"]["sandbox"]["mounts"][1]["optional"], true);
                 assert_eq!(value["spec"]["sandbox"]["mounts"][2]["capacity"], "1Gi");
+                assert_eq!(value["spec"]["sandbox"]["mounts"][3]["volume"], "altinn-apps");
+                assert_eq!(value["spec"]["sandbox"]["mounts"][3]["readOnly"], true);
             },
         ),
         (
@@ -551,7 +554,7 @@ fn optional_instructions_and_skills_are_decoded_and_serialized_only_when_set() {
     assert_eq!(value["spec"]["skills"][0]["optional"], true);
 }
 
-/// Only a bind mount has a source that can be missing.
+/// A tmpfs mount has nothing that can be missing.
 #[test]
 fn a_tmpfs_mount_cannot_be_optional() {
     let bytes = manifest_with(&[(
@@ -560,6 +563,29 @@ fn a_tmpfs_mount_cannot_be_optional() {
          capacity: \"1Gi\"\n        optional: true\n",
     )]);
     manifest::decode(&bytes).expect_err("optional on a tmpfs mount");
+}
+
+/// A volume mount says whether the agent may change its files, as a bind mount does. A writable one
+/// keeps its changes on a direct root filesystem, and its target must not hold what separates the
+/// options its writable layer is mounted with.
+#[test]
+fn a_volume_mount_says_whether_it_is_read_only() {
+    let volume = |mode: &str, fields: &str| {
+        manifest_with(&[(
+            ROOT_FILESYSTEM_MODE,
+            &format!("        mode: {mode}\n    mounts:\n      - type: volume\n        volume: apps\n{fields}"),
+        )])
+    };
+    let writable = "        target: /apps\n        readOnly: false\n";
+    manifest::decode(&volume("direct", "        target: /apps\n")).expect_err("readOnly is required");
+    manifest::decode(&volume("direct", writable)).expect("a writable volume");
+    let layered = manifest::decode(&volume("layered", writable)).expect_err("a layered root filesystem");
+    assert!(layered.to_string().contains("mode: direct"), "{layered}");
+    manifest::decode(&volume("layered", "        target: /apps\n        readOnly: true\n"))
+        .expect("a read-only volume on a layered root filesystem");
+    let comma = manifest::decode(&volume("direct", "        target: /apps,x\n        readOnly: false\n"))
+        .expect_err("a writable target with a comma");
+    assert!(comma.to_string().contains("must not contain"), "{comma}");
 }
 
 #[test]

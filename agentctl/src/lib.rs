@@ -21,15 +21,16 @@ pub mod sessions;
 pub mod ssh;
 pub mod upgrade;
 pub mod vnc;
+pub mod volumes;
 
 pub use control_plane::AgentId;
 pub use controller::{FailureKind, ReconcileFailure};
 pub use harness::{Effort, Harness, HarnessAuthMode, HarnessSpec, Model, ModelSelection};
 pub use manifest::{
     API_VERSION, AccessSpec, Agent, AgentVariant, AgentVariantName, Condition, ConditionStatus, EnvironmentSpec,
-    HomeSpec, InstructionsSpec, KIND, Metadata, MountSpec, NestedSandboxes, NetworkAllow, NetworkMode, NetworkSpec,
-    PlatformManifestSpec, Provenance, ResolvedManifest, ResourcesManifestSpec, RunState, SandboxManifestSpec,
-    SecretSpec, SkillSpec, Spec, Status, VARIANT_KIND,
+    HomeSpec, InstructionsSpec, KIND, Metadata, MountSpec, MountedVolume, NestedSandboxes, NetworkAllow, NetworkMode,
+    NetworkSpec, PlatformManifestSpec, Provenance, ResolvedManifest, ResourcesManifestSpec, RunState,
+    SandboxManifestSpec, SecretSpec, SkillSpec, Spec, Status, VARIANT_KIND,
 };
 
 /// Version embedded in a matched `agentctl`/`agentd` build.
@@ -60,6 +61,9 @@ pub enum Error {
     /// The requested agent does not exist.
     #[error("Agent not found")]
     NotFound,
+    /// The named volume does not exist.
+    #[error("Volume {0:?} not found")]
+    VolumeNotFound(String),
     /// A desired-state field that only a new agent takes changed. The message says how to change it, since the
     /// person applying it has to.
     #[error("{0} cannot change on an existing agent. Delete the agent and apply again, which starts its disk over")]

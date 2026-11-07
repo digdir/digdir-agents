@@ -10,7 +10,7 @@
 //! periodic resync would otherwise replace the pass that provisioned the agent
 //! within seconds, and show a healthy agent as provisioning while it runs.
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, hash::Hash, rc::Rc};
 
 use ::sandbox::progress::{OperationStatus, Progress};
 
@@ -35,15 +35,26 @@ pub struct Provisioning {
     pub progress: Progress,
 }
 
-/// Latest provisioning of every agent, shared by the reconciler and readers.
-#[derive(Clone, Default)]
-pub struct ProvisioningState {
-    agents: Rc<RefCell<HashMap<AgentId, Provisioning>>>,
-    resyncs: Rc<RefCell<HashMap<AgentId, Progress>>>,
+/// Latest provisioning of every agent, shared by the reconciler and readers. Volumes keep their copies'
+/// progress in one keyed by volume.
+#[derive(Clone)]
+pub struct ProvisioningState<K = AgentId> {
+    agents: Rc<RefCell<HashMap<K, Provisioning>>>,
+    resyncs: Rc<RefCell<HashMap<K, Progress>>>,
     changes: Changes,
 }
 
-impl ProvisioningState {
+impl<K> Default for ProvisioningState<K> {
+    fn default() -> Self {
+        Self {
+            agents: Rc::default(),
+            resyncs: Rc::default(),
+            changes: Changes::default(),
+        }
+    }
+}
+
+impl<K: Copy + Eq + Hash> ProvisioningState<K> {
     /// Creates empty state whose every change advances `changes`.
     #[must_use]
     pub fn new(changes: Changes) -> Self {
@@ -55,7 +66,7 @@ impl ProvisioningState {
 
     /// Returns the complete progress of the agent's latest pass.
     #[must_use]
-    pub fn get(&self, id: AgentId) -> Option<Provisioning> {
+    pub fn get(&self, id: K) -> Option<Provisioning> {
         self.agents.borrow().get(&id).cloned()
     }
 
@@ -63,7 +74,7 @@ impl ProvisioningState {
     ///
     /// A succeeded pass is omitted: the agent's conditions report it.
     #[must_use]
-    pub fn summary(&self, id: AgentId) -> Option<Provisioning> {
+    pub fn summary(&self, id: K) -> Option<Provisioning> {
         let agents = self.agents.borrow();
         let provisioning = agents.get(&id)?;
         let output = match provisioning.progress.status() {
@@ -78,17 +89,17 @@ impl ProvisioningState {
     }
 
     /// Starts a new pass, replacing what the previous one left behind.
-    pub(crate) fn begin(&self, id: AgentId) {
+    pub(crate) fn begin(&self, id: K) {
         self.resyncs.borrow_mut().remove(&id);
         self.publish(id, Progress::new());
     }
 
     /// Starts a resync, which leaves the latest pass in place unless it fails.
-    pub(crate) fn begin_resync(&self, id: AgentId) {
+    pub(crate) fn begin_resync(&self, id: K) {
         self.resyncs.borrow_mut().insert(id, Progress::new());
     }
 
-    pub(crate) fn apply(&self, id: AgentId, event: &::sandbox::ProgressEvent) {
+    pub(crate) fn apply(&self, id: K, event: &::sandbox::ProgressEvent) {
         if let Some(progress) = self.resyncs.borrow_mut().get_mut(&id) {
             progress.apply(event);
             return;
@@ -96,14 +107,14 @@ impl ProvisioningState {
         self.update(id, |provisioning| provisioning.progress.apply(event));
     }
 
-    pub(crate) fn succeed(&self, id: AgentId) {
+    pub(crate) fn succeed(&self, id: K) {
         if self.resyncs.borrow_mut().remove(&id).is_some() {
             return;
         }
         self.update(id, |provisioning| provisioning.progress.succeed());
     }
 
-    pub(crate) fn fail(&self, id: AgentId, detail: &str) {
+    pub(crate) fn fail(&self, id: K, detail: &str) {
         let resync = self.resyncs.borrow_mut().remove(&id);
         if let Some(mut progress) = resync {
             progress.fail(detail);
@@ -114,20 +125,20 @@ impl ProvisioningState {
     }
 
     /// Drops a deleted agent's state.
-    pub(crate) fn forget(&self, id: AgentId) {
+    pub(crate) fn forget(&self, id: K) {
         self.resyncs.borrow_mut().remove(&id);
         if self.agents.borrow_mut().remove(&id).is_some() {
             self.changes.bump();
         }
     }
 
-    fn publish(&self, id: AgentId, progress: Progress) {
+    fn publish(&self, id: K, progress: Progress) {
         self.changes.bump();
         let pass = self.changes.revision();
         self.agents.borrow_mut().insert(id, Provisioning { pass, progress });
     }
 
-    fn update(&self, id: AgentId, change: impl FnOnce(&mut Provisioning)) {
+    fn update(&self, id: K, change: impl FnOnce(&mut Provisioning)) {
         let updated = self.agents.borrow_mut().get_mut(&id).map(change).is_some();
         if updated {
             self.changes.bump();

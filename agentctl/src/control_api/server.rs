@@ -19,9 +19,10 @@ use super::protocol::{
     METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
     METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
     METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, NameParams, PROTOCOL_VERSION, ProgressParams,
-    ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams,
-    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
+    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
+    METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, PROTOCOL_VERSION, ProgressParams, ReadMessage, Request,
+    ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams,
+    SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -33,6 +34,45 @@ const WATCH_SETTLE: Duration = Duration::from_millis(150);
 /// Longest a watch waits without a change; the unchanged reply tells the
 /// watcher the daemon is still there.
 const WATCH_KEEPALIVE: Duration = Duration::from_secs(30);
+
+/// Volume operations exposed through the Control API.
+pub trait VolumeApi {
+    /// Creates or updates a volume, requesting a new revision when its source changed.
+    fn apply(
+        &self,
+        request: crate::volumes::ApplyVolumeRequest,
+    ) -> LocalFuture<'_, Result<crate::volumes::Volume, Error>>;
+
+    /// Gets a volume by name.
+    fn get<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<crate::volumes::Volume, Error>>;
+
+    /// Lists every volume.
+    fn list(&self) -> LocalFuture<'_, Result<Vec<crate::volumes::Volume>, Error>>;
+
+    /// Requests a volume's deletion.
+    fn delete<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>>;
+}
+
+impl VolumeApi for crate::volumes::VolumeService {
+    fn apply(
+        &self,
+        request: crate::volumes::ApplyVolumeRequest,
+    ) -> LocalFuture<'_, Result<crate::volumes::Volume, Error>> {
+        Box::pin(async move { Self::apply(self, request).await })
+    }
+
+    fn get<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<crate::volumes::Volume, Error>> {
+        Box::pin(async move { Self::get(self, name).await })
+    }
+
+    fn list(&self) -> LocalFuture<'_, Result<Vec<crate::volumes::Volume>, Error>> {
+        Box::pin(async move { Self::list(self).await })
+    }
+
+    fn delete<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(async move { Self::delete(self, name).await })
+    }
+}
 
 /// Agent operations exposed through the Control API.
 pub trait AgentApi {
@@ -433,6 +473,7 @@ pub struct Server {
     sessions: Rc<dyn SessionApi>,
     ssh: Rc<dyn SshAccessApi>,
     vnc: Rc<dyn VncAccessApi>,
+    volumes: Option<Rc<dyn VolumeApi>>,
     changes: Changes,
     on_error: ErrorHandler,
     lifecycle: Lifecycle,
@@ -464,10 +505,18 @@ impl Server {
             sessions,
             ssh,
             vnc,
+            volumes: None,
             changes,
             on_error,
             lifecycle: Lifecycle::default(),
         }
+    }
+
+    /// Serves volume operations as well.
+    #[must_use]
+    pub fn with_volumes(mut self, volumes: Rc<dyn VolumeApi>) -> Self {
+        self.volumes = Some(volumes);
+        self
     }
 
     /// Listens on the platform's local socket implementation.
@@ -605,6 +654,13 @@ impl Server {
             METHOD_SESSION_DELETE => self.handle_session_delete(request.id, request.params).await,
             METHOD_SESSION_ARCHIVE => self.handle_session_archive(request.id, request.params, true).await,
             METHOD_SESSION_UNARCHIVE => self.handle_session_archive(request.id, request.params, false).await,
+            METHOD_VOLUME_APPLY => self.handle_volume_apply(request.id, request.params).await,
+            METHOD_VOLUME_GET => self.handle_volume_get(request.id, request.params).await,
+            METHOD_VOLUME_LIST => match &self.volumes {
+                Some(volumes) => result_response(request.id, volumes.list().await),
+                None => volumes_unavailable(request.id),
+            },
+            METHOD_VOLUME_DELETE => self.handle_volume_delete(request.id, request.params).await,
             _ => error_response(request.id, CODE_METHOD_NOT_FOUND, "method not found"),
         }
     }
@@ -653,6 +709,38 @@ impl Server {
             return error_response(id, CODE_INVALID_PARAMS, "invalid apply parameters");
         };
         result_response(id, self.agents.apply(params).await)
+    }
+
+    async fn handle_volume_apply(&self, id: u64, value: Value) -> Response {
+        let Some(volumes) = &self.volumes else {
+            return volumes_unavailable(id);
+        };
+        let Ok(params) = serde_json::from_value::<crate::volumes::ApplyVolumeRequest>(value) else {
+            return error_response(id, CODE_INVALID_PARAMS, "invalid volume apply parameters");
+        };
+        result_response(id, volumes.apply(params).await)
+    }
+
+    async fn handle_volume_get(&self, id: u64, value: Value) -> Response {
+        let Some(volumes) = &self.volumes else {
+            return volumes_unavailable(id);
+        };
+        let params = match name_params(value) {
+            Ok(params) => params,
+            Err(response) => return response_with_id(id, response),
+        };
+        result_response(id, volumes.get(&params.name).await)
+    }
+
+    async fn handle_volume_delete(&self, id: u64, value: Value) -> Response {
+        let Some(volumes) = &self.volumes else {
+            return volumes_unavailable(id);
+        };
+        let params = match name_params(value) {
+            Ok(params) => params,
+            Err(response) => return response_with_id(id, response),
+        };
+        result_response(id, volumes.delete(&params.name).await.map(|()| serde_json::json!({})))
     }
 
     async fn handle_get(&self, id: u64, value: Value) -> Response {
@@ -790,6 +878,10 @@ impl Server {
                 revision,
                 agents: self.agents.list().await?,
                 sessions: self.sessions.list(None).await?,
+                volumes: match &self.volumes {
+                    Some(volumes) => volumes.list().await?,
+                    None => Vec::new(),
+                },
             })
         };
         result_response(id, resources.await)
@@ -995,6 +1087,10 @@ fn name_params(value: Value) -> Result<NameParams, Response> {
         .ok_or_else(|| error_response(0, CODE_INVALID_PARAMS, "name is required"))
 }
 
+fn volumes_unavailable(id: u64) -> Response {
+    error_response(id, CODE_METHOD_NOT_FOUND, "this agentd serves no volumes")
+}
+
 const fn response_with_id(id: u64, mut response: Response) -> Response {
     response.id = id;
     response
@@ -1012,6 +1108,7 @@ fn result_response<T: Serialize>(id: u64, result: Result<T, Error>) -> Response 
             },
         ),
         Err(Error::NotFound) => error_response(id, CODE_NOT_FOUND, Error::NotFound.to_string()),
+        Err(error @ Error::VolumeNotFound(_)) => error_response(id, CODE_NOT_FOUND, error.to_string()),
         Err(Error::Immutable(field)) => error_response(id, CODE_IMMUTABLE, Error::Immutable(field).to_string()),
         Err(Error::Conflict) => error_response(id, CODE_IMMUTABLE, Error::Conflict.to_string()),
         Err(Error::Invalid(message)) => error_response(id, CODE_INVALID_PARAMS, message),

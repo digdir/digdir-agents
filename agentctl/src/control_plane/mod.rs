@@ -17,6 +17,7 @@ pub use controller::{Controller, ErrorHandler, Wakeup};
 pub use convergence::{Convergence, WaitPolicy};
 pub use reconciler::{Reconciler, SessionNotifier};
 pub use resource::{AgentId, AgentRecord, ENV_FILE};
+pub(crate) use service::reject_secrets_in_copy;
 pub use service::{ApplyRequest, ControlPlane, ImmediateStops, Notifier};
 
 /// Separates desired-state writes from reconciler status writes using generation checks.
@@ -43,6 +44,14 @@ pub trait AgentStore {
 
     /// Finalizes a soft-deleted record if its desired generation has not changed.
     fn finalize_deletion(&self, id: AgentId, generation: u64) -> LocalFuture<'_, Result<(), Error>>;
+
+    /// Replaces the volume revisions an agent's volume mounts use. Only the reconciler writes them,
+    /// before the agent's sandbox mounts them, and then keeps them for the agent's life.
+    fn set_volume_revisions(
+        &self,
+        id: AgentId,
+        revisions: crate::volumes::VolumePins,
+    ) -> LocalFuture<'_, Result<(), Error>>;
 }
 
 pub(crate) type SharedAgentStore = Rc<dyn AgentStore>;

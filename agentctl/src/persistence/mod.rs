@@ -12,6 +12,7 @@ mod agents;
 mod schema;
 mod secrets;
 mod sessions;
+mod volumes;
 
 /// Persistent agent store backed by the shared control-plane database owner.
 ///
@@ -433,6 +434,77 @@ impl crate::control_plane::AgentStore for Database {
             .await
         })
     }
+
+    fn set_volume_revisions(
+        &self,
+        id: AgentId,
+        revisions: crate::volumes::VolumePins,
+    ) -> sandbox::LocalFuture<'_, Result<(), Error>> {
+        Box::pin(async move {
+            self.request(|response| Command::SetVolumeRevisions {
+                id,
+                revisions,
+                response,
+            })
+            .await
+        })
+    }
+}
+
+impl crate::volumes::VolumeStore for Database {
+    fn get(
+        &self,
+        id: crate::volumes::VolumeId,
+    ) -> sandbox::LocalFuture<'_, Result<crate::volumes::VolumeRecord, Error>> {
+        Box::pin(async move { self.request(|response| Command::GetVolume { id, response }).await })
+    }
+
+    fn get_by_name<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> sandbox::LocalFuture<'a, Result<crate::volumes::VolumeRecord, Error>> {
+        Box::pin(async move {
+            self.request(|response| Command::GetVolumeByName {
+                name: name.into(),
+                response,
+            })
+            .await
+        })
+    }
+
+    fn list(&self) -> sandbox::LocalFuture<'_, Result<Vec<crate::volumes::VolumeRecord>, Error>> {
+        Box::pin(async move { self.request(|response| Command::ListVolumes { response }).await })
+    }
+
+    fn put(
+        &self,
+        record: crate::volumes::VolumeRecord,
+        expected_version: u64,
+    ) -> sandbox::LocalFuture<'_, Result<(), Error>> {
+        Box::pin(async move {
+            self.request(|response| Command::PutVolume {
+                record: Box::new(record),
+                expected_version,
+                response,
+            })
+            .await
+        })
+    }
+
+    fn remove(
+        &self,
+        id: crate::volumes::VolumeId,
+        expected_version: u64,
+    ) -> sandbox::LocalFuture<'_, Result<(), Error>> {
+        Box::pin(async move {
+            self.request(|response| Command::RemoveVolume {
+                id,
+                expected_version,
+                response,
+            })
+            .await
+        })
+    }
 }
 
 impl sandbox::secret_store::SecretStore for Database {
@@ -512,6 +584,27 @@ impl crate::ssh::HostKeyStore for Database {
 }
 
 enum Command {
+    GetVolume {
+        id: crate::volumes::VolumeId,
+        response: oneshot::Sender<Result<crate::volumes::VolumeRecord, Error>>,
+    },
+    GetVolumeByName {
+        name: String,
+        response: oneshot::Sender<Result<crate::volumes::VolumeRecord, Error>>,
+    },
+    ListVolumes {
+        response: oneshot::Sender<Result<Vec<crate::volumes::VolumeRecord>, Error>>,
+    },
+    PutVolume {
+        record: Box<crate::volumes::VolumeRecord>,
+        expected_version: u64,
+        response: oneshot::Sender<Result<(), Error>>,
+    },
+    RemoveVolume {
+        id: crate::volumes::VolumeId,
+        expected_version: u64,
+        response: oneshot::Sender<Result<(), Error>>,
+    },
     Get {
         id: AgentId,
         response: oneshot::Sender<Result<AgentRecord, Error>>,
@@ -541,6 +634,11 @@ enum Command {
     FinalizeDeletion {
         id: AgentId,
         generation: u64,
+        response: oneshot::Sender<Result<(), Error>>,
+    },
+    SetVolumeRevisions {
+        id: AgentId,
+        revisions: crate::volumes::VolumePins,
         response: oneshot::Sender<Result<(), Error>>,
     },
     SetSecret {
@@ -677,9 +775,12 @@ impl Command {
     const fn changes_resources(&self) -> bool {
         match self {
             Self::Put { .. }
+            | Self::PutVolume { .. }
+            | Self::RemoveVolume { .. }
             | Self::UpdateStatus { .. }
             | Self::MarkDeleting { .. }
             | Self::FinalizeDeletion { .. }
+            | Self::SetVolumeRevisions { .. }
             | Self::EnsureSession { .. }
             | Self::UpdateSessionLifecycle { .. }
             | Self::ActivateSession { .. }
@@ -691,6 +792,9 @@ impl Command {
             | Self::ApplySessionActivityForLaunch { .. }
             | Self::RecordSessionLaunch { .. } => true,
             Self::Get { .. }
+            | Self::GetVolume { .. }
+            | Self::GetVolumeByName { .. }
+            | Self::ListVolumes { .. }
             | Self::GetByName { .. }
             | Self::List { .. }
             | Self::SetSecret { .. }
@@ -809,6 +913,29 @@ fn sync_directory(path: &Path) -> Result<(), Error> {
 
 fn execute(connection: &mut Connection, command: Command) {
     match command {
+        Command::GetVolume { id, response } => {
+            let _ = response.send(volumes::get(connection, id));
+        }
+        Command::GetVolumeByName { name, response } => {
+            let _ = response.send(volumes::get_by_name(connection, &name));
+        }
+        Command::ListVolumes { response } => {
+            let _ = response.send(volumes::list(connection));
+        }
+        Command::PutVolume {
+            record,
+            expected_version,
+            response,
+        } => {
+            let _ = response.send(volumes::put(connection, &record, expected_version));
+        }
+        Command::RemoveVolume {
+            id,
+            expected_version,
+            response,
+        } => {
+            let _ = response.send(volumes::remove(connection, id, expected_version));
+        }
         Command::Get { id, response } => {
             let _ = response.send(agents::get(connection, id));
         }
@@ -842,6 +969,13 @@ fn execute(connection: &mut Connection, command: Command) {
             response,
         } => {
             let _ = response.send(agents::finalize_deletion(connection, id, generation));
+        }
+        Command::SetVolumeRevisions {
+            id,
+            revisions,
+            response,
+        } => {
+            let _ = response.send(agents::set_volume_revisions(connection, id, &revisions));
         }
         Command::DeleteSecret { name, response } => {
             let _ignored = response.send(secrets::delete_secret(connection, &name));

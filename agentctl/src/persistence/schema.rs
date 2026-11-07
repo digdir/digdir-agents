@@ -8,7 +8,7 @@ use crate::Error;
 
 use super::database_error;
 
-pub(crate) const VERSION: u32 = 7;
+pub(crate) const VERSION: u32 = 8;
 
 const PREVIEW_1_SQL: &str = "
     CREATE TABLE agents (
@@ -76,6 +76,16 @@ const AGENT_OPTIONAL_MOUNTS_COLUMN_SQL: &str = "
     ALTER TABLE agents ADD COLUMN optional_mount_sources_json TEXT NOT NULL DEFAULT '{}';
 ";
 
+const VOLUMES_SQL: &str = "
+    CREATE TABLE volumes (
+        id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL UNIQUE,
+        version INTEGER NOT NULL,
+        record_json TEXT NOT NULL
+    );
+    ALTER TABLE agents ADD COLUMN volume_revisions_json TEXT NOT NULL DEFAULT '{}';
+";
+
 struct Migration {
     version: u32,
     name: &'static str,
@@ -125,6 +135,12 @@ const MIGRATIONS: &[Migration] = &[
         name: "optional bind mounts",
         schema: &[AGENT_OPTIONAL_MOUNTS_COLUMN_SQL],
         apply: add_agent_optional_mounts,
+    },
+    Migration {
+        version: 8,
+        name: "volumes",
+        schema: &[VOLUMES_SQL],
+        apply: add_volumes,
     },
 ];
 
@@ -260,6 +276,15 @@ fn add_agent_optional_mounts(transaction: &Transaction<'_>) -> Result<(), Error>
     transaction
         .execute_batch(AGENT_OPTIONAL_MOUNTS_COLUMN_SQL)
         .map_err(database_error)
+}
+
+/// Adds volumes and the volume revisions each agent uses. Agents from earlier schemas could not
+/// mount volumes, so every existing row uses none.
+fn add_volumes(transaction: &Transaction<'_>) -> Result<(), Error> {
+    if schema_difference(transaction, 8)?.is_none() {
+        return Ok(());
+    }
+    transaction.execute_batch(VOLUMES_SQL).map_err(database_error)
 }
 
 /// Keeps each harness's one earlier login as its login named `default`, the one agents use when

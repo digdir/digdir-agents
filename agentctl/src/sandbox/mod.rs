@@ -190,6 +190,25 @@ pub trait Provider {
 
     /// Idempotently releases the sandbox and its Provider-specific host integration.
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>>;
+
+    /// Creates the Volume `name`, holding a read-only copy of the host directory `source` that
+    /// sandboxes can share, and reports the steps of copying it to `progress`. A Volume an
+    /// interrupted call left under the name is replaced, since its copy may be of an older `source`.
+    fn ensure_directory_copy<'a>(
+        &'a self,
+        name: &'a ::sandbox::volume::VolumeName,
+        source: &'a std::path::Path,
+        progress: ::sandbox::ProgressReporter,
+    ) -> LocalFuture<'a, Result<::sandbox::volume::VolumeId, Error>> {
+        let _ = (name, source, progress);
+        Box::pin(async { Err(Error::Invalid("this sandbox provider has no Volumes".into())) })
+    }
+
+    /// Deletes a Volume, or returns `false` and keeps it while a sandbox still mounts it.
+    fn delete_volume<'a>(&'a self, id: &'a ::sandbox::volume::VolumeId) -> LocalFuture<'a, Result<bool, Error>> {
+        let _ = id;
+        Box::pin(async { Err(Error::Invalid("this sandbox provider has no Volumes".into())) })
+    }
 }
 
 /// Provider result retaining lifecycle information needed by dependent sessions.
@@ -518,6 +537,32 @@ impl Service {
             .as_ref()
             .ok_or_else(|| Error::Invalid("Agent has no sandbox provider assignment".into()))?;
         self.provider(assignment.provider())
+    }
+
+    /// Creates the Volume `name`, holding a read-only copy of `source`, through the first
+    /// configured Provider, reports the steps of copying it to `progress`, and returns where it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Provider cannot copy the directory.
+    pub async fn ensure_directory_copy(
+        &self,
+        name: &::sandbox::volume::VolumeName,
+        source: &std::path::Path,
+        progress: ::sandbox::ProgressReporter,
+    ) -> Result<(ProviderId, ::sandbox::volume::VolumeId), Error> {
+        let provider = &self.providers[0];
+        let id = provider.ensure_directory_copy(name, source, progress).await?;
+        Ok((provider.id().clone(), id))
+    }
+
+    /// Deletes a Volume, or returns `false` and keeps it while a sandbox still mounts it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Provider is not configured or cannot delete the Volume.
+    pub async fn delete_volume(&self, provider: &ProviderId, id: &::sandbox::volume::VolumeId) -> Result<bool, Error> {
+        self.provider(provider)?.delete_volume(id).await
     }
 
     fn provider(&self, id: &ProviderId) -> Result<&dyn Provider, Error> {

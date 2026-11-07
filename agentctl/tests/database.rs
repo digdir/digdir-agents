@@ -29,6 +29,7 @@ fn record_with_id(name: &str, generation: u64, id: AgentId) -> AgentRecord {
         env_file: None,
         agent,
         optional_mount_sources: std::collections::BTreeMap::new(),
+        volume_revisions: std::collections::BTreeMap::new(),
     }
 }
 
@@ -288,6 +289,99 @@ fn optional_mount_sources_are_stored_when_an_agent_is_created_and_kept_by_update
         let updated = store.get(record.id).await.expect("Agent reloaded");
         assert_eq!(updated.agent.metadata.generation, 2);
         assert_eq!(updated.optional_mount_sources, record.optional_mount_sources);
+    });
+}
+
+/// Only the reconciler pins an agent's volume revisions, so a desired-state update keeps them.
+#[test]
+fn volume_revisions_are_stored_with_a_new_agent_and_kept_by_updates() {
+    let directory = TempDir::new().expect("temporary directory");
+    let store = persistence::Database::open(&directory.path().join("control-plane.db")).expect("open database");
+    LocalRuntime::new().expect("local runtime").block_on(async {
+        let mut record = record("worker", 1);
+        record.volume_revisions = [
+            (
+                sandbox::SandboxPath::new("/home/agent/code/apps"),
+                Some(agent::volumes::PinnedRevision {
+                    volume: "7d3a9b0e-5b8e-4a59-9c4f-2f0e6c1d8a11".parse().expect("volume ID"),
+                    revision: 3,
+                    storage: agent::volumes::RevisionStorage {
+                        provider: ProviderId::new("microsandbox").expect("Provider ID"),
+                        volume: "1c9e3f6a-0b2d-4c8e-9a7f-5d4e3c2b1a00"
+                            .parse()
+                            .expect("Provider Volume ID"),
+                    },
+                }),
+            ),
+            (sandbox::SandboxPath::new("/home/agent/code/docs"), None),
+        ]
+        .into();
+        store.put(record.clone(), 0).await.expect("Agent stored");
+
+        let mut update = store.get(record.id).await.expect("Agent loaded");
+        assert_eq!(update.volume_revisions, record.volume_revisions);
+        update.agent.metadata.generation = 2;
+        update.volume_revisions.clear();
+        store.put(update, 1).await.expect("Agent updated");
+        assert_eq!(
+            store.get(record.id).await.expect("Agent reloaded").volume_revisions,
+            record.volume_revisions
+        );
+    });
+}
+
+/// A volume is replaced only by a writer that read its current version, so concurrent writes
+/// never lose a revision.
+#[test]
+fn volumes_are_stored_by_name_and_replaced_only_at_their_current_version() {
+    let directory = TempDir::new().expect("temporary directory");
+    let database = persistence::Database::open(&directory.path().join("control-plane.db")).expect("open database");
+    let changes = database.changes();
+    let volumes: &dyn agent::volumes::VolumeStore = &database;
+    LocalRuntime::new().expect("local runtime").block_on(async {
+        let volume = |name: &str, id: &str| agent::volumes::VolumeRecord {
+            id: id.parse().expect("volume ID"),
+            version: 0,
+            volume: agent::volumes::Volume {
+                api_version: agent::API_VERSION.into(),
+                kind: agent::volumes::KIND.into(),
+                metadata: agent::Metadata {
+                    name: name.into(),
+                    generation: 1,
+                    deletion_timestamp: None,
+                    restart_timestamp: None,
+                },
+                spec: agent::volumes::VolumeSpec::Copy {
+                    source: PathBuf::from("/data/apps"),
+                },
+                status: agent::volumes::VolumeStatus::default(),
+            },
+            discarded: Vec::new(),
+        };
+        let apps = volume("apps", "7d3a9b0e-5b8e-4a59-9c4f-2f0e6c1d8a11");
+        let before = changes.revision();
+        volumes.put(apps.clone(), 0).await.expect("volume stored");
+        assert_ne!(changes.revision(), before, "a volume write is a resource change");
+        assert!(matches!(volumes.put(apps.clone(), 0).await, Err(Error::Conflict)));
+        assert!(matches!(
+            volumes
+                .put(volume("apps", "0f1e2d3c-4b5a-4968-8776-655443322110"), 0)
+                .await,
+            Err(Error::Conflict)
+        ));
+
+        let stored = volumes.get_by_name("apps").await.expect("volume by name");
+        assert_eq!(stored.version, 1);
+        assert_eq!(volumes.get(apps.id).await.expect("volume by ID"), stored);
+        volumes.put(stored.clone(), 1).await.expect("volume replaced");
+        assert!(matches!(volumes.put(stored, 1).await, Err(Error::Conflict)));
+        assert!(matches!(volumes.remove(apps.id, 1).await, Err(Error::Conflict)));
+        volumes.remove(apps.id, 2).await.expect("volume removed");
+        assert_eq!(volumes.list().await.expect("volumes"), []);
+        assert!(matches!(
+            volumes.get_by_name("apps").await,
+            Err(Error::VolumeNotFound(_))
+        ));
     });
 }
 
@@ -662,7 +756,7 @@ fn released_preview_1_database_migrates_without_losing_state() {
         connection
             .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("schema version"),
-        7
+        8
     );
     assert_migrated_session_selections(&connection, 2, 2);
     assert_eq!(
@@ -814,7 +908,7 @@ fn preview_1_home_opened_by_the_expanded_version_1_build_migrates() {
     });
     drop(database);
 
-    assert_eq!(schema_snapshot(&path).0, 7);
+    assert_eq!(schema_snapshot(&path).0, 8);
     assert_eq!(
         connection_value(&path, EXPANDED_AGENT_ID, "desired_json"),
         expanded_desired,
@@ -871,7 +965,7 @@ fn version_2_home_records_the_model_existing_claude_code_sessions_launched_with(
         assert!(sessions[1].model_selection.is_empty());
     });
     drop(database);
-    assert_eq!(schema_snapshot(&path).0, 7);
+    assert_eq!(schema_snapshot(&path).0, 8);
     assert!(
         directory.path().join("backups").is_dir(),
         "a pending migration is backed up first"
@@ -912,11 +1006,11 @@ fn expanded_version_1_schema_is_adopted_without_losing_state() {
     drop(database);
 
     let after = schema_snapshot(&path);
-    assert_eq!(after.0, 7);
+    assert_eq!(after.0, 8);
     let unchanged = |snapshot: &[(String, String)]| {
         snapshot
             .iter()
-            .filter(|(name, _)| name != "table:sessions" && name != "table:agents")
+            .filter(|(name, _)| name != "table:sessions" && name != "table:agents" && name != "table:volumes")
             .cloned()
             .collect::<Vec<_>>()
     };
@@ -936,6 +1030,8 @@ fn expanded_version_1_schema_is_adopted_without_losing_state() {
     );
     assert!(!table_sql(&before, "agents").contains("optional_mount_sources_json"));
     assert!(table_sql(&after.1, "agents").contains("optional_mount_sources_json"));
+    assert!(table_sql(&after.1, "agents").contains("volume_revisions_json"));
+    assert!(table_sql(&after.1, "volumes").contains("record_json"));
 }
 
 #[test]
