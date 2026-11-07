@@ -1651,9 +1651,10 @@ fn exit_code(code: i32) -> ExitCode {
 }
 
 async fn definitions(client: &Client, directory: Option<PathBuf>, output: OutputFormat) -> CommandResult<()> {
+    let current = std::env::current_dir().map_err(Error::from)?;
     let directory = match directory {
         Some(directory) => absolute(std::env::current_dir, directory)?,
-        None => std::env::current_dir().map_err(Error::from)?,
+        None => current.clone(),
     };
     let applied = client.list_agents().await?;
     let found = {
@@ -1668,11 +1669,11 @@ async fn definitions(client: &Client, directory: Option<PathBuf>, output: Output
             if found.is_empty() {
                 println!("No agent definitions found.");
             } else {
-                print_table(&definitions_table(&found, &directory));
+                print_table(&definitions_table(&found, &current));
             }
             for definition in &found {
                 if let Some(error) = &definition.error {
-                    eprintln!("{}: {error}", shown_path(&definition.path, &directory));
+                    eprintln!("{}: {error}", shown_path(&definition.path, &current));
                 }
             }
         }
@@ -1680,17 +1681,33 @@ async fn definitions(client: &Client, directory: Option<PathBuf>, output: Output
     Ok(())
 }
 
-/// `path` relative to `directory` when it is below it.
-fn shown_path(path: &Path, directory: &Path) -> String {
-    path.strip_prefix(directory).unwrap_or(path).display().to_string()
+/// `path` as `git status` shows one: relative to the current directory `current`, with `..` where it is not below
+/// it, so that it can be pasted into `apply -f`. A path that shares no root with it, such as one on another drive,
+/// stays absolute.
+fn shown_path(path: &Path, current: &Path) -> String {
+    let path = path.components().collect::<Vec<_>>();
+    let current = current.components().collect::<Vec<_>>();
+    let shared = path
+        .iter()
+        .zip(&current)
+        .take_while(|(path, current)| path == current)
+        .count();
+    if shared == 0 {
+        return path.into_iter().collect::<PathBuf>().display().to_string();
+    }
+    std::iter::repeat_n(std::path::Component::ParentDir, current.len().saturating_sub(shared))
+        .chain(path.into_iter().skip(shared))
+        .collect::<PathBuf>()
+        .display()
+        .to_string()
 }
 
-fn definitions_table(definitions: &[agent::definitions::Definition], directory: &Path) -> Vec<String> {
+fn definitions_table(definitions: &[agent::definitions::Definition], current: &Path) -> Vec<String> {
     let rows = definitions
         .iter()
         .map(|definition| {
             vec![
-                shown_path(&definition.path, directory),
+                shown_path(&definition.path, current),
                 definition
                     .variant
                     .as_ref()
@@ -2600,6 +2617,52 @@ mod tests {
         assert!(
             Arguments::try_parse_from(["agentctl", "ssh-proxy", "worker"]).is_ok(),
             "OpenSSH still runs the hidden command"
+        );
+    }
+
+    #[test]
+    fn definitions_show_paths_from_the_current_directory_as_git_status_does() {
+        let root = Path::new("/repo");
+        let current = root.join("agents").join("probe");
+        let definition = |path: PathBuf, variant: Option<&str>| agent::definitions::Definition {
+            path,
+            variant: variant.map(|variant| variant.parse().expect("variant")),
+            name: Some("probe".into()),
+            error: None,
+            repository: Some(root.to_path_buf()),
+            agents: Vec::new(),
+        };
+
+        let lines = definitions_table(
+            &[
+                definition(current.join("agent.yaml"), None),
+                definition(root.join("agents").join("notes").join("agent.gpu.yaml"), Some("gpu")),
+                definition(root.join("agent.yaml"), None),
+            ],
+            &current,
+        );
+
+        let paths = lines
+            .iter()
+            .skip(1)
+            .map(|line| line.split_whitespace().next().expect("path").to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            [
+                "agent.yaml".to_owned(),
+                Path::new("..")
+                    .join("notes")
+                    .join("agent.gpu.yaml")
+                    .display()
+                    .to_string(),
+                Path::new("..").join("..").join("agent.yaml").display().to_string(),
+            ],
+            "{lines:#?}"
+        );
+        assert_eq!(
+            lines[0].split_whitespace().collect::<Vec<_>>(),
+            ["PATH", "VARIANT", "NAME", "AGENTS"]
         );
     }
 
