@@ -23,6 +23,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
   - `login: work` on a harness in an agent's manifest picks one. `login: [work, private]` or `login: any` gives the agent whichever the fewest other running agents use, and it keeps that one while it stays allowed and stored. ([#357](https://github.com/digdir/digdir-agents/pull/357))
 - `agentctl skills install` puts a skill where the coding agents on your machine, such as Claude Code, Codex and Pi, find it, for you with `--user` or for a repository with `--repo`, and running it again updates it. `--bundled agentctl` gives them the skill for driving agents. ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#340](https://github.com/digdir/digdir-agents/pull/340))
 - A manifest can leave out `spec.home`, to copy nothing into `/home/agent`, and `spec.network`, which then sends all traffic through the host's network mediator. ([#309](https://github.com/digdir/digdir-agents/pull/309))
+- On agents with the desktop, `desktop record` records the screen for someone to watch, and the `computer-use` skill describes how to make a recording a viewer can follow. `media-preview` shows what a clip stays still long enough to read. ([#418](https://github.com/digdir/digdir-agents/pull/418))
 
 ### Changed
 
@@ -38,6 +39,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
   - Applying a name that an agent from another directory already has asks you to choose another name.
 - At a terminal, agentctl's questions take a single key, without Enter, and ignore keys typed before they appear: ([#310](https://github.com/digdir/digdir-agents/pull/310))
   - Yes/no questions take `y` or `n`. Enter on its own answers nothing.
+- Chromium on the shared images no longer offers to translate pages or underlines misspelled words, which covered pages in screenshots and recordings. ([#418](https://github.com/digdir/digdir-agents/pull/418))
 
 ### Fixed
 
