@@ -46,6 +46,9 @@ const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Microsandbox Provider pairing its sandbox backend with its Image Backend.
 pub struct MicrosandboxProvider {
     pub(crate) client: Client,
+    /// Images of the directories sandboxes mount as [`Mount::DirectoryImage`], one directory per
+    /// runtime.
+    directory_images: PathBuf,
     images: ImageCache,
     image_backend: MicrosandboxImageBackend,
     pub(crate) state: StateStore,
@@ -156,6 +159,7 @@ impl MicrosandboxProvider {
         let image_backend = MicrosandboxImageBackend::new(client.clone(), images.clone(), registry_authentication);
         let provider = Self {
             client,
+            directory_images: home.join("directory-images"),
             images,
             image_backend,
             state,
@@ -474,6 +478,7 @@ impl MicrosandboxProvider {
             handle.remove().await.map_err(error::microsandbox)?;
         }
         self.client.local().set_network_controlled(&record.runtime_name, false);
+        remove_directory_images(&self.directory_images.join(&record.runtime_name)).await?;
         // Releasing first keeps a removal pass from taking the image as left behind before its
         // cache entry is refreshed.
         self.images.release(&record).await;
@@ -520,7 +525,7 @@ impl MicrosandboxProvider {
         // without host network control.
         let network = self.prepare_runtime_network(record)?;
         let step = progress.start_step(RESOLVE_RUNTIME_INPUTS).await;
-        let mounts = self.resolve_mounts(&record.mounts).await?;
+        let mounts = self.resolve_mounts(record).await?;
         // Holding the image again also covers a record saved before it held its image, and an
         // image the cache no longer has.
         let image = self.hold_image(record).await?;
@@ -581,9 +586,13 @@ impl MicrosandboxProvider {
         Ok(())
     }
 
-    async fn resolve_mounts(&self, mounts: &[Mount]) -> Result<Vec<RuntimeMount>, Error> {
-        let mut resolved = Vec::with_capacity(mounts.len());
-        for mount in mounts {
+    /// Resolves the record's mounts for a new runtime, copying each directory it mounts as an image.
+    async fn resolve_mounts(&self, record: &SandboxRecord) -> Result<Vec<RuntimeMount>, Error> {
+        let images = self.directory_images.join(&record.runtime_name);
+        // Images left by an earlier runtime of this sandbox would be stale copies.
+        remove_directory_images(&images).await?;
+        let mut resolved = Vec::with_capacity(record.mounts.len());
+        for (index, mount) in record.mounts.iter().enumerate() {
             resolved.push(match mount {
                 Mount::Volume { id, target, read_only } => {
                     let volume = self.state.volume_by_id(id).await?;
@@ -607,6 +616,17 @@ impl MicrosandboxProvider {
                     target: target.as_str().to_string(),
                     capacity_mib: crate::client::exact_mib("mount.tmpfs.capacity", *capacity)?,
                 },
+                Mount::DirectoryImage { source, target } => {
+                    tokio::fs::create_dir_all(&images)
+                        .await
+                        .map_err(|source| error::io("create directory images", source))?;
+                    let image = images.join(format!("{index}.erofs"));
+                    crate::directory_image::build(source.clone(), image.clone()).await?;
+                    RuntimeMount::DiskImage {
+                        source: image,
+                        target: target.as_str().to_string(),
+                    }
+                }
             });
         }
         Ok(resolved)
@@ -707,7 +727,12 @@ impl SandboxBackend for MicrosandboxProvider {
             }
             Ok(SandboxBackendCapabilities::new(
                 features,
-                MountKindSet::from([MountKind::Volume, MountKind::Bind, MountKind::Tmpfs]),
+                MountKindSet::from([
+                    MountKind::Volume,
+                    MountKind::Bind,
+                    MountKind::Tmpfs,
+                    MountKind::DirectoryImage,
+                ]),
                 RootFilesystemModeSet::from([RootFilesystemMode::Layered, RootFilesystemMode::Direct]),
                 network::NetworkEndpointCapabilities::new().with_control_protocol(
                     network::NetworkControlProtocolId::new(microsandbox_network::control::NETWORK_CONTROL_PROTOCOL),
@@ -903,6 +928,10 @@ enum RuntimeMount {
         target: String,
         capacity_mib: u32,
     },
+    DiskImage {
+        source: std::path::PathBuf,
+        target: String,
+    },
 }
 
 impl RuntimeMount {
@@ -925,7 +954,18 @@ impl RuntimeMount {
                 if read_only { mount.readonly() } else { mount }
             }),
             Self::Tmpfs { target, capacity_mib } => builder.volume(target, |mount| mount.tmpfs().size(capacity_mib)),
+            Self::DiskImage { source, target } => {
+                builder.volume(target, |mount| mount.disk(source).fstype("erofs").readonly())
+            }
         }
+    }
+}
+
+/// Removes a runtime's directory images, if it has any.
+async fn remove_directory_images(directory: &Path) -> Result<(), Error> {
+    match tokio::fs::remove_dir_all(directory).await {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error::io("remove directory images", error)),
+        _ => Ok(()),
     }
 }
 

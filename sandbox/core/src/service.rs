@@ -445,7 +445,7 @@ impl EnsureSandboxRequest {
         for mount in &self.mounts {
             match mount {
                 Mount::Volume { .. } => required.insert(SandboxFeature::PersistentVolumes),
-                Mount::Bind { .. } | Mount::Tmpfs { .. } => {}
+                Mount::Bind { .. } | Mount::Tmpfs { .. } | Mount::DirectoryImage { .. } => {}
             }
         }
         if self.spec.init_system == InitSystem::Image {

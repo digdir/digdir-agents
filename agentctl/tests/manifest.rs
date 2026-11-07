@@ -425,13 +425,15 @@ fn decodes_each_part_of_a_manifest_and_serializes_only_what_it_sets() {
                  target: /home/agent/code/altinn-studio\n        readOnly: false\n      - type: bind\n        \
                  source: ~/altinn-apps\n        target: /home/agent/code/.reference/altinn-apps\n        \
                  readOnly: true\n        optional: true\n      - type: tmpfs\n        \
-                 target: /tmp\n        capacity: \"1Gi\"\n",
+                 target: /tmp\n        capacity: \"1Gi\"\n      - type: image\n        \
+                 source: ~/altinn-apps\n        target: /home/agent/code/.reference/altinn-apps-copy\n",
             )]),
             |_, value| {
                 assert_eq!(value["spec"]["sandbox"]["mounts"][0]["source"], "../..");
                 assert!(value["spec"]["sandbox"]["mounts"][0].get("optional").is_none());
                 assert_eq!(value["spec"]["sandbox"]["mounts"][1]["optional"], true);
                 assert_eq!(value["spec"]["sandbox"]["mounts"][2]["capacity"], "1Gi");
+                assert_eq!(value["spec"]["sandbox"]["mounts"][3]["type"], "image");
             },
         ),
         (

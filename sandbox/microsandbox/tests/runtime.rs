@@ -242,6 +242,59 @@ async fn nested_sandboxes_follow_the_resource_across_updates() {
     backend.delete(&sandbox.id).await.expect("Sandbox should be deleted");
 }
 
+/// A directory image is the directory as it was when the runtime was created. A restart keeps
+/// it, so later changes to the directory do not reach the sandbox, and deleting the sandbox
+/// removes it.
+#[tokio::test(flavor = "local")]
+#[ignore = "requires a Microsandbox host runtime, hardware virtualization and registry access"]
+async fn a_directory_image_is_a_read_only_copy_kept_until_the_sandbox_is_deleted() {
+    let temporary = RetainedOnFailureTempDir::new();
+    let home = temporary.path().join("control-plane");
+    let source = temporary.path().join("apps");
+    std::fs::create_dir_all(source.join("app")).expect("source directory should be created");
+    std::fs::write(source.join("app/file.txt"), b"before").expect("source file should be written");
+    let backend = Rc::new(MicrosandboxProvider::open(&home).await.expect("Backend should open"));
+    let service = SandboxService::new(backend.clone());
+    let request = EnsureSandboxRequest::new(
+        SandboxName::new("directory-image-worker").expect("test sandbox name should be valid"),
+        SandboxSpec {
+            image: ImageSource::Reference {
+                reference: "docker.io/library/alpine:3.22".to_string(),
+            },
+            platform: native_linux_platform(),
+            resources: resources("1", "512Mi", "1Gi"),
+            init_system: sandbox::init::InitSystem::Backend,
+            retention_policy: RetentionPolicy::Retain,
+        },
+    )
+    .with_mounts([Mount::DirectoryImage {
+        source: source.clone(),
+        target: sandbox::SandboxPath::new("/data"),
+    }]);
+    let (sandbox, _) = collect_progress(service.ensure(&request))
+        .await
+        .expect("Sandbox with a directory image should start");
+    assert_eq!(read(&backend, &sandbox.id, "/data/app/file.txt").await, b"before");
+    let write = run(backend.as_ref(), &sandbox.id, shell("touch /data/new 2>&1")).await;
+    assert_ne!(write.status.code, 0, "the copy is read-only");
+
+    std::fs::write(source.join("app/file.txt"), b"after").expect("source file should be changed");
+    backend.stop(&sandbox.id).await.expect("Sandbox should stop");
+    backend.start(&sandbox.id).await.expect("Sandbox should restart");
+    assert_eq!(read(&backend, &sandbox.id, "/data/app/file.txt").await, b"before");
+
+    backend.delete(&sandbox.id).await.expect("Sandbox should be deleted");
+    let images = home.join("directory-images");
+    assert!(
+        !images.exists()
+            || std::fs::read_dir(&images)
+                .expect("image directory should be listed")
+                .next()
+                .is_none(),
+        "deleting the sandbox removes its images"
+    );
+}
+
 async fn has_kvm(backend: &MicrosandboxProvider, sandbox: &Sandbox) -> bool {
     let output = run(
         backend,

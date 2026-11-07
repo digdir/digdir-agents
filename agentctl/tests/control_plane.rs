@@ -29,6 +29,7 @@ use sandbox::{
     backend::SandboxBackend as _,
     init::InitSystem,
     memory as sandbox_memory,
+    mount::Mount,
     network::{NetworkEndpointSelection, PacketMedium},
 };
 use tokio::sync::Notify;
@@ -644,6 +645,48 @@ async fn a_bind_mount_source_starting_with_a_tilde_resolves_below_the_home_direc
         panic!("expected bind Mount");
     };
     assert_eq!(source, &std::fs::canonicalize(&workspace).expect("canonical workspace"));
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_image_mount_gives_the_sandbox_a_copy_of_the_directory_checked_like_a_bind_mount() {
+    let fixture = fixture();
+    let temporary = TempDirectory::new("image-mount");
+    let apps = temporary.path().join("apps");
+    std::fs::create_dir_all(&apps).expect("apps directory");
+    let mut request = apply_request("worker");
+    request.agent.spec.sandbox.mounts.push(MountSpec::Image {
+        source: support::via_home(&apps),
+        target: SandboxPath::new("/home/agent/code/apps"),
+    });
+
+    let applied = fixture.control_plane.apply(request.clone()).await.expect("apply");
+    let canonical = std::fs::canonicalize(&apps).expect("canonical apps");
+    let MountSpec::Image { source, .. } = &applied.spec.sandbox.mounts[0] else {
+        panic!("expected image Mount");
+    };
+    assert_eq!(source, &canonical);
+    reconcile(&fixture, "worker").await;
+    let record = stored(&fixture, "worker").await;
+    let materialized = fixture
+        .backend
+        .find(&sandbox_name(&record))
+        .await
+        .expect("materialized sandbox");
+    assert_eq!(
+        materialized.mounts,
+        [Mount::DirectoryImage {
+            source: canonical,
+            target: SandboxPath::new("/home/agent/code/apps"),
+        }]
+    );
+
+    std::fs::write(apps.join(".env"), "PRIVATE=value\n").expect("environment file");
+    let error = fixture
+        .control_plane
+        .apply(request)
+        .await
+        .expect_err("the copy would hold .env");
+    assert!(error.to_string().contains("which contains .env"), "{error}");
 }
 
 #[tokio::test(flavor = "local")]

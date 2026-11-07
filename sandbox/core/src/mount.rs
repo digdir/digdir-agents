@@ -17,6 +17,8 @@ pub enum MountKind {
     Bind,
     /// Anonymous in-memory storage.
     Tmpfs,
+    /// A read-only copy of a caller-selected host directory.
+    DirectoryImage,
 }
 
 /// Deterministic set of supported Mount forms.
@@ -63,6 +65,11 @@ pub enum Mount {
         target: SandboxPath,
         capacity: ByteQuantity,
     },
+    /// A read-only copy of a host directory, taken before the sandbox first starts and kept
+    /// until the sandbox is deleted. Unlike a read-only bind mount, the guest reads it
+    /// without asking the host, so repeated walks and searches stay inside the sandbox, but
+    /// later changes to the directory do not reach it.
+    DirectoryImage { source: PathBuf, target: SandboxPath },
 }
 
 impl Mount {
@@ -73,6 +80,7 @@ impl Mount {
             Self::Volume { .. } => MountKind::Volume,
             Self::Bind { .. } => MountKind::Bind,
             Self::Tmpfs { .. } => MountKind::Tmpfs,
+            Self::DirectoryImage { .. } => MountKind::DirectoryImage,
         }
     }
 }

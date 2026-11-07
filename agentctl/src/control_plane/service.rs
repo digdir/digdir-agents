@@ -222,15 +222,15 @@ impl ControlPlane {
 
     /// Rejects desired state that would expose a `.env` file or a selected secret file inside a sandbox.
     ///
-    /// Secret files hold the real values that mediation exists to keep out of sandboxes. A bind
-    /// mount whose source contains a `.env` file, this agent's selected non-default secret file or
+    /// Secret files hold the real values that mediation exists to keep out of sandboxes. A mounted
+    /// host directory that contains a `.env` file, this agent's selected non-default secret file or
     /// another active agent's selected secret file would hand those values to the guest, so the
     /// combination is refused at apply time. The mounts checked are those the agent's sandbox
     /// gets, with canonical sources: an optional source that has since moved, such as through a
     /// symbolic link, keeps the directory the agent was created with.
     async fn reject_exposed_secrets(&self, record: &AgentRecord) -> Result<(), Error> {
         let desired = &record.agent;
-        reject_dot_env_in_bind_mounts(bind_mount_sources(record)).await?;
+        reject_dot_env_in_mounts(host_mount_sources(record)).await?;
         let mut secret_files = Vec::new();
         if !desired.spec.secrets.is_empty() {
             let path = record.env_file_path();
@@ -238,7 +238,7 @@ impl ControlPlane {
                 secret_files.push((desired.metadata.name.clone(), canonical_secret_file(&path).await));
             }
         }
-        let mut mounts = bind_mount_sources(record);
+        let mut mounts = host_mount_sources(record);
         for other in self.store.list().await? {
             if other.id == record.id || other.agent.metadata.deletion_timestamp.is_some() {
                 continue;
@@ -251,7 +251,7 @@ impl ControlPlane {
             }
             if !desired.spec.secrets.is_empty() {
                 mounts.extend(
-                    bind_mount_sources(&other)
+                    host_mount_sources(&other)
                         .into_iter()
                         .map(|(_, source)| (format!("Agent {:?}", other.agent.metadata.name), source)),
                 );
@@ -261,7 +261,7 @@ impl ControlPlane {
             for (mount, source) in &mounts {
                 if secret_file.starts_with(source) {
                     return Err(Error::Invalid(format!(
-                        "{mount} bind-mounts {} which contains the secret file {} of agent {owner:?}; \
+                        "{mount} mounts {} which contains the secret file {} of agent {owner:?}; \
                          the sandbox would see its real values. Keep secret files outside mounted directories, \
                          for example with `agentctl apply --env-file`",
                         source.display(),
@@ -510,13 +510,13 @@ impl ControlPlane {
     }
 }
 
-/// Rejects any bind source containing a `.env` file, case-insensitively and regardless of ignores.
+/// Rejects any mounted host directory containing a `.env` file, case-insensitively and regardless of ignores.
 ///
 /// Filesystem traversal is blocking and may cover a whole checkout, so it stays off the local
 /// async runtime. Directories named `.env` are allowed. Symbolic links are not followed, but a
 /// link itself named `.env` is rejected. A source that no longer exists, as an optional one may
 /// not, exposes nothing.
-async fn reject_dot_env_in_bind_mounts(mounts: Vec<(String, PathBuf)>) -> Result<(), Error> {
+async fn reject_dot_env_in_mounts(mounts: Vec<(String, PathBuf)>) -> Result<(), Error> {
     tokio::task::spawn_blocking(move || {
         for (field, source) in mounts {
             if matches!(source.try_exists(), Ok(false)) {
@@ -545,7 +545,7 @@ async fn reject_dot_env_in_bind_mounts(mounts: Vec<(String, PathBuf)>) -> Result
                     .eq_ignore_ascii_case(super::resource::ENV_FILE.as_bytes());
                 if !is_directory && is_env_file {
                     return Err(Error::Invalid(format!(
-                        "{field} bind-mounts {} which contains .env at {}; the sandbox would see its real values. \
+                        "{field} mounts {} which contains .env at {}; the sandbox would see its real values. \
                          Remove the file or keep it outside mounted directories",
                         source.display(),
                         entry.path().display(),
@@ -556,7 +556,7 @@ async fn reject_dot_env_in_bind_mounts(mounts: Vec<(String, PathBuf)>) -> Result
         Ok(())
     })
     .await
-    .map_err(|error| Error::Daemon(format!("bind-mount .env inspection failed: {error}")))?
+    .map_err(|error| Error::Daemon(format!("mount .env inspection failed: {error}")))?
 }
 
 impl ControlPlane {
@@ -638,8 +638,8 @@ fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) -> Result<(
     Ok(())
 }
 
-/// Resolves each bind mount's source, returning the canonical sources of the optional ones that exist. A required
-/// source is replaced by its canonical form, so the sandbox keeps the directory it was created with. An optional one
+/// Resolves the source of each mount of a host directory, returning the canonical sources of the optional ones that
+/// exist. A required source is replaced by its canonical form, so the sandbox keeps the directory it was created with. An optional one
 /// keeps the path it declares, so that applying the same manifest again compares equal whether the directory has
 /// since appeared or disappeared.
 async fn resolve_mount_sources(
@@ -648,18 +648,19 @@ async fn resolve_mount_sources(
 ) -> Result<BTreeMap<SandboxPath, PathBuf>, Error> {
     let mut optional_sources = BTreeMap::new();
     for (index, mount) in agent.spec.sandbox.mounts.iter_mut().enumerate() {
-        let MountSpec::Bind {
-            source,
-            target,
-            optional,
-            ..
-        } = mount
-        else {
-            continue;
+        let (source, target, optional) = match mount {
+            MountSpec::Bind {
+                source,
+                target,
+                optional,
+                ..
+            } => (source, target, *optional),
+            MountSpec::Image { source, target } => (source, target, false),
+            MountSpec::Tmpfs { .. } => continue,
         };
         let field = format!("spec.sandbox.mounts[{index}].source");
         let unresolved = crate::manifest::resolve_host_path(source_directory, source, &field)?;
-        if *optional {
+        if optional {
             source.clone_from(&unresolved);
             let present = tokio::fs::try_exists(&unresolved).await.map_err(|error| {
                 Error::Invalid(format!("{field} {} cannot be checked: {error}", unresolved.display()))
@@ -677,7 +678,7 @@ async fn resolve_mount_sources(
                 resolved.display()
             )));
         }
-        if *optional {
+        if optional {
             optional_sources.insert(target.clone(), resolved);
         } else {
             *source = resolved;
@@ -705,12 +706,14 @@ fn validate_request_paths(request: &ApplyRequest) -> Result<(), Error> {
     Ok(())
 }
 
-/// The canonical source of each bind mount the agent's sandbox gets, named by its field.
-fn bind_mount_sources(record: &AgentRecord) -> Vec<(String, PathBuf)> {
+/// The canonical source of each host directory the agent's sandbox mounts, named by its field.
+fn host_mount_sources(record: &AgentRecord) -> Vec<(String, PathBuf)> {
     record
         .indexed_sandbox_mounts()
         .filter_map(|(index, mount)| match mount {
-            Mount::Bind { source, .. } => Some((format!("spec.sandbox.mounts[{index}]"), source)),
+            Mount::Bind { source, .. } | Mount::DirectoryImage { source, .. } => {
+                Some((format!("spec.sandbox.mounts[{index}]"), source))
+            }
             _ => None,
         })
         .collect()
@@ -722,7 +725,7 @@ async fn canonical_or_original(path: &std::path::Path) -> PathBuf {
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Canonical form of a secret file for comparison against canonical bind mount sources.
+/// Canonical form of a secret file for comparison against canonical mount sources.
 ///
 /// The file, and any number of its parent directories, may not exist yet. The nearest existing
 /// ancestor is canonicalized and the missing components appended, so a symlink anywhere above
@@ -749,5 +752,5 @@ async fn canonical_secret_file(path: &std::path::Path) -> PathBuf {
 
 fn association_directories(record: &AgentRecord) -> impl Iterator<Item = PathBuf> {
     std::iter::once(record.source_directory.clone())
-        .chain(bind_mount_sources(record).into_iter().map(|(_, source)| source))
+        .chain(host_mount_sources(record).into_iter().map(|(_, source)| source))
 }

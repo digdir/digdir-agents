@@ -318,7 +318,12 @@ impl SandboxBackend for Provider {
                     SandboxFeature::ImageInit,
                 ]
                 .into(),
-                MountKindSet::from([MountKind::Volume, MountKind::Bind, MountKind::Tmpfs]),
+                MountKindSet::from([
+                    MountKind::Volume,
+                    MountKind::Bind,
+                    MountKind::Tmpfs,
+                    MountKind::DirectoryImage,
+                ]),
                 RootFilesystemModeSet::from([RootFilesystemMode::Layered, RootFilesystemMode::Direct]),
                 network::NetworkEndpointCapabilities::new()
                     .with_packet_medium(network::PacketMedium::Ethernet)

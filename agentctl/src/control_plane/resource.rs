@@ -102,6 +102,10 @@ impl AgentRecord {
                         target: target.clone(),
                         read_only: *read_only,
                     },
+                    MountSpec::Image { source, target } => Mount::DirectoryImage {
+                        source: source.clone(),
+                        target: target.clone(),
+                    },
                     MountSpec::Tmpfs { target, capacity } => Mount::Tmpfs {
                         target: target.clone(),
                         capacity: *capacity,

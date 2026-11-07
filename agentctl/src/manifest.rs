@@ -387,6 +387,16 @@ pub enum MountSpec {
         #[serde(default, skip_serializing_if = "is_false")]
         optional: bool,
     },
+    /// A read-only copy of a caller-host directory, taken when the agent's sandbox is created. The sandbox reads it
+    /// without asking the host, so walking and searching a large tree again is much faster than through a bind
+    /// mount. Later changes to the directory reach the agent only once its sandbox is created again, such as when
+    /// the agent is deleted and applied again.
+    Image {
+        /// Host directory, resolved relative to the manifest directory at apply time.
+        source: std::path::PathBuf,
+        /// Absolute path inside the sandbox.
+        target: SandboxPath,
+    },
     /// Anonymous in-memory storage with an explicit capacity.
     Tmpfs {
         /// Absolute path inside the sandbox.
@@ -399,7 +409,7 @@ pub enum MountSpec {
 impl MountSpec {
     const fn target(&self) -> &SandboxPath {
         match self {
-            Self::Bind { target, .. } | Self::Tmpfs { target, .. } => target,
+            Self::Bind { target, .. } | Self::Image { target, .. } | Self::Tmpfs { target, .. } => target,
         }
     }
 }
@@ -517,7 +527,7 @@ impl Spec {
     fn validate(&self) -> Result<(), Error> {
         let mut mount_targets = std::collections::BTreeSet::new();
         for (index, mount) in self.sandbox.mounts.iter().enumerate() {
-            if let MountSpec::Bind { source, .. } = mount
+            if let MountSpec::Bind { source, .. } | MountSpec::Image { source, .. } = mount
                 && source.as_os_str().is_empty()
             {
                 return Err(Error::Invalid(format!(
