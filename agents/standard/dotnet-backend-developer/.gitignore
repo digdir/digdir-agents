@@ -1,0 +1,3 @@
+# Checkout-local agent variants and environment files are private.
+agent.*.yaml
+.env
