@@ -1038,6 +1038,98 @@ async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
         .expect("setup without a declared version");
 }
 
+fn is_presence_check(spec: &sandbox::execution::ExecutionSpec, test: &str, path: &str) -> bool {
+    matches!(
+        spec.program(),
+        Program::Command { executable, args }
+            if executable.as_str() == "/usr/bin/test" && args == &[test, path]
+    )
+}
+
+/// How many times setup switched the guest kernel's transparent huge page policy to `always`.
+fn huge_page_switches(backend: &memory::Provider) -> usize {
+    backend
+        .execution_specs()
+        .into_iter()
+        .filter(|spec| {
+            matches!(
+                spec.program(),
+                Program::Command { executable, args }
+                    if executable.as_str() == "/usr/bin/sudo"
+                        && args == &["-n", "/bin/sh", "-c", "echo always > /sys/kernel/mm/transparent_hugepage/enabled"]
+            )
+        })
+        .count()
+}
+
+/// Setup backs nested sandboxes with huge pages when the guest has `/dev/kvm` and its kernel has huge pages.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_enables_huge_pages_only_for_nested_sandboxes() {
+    // (has /dev/kvm, kernel has huge pages, expected switches)
+    for (kvm, huge_pages, switches) in [(true, true, 1), (false, true, 0), (true, false, 0)] {
+        let directory = TempDir::new().expect("temporary directory");
+        let home = directory.path().join("home");
+        std::fs::create_dir_all(&home).expect("home directory");
+        std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
+        let agent_id: AgentId = "8d1b0d3e-3c55-4a8f-9e0a-2f3f1f6c9b21".parse().expect("Agent ID");
+        let mut resource = support::agent("worker");
+        resource.metadata.generation = 1;
+        resource.spec.home.source = home;
+        resource.spec.harnesses[0].version = None;
+        let record = AgentRecord {
+            id: agent_id,
+            source_directory: PathBuf::from(directory.path()),
+            manifest_path: None,
+            env_file: None,
+            agent: resource,
+        };
+        let backend = Rc::new(memory::Provider::new());
+        backend.queue_execution_events_matching(
+            is_claude_version,
+            vec![
+                ExecutionEvent::Started { process_id: None },
+                ExecutionEvent::Stdout("2.1.258 (Claude Code)\n".into()),
+                ExecutionEvent::Exited(ExitStatus { code: 0 }),
+            ],
+        );
+        backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+        if !kvm {
+            backend.queue_execution_events_matching(|spec| is_presence_check(spec, "-c", "/dev/kvm"), completed(1));
+        }
+        if !huge_pages {
+            backend.queue_execution_events_matching(
+                |spec| is_presence_check(spec, "-f", "/sys/kernel/mm/transparent_hugepage/enabled"),
+                completed(1),
+            );
+        }
+        let service = SandboxService::new(backend.clone());
+        let spec = record
+            .agent
+            .spec
+            .sandbox
+            .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+            .expect("Sandbox spec");
+        let sandbox = service
+            .ensure(&EnsureSandboxRequest::new(
+                record.sandbox_name().expect("Sandbox name"),
+                spec,
+            ))
+            .await
+            .expect("Sandbox");
+
+        Linux::new(PLATFORM_API_URL)
+            .setup(&record, &sandbox, &declared(&record), &setup_phase())
+            .await
+            .expect("setup");
+
+        assert_eq!(
+            huge_page_switches(&backend),
+            switches,
+            "/dev/kvm present: {kvm}, huge pages in the kernel: {huge_pages}"
+        );
+    }
+}
+
 /// A restarted `agentd` listens on a new port; its first setup pass moves harnesses that kept
 /// running onto it.
 #[tokio::test(flavor = "local")]
