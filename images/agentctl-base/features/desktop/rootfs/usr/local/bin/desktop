@@ -41,6 +41,8 @@ jpeg_quality=${DESKTOP_JPEG_QUALITY:-7}
 settle_attempts=${DESKTOP_SETTLE_ATTEMPTS:-8}
 settle_interval=${DESKTOP_SETTLE_INTERVAL:-0.1}
 keep_captures=${DESKTOP_KEEP_CAPTURES:-200}
+# The running recording on this display, if any: one per display rather than per session.
+recording_state=$captures/.recording$display
 # The geometry of the last screenshot or tree, which every coordinate refers to. One per session,
 # since sessions with different harnesses get screenshots at different sizes.
 observed_geometry=$captures/.screenshot-geometry${AGENT_SESSION_ID:+.$AGENT_SESSION_ID}
@@ -104,6 +106,10 @@ Windows and session
   focus WINDOW                   raise and focus a window by id or title substring
   resize WIDTH HEIGHT            resize the display with RandR
   wait SECONDS                   pause
+
+Record
+  record start OUT.mp4           record the display until `record stop`; meanwhile the pointer glides and typing slows
+  record stop [--width PIXELS]   stop and render OUT.mp4, 1280 px wide by default
 
 Batch
   batch [--no-screenshot]        read one command per line from stdin and run them in order
@@ -428,6 +434,43 @@ json_string_or_null() {
 # does not race the one before it. A request that needs a reply is a round trip by definition.
 sync_x() { xdotool getactivewindow >/dev/null 2>&1 || true; }
 
+# Whether a recording is running. Someone watching one has to see what the pointer and keyboard do,
+# so while it runs the pointer glides to where it is sent and text is typed at a readable pace.
+recording() {
+    local pid
+    read -r pid _ 2>/dev/null <"$recording_state" && kill -0 "$pid" 2>/dev/null
+}
+
+# Glides the pointer to display pixels X Y over a fraction of a second, eased in and out, as one
+# xdotool call that alternates moves and sleeps, so that someone watching can follow it.
+glide_to() {
+    local X Y
+    eval "$(xdotool getmouselocation --shell)"
+    local -a glide
+    read -r -a glide < <(awk -v x0="$X" -v y0="$Y" -v x1="$1" -v y1="$2" 'BEGIN {
+        distance = sqrt((x1 - x0) ^ 2 + (y1 - y0) ^ 2)
+        seconds = distance / 1500; if (seconds < 0.3) seconds = 0.3; if (seconds > 0.8) seconds = 0.8
+        n = int(seconds * 60)
+        for (i = 1; i <= n; i++) {
+            s = i / n; s = s * s * (3 - 2 * s)
+            printf "mousemove -- %d %d sleep %.4f ", x0 + (x1 - x0) * s + 0.5, y0 + (y1 - y0) * s + 0.5, seconds / n
+        }
+        print ""
+    }')
+    xdotool "${glide[@]}"
+}
+
+# Moves the pointer to display pixels X Y: at once, or gliding while recording.
+pointer_to() {
+    if recording; then
+        glide_to "$1" "$2"
+    else
+        xdotool mousemove -- "$1" "$2"
+    fi
+}
+
+# Moves the pointer to X Y in the pixels of the last observation, gliding if the third argument is
+# `glide` or a recording is running.
 move_pointer() {
     local actual_width actual_height sent_width sent_height x y addressed
     addressed=$(addressed_geometry)
@@ -435,7 +478,11 @@ move_pointer() {
     require_integer "$1" "x"; require_integer "$2" "y"
     x=$(to_display "$1" "$sent_width" "$actual_width")
     y=$(to_display "$2" "$sent_height" "$actual_height")
-    xdotool mousemove -- "$x" "$y"
+    if [ "${3:-}" = glide ]; then
+        glide_to "$x" "$y"
+    else
+        pointer_to "$x" "$y"
+    fi
 }
 
 command_click() {
@@ -461,20 +508,12 @@ command_mouse_button() {
 
 command_drag() {
     [ $# -eq 4 ] || fail "drag takes X1 Y1 X2 Y2"
+    # Checked before pressing, so that a bad drop point cannot leave the button held.
+    require_integer "$3" "x"; require_integer "$4" "y"
     move_pointer "$1" "$2"
     xdotool mousedown 1
-    # Intermediate motion: applications that track drags ignore a single jump.
-    local actual_width actual_height sent_width sent_height step addressed
-    addressed=$(addressed_geometry)
-    read -r actual_width actual_height sent_width sent_height <<<"$addressed"
-    for step in 1 2 3; do
-        xdotool mousemove -- \
-            "$(awk -v a="$1" -v b="$3" -v s="$step" -v sw="$sent_width" -v aw="$actual_width" \
-                'BEGIN { printf "%d", int((a + (b - a) * s / 4) * aw / sw + 0.5) }')" \
-            "$(awk -v a="$2" -v b="$4" -v s="$step" -v sh="$sent_height" -v ah="$actual_height" \
-                'BEGIN { printf "%d", int((a + (b - a) * s / 4) * ah / sh + 0.5) }')"
-    done
-    move_pointer "$3" "$4"
+    # A glide, since applications that track drags, such as HTML drag and drop, ignore a jump.
+    move_pointer "$3" "$4" glide
     xdotool mouseup 1
     sync_x
 }
@@ -509,7 +548,11 @@ type_bound() {
         trap "$cleanup" EXIT
         xmodmap "${bind[@]}" || fail "cannot bind keys on display $display"
     fi
-    xdotool type --delay 12 -- "$text" &
+    # Milliseconds per character. xdotool waits half of it after pressing a key and half after
+    # releasing it.
+    local delay=12
+    recording && delay=180
+    xdotool type --delay "$delay" -- "$text" &
     pid=$!
     # shellcheck disable=SC2064 # Expand the pid now.
     trap "kill $pid 2>/dev/null; $cleanup" EXIT
@@ -701,6 +744,7 @@ dispatch() {
         focus) command_focus "$@" ;;
         resize) command_resize "$@" ;;
         wait) command_wait "$@" ;;
+        record) "${DESKTOP_RECORD:-/usr/local/libexec/agent-desktop-record}" "$recording_state" "$@" ;;
         batch) command_batch "$@" ;;
         help | --help | -h) usage ;;
         *) fail "unknown command '$command'; run 'desktop help'" ;;
