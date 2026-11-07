@@ -27,7 +27,7 @@ spec:
   skills:
     - source: ../skills/pr-evidence
     - source: ../skills/changelog
-    # The image ships the computer-use skill with its desktop.
+    # The image ships the computer-use and recording skills.
   harnesses:
     - type: claudeCode
       auth: mediated

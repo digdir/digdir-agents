@@ -69,6 +69,9 @@ for skills in /home/agent/.claude/skills /home/agent/.agents/skills; do
     rm -rf "${skills}/playwright-cli"
     cp -R "${NODE_PATH}/@playwright/cli/skills/playwright-cli" "${skills}/playwright-cli"
     chown -R agent:agent "${skills}/playwright-cli"
+    # The base image's recording skill, with its reference for recording a page.
+    install -d -o agent -g agent "${skills}/recording" "${skills}/recording/references"
+    install -m 0644 -o agent -g agent "${feature}/skills/recording/references/web.md" "${skills}/recording/references/"
 done
 
 systemctl enable agent-browser-ca-init.service

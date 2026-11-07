@@ -5,7 +5,7 @@ carry the harness versions its adapters are tested with, so an agent's Dockerfil
 
 | Image | Contents |
 | --- | --- |
-| `ghcr.io/digdir/agentctl-base:ubuntu-26.04` | Headless: Ubuntu 26.04 booting systemd, the `agent` user, Claude Code, Codex and Pi, Node.js and common developer tools. The [Dockerfile](Dockerfile) has the full list |
+| `ghcr.io/digdir/agentctl-base:ubuntu-26.04` | Headless: Ubuntu 26.04 booting systemd, the `agent` user, Claude Code, Codex and Pi, Node.js, common developer tools and the [`recording` skill](skills/recording/SKILL.md). The [Dockerfile](Dockerfile) has the full list |
 | `ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop` | The headless image plus the [`desktop` feature](#features) |
 
 Both are published for `linux/amd64` and `linux/arm64` from `main` whenever this directory changes, and also tagged
@@ -74,7 +74,8 @@ USER agent
 ```
 
 A script cannot set an image's environment, so add the `ENV` lines `agent-feature env <feature>` prints.
-`agent-image-check` fails an image without them.
+`agent-image-check` fails an image without them. The `browser` and `desktop` features also add their reference to the
+`recording` skill, for recording a page and the desktop.
 
 | Feature | Adds |
 | --- | --- |

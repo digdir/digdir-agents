@@ -80,6 +80,9 @@ for skills in /home/agent/.claude/skills /home/agent/.agents/skills; do
     rm -rf "${skills}/computer-use"
     cp -R "${feature}/skills/computer-use" "${skills}/computer-use"
     chown -R agent:agent "${skills}/computer-use"
+    # The base image's recording skill, with its reference for recording the desktop.
+    install -d -o agent -g agent "${skills}/recording" "${skills}/recording/references"
+    install -m 0644 -o agent -g agent "${feature}/skills/recording/references/desktop.md" "${skills}/recording/references/"
 done
 
 systemctl enable agent-desktop-display.service agent-desktop-session.service agent-desktop-dbus.service \

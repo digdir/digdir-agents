@@ -80,5 +80,5 @@ levels it rejects onto ones it accepts with `thinkingLevelMap`, and leave out a 
 
 [`instructions.md`](instructions.md), plus [`full/desktop.md`](full/desktop.md) on `full`, are the agent's own
 instructions. Its skills are [`pr-evidence`](skills/pr-evidence/SKILL.md), for showing a change to reviewers, and
-[`changelog`](skills/changelog/SKILL.md), for changelog entries. The `full` image also ships the base image's
-`computer-use` skill for its desktop.
+[`changelog`](skills/changelog/SKILL.md), for changelog entries. The images add the base image's `recording` skill,
+and on `full` its `computer-use` skill for the desktop.
