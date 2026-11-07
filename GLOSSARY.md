@@ -12,7 +12,7 @@ identifiers and code, such as `kind: Agent` or a Rust type.
 | `agentctl` | The command-line tool and TUI for agents. It talks to `agentd` and holds no state of its own. |
 | `agentd` | The daemon on the host that owns agents: it stores what each manifest declares and keeps the sandbox and sessions matching it. Not to be confused with Microsandbox's guest agent, which also runs as `agentd` inside the sandbox. |
 | Control API | How `agentctl`, or any other client, talks to `agentd`. Local to the host. |
-| Definition source | A folder that holds agent definitions: a Git repository, or a folder outside one that keeps them in `agents/<name>/`, such as the home directory. An agent is found from anywhere in its repository, or only from that folder itself. |
+| Definition source | A folder that holds agent definitions, and volume manifests anywhere in its `agents/`: a Git repository, or a folder outside one that keeps them in `agents/<name>/`, such as the home directory. An agent is found from anywhere in its repository, or only from that folder itself. |
 | Execution | A command run in a sandbox from the host, such as `agentctl exec` or a setup step. |
 | Harness | The program that runs a model in a loop with tools, such as Claude Code, Codex or Pi. A session runs one. |
 | Harness adapter | The part of `agentd` that knows one harness: how it logs in, launches, reports activity and resumes. |
@@ -29,3 +29,5 @@ identifiers and code, such as `kind: Agent` or a Rust type.
 | Sandbox SDK | The crates in `sandbox/` for creating and running sandboxes, independent of agents. |
 | Secret | A value the host holds for an agent, such as a token, that never enters the sandbox. |
 | Session | One harness running in an agent, durable and resumable. An agent can have several. |
+| Volume | Storage that agents mount by name and share, declared in its own manifest with `kind: Volume`. A `copy` volume holds a read-only copy of a host directory. |
+| Volume revision | One copy a volume holds. Applying the volume again takes a new one when its source changed. An agent keeps the revision it got first, so it never sees its files change. |
