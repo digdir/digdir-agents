@@ -2623,6 +2623,8 @@ mod tests {
             Err(Error::Invalid(message)) => message,
             other => panic!("expected an invalid request, got {other:?}"),
         };
+        // The message shows paths as the platform writes them, with `\` on Windows.
+        let shown = |path: &str| Path::new(path).components().collect::<PathBuf>().display().to_string();
         assert!(invalid(default_manifest(home)).starts_with("no agent.yaml here or in agents/<name>/"));
 
         std::fs::create_dir_all(home.join("agents/notes")).expect("agent folder");
@@ -2631,14 +2633,21 @@ mod tests {
         assert_eq!(found_manifests(home), [home.join("agents/notes/agent.yaml")]);
         assert_eq!(
             invalid(default_manifest(home)),
-            "no agent.yaml here; apply agents/notes/agent.yaml with `--filename agents/notes/agent.yaml`"
+            format!(
+                "no agent.yaml here; apply {0} with `--filename {0}`",
+                shown("agents/notes/agent.yaml")
+            )
         );
 
         std::fs::create_dir_all(home.join("agents/work")).expect("second agent folder");
         std::fs::write(home.join("agents/work/agent.yaml"), "").expect("second manifest");
         assert_eq!(
             invalid(default_manifest(home)),
-            "no agent.yaml here; name one of these with --filename: agents/notes/agent.yaml, agents/work/agent.yaml"
+            format!(
+                "no agent.yaml here; name one of these with --filename: {}, {}",
+                shown("agents/notes/agent.yaml"),
+                shown("agents/work/agent.yaml")
+            )
         );
 
         let repository = home.join("code/app");
