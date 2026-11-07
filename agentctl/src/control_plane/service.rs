@@ -156,10 +156,9 @@ impl ControlPlane {
         desired.validate()?;
         crate::labels::validate_all(&request.labels)?;
         let run_state = desired.spec.run_state;
-        let declared = std::mem::take(&mut desired.metadata.labels);
-        // An update keeps the stored labels and changes them in a write of their own.
-        let update_labels = crate::labels::LabelChange {
-            declared: Some(declared.clone()),
+        // The labels the manifest declares replace those the last apply declared, and those set from the host stay.
+        let labels = crate::labels::LabelChange {
+            declared: Some(std::mem::take(&mut desired.metadata.labels)),
             set: request.labels.clone(),
             ..crate::labels::LabelChange::default()
         };
@@ -197,8 +196,7 @@ impl ControlPlane {
                         && current.env_file == record.env_file
                     {
                         let mut current = current;
-                        current.agent.metadata.labels =
-                            self.store.change_labels(current.id, update_labels).await?.effective();
+                        current.agent.metadata.labels = self.store.change_labels(current.id, labels).await?.effective();
                         self.notifier.notify(current.id);
                         return Ok(self.resource(current));
                     }
@@ -208,9 +206,9 @@ impl ControlPlane {
                     record.agent.metadata.restart_timestamp = current.agent.metadata.restart_timestamp;
                     record.agent.status = current.agent.status;
                     self.store
-                        .put(record.clone(), expected_generation)
+                        .put_with_labels(record.clone(), expected_generation, labels.clone())
                         .await
-                        .map(|()| (record, update_labels.clone()))
+                        .map(|stored| (record, stored))
                 }
                 Err(Error::NotFound) => {
                     desired.spec.set_run_state(applied_run_state(run_state, None));
@@ -224,16 +222,11 @@ impl ControlPlane {
                         volume_revisions: std::collections::BTreeMap::new(),
                     };
                     record.agent.metadata.generation = 1;
-                    // Created with every label, so that no reader sees it without them. Those from the host are
-                    // then marked as set from the host, which keeps them through a later `apply`.
-                    record.agent.metadata.labels.clone_from(&declared);
-                    record.agent.metadata.labels.extend(request.labels.clone());
                     self.reject_exposed_secrets(&record).await?;
-                    let host = crate::labels::LabelChange {
-                        set: request.labels.clone(),
-                        ..crate::labels::LabelChange::default()
-                    };
-                    self.store.put(record.clone(), 0).await.map(|()| (record, host))
+                    self.store
+                        .put_with_labels(record.clone(), 0, labels.clone())
+                        .await
+                        .map(|stored| (record, stored))
                 }
                 Err(error) => return Err(error),
             };
@@ -241,11 +234,10 @@ impl ControlPlane {
             match result {
                 Err(Error::Conflict) => {}
                 Err(error) => return Err(error),
-                Ok((record, labels)) => {
-                    let labels = self.store.change_labels(record.id, labels).await?.effective();
+                Ok((record, stored)) => {
                     self.notifier.notify(record.id);
                     let mut agent = projected(record);
-                    agent.metadata.labels = labels;
+                    agent.metadata.labels = stored.effective();
                     agent.status.phase = Some(agent.phase());
                     return Ok(agent);
                 }

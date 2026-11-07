@@ -56,7 +56,12 @@ pub(super) fn list(connection: &Connection) -> Result<Vec<AgentRecord>, Error> {
         .collect()
 }
 
-pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_generation: u64) -> Result<(), Error> {
+pub(super) fn put(
+    connection: &mut Connection,
+    record: &AgentRecord,
+    expected_generation: u64,
+    labels: &crate::labels::LabelChange,
+) -> Result<crate::labels::StoredLabels, Error> {
     let id = record.id;
     let name = &record.agent.metadata.name;
     let source = serde_json::to_string(&crate::Provenance {
@@ -66,8 +71,13 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
     })?;
     let desired = encode_desired(&record.agent)?;
     let transaction = connection.transaction().map_err(database_error)?;
-    let changed = if expected_generation == 0 {
-        transaction
+    let (changed, stored) = if expected_generation == 0 {
+        let mut stored = crate::labels::StoredLabels {
+            declared: record.agent.metadata.labels.clone(),
+            ..crate::labels::StoredLabels::default()
+        };
+        stored.apply(labels);
+        let changed = transaction
             .execute(
                 "INSERT OR IGNORE INTO agents
                  (id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
@@ -82,13 +92,11 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
                     encode_status(&record.agent.status)?,
                     serde_json::to_string(&record.optional_mount_sources)?,
                     serde_json::to_string(&record.volume_revisions)?,
-                    serde_json::to_string(&crate::labels::StoredLabels {
-                        declared: record.agent.metadata.labels.clone(),
-                        ..crate::labels::StoredLabels::default()
-                    })?
+                    serde_json::to_string(&stored)?
                 ],
             )
-            .map_err(database_error)?
+            .map_err(database_error)?;
+        (changed, stored)
     } else {
         let current = get(&transaction, id)?;
         if current.agent.metadata.generation != expected_generation
@@ -97,18 +105,29 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
         {
             return Err(Error::Conflict);
         }
-        transaction
-            .execute(
-                "UPDATE agents SET source_directory = ?1, desired_json = ?2
-                 WHERE id = ?3 AND active_name = ?4 AND deletion_timestamp IS NULL",
-                params![source, desired, id.to_string(), name],
+        let stored = transaction
+            .query_row(
+                "SELECT labels_json FROM agents WHERE id = ?1",
+                [id.to_string()],
+                |row| row.get::<_, String>(0),
             )
-            .map_err(database_error)?
+            .map_err(database_error)?;
+        let mut stored = serde_json::from_str::<crate::labels::StoredLabels>(&stored)?;
+        stored.apply(labels);
+        let changed = transaction
+            .execute(
+                "UPDATE agents SET source_directory = ?1, desired_json = ?2, labels_json = ?3
+                 WHERE id = ?4 AND active_name = ?5 AND deletion_timestamp IS NULL",
+                params![source, desired, serde_json::to_string(&stored)?, id.to_string(), name],
+            )
+            .map_err(database_error)?;
+        (changed, stored)
     };
     if changed != 1 {
         return Err(Error::Conflict);
     }
-    transaction.commit().map_err(database_error)
+    transaction.commit().map_err(database_error)?;
+    Ok(stored)
 }
 
 pub(super) fn change_labels(
@@ -227,7 +246,7 @@ pub(super) fn finalize_deletion(connection: &mut Connection, id: AgentId, genera
 fn encode_desired(agent: &Agent) -> Result<String, Error> {
     let mut desired = agent.clone();
     desired.metadata.deletion_timestamp = None;
-    // Kept in their own column, which only label changes write.
+    // Kept in their own column, as declared and set from the host.
     desired.metadata.labels.clear();
     desired.status = Status::default();
     serde_json::to_string(&desired).map_err(Error::from)
