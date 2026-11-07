@@ -22,19 +22,20 @@ agents. The Rust workspace version is a build detail and is not tracked here.
   - `agentctl claude login work` and `agentctl codex login work` store one, and `list` and `logout` show and forget them. Your existing logins become `default`. ([#356](https://github.com/digdir/digdir-agents/pull/356))
   - `login: work` on a harness in an agent's manifest picks one. `login: [work, private]` or `login: any` gives the agent whichever the fewest other running agents use, and it keeps that one while it stays allowed and stored. ([#357](https://github.com/digdir/digdir-agents/pull/357))
 - `agentctl skills install` puts a skill where the coding agents on your machine, such as Claude Code, Codex and Pi, find it, for you with `--user` or for a repository with `--repo`, and running it again updates it. `--bundled agentctl` gives them the skill for driving agents. ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#340](https://github.com/digdir/digdir-agents/pull/340))
+- A manifest can leave out `spec.home`, to copy nothing into `/home/agent`, and `spec.network`, which then sends all traffic through the host's network mediator. ([#309](https://github.com/digdir/digdir-agents/pull/309))
 
 ### Changed
 
 - Applying a manifest that adds, removes or renames instruction files or skills updates the agent in place, keeping its disk and sessions, instead of being refused. A skill the agent no longer declares is removed from its harnesses, while the skills its image ships stay.
 - The Agent sandbox section at the top of an agent's instructions now tells the agent that what it sends through the host, such as pushes, pull requests, comments and API calls, reaches real services and people. ([#372](https://github.com/digdir/digdir-agents/pull/372))
 - Newly created agents using the shared images ship Claude Code 2.1.316, Codex CLI 0.166.0 and Pi 1.5.0. ([#392](https://github.com/digdir/digdir-agents/pull/392))
-- Commands that use the current directory's agent, such as `attach`, `exec` and `ssh`, find it from anywhere in its Git repository or, outside one, from the folder holding its `agents/`, and without `-f`, `agentctl apply` names the manifests it finds there. ([#309](https://github.com/digdir/digdir-agents/pull/309))
-- A manifest may leave out `spec.home` and `spec.network`: without `home` nothing is copied into `/home/agent`, and without `network` all traffic goes through the host's network mediator. ([#309](https://github.com/digdir/digdir-agents/pull/309))
-- agentctl's help starts with what it is for and lists the commands people use first. ([#309](https://github.com/digdir/digdir-agents/pull/309))
-- agentctl's error messages: ([#309](https://github.com/digdir/digdir-agents/pull/309))
-  - no longer begin with `invalid agent:` or `Control API error:`
-  - for a field only a new agent takes, such as `spec.sandbox.image`, say how to create the agent again
-  - for a name another directory's agent has, ask for another name
+- `attach`, `exec`, `ssh` and the other commands that use the current directory's agent now find it from anywhere in its Git repository. Outside a repository, they find it from the directory that holds its `agents/` directory. ([#309](https://github.com/digdir/digdir-agents/pull/309))
+- `agentctl apply` without `-f`, in a directory with no `agent.yaml`, lists the manifests it finds, so you can pass one with `-f`. ([#309](https://github.com/digdir/digdir-agents/pull/309))
+- `agentctl --help` starts with what agentctl is for and the commands you use most. ([#309](https://github.com/digdir/digdir-agents/pull/309))
+- Error messages are plainer: ([#309](https://github.com/digdir/digdir-agents/pull/309))
+  - They no longer start with `invalid agent:` or `Control API error:`.
+  - Changing a field an existing agent can't change, such as `spec.sandbox.image`, tells you to delete the agent and apply again.
+  - Applying a name that an agent from another directory already has asks you to choose another name.
 
 ### Fixed
 
