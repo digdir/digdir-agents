@@ -245,7 +245,7 @@ enum Command {
     /// `KEY=VALUE` sets a label, which a later `apply` keeps. `KEY-` removes one, until a manifest that declares it
     /// is applied again. Labels change no generation and restart nothing.
     Label {
-        /// The agent, as `agent/NAME`.
+        /// The agent, as `agent/NAME`, or `agent` followed by its name, as kubectl takes it.
         resource: String,
         /// Changes, as `KEY=VALUE` or `KEY-`.
         #[arg(required = true, value_name = "KEY=VALUE|KEY-")]
@@ -707,12 +707,8 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         }
         Command::Describe { resource, name, output } => describe(client, &resource, name, output).await?,
         Command::Label { resource, changes } => {
-            let (resource, name) = resource_reference(&resource, None)?;
-            if resource != Resource::Agent {
-                return Err(Error::Invalid("label supports only agent resources".into()).into());
-            }
-            let name = require_name(name, "Agent")?;
-            let (set, remove) = parse_label_changes(&changes)?;
+            let (name, changes) = label_target(&resource, &changes)?;
+            let (set, remove) = parse_label_changes(changes)?;
             client.label(&name, set, remove).await?;
             println!("agent/{name} labeled");
         }
@@ -1665,6 +1661,23 @@ fn resource_reference(resource: &str, name: Option<String>) -> Result<(Resource,
         _ => return Err(Error::Invalid(format!("unknown resource type {kind:?}"))),
     };
     Ok((resource, embedded_name.or(name)))
+}
+
+/// Splits the words `agentctl label` takes into the agent's name and the changes. As in kubectl, the name may follow
+/// the type as a word of its own, so `agent/NAME KEY=VALUE` and `agent NAME KEY=VALUE` are the same.
+fn label_target<'a>(resource: &str, words: &'a [String]) -> Result<(String, &'a [String]), Error> {
+    let (name, changes) = match words.split_first() {
+        Some((name, changes)) if !resource.contains('/') => (Some(name.clone()), changes),
+        _ => (None, words),
+    };
+    let (resource, name) = resource_reference(resource, name)?;
+    if resource != Resource::Agent {
+        return Err(Error::Invalid("label supports only agent resources".into()));
+    }
+    if changes.is_empty() {
+        return Err(Error::Invalid("label needs a change, as KEY=VALUE or KEY-".into()));
+    }
+    Ok((require_name(name, "Agent")?, changes))
 }
 
 /// Parses `KEY=VALUE` for `apply --label`.
@@ -2797,6 +2810,24 @@ mod tests {
             assert!(parse_label_changes(&[invalid.to_owned()]).is_err(), "{invalid}");
         }
         assert!(parse_label("client=a=b").is_err(), "a value cannot hold `=`");
+    }
+
+    #[test]
+    fn label_takes_the_agent_as_one_word_or_two() {
+        let words = |words: &[&str]| words.iter().map(|&word| word.to_owned()).collect::<Vec<_>>();
+        let one = words(&["client=t3code"]);
+        let (name, changes) = label_target("agent/worker", &one).expect("TYPE/NAME");
+        assert_eq!((name.as_str(), changes), ("worker", one.as_slice()));
+        let two = words(&["worker", "client=t3code"]);
+        let (name, changes) = label_target("agent", &two).expect("TYPE NAME");
+        assert_eq!((name.as_str(), changes), ("worker", &one[..]));
+        for (resource, words) in [
+            ("agent", words(&["worker"])),
+            ("agent/worker", words(&[])),
+            ("session/s1", words(&["client=t3code"])),
+        ] {
+            assert!(label_target(resource, &words).is_err(), "{resource} {words:?}");
+        }
     }
 
     #[test]
