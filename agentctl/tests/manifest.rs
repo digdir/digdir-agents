@@ -889,6 +889,21 @@ fn rejects_unknown_duplicate_and_configured_access_capabilities() {
             "name: t3code\n      port: 3773\n      path: docs",
             "spec.access[0].path",
         ),
+        (
+            "name: t3code\n      port: 3773\n      path: \"/docs page\"",
+            "must be a URL path",
+        ),
+        (
+            "name: t3code\n      port: 3773\n      path: \"/docs?tab=1\"",
+            "must be a URL path",
+        ),
+        (
+            "name: t3code\n      port: 3773\n      path: \"/#top\"",
+            "must be a URL path",
+        ),
+        ("name: t3code\n      port: 3773\n      path: /%zz", "must be a URL path"),
+        ("name: t3code\n      port: 3773\n      path: /%2", "must be a URL path"),
+        ("name: t3code\n      port: 3773\n      path: /ø", "must be a URL path"),
     ] {
         let bytes = manifest_with_access(&format!("  access:\n    - type: web\n      {view}\n"));
         assert!(
@@ -904,6 +919,10 @@ fn rejects_unknown_duplicate_and_configured_access_capabilities() {
         ),
         "a web view has a name"
     );
+    manifest::decode(&manifest_with_access(
+        "  access:\n    - type: web\n      name: t3code\n      port: 3773\n      path: \"/a-b_c.d~e/%20x;v=1,@:\"\n",
+    ))
+    .expect("a path with escapes and the characters a URL path allows");
     assert!(
         matches!(
             manifest::decode(&manifest_with_access(

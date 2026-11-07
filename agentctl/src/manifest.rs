@@ -420,6 +420,11 @@ impl AccessSpec {
         if !path.starts_with('/') {
             return Err(Error::Invalid(format!("{field}.path {path:?} must start with `/`")));
         }
+        if !is_url_path(path) {
+            return Err(Error::Invalid(format!(
+                "{field}.path {path:?} must be a URL path, of letters, digits and `-._~!$&'()*+,;=:@/`, with any                  other character escaped as `%XX`"
+            )));
+        }
         Ok(())
     }
 }
@@ -455,6 +460,30 @@ impl AccountSpec {
             Self::Github { login } => login,
         }
     }
+}
+
+/// Whether `path` holds only what RFC 3986 allows in a URL path: unreserved characters, sub-delimiters, `:`, `@` and
+/// `/`, and `%` followed by two hexadecimal digits. Clients put a view's path into a URL as it is, so a space, `?` or
+/// `#` would break it or change what it opens.
+fn is_url_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    let mut index = 0;
+    while let Some(&byte) = bytes.get(index) {
+        if byte == b'%' {
+            if !bytes
+                .get(index + 1..index + 3)
+                .is_some_and(|hex| hex.iter().all(u8::is_ascii_hexdigit))
+            {
+                return false;
+            }
+            index += 3;
+        } else if byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@/".contains(&byte) {
+            index += 1;
+        } else {
+            return false;
+        }
+    }
+    true
 }
 
 /// Sandbox settings as supplied by an agent manifest.
