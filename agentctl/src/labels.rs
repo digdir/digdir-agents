@@ -369,4 +369,24 @@ mod tests {
             assert!(invalid.parse::<super::Selector>().is_err(), "{invalid}");
         }
     }
+
+    /// Kubernetes' parser reads `()` as the set that holds the empty value, and an empty item between commas as that
+    /// value too, so `client in ()` selects `client=`.
+    #[test]
+    fn a_set_can_hold_the_empty_value_as_in_kubernetes() {
+        let empty = labels(&[("client", "")]);
+        let t3code = labels(&[("client", "t3code")]);
+        for (selector, selected) in [
+            ("client in ()", [true, false]),
+            ("client in (t3code,)", [true, true]),
+            ("client notin ()", [false, true]),
+        ] {
+            let parsed: super::Selector = selector.parse().expect(selector);
+            assert_eq!(
+                [&empty, &t3code].map(|labels| parsed.matches(labels)),
+                selected,
+                "{selector}"
+            );
+        }
+    }
 }
