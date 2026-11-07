@@ -26,7 +26,7 @@ The rest, clients work out themselves:
 | Whether an agent is the one the client knew | Nobody | A resource carries only its name, and a deleted agent's name can come back as a new agent ([#301](https://github.com/digdir/digdir-agents/issues/301)). Gateway's and the Claude app's host lists and T3 Code's environments keep a reference longer than an agent may live. |
 | The project to open | Nobody | `ssh-info` always says `/home/agent/code`. The repository the image clones is below it, so every editor opens beside the project rather than in it. |
 | The web UIs an agent serves | A person, from the image's docs | The image sets the port, and nothing the host can read records it ([#387](https://github.com/digdir/digdir-agents/issues/387)). |
-| The agent definitions on disk | The TUI, `apply` with [#309](https://github.com/digdir/digdir-agents/pull/309), and T3 Code | Three walks of the filesystem, each with its own rules for which files are variants. |
+| The agent definitions on disk | The TUI and `apply`, which share one lookup, and T3 Code | Two walks of the filesystem, each with its own rules for which files are variants. |
 
 ## Proposal
 
@@ -154,9 +154,9 @@ come later as a `login` field on the view, which is reserved until then, so a ma
 
 `agentctl definitions [DIR] -o json` lists the agent definitions under a directory. For each manifest and variant it
 gives the path, the variant, the agent name it declares, the repository it belongs to and the applied agents that came
-from it, since `apply --name` can make several from one file. It uses the lookup the TUI has today and #309 gives
-`apply`, moved into the `agent` library, so the TUI, `apply`, T3 Code and a GUI find the same definitions. It is not a
-`get`, because the files are not resources in `agentd`.
+from it, since `apply --name` can make several from one file. It uses the lookup in the `agent` library that the TUI
+and `apply` use, so T3 Code and a GUI find the same definitions as they do. It is not a `get`, because the files are
+not resources in `agentd`.
 
 ## Where a client's choice lives
 
