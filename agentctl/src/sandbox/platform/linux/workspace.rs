@@ -1,4 +1,8 @@
 //! The repositories an image clones into the workspace.
+//!
+//! The lists are read as the image's clone script reads them, except in two corners that the base images do not
+//! use: the script reads them from `$AGENT_WORKSPACE_LISTS` when that is set, and it keeps a `\r` at the end of a
+//! line, which this drops.
 
 use ::sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
 
