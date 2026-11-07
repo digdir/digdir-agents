@@ -80,8 +80,11 @@ impl std::fmt::Display for ProviderId {
 }
 
 /// Sticky runtime assignment for one agent's sandbox.
+///
+/// It is part of the agent's [`Status`](crate::Status), so unknown fields are tolerated for the same reason: a build
+/// can read what a newer `agentd` recorded.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase", tag = "state")]
+#[serde(rename_all = "camelCase", tag = "state")]
 pub enum Assignment {
     /// A Provider has been durably selected before external effects begin.
     Selected {
