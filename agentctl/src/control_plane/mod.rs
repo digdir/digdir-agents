@@ -36,9 +36,26 @@ pub trait AgentStore {
     /// Lists an independent snapshot of every record.
     fn list(&self) -> LocalFuture<'_, Result<Vec<AgentRecord>, Error>>;
 
-    /// Creates or replaces desired state if the stored generation still matches. Refuses a record
-    /// whose bind mounts are not resolved; see [`AgentRecord::check_resolved`].
-    fn put(&self, record: AgentRecord, expected_generation: u64) -> LocalFuture<'_, Result<(), Error>>;
+    /// Creates or replaces desired state if the stored generation still matches. An agent it creates gets the labels
+    /// of its record as declared, and an update keeps the stored labels. Refuses a record whose bind mounts are not
+    /// resolved; see [`AgentRecord::check_resolved`].
+    fn put(&self, record: AgentRecord, expected_generation: u64) -> LocalFuture<'_, Result<(), Error>> {
+        Box::pin(async move {
+            self.put_with_labels(record, expected_generation, crate::labels::LabelChange::default())
+                .await
+                .map(drop)
+        })
+    }
+
+    /// Does what [`Self::put`] does, and applies `labels` to the agent's labels in the same write, and returns its
+    /// labels as stored. An apply changes both, and one write keeps a concurrent apply or a crash from leaving the
+    /// desired state of one with the labels of another, or with none.
+    fn put_with_labels(
+        &self,
+        record: AgentRecord,
+        expected_generation: u64,
+        labels: crate::labels::LabelChange,
+    ) -> LocalFuture<'_, Result<crate::labels::StoredLabels, Error>>;
 
     /// Replaces observed state if the reconciled generation is still current
     /// and the agent is not being deleted, stamping condition transition times
@@ -59,9 +76,8 @@ pub trait AgentStore {
         revisions: crate::volumes::VolumePins,
     ) -> LocalFuture<'_, Result<(), Error>>;
 
-    /// Applies `change` to an active agent's labels in one write, and returns its labels as stored. Labels have a
-    /// write of their own because changing them changes no generation: [`Self::put`] keeps the stored ones, and
-    /// creates an agent with the labels of its record as declared.
+    /// Applies `change` to an active agent's labels in one write, and returns its labels as stored. Changing labels
+    /// changes no generation, so `agentctl label` has this write of its own, which leaves the desired state alone.
     fn change_labels(
         &self,
         id: AgentId,

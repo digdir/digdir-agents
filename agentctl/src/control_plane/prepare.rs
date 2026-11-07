@@ -50,7 +50,8 @@ impl Prepared {
 
 impl ControlPlane {
     /// Stores a new agent made from `prepared`, whose bind mounts have their folders, kept for
-    /// `lifetime`.
+    /// `lifetime`, with `labels` applied to the labels it declares in the same write. Returns the
+    /// record and its labels as stored.
     ///
     /// # Errors
     ///
@@ -61,7 +62,8 @@ impl ControlPlane {
         prepared: &Prepared,
         lifetime: Lifetime,
         allowed: &std::collections::BTreeSet<PathBuf>,
-    ) -> Result<AgentRecord, Error> {
+        labels: crate::labels::LabelChange,
+    ) -> Result<(AgentRecord, crate::labels::StoredLabels), Error> {
         let mut record = AgentRecord {
             id: AgentId::generate(),
             source_directory: prepared.source_directory.clone(),
@@ -77,8 +79,8 @@ impl ControlPlane {
         };
         record.agent.metadata.generation = 1;
         self.check_exposed_files(&mut record, allowed).await?;
-        self.store.put(record.clone(), 0).await?;
-        Ok(record)
+        let stored = self.store.put_with_labels(record.clone(), 0, labels).await?;
+        Ok((record, stored))
     }
 
     /// Prepares the agent the definition `reference` names declares, from agentd's copy of it.

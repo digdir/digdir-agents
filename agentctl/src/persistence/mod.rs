@@ -454,11 +454,17 @@ impl crate::control_plane::AgentStore for Database {
         Box::pin(async move { self.request(|response| Command::List { response }).await })
     }
 
-    fn put(&self, record: AgentRecord, expected_generation: u64) -> sandbox::LocalFuture<'_, Result<(), Error>> {
+    fn put_with_labels(
+        &self,
+        record: AgentRecord,
+        expected_generation: u64,
+        labels: crate::labels::LabelChange,
+    ) -> sandbox::LocalFuture<'_, Result<crate::labels::StoredLabels, Error>> {
         Box::pin(async move {
             self.request(|response| Command::Put {
                 record: Box::new(record),
                 expected_generation,
+                labels: Box::new(labels),
                 response,
             })
             .await
@@ -702,7 +708,8 @@ enum Command {
     Put {
         record: Box<AgentRecord>,
         expected_generation: u64,
-        response: oneshot::Sender<Result<(), Error>>,
+        labels: Box<crate::labels::LabelChange>,
+        response: oneshot::Sender<Result<crate::labels::StoredLabels, Error>>,
     },
     UpdateStatus {
         id: AgentId,
@@ -1064,9 +1071,10 @@ fn execute(connection: &mut Connection, command: Command) {
         Command::Put {
             record,
             expected_generation,
+            labels,
             response,
         } => {
-            let _ = response.send(agents::put(connection, &record, expected_generation));
+            let _ = response.send(agents::put(connection, &record, expected_generation, &labels));
         }
         Command::UpdateStatus {
             id,

@@ -171,7 +171,7 @@ impl ControlPlane {
         let given = self.validate_bind_sources(&request.binds).await?;
         // Boxed, as preparing reads the filesystem through several steps that would otherwise
         // make every caller's future as large.
-        let prepared = Box::pin(self.prepare_local(
+        let mut prepared = Box::pin(self.prepare_local(
             request.source_directory,
             request.manifest_path,
             request.env_file,
@@ -180,9 +180,9 @@ impl ControlPlane {
         .await?;
         let name = prepared.agent.metadata.name.clone();
         let run_state = prepared.agent.spec.run_state;
-        // An update keeps the stored labels and changes them in a write of their own.
-        let update_labels = crate::labels::LabelChange {
-            declared: Some(prepared.agent.metadata.labels.clone()),
+        // The labels the manifest declares replace those the last apply declared, and those set from the host stay.
+        let labels = crate::labels::LabelChange {
+            declared: Some(std::mem::take(&mut prepared.agent.metadata.labels)),
             set: request.labels.clone(),
             ..crate::labels::LabelChange::default()
         };
@@ -247,8 +247,7 @@ impl ControlPlane {
                         && current.exposed_files == record.exposed_files
                     {
                         let mut current = current;
-                        current.agent.metadata.labels =
-                            self.store.change_labels(current.id, update_labels).await?.effective();
+                        current.agent.metadata.labels = self.store.change_labels(current.id, labels).await?.effective();
                         self.notifier.notify(current.id);
                         return Ok(self.resource(current));
                     }
@@ -258,24 +257,21 @@ impl ControlPlane {
                     record.agent.metadata.restart_timestamp = current.agent.metadata.restart_timestamp;
                     record.agent.status = current.agent.status.clone();
                     self.store
-                        .put(record.clone(), expected_generation)
+                        .put_with_labels(record.clone(), expected_generation, labels.clone())
                         .await
-                        .map(|()| (record, update_labels.clone()))
+                        .map(|stored| (record, stored))
                 }
                 Err(Error::NotFound) => {
                     let mut new = prepared.clone();
                     Box::pin(new.bind(&given)).await?;
                     new.agent.spec.set_run_state(applied_run_state(run_state, None));
-                    // Created with every label, so that no reader sees it without them. Those from the host are
-                    // then marked as set from the host, which keeps them through a later `apply`.
-                    new.agent.metadata.labels.extend(request.labels.clone());
-                    let host = crate::labels::LabelChange {
-                        set: request.labels.clone(),
-                        ..crate::labels::LabelChange::default()
-                    };
-                    Box::pin(self.create(&new, crate::Lifetime::UntilDeleted, &request.allow_exposed_files))
-                        .await
-                        .map(|record| (record, host))
+                    Box::pin(self.create(
+                        &new,
+                        crate::Lifetime::UntilDeleted,
+                        &request.allow_exposed_files,
+                        labels.clone(),
+                    ))
+                    .await
                 }
                 Err(error) => return Err(error),
             };
@@ -283,11 +279,10 @@ impl ControlPlane {
             match result {
                 Err(Error::Conflict) => {}
                 Err(error) => return Err(error),
-                Ok((record, labels)) => {
-                    let labels = self.store.change_labels(record.id, labels).await?.effective();
+                Ok((record, stored)) => {
                     self.notifier.notify(record.id);
                     let mut agent = projected(record);
-                    agent.metadata.labels = labels;
+                    agent.metadata.labels = stored.effective();
                     agent.status.phase = Some(agent.phase());
                     return Ok(agent);
                 }

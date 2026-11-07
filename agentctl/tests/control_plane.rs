@@ -3813,8 +3813,13 @@ impl AgentStore for HeldStore {
         self.inner.list()
     }
 
-    fn put(&self, record: AgentRecord, expected_generation: u64) -> LocalFuture<'_, Result<(), Error>> {
-        self.inner.put(record, expected_generation)
+    fn put_with_labels(
+        &self,
+        record: AgentRecord,
+        expected_generation: u64,
+        labels: agent::labels::LabelChange,
+    ) -> LocalFuture<'_, Result<agent::labels::StoredLabels, Error>> {
+        self.inner.put_with_labels(record, expected_generation, labels)
     }
 
     fn update_status(&self, id: AgentId, generation: u64, status: Status) -> LocalFuture<'_, Result<Status, Error>> {
@@ -4462,8 +4467,13 @@ impl AgentStore for DeleteBeforeStarting {
     fn list(&self) -> LocalFuture<'_, Result<Vec<AgentRecord>, Error>> {
         self.inner.list()
     }
-    fn put(&self, record: AgentRecord, generation: u64) -> LocalFuture<'_, Result<(), Error>> {
-        self.inner.put(record, generation)
+    fn put_with_labels(
+        &self,
+        record: AgentRecord,
+        generation: u64,
+        labels: agent::labels::LabelChange,
+    ) -> LocalFuture<'_, Result<agent::labels::StoredLabels, Error>> {
+        self.inner.put_with_labels(record, generation, labels)
     }
     fn update_status(&self, id: AgentId, generation: u64, status: Status) -> LocalFuture<'_, Result<Status, Error>> {
         Box::pin(async move {

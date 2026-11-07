@@ -1753,7 +1753,7 @@ fn archiving_a_session_is_recorded_once_and_survives_reopening() {
     });
 }
 
-/// Labels have a write of their own: a desired-state write keeps them, and changing them changes no generation.
+/// A desired-state write without a label change keeps the labels, and changing them changes no generation.
 #[test]
 fn labels_survive_desired_state_writes_and_reopening() {
     let directory = TempDir::new().expect("temporary directory");
@@ -1802,5 +1802,68 @@ fn labels_survive_desired_state_writes_and_reopening() {
             .await
             .expect_err("a deleting agent keeps its labels");
         assert!(matches!(error, Error::Conflict));
+    });
+}
+
+/// An apply writes its labels with its desired state, so a write that loses its compare-and-swap changes neither.
+#[test]
+fn labels_change_with_the_desired_state_write_that_carries_them() {
+    let directory = TempDir::new().expect("temporary directory");
+    let labels = |pairs: &[(&str, &str)]| -> agent::labels::Labels {
+        pairs
+            .iter()
+            .map(|&(key, value)| (key.to_owned(), value.to_owned()))
+            .collect()
+    };
+    let database = persistence::Database::open(&directory.path().join("control-plane.db")).expect("open database");
+    LocalRuntime::new().expect("local runtime").block_on(async {
+        let created = database
+            .put_with_labels(
+                record("worker", 1),
+                0,
+                agent::labels::LabelChange {
+                    declared: Some(labels(&[("client", "jetbrains")])),
+                    set: labels(&[("managed-by", "t3code")]),
+                    ..agent::labels::LabelChange::default()
+                },
+            )
+            .await
+            .expect("create");
+        assert_eq!(created.declared, labels(&[("client", "jetbrains")]));
+        assert_eq!(created.host, labels(&[("managed-by", "t3code")]));
+
+        let redeclared = agent::labels::LabelChange {
+            declared: Some(labels(&[("client", "vscode")])),
+            ..agent::labels::LabelChange::default()
+        };
+        let error = database
+            .put_with_labels(record("worker", 3), 2, redeclared.clone())
+            .await
+            .expect_err("a stale generation");
+        assert!(matches!(error, Error::Conflict));
+        assert_eq!(
+            database
+                .get(test_agent_id())
+                .await
+                .expect("record")
+                .agent
+                .metadata
+                .labels,
+            labels(&[("client", "jetbrains"), ("managed-by", "t3code")]),
+            "a write that loses changes no labels"
+        );
+
+        let updated = database
+            .put_with_labels(record("worker", 2), 1, redeclared)
+            .await
+            .expect("update");
+        assert_eq!(updated.declared, labels(&[("client", "vscode")]));
+        assert_eq!(updated.host, labels(&[("managed-by", "t3code")]));
+        let stored = database.get(test_agent_id()).await.expect("record");
+        assert_eq!(stored.agent.metadata.generation, 2);
+        assert_eq!(
+            stored.agent.metadata.labels,
+            labels(&[("client", "vscode"), ("managed-by", "t3code")])
+        );
     });
 }
