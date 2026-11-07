@@ -386,6 +386,21 @@ fn status_reads_a_phase_it_does_not_know_as_unknown() {
 }
 
 #[test]
+fn status_tolerates_unknown_fields_in_the_sandbox_assignment() {
+    let status: agent::Status = serde_json::from_value(serde_json::json!({
+        "sandbox": {
+            "state": "materialized",
+            "provider": "microsandbox",
+            "id": "38f41de4-6ff7-4679-ae46-678bc61e4dcb",
+            "projects": ["/home/agent/code/digdir-agents"],
+            "futureField": true
+        }
+    }))
+    .expect("an assignment from a newer agentd should decode");
+    assert!(status.sandbox.is_some_and(|assignment| assignment.id().is_some()));
+}
+
+#[test]
 fn rejects_skills_without_a_directory_name_or_with_duplicate_names() {
     let mut agent = support::agent("worker");
     agent.spec.skills = vec![agent::SkillSpec {
