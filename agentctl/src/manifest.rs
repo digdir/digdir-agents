@@ -1679,7 +1679,12 @@ impl ListKey {
             Self::Skill => field("name").or_else(|| Path::new(field("source")?).file_name()?.to_str()),
             Self::TypeAndName => {
                 let kind = field("type")?;
-                return Some(field("name").map_or_else(|| kind.to_owned(), |name| format!("{kind}/{name}")));
+                return match field("name") {
+                    Some(name) => Some(format!("{kind}/{name}")),
+                    // A web view is known by its name, so without one it names no entry, and a removal is refused.
+                    None if kind == "web" => None,
+                    None => Some(kind.to_owned()),
+                };
             }
         };
         key.map(str::to_owned)

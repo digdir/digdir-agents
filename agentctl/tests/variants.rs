@@ -312,6 +312,11 @@ fn refuses_patch_markers_a_variant_cannot_apply() {
             "spec.environment: an entry with $patch must name the entry it removes by its name",
         ),
         (
+            "unnamed-view",
+            "spec:\n  access:\n    - type: web\n      $patch: delete\n",
+            "spec.access: an entry with $patch must name the entry it removes by its type, and name for a web view",
+        ),
+        (
             "unkeyed",
             "spec:\n  instructions:\n    - source: a.md\n      $patch: delete\n",
             "$patch",
