@@ -29,6 +29,7 @@ use crate::watch::RECONNECT_INTERVAL;
 use agent::manifest::MANIFEST_FILE;
 use app::{
     Action, App, CreateForm, ForwardEntry, ForwardForm, ManifestCandidate, Modal, MouseAction, PromptForm, RowTarget,
+    VolumeForm,
 };
 use open::{DesktopViewer, OpenTarget, SshSetup};
 use terminal::Tui;
@@ -61,6 +62,7 @@ enum Input {
     ArchiveChanged(Session),
     ForwardCreated(CreateOutcome),
     ManifestsDiscovered(Vec<ManifestCandidate>),
+    VolumeManifestsDiscovered(Vec<ManifestCandidate>),
     /// An action a finished step leads to, run in turn with the input already waiting.
     Then(Action),
     /// OpenSSH resolved an agent's alias.
@@ -141,6 +143,7 @@ impl MouseInput {
                 match hit_map.wheel_at(event.column, event.row) {
                     Some(WheelTarget::Tree) => app.on_mouse(MouseAction::MoveTree(delta)),
                     Some(WheelTarget::Forwards) => app.on_mouse(MouseAction::MoveForward(delta)),
+                    Some(WheelTarget::Volumes) => app.on_mouse(MouseAction::MoveVolume(delta)),
                     Some(WheelTarget::Detail) => app.on_mouse(MouseAction::ScrollDetail(delta)),
                     None => Action::None,
                 }
@@ -195,6 +198,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
             Input::Resources(Ok(resources)) => {
                 app.connection_error = None;
                 forwards.prune(&resources.agents);
+                app.set_volumes(resources.volumes);
                 app.apply_snapshot(resources.agents, resources.sessions);
                 continue;
             }
@@ -233,6 +237,11 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
             Input::ManifestsDiscovered(candidates) => {
                 mouse.reset();
                 app.manifests_discovered(candidates);
+                continue;
+            }
+            Input::VolumeManifestsDiscovered(candidates) => {
+                mouse.reset();
+                app.volume_manifests_discovered(candidates);
                 continue;
             }
             Input::Then(action) => action,
@@ -277,6 +286,18 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                     app.error = Some(error.to_string());
                 }
             }
+            Action::DeleteVolume { volume } => {
+                if let Err(error) = client.delete_volume(&volume).await {
+                    app.error = Some(error.to_string());
+                }
+            }
+            Action::OpenApplyVolume => {
+                if !app.discovering_volumes {
+                    app.discovering_volumes = true;
+                    spawn_volume_discovery(inputs.clone(), app.volumes.clone());
+                }
+            }
+            Action::ApplyVolume { manifest, name, form } => apply_volume(&mut app, client, manifest, name, form).await,
             Action::StopAll { agents } => {
                 let failed: Vec<String> =
                     futures_util::future::join_all(agents.iter().map(|agent| client.stop_now(agent)))
@@ -803,28 +824,74 @@ fn spawn_discovery(inputs: Inputs, agents: Vec<Agent>) {
     });
 }
 
+/// Discovers volume manifests off the event loop so a slow filesystem never freezes the UI.
+fn spawn_volume_discovery(inputs: Inputs, volumes: Vec<agent::volumes::Volume>) {
+    tokio::task::spawn_local(async move {
+        let candidates = volume_candidates(std::env::current_dir().ok(), volumes).await;
+        let _ = inputs.send(Input::VolumeManifestsDiscovered(candidates));
+    });
+}
+
+/// Assembles apply-volume candidates from the volume manifests found for the working directory and
+/// the manifests volumes were applied from.
+async fn volume_candidates(
+    current_directory: Option<PathBuf>,
+    volumes: Vec<agent::volumes::Volume>,
+) -> Vec<ManifestCandidate> {
+    tokio::task::spawn_blocking(move || {
+        let found = current_directory
+            .as_deref()
+            .map_or_else(Vec::new, agent::definitions::volume_manifests);
+        let recorded = volumes
+            .iter()
+            .filter_map(|volume| volume.status.manifest_path().map(Path::to_path_buf))
+            .collect();
+        merge_candidates(found, recorded, |path| {
+            std::fs::read(path)
+                .map_err(Error::from)
+                .and_then(|bytes| agent::volumes::decode(&bytes))
+                .map(|volume| volume.metadata.name)
+        })
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// Assembles create-agent candidates from the working tree and recorded agent manifests.
 ///
 /// Inside a git repository every manifest below the repository root is offered,
 /// skipping hidden and ignored directories; outside one only `agent.yaml` and
-/// `agents/*/agent.yaml` in the working directory are. A recorded manifest that is
-/// unreadable stays listed so its error is visible.
+/// `agents/*/agent.yaml` in the working directory are.
 async fn manifest_candidates(current_directory: Option<PathBuf>, agents: &[Agent]) -> Vec<ManifestCandidate> {
-    let agents = agents.to_vec();
-    tokio::task::spawn_blocking(move || manifest_candidates_blocking(current_directory.as_deref(), &agents))
-        .await
-        .unwrap_or_default()
-}
-
-fn manifest_candidates_blocking(current_directory: Option<&Path>, agents: &[Agent]) -> Vec<ManifestCandidate> {
-    let mut recorded: Vec<PathBuf> = agents
+    let recorded = agents
         .iter()
         .filter_map(|agent| agent.status.provenance.as_ref())
         .map(agent::Provenance::manifest_or_default)
         .collect();
+    tokio::task::spawn_blocking(move || {
+        let found = current_directory
+            .as_deref()
+            .map_or_else(Vec::new, agent::definitions::manifests);
+        merge_candidates(found, recorded, |path| {
+            manifest::resolve(path).map(|resolved| resolved.agent.metadata.name)
+        })
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Merges the manifests `found` for the working directory with the `recorded` ones resources were
+/// applied from into one candidate per file, however many paths reach it, named by `name`.
+///
+/// A recorded manifest that cannot be read stays listed so its error is visible. A found one that
+/// has gone since it was found is left out.
+fn merge_candidates(
+    found: Vec<PathBuf>,
+    mut recorded: Vec<PathBuf>,
+    name: impl Fn(&Path) -> Result<String, Error>,
+) -> Vec<ManifestCandidate> {
     recorded.sort();
     recorded.dedup();
-    let found = current_directory.map_or_else(Vec::new, agent::definitions::manifests);
     let paths = found
         .into_iter()
         .map(|path| (path, false))
@@ -837,8 +904,8 @@ fn manifest_candidates_blocking(current_directory: Option<&Path>, agents: &[Agen
             candidates[index].add_equivalent_path(path);
             continue;
         }
-        let name = match manifest::resolve(&path) {
-            Ok(resolved) => Ok(resolved.agent.metadata.name),
+        let name = match name(&path) {
+            Ok(name) => Ok(name),
             Err(error) if recorded || path.exists() => Err(error.to_string()),
             Err(_) => continue,
         };
@@ -863,6 +930,33 @@ async fn create(
             form.error = Some(error.to_string());
             app.modal = Some(Modal::CreateAgent(form));
         }
+    }
+}
+
+/// Applies a volume manifest, as `name` when given; a rejection reopens the form it came from with the
+/// error, or reports it.
+async fn apply_volume(
+    app: &mut App,
+    client: &Client,
+    manifest: PathBuf,
+    name: Option<String>,
+    form: Option<VolumeForm>,
+) {
+    let applied = async {
+        let mut request = crate::read_volume_request(manifest)?;
+        if let Some(name) = name {
+            request.volume.metadata.name = name;
+        }
+        client.apply_volume(request).await
+    }
+    .await;
+    match (applied, form) {
+        (Ok(volume), _) => app.volume_applied(volume, Instant::now()),
+        (Err(error), Some(mut form)) => {
+            form.error = Some(error.to_string());
+            app.modal = Some(Modal::ApplyVolume(form));
+        }
+        (Err(error), None) => app.error = Some(error.to_string()),
     }
 }
 
@@ -1188,6 +1282,63 @@ mod tests {
             ]
         );
         assert_eq!(candidates[2].name.as_deref(), Ok("mine"));
+    }
+
+    fn volume_yaml(name: &str) -> String {
+        format!(
+            "apiVersion: agents.platform/v1alpha1\nkind: Volume\nmetadata:\n  name: {name}\nspec:\n  type: copy\n  \
+             source: /data/{name}\n"
+        )
+    }
+
+    fn recorded_volume(name: &str, manifest: &Path) -> agent::volumes::Volume {
+        let volume = agent::volumes::decode(volume_yaml(name).as_bytes()).expect("test volume should decode");
+        super::app::tests::applied_from(volume, manifest)
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn volume_discovery_finds_manifests_by_kind_under_agents_and_beside_agent_definitions() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let cwd = empty_directory(root.path(), "cwd");
+        let shared = empty_directory(&cwd, "agents/_volumes");
+        std::fs::write(shared.join("apps.yaml"), volume_yaml("apps")).expect("flat volume");
+        let docs = empty_directory(&shared, "docs");
+        std::fs::write(docs.join("volume.yaml"), volume_yaml("docs")).expect("volume in a directory");
+        let worker = manifest_directory(&cwd, "agents/worker", &manifest_yaml("worker"));
+        std::fs::write(worker.join("data.yml"), volume_yaml("data")).expect("volume in an agent definition");
+        std::fs::write(worker.join("config.yaml"), "kind: ConfigMap\n").expect("other yaml");
+        std::fs::write(worker.join(".local.yaml"), volume_yaml("local")).expect("hidden volume beside an agent");
+        std::fs::write(worker.join("scratch.yaml"), volume_yaml("scratch")).expect("ignored volume beside an agent");
+        std::fs::write(cwd.join(".gitignore"), "scratch.yaml\n").expect("ignore file");
+        std::fs::write(shared.join("broken.yaml"), "kind: Volume\nmetadata: [").expect("unparsable yaml");
+        let hidden = empty_directory(&cwd, "agents/.hidden");
+        std::fs::write(hidden.join("secret.yaml"), volume_yaml("hidden")).expect("hidden volume");
+        let elsewhere = empty_directory(root.path(), "elsewhere");
+        std::fs::write(elsewhere.join("logs.yaml"), volume_yaml("logs")).expect("recorded volume");
+        let invalid = elsewhere.join("invalid.yaml");
+        std::fs::write(&invalid, "apiVersion: agents.platform/v1alpha1\nkind: Volume\n").expect("invalid");
+        let volumes = [
+            recorded_volume("logs", &elsewhere.join("logs.yaml")),
+            recorded_volume("apps", &shared.join("apps.yaml")),
+            recorded_volume("invalid", &invalid),
+        ];
+
+        let candidates = volume_candidates(Some(cwd.clone()), volumes.to_vec()).await;
+
+        let found: Vec<(&Path, Result<&str, ()>)> = candidates
+            .iter()
+            .map(|candidate| (candidate.path.as_path(), candidate.name.as_deref().map_err(|_| ())))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (shared.join("apps.yaml").as_path(), Ok("apps")),
+                (docs.join("volume.yaml").as_path(), Ok("docs")),
+                (worker.join("data.yml").as_path(), Ok("data")),
+                (invalid.as_path(), Err(())),
+                (elsewhere.join("logs.yaml").as_path(), Ok("logs")),
+            ]
+        );
     }
 
     #[tokio::test(flavor = "local")]

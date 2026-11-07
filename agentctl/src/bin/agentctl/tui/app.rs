@@ -134,6 +134,21 @@ const FORWARD_VIEW_HINTS: [Hint; 4] = [
     Hint::key("q", "back", KeyCode::Char('q')),
 ];
 
+const VOLUME_VIEW_HINTS: [Hint; 5] = [
+    Hint::key("c", "new volume", KeyCode::Char('c')),
+    Hint::key("a", "apply again", KeyCode::Char('a')),
+    Hint::key("s", "describe", KeyCode::Char('s')),
+    Hint::modified("ctrl-d", "delete", KeyCode::Char('d'), KeyModifiers::CONTROL),
+    Hint::key("q", "back", KeyCode::Char('q')),
+];
+
+/// Key hints of the apply volume form, shared by the modal and the footer.
+pub(crate) const APPLY_VOLUME_HINTS: [Hint; 3] = [
+    Hint::key("enter", "apply", KeyCode::Enter),
+    Hint::display("↑/↓", "select"),
+    Hint::key("esc", "cancel", KeyCode::Esc),
+];
+
 // Selection hints come most used first, so a footer too narrow for all of
 // them drops the rarest.
 const AGENT_HINTS: [Hint; 12] = [
@@ -248,6 +263,7 @@ pub(crate) const HELP: [&[HelpSection]; 2] = [
                 ("/", "filter by name or state"),
                 ("c", "create an agent"),
                 ("F", "port forwards"),
+                ("V", "volumes"),
                 ("q", "quit"),
             ],
         ),
@@ -316,6 +332,9 @@ pub(crate) struct App {
     pub(crate) forwards: Vec<ForwardEntry>,
     pub(crate) view: View,
     pub(crate) forward_selected: usize,
+    /// Volumes, by name, as last reported.
+    pub(crate) volumes: Vec<agent::volumes::Volume>,
+    pub(crate) volume_selected: usize,
     pub(crate) creating: usize,
     /// Prompts being sent.
     pub(crate) prompting: usize,
@@ -332,6 +351,7 @@ pub(crate) struct App {
     pub(crate) notice: Option<(String, Instant)>,
     pub(crate) discovering: bool,
     pub(crate) queued_candidates: Option<Vec<ManifestCandidate>>,
+    pub(crate) discovering_volumes: bool,
     /// Editors and whether the terminal is remote, which the open menu depends on.
     pub(crate) environment: Environment,
     /// Whether OpenSSH reaches agents through the generated configuration, as
@@ -385,6 +405,7 @@ impl ForwardEntry {
 pub(crate) enum View {
     Tree,
     Forwards,
+    Volumes,
 }
 
 pub(crate) struct Group {
@@ -463,6 +484,7 @@ pub(crate) enum Modal {
     },
     NewSession(SessionForm),
     CreateAgent(CreateForm),
+    ApplyVolume(VolumeForm),
     PortForward(ForwardForm),
     Filter,
     Prompt(PromptForm),
@@ -949,6 +971,72 @@ fn wrapped_index(current: usize, length: usize, delta: isize) -> usize {
     usize::try_from((current + delta).rem_euclid(length)).unwrap_or_default()
 }
 
+/// Apply-volume form state: a picker over the volume manifests discovered.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct VolumeForm {
+    pub(crate) candidates: Vec<ManifestCandidate>,
+    pub(crate) selected: usize,
+    pub(crate) error: Option<String>,
+}
+
+impl VolumeForm {
+    /// Preselects the first manifest declaring a volume that does not exist yet, since the form is
+    /// opened to add one.
+    pub(crate) fn new(candidates: Vec<ManifestCandidate>, volumes: &[agent::volumes::Volume]) -> Self {
+        let selected = candidates
+            .iter()
+            .position(|candidate| {
+                candidate
+                    .name
+                    .as_ref()
+                    .is_ok_and(|name| volumes.iter().all(|volume| volume.metadata.name != *name))
+            })
+            .unwrap_or_default();
+        Self {
+            candidates,
+            selected,
+            error: None,
+        }
+    }
+
+    pub(crate) fn candidate(&self) -> Option<&ManifestCandidate> {
+        self.candidates.get(self.selected)
+    }
+
+    /// Applies one key press; a submitted or cancelled form returns its Action.
+    fn key(&mut self, key: KeyEvent) -> Option<Action> {
+        match key.code {
+            KeyCode::Esc => return Some(Action::None),
+            KeyCode::Enter => match self.submission() {
+                Ok(action) => return Some(action),
+                Err(invalid) => self.error = Some(invalid),
+            },
+            KeyCode::Down | KeyCode::Right | KeyCode::Tab | KeyCode::Char('j') => self.select(1),
+            KeyCode::Up | KeyCode::Left | KeyCode::BackTab | KeyCode::Char('k') => self.select(-1),
+            _ => {}
+        }
+        None
+    }
+
+    fn select(&mut self, delta: isize) {
+        self.selected = wrapped_index(self.selected, self.candidates.len(), delta);
+        self.error = None;
+    }
+
+    fn submission(&self) -> Result<Action, String> {
+        let candidate = self.candidate().ok_or_else(|| {
+            "no volume manifests found under agents/; write one with kind: Volume, or apply one with agentctl apply -f"
+                .to_owned()
+        })?;
+        candidate.name.as_ref().map_err(Clone::clone)?;
+        Ok(Action::ApplyVolume {
+            manifest: candidate.path.clone(),
+            name: None,
+            form: Some(self.clone()),
+        })
+    }
+}
+
 /// k9s-style port-forward form state.
 pub(crate) struct ForwardForm {
     pub(crate) agent: String,
@@ -1050,6 +1138,7 @@ pub(crate) enum MouseAction {
     FoldTree(String),
     MoveTree(isize),
     MoveForward(isize),
+    MoveVolume(isize),
     ScrollDetail(isize),
     FocusSessionField(SessionField),
     SelectHarness(usize),
@@ -1059,6 +1148,8 @@ pub(crate) enum MouseAction {
         delta: isize,
     },
     FocusForwardField(ForwardField),
+    /// Moves the apply volume form's picker by this many manifests.
+    SelectVolumeManifest(isize),
     /// Chooses the open menu's item at this index.
     ChooseOpen(usize),
 }
@@ -1072,6 +1163,8 @@ pub(crate) enum RowTarget {
     Tree(TreeRowId),
     /// A port forward by its stable ID.
     Forward(u64),
+    /// A volume by its name.
+    Volume(String),
 }
 
 /// Identity of one tree row.
@@ -1137,6 +1230,18 @@ pub(crate) enum Action {
     },
     Restart {
         agent: String,
+    },
+    DeleteVolume {
+        volume: String,
+    },
+    /// Discovers volume manifests to offer in the apply volume form.
+    OpenApplyVolume,
+    /// Applies a volume manifest, as the volume `name` when given rather than the manifest's. A
+    /// rejection reopens `form`, when it came from one.
+    ApplyVolume {
+        manifest: PathBuf,
+        name: Option<String>,
+        form: Option<VolumeForm>,
     },
     DeleteSession {
         agent: String,
@@ -1226,6 +1331,8 @@ impl App {
             forwards: Vec::new(),
             view: View::Tree,
             forward_selected: 0,
+            volumes: Vec::new(),
+            volume_selected: 0,
             creating: 0,
             prompting: 0,
             transcript: None,
@@ -1234,6 +1341,7 @@ impl App {
             show_archived: false,
             notice: None,
             discovering: false,
+            discovering_volumes: false,
             queued_candidates: None,
             environment: Environment::default(),
             ssh_setup: SshSetup::Unknown,
@@ -1490,10 +1598,11 @@ impl App {
         if self.error.is_some() {
             return self.error_key(key);
         }
-        if self.view == View::Forwards {
-            return self.forwards_key(key);
+        match self.view {
+            View::Forwards => self.forwards_key(key),
+            View::Volumes => self.volumes_key(key),
+            View::Tree => self.main_key(key),
         }
-        self.main_key(key)
     }
 
     /// The error screen renders over the tree or forwards view until dismissed.
@@ -1529,6 +1638,7 @@ impl App {
                 let code = match target {
                     RowTarget::Tree(_) => KeyCode::Enter,
                     RowTarget::Forward(_) => KeyCode::Char('e'),
+                    RowTarget::Volume(_) => return Action::None,
                 };
                 self.on_key(KeyEvent::new(code, KeyModifiers::NONE))
             }
@@ -1540,6 +1650,12 @@ impl App {
             }
             MouseAction::MoveTree(delta) => {
                 self.move_selection_clamped(delta);
+                Action::None
+            }
+            MouseAction::MoveVolume(delta) => {
+                if !self.volumes.is_empty() {
+                    self.volume_selected = offset_clamped(self.volume_selected, self.volumes.len() - 1, delta);
+                }
                 Action::None
             }
             MouseAction::MoveForward(delta) => {
@@ -1577,6 +1693,12 @@ impl App {
             MouseAction::SelectCreate { field, delta } => {
                 if let Some(Modal::CreateAgent(form)) = &mut self.modal {
                     form.field = field;
+                    form.select(delta);
+                }
+                Action::None
+            }
+            MouseAction::SelectVolumeManifest(delta) => {
+                if let Some(Modal::ApplyVolume(form)) = &mut self.modal {
                     form.select(delta);
                 }
                 Action::None
@@ -1620,6 +1742,12 @@ impl App {
                 };
                 self.forward_selected = index;
             }
+            RowTarget::Volume(name) => {
+                let Some(index) = self.volumes.iter().position(|volume| volume.metadata.name == *name) else {
+                    return false;
+                };
+                self.volume_selected = index;
+            }
         }
         true
     }
@@ -1645,6 +1773,7 @@ impl App {
                 self.rebuild();
             }
             KeyCode::Char('F') => self.view = View::Forwards,
+            KeyCode::Char('V') => self.view = View::Volumes,
             KeyCode::Char('c') => return Action::OpenCreate,
             KeyCode::Char('X') => {
                 let agents: Vec<String> = self
@@ -1712,6 +1841,105 @@ impl App {
             _ => {}
         }
         Action::None
+    }
+
+    fn volumes_key(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q' | 'V') => self.view = View::Tree,
+            KeyCode::Char('?') => self.modal = Some(Modal::Help),
+            KeyCode::Down | KeyCode::Char('j') if !self.volumes.is_empty() => {
+                self.volume_selected = wrapped_index(self.volume_selected, self.volumes.len(), 1);
+            }
+            KeyCode::Up | KeyCode::Char('k') if !self.volumes.is_empty() => {
+                self.volume_selected = wrapped_index(self.volume_selected, self.volumes.len(), -1);
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(volume) = self.volumes.get(self.volume_selected) {
+                    return Action::DeleteVolume {
+                        volume: volume.metadata.name.clone(),
+                    };
+                }
+            }
+            KeyCode::Char('c') => return Action::OpenApplyVolume,
+            KeyCode::Char('a') => {
+                if let Some(volume) = self.volumes.get(self.volume_selected) {
+                    let name = &volume.metadata.name;
+                    match volume.status.manifest_path() {
+                        Some(manifest) => {
+                            // The volume may have been applied under another name than its manifest's.
+                            return Action::ApplyVolume {
+                                manifest: manifest.to_path_buf(),
+                                name: Some(name.clone()),
+                                form: None,
+                            };
+                        }
+                        None => {
+                            self.error = Some(format!(
+                                "volume/{name} was applied without its manifest's path; apply it with agentctl apply -f"
+                            ));
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('s') | KeyCode::Enter => {
+                if let Some(volume) = self.volumes.get(self.volume_selected) {
+                    self.detail = Some(Detail::text(
+                        format!("volume/{}", volume.metadata.name),
+                        format::describe_volume_lines(volume),
+                    ));
+                }
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// Opens the apply volume form for finished discovery, unless the volumes view was left meanwhile.
+    pub(crate) fn volume_manifests_discovered(&mut self, candidates: Vec<ManifestCandidate>) {
+        if std::mem::take(&mut self.discovering_volumes) && self.idle() && self.view == View::Volumes {
+            self.modal = Some(Modal::ApplyVolume(VolumeForm::new(candidates, &self.volumes)));
+        }
+    }
+
+    /// Shows a volume this TUI just applied, ahead of the watch reply that will report it, selects
+    /// it and says whether applying took a new copy.
+    pub(crate) fn volume_applied(&mut self, volume: agent::volumes::Volume, now: Instant) {
+        let name = volume.metadata.name.clone();
+        let previous = self
+            .volumes
+            .iter()
+            .find(|known| known.metadata.name == name)
+            .and_then(|known| known.status.latest())
+            .map(|revision| revision.number);
+        let notice = match (volume.status.copying(), volume.status.latest()) {
+            (Some(copy), _) => format!("volume/{name} is copying revision {}", copy.number),
+            (None, Some(revision)) if previous == Some(revision.number) => {
+                format!("volume/{name} is unchanged since revision {}", revision.number)
+            }
+            _ => format!("volume/{name} applied"),
+        };
+        let mut volumes = std::mem::take(&mut self.volumes);
+        volumes.retain(|known| known.metadata.name != name);
+        volumes.push(volume);
+        volumes.sort_by(|left, right| left.metadata.name.cmp(&right.metadata.name));
+        self.volume_selected = volumes
+            .iter()
+            .position(|known| known.metadata.name == name)
+            .unwrap_or_default();
+        self.volumes = volumes;
+        self.notice = Some((notice, now));
+    }
+
+    /// Replaces the volumes, keeping the selected one by its name.
+    pub(crate) fn set_volumes(&mut self, volumes: Vec<agent::volumes::Volume>) {
+        let selected = self
+            .volumes
+            .get(self.volume_selected)
+            .map(|volume| volume.metadata.name.clone());
+        self.volumes = volumes;
+        self.volume_selected = selected
+            .and_then(|name| self.volumes.iter().position(|volume| volume.metadata.name == name))
+            .unwrap_or_else(|| self.volume_selected.min(self.volumes.len().saturating_sub(1)));
     }
 
     fn agent_key(&mut self, key: KeyEvent, group: usize) -> Action {
@@ -1915,6 +2143,13 @@ impl App {
                     return action;
                 }
                 self.modal = Some(Modal::CreateAgent(form));
+                Action::None
+            }
+            Some(Modal::ApplyVolume(mut form)) => {
+                if let Some(action) = form.key(key) {
+                    return action;
+                }
+                self.modal = Some(Modal::ApplyVolume(form));
                 Action::None
             }
             Some(Modal::PortForward(mut form)) => {
@@ -2134,6 +2369,26 @@ impl App {
                     .map(|line| line.text.as_str()),
             ));
         }
+        let volumes = agent
+            .spec
+            .sandbox
+            .mounts
+            .iter()
+            .filter_map(|mount| match mount {
+                agent::MountSpec::Volume {
+                    volume,
+                    target,
+                    read_only,
+                    ..
+                } => Some(self.volume_mount_lines(agent, volume, target, *read_only)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if !volumes.is_empty() {
+            lines.push(String::new());
+            lines.push("Volumes · V manage".to_owned());
+            lines.extend(volumes.into_iter().flatten());
+        }
         lines.extend([String::new(), "Connect · o open…".to_owned()]);
         let desktop = self
             .forwards
@@ -2147,6 +2402,27 @@ impl App {
             desktop.as_deref(),
         ));
         lines
+    }
+
+    /// The volume an agent mounts at `target`, with the revision it uses once agentd has chosen it.
+    fn volume_mount_lines(
+        &self,
+        agent: &Agent,
+        volume: &str,
+        target: &sandbox::SandboxPath,
+        read_only: bool,
+    ) -> [String; 2] {
+        let mounted = agent.status.volumes.iter().find(|mounted| mounted.target == *target);
+        let revision = match mounted.map(|mounted| mounted.revision) {
+            Some(Some(revision)) if !read_only => format!("revision {revision}, writable"),
+            Some(Some(revision)) => format!("revision {revision}"),
+            Some(None) => "left out until the agent is recreated".to_owned(),
+            None if self.volumes.iter().any(|candidate| candidate.metadata.name == volume) => {
+                "no revision yet".to_owned()
+            }
+            None => "does not exist yet".to_owned(),
+        };
+        [format!("  {volume}, {revision}"), format!("    at {}", target.as_str())]
     }
 
     /// The agent whose provisioning the open detail follows.
@@ -2544,6 +2820,7 @@ impl App {
                 | Modal::ConfirmQuit => &CONFIRM_HINTS,
                 Modal::NewSession(_) => &NEW_SESSION_HINTS,
                 Modal::CreateAgent { .. } => &CREATE_AGENT_HINTS,
+                Modal::ApplyVolume(_) => &APPLY_VOLUME_HINTS,
                 Modal::PortForward { .. } => &PORT_FORWARD_HINTS,
                 Modal::Filter => &FILTER_HINTS,
                 Modal::Prompt(_) => &PROMPT_HINTS,
@@ -2556,8 +2833,10 @@ impl App {
         if self.detail.is_some() {
             return &DETAIL_HINTS;
         }
-        if self.view == View::Forwards {
-            return &FORWARD_VIEW_HINTS;
+        match self.view {
+            View::Forwards => return &FORWARD_VIEW_HINTS,
+            View::Volumes => return &VOLUME_VIEW_HINTS,
+            View::Tree => {}
         }
         match self.selected_row() {
             Some(Row::Agent(group)) => match self.group_agent(group) {
@@ -2651,6 +2930,10 @@ fn agent_state(agent: &Agent) -> AgentState {
     // Retried like any transient failure, but nothing reaches the guest until it responds again.
     if agent.status.unresponsive().is_some() {
         return failed(Tone::Red, "Unresponsive", message(), entered);
+    }
+    // Nothing is provisioned until the volumes it mounts have a copy, so it says which and why.
+    if failure.is_none() && ready.is_some_and(|ready| ready.reason == Condition::REASON_WAITING_FOR_VOLUMES) {
+        return state(Tone::Yellow, "Waiting", message(), entered);
     }
     match (failure, provisioning(agent)) {
         (Some(FailureKind::Invalid), _) => failed(Tone::Red, "Failed", message(), entered),
@@ -2786,13 +3069,281 @@ fn session_detail(session: &Session) -> Detail {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    pub(crate) fn volume(name: &str, agents: &[&str]) -> agent::volumes::Volume {
+        agent::volumes::Volume {
+            api_version: agent::API_VERSION.into(),
+            kind: agent::volumes::KIND.into(),
+            metadata: agent::Metadata {
+                name: name.into(),
+                generation: 1,
+                deletion_timestamp: None,
+                restart_timestamp: None,
+            },
+            spec: agent::volumes::VolumeSpec::Copy {
+                source: PathBuf::from("/data/apps"),
+            },
+            status: agent::volumes::VolumeStatus {
+                provenance: None,
+                revisions: vec![agent::volumes::Revision {
+                    number: 2,
+                    created: OffsetDateTime::now_utc(),
+                    fingerprint: "applied".into(),
+                    files: 83_200,
+                    bytes: 712_000_000,
+                    storage: agent::volumes::RevisionStorage {
+                        provider: agent::sandbox::ProviderId::new("memory").expect("Provider ID"),
+                        volume: "1c9e3f6a-0b2d-4c8e-9a7f-5d4e3c2b1a00"
+                            .parse()
+                            .expect("Provider Volume ID"),
+                    },
+                    agents: agents.iter().map(|agent| (*agent).to_owned()).collect(),
+                    progress: None,
+                }],
+                copy: None,
+            },
+        }
+    }
+
+    /// A copy of revision `number` being taken.
+    pub(crate) fn copying(number: u64) -> agent::volumes::CopyStatus {
+        agent::volumes::CopyStatus {
+            number,
+            created: OffsetDateTime::now_utc(),
+            fingerprint: "changed".into(),
+            files: 83_200,
+            bytes: 712_000_000,
+            failure: None,
+            progress: None,
+        }
+    }
+
+    /// `volume` as last applied from `manifest`.
+    pub(crate) fn applied_from(mut volume: agent::volumes::Volume, manifest: &Path) -> agent::volumes::Volume {
+        volume.status.provenance = Some(agent::Provenance {
+            source_directory: manifest.parent().expect("manifest directory").to_path_buf(),
+            manifest_path: Some(manifest.to_path_buf()),
+            env_file: None,
+        });
+        volume
+    }
+
+    #[test]
+    fn the_volumes_view_lists_volumes_and_deletes_the_selected_one() {
+        let mut app = App::new();
+        app.apply_snapshot(vec![agent("worker")], Vec::new());
+        app.set_volumes(vec![volume("apps", &["worker"]), volume("docs", &[])]);
+        app.on_key(key(KeyCode::Char('V')));
+        assert_eq!(app.view, View::Volumes);
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(
+            app.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            Action::DeleteVolume { volume: "docs".into() }
+        );
+        app.set_volumes(vec![volume("docs", &[])]);
+        assert_eq!(app.volume_selected, 0, "the selection follows the volume by name");
+        app.on_key(key(KeyCode::Char('q')));
+        assert_eq!(app.view, View::Tree);
+    }
+
+    /// An agent mounting the volume `apps`, with the revisions agentd chose for it.
+    fn mounting(name: &str, read_only: bool, chosen: &[Option<u64>]) -> Agent {
+        let mut agent = agent(name);
+        let target = sandbox::SandboxPath::new("/workspace/apps");
+        agent.spec.sandbox.mounts.push(agent::MountSpec::Volume {
+            volume: "apps".into(),
+            target: target.clone(),
+            read_only,
+            optional: true,
+        });
+        agent.status.volumes = chosen
+            .iter()
+            .map(|&revision| agent::MountedVolume {
+                target: target.clone(),
+                volume: "apps".into(),
+                revision,
+            })
+            .collect();
+        agent
+    }
+
+    #[test]
+    fn the_agent_panel_names_the_revision_of_each_volume_it_mounts() {
+        let mut app = App::new();
+        app.apply_snapshot(vec![mounting("worker", true, &[])], Vec::new());
+        let missing = app.agent_panel_lines("worker");
+        assert!(
+            missing.iter().any(|line| line == "  apps, does not exist yet"),
+            "{missing:?}"
+        );
+        app.set_volumes(vec![volume("apps", &[])]);
+        let waiting = app.agent_panel_lines("worker");
+        assert!(
+            waiting.iter().any(|line| line == "  apps, no revision yet"),
+            "{waiting:?}"
+        );
+        app.apply_snapshot(vec![mounting("worker", true, &[Some(2)])], Vec::new());
+        let lines = app.agent_panel_lines("worker");
+        assert!(
+            lines
+                .windows(2)
+                .any(|pair| pair == ["  apps, revision 2", "    at /workspace/apps"]),
+            "{lines:?}"
+        );
+        app.apply_snapshot(vec![mounting("worker", false, &[Some(2)])], Vec::new());
+        let lines = app.agent_panel_lines("worker");
+        assert!(lines.contains(&"  apps, revision 2, writable".to_owned()), "{lines:?}");
+    }
+
+    #[test]
+    fn the_agent_panel_says_an_optional_volume_was_left_out() {
+        let mut app = App::new();
+        app.apply_snapshot(vec![mounting("reader", true, &[None])], Vec::new());
+        let lines = app.agent_panel_lines("reader");
+        assert!(
+            lines.contains(&"  apps, left out until the agent is recreated".to_owned()),
+            "{lines:?}"
+        );
+    }
+
+    fn volume_candidate(path: &str, name: &str) -> ManifestCandidate {
+        ManifestCandidate::new(PathBuf::from(path), Ok(name.to_owned()))
+    }
+
+    #[test]
+    fn the_volumes_view_applies_a_discovered_manifest_preselecting_a_new_volume() {
+        let mut app = App::new();
+        app.set_volumes(vec![volume("apps", &[])]);
+        app.on_key(key(KeyCode::Char('V')));
+        assert_eq!(app.on_key(key(KeyCode::Char('c'))), Action::OpenApplyVolume);
+        app.discovering_volumes = true;
+        app.volume_manifests_discovered(vec![
+            volume_candidate("/work/agents/_volumes/apps.yaml", "apps"),
+            volume_candidate("/work/agents/_volumes/docs/volume.yaml", "docs"),
+        ]);
+        assert_eq!(app.hints(), &APPLY_VOLUME_HINTS);
+        let Some(Modal::ApplyVolume(form)) = &app.modal else {
+            panic!("the apply volume form should open");
+        };
+        assert_eq!(
+            form.candidate().map(|candidate| candidate.path.as_path()),
+            Some(Path::new("/work/agents/_volumes/docs/volume.yaml")),
+            "the form opens on the volume that does not exist yet"
+        );
+        let form = form.clone();
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::ApplyVolume {
+                manifest: PathBuf::from("/work/agents/_volumes/docs/volume.yaml"),
+                name: None,
+                form: Some(form),
+            }
+        );
+    }
+
+    #[test]
+    fn discovery_finishing_after_the_volumes_view_was_left_opens_nothing() {
+        let mut app = App::new();
+        app.on_key(key(KeyCode::Char('V')));
+        app.on_key(key(KeyCode::Char('c')));
+        app.discovering_volumes = true;
+        app.on_key(key(KeyCode::Char('q')));
+        app.volume_manifests_discovered(vec![volume_candidate("/work/agents/_volumes/apps.yaml", "apps")]);
+        assert!(app.modal.is_none());
+        assert!(!app.discovering_volumes);
+    }
+
+    #[test]
+    fn the_apply_volume_form_without_manifests_says_where_to_write_one() {
+        let mut app = App::new();
+        app.view = View::Volumes;
+        app.discovering_volumes = true;
+        app.volume_manifests_discovered(Vec::new());
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        let Some(Modal::ApplyVolume(form)) = &app.modal else {
+            panic!("the form should stay open");
+        };
+        assert!(
+            form.error
+                .as_deref()
+                .is_some_and(|error| error.contains("kind: Volume"))
+        );
+    }
+
+    #[test]
+    fn a_volume_is_applied_again_from_its_manifest_and_described() {
+        let mut app = App::new();
+        let apps = applied_from(volume("apps", &[]), Path::new("/work/agents/_volumes/apps.yaml"));
+        app.set_volumes(vec![apps, volume("docs", &[])]);
+        app.view = View::Volumes;
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('a'))),
+            Action::ApplyVolume {
+                manifest: PathBuf::from("/work/agents/_volumes/apps.yaml"),
+                name: Some("apps".to_owned()),
+                form: None,
+            }
+        );
+        app.on_key(key(KeyCode::Char('s')));
+        let detail = app.detail.take().expect("described");
+        assert_eq!(detail.title, "volume/apps");
+        assert!(
+            detail
+                .lines
+                .iter()
+                .any(|line| line == "Manifest:  /work/agents/_volumes/apps.yaml")
+        );
+
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.on_key(key(KeyCode::Char('a'))), Action::None);
+        assert!(
+            app.error
+                .as_deref()
+                .is_some_and(|error| error.contains("agentctl apply -f")),
+            "a volume applied without its manifest's path says how to apply it"
+        );
+    }
+
+    #[test]
+    fn applying_a_volume_says_whether_it_takes_a_new_copy() {
+        let mut app = App::new();
+        app.set_volumes(vec![volume("apps", &[]), volume("logs", &[])]);
+        app.view = View::Volumes;
+        let now = Instant::now();
+
+        app.volume_applied(volume("apps", &[]), now);
+        assert_eq!(
+            app.notice.as_ref().map(|(notice, _)| notice.as_str()),
+            Some("volume/apps is unchanged since revision 2")
+        );
+
+        let mut changed = volume("apps", &[]);
+        changed.status.copy = Some(copying(3));
+        app.volume_applied(changed, now);
+        assert_eq!(
+            app.notice.as_ref().map(|(notice, _)| notice.as_str()),
+            Some("volume/apps is copying revision 3")
+        );
+
+        let mut created = volume("docs", &[]);
+        created.status.revisions.clear();
+        created.status.copy = Some(copying(1));
+        app.volume_applied(created, now);
+        assert_eq!(
+            app.notice.as_ref().map(|(notice, _)| notice.as_str()),
+            Some("volume/docs is copying revision 1")
+        );
+        let names: Vec<&str> = app.volumes.iter().map(|volume| volume.metadata.name.as_str()).collect();
+        assert_eq!(names, ["apps", "docs", "logs"]);
+        assert_eq!(app.volume_selected, 1, "the applied volume is selected");
     }
 
     fn agent_named(name: &str, harnesses: &str) -> Agent {
@@ -4077,6 +4628,25 @@ mod tests {
             progress,
         });
         agent
+    }
+
+    #[test]
+    fn an_agent_waiting_for_a_volume_says_which_and_why() {
+        let mut waiting = agent("analyst");
+        waiting.status.conditions.push(agent::Condition {
+            kind: "Ready".into(),
+            status: ConditionStatus::False,
+            reason: Condition::REASON_WAITING_FOR_VOLUMES.into(),
+            message: "volume \"apps\" is taking its first copy".into(),
+            last_transition_time: None,
+        });
+        let mut app = App::new();
+        app.apply_snapshot(vec![waiting], Vec::new());
+        let rows = app.render_rows();
+        assert_eq!(
+            (rows[0].state, rows[0].tone, rows[0].detail.as_str()),
+            ("Waiting", Tone::Yellow, "volume \"apps\" is taking its first copy")
+        );
     }
 
     #[test]
