@@ -19,7 +19,7 @@ const MAX_SELECTION_CHARACTERS: usize = 128;
 pub use login::{LoginName, LoginSet};
 pub use skills::Skill;
 pub(crate) use skills::{
-    INSTALL_RECORD, SkillFile, platform_skill, remove_linux as remove_skills_linux, valid_name as valid_skill_name,
+    INSTALL_RECORD, SkillFile, platform_skills, remove_linux as remove_skills_linux, valid_name as valid_skill_name,
 };
 
 /// Supported harnesses.

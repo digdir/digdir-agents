@@ -22,6 +22,8 @@ agents. The Rust workspace version is a build detail and is not tracked here.
   - `agentctl claude login work` and `agentctl codex login work` store one, and `list` and `logout` show and forget them. Your existing logins become `default`. ([#356](https://github.com/digdir/digdir-agents/pull/356))
   - `login: work` on a harness in an agent's manifest picks one. `login: [work, private]` or `login: any` gives the agent whichever the fewest other running agents use, and it keeps that one while it stays allowed and stored. ([#357](https://github.com/digdir/digdir-agents/pull/357))
 - `agentctl skills install` puts a skill where the coding agents on your machine, such as Claude Code, Codex and Pi, find it, for you with `--user` or for a repository with `--repo`, and running it again updates it. `--bundled agentctl` gives them the skill for driving agents. ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#340](https://github.com/digdir/digdir-agents/pull/340))
+- `agentctl new` makes a new agent with you: run it in a repository's checkout, and an agent builder asks what the agent is for, writes and tries its definition in the checkout or in `~/agent-definitions`, and tells you how to run it. ([your first agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#368](https://github.com/digdir/digdir-agents/pull/368))
+- Every agent gets an `agent-definition` skill for writing and changing agent definitions, its own included, and trying a change in a nested agent before proposing it. `agentctl skills install --bundled agent-definition` gives it to the coding agents on your machine. ([#368](https://github.com/digdir/digdir-agents/pull/368))
 
 ### Changed
 

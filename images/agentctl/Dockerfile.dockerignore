@@ -8,6 +8,9 @@
 !agentctl/Cargo.toml
 !agentctl/src/
 !agentctl/skills/
+!agents/agent-builder/agent.yaml
+!agents/agent-builder/instructions.md
+!agents/agent-builder/home/.claude/settings.json
 !sandbox/authorization/Cargo.toml
 !sandbox/authorization/src/
 !sandbox/core/Cargo.toml
