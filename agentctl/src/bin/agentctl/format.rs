@@ -93,8 +93,15 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
         )
     };
 
+    let uid = agent
+        .metadata
+        .uid
+        .as_ref()
+        .map_or_else(|| "-".into(), ToString::to_string);
+
     let mut lines = vec![
         format!("Name:       {}", agent.metadata.name),
+        format!("UID:        {uid}"),
         format!("Generation: {}", agent.metadata.generation),
         format!("Run state:  {:?}", agent.spec.run_state()),
         format!("Source:     {source}"),
@@ -496,6 +503,20 @@ mod tests {
             lines
                 .iter()
                 .any(|line| line.contains("SandboxReconcileFailed") && line.contains(" 3m "))
+        );
+    }
+
+    #[test]
+    fn describe_shows_the_uid() {
+        let mut agent: Agent =
+            serde_yaml_ng::from_str(include_str!("../../../tests/fixtures/agent.yaml")).expect("fixture manifest");
+        agent.metadata.uid = Some("38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"));
+
+        let lines = describe_agent_lines(&agent);
+
+        assert!(
+            lines.contains(&"UID:        38f41de4-6ff7-4679-ae46-678bc61e4dcb".to_owned()),
+            "{lines:#?}"
         );
     }
 
