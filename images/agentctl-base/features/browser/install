@@ -54,6 +54,11 @@ rm -rf /var/lib/apt/lists/*
 
 # This feature's files, copied after the packages so that dpkg installs over none of them.
 cp -R "${feature}/rootfs/." /
+# Its managed policy turns off the translation offer and spellchecking, whose bar and underlines cover pages in
+# screenshots and recordings, and which the agent has no use for. Chromium reads policies from a directory named after
+# its build, and Playwright's is Chrome for Testing.
+policies=/etc/opt/chrome_for_testing/policies
+grep -qaF "${policies}" "${chrome}" || { echo "Chromium build ${revision} does not read policies from ${policies}" >&2; exit 1; }
 
 # The bundled skill is installed user-wide where Claude Code, Codex and Pi look for skills;
 # `playwright-cli install --skills` would otherwise write it per working directory.
