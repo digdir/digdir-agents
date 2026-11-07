@@ -51,6 +51,28 @@ struct Arguments {
 enum Command {
     /// Open the terminal UI with every agent and session.
     Tui,
+    /// Create or update an agent from a manifest.
+    Apply {
+        /// Agent manifest path; defaults to ./agent.yaml.
+        #[arg(short = 'f', long = "filename", conflicts_with = "variant")]
+        filename: Option<PathBuf>,
+        /// Variant of the agent in the current directory.
+        #[arg(long, value_parser = parse_variant_name, conflicts_with = "filename")]
+        variant: Option<AgentVariantName>,
+        /// Override metadata.name so one manifest can create multiple agents.
+        #[arg(long)]
+        name: Option<String>,
+        /// File supplying declared manifest environment and secret values; defaults to `.env`
+        /// beside the manifest. Keep files containing secrets outside bind-mounted directories.
+        #[arg(long)]
+        env_file: Option<PathBuf>,
+        /// Stay attached after applying and show provisioning progress until the agent is Ready.
+        #[arg(long)]
+        wait: bool,
+        /// Maximum wait with `--wait`, written as seconds, minutes, or hours (for example `10m`).
+        #[arg(long, default_value = "10m", value_parser = parse_duration, requires = "wait")]
+        timeout: Duration,
+    },
     /// Create or attach to a named session in an agent sandbox.
     Attach {
         /// Session resource, optionally combined with its name (for example `session/s1`).
@@ -74,14 +96,6 @@ enum Command {
         #[command(flatten)]
         target: StopTarget,
     },
-    /// Stop an agent, or every agent, at once, as `stop --now` does: an emergency stop.
-    ///
-    /// The VMs end without shutting down; disks are kept, but what an agent wrote in its last
-    /// seconds may be lost. Without an agent, asks whether to stop every running agent.
-    Kill {
-        #[command(flatten)]
-        target: KillTarget,
-    },
     /// Start a stopped agent on its kept disk and wait until it is ready.
     Start {
         #[command(flatten)]
@@ -99,6 +113,14 @@ enum Command {
         /// seconds may be lost.
         #[arg(long)]
         now: bool,
+    },
+    /// Stop an agent, or every agent, at once, as `stop --now` does: an emergency stop.
+    ///
+    /// The VMs end without shutting down; disks are kept, but what an agent wrote in its last
+    /// seconds may be lost. Without an agent, asks whether to stop every running agent.
+    Kill {
+        #[command(flatten)]
+        target: KillTarget,
     },
     /// Sign agents in to Claude Code.
     Claude {
@@ -248,28 +270,6 @@ enum Command {
         /// Output format.
         #[arg(short = 'o', long, default_value = "table", value_enum)]
         output: OutputFormat,
-    },
-    /// Create or update an agent from a manifest.
-    Apply {
-        /// Agent manifest path; defaults to ./agent.yaml.
-        #[arg(short = 'f', long = "filename", conflicts_with = "variant")]
-        filename: Option<PathBuf>,
-        /// Variant of the agent in the current directory.
-        #[arg(long, value_parser = parse_variant_name, conflicts_with = "filename")]
-        variant: Option<AgentVariantName>,
-        /// Override metadata.name so one manifest can create multiple agents.
-        #[arg(long)]
-        name: Option<String>,
-        /// File supplying declared manifest environment and secret values; defaults to `.env`
-        /// beside the manifest. Keep files containing secrets outside bind-mounted directories.
-        #[arg(long)]
-        env_file: Option<PathBuf>,
-        /// Stay attached after applying and show provisioning progress until the agent is Ready.
-        #[arg(long)]
-        wait: bool,
-        /// Maximum wait with `--wait`, written as seconds, minutes, or hours (for example `10m`).
-        #[arg(long, default_value = "10m", value_parser = parse_duration, requires = "wait")]
-        timeout: Duration,
     },
     /// Request deletion of a resource.
     Delete {
@@ -2231,7 +2231,7 @@ mod tests {
             .take_while(|line| !line.trim().is_empty())
             .filter_map(|line| line.split_whitespace().next())
             .collect::<Vec<_>>();
-        assert_eq!(commands[..5], ["tui", "attach", "stop", "kill", "start"], "{help}");
+        assert_eq!(commands[..5], ["tui", "apply", "attach", "stop", "start"], "{help}");
         for hidden in ["ssh-proxy", "vnc-proxy"] {
             assert!(!commands.contains(&hidden), "{help}");
         }
