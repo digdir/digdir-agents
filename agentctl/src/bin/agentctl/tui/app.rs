@@ -3006,7 +3006,7 @@ fn agent_state(agent: &Agent) -> AgentState {
             || state(Tone::Cyan, String::new(), entered),
             |progress| state(Tone::Cyan, progress_summary(progress), Some(pass_started(progress))),
         ),
-        AgentPhase::Pending => state(Tone::Gray, String::new(), None),
+        AgentPhase::Pending | AgentPhase::Unknown => state(Tone::Gray, String::new(), None),
         AgentPhase::Ready => state(Tone::Green, String::new(), entered),
     }
 }
