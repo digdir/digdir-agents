@@ -54,10 +54,18 @@ follow without changing what clients read.
 | `Unresponsive` | The sandbox has stopped answering. |
 | `Failed` | The manifest cannot be provisioned as written. Applying a fixed one is the way out. |
 | `Stopping`, `Stopped` | Stopped by request, with the disk kept. |
+| `Restarting` | A restart was asked for, and the sandbox has not stopped for it yet. |
 | `Terminating` | Deletion has been requested. |
 
 `agentd` derives it from the fields the TUI combines today, in one place, and the TUI, `agentctl status`
-([#311](https://github.com/digdir/digdir-agents/pull/311)), T3 Code and a GUI read it.
+([#311](https://github.com/digdir/digdir-agents/pull/311)), T3 Code and a GUI read it. A client follows three rules
+with it:
+
+- A phase the client does not know means that the agent cannot be used, since `agentd` can add phases.
+- While `metadata.generation` is above `status.observedGeneration`, a change waits for a pass, and the phase still
+  describes the agent before it. A client that applies a change and then waits for `Ready` waits for
+  `observedGeneration` to catch up as well, as `apply --wait` does.
+- `ssh-info` answers for an agent in any phase, so a client checks the phase before it connects.
 
 Kubernetes moved away from a phase in favour of conditions, because one word hides detail. Here the conditions stay
 the detail. The phase is there because every client needs the same summary, and each one that computes it gets it
@@ -69,7 +77,8 @@ slightly wrong.
 [base images](../../../images/agentctl-base/README.md) do, once the sandbox is up. `status.sandbox.projects` lists
 them as paths in the sandbox. `ssh-info` gets `projectDirectory`: the repository's checkout when the image clones
 exactly one, and the working directory otherwise. Editors open that, and a client can offer the list when there are
-several.
+several. The list says what the image declares, not what is on disk. The image clones at boot, and an agent can be
+`Ready` before that is done, so a checkout may not be there yet, or ever when the clone fails.
 
 ### Labels
 
@@ -127,9 +136,10 @@ access:
     path: /
 ```
 
-The manifest is read on the host, so a sandbox cannot add views. The resource carries them, so a client lists an
-agent's views without knowing its image. Reaching a view, with a forward and a sign-in link, stays in #387. The name
-is written like a label value, such as `t3code`, since commands such as `connect` take it.
+`path` defaults to `/`, and the resource leaves out a path of `/`. The manifest is read on the host, so a sandbox cannot
+add views. The resource carries them, so a client lists an agent's views without knowing its image. Reaching a view,
+with a forward and a sign-in link, stays in #387. The name is written like a label value, such as `t3code`, since
+commands such as `connect` take it.
 
 Two things about `access` change with it. Today an access type takes no fields, and a view needs some. And
 [#395](https://github.com/digdir/digdir-agents/issues/395) merges `access` in variants by `type`, which allows one
@@ -137,16 +147,16 @@ entry per type. Views need `type` and `name` together as the key.
 
 A view needs no sign-in of the platform's own. Its forward listens on the host's loopback interface, which only the
 host reaches, not others on the host's network. Sign-in through a reverse proxy, such as with a device passkey, can
-come later as a `login` field on the view, with `login: none` for what exists now. `access: vnc` stays the direct VNC
-connection. A desktop in the browser, such as noVNC, is a `web` view.
+come later as a `login` field on the view, which is reserved until then, so a manifest that sets it is refused.
+`access: vnc` stays the direct VNC connection. A desktop in the browser, such as noVNC, is a `web` view.
 
 ### Agent definitions on disk
 
 `agentctl definitions [DIR] -o json` lists the agent definitions under a directory. For each manifest and variant it
-gives the path, the variant, the agent name it declares, the repository it belongs to and the applied agent that came
-from it, if one did. It uses the lookup the TUI has today and #309 gives `apply`, moved into the `agent` library, so
-the TUI, `apply`, T3 Code and a GUI find the same definitions. It is not a `get`, because the files are not resources
-in `agentd`.
+gives the path, the variant, the agent name it declares, the repository it belongs to and the applied agents that came
+from it, since `apply --name` can make several from one file. It uses the lookup the TUI has today and #309 gives
+`apply`, moved into the `agent` library, so the TUI, `apply`, T3 Code and a GUI find the same definitions. It is not a
+`get`, because the files are not resources in `agentd`.
 
 ## Where a client's choice lives
 
