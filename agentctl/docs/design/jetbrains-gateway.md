@@ -133,7 +133,8 @@ git ignores and that extends it, as Saman's `agent.desktop.yaml` adds a desktop.
 into three limits of variants:
 
 - **Lists replace.** A variant merges mappings but replaces lists. To add `ssh` to `access` it repeats the base's whole
-  list, and an entry the base adds later is silently lost.
+  list, and an entry the base adds later is silently lost. Merging keyed lists by key, as proposed below, removes this
+  limit.
 - **A variant cannot build on its base's image.** It can select a `target` stage the base's Dockerfile has, or copy
   the Dockerfile, as Saman's `Dockerfile.desktop` does.
 - **`extends` names only a sibling.** A preference kept elsewhere, such as a team's IDE setup in another repository,
