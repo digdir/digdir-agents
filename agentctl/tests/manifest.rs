@@ -322,6 +322,16 @@ fn status_tolerates_unknown_fields_inside_provenance_and_conditions() {
 }
 
 #[test]
+fn status_reads_a_phase_it_does_not_know_as_unknown() {
+    let status: agent::Status = serde_json::from_value(serde_json::json!({
+        "observedGeneration": 1,
+        "phase": "Hibernating"
+    }))
+    .expect("a newer phase should decode");
+    assert_eq!(status.phase, Some(agent::AgentPhase::Unknown));
+}
+
+#[test]
 fn rejects_skills_without_a_directory_name_or_with_duplicate_names() {
     let mut agent = support::agent("worker");
     agent.spec.skills = vec![agent::SkillSpec {

@@ -1114,6 +1114,10 @@ pub enum AgentPhase {
     Stopped,
     /// Deletion was asked for.
     Terminating,
+    /// A phase that a newer `agentd` reports and this build does not know. Phases can be added, so a client reads one
+    /// it does not know as this, and treats the agent as not usable, rather than failing to read the agent at all.
+    #[serde(other)]
+    Unknown,
 }
 
 impl AgentPhase {
@@ -1133,6 +1137,7 @@ impl AgentPhase {
             Self::Restarting => "Restarting",
             Self::Stopped => "Stopped",
             Self::Terminating => "Terminating",
+            Self::Unknown => "Unknown",
         }
     }
 }
