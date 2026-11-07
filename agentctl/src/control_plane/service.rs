@@ -319,8 +319,8 @@ impl ControlPlane {
     ///
     /// # Errors
     ///
-    /// Returns an error when no agent matches, multiple agents share the closest
-    /// source directory, or storage cannot be read.
+    /// Returns an error when no agent matches, several are found equally close, or
+    /// storage cannot be read.
     pub async fn resolve_directory(&self, directory: &std::path::Path) -> Result<Agent, Error> {
         self.resolve_directory_variant(directory, None).await
     }
@@ -406,7 +406,7 @@ impl ControlPlane {
                 .collect::<Vec<_>>();
             names.sort();
             return Err(Error::Invalid(format!(
-                "multiple agents were applied from this directory ({}); specify --agent or --variant",
+                "more than one agent is found here ({}); pass --agent NAME or --variant VARIANT",
                 names.join(", ")
             )));
         }

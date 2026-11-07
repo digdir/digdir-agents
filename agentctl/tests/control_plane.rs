@@ -546,7 +546,11 @@ async fn an_agent_defined_in_a_subdirectory_resolves_from_anywhere_in_its_reposi
     }
     let shared = fixture.control_plane.resolve_directory(&root).await;
     assert!(
-        matches!(&shared, Err(Error::Invalid(message)) if message.contains("multiple agents")),
+        matches!(
+            &shared,
+            Err(Error::Invalid(message))
+                if message == "more than one agent is found here (inner, worker); pass --agent NAME or --variant VARIANT"
+        ),
         "two Agents in one repository are ambiguous from its root: {shared:?}"
     );
     let outside = fixture.control_plane.resolve_directory(&elsewhere).await;
@@ -683,7 +687,7 @@ async fn directory_resolution_remains_ambiguous_without_one_default_manifest() {
         .resolve_directory(&root)
         .await
         .expect_err("ambiguous variants");
-    assert!(matches!(error, Error::Invalid(message) if message.contains("--agent or --variant")));
+    assert!(matches!(error, Error::Invalid(message) if message.contains("--agent NAME or --variant VARIANT")));
 }
 
 #[tokio::test(flavor = "local")]
@@ -1092,7 +1096,7 @@ async fn directory_resolution_rejects_shared_sources_instead_of_guessing() {
         .resolve_directory(&std::env::temp_dir().join("agent-platform-source/worktree"))
         .await
         .expect_err("shared source must be ambiguous");
-    assert!(matches!(error, Error::Invalid(message) if message.contains("multiple agents")));
+    assert!(matches!(error, Error::Invalid(message) if message.contains("more than one agent is found here")));
 }
 
 #[tokio::test(flavor = "local")]

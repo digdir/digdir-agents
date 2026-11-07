@@ -2771,11 +2771,11 @@ mod tests {
     fn inference_errors_have_one_actionable_message() {
         let ambiguous = inference_error(Error::Rpc(agent::control_api::ResponseError {
             code: -32602,
-            message: "multiple agents were applied from this directory; specify --agent or --variant".into(),
+            message: "more than one agent is found here (first, second); pass --agent NAME or --variant VARIANT".into(),
         }));
         assert_eq!(
             ambiguous.to_string(),
-            "multiple agents were applied from this directory; specify --agent or --variant"
+            "more than one agent is found here (first, second); pass --agent NAME or --variant VARIANT"
         );
 
         let missing = inference_error(Error::Rpc(agent::control_api::ResponseError {
