@@ -26,6 +26,10 @@ on:
         description: More bake --set values, one per line, in which `{arch}` stands for the architecture
         type: string
         default: ''
+      variables:
+        description: Bake variables, as NAME=value, one per line
+        type: string
+        default: ''
       sparse-checkout:
         description: The directories the build needs, one per line. Cone mode also checks out the root's files
         type: string
@@ -71,9 +75,16 @@ jobs:
           GROUP: ${{ inputs.group }}
           IMAGES: ${{ inputs.images }}
           SET: ${{ inputs.set }}
+          VARIABLES: ${{ inputs.variables }}
           PUBLISH: ${{ inputs.publish }}
         run: |
           set -euo pipefail
+
+          while IFS= read -r variable; do
+            if [ -n "${variable}" ]; then
+              export "${variable?}"
+            fi
+          done <<< "${VARIABLES}"
 
           args=()
           for file in ${FILES}; do

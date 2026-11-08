@@ -1,11 +1,22 @@
-# Builds the self-development agent's images from agents/self-dev on main, and publishes them to
-# ghcr.io/digdir/digdir-agents as `latest` and `sha-<commit>`. They develop this repository and are not part of agentctl,
-# so they build on the base images as published, like any agent's image, and are published again whenever those are.
-# Pull requests do not build them. To try a change before merging it, run this workflow by hand on its branch, which
-# builds the images without publishing them.
+# Builds the self-development agent's images from agents/self-dev. They develop this repository and are not part of
+# agentctl, so they are published under its name, to ghcr.io/digdir/digdir-agents as `latest` and `sha-<commit>`.
+#
+# On main, they build on the base images as published, like any agent's image, and are published again whenever those
+# are. Pull requests only build them, on the base images from the same commit, so that a change to both is tested as one.
 name: self-dev images
 
 on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed]
+    paths:
+      - agents/self-dev/**
+      - images/agentctl-base/**
+      - docker-bake.hcl
+      - .github/workflows/self-dev-images.yml
+      - .github/workflows/images.yml
+      # Neither this image's .dockerignore nor the base's admits this Markdown. agentctl applies the self-dev agent's from its manifest.
+      - '!agents/self-dev/**/*.md'
+      - '!images/agentctl-base/*.md'
   push:
     branches:
       - main
@@ -33,7 +44,8 @@ jobs:
   plan:
     name: Plan
     if: >-
-      ${{ github.event_name != 'workflow_run'
+      ${{ (github.event_name == 'pull_request' && github.event.action != 'closed' && !github.event.pull_request.draft)
+      || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
       || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'pull_request') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -74,14 +86,22 @@ jobs:
     # On this job rather than the workflow, so that a run that builds nothing never takes the place of a pending one
     # that would. A cancelled publish could leave the two images' tags pointing at different commits.
     concurrency:
-      group: self-dev-images-${{ github.ref }}
-      cancel-in-progress: false
+      group: self-dev-images-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     uses: ./.github/workflows/images.yml
     with:
-      files: agents/self-dev/docker-bake.hcl
+      # A pull request reads the base images' bake file too, to build the base from the same commit, and its cache.
+      files: >-
+        ${{ github.event_name == 'pull_request' && 'docker-bake.hcl agents/self-dev/docker-bake.hcl'
+        || 'agents/self-dev/docker-bake.hcl' }}
       group: self-dev
-      set: self-dev-full.cache-from=type=registry,ref=ghcr.io/digdir/digdir-agents/agentctl-self-dev-minimal:buildcache-{arch}
-      sparse-checkout: agents/self-dev
+      variables: ${{ github.event_name == 'pull_request' && 'BASE_CONTEXT=target:base-headless' || '' }}
+      set: |
+        self-dev-full.cache-from=type=registry,ref=ghcr.io/digdir/digdir-agents/agentctl-self-dev-minimal:buildcache-{arch}
+        ${{ github.event_name == 'pull_request' && 'base-headless.cache-from=type=registry,ref=ghcr.io/digdir/agentctl-base:buildcache-headless-{arch}' || '' }}
+      sparse-checkout: |
+        agents/self-dev
+        images/agentctl-base
       publish: ${{ github.ref == 'refs/heads/main' }}
       images: |
         [
