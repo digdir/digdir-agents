@@ -5,3 +5,7 @@
 !headless/**
 !features/
 !features/**
+!skills/
+!skills/**
+# Bytecode that running the tools or their tests leaves beside them.
+**/__pycache__

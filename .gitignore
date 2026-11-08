@@ -26,3 +26,6 @@ tmpclaude-*
 # Rust
 /target/
 /build/
+
+# Python
+__pycache__/

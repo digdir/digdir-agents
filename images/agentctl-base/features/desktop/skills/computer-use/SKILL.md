@@ -27,9 +27,11 @@ so never do resolution arithmetic yourself.
 browser is scriptable, in the tree and visible. A snapshot or a tree costs a few hundred text
 tokens. A screenshot costs about 1.5k image tokens or more every time, so take one to judge a
 screen, not to find out what is on it, and at a step boundary rather than after each action.
+Captures are JPEG, so `--out` takes a `.jpg` path.
 
 Use the desktop rather than a headless browser when the task is a native application, when a
-person will watch or take over, or when the rendered result is the deliverable.
+person will watch or take over, or when the rendered result is the deliverable. To record it for
+someone who was not there, follow the `recording` skill.
 
 ## Batch predictable steps
 
@@ -63,7 +65,9 @@ every capture already waits until the screen stops changing.
 ## Working accurately
 
 - **On a web page, act on refs, not pixels.** Find elements with `playwright-cli snapshot`, act
-  with `playwright-cli click e12` or `fill`, and confirm with another snapshot.
+  with `playwright-cli click e12` or `fill`, and confirm with another snapshot. While recording
+  the desktop, act through `desktop` instead, as the `recording` skill says, since only it moves
+  the pointer the viewer sees.
 - **Elsewhere, click what you measured.** For the browser's own controls and dialogs, or a native
   window, take the box from `desktop tree` or read it off a screenshot, then act. Some
   applications, GTK 4 ones among them, report no boxes. Use a screenshot for those.

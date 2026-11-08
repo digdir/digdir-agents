@@ -5,7 +5,7 @@ carry the harness versions its adapters are tested with, so an agent's Dockerfil
 
 | Image | Contents |
 | --- | --- |
-| `ghcr.io/digdir/agentctl-base:ubuntu-26.04` | Headless: Ubuntu 26.04 booting systemd, the `agent` user, Claude Code, Codex and Pi, Node.js and common developer tools. The [Dockerfile](Dockerfile) has the full list |
+| `ghcr.io/digdir/agentctl-base:ubuntu-26.04` | Headless: Ubuntu 26.04 booting systemd, the `agent` user, Claude Code, Codex and Pi, Node.js, common developer tools and the [`recording` skill](skills/recording/SKILL.md). The [Dockerfile](Dockerfile) has the full list |
 | `ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop` | The headless image plus the [`desktop` feature](#features) |
 
 Both are published for `linux/amd64` and `linux/arm64` from `main` whenever this directory changes, and also tagged
@@ -74,11 +74,12 @@ USER agent
 ```
 
 A script cannot set an image's environment, so add the `ENV` lines `agent-feature env <feature>` prints.
-`agent-image-check` fails an image without them.
+`agent-image-check` fails an image without them. The `browser` and `desktop` features also add their reference to the
+`recording` skill, for recording a page and the desktop.
 
 | Feature | Adds |
 | --- | --- |
-| `browser` | Chromium with `playwright-cli` and its skill, ffmpeg, and the `video-to-gif` and `media-preview` helpers. Chromium trusts the agent's mediated CA once `$XDG_RUNTIME_DIR/chromium-ca-ready` exists, shortly after boot. |
+| `browser` | Chromium with `playwright-cli` and its skill, ffmpeg, and the `media` command, which checks a recording as someone watching it would see it. A managed policy turns off Chromium's translation offer and spellchecking, which would cover pages in screenshots. Chromium trusts the agent's mediated CA once `$XDG_RUNTIME_DIR/chromium-ca-ready` exists, shortly after boot. |
 | `containers` | Podman, with bridge networks and container name resolution. `agentd` sets up Podman's socket for the agent user, and Docker API clients reach it at the default `/run/docker.sock`. The `docker` command runs Podman, so do not install Docker's own CLI beside it. `docker compose` and `podman compose` run Docker Compose. |
 | `desktop` | `browser`, plus an X11 desktop on display `:1` with VNC access and a Secret Service, the `desktop`, `desktop-terminal` and `chromium` commands, and the `computer-use` skill. Provides `/etc/agent-access.d/vnc.conf`, so an agent on it can declare `access: [{type: vnc}]`. |
 

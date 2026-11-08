@@ -1,0 +1,15 @@
+#!/usr/bin/python3 -I
+"""Checks a recording as someone watching it would see it. `media help` lists the commands.
+
+The system Python, isolated from the environment's, so that a project's Python or the current directory cannot change
+what it runs.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), '..', 'lib', 'agent-tools'))
+
+from agent_media.cli import main  # noqa: E402
+
+sys.exit(main(sys.argv[1:]))

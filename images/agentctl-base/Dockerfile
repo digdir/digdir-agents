@@ -53,7 +53,8 @@ RUN usermod --login agent --home /home/agent --move-home ubuntu \
     && printf 'agent ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent \
     && install -d -m 0755 -o agent -g agent /home/agent/code \
-    && install -d -m 0700 -o agent -g agent /home/agent/.claude \
+    && install -d -m 0700 -o agent -g agent /home/agent/.claude /home/agent/.agents \
+    && install -d -o agent -g agent /home/agent/.claude/skills /home/agent/.agents/skills \
     && install -d -m 0700 -o agent -g agent /run/user/1000 \
     && install -d -m 0755 /etc/agent-workspace.d \
     && rm -f /etc/machine-id /var/lib/dbus/machine-id \
@@ -175,6 +176,10 @@ COPY features/ /usr/local/share/agentctl-base/features/
 # agent's home overlay, which is applied again on every pass and would undo what Claude Code records in the file.
 # The directory exists already: BuildKit would give a parent directory COPY creates the file's mode, 0600.
 COPY --chown=agent:agent --chmod=0600 claude-state.json /home/agent/.claude/.claude.json
+# The skills every agent on the image gets, where Claude Code, Codex and Pi look for them. A feature adds to one
+# what only it makes possible, such as the recording skill's reference for its medium.
+COPY --chown=agent:agent skills/ /home/agent/.claude/skills/
+COPY --chown=agent:agent skills/ /home/agent/.agents/skills/
 
 # agentd owns the loopback SSH server policy, unit and per-agent state. The distribution's own ssh.service and socket
 # are masked so the image cannot expose its package-generated host keys. The guest has no udev to activate hvc0's
