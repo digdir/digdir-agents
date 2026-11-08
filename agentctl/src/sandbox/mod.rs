@@ -554,10 +554,8 @@ impl Service {
         // agentd configures one Provider, so agents can mount what it holds.
         let provider = &self.providers[0];
         // A Volume an interrupted call left under the name may hold an older `source`.
-        match provider.find_volume(name).await {
-            Ok(interrupted) => provider.delete_volume(&interrupted.id).await?,
-            Err(Error::Sandbox(error)) if error.is_not_found() => {}
-            Err(error) => return Err(error),
+        if let Some((_, interrupted)) = self.find_directory_copy(name).await? {
+            provider.delete_volume(&interrupted).await?;
         }
         let request = ::sandbox::volume::EnsureVolumeRequest::new(name.clone()).with_contents(
             ::sandbox::volume::VolumeContents::DirectoryCopy {
@@ -567,6 +565,24 @@ impl Service {
         );
         let volume = provider.ensure_volume(request, progress).await?;
         Ok((provider.id().clone(), volume.id))
+    }
+
+    /// Finds the Volume `name` that [`Self::ensure_directory_copy`] created, if any, and returns
+    /// where it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Provider cannot be asked.
+    pub async fn find_directory_copy(
+        &self,
+        name: &::sandbox::volume::VolumeName,
+    ) -> Result<Option<(ProviderId, ::sandbox::volume::VolumeId)>, Error> {
+        let provider = &self.providers[0];
+        match provider.find_volume(name).await {
+            Ok(volume) => Ok(Some((provider.id().clone(), volume.id))),
+            Err(Error::Sandbox(error)) if error.is_not_found() => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Deletes a Volume, or returns `false` and keeps it while a sandbox still mounts it.

@@ -28,6 +28,8 @@ pub(crate) struct VolumeFixture {
     pub(crate) reconciler: Reconciler,
     pub(crate) control_plane: ControlPlane,
     pub(crate) agent_reconciler: agent::control_plane::Reconciler,
+    /// agentd's home directory.
+    pub(crate) home: TempDirectory,
     _controller: agent::volumes::Controller,
 }
 
@@ -56,8 +58,12 @@ pub(crate) fn volume_fixture() -> VolumeFixture {
         Duration::from_secs(3600),
         Rc::new(|_, _| {}),
     );
+    let home = TempDirectory::new("volume-agent-home");
     VolumeFixture {
-        service: VolumeService::new(volumes.clone(), agents.clone(), wakeup).with_progress(progress),
+        service: VolumeService::new(volumes.clone(), agents.clone(), wakeup)
+            .with_progress(progress)
+            .with_home(home.path().to_path_buf()),
+        home,
         control_plane: ControlPlane::new(agents.clone(), Rc::new(Unscheduled)).with_volumes(volumes.clone()),
         agent_reconciler,
         agents,
@@ -393,6 +399,27 @@ async fn a_copy_volume_refuses_a_source_holding_a_dot_env_file() {
     assert_eq!(fixture.service.list().await.expect("list"), []);
 }
 
+/// agentd's home holds its database and the copies themselves.
+#[tokio::test(flavor = "local")]
+async fn a_copy_volume_refuses_a_source_overlapping_agentds_home() {
+    let fixture = volume_fixture();
+    let inner = fixture.home.path().join("microsandbox");
+    std::fs::create_dir_all(&inner).expect("inner directory");
+    for source in [fixture.home.path().to_path_buf(), inner] {
+        let error = fixture
+            .service
+            .apply(volume_request("apps", source.clone()))
+            .await
+            .expect_err("a copy of agentd's home");
+        assert!(
+            error.to_string().contains("overlaps agentd's home"),
+            "{}: {error}",
+            source.display()
+        );
+    }
+    assert_eq!(fixture.service.list().await.expect("list"), []);
+}
+
 #[tokio::test(flavor = "local")]
 async fn a_deleted_volume_goes_with_its_last_revision() {
     let fixture = volume_fixture();
@@ -421,6 +448,44 @@ async fn a_deleted_volume_goes_with_its_last_revision() {
     ));
     assert_eq!(fixture.backend.volume_count(), 0);
     let _ = fixture.agents.list().await.expect("agents");
+}
+
+/// agentd may stop after the Provider saved a copy but before agentd recorded it. Deleting the
+/// volume then deletes that copy too.
+#[tokio::test(flavor = "local")]
+async fn deleting_a_volume_deletes_a_copy_an_interruption_left_unrecorded() {
+    let fixture = volume_fixture();
+    let temporary = TempDirectory::new("volume-interrupted-delete");
+    let source = temporary.path().join("apps");
+    std::fs::create_dir_all(&source).expect("source");
+    fixture
+        .service
+        .apply(volume_request("apps", source.clone()))
+        .await
+        .expect("apply");
+    let id = fixture.volumes.get_by_name("apps").await.expect("volume").id;
+    let name = sandbox::volume::VolumeName::new(format!("copy-{}-1", id.as_uuid().simple())).expect("name");
+    fixture
+        .provider
+        .ensure_volume(
+            sandbox::volume::EnsureVolumeRequest::new(name).with_contents(
+                sandbox::volume::VolumeContents::DirectoryCopy {
+                    source,
+                    owner: sandbox::volume::Owner::default(),
+                },
+            ),
+            sandbox::ProgressReporter::from_callback(|_| {}),
+        )
+        .await
+        .expect("the copy taken before agentd stopped");
+
+    fixture.service.delete("apps").await.expect("delete");
+    reconcile_volume(&fixture, "apps").await;
+    assert!(matches!(
+        fixture.service.get("apps").await,
+        Err(agent::Error::VolumeNotFound(_))
+    ));
+    assert_eq!(fixture.backend.volume_count(), 0);
 }
 
 fn mounting_agent(name: &str, volume: &str) -> ApplyRequest {
@@ -744,6 +809,51 @@ async fn an_agent_whose_volume_has_no_copy_fails_until_the_volume_is_applied_aga
         ready_reason(&failed)
     );
     assert_eq!(failed.agent.status.failure, Some(agent::FailureKind::Invalid));
+}
+
+/// A revision keeps the source it copied after the volume's source changes, and agents may still
+/// mount it.
+#[tokio::test(flavor = "local")]
+async fn an_agent_cannot_select_a_secret_file_inside_an_earlier_source_of_a_volume() {
+    let fixture = volume_fixture();
+    let temporary = TempDirectory::new("volume-earlier-secret-file");
+    let earlier = temporary.path().join("earlier");
+    let later = temporary.path().join("later");
+    std::fs::create_dir_all(&earlier).expect("earlier source");
+    std::fs::create_dir_all(&later).expect("later source");
+    std::fs::write(earlier.join("credentials.env"), b"GITHUB_TOKEN=value\n").expect("secret file");
+    fixture
+        .service
+        .apply(volume_request("apps", earlier.clone()))
+        .await
+        .expect("apply");
+    reconcile_volume(&fixture, "apps").await;
+    fixture
+        .service
+        .apply(volume_request("apps", later))
+        .await
+        .expect("apply another source");
+
+    let mut request = agent("worker");
+    request.spec.secrets.push(agent::SecretSpec {
+        environment: "GITHUB_TOKEN".into(),
+        optional: false,
+        placeholder: None,
+        allowed_hosts: vec!["github.com".into()],
+        source: None,
+    });
+    let error = fixture
+        .control_plane
+        .apply(ApplyRequest {
+            source_directory: std::env::temp_dir().join("agent-platform-source"),
+            manifest_path: None,
+            env_file: Some(earlier.join("credentials.env")),
+            create_only: false,
+            agent: request,
+        })
+        .await
+        .expect_err("revision 1 holds the real values");
+    assert!(error.to_string().contains("Volume \"apps\" copies"), "{error}");
 }
 
 #[tokio::test(flavor = "local")]

@@ -254,7 +254,19 @@ impl ControlPlane {
             // A copy any agent may mount must not hold the file, whichever agent selects it.
             for volume in self.volumes.list().await? {
                 let crate::volumes::VolumeSpec::Copy { source } = volume.volume.spec;
-                mounts.push((format!("Volume {:?}", volume.volume.metadata.name), "copies", source));
+                let name = format!("Volume {:?}", volume.volume.metadata.name);
+                // Agents may still mount revisions of an earlier source.
+                let sources = std::iter::once(source)
+                    .chain(
+                        volume
+                            .volume
+                            .status
+                            .revisions
+                            .into_iter()
+                            .map(|revision| revision.source),
+                    )
+                    .collect::<std::collections::BTreeSet<_>>();
+                mounts.extend(sources.into_iter().map(|source| (name.clone(), "copies", source)));
             }
         }
         for other in self.store.list().await? {

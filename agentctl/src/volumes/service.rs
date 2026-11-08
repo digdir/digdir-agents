@@ -31,6 +31,7 @@ pub struct VolumeService {
     agents: Rc<dyn AgentStore>,
     wakeup: Wakeup,
     progress: CopyProgress,
+    home: Option<PathBuf>,
 }
 
 impl VolumeService {
@@ -42,7 +43,16 @@ impl VolumeService {
             agents,
             wakeup,
             progress: CopyProgress::default(),
+            home: None,
         }
+    }
+
+    /// Refuses a source that holds agentd's home directory, `home`, or is inside it, since it holds
+    /// agentd's database and the copies themselves.
+    #[must_use]
+    pub fn with_home(mut self, home: PathBuf) -> Self {
+        self.home = Some(home);
+        self
     }
 
     /// Reports the progress of the copies the volume reconciler takes, read from `progress`.
@@ -67,9 +77,7 @@ impl VolumeService {
         }
         let VolumeSpec::Copy { source } = &mut desired.spec;
         *source = resolve_source(&request.source_directory, source).await?;
-        let source = source.clone();
-        crate::control_plane::reject_secrets_in_copy(self.agents.as_ref(), "spec.source", &source).await?;
-        let fingerprint = fingerprint::take(source).await?;
+        let fingerprint = self.fingerprint_source(source.clone()).await?;
         let provenance = crate::Provenance {
             source_directory: request.source_directory,
             manifest_path: request.manifest_path,
@@ -158,6 +166,24 @@ impl VolumeService {
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    /// Fingerprints a resolved source, refusing one the copy must not hold: agentd's home, or a
+    /// secret file.
+    async fn fingerprint_source(&self, source: PathBuf) -> Result<fingerprint::Fingerprint, Error> {
+        if let Some(home) = &self.home {
+            let home = tokio::fs::canonicalize(home).await.unwrap_or_else(|_| home.clone());
+            if home.starts_with(&source) || source.starts_with(&home) {
+                return Err(Error::Invalid(format!(
+                    "spec.source {} overlaps agentd's home {}, which holds its database and the copies; copy another \
+                     directory",
+                    source.display(),
+                    home.display()
+                )));
+            }
+        }
+        crate::control_plane::reject_secrets_in_copy(self.agents.as_ref(), "spec.source", &source).await?;
+        fingerprint::take(source).await
     }
 
     /// Gets a volume with its revisions and the agents that use them.

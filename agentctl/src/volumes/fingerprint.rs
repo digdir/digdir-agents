@@ -12,8 +12,9 @@ use crate::Error;
 /// What a directory held, judged by its entries' metadata rather than their contents.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Fingerprint {
-    /// Hash of every entry's relative path, type, size, permissions, modification time and link
-    /// target, and on Unix its inode and status change time. A program can set a file's
+    /// Hash of the directory's own metadata and every entry's relative path, type, size,
+    /// permissions, modification time and link target, and on Unix its inode and status change
+    /// time. A program can set a file's
     /// modification time back after writing it, but not its status change time.
     pub(crate) digest: String,
     /// Regular files in the directory.
@@ -34,8 +35,11 @@ pub(crate) async fn take(directory: PathBuf) -> Result<Fingerprint, Error> {
             bytes: 0,
             dot_env: None,
         };
-        fingerprint
-            .directory(&directory, Path::new(""))
+        // The directory's own metadata changes when an entry is added and removed again, which
+        // its entries alone would not show.
+        std::fs::metadata(&directory)
+            .map(|metadata| fingerprint.metadata(&metadata))
+            .and_then(|()| fingerprint.directory(&directory, Path::new("")))
             .map_err(|error| Error::Invalid(format!("cannot read {} to copy it: {error}", directory.display())))?;
         if let Some(path) = fingerprint.dot_env {
             return Err(Error::Invalid(format!(
@@ -101,15 +105,7 @@ impl Walk {
             };
             self.field(relative.as_os_str().as_encoded_bytes());
             self.field(tag);
-            self.field(&metadata.len().to_le_bytes());
-            self.field(&permissions(&metadata).to_le_bytes());
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .unwrap_or_default();
-            self.field(&modified.as_nanos().to_le_bytes());
-            self.field(&identity(&metadata));
+            self.metadata(&metadata);
             if kind.is_symlink() {
                 self.field(std::fs::read_link(&path)?.as_os_str().as_encoded_bytes());
             }
@@ -121,6 +117,19 @@ impl Walk {
             }
         }
         Ok(())
+    }
+
+    /// Hashes an entry's size, permissions, modification time and identity.
+    fn metadata(&mut self, metadata: &std::fs::Metadata) {
+        self.field(&metadata.len().to_le_bytes());
+        self.field(&permissions(metadata).to_le_bytes());
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .unwrap_or_default();
+        self.field(&modified.as_nanos().to_le_bytes());
+        self.field(&identity(metadata));
     }
 
     /// Hashes one field with its length, so neighbouring fields cannot run together.
@@ -174,6 +183,22 @@ mod tests {
         let added = take(directory.path().to_path_buf()).await.expect("added");
         assert_ne!(added.digest, first.digest);
         assert_eq!(added.files, 3);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_fingerprint_changes_when_a_file_is_added_and_removed_again() {
+        let directory = tempfile::tempdir().expect("directory");
+        std::fs::write(directory.path().join("app.txt"), b"app").expect("app");
+        let first = take(directory.path().to_path_buf()).await.expect("fingerprint");
+        // The status change time has a clock tick's resolution, which a quick change can fall within.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let passing = directory.path().join("passing.txt");
+        std::fs::write(&passing, b"briefly").expect("added");
+        std::fs::remove_file(&passing).expect("removed");
+        let after = take(directory.path().to_path_buf()).await.expect("after");
+        assert_ne!(after.digest, first.digest);
     }
 
     #[cfg(unix)]

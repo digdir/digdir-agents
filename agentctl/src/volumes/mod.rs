@@ -135,6 +135,8 @@ pub struct Revision {
     pub created: OffsetDateTime,
     /// Fingerprint of the source the copy holds.
     pub fingerprint: String,
+    /// The directory copied, which an earlier revision keeps when the volume's source changes.
+    pub source: PathBuf,
     /// Regular files in the copy.
     pub files: u64,
     /// Bytes in those files.
@@ -327,8 +329,9 @@ pub(crate) fn revision_users(
     users
 }
 
-/// The Provider Volume name of a revision's copy, unique to the revision so creating it again after
-/// an interruption finds the copy already taken.
+/// The Provider Volume name of a revision's copy. A retry reuses the revision's number, so the
+/// name finds the copy an interrupted attempt left, which is replaced, as it may be of an older
+/// source, or deleted with its volume.
 pub(crate) fn revision_volume_name(id: VolumeId, number: u64) -> Result<::sandbox::volume::VolumeName, Error> {
     ::sandbox::volume::VolumeName::new(format!("copy-{}-{number}", id.as_uuid().simple()))
         .map_err(|error| Error::Database(format!("volume revision cannot name its copy: {error}")))

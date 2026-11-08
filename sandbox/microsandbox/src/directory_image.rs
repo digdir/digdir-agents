@@ -145,12 +145,18 @@ struct Copied<'a> {
 }
 
 impl Copied<'_> {
-    fn add(&mut self, bytes: usize) {
+    /// Counts `bytes` as copied, and stops the copy once its caller is gone, such as when agentd
+    /// stops, since nothing would use the image.
+    fn add(&mut self, bytes: usize) -> Result<(), Error> {
+        if self.stages.is_closed() {
+            return Err(Error::Backend("the copy was abandoned".into()));
+        }
         self.bytes += bytes as u64;
         if self.reported.elapsed() >= REPORT_INTERVAL {
             self.reported = Instant::now();
             let _ = self.stages.send(Stage::Copied(self.bytes));
         }
+        Ok(())
     }
 }
 
@@ -223,7 +229,7 @@ fn copy_contents(
         spool
             .write_chunk(&buffer[..read])
             .map_err(|source| error::io("write image spool", source))?;
-        copied.add(read);
+        copied.add(read)?;
     }
     Ok(spool.data_ref(offset, spool.current_offset() - offset))
 }
@@ -286,6 +292,26 @@ fn read_error(path: &Path, error: &std::io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copy_stops_once_its_caller_is_gone_and_leaves_nothing() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("data.bin"), vec![7_u8; COPY_BUFFER]).unwrap();
+        let output = directory.path().join("image.erofs");
+        let (stages, received) = mpsc::unbounded_channel();
+        drop(received);
+
+        let error = build_blocking(&source, Owner::default(), &output, &stages).unwrap_err();
+
+        assert!(error.to_string().contains("abandoned"), "{error}");
+        let left: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["source"]);
+    }
 
     #[tokio::test]
     async fn an_image_holds_the_directory_tree() {

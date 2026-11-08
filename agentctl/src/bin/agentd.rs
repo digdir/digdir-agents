@@ -210,7 +210,9 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
         reconciliation_errors("Volume"),
     );
     let volumes = Rc::new(
-        agent::volumes::VolumeService::new(volume_store, store.clone(), volume_wakeup).with_progress(copy_progress),
+        agent::volumes::VolumeService::new(volume_store, store.clone(), volume_wakeup)
+            .with_progress(copy_progress)
+            .with_home(home.path().to_path_buf()),
     );
     let convergence = agent::control_plane::Convergence::new(wakeup, store.clone(), changes.clone());
     let executions = Rc::new(ExecutionService::new(store.clone(), convergence.clone()));

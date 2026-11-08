@@ -482,6 +482,11 @@ pub(crate) enum Modal {
         agent: String,
         session: SessionName,
     },
+    /// Names the agents still using the volume, which it goes after.
+    ConfirmDeleteVolume {
+        volume: String,
+        agents: Vec<String>,
+    },
     NewSession(SessionForm),
     CreateAgent(CreateForm),
     ApplyVolume(VolumeForm),
@@ -499,6 +504,25 @@ pub(crate) enum Modal {
         include: agent::ssh::UserInclude,
         then: Option<OpenTarget>,
     },
+}
+
+impl Modal {
+    /// What answering yes to a question does. Other modals ask none.
+    fn confirmed(self) -> Action {
+        match self {
+            Self::ConfirmDelete { agent, .. } => Action::Delete { agent },
+            Self::ConfirmStop { agent } => Action::SetRunState {
+                agent,
+                state: RunState::Stopped,
+            },
+            Self::ConfirmRestart { agent } => Action::Restart { agent },
+            Self::ConfirmStopAll { agents } => Action::StopAll { agents },
+            Self::ConfirmDeleteSession { agent, session } => Action::DeleteSession { agent, session },
+            Self::ConfirmDeleteVolume { volume, .. } => Action::DeleteVolume { volume },
+            Self::ConfirmQuit => Action::Quit,
+            _ => Action::None,
+        }
+    }
 }
 
 /// A prompt for a running session, sent without attaching to it.
@@ -1855,9 +1879,10 @@ impl App {
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(volume) = self.volumes.get(self.volume_selected) {
-                    return Action::DeleteVolume {
+                    self.modal = Some(Modal::ConfirmDeleteVolume {
                         volume: volume.metadata.name.clone(),
-                    };
+                        agents: volume.status.agents().into_iter().map(str::to_owned).collect(),
+                    });
                 }
             }
             KeyCode::Char('c') => return Action::OpenApplyVolume,
@@ -2086,9 +2111,9 @@ impl App {
 
     /// Answers a confirmation: `y` takes `yes`, `esc`, `n` and `q` decline, and any other key
     /// keeps `modal` open.
-    fn confirm(&mut self, key: KeyEvent, modal: Modal, yes: Action) -> Action {
+    fn confirm(&mut self, key: KeyEvent, modal: Modal) -> Action {
         match key.code {
-            KeyCode::Char('y') => yes,
+            KeyCode::Char('y') => modal.confirmed(),
             KeyCode::Esc | KeyCode::Char('n' | 'q') => Action::None,
             _ => {
                 self.modal = Some(modal);
@@ -2105,32 +2130,15 @@ impl App {
                 }
                 Action::None
             }
-            Some(Modal::ConfirmDelete { agent, sessions }) => {
-                let yes = Action::Delete { agent: agent.clone() };
-                self.confirm(key, Modal::ConfirmDelete { agent, sessions }, yes)
-            }
-            Some(Modal::ConfirmStop { agent }) => {
-                let yes = Action::SetRunState {
-                    agent: agent.clone(),
-                    state: RunState::Stopped,
-                };
-                self.confirm(key, Modal::ConfirmStop { agent }, yes)
-            }
-            Some(Modal::ConfirmRestart { agent }) => {
-                let yes = Action::Restart { agent: agent.clone() };
-                self.confirm(key, Modal::ConfirmRestart { agent }, yes)
-            }
-            Some(Modal::ConfirmStopAll { agents }) => {
-                let yes = Action::StopAll { agents: agents.clone() };
-                self.confirm(key, Modal::ConfirmStopAll { agents }, yes)
-            }
-            Some(Modal::ConfirmDeleteSession { agent, session }) => {
-                let yes = Action::DeleteSession {
-                    agent: agent.clone(),
-                    session: session.clone(),
-                };
-                self.confirm(key, Modal::ConfirmDeleteSession { agent, session }, yes)
-            }
+            Some(
+                modal @ (Modal::ConfirmDelete { .. }
+                | Modal::ConfirmStop { .. }
+                | Modal::ConfirmRestart { .. }
+                | Modal::ConfirmStopAll { .. }
+                | Modal::ConfirmDeleteSession { .. }
+                | Modal::ConfirmDeleteVolume { .. }
+                | Modal::ConfirmQuit),
+            ) => self.confirm(key, modal),
             Some(Modal::NewSession(mut form)) => {
                 if let Some(action) = form.key(key, &self.sessions) {
                     return action;
@@ -2167,7 +2175,6 @@ impl App {
                 Action::None
             }
             Some(Modal::Open(menu)) => self.open_menu_key(menu, key),
-            Some(Modal::ConfirmQuit) => self.confirm(key, Modal::ConfirmQuit, Action::Quit),
             Some(Modal::ConfirmSshSetup { agent, include, then }) => {
                 self.confirm_ssh_setup_key(agent, include, then, key)
             }
@@ -2817,6 +2824,7 @@ impl App {
                 | Modal::ConfirmRestart { .. }
                 | Modal::ConfirmStopAll { .. }
                 | Modal::ConfirmDeleteSession { .. }
+                | Modal::ConfirmDeleteVolume { .. }
                 | Modal::ConfirmQuit => &CONFIRM_HINTS,
                 Modal::NewSession(_) => &NEW_SESSION_HINTS,
                 Modal::CreateAgent { .. } => &CREATE_AGENT_HINTS,
@@ -3097,6 +3105,7 @@ pub(crate) mod tests {
                     number: 2,
                     created: OffsetDateTime::now_utc(),
                     fingerprint: "applied".into(),
+                    source: PathBuf::from("/data/apps"),
                     files: 83_200,
                     bytes: 712_000_000,
                     storage: agent::volumes::RevisionStorage {
@@ -3146,6 +3155,11 @@ pub(crate) mod tests {
         app.on_key(key(KeyCode::Char('j')));
         assert_eq!(
             app.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            Action::None,
+            "deleting asks first"
+        );
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('y'))),
             Action::DeleteVolume { volume: "docs".into() }
         );
         app.set_volumes(vec![volume("docs", &[])]);

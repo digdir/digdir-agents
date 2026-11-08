@@ -890,6 +890,17 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal, hit_map
                 .row(note_line("Its harness is stopped and the session is removed."))
                 .render(frame, area, FORM_WIDTH, hit_map);
         }
+        Modal::ConfirmDeleteVolume { volume, agents } => {
+            let after = match agents.as_slice() {
+                [] => "Its copies are deleted now.".to_owned(),
+                agents => format!("It goes once {} no longer use it.", agents.join(", ")),
+            };
+            Form::new(" delete ", Color::Red, &CONFIRM_HINTS)
+                .row(Line::from(format!("Delete volume {volume}?")))
+                .row(note_line("New agents can no longer mount it."))
+                .row(note_line(&after))
+                .render(frame, area, FORM_WIDTH, hit_map);
+        }
         Modal::NewSession(form) => render_new_session(frame, area, form, hit_map),
         Modal::CreateAgent(form) => render_create_agent(frame, area, form, &app.agents, hit_map),
         Modal::ApplyVolume(form) => render_apply_volume(frame, area, form, &app.volumes, hit_map),

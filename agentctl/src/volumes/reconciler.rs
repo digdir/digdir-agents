@@ -68,8 +68,17 @@ impl Reconciler {
             let Some(requested) = record.volume.status.copying().cloned() else {
                 break;
             };
+            let VolumeSpec::Copy { source } = &record.volume.spec;
             let outcome = if record.is_deleting() {
-                Err(("the volume was deleted before its copy was taken".to_owned(), None))
+                // A copy taken before agentd was interrupted may be saved under the revision's name,
+                // which cleanup then deletes.
+                let name = revision_volume_name(record.id, requested.number)?;
+                let leftover = self
+                    .sandboxes
+                    .find_directory_copy(&name)
+                    .await?
+                    .map(|(provider, volume)| RevisionStorage { provider, volume });
+                Err(("the volume was deleted before its copy was taken".to_owned(), leftover))
             } else {
                 let progress = self.progress.begin(id, requested.number);
                 let outcome = self.copy(&record, &requested, &progress).await;
@@ -96,6 +105,7 @@ impl Reconciler {
                             number: requested.number,
                             created: requested.created,
                             fingerprint: requested.fingerprint.clone(),
+                            source: source.clone(),
                             files: requested.files,
                             bytes: requested.bytes,
                             storage: storage.clone(),

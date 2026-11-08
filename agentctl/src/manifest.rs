@@ -456,6 +456,34 @@ fn validate_mounts(mounts: &[MountSpec], root_filesystem: ::sandbox::RootFilesys
             )));
         }
     }
+    reject_mounts_inside_writable_volumes(mounts)
+}
+
+/// A writable volume's layer is mounted over its target after the other mounts, so it would hide
+/// any of them inside the target.
+fn reject_mounts_inside_writable_volumes(mounts: &[MountSpec]) -> Result<(), Error> {
+    let writable = mounts.iter().enumerate().filter_map(|(index, mount)| match mount {
+        MountSpec::Volume {
+            target,
+            read_only: false,
+            ..
+        } => Some((index, target.as_str())),
+        _ => None,
+    });
+    for (index, writable) in writable {
+        if let Some(inner) = mounts.iter().position(|mount| {
+            mount
+                .target()
+                .as_str()
+                .strip_prefix(writable)
+                .is_some_and(|rest| rest.starts_with('/'))
+        }) {
+            return Err(Error::Invalid(format!(
+                "spec.sandbox.mounts[{inner}].target is inside writable volume mount \
+                 spec.sandbox.mounts[{index}], which would hide it; mount it elsewhere or make the volume read-only"
+            )));
+        }
+    }
     Ok(())
 }
 

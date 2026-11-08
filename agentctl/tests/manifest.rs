@@ -566,8 +566,8 @@ fn a_tmpfs_mount_cannot_be_optional() {
 }
 
 /// A volume mount says whether the agent may change its files, as a bind mount does. A writable one
-/// keeps its changes on a direct root filesystem, and its target must not hold what separates the
-/// options its writable layer is mounted with.
+/// keeps its changes on a direct root filesystem, its target must not hold what separates the
+/// options its writable layer is mounted with, and no other mount may be inside it.
 #[test]
 fn a_volume_mount_says_whether_it_is_read_only() {
     let volume = |mode: &str, fields: &str| {
@@ -586,6 +586,17 @@ fn a_volume_mount_says_whether_it_is_read_only() {
     let comma = manifest::decode(&volume("direct", "        target: /apps,x\n        readOnly: false\n"))
         .expect_err("a writable target with a comma");
     assert!(comma.to_string().contains("must not contain"), "{comma}");
+    let inside = "      - type: tmpfs\n        target: /apps/cache\n        capacity: \"1Gi\"\n";
+    let hidden = manifest::decode(&volume("direct", &format!("{writable}{inside}")))
+        .expect_err("a mount inside a writable volume");
+    assert!(hidden.to_string().contains("mounts[1].target is inside"), "{hidden}");
+    manifest::decode(&volume(
+        "direct",
+        &format!("        target: /apps\n        readOnly: true\n{inside}"),
+    ))
+    .expect("a mount inside a read-only volume");
+    let beside = "      - type: tmpfs\n        target: /apps-cache\n        capacity: \"1Gi\"\n";
+    manifest::decode(&volume("direct", &format!("{writable}{beside}"))).expect("a mount beside a writable volume");
 }
 
 #[test]
