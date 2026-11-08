@@ -48,21 +48,28 @@ cp -r ~/code/digdir-agents/agents/examples/dotnet-dev agents/dev
 cd agents/dev
 ```
 
-Open `agent.yaml`. Every line has a comment that says what it does. Change the agent's name to your repository's:
+Open `agent.yaml`. Every line has a comment that says what it does. Change the agent's name, `dotnet-dev`, to your
+repository's. A name takes lowercase letters, digits and `-`, so write `MyApp` as `myapp`:
 
 ```yaml
 metadata:
+  # The agent's name in agentctl's commands and the TUI. `agentctl apply --name` overrides it, so one manifest can
+  # create several agents.
   name: myapp
 ```
 
-Open `workspace.list`, which lists the repositories the agent clones when it starts, and add yours on a line of its
-own:
+Open `workspace.list`, which lists the repositories the agent clones when it starts, and add yours at the end, on a
+line of its own:
 
 ```text
+# Repositories to clone into /home/agent/code at boot, one OWNER/NAME per line, optionally followed by a directory
+# name. A repository that is already there is left alone. Cloning needs GITHUB_TOKEN, even for a public repository.
+#
+# Altinn/dialogporten
 OWNER/myapp
 ```
 
-The agent clones it to `/home/agent/code/myapp`.
+The agent clones it to `/home/agent/code/myapp`, spelled as the line spells it.
 
 ## Give the agent its settings
 
@@ -72,9 +79,10 @@ The manifest reads its values from `.env` beside it. Make one from the sample:
 cp .env.sample .env
 ```
 
-Fill in your name and email for Git, and your token as `GITHUB_TOKEN`. You can leave `AIVAR_API_KEY` empty. The token
-stays on this machine: the agent sees only a placeholder, and `agentctl` puts the real token into requests to GitHub.
-The definition's `.gitignore` keeps `.env` out of Git.
+Fill in your name and email for Git, and your token as `GITHUB_TOKEN`. You can leave `AIVAR_API_KEY` empty. The agent
+clones with the GitHub CLI, which needs the token even for a public repository, so without it the agent starts with
+an empty `/home/agent/code`. The token stays on this machine: the agent sees only a placeholder, and `agentctl` puts
+the real token into requests to GitHub. The definition's `.gitignore` keeps `.env` out of Git.
 
 ## Start the agent
 
@@ -82,15 +90,23 @@ The definition's `.gitignore` keeps `.env` out of Git.
 agentctl apply --wait
 ```
 
-`agentctl` builds the image, starts the agent and shows the progress until the agent is ready. The first build takes
-several minutes. Check the agent:
+`agentctl` builds the image with Docker, starts the agent and shows the progress until the agent is ready. The first
+build downloads the base image and the .NET SDK, and takes several minutes. Later applies reuse the image and take
+seconds. If `apply` stops with `Claude Code login "default" is not stored`, run `agentctl claude login` and apply
+again.
+
+Check the agent:
 
 ```sh
 agentctl get agents
 ```
 
-The `STATUS` column says `Ready`. The agent clones `myapp` while it starts, so give it a minute if a step below can't
-find the repository.
+```text
+NAME   READY  STATUS  HARNESSES                        PROVIDER
+myapp  True   Ready   claudeCode (default), codex, pi  microsandbox
+```
+
+The agent clones `myapp` while it starts, so give it a minute if a step below can't find the repository.
 
 ## Work with Claude Code in the agent
 
@@ -100,10 +116,12 @@ From the definition's folder, start a session called `s1`:
 agentctl attach session/s1
 ```
 
-Claude Code starts in `/home/agent/code`, inside the agent. Ask it to look at `myapp` and run its tests. It can use the
-.NET SDK, Git and `gh`, and push to GitHub with your token.
+Claude Code starts in `~/code`, which is `/home/agent/code` inside the agent. Ask it to look at `myapp` and run its
+tests. It can use the .NET SDK, Git and `gh`, and push to GitHub with your token. If your tests target an older .NET
+than the image's SDK, Claude Code finds its runtime missing. Add that runtime to the `Dockerfile` and apply again.
 
-Press `Ctrl-b` and then `d` to leave the session. It keeps running, and `agentctl attach session/s1` takes you back.
+Press `Ctrl-b` and then `d` to leave the session, as the bar at the bottom says. The session keeps running, and
+`agentctl attach session/s1` takes you back to it.
 
 ## Open the repository in VS Code
 
@@ -113,13 +131,22 @@ Let your SSH client reach your agents. You do this once on each machine:
 agentctl ssh-config install
 ```
 
-Ask the agent where its project is:
+It adds an `Include` line at the top of `~/.ssh/config` and says so. Ask the agent where its project is:
 
 ```sh
 agentctl ssh-info agent/myapp
 ```
 
-`Alias` is `agentctl-myapp`, and `Project` is `/home/agent/code/myapp`. Open that folder in VS Code over SSH:
+Among the lines it prints, which also name the key and configuration files `agentctl` keeps for the agent, are:
+
+```text
+Alias:       agentctl-myapp
+User:        agent
+Directory:   /home/agent/code
+Project:     /home/agent/code/myapp
+```
+
+`ssh agentctl-myapp` now opens a shell in the agent. Open the project in VS Code over SSH:
 
 ```sh
 code --remote ssh-remote+agentctl-myapp /home/agent/code/myapp
@@ -143,8 +170,8 @@ git commit -m "Add an agent definition"
 agentctl stop agent/myapp
 ```
 
-The agent keeps its disk. `agentctl start agent/myapp` starts it again, and `agentctl attach session/s1` resumes the
-session.
+The agent keeps its disk, and `agentctl get agents` shows it as `Stopped`. `agentctl start agent/myapp` starts it
+again in a few seconds, and `agentctl attach session/s1` resumes the session with its conversation.
 
 ## What you did
 

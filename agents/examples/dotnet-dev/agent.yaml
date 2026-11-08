@@ -76,7 +76,7 @@ spec:
 
   # The GitHub account the agent acts as, stored with `agentctl github login default`. It gets a GITHUB_TOKEN for
   # GitHub's hosts, and Git commits as the account. Without the login, the agent starts without it, but cannot clone
-  # private repositories, push or open pull requests.
+  # repositories, even public ones, push or open pull requests.
   accounts:
     - type: github
       login: default
