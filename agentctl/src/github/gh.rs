@@ -37,8 +37,8 @@ pub fn sign_in(program: &Path) -> Result<Zeroizing<String>, Error> {
         "--hostname",
         "github.com",
         "--web",
-        // The person types the one-time code into the browser, so gh copies it for them.
-        "--clipboard",
+        // No `--clipboard`: without a clipboard tool, such as over SSH, gh complains instead of
+        // copying, and the code it shows is short enough to type.
         // With `https`, gh offers to make itself Git's credential helper, a question about a
         // login that is about to be deleted. The protocol choice is deleted with it.
         "--git-protocol",
