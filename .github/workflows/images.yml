@@ -1,7 +1,8 @@
 # Builds a bake group's images and, when asked, publishes them, for the workflows that build images to call. Each
 # architecture builds on a native runner: under QEMU, an arm64 build of the base took more than 20 minutes for its
-# package layer alone. When publishing, each runner pushes its images by digest, and the publish job joins them into
-# multi-platform images under the tags the caller names.
+# package layer alone. When pushing, each runner pushes its images by digest, and the publish job joins them into
+# multi-platform images under the tags the caller names. A release's build stops before that, for the release workflow
+# to tag the images once the release is published.
 name: Images
 
 on:
@@ -18,8 +19,8 @@ on:
       images:
         description: >-
           A JSON array with an object for each image to publish: its bake `target`, the `repository` it is published
-          to, the `cache` reference it reads and, when publishing, writes, to which `-<arch>` is appended, and the
-          `tags` it is published under, in which `{sha}` stands for the commit's first 10 characters
+          to, the `cache` reference it reads and, on main, writes, to which `-<arch>` is appended, and the `tags` it is
+          published under on main, in which `{sha}` stands for the commit's first 10 characters
         type: string
         required: true
       set:
@@ -34,10 +35,12 @@ on:
         description: The directories the build needs, one per line. Cone mode also checks out the root's files
         type: string
         required: true
-      publish:
-        description: Whether to push the images and write their caches
-        type: boolean
-        default: false
+      mode:
+        description: >-
+          `build` pushes nothing. `main` pushes the images, tags them and writes their caches. `release` pushes them by
+          digest alone and keeps the digests for the release workflow to tag
+        type: string
+        default: build
 
 jobs:
   build:
@@ -63,7 +66,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GHCR
-        if: inputs.publish
+        if: inputs.mode != 'build'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
@@ -76,9 +79,14 @@ jobs:
           IMAGES: ${{ inputs.images }}
           SET: ${{ inputs.set }}
           VARIABLES: ${{ inputs.variables }}
-          PUBLISH: ${{ inputs.publish }}
+          MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
+
+          case "${MODE}" in
+            build | main | release) ;;
+            *) echo "::error::unknown mode '${MODE}'"; exit 1 ;;
+          esac
 
           while IFS= read -r variable; do
             if [ -n "${variable}" ]; then
@@ -98,20 +106,24 @@ jobs:
           done <<< "${SET}"
           while IFS=$'\t' read -r target repository cache; do
             args+=(--set "${target}.cache-from=type=registry,ref=${cache}-${ARCH}")
-            if [ "${PUBLISH}" = "true" ]; then
-              # Without clearing the bake file's tags, buildx refuses to push by digest. The publish job tags.
+            if [ "${MODE}" != build ]; then
+              # Without clearing the bake file's tags, buildx refuses to push by digest. The images are tagged later.
               args+=(
                 --set "${target}.tags="
                 --set "${target}.output=type=image,name=${repository},push-by-digest=true,name-canonical=true,push=true"
-                --set "${target}.cache-to=type=registry,ref=${cache}-${ARCH},mode=max,image-manifest=true"
               )
+            fi
+            # Only main writes the caches, which pull requests and releases read: a cache reference holds only its
+            # last export, so a release's would cost main's next build its cache.
+            if [ "${MODE}" = main ]; then
+              args+=(--set "${target}.cache-to=type=registry,ref=${cache}-${ARCH},mode=max,image-manifest=true")
             fi
           done < <(jq -r '.[] | [.target, .repository, .cache] | @tsv' <<< "${IMAGES}")
 
           metadata="${RUNNER_TEMP}/metadata.json"
           docker buildx bake --provenance=false --sbom=false --metadata-file "${metadata}" "${args[@]}" "${GROUP}"
 
-          if [ "${PUBLISH}" = "true" ]; then
+          if [ "${MODE}" != build ]; then
             mkdir -p "${RUNNER_TEMP}/digests"
             while IFS= read -r target; do
               digest="$(jq -r --arg target "${target}" '.[$target]."containerimage.digest"' "${metadata}")"
@@ -123,16 +135,17 @@ jobs:
           fi
 
       - name: Upload image digests
-        if: inputs.publish
+        if: inputs.mode != 'build'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: digests-${{ inputs.group }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/
           if-no-files-found: error
-          retention-days: 1
+          # A release's are kept until its pull request has merged, which tags the images they name.
+          retention-days: ${{ inputs.mode == 'release' && 90 || 1 }}
 
   publish:
-    if: inputs.publish
+    if: inputs.mode == 'main'
     name: Publish images
     needs: build
     runs-on: ubuntu-24.04

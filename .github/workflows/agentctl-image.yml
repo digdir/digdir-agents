@@ -124,24 +124,7 @@ jobs:
               images/agentctl/Dockerfile images/agentctl/Dockerfile.dockerignore)"
             test -n "${commit}"
 
-            # The latest release as the installers resolve it: the newest agentctl/ tag.
-            latest="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              --jq '.[] | select(.tag_name | startswith("agentctl/v")) | .tag_name' | head -n 1)"
-            base="${latest#agentctl/}"
-            if ! printf '%s\n' "${base}" | grep -q -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-              echo "::error::no agentctl release to base the version on: '${latest}'"
-              exit 1
-            fi
-            # A main build sorts after the release it follows and before the next one: after a preview it extends
-            # the preview, and after a stable release it is a prerelease of the next patch. The g keeps a commit
-            # that has only digits and starts with 0 from being an invalid semantic version identifier.
-            case "${base}" in
-              *-*) version="${base}.main.g${commit::7}" ;;
-              *)
-                patch="${base##*.}"
-                version="${base%.*}.$((patch + 1))-main.g${commit::7}"
-                ;;
-            esac
+            version="$(.github/scripts/main-version.sh "${commit}")"
             if [ "${GITHUB_REF}" = refs/heads/main ] && [ "${GITHUB_EVENT_NAME}" != pull_request ]; then
               mode=main
             else

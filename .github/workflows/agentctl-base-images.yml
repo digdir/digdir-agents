@@ -1,6 +1,8 @@
 # Builds the agentctl base images from images/agentctl-base. Pull requests only build them; main, including a manual
 # run on main, also publishes them to ghcr.io/digdir/agentctl-base as `ubuntu-26.04` and `ubuntu-26.04-desktop`, each
-# also tagged with `-sha-<commit>`. Publishing them rebuilds the self-dev images on them (self-dev-images.yml).
+# also tagged with `-sha-<commit>`. Publishing them rebuilds the self-dev images on them (self-dev-images.yml). The
+# release workflow calls this one on a release pull request to push the release's images by digest, and tags them as
+# `ubuntu-26.04-<version>` and `ubuntu-26.04-desktop-<version>` once the release is published.
 name: agentctl base images
 
 on:
@@ -24,29 +26,93 @@ on:
       # The top-level Markdown is not in the build context, which .dockerignore limits.
       - '!images/agentctl-base/*.md'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version the images belong to and are tagged with, such as v0.1.0-preview.13
+        type: string
+        required: true
+      publish:
+        description: >-
+          Push the images by digest for the release workflow to tag once the release is published, rather than only
+          build them as a release dry run does
+        type: boolean
+        default: false
 
 permissions:
   contents: read
   packages: write
 
+# A release's build has its own group, so that it and the same pull request's own base check cannot cancel each other.
 concurrency:
-  group: agentctl-base-images-${{ github.event.pull_request.number || github.ref }}
+  group: >-
+    agentctl-base-images-${{ inputs.version && format('release-{0}', inputs.version)
+    || github.event.pull_request.number || github.ref }}
   # A cancelled publish could leave the two tags pointing at different commits.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # The version the images' labels carry: the release's, or `<latest release>.main.g<commit>` for any other build.
+  resolve:
+    # A release's build always runs, even from a draft.
+    if: >-
+      ${{ inputs.version != '' || github.event_name != 'pull_request'
+      || (github.event.action != 'closed' && !github.event.pull_request.draft) }}
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      mode: ${{ steps.resolve.outputs.mode }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Resolve version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          PUBLISH_RELEASE: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          if [ -n "${RELEASE_VERSION}" ]; then
+            version="${RELEASE_VERSION}"
+            if [ "${PUBLISH_RELEASE}" = true ]; then
+              mode=release
+            else
+              mode=build
+            fi
+          else
+            version="$(.github/scripts/main-version.sh "${GITHUB_SHA}")"
+            if [ "${GITHUB_REF}" = refs/heads/main ] && [ "${GITHUB_EVENT_NAME}" != pull_request ]; then
+              mode=main
+            else
+              mode=build
+            fi
+          fi
+          echo "Building ${version} from ${GITHUB_SHA}"
+          {
+            echo "version=${version}"
+            echo "mode=${mode}"
+          } >> "${GITHUB_OUTPUT}"
+
   # Both images are built in one bake: desktop is headless plus its own stage, so it publishes the headless layers with
   # the same digests, and a host that has the headless image only pulls the desktop layers. Desktop also reads the
   # headless cache, for the stage the two share.
   images:
-    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft) }}
+    needs: resolve
     name: Base images
     uses: ./.github/workflows/images.yml
     with:
       files: docker-bake.hcl
       group: base
       sparse-checkout: images/agentctl-base
-      publish: ${{ github.ref == 'refs/heads/main' }}
+      mode: ${{ needs.resolve.outputs.mode }}
+      variables: AGENT_VERSION=${{ needs.resolve.outputs.version }}
       set: base-desktop.cache-from=type=registry,ref=ghcr.io/digdir/agentctl-base:buildcache-headless-{arch}
       images: |
         [

@@ -9,7 +9,10 @@ carry the harness versions its adapters are tested with, so an agent's Dockerfil
 | `ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop` | The headless image plus the [`desktop` feature](#features) |
 
 Both are published for `linux/amd64` and `linux/arm64` from `main` whenever this directory changes, and also tagged
-`<tag>-sha-<commit>`. Pin a digest, which Renovate keeps current.
+`<tag>-sha-<commit>`. Each agentctl release also publishes them as `<tag>-<version>`, such as
+`ubuntu-26.04-v0.1.0-preview.14`, the images that release was made with. A release's tag never moves, so moving to a
+newer release means changing the tag. Their `no.digdir.agentctl.base.version` label names the agentctl version they
+belong to, and images built on them inherit it. Pin a digest, which Renovate keeps current.
 
 ```dockerfile
 FROM ghcr.io/digdir/agentctl-base:ubuntu-26.04@sha256:…

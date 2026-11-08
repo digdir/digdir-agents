@@ -4,6 +4,12 @@
 # `docker buildx bake -f docker-bake.hcl --load base-headless` builds one locally under its published name. Always pass
 # `-f docker-bake.hcl`: without it, bake also reads the root docker-compose.yml.
 
+# The agentctl version the images belong to, which their labels carry and the agentctl image's binaries report. CI sets
+# the release's, or `<latest release>.main.g<commit>` for any other build.
+variable "AGENT_VERSION" {
+  default = "v0.0.1-dev"
+}
+
 # Where the agentctl base images are published.
 variable "BASE_REPOSITORY" {
   default = "ghcr.io/digdir/agentctl-base"
@@ -32,6 +38,10 @@ target "base-headless" {
   labels = {
     "org.opencontainers.image.title"       = "agentctl-base"
     "org.opencontainers.image.description" = "Headless base image for agentctl agents, with Claude Code, Codex and Pi"
+    "org.opencontainers.image.version"     = AGENT_VERSION
+    # Images built on the base inherit its labels, and may set the OCI version to their own. This one keeps saying
+    # which agentctl version their base belongs to.
+    "no.digdir.agentctl.base.version" = AGENT_VERSION
   }
 }
 
@@ -42,11 +52,6 @@ target "base-desktop" {
   labels = {
     "org.opencontainers.image.description" = "Desktop base image for agentctl agents: the headless image plus Chromium and a VNC desktop"
   }
-}
-
-# The version the agentctl image's binaries report. CI sets the release's, or `<latest release>.main.g<commit>` on main.
-variable "AGENT_VERSION" {
-  default = "v0.0.1-dev"
 }
 
 # agentctl and agentd alone, for agent images to copy in. Built from the repository root; locally under a localhost/
