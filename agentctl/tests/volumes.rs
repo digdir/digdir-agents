@@ -822,3 +822,46 @@ async fn a_copy_a_failed_copy_could_not_delete_is_deleted_by_cleanup() {
         "the failure stays visible"
     );
 }
+
+/// A retry takes its copy under the same name as the one that failed, so a failed copy still there
+/// is replaced rather than taken as the new one.
+#[tokio::test(flavor = "local")]
+async fn a_retried_copy_replaces_the_failed_copy_left_under_its_name() {
+    let fixture = volume_fixture();
+    let temporary = TempDirectory::new("volume-retry-leftover");
+    let source = temporary.path().join("apps");
+    std::fs::create_dir_all(&source).expect("source");
+    let vanishing = source.clone();
+    *fixture.provider.while_copying.borrow_mut() = Some(Box::new(move || {
+        std::fs::remove_dir_all(&vanishing).expect("source removed while copying");
+    }));
+    fixture.provider.failing_volume_deletes.set(2);
+    fixture
+        .service
+        .apply(volume_request("apps", source.clone()))
+        .await
+        .expect("apply volume");
+    let id = fixture.volumes.get_by_name("apps").await.expect("volume").id;
+    let _ = fixture.reconciler.reconcile(id).await;
+    let failed = fixture.volumes.get(id).await.expect("volume").discarded[0]
+        .volume
+        .clone();
+
+    *fixture.provider.while_copying.borrow_mut() = None;
+    std::fs::create_dir_all(&source).expect("source restored");
+    fixture
+        .service
+        .apply(volume_request("apps", source))
+        .await
+        .expect("apply volume again");
+    reconcile_volume(&fixture, "apps").await;
+    let record = fixture.volumes.get(id).await.expect("volume");
+    let latest = record.volume.status.latest().expect("revision 1");
+    assert_eq!(latest.number, 1, "the retry reuses the number");
+    assert_ne!(
+        latest.storage.volume, failed,
+        "the failed copy is not taken as the new one"
+    );
+    assert_eq!(fixture.backend.volume_count(), 1);
+    assert_eq!(record.discarded, []);
+}

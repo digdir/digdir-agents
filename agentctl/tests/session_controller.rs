@@ -206,6 +206,25 @@ impl Provider for MemoryProvider {
                 .map_err(Error::from)
         })
     }
+
+    fn ensure_volume(
+        &self,
+        request: sandbox::volume::EnsureVolumeRequest,
+        progress: sandbox::ProgressReporter,
+    ) -> LocalFuture<'_, Result<sandbox::volume::Volume, Error>> {
+        Box::pin(async move { Ok(self.service.ensure_volume(request).forward(&progress).await?) })
+    }
+
+    fn find_volume<'a>(
+        &'a self,
+        name: &'a sandbox::volume::VolumeName,
+    ) -> LocalFuture<'a, Result<sandbox::volume::Volume, Error>> {
+        Box::pin(async move { Ok(self.service.find_volume(name).await?) })
+    }
+
+    fn delete_volume<'a>(&'a self, id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(async move { Ok(self.service.delete_volume(id).await?) })
+    }
 }
 
 impl Reconcile<SessionId> for BlockingReconcile {

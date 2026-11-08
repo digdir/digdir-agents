@@ -252,42 +252,34 @@ impl Provider for MemoryProvider {
         })
     }
 
-    fn ensure_directory_copy<'a>(
-        &'a self,
-        name: &'a sandbox::volume::VolumeName,
-        source: &'a std::path::Path,
+    fn ensure_volume(
+        &self,
+        request: sandbox::volume::EnsureVolumeRequest,
         progress: sandbox::ProgressReporter,
-    ) -> LocalFuture<'a, Result<sandbox::volume::VolumeId, Error>> {
+    ) -> LocalFuture<'_, Result<sandbox::volume::Volume, Error>> {
         Box::pin(async move {
-            let volume = self
-                .service
-                .ensure_volume(sandbox::volume::EnsureVolumeRequest::new(name.clone()).with_contents(
-                    sandbox::volume::VolumeContents::DirectoryCopy {
-                        source: source.to_path_buf(),
-                        owner: sandbox::volume::Owner::default(),
-                    },
-                ))
-                .forward(&progress)
-                .await?;
+            let volume = self.service.ensure_volume(request).forward(&progress).await?;
             if let Some(change) = self.while_copying.borrow().as_ref() {
                 change();
             }
-            Ok(volume.id)
+            Ok(volume)
         })
     }
 
-    fn delete_volume<'a>(&'a self, id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<bool, Error>> {
+    fn find_volume<'a>(
+        &'a self,
+        name: &'a sandbox::volume::VolumeName,
+    ) -> LocalFuture<'a, Result<sandbox::volume::Volume, Error>> {
+        Box::pin(async move { Ok(self.service.find_volume(name).await?) })
+    }
+
+    fn delete_volume<'a>(&'a self, id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             if let Some(remaining) = self.failing_volume_deletes.get().checked_sub(1) {
                 self.failing_volume_deletes.set(remaining);
                 return Err(Error::Sandbox(sandbox::Error::Backend("runtime unreachable".into())));
             }
-            match self.service.delete_volume(id).await {
-                Ok(()) => Ok(true),
-                Err(error) if error.kind() == sandbox::ErrorKind::InUse => Ok(false),
-                Err(error) if error.is_not_found() => Ok(true),
-                Err(error) => Err(error.into()),
-            }
+            Ok(self.service.delete_volume(id).await?)
         })
     }
 }
@@ -404,6 +396,25 @@ impl Provider for PlannedProvider {
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
         self.inner.release(record)
     }
+
+    fn ensure_volume(
+        &self,
+        request: sandbox::volume::EnsureVolumeRequest,
+        progress: sandbox::ProgressReporter,
+    ) -> LocalFuture<'_, Result<sandbox::volume::Volume, Error>> {
+        self.inner.ensure_volume(request, progress)
+    }
+
+    fn find_volume<'a>(
+        &'a self,
+        name: &'a sandbox::volume::VolumeName,
+    ) -> LocalFuture<'a, Result<sandbox::volume::Volume, Error>> {
+        self.inner.find_volume(name)
+    }
+
+    fn delete_volume<'a>(&'a self, id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
+        self.inner.delete_volume(id)
+    }
 }
 
 impl UnsupportedProvider {
@@ -449,6 +460,25 @@ impl Provider for UnsupportedProvider {
     }
 
     fn release<'a>(&'a self, _record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
+    }
+
+    fn ensure_volume(
+        &self,
+        _request: sandbox::volume::EnsureVolumeRequest,
+        _progress: sandbox::ProgressReporter,
+    ) -> LocalFuture<'_, Result<sandbox::volume::Volume, Error>> {
+        Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
+    }
+
+    fn find_volume<'a>(
+        &'a self,
+        _name: &'a sandbox::volume::VolumeName,
+    ) -> LocalFuture<'a, Result<sandbox::volume::Volume, Error>> {
+        Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
+    }
+
+    fn delete_volume<'a>(&'a self, _id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
     }
 }

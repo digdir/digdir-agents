@@ -227,37 +227,23 @@ impl Provider for Adapter {
         })
     }
 
-    fn ensure_directory_copy<'a>(
-        &'a self,
-        name: &'a ::sandbox::volume::VolumeName,
-        source: &'a Path,
+    fn ensure_volume(
+        &self,
+        request: ::sandbox::volume::EnsureVolumeRequest,
         progress: ::sandbox::ProgressReporter,
-    ) -> LocalFuture<'a, Result<::sandbox::volume::VolumeId, Error>> {
-        Box::pin(async move {
-            match self.service.find_volume(name).await {
-                Ok(interrupted) => self.service.delete_volume(&interrupted.id).await?,
-                Err(error) if error.is_not_found() => {}
-                Err(error) => return Err(error.into()),
-            }
-            let request = ::sandbox::volume::EnsureVolumeRequest::new(name.clone()).with_contents(
-                ::sandbox::volume::VolumeContents::DirectoryCopy {
-                    source: source.to_path_buf(),
-                    owner: super::platform::linux::USER_OWNER,
-                },
-            );
-            Ok(self.service.ensure_volume(request).forward(&progress).await?.id)
-        })
+    ) -> LocalFuture<'_, Result<::sandbox::volume::Volume, Error>> {
+        Box::pin(async move { Ok(self.service.ensure_volume(request).forward(&progress).await?) })
     }
 
-    fn delete_volume<'a>(&'a self, id: &'a ::sandbox::volume::VolumeId) -> LocalFuture<'a, Result<bool, Error>> {
-        Box::pin(async move {
-            match self.service.delete_volume(id).await {
-                Ok(()) => Ok(true),
-                Err(error) if error.kind() == ErrorKind::InUse => Ok(false),
-                Err(error) if error.is_not_found() => Ok(true),
-                Err(error) => Err(error.into()),
-            }
-        })
+    fn find_volume<'a>(
+        &'a self,
+        name: &'a ::sandbox::volume::VolumeName,
+    ) -> LocalFuture<'a, Result<::sandbox::volume::Volume, Error>> {
+        Box::pin(async move { Ok(self.service.find_volume(name).await?) })
+    }
+
+    fn delete_volume<'a>(&'a self, id: &'a ::sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(async move { Ok(self.service.delete_volume(id).await?) })
     }
 
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
