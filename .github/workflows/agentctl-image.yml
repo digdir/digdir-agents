@@ -2,7 +2,7 @@
 # that change the Rust workspace or the image only build it. Every push to main that does, and a manual run on main,
 # publishes it to ghcr.io/digdir/agentctl as `sha-<commit>`, and as `main` while no newer commit has started a run. The
 # release workflow calls this one on a release pull request to push the release's image by digest, and tags it as
-# `<version>`, such as `v0.1.0-preview.13`, once the release is published.
+# `<version>`, such as `v0.1.0-preview.13`, when the pull request lands, just before it publishes the release.
 name: agentctl image
 
 on:
@@ -18,6 +18,7 @@ on:
       - images/agentctl/**
       - docker-bake.hcl
       - .github/workflows/agentctl-image.yml
+      - .github/scripts/main-version.sh
       # Markdown is not built into the binaries, except the skill agentctl bundles.
       - '!**/*.md'
       - agentctl/skills/**
@@ -35,6 +36,7 @@ on:
       - images/agentctl/**
       - docker-bake.hcl
       - .github/workflows/agentctl-image.yml
+      - .github/scripts/main-version.sh
       - '!**/*.md'
       - agentctl/skills/**
   workflow_dispatch:
@@ -46,8 +48,8 @@ on:
         required: true
       publish:
         description: >-
-          Push the image by digest for the release workflow to tag once the release is published, rather than only
-          build it as a release dry run does
+          Push the image by digest for the release workflow to tag when the release pull request lands, rather than
+          only build it as a release dry run does
         type: boolean
         default: false
 

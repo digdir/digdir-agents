@@ -2,7 +2,8 @@
 # run on main, also publishes them to ghcr.io/digdir/agentctl-base as `ubuntu-26.04` and `ubuntu-26.04-desktop`, each
 # also tagged with `-sha-<commit>`. Publishing them rebuilds the self-dev images on them (self-dev-images.yml). The
 # release workflow calls this one on a release pull request to push the release's images by digest, and tags them as
-# `ubuntu-26.04-<version>` and `ubuntu-26.04-desktop-<version>` once the release is published.
+# `ubuntu-26.04-<version>` and `ubuntu-26.04-desktop-<version>` when the pull request lands, just before it publishes
+# the release.
 name: agentctl base images
 
 on:
@@ -13,10 +14,12 @@ on:
       - docker-bake.hcl
       - .github/workflows/agentctl-base-images.yml
       - .github/workflows/images.yml
+      - .github/scripts/main-version.sh
       # The top-level Markdown is not in the build context, which .dockerignore limits.
       - '!images/agentctl-base/*.md'
-  # Not on changes to docker-bake.hcl or images.yml alone: every build of the base has a new digest, which images built
-  # on it then follow. self-dev-images.yml publishes on images.yml changes, which tries them on main.
+  # Not on changes to docker-bake.hcl, images.yml or main-version.sh alone: every build of the base has a new digest,
+  # which images built on it then follow. self-dev-images.yml publishes on changes to images.yml, and agentctl-image.yml
+  # on changes to the other two, which tries them on main.
   push:
     branches:
       - main
@@ -34,8 +37,8 @@ on:
         required: true
       publish:
         description: >-
-          Push the images by digest for the release workflow to tag once the release is published, rather than only
-          build them as a release dry run does
+          Push the images by digest for the release workflow to tag when the release pull request lands, rather than
+          only build them as a release dry run does
         type: boolean
         default: false
 

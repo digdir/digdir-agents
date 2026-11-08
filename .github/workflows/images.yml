@@ -2,7 +2,7 @@
 # architecture builds on a native runner: under QEMU, an arm64 build of the base took more than 20 minutes for its
 # package layer alone. When pushing, each runner pushes its images by digest, and the publish job joins them into
 # multi-platform images under the tags the caller names. A release's build stops before that, for the release workflow
-# to tag the images once the release is published.
+# to tag the images when the release pull request lands.
 name: Images
 
 on:
