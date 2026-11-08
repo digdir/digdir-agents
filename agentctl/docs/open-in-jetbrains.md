@@ -45,6 +45,20 @@ Apply it:
 agentctl apply --variant mine --wait
 ```
 
+The agent now has the label:
+
+```sh
+agentctl get agents -L client
+```
+
+```text
+NAME   READY  STATUS  HARNESSES                        PROVIDER      CLIENT
+myapp  True   Ready   claudeCode (default), codex, pi  microsandbox  jetbrains
+```
+
+Apply with `--variant mine` from now on. A plain `agentctl apply` applies `agent.yaml` again, which takes the memory
+and the label away and restarts the agent with less memory.
+
 ## Set up SSH once
 
 ```sh
@@ -60,7 +74,14 @@ there.
 agentctl ssh-info agent/myapp
 ```
 
-Note `Alias`, such as `agentctl-myapp`, and `Project`, such as `/home/agent/code/myapp`.
+Note `Alias` and `Project`. Among the lines it prints are:
+
+```text
+Alias:       agentctl-myapp
+User:        agent
+Directory:   /home/agent/code
+Project:     /home/agent/code/myapp
+```
 
 ## Connect from Gateway
 
