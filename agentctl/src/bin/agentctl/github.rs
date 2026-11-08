@@ -171,7 +171,7 @@ fn unkept(kept: &[Account], agents: &[Agent]) -> String {
     for (name, agents) in wanted {
         let _ = writeln!(
             text,
-            "\nNo login named {name} is kept, which {} ask for, so they run without GitHub access. \
+            "\nNo login named {name} is kept, so the agents asking for it run without GitHub access: {}. \
              Keep one with `agentctl github login {name}`.",
             agents.join(", ")
         );
@@ -415,7 +415,7 @@ spec:
         let kept = [token("digdir", TokenKind::FineGrained, None)];
         assert_eq!(
             unkept(&kept, &agents),
-            "\nNo login named case-web is kept, which web, api ask for, so they run without GitHub access. \
+            "\nNo login named case-web is kept, so the agents asking for it run without GitHub access: web, api. \
              Keep one with `agentctl github login case-web`.\n"
         );
         assert_eq!(unkept(&kept, &agents[2..]), "");
