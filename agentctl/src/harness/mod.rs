@@ -404,7 +404,7 @@ pub struct AuthenticationManager {
     /// went on to succeed; see [`Self::assign_login`].
     assignments:
         std::cell::RefCell<std::collections::BTreeMap<crate::AgentId, std::collections::BTreeMap<Harness, LoginName>>>,
-    accounts: crate::accounts::Accounts,
+    github: crate::github::Authentication,
 }
 
 impl AuthenticationManager {
@@ -415,7 +415,7 @@ impl AuthenticationManager {
             database: database.clone(),
             claude_code: claude_code::authentication::Authentication::new(database.clone()),
             codex: codex::authentication::Authentication::new(database.clone()),
-            accounts: crate::accounts::Accounts::new(database),
+            github: crate::github::Authentication::new(database),
             assignments: std::cell::RefCell::default(),
         }
     }
@@ -433,16 +433,28 @@ impl AuthenticationManager {
         name: &str,
         credential: Zeroizing<String>,
     ) -> Result<crate::accounts::Login, Error> {
-        self.accounts.login(account_type, name, credential).await
+        match account_type {
+            crate::accounts::AccountType::Github => self
+                .github
+                .login(credential, name)
+                .await
+                .map(crate::accounts::Login::Github),
+        }
     }
 
-    /// The kept accounts of every type, without their credentials.
+    /// The kept accounts of every type, by type, then name, without their credentials.
     ///
     /// # Errors
     ///
-    /// Returns an error when the database cannot be read.
+    /// Returns an error when the database cannot be read or holds an unreadable account.
     pub async fn accounts(&self) -> Result<Vec<crate::accounts::Account>, Error> {
-        self.accounts.list().await
+        Ok(self
+            .github
+            .accounts()
+            .await?
+            .into_iter()
+            .map(crate::accounts::Account::Github)
+            .collect())
     }
 
     /// Forgets the account `name` of `account_type`, returning it, or `None` when there was none.
@@ -455,7 +467,11 @@ impl AuthenticationManager {
         account_type: crate::accounts::AccountType,
         name: &str,
     ) -> Result<Option<crate::accounts::Account>, Error> {
-        self.accounts.logout(account_type, name).await
+        match account_type {
+            crate::accounts::AccountType::Github => {
+                Ok(self.github.forget(name).await?.map(crate::accounts::Account::Github))
+            }
+        }
     }
 
     /// Stores a credential for the selected harness as the login `login`, replacing an earlier

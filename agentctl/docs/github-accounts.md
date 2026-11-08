@@ -16,11 +16,10 @@ GitHub token and one Git identity.
 
 ## Keeping a token
 
-`agentctl github login NAME` keeps a token under that name. Without a name it uses this repository's. At a terminal it
-asks which user or organization the token is for, offering the owner of this repository's GitHub remote. It then opens
-GitHub's form for a fine-grained token, with the owner, a lifetime and the permissions agents need filled in, as
-[`PERMISSIONS`](../src/github/mod.rs) lists them. You pick the repositories, which the form can't be given, and paste
-the token. It isn't shown.
+`agentctl github login NAME` keeps a token under that name. At a terminal it asks which user or organization the token
+is for, then opens GitHub's form for a fine-grained token, with the owner, a lifetime and the permissions agents need
+filled in, as [`PERMISSIONS`](../src/github/mod.rs) lists them. You pick the repositories, which the form can't be
+given, and paste the token. It isn't shown.
 
 `--from-stdin` reads the token from standard input instead. That also takes a classic token or your own GitHub CLI
 login:
@@ -35,8 +34,8 @@ such as a bot, keeps what agents do apart from what you do.
 
 agentd asks GitHub which account the token acts as and when it expires, and refuses a token GitHub rejects, one that
 has expired, and kinds that stop working on their own, such as GitHub App tokens that need refreshing. Once the token
-is kept, agentctl shows the account and warns when the token can't see this repository, expires within a week,
-reaches beyond the repositories it was created for, or lacks scopes `gh` needs.
+is kept, agentctl shows the account and warns when the token expires within a week, reaches beyond the repositories
+it was created for, or lacks scopes `gh` needs.
 
 ## What the agent gets
 

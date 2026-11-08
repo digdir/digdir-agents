@@ -222,8 +222,44 @@ pub struct ProviderEnsureOutcome {
     pub logins: BTreeMap<crate::Harness, crate::harness::LoginName>,
     /// Whether the sandbox got the nested sandboxes the agent asks for, when it asks for them.
     pub nested_sandboxes: Option<NestedSandboxesOutcome>,
-    /// The agent's kept GitHub account, without its token, when it asks for one and one is kept.
-    pub github_account: Option<crate::github::Account>,
+    /// What setup configures in the guest for the accounts the agent acts as.
+    pub accounts: AccountSetup,
+}
+
+/// What setup configures in the guest for the accounts an agent acts as. Preparation fills it in
+/// from each account type, so platform adapters need no knowledge of the types.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AccountSetup {
+    /// Who Git commits as, unless the manifest sets `GIT_USER_NAME` and `GIT_USER_EMAIL`.
+    pub git_identity: Option<GitIdentity>,
+    /// The HTTPS hosts Git reaches with a mediated credential.
+    pub git_credentials: Vec<GitCredential>,
+    /// Lines for the agent's instructions, each with its label, such as `GitHub`.
+    pub instructions: Vec<(&'static str, String)>,
+}
+
+/// A name and email Git commits as.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitIdentity {
+    /// The commit author's name.
+    pub name: String,
+    /// The commit author's email.
+    pub email: String,
+}
+
+/// A credential Git sends over HTTPS: the inert value of a guest variable, which the network
+/// mediator replaces with the real credential.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitCredential {
+    /// Where Git sends it, such as `https://github.com`, without a trailing slash.
+    pub url: &'static str,
+    /// The user name Git sends with it.
+    pub username: &'static str,
+    /// The guest variable holding the inert value Git sends as the password.
+    pub environment: &'static str,
+    /// Remote prefixes Git rewrites to `url`, such as SSH remotes, since the sandbox has no SSH
+    /// key and mediation covers HTTPS only.
+    pub rewrites: &'static [&'static str],
 }
 
 /// Whether a sandbox runs sandboxes of its own as its agent asks.
@@ -291,14 +327,14 @@ pub trait PlatformAdapter {
     fn supports(&self, platform: &Platform) -> bool;
 
     /// Idempotently applies agent and harness setup inside the sandbox,
-    /// reporting its steps through `steps`. `github_account` is the agent's kept
-    /// GitHub account, without its token, for the Git identity and the platform's instructions.
+    /// reporting its steps through `steps`. `accounts` is what it configures for the accounts
+    /// the agent acts as.
     fn setup<'a>(
         &'a self,
         record: &'a AgentRecord,
         sandbox: &'a SandboxHandle,
         harnesses: &'a [crate::Harness],
-        github_account: Option<&'a crate::github::Account>,
+        accounts: &'a AccountSetup,
         steps: &'a ::sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<PlatformSetup, Error>>;
 }
@@ -398,7 +434,7 @@ impl Service {
                     record,
                     &sandbox,
                     &outcome.harnesses,
-                    outcome.github_account.as_ref(),
+                    &outcome.accounts,
                     &progress.steps(),
                 ),
             )

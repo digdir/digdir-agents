@@ -107,10 +107,10 @@ impl PlatformAdapter for Linux {
         record: &'a control_plane::AgentRecord,
         sandbox: &'a SandboxHandle,
         harnesses: &'a [crate::Harness],
-        github_account: Option<&'a crate::github::Account>,
+        accounts: &'a crate::sandbox::AccountSetup,
         steps: &'a ::sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<PlatformSetup, Error>> {
-        Box::pin(self.setup(record, sandbox, harnesses, github_account, steps))
+        Box::pin(self.setup(record, sandbox, harnesses, accounts, steps))
     }
 }
 
@@ -122,7 +122,7 @@ impl Linux {
         record: &control_plane::AgentRecord,
         sandbox: &SandboxHandle,
         harnesses: &[crate::Harness],
-        github_account: Option<&crate::github::Account>,
+        accounts: &crate::sandbox::AccountSetup,
         steps: &::sandbox::SandboxProgress,
     ) -> Result<PlatformSetup, Error> {
         let installations: Vec<&crate::HarnessSpec> = record
@@ -148,14 +148,14 @@ impl Linux {
         step.complete().await;
         mount_writable_volumes(record, sandbox, steps).await?;
         let step = steps.start_step("Sync home").await;
-        set_up_home(record, sandbox, podman, github_account).await?;
+        set_up_home(record, sandbox, podman, accounts).await?;
         step.complete().await;
         let observed = preamble::Observed {
             harnesses,
             environment: &sandbox.snapshot().environment,
             kvm,
             podman,
-            github_account,
+            accounts,
         };
         let section = preamble::render(record, &observed);
         let mut missing = Vec::new();
@@ -259,12 +259,12 @@ async fn read_owned_instructions(sandbox: &SandboxHandle, path: &str) -> Result<
 }
 
 /// Copies the agent's home into the sandbox when it has one, points Podman at its socket when the
-/// image has Podman, and configures Git, with the kept `github_account` for an agent with one.
+/// image has Podman, and configures Git, with what the agent's `accounts` need.
 async fn set_up_home(
     record: &control_plane::AgentRecord,
     sandbox: &SandboxHandle,
     podman: bool,
-    github_account: Option<&crate::github::Account>,
+    accounts: &crate::sandbox::AccountSetup,
 ) -> Result<(), Error> {
     if let Some(home) = &record.agent.spec.home {
         let archive = archive_home(record.source_directory.clone(), home.source.clone()).await?;
@@ -274,37 +274,27 @@ async fn set_up_home(
         // After the home sync, so a file of the same name in the agent's home cannot replace it.
         point_podman_at_socket(sandbox).await?;
     }
-    configure_git(
-        sandbox,
-        record
-            .agent
-            .spec
-            .account(crate::accounts::AccountType::Github)
-            .is_some(),
-        github_account.map(|account| &account.identity),
-    )
-    .await
+    configure_git(sandbox, accounts).await
 }
 
 /// Configures Git for the agent's user when the image has it: the commit identity from
-/// `GIT_USER_NAME` and `GIT_USER_EMAIL`, or else from the GitHub account's `identity`, and for an
-/// agent with a GitHub account, HTTPS access to GitHub through the mediated `GITHUB_TOKEN`.
-async fn configure_git(
-    sandbox: &SandboxHandle,
-    github_account: bool,
-    identity: Option<&crate::github::Identity>,
-) -> Result<(), Error> {
+/// `GIT_USER_NAME` and `GIT_USER_EMAIL`, or else from the `accounts`, and HTTPS access through
+/// each of their mediated credentials.
+async fn configure_git(sandbox: &SandboxHandle, accounts: &crate::sandbox::AccountSetup) -> Result<(), Error> {
     let environment = &sandbox.snapshot().environment;
     let identity = match (environment.get("GIT_USER_NAME"), environment.get("GIT_USER_EMAIL")) {
         (Some(name), Some(email)) => Some((name.clone(), email.clone())),
-        (None, None) => identity.map(|identity| (identity.name.clone(), identity.email.clone())),
+        (None, None) => accounts
+            .git_identity
+            .as_ref()
+            .map(|identity| (identity.name.clone(), identity.email.clone())),
         _ => {
             return Err(Error::Invalid(
                 "GIT_USER_NAME and GIT_USER_EMAIL must both be configured".into(),
             ));
         }
     };
-    if identity.is_none() && !github_account {
+    if identity.is_none() && accounts.git_credentials.is_empty() {
         return Ok(());
     }
     let present = run_git(sandbox, &["--version"]).await?;
@@ -321,38 +311,49 @@ async fn configure_git(
         run_git_config(sandbox, "user.name", &name).await?;
         run_git_config(sandbox, "user.email", &email).await?;
     }
-    if github_account {
-        configure_github_https(sandbox).await?;
+    for credential in &accounts.git_credentials {
+        configure_credential(sandbox, credential).await?;
     }
     Ok(())
 }
 
-/// Hands Git the placeholder as the password; the mediator replaces it in the Basic credentials.
-const GITHUB_CREDENTIAL_KEY: &str = "credential.https://github.com.helper";
-const GITHUB_CREDENTIAL_HELPER: &str =
-    "!f() { test \"$1\" = get || exit 0; echo username=x-access-token; echo \"password=$GITHUB_TOKEN\"; }; f";
-const GITHUB_HTTPS_REWRITE: &str = "url.https://github.com/.insteadOf";
-const GITHUB_SSH_URLS: [&str; 2] = ["git@github.com:", "ssh://git@github.com/"];
-
-/// Gives Git the mediated `GITHUB_TOKEN` for GitHub over HTTPS, and sends GitHub's SSH URLs over
-/// HTTPS, since the Sandbox has no SSH key and mediation covers HTTPS only.
+/// Gives Git `credential` for its host over HTTPS, and sends its remotes, such as SSH ones, over
+/// HTTPS instead. Git sends the inert value as the password, and the mediator replaces it in the
+/// Basic credentials.
 ///
 /// The helper is added after any the image configured, which Git asks first, so an image's own
 /// helper still wins when it answers and ours answers when it does not, such as a generic `cache`
-/// or `store`. An image's own rewrite of an SSH URL is kept.
-async fn configure_github_https(sandbox: &SandboxHandle) -> Result<(), Error> {
-    let helpers = git_lookup(sandbox, &["config", "--global", "--get-all", GITHUB_CREDENTIAL_KEY])
+/// or `store`. An image's own rewrite of one of the remotes is kept.
+async fn configure_credential(
+    sandbox: &SandboxHandle,
+    credential: &crate::sandbox::GitCredential,
+) -> Result<(), Error> {
+    let crate::sandbox::GitCredential {
+        url,
+        username,
+        environment,
+        rewrites,
+    } = credential;
+    let key = format!("credential.{url}.helper");
+    let helper = format!(
+        "!f() {{ test \"$1\" = get || exit 0; echo username={username}; echo \"password=${environment}\"; }}; f"
+    );
+    let helpers = git_lookup(sandbox, &["config", "--global", "--get-all", &key])
         .await?
         .unwrap_or_default();
-    if !helpers.lines().any(|helper| helper == GITHUB_CREDENTIAL_HELPER) {
-        add_git_config(sandbox, GITHUB_CREDENTIAL_KEY, GITHUB_CREDENTIAL_HELPER).await?;
+    if !helpers.lines().any(|existing| existing == helper) {
+        add_git_config(sandbox, &key, &helper).await?;
     }
-    let rewrites = git_lookup(sandbox, &["config", "--get-regexp", r"^url\..*\.insteadof$"])
+    let existing = git_lookup(sandbox, &["config", "--get-regexp", r"^url\..*\.insteadof$"])
         .await?
         .unwrap_or_default();
-    for ssh in GITHUB_SSH_URLS {
-        if !rewrites.lines().any(|line| line.split_whitespace().nth(1) == Some(ssh)) {
-            add_git_config(sandbox, GITHUB_HTTPS_REWRITE, ssh).await?;
+    let rewrite = format!("url.{url}/.insteadOf");
+    for remote in *rewrites {
+        if !existing
+            .lines()
+            .any(|line| line.split_whitespace().nth(1) == Some(remote))
+        {
+            add_git_config(sandbox, &rewrite, remote).await?;
         }
     }
     Ok(())

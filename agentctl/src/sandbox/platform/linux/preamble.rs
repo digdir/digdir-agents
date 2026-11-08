@@ -26,8 +26,8 @@ pub(super) struct Observed<'a> {
     pub(super) kvm: bool,
     /// Whether the image has Podman, which builds the images of nested agents.
     pub(super) podman: bool,
-    /// The GitHub account kept under the name the agent asks for, without its token.
-    pub(super) github_account: Option<&'a crate::github::Account>,
+    /// What setup configures for the accounts the agent acts as, such as lines for these instructions.
+    pub(super) accounts: &'a crate::sandbox::AccountSetup,
 }
 
 /// Opens the section, so that a later pass can find and replace it in a file the image or the home
@@ -77,7 +77,7 @@ pub(super) fn without_section(existing: &[u8]) -> &[u8] {
 pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
     let spec = &record.agent.spec;
     let name = &record.agent.metadata.name;
-    let lines = [
+    let mut lines = vec![
         (
             "Computer",
             Some(format!(
@@ -95,10 +95,18 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
                 .then(|| format!("{}.", code_list(spec.environment.iter().map(|variable| &variable.name)))),
         ),
         ("Network", Some(network(spec))),
-        ("GitHub", github(spec, observed.github_account)),
+    ];
+    lines.extend(
+        observed
+            .accounts
+            .instructions
+            .iter()
+            .map(|(label, text)| (*label, Some(text.clone()))),
+    );
+    lines.extend([
         ("Access", access(spec, name)),
         ("Nested agents", Some(nested_agents(spec, observed).to_owned())),
-    ];
+    ]);
     let mut section = format!(
         "{BEGIN}# Agent sandbox\n\n\
          Written by agentd {}. Instructions after this section are the agent's own and take precedence.\n\n",
@@ -138,23 +146,6 @@ fn harnesses(spec: &Spec, installed: &[Harness]) -> String {
             label.to_owned()
         }
     }))
-}
-
-/// How GitHub works for an Agent with an account: as the account itself when its token reaches
-/// all the account can, else for the repositories the token was created for, as a fine-grained
-/// token is.
-fn github(spec: &Spec, account: Option<&crate::github::Account>) -> Option<String> {
-    let name = spec.account(crate::accounts::AccountType::Github)?;
-    let reach = match account {
-        Some(account) if !account.kind.single_owner() => {
-            format!("as `{}`, for whatever that account can reach", account.identity.login)
-        }
-        _ => format!("for the repositories the `{name}` token was created for"),
-    };
-    Some(format!(
-        "`gh` and `git` over HTTPS work {reach}, and SSH remotes on github.com go over HTTPS; \
-         `gh api user --jq .login` shows the account. Don't run `gh auth login` or replace `GITHUB_TOKEN`."
-    ))
 }
 
 /// One sub-bullet per secret, with the hosts it is sent to or that it was left unconfigured.
@@ -231,66 +222,4 @@ fn code_list<'a>(items: impl IntoIterator<Item = &'a String>) -> String {
         .map(|item| format!("`{item}`"))
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::expect_used)]
-
-    use super::*;
-
-    fn spec(mounts: &str, extra: &str) -> Spec {
-        let manifest = format!(
-            "apiVersion: agents.platform/v1alpha1
-kind: Agent
-metadata:
-  name: worker
-spec:
-  sandbox:
-    image:
-      type: reference
-      reference: example.com/agent:latest
-    platform:
-      os: linux
-    resources:
-      cpu: \"1\"
-      memory: \"1Gi\"
-      rootFilesystem:
-        capacity: \"8Gi\"
-        mode: layered
-    mounts: {mounts}
-  harnesses: [{{type: pi}}]
-{extra}"
-        );
-        crate::manifest::decode(manifest.as_bytes()).expect("manifest").spec
-    }
-
-    #[test]
-    fn github_works_as_the_account_unless_the_token_is_for_one_owner() {
-        assert_eq!(github(&spec("[]", ""), None), None);
-        let spec = spec("[]", "  accounts: [{type: github, name: altinn-studio}]\n");
-        let token = |kind| crate::github::Account {
-            name: "altinn-studio".into(),
-            identity: crate::github::Identity {
-                login: "digdir-agent".into(),
-                name: "Digdir Agent".into(),
-                email: "1+digdir-agent@users.noreply.github.com".into(),
-            },
-            kind,
-            expires_at: None,
-        };
-        let repositories =
-            "`gh` and `git` over HTTPS work for the repositories the `altinn-studio` token was created for,";
-        let account = "`gh` and `git` over HTTPS work as `digdir-agent`, for whatever that account can reach,";
-        for (token, expected) in [
-            (None, repositories),
-            (Some(token(crate::github::TokenKind::FineGrained)), repositories),
-            (Some(token(crate::github::TokenKind::Oauth)), account),
-            (Some(token(crate::github::TokenKind::Classic)), account),
-        ] {
-            let text = github(&spec, token.as_ref()).expect("a GitHub line");
-            assert!(text.starts_with(expected), "{expected} in {text}");
-            assert!(text.contains("`gh api user --jq .login`"), "{text}");
-        }
-    }
 }

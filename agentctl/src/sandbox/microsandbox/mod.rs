@@ -163,7 +163,7 @@ impl Provider for Adapter {
             let prepared = self.preparation.prepare(record).await?;
             let harnesses = prepared.harnesses;
             let logins = prepared.logins;
-            let github_account = prepared.github_account;
+            let accounts = prepared.accounts;
             for (name, value) in prepared.environment {
                 if environment.insert(name.clone(), value).is_some() {
                     return Err(Error::Invalid(format!(
@@ -203,7 +203,7 @@ impl Provider for Adapter {
                 harnesses,
                 logins,
                 nested_sandboxes,
-                github_account,
+                accounts,
             })
         })
     }

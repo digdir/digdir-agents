@@ -31,22 +31,18 @@ pub fn find_executable(path: Option<&std::ffi::OsStr>, names: &[&str]) -> Option
             .iter()
             .filter(|directory| directory.is_absolute())
             .map(|directory| directory.join(name))
-            .find(|candidate| is_runnable(candidate))
+            .find(|candidate| runnable(candidate))
     })
 }
 
-/// Whether `candidate` is a file and, on Unix, one that may be run.
 #[cfg(unix)]
-#[must_use]
-pub fn is_runnable(candidate: &std::path::Path) -> bool {
+fn runnable(candidate: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::metadata(candidate).is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
-/// Whether `candidate` is a file and, on Unix, one that may be run.
 #[cfg(not(unix))]
-#[must_use]
-pub fn is_runnable(candidate: &std::path::Path) -> bool {
+fn runnable(candidate: &std::path::Path) -> bool {
     candidate.is_file()
 }
 

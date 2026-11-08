@@ -1,16 +1,16 @@
 //! Accounts agents act as, such as a GitHub account, each signed in once and kept under a name a
 //! manifest asks for.
 //!
-//! Each type of account is code here: how its credential is checked, what is kept about it and
-//! where the network mediator may substitute it. A manifest only names the account, and an agent
-//! has at most one of each type. Credentials stay in the secret store under names that never
-//! change, and the mediator reads them on every use, so a type whose credentials expire can
-//! refresh them by replacing the stored value, without touching the agents that use it.
+//! Each type has a module of its own, such as [`github`], that knows how its credential is
+//! checked, what is kept about it, where the network mediator may substitute it and what setup
+//! configures in the guest. A manifest only names the account, and an agent has at most one of
+//! each type. Credentials stay in the secret store under names that never change, and the mediator
+//! reads them on every use, so a type whose credentials expire can refresh them by replacing the
+//! stored value, without touching the agents that use it.
 
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroizing;
 
-use crate::{Error, github, persistence};
+use crate::github;
 
 /// The longest name an account is kept under.
 pub(crate) const NAME_MAX_LENGTH: usize = 64;
@@ -93,57 +93,6 @@ impl Login {
     pub fn account(&self) -> Account {
         match self {
             Self::Github(login) => Account::Github(login.account.clone()),
-        }
-    }
-}
-
-/// Checks credentials, keeps them as accounts, lists and forgets them, for every type.
-pub(crate) struct Accounts {
-    github: github::Authentication,
-}
-
-impl Accounts {
-    pub(crate) fn new(database: persistence::Database) -> Self {
-        Self {
-            github: github::Authentication::new(database),
-        }
-    }
-
-    /// Checks `credential` and keeps it as the account `name` of `account_type`, replacing an
-    /// earlier one of that name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the name or credential is invalid, the credential is refused, or it
-    /// cannot be kept. Nothing is kept then, and no error contains the credential.
-    pub(crate) async fn login(
-        &self,
-        account_type: AccountType,
-        name: &str,
-        credential: Zeroizing<String>,
-    ) -> Result<Login, Error> {
-        match account_type {
-            AccountType::Github => self.github.login(credential, name).await.map(Login::Github),
-        }
-    }
-
-    /// Every kept account, by type, then name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the database cannot be read or holds an unreadable account.
-    pub(crate) async fn list(&self) -> Result<Vec<Account>, Error> {
-        Ok(self.github.accounts().await?.into_iter().map(Account::Github).collect())
-    }
-
-    /// Forgets the account `name` of `account_type`, returning it, or `None` when there was none.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the database cannot be read or written.
-    pub(crate) async fn logout(&self, account_type: AccountType, name: &str) -> Result<Option<Account>, Error> {
-        match account_type {
-            AccountType::Github => Ok(self.github.forget(name).await?.map(Account::Github)),
         }
     }
 }

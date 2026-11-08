@@ -12,7 +12,12 @@ use zeroize::Zeroizing;
 
 pub use inspect::SCOPES;
 
-use crate::{Error, accounts, harness::MediatedSecret, persistence};
+use crate::{
+    Error, accounts,
+    harness::MediatedSecret,
+    persistence,
+    sandbox::{AccountSetup, GitCredential, GitIdentity},
+};
 use sandbox::secret_store::SecretReference;
 
 /// Provider account namespace; each token's account is `github/<name>`.
@@ -27,6 +32,8 @@ pub(crate) const ACCESS_ENVIRONMENT: &str = "GITHUB_TOKEN";
 const ACCESS_PLACEHOLDER: &str = "github_pat_AGENT_MEDIATED_GITHUB_TOKEN";
 /// The hosts `gh` and Git over HTTPS reach; the token is substituted nowhere else.
 const MEDIATED_HOSTS: [&str; 4] = ["github.com", "api.github.com", "gist.github.com", "uploads.github.com"];
+/// GitHub's SSH remotes, which Git reaches over HTTPS instead.
+const SSH_REMOTES: [&str; 2] = ["git@github.com:", "ssh://git@github.com/"];
 /// The longest login GitHub allows.
 const OWNER_MAX_LENGTH: usize = 39;
 
@@ -120,32 +127,10 @@ const KIND_RULE: &str = "agents take fine-grained (github_pat_), classic (ghp_) 
                          and this is none of them";
 
 /// Whether `owner` can be a GitHub user or organization login: ASCII letters, digits and inner
-/// hyphens, at most 39 characters. Owners name URL paths, so nothing else passes.
+/// hyphens, at most 39 characters.
 #[must_use]
 pub fn valid_owner(owner: &str) -> bool {
     owner.len() <= OWNER_MAX_LENGTH && accounts::valid_name(owner)
-}
-
-/// A token's name after `text`, such as a repository or folder name.
-///
-/// It is in lowercase, with hyphens for anything [`accounts::valid_name`] does not take, such as
-/// `app-lib-net` for `App_Lib.NET`, and `None` when nothing is left.
-#[must_use]
-pub fn name_after(text: &str) -> Option<String> {
-    let mut name = String::new();
-    for character in text.chars() {
-        if character.is_ascii_alphanumeric() {
-            name.push(character.to_ascii_lowercase());
-        } else if !name.is_empty() && !name.ends_with('-') {
-            name.push('-');
-        }
-    }
-    let name = name.trim_end_matches('-');
-    let name = name
-        .get(..accounts::NAME_MAX_LENGTH)
-        .unwrap_or(name)
-        .trim_end_matches('-');
-    accounts::valid_name(name).then(|| name.to_owned())
 }
 
 /// How long before its expiry a token is called out at login.
@@ -181,50 +166,6 @@ pub fn token_form_url(owner: &str, name: &str, description: &str) -> String {
     .into_iter()
     .chain(PERMISSIONS);
     reqwest::Url::parse_with_params(TOKEN_FORM, parameters).map_or_else(|_| TOKEN_FORM.to_owned(), String::from)
-}
-
-/// A GitHub repository, shown as `owner/name`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Repository {
-    /// The user or organization that owns it, lowercased.
-    pub owner: String,
-    /// The repository name.
-    pub name: String,
-}
-
-impl Repository {
-    /// The GitHub repository a Git remote URL names, in its HTTPS, SSH or `scp`-like form; `None`
-    /// for any other host, or a URL carrying credentials.
-    #[must_use]
-    pub fn from_remote(url: &str) -> Option<Self> {
-        let url = url.trim();
-        let path = ["https://github.com/", "ssh://git@github.com/", "git@github.com:"]
-            .iter()
-            .find_map(|prefix| url.strip_prefix(prefix))?;
-        let path = path.trim_end_matches('/');
-        let (owner, name) = path.strip_suffix(".git").unwrap_or(path).split_once('/')?;
-        let valid_repository = !name.is_empty()
-            && !name.starts_with('.')
-            && name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
-        (valid_owner(owner) && valid_repository).then(|| Self {
-            owner: owner.to_ascii_lowercase(),
-            name: name.to_owned(),
-        })
-    }
-
-    /// The name a token for this repository is suggested under, as [`name_after`] makes it.
-    #[must_use]
-    pub fn token_name(&self) -> Option<String> {
-        name_after(&self.name)
-    }
-}
-
-impl std::fmt::Display for Repository {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}/{}", self.owner, self.name)
-    }
 }
 
 /// A kept GitHub account: a token under a name, without the token.
@@ -350,21 +291,46 @@ pub(crate) async fn stored(database: &persistence::Database, name: &str) -> Resu
     Ok(Some(read(&name, &metadata)?))
 }
 
+/// What setup configures for an agent asking for the token `name`, kept as `account` or not yet.
+///
+/// That is Git over HTTPS with the mediated token, the account's identity for commits, and a line
+/// in the agent's instructions.
+#[must_use]
+pub fn setup(name: &str, account: Option<&Account>) -> AccountSetup {
+    AccountSetup {
+        git_identity: account.map(|account| GitIdentity {
+            name: account.identity.name.clone(),
+            email: account.identity.email.clone(),
+        }),
+        git_credentials: vec![GitCredential {
+            url: "https://github.com",
+            username: "x-access-token",
+            environment: ACCESS_ENVIRONMENT,
+            rewrites: &SSH_REMOTES,
+        }],
+        instructions: vec![("GitHub", instructions(name, account))],
+    }
+}
+
+/// How GitHub works for the agent: as the account itself when its token reaches all the account
+/// can, else for the repositories the token was created for, as a fine-grained token is.
+fn instructions(name: &str, account: Option<&Account>) -> String {
+    let reach = match account {
+        Some(account) if !account.kind.single_owner() => {
+            format!("as `{}`, for whatever that account can reach", account.identity.login)
+        }
+        _ => format!("for the repositories the `{name}` token was created for"),
+    };
+    format!(
+        "`gh` and `git` over HTTPS work {reach}, and SSH remotes on github.com go over HTTPS; \
+         `gh api user --jq .login` shows the account. Don't run `gh auth login` or replace `GITHUB_TOKEN`."
+    )
+}
+
 /// Whether a manifest secret would collide with the binding the GitHub account owns. Mediation
 /// needs placeholders that never contain one another, so overlapping ones are refused.
 pub(crate) fn conflicts_with_managed_secret(name: &str, placeholder: &str) -> bool {
     name == ACCESS_ENVIRONMENT || placeholder.contains(ACCESS_PLACEHOLDER) || ACCESS_PLACEHOLDER.contains(placeholder)
-}
-
-/// Whether `token` can see `repository` on GitHub. A fine-grained token sees only the
-/// repositories selected for it, and only once their owner approved it where that is required.
-///
-/// # Errors
-///
-/// Returns an error, never containing the token, when GitHub cannot be reached or answers
-/// unexpectedly.
-pub async fn can_see(token: &str, repository: &Repository) -> Result<bool, Error> {
-    inspect::can_see_at(inspect::API, token.trim(), repository).await
 }
 
 async fn check_at(api: &str, token: &str, name: &str) -> Result<Login, Error> {
@@ -900,6 +866,41 @@ mod tests {
     }
 
     #[test]
+    fn github_works_as_the_account_unless_the_token_is_for_one_owner() {
+        let account = |kind| Account {
+            name: "altinn-studio".into(),
+            identity: Identity {
+                login: "digdir-agent".into(),
+                name: "Digdir Agent".into(),
+                email: "1+digdir-agent@users.noreply.github.com".into(),
+            },
+            kind,
+            expires_at: None,
+        };
+        let repositories =
+            "`gh` and `git` over HTTPS work for the repositories the `altinn-studio` token was created for,";
+        let everywhere = "`gh` and `git` over HTTPS work as `digdir-agent`, for whatever that account can reach,";
+        for (account, expected) in [
+            (None, repositories),
+            (Some(account(TokenKind::FineGrained)), repositories),
+            (Some(account(TokenKind::Oauth)), everywhere),
+            (Some(account(TokenKind::Classic)), everywhere),
+        ] {
+            let setup = setup("altinn-studio", account.as_ref());
+            let [("GitHub", text)] = setup.instructions.as_slice() else {
+                panic!("one GitHub line: {:?}", setup.instructions);
+            };
+            assert!(text.starts_with(expected), "{expected} in {text}");
+            assert!(text.contains("`gh api user --jq .login`"), "{text}");
+            assert_eq!(
+                setup.git_identity.map(|identity| identity.email),
+                account.map(|account| account.identity.email)
+            );
+            assert_eq!(setup.git_credentials[0].environment, "GITHUB_TOKEN");
+        }
+    }
+
+    #[test]
     fn the_token_form_is_prefilled_with_the_owner_lifetime_and_permissions_and_nothing_secret() {
         let url = reqwest::Url::parse(&token_form_url(
             "digdir",
@@ -932,95 +933,5 @@ mod tests {
         assert_eq!(url.username(), "");
         assert_eq!(url.password(), None);
         assert_eq!(url.fragment(), None);
-    }
-
-    #[tokio::test(flavor = "local")]
-    async fn whether_a_token_sees_a_repository_is_asked_of_github_with_it() {
-        let repository = Repository::from_remote("git@github.com:digdir/case-web.git").expect("repository");
-        let (api, requests) = serve(BOT).await;
-        assert!(
-            inspect::can_see_at(&api, "github_pat_FAKE_canary", &repository)
-                .await
-                .expect("visible")
-        );
-        let request = requests.borrow()[0].to_ascii_lowercase();
-        assert!(request.starts_with("get /repos/digdir/case-web "), "{request}");
-        assert!(
-            request.contains("authorization: bearer github_pat_fake_canary"),
-            "{request}"
-        );
-
-        for status in ["404 Not Found", "403 Forbidden"] {
-            let (api, _) = serve(Answer { status, ..BOT }).await;
-            assert!(
-                !inspect::can_see_at(&api, "github_pat_FAKE_canary", &repository)
-                    .await
-                    .expect("answered")
-            );
-        }
-        let (api, _) = serve(Answer {
-            status: "500 Internal Server Error",
-            ..BOT
-        })
-        .await;
-        let error = inspect::can_see_at(&api, "github_pat_FAKE_canary", &repository)
-            .await
-            .expect_err("unexpected answer");
-        let message = format!("{error} {error:?}");
-        assert!(message.contains("500"), "{message}");
-        assert!(!message.contains("FAKE_canary"), "{message}");
-    }
-
-    #[test]
-    fn a_repositorys_token_name_is_its_name_in_lowercase_with_hyphens() {
-        let name = |repository: &str| {
-            Repository {
-                owner: "digdir".into(),
-                name: repository.into(),
-            }
-            .token_name()
-        };
-        assert_eq!(name("altinn-studio").as_deref(), Some("altinn-studio"));
-        assert_eq!(name("App_Lib.NET").as_deref(), Some("app-lib-net"));
-        assert_eq!(name("_.x").as_deref(), Some("x"));
-        assert_eq!(name(&"a".repeat(70)), Some("a".repeat(64)));
-        assert_eq!(name("__"), None);
-    }
-
-    #[test]
-    fn remotes_name_a_github_repository_in_https_ssh_or_scp_form() {
-        let expected = Some(Repository {
-            owner: "digdir".into(),
-            name: "case-web".into(),
-        });
-        for remote in [
-            "https://github.com/digdir/case-web.git",
-            "https://github.com/Digdir/case-web",
-            "https://github.com/digdir/case-web/",
-            "ssh://git@github.com/digdir/case-web.git",
-            "git@github.com:digdir/case-web.git",
-            "git@github.com:digdir/case-web",
-        ] {
-            assert_eq!(Repository::from_remote(remote), expected, "{remote}");
-        }
-        assert_eq!(
-            expected.map(|repository| repository.to_string()).as_deref(),
-            Some("digdir/case-web")
-        );
-        for remote in [
-            "https://gitlab.com/digdir/case-web.git",
-            "git@gitlab.com:digdir/case-web.git",
-            "https://github.com.evil.example/digdir/case-web",
-            "https://x-access-token:ghp_FAKE@github.com/digdir/case-web.git",
-            "https://github.com/digdir",
-            "https://github.com/digdir/case-web/tree/main",
-            "https://github.com/-digdir/case-web",
-            "https://github.com/digdir/..",
-            "https://github.com/digdir/a%2fb",
-            "/srv/git/case-web.git",
-            "",
-        ] {
-            assert_eq!(Repository::from_remote(remote), None, "{remote}");
-        }
     }
 }

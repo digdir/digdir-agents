@@ -591,8 +591,8 @@ enum GithubCommand {
     /// GitHub CLI tokens are taken. Agents whose manifest has `accounts: [{type: github, name:
     /// NAME}]` use it at once.
     Login {
-        /// The name manifests ask for the token by; by default this repository's name.
-        name: Option<String>,
+        /// The name manifests ask for the token by, such as `altinn-studio`.
+        name: String,
         /// Read the token from standard input instead, such as `gh auth token | agentctl github
         /// login NAME --from-stdin`.
         #[arg(long)]
@@ -674,7 +674,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         }
         Command::Github { command } => match command {
             GithubCommand::Login { name, from_stdin } => {
-                github::login(client, name.as_deref(), from_stdin).await?;
+                github::login(client, &name, from_stdin).await?;
             }
             GithubCommand::List => github::list(client).await?,
             GithubCommand::Logout { name } => github::logout(client, &name).await?,
@@ -2432,7 +2432,7 @@ mod tests {
             parse(&["agentctl", "github", "login", "altinn-studio", "--from-stdin"]),
             Ok(Command::Github {
                 command: GithubCommand::Login { name, from_stdin: true }
-            }) if name.as_deref() == Some("altinn-studio")
+            }) if name == "altinn-studio"
         ));
         assert!(matches!(
             parse(&["agentctl", "github", "logout", "altinn-studio"]),
@@ -2440,20 +2440,9 @@ mod tests {
                 command: GithubCommand::Logout { name }
             }) if name == "altinn-studio"
         ));
-        assert!(
-            matches!(
-                parse(&["agentctl", "github", "login"]),
-                Ok(Command::Github {
-                    command: GithubCommand::Login {
-                        name: None,
-                        from_stdin: false
-                    }
-                })
-            ),
-            "the name defaults to this repository's"
-        );
         for arguments in [
-            &["agentctl", "github", "login", "digdir", "--token", "ghp_FAKE_canary"][..],
+            &["agentctl", "github", "login"][..],
+            &["agentctl", "github", "login", "digdir", "--token", "ghp_FAKE_canary"],
             &["agentctl", "github", "login", "digdir", "ghp_FAKE_canary"],
             &["agentctl", "github", "login", "digdir", "--token=ghp_FAKE_canary"],
             &["agentctl", "github", "list", "ghp_FAKE_canary"],
