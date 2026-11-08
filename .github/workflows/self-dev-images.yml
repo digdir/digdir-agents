@@ -102,7 +102,7 @@ jobs:
       sparse-checkout: |
         agents/self-dev
         images/agentctl-base
-      publish: ${{ github.ref == 'refs/heads/main' }}
+      mode: ${{ github.ref == 'refs/heads/main' && 'main' || 'build' }}
       images: |
         [
           {
