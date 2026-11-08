@@ -162,7 +162,9 @@ impl Assignment {
 /// The skills setup placed in a sandbox: for each skill folder, the names of those it placed there.
 pub type PlacedSkills = BTreeMap<String, Vec<String>>;
 
-/// One runtime-selectable implementation of agent sandbox lifecycle effects.
+/// One runtime-selectable sandbox backend, onto which agents' sandboxes and the Volumes they mount
+/// are mapped. Agents record the Provider they were placed on, so different agents can use
+/// different ones.
 pub trait Provider {
     /// Returns the configured Provider identity.
     fn id(&self) -> &ProviderId;
@@ -190,6 +192,23 @@ pub trait Provider {
 
     /// Idempotently releases the sandbox and its Provider-specific host integration.
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>>;
+
+    /// Creates the Volume `request` describes, or returns the one already under its name, and
+    /// reports the steps of filling it to `progress`.
+    fn ensure_volume(
+        &self,
+        request: ::sandbox::volume::EnsureVolumeRequest,
+        progress: ::sandbox::ProgressReporter,
+    ) -> LocalFuture<'_, Result<::sandbox::volume::Volume, Error>>;
+
+    /// Finds the Volume named `name`.
+    fn find_volume<'a>(
+        &'a self,
+        name: &'a ::sandbox::volume::VolumeName,
+    ) -> LocalFuture<'a, Result<::sandbox::volume::Volume, Error>>;
+
+    /// Deletes a Volume, failing as in use while a sandbox mounts it.
+    fn delete_volume<'a>(&'a self, id: &'a ::sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>>;
 }
 
 /// Provider result retaining lifecycle information needed by dependent sessions.
@@ -518,6 +537,66 @@ impl Service {
             .as_ref()
             .ok_or_else(|| Error::Invalid("Agent has no sandbox provider assignment".into()))?;
         self.provider(assignment.provider())
+    }
+
+    /// Creates the Volume `name`, holding a read-only copy of `source`, through the first
+    /// configured Provider, reports the steps of copying it to `progress`, and returns where it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Provider cannot copy the directory.
+    pub async fn ensure_directory_copy(
+        &self,
+        name: &::sandbox::volume::VolumeName,
+        source: &std::path::Path,
+        progress: ::sandbox::ProgressReporter,
+    ) -> Result<(ProviderId, ::sandbox::volume::VolumeId), Error> {
+        // agentd configures one Provider, so agents can mount what it holds.
+        let provider = &self.providers[0];
+        // A Volume an interrupted call left under the name may hold an older `source`.
+        if let Some((_, interrupted)) = self.find_directory_copy(name).await? {
+            provider.delete_volume(&interrupted).await?;
+        }
+        let request = ::sandbox::volume::EnsureVolumeRequest::new(name.clone()).with_contents(
+            ::sandbox::volume::VolumeContents::DirectoryCopy {
+                source: source.to_path_buf(),
+                owner: platform::linux::USER_OWNER,
+            },
+        );
+        let volume = provider.ensure_volume(request, progress).await?;
+        Ok((provider.id().clone(), volume.id))
+    }
+
+    /// Finds the Volume `name` that [`Self::ensure_directory_copy`] created, if any, and returns
+    /// where it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Provider cannot be asked.
+    pub async fn find_directory_copy(
+        &self,
+        name: &::sandbox::volume::VolumeName,
+    ) -> Result<Option<(ProviderId, ::sandbox::volume::VolumeId)>, Error> {
+        let provider = &self.providers[0];
+        match provider.find_volume(name).await {
+            Ok(volume) => Ok(Some((provider.id().clone(), volume.id))),
+            Err(Error::Sandbox(error)) if error.is_not_found() => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Deletes a Volume, or returns `false` and keeps it while a sandbox still mounts it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Provider is not configured or cannot delete the Volume.
+    pub async fn delete_volume(&self, provider: &ProviderId, id: &::sandbox::volume::VolumeId) -> Result<bool, Error> {
+        match self.provider(provider)?.delete_volume(id).await {
+            Ok(()) => Ok(true),
+            Err(Error::Sandbox(error)) if error.kind() == ::sandbox::ErrorKind::InUse => Ok(false),
+            Err(Error::Sandbox(error)) if error.is_not_found() => Ok(true),
+            Err(error) => Err(error),
+        }
     }
 
     fn provider(&self, id: &ProviderId) -> Result<&dyn Provider, Error> {

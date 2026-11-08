@@ -25,6 +25,7 @@ pub struct Reconciler {
     vnc: Option<Rc<crate::vnc::Access>>,
     provisioning: ProvisioningState,
     immediate_stops: super::ImmediateStops,
+    volumes: crate::volumes::VolumeRevisions,
 }
 
 impl Reconciler {
@@ -43,7 +44,16 @@ impl Reconciler {
             vnc: None,
             provisioning,
             immediate_stops: super::ImmediateStops::default(),
+            volumes: crate::volumes::VolumeRevisions::default(),
         }
+    }
+
+    /// Gives agents the volumes they mount from `volumes`. Without them, an agent that mounts a volume
+    /// waits for it to exist.
+    #[must_use]
+    pub fn with_volumes(mut self, volumes: crate::volumes::VolumeRevisions) -> Self {
+        self.volumes = volumes;
+        self
     }
 
     /// Carries out the stops the Control Plane was asked to make immediate.
@@ -154,6 +164,15 @@ impl Reconciler {
             record.agent.status = self.update_status(&record, starting, None).await?;
         }
 
+        if let Some((message, failure)) = self.pin_volume_revisions(&mut record).await? {
+            let waiting = not_ready(&record, Condition::REASON_WAITING_FOR_VOLUMES, &message);
+            self.update_status(&record, waiting, failure).await?;
+            if let Some(observer) = restarting {
+                observer.succeeded();
+            }
+            return Ok(());
+        }
+
         let status = &record.agent.status;
         let observer = if let Some(observer) = restarting {
             observer
@@ -171,6 +190,47 @@ impl Reconciler {
                 self.abandon_setup(&observer, record.id, generation);
                 Ok(())
             }
+        }
+    }
+
+    /// Fixes the revision of each volume the agent mounts, once every one of them has a revision
+    /// ready, and keeps them from then on. Until then it returns why the agent waits, and whether
+    /// only changing a volume can end the wait.
+    async fn pin_volume_revisions(
+        &self,
+        record: &mut AgentRecord,
+    ) -> Result<Option<(String, Option<FailureKind>)>, Error> {
+        let mounts = record
+            .agent
+            .spec
+            .sandbox
+            .mounts
+            .iter()
+            .filter_map(|mount| match mount {
+                crate::MountSpec::Volume {
+                    volume,
+                    target,
+                    optional,
+                    ..
+                } => Some((target.clone(), volume.clone(), *optional)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if mounts
+            .iter()
+            .all(|(target, ..)| record.volume_revisions.contains_key(target))
+        {
+            return Ok(None);
+        }
+        // Cleanup waits until the choice is stored, so it never deletes a revision chosen here.
+        let _choosing = self.volumes.lock().await;
+        match self.volumes.choose(&mounts).await? {
+            Ok(pins) => {
+                self.store.set_volume_revisions(record.id, pins).await?;
+                *record = self.store.get(record.id).await?;
+                Ok(None)
+            }
+            Err(waiting) => Ok(Some(waiting)),
         }
     }
 
@@ -528,6 +588,7 @@ impl Reconciler {
         let stored = Status {
             progress: None,
             provenance: None,
+            volumes: Vec::new(),
             ..record.agent.status.clone()
         };
         let mut unchanged = status.clone();
@@ -610,25 +671,40 @@ fn nested_sandboxes_condition(outcome: Option<&crate::sandbox::NestedSandboxesOu
     })
 }
 
-/// Reports whether the agent's optional bind mounts, instructions and skills exist, naming the mounts
-/// left out when it was created and the files setup left out; nothing when it declares none.
+/// Reports whether the agent's optional bind mounts, volumes, instructions and skills exist, naming the
+/// mounts left out when it was created and the files setup left out; nothing when it declares none.
 fn optional_sources_condition(record: &AgentRecord, missing_files: &[String]) -> Option<Condition> {
     let spec = &record.agent.spec;
     let mut declares = spec.instructions.iter().any(|instructions| instructions.optional)
         || spec.skills.iter().any(|skill| skill.optional);
     let mut missing = Vec::new();
     for (index, mount) in spec.sandbox.mounts.iter().enumerate() {
-        if let crate::MountSpec::Bind {
-            source,
-            target,
-            optional: true,
-            ..
-        } = mount
-        {
-            declares = true;
-            if !record.optional_mount_sources.contains_key(target) {
-                missing.push(format!("spec.sandbox.mounts[{index}].source {}", source.display()));
+        match mount {
+            crate::MountSpec::Bind {
+                source,
+                target,
+                optional: true,
+                ..
+            } => {
+                declares = true;
+                if !record.optional_mount_sources.contains_key(target) {
+                    missing.push(format!("spec.sandbox.mounts[{index}].source {}", source.display()));
+                }
             }
+            crate::MountSpec::Volume {
+                volume,
+                target,
+                optional: true,
+                ..
+            } => {
+                declares = true;
+                if record.volume_revisions.get(target).is_some_and(Option::is_none) {
+                    missing.push(format!(
+                        "spec.sandbox.mounts[{index}].volume {volume:?}, until the agent is recreated"
+                    ));
+                }
+            }
+            _ => {}
         }
     }
     if !declares {

@@ -14,7 +14,7 @@ use sandbox::{
     image::ImageSource,
     mount::Mount,
     terminal::{StartTerminalExecutionRequest, TerminalEvent, TerminalSize},
-    volume::{EnsureVolumeRequest, VolumeName},
+    volume::{EnsureVolumeRequest, Owner, VolumeContents, VolumeName},
 };
 use sandbox_microsandbox::MicrosandboxProvider;
 use sha2::{Digest as _, Sha256};
@@ -240,6 +240,89 @@ async fn nested_sandboxes_follow_the_resource_across_updates() {
     );
 
     backend.delete(&sandbox.id).await.expect("Sandbox should be deleted");
+}
+
+/// A Volume holding a directory copy is the directory as it was when the Volume was created.
+/// Sandboxes share it read-only, owned by the user it was copied for, and it cannot be deleted
+/// while one of them mounts it.
+#[tokio::test(flavor = "local")]
+#[ignore = "requires a Microsandbox host runtime, hardware virtualization and registry access"]
+async fn sandboxes_share_a_read_only_directory_copy() {
+    let temporary = RetainedOnFailureTempDir::new();
+    let home = temporary.path().join("control-plane");
+    let source = temporary.path().join("apps");
+    std::fs::create_dir_all(source.join("app")).expect("source directory should be created");
+    std::fs::write(source.join("app/file.txt"), b"before").expect("source file should be written");
+    let backend = Rc::new(MicrosandboxProvider::open(&home).await.expect("Backend should open"));
+    let service = SandboxService::new(backend.clone());
+    let copy = service
+        .ensure_volume(
+            EnsureVolumeRequest::new(VolumeName::new("apps").expect("valid Volume name")).with_contents(
+                VolumeContents::DirectoryCopy {
+                    source: source.clone(),
+                    owner: Owner { uid: 1000, gid: 1000 },
+                },
+            ),
+        )
+        .await
+        .expect("directory copy should be created");
+    std::fs::write(source.join("app/file.txt"), b"after").expect("source file should be changed");
+
+    let mut sandboxes = Vec::new();
+    for name in ["copy-reader-one", "copy-reader-two"] {
+        let request = EnsureSandboxRequest::new(
+            SandboxName::new(name).expect("test sandbox name should be valid"),
+            SandboxSpec {
+                image: ImageSource::Reference {
+                    reference: "docker.io/library/alpine:3.22".to_string(),
+                },
+                platform: native_linux_platform(),
+                resources: resources("1", "512Mi", "1Gi"),
+                init_system: sandbox::init::InitSystem::Backend,
+                retention_policy: RetentionPolicy::Retain,
+            },
+        )
+        .with_mounts([Mount::Volume {
+            id: copy.id.clone(),
+            target: sandbox::SandboxPath::new("/data"),
+            read_only: true,
+        }]);
+        let (sandbox, _) = collect_progress(service.ensure(&request))
+            .await
+            .expect("Sandbox mounting the copy should start");
+        assert_eq!(read(&backend, &sandbox.id, "/data/app/file.txt").await, b"before");
+        let owner = run(
+            backend.as_ref(),
+            &sandbox.id,
+            shell("stat -c %u:%g /data/app /data/app/file.txt"),
+        )
+        .await;
+        assert_eq!(owner.stdout.as_ref(), b"1000:1000\n1000:1000\n");
+        let write = run(backend.as_ref(), &sandbox.id, shell("touch /data/new 2>&1")).await;
+        assert_ne!(write.status.code, 0, "the copy is read-only");
+        sandboxes.push(sandbox);
+    }
+
+    let refused = backend
+        .delete_volume(&copy.id)
+        .await
+        .expect_err("a mounted Volume should not be deleted");
+    assert_eq!(refused.kind(), sandbox::ErrorKind::InUse);
+    for sandbox in &sandboxes {
+        backend.delete(&sandbox.id).await.expect("Sandbox should be deleted");
+    }
+    backend
+        .delete_volume(&copy.id)
+        .await
+        .expect("an unmounted Volume should be deleted");
+    let copies = home.join("volume-copies");
+    assert!(
+        std::fs::read_dir(&copies)
+            .expect("copies directory should be listed")
+            .next()
+            .is_none(),
+        "deleting the Volume removes its copy"
+    );
 }
 
 async fn has_kvm(backend: &MicrosandboxProvider, sandbox: &Sandbox) -> bool {

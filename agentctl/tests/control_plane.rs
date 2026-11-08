@@ -83,7 +83,10 @@ struct Blocking {
     release: Rc<Notify>,
 }
 
-struct MemoryProvider {
+/// A change to a directory's contents.
+pub(crate) type SourceChange = Box<dyn Fn()>;
+
+pub(crate) struct MemoryProvider {
     id: ProviderId,
     service: SandboxService,
     default_architecture: String,
@@ -99,10 +102,14 @@ struct MemoryProvider {
     hanging_stops: Rc<Cell<bool>>,
     /// Whether nested sandboxes are offered, or why not.
     nested_sandboxes_offered: Rc<RefCell<Result<(), String>>>,
+    /// Runs after each directory copy is taken, as a change to the source while it is copied would.
+    pub(crate) while_copying: Rc<RefCell<Option<SourceChange>>>,
+    /// Volume deletions that fail, as a Provider that cannot be reached does.
+    pub(crate) failing_volume_deletes: Rc<Cell<usize>>,
 }
 
 impl MemoryProvider {
-    fn new(backend: Rc<sandbox_memory::Provider>) -> Self {
+    pub(crate) fn new(backend: Rc<sandbox_memory::Provider>) -> Self {
         Self {
             id: ProviderId::new("memory").expect("Provider ID"),
             service: SandboxService::new(backend).with_network_backend(Rc::new(
@@ -119,6 +126,8 @@ impl MemoryProvider {
             kills: Rc::new(Cell::new(0)),
             hanging_stops: Rc::new(Cell::new(false)),
             nested_sandboxes_offered: Rc::new(RefCell::new(Err("the memory backend cannot nest".into()))),
+            while_copying: Rc::new(RefCell::new(None)),
+            failing_volume_deletes: Rc::new(Cell::new(0)),
         }
     }
 
@@ -242,6 +251,37 @@ impl Provider for MemoryProvider {
                 .map_err(Error::from)
         })
     }
+
+    fn ensure_volume(
+        &self,
+        request: sandbox::volume::EnsureVolumeRequest,
+        progress: sandbox::ProgressReporter,
+    ) -> LocalFuture<'_, Result<sandbox::volume::Volume, Error>> {
+        Box::pin(async move {
+            let volume = self.service.ensure_volume(request).forward(&progress).await?;
+            if let Some(change) = self.while_copying.borrow().as_ref() {
+                change();
+            }
+            Ok(volume)
+        })
+    }
+
+    fn find_volume<'a>(
+        &'a self,
+        name: &'a sandbox::volume::VolumeName,
+    ) -> LocalFuture<'a, Result<sandbox::volume::Volume, Error>> {
+        Box::pin(async move { Ok(self.service.find_volume(name).await?) })
+    }
+
+    fn delete_volume<'a>(&'a self, id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(async move {
+            if let Some(remaining) = self.failing_volume_deletes.get().checked_sub(1) {
+                self.failing_volume_deletes.set(remaining);
+                return Err(Error::Sandbox(sandbox::Error::Backend("runtime unreachable".into())));
+            }
+            Ok(self.service.delete_volume(id).await?)
+        })
+    }
 }
 
 struct UnsupportedProvider {
@@ -356,6 +396,25 @@ impl Provider for PlannedProvider {
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
         self.inner.release(record)
     }
+
+    fn ensure_volume(
+        &self,
+        request: sandbox::volume::EnsureVolumeRequest,
+        progress: sandbox::ProgressReporter,
+    ) -> LocalFuture<'_, Result<sandbox::volume::Volume, Error>> {
+        self.inner.ensure_volume(request, progress)
+    }
+
+    fn find_volume<'a>(
+        &'a self,
+        name: &'a sandbox::volume::VolumeName,
+    ) -> LocalFuture<'a, Result<sandbox::volume::Volume, Error>> {
+        self.inner.find_volume(name)
+    }
+
+    fn delete_volume<'a>(&'a self, id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
+        self.inner.delete_volume(id)
+    }
 }
 
 impl UnsupportedProvider {
@@ -403,9 +462,28 @@ impl Provider for UnsupportedProvider {
     fn release<'a>(&'a self, _record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
     }
+
+    fn ensure_volume(
+        &self,
+        _request: sandbox::volume::EnsureVolumeRequest,
+        _progress: sandbox::ProgressReporter,
+    ) -> LocalFuture<'_, Result<sandbox::volume::Volume, Error>> {
+        Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
+    }
+
+    fn find_volume<'a>(
+        &'a self,
+        _name: &'a sandbox::volume::VolumeName,
+    ) -> LocalFuture<'a, Result<sandbox::volume::Volume, Error>> {
+        Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
+    }
+
+    fn delete_volume<'a>(&'a self, _id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
+    }
 }
 
-fn sandbox_service(provider: Rc<dyn Provider>) -> Rc<Service> {
+pub(crate) fn sandbox_service(provider: Rc<dyn Provider>) -> Rc<Service> {
     Rc::new(Service::new([provider], [Rc::new(NoopPlatform) as Rc<dyn PlatformAdapter>]).expect("Sandbox service"))
 }
 
@@ -3354,6 +3432,14 @@ impl AgentStore for HeldStore {
     fn finalize_deletion(&self, id: AgentId, generation: u64) -> LocalFuture<'_, Result<(), Error>> {
         self.inner.finalize_deletion(id, generation)
     }
+
+    fn set_volume_revisions(
+        &self,
+        id: AgentId,
+        revisions: agent::volumes::VolumePins,
+    ) -> LocalFuture<'_, Result<(), Error>> {
+        self.inner.set_volume_revisions(id, revisions)
+    }
 }
 
 #[tokio::test(flavor = "local")]
@@ -3993,6 +4079,14 @@ impl AgentStore for DeleteBeforeStarting {
     }
     fn finalize_deletion(&self, id: AgentId, generation: u64) -> LocalFuture<'_, Result<(), Error>> {
         self.inner.finalize_deletion(id, generation)
+    }
+
+    fn set_volume_revisions(
+        &self,
+        id: AgentId,
+        revisions: agent::volumes::VolumePins,
+    ) -> LocalFuture<'_, Result<(), Error>> {
+        self.inner.set_volume_revisions(id, revisions)
     }
 }
 

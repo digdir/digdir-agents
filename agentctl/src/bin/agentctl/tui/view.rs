@@ -8,8 +8,8 @@ use ratatui::{
 
 use super::MANIFEST_FILE;
 use super::app::{
-    App, CONFIRM_HINTS, CONFIRM_SSH_SETUP_HINTS, CONFIRM_SSH_SETUP_THEN_HINTS, CREATE_AGENT_HINTS, CreateField,
-    ForwardField, HELP, HELP_HINTS, HelpSection, Hint, Modal, MouseAction, NEW_SESSION_HINTS, OPEN_HINTS,
+    APPLY_VOLUME_HINTS, App, CONFIRM_HINTS, CONFIRM_SSH_SETUP_HINTS, CONFIRM_SSH_SETUP_THEN_HINTS, CREATE_AGENT_HINTS,
+    CreateField, ForwardField, HELP, HELP_HINTS, HelpSection, Hint, Modal, MouseAction, NEW_SESSION_HINTS, OPEN_HINTS,
     PORT_FORWARD_HINTS, Row as TreeRow, RowTarget, RowView, SELECTION_HINTS, SessionField, Tone, TreeRowId, View,
     harness_label,
 };
@@ -53,6 +53,7 @@ pub(crate) struct ViewState {
     /// First tree row below the column header, pinned agent aside.
     tree_offset: usize,
     forwards: ListState,
+    volumes: ListState,
     /// Draw without color; glyphs and modifiers still tell states apart.
     no_color: bool,
 }
@@ -71,6 +72,7 @@ impl ViewState {
 pub(crate) enum WheelTarget {
     Tree,
     Forwards,
+    Volumes,
     Detail,
 }
 
@@ -157,6 +159,8 @@ pub(crate) fn render(frame: &mut Frame, app: &App, state: &mut ViewState) -> Hit
         render_error(frame, body, error, &mut hit_map);
     } else if app.view == View::Forwards {
         render_forwards(frame, body, app, state, &mut hit_map);
+    } else if app.view == View::Volumes {
+        render_volumes(frame, body, app, state, &mut hit_map);
     } else if shows_side_panel(body.width) {
         // The panel keeps its width whatever is selected, so the tree's
         // columns stay put while the selection moves.
@@ -534,17 +538,61 @@ fn render_forwards(frame: &mut Frame, area: Rect, app: &App, state: &mut ViewSta
     state.forwards.select(Some(app.forward_selected));
     frame.render_stateful_widget(list, area, &mut state.forwards);
     hit_map.wheel(inner, WheelTarget::Forwards);
-    for visible in 0..usize::from(inner.height) {
-        let index = state.forwards.offset().saturating_add(visible);
-        let Some(entry) = app.forwards.get(index) else {
-            break;
-        };
-        let y = inner.y.saturating_add(u16::try_from(visible).unwrap_or(u16::MAX));
-        hit_map.click(
-            Rect::new(inner.x, y, inner.width, 1),
-            HitTarget::Row(RowTarget::Forward(entry.id)),
-        );
+    click_rows(hit_map, inner, state.forwards.offset(), &app.forwards, |entry| {
+        RowTarget::Forward(entry.id)
+    });
+}
+
+/// Makes each list row visible in `area`, from the list's scroll `offset`, a click target.
+fn click_rows<T>(hit_map: &mut HitMap, area: Rect, offset: usize, items: &[T], target: impl Fn(&T) -> RowTarget) {
+    for (visible, item) in items.iter().skip(offset).take(usize::from(area.height)).enumerate() {
+        let y = area.y.saturating_add(u16::try_from(visible).unwrap_or(u16::MAX));
+        hit_map.click(Rect::new(area.x, y, area.width, 1), HitTarget::Row(target(item)));
     }
+}
+
+/// Every volume, as `agentctl get volumes` lists them.
+fn render_volumes(frame: &mut Frame, area: Rect, app: &App, state: &mut ViewState, hit_map: &mut HitMap) {
+    let block = Block::bordered().title(" volumes ");
+    let inner = block.inner(area);
+    let lines = crate::format::volumes_table(&app.volumes);
+    let Some((header, rows)) = lines.split_first() else {
+        frame.render_widget(
+            Paragraph::new("(no volumes — c applies a manifest with kind: Volume)")
+                .style(Style::new().fg(Color::DarkGray))
+                .block(block),
+            area,
+        );
+        return;
+    };
+    frame.render_widget(block, area);
+    let [header_area, list_area] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+    frame.render_widget(
+        Paragraph::new(header.clone()).style(Style::new().fg(Color::DarkGray)),
+        header_area,
+    );
+    let items = rows
+        .iter()
+        .zip(&app.volumes)
+        .map(|(row, volume)| {
+            let tone = match &volume.status.copy {
+                Some(copy) if copy.failure.is_some() => Style::new().fg(Color::Red),
+                Some(_) => Style::new().fg(Color::Yellow),
+                None => Style::new(),
+            };
+            ListItem::new(Line::styled(row.clone(), tone))
+        })
+        .collect::<Vec<_>>();
+    state.volumes.select(Some(app.volume_selected));
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(selection(state)),
+        list_area,
+        &mut state.volumes,
+    );
+    hit_map.wheel(list_area, WheelTarget::Volumes);
+    click_rows(hit_map, list_area, state.volumes.offset(), &app.volumes, |volume| {
+        RowTarget::Volume(volume.metadata.name.clone())
+    });
 }
 
 /// A detail view, with long lines wrapped to its width so a failure message
@@ -604,7 +652,7 @@ fn render_error(frame: &mut Frame, area: Rect, error: &str, hit_map: &mut HitMap
 /// hints, so moving the selection or opening a prompt never moves the tree.
 fn footer_height(app: &App, width: u16) -> u16 {
     let own = [app.hints()];
-    let contextual: &[&[Hint]] = if app.detail.is_some() || app.view == View::Forwards {
+    let contextual: &[&[Hint]] = if app.detail.is_some() || app.view != View::Tree {
         &own
     } else {
         &SELECTION_HINTS
@@ -684,8 +732,8 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, hit_map: &mut HitMap)
         hit_map,
         |_| app.error.is_none(),
     );
-    // A detail view's own hints replace the tree's, whose keys do not apply there.
-    if app.detail.is_some() {
+    // A detail view's or another view's own hints replace the tree's, whose keys do not apply there.
+    if app.detail.is_some() || app.view != View::Tree {
         return;
     }
     render_hints(
@@ -696,7 +744,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, hit_map: &mut HitMap)
         Color::DarkGray,
         hit_map,
         |hint| {
-            if app.modal.is_some() || app.detail.is_some() || app.view == View::Forwards {
+            if app.modal.is_some() {
                 false
             } else if app.error.is_some() {
                 hint.label == "q"
@@ -842,8 +890,20 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal, hit_map
                 .row(note_line("Its harness is stopped and the session is removed."))
                 .render(frame, area, FORM_WIDTH, hit_map);
         }
+        Modal::ConfirmDeleteVolume { volume, agents } => {
+            let after = match agents.as_slice() {
+                [] => "Its copies are deleted now.".to_owned(),
+                agents => format!("It goes once {} no longer use it.", agents.join(", ")),
+            };
+            Form::new(" delete ", Color::Red, &CONFIRM_HINTS)
+                .row(Line::from(format!("Delete volume {volume}?")))
+                .row(note_line("New agents can no longer mount it."))
+                .row(note_line(&after))
+                .render(frame, area, FORM_WIDTH, hit_map);
+        }
         Modal::NewSession(form) => render_new_session(frame, area, form, hit_map),
         Modal::CreateAgent(form) => render_create_agent(frame, area, form, &app.agents, hit_map),
+        Modal::ApplyVolume(form) => render_apply_volume(frame, area, form, &app.volumes, hit_map),
         Modal::PortForward(form) => render_port_forward(frame, area, form, hit_map),
         Modal::Help => render_help(frame, area, hit_map),
         Modal::Open(menu) => render_open(frame, area, menu, hit_map),
@@ -1165,6 +1225,68 @@ fn render_create_agent(
             hit_map,
         );
     }
+}
+
+fn render_apply_volume(
+    frame: &mut Frame,
+    area: Rect,
+    form: &super::app::VolumeForm,
+    volumes: &[agent::volumes::Volume],
+    hit_map: &mut HitMap,
+) {
+    let candidate_error = form.candidate().and_then(|candidate| candidate.name.as_ref().err());
+    let widget = Form::new(" apply volume ", Color::Cyan, &APPLY_VOLUME_HINTS)
+        .error(form.error.as_ref().or(candidate_error).map(String::as_str));
+    let Some(candidate) = form.candidate() else {
+        widget
+            .row(Line::from("No volume manifests found."))
+            .row(note_line("Write one with kind: Volume under agents/, such as"))
+            .row(note_line(
+                "agents/_volumes/<name>.yaml, or apply one: agentctl apply -f",
+            ))
+            .row(Line::default())
+            .render(frame, area, CREATE_AGENT_FORM_WIDTH, hit_map);
+        return;
+    };
+    let detail_width =
+        usize::from(CREATE_AGENT_FORM_WIDTH.saturating_sub(4)).saturating_sub(FORM_LABEL_WIDTH + PICKER_WIDTH);
+    let label = candidate.name.as_ref().map_or_else(
+        |_| {
+            candidate
+                .path
+                .file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+        },
+        Clone::clone,
+    );
+    let outcome = match &candidate.name {
+        Ok(name) if volumes.iter().any(|volume| volume.metadata.name == *name) => {
+            format!("volume/{name} exists. Applying it takes a new copy when its source changed.")
+        }
+        Ok(name) => format!("Creates volume/{name} and takes its first copy."),
+        Err(_) => String::new(),
+    };
+    let target = widget
+        .row(labeled(
+            "Volume",
+            true,
+            picker(
+                &label,
+                true,
+                form.selected,
+                form.candidates.len(),
+                &abbreviate_home(&candidate.path.display().to_string()),
+                detail_width,
+            ),
+        ))
+        .row(note_line(&outcome))
+        .render(frame, area, CREATE_AGENT_FORM_WIDTH, hit_map);
+    map_picker_targets(
+        line_area(target, 0),
+        MouseAction::SelectVolumeManifest(-1),
+        MouseAction::SelectVolumeManifest(1),
+        hit_map,
+    );
 }
 
 fn render_port_forward(frame: &mut Frame, area: Rect, form: &super::app::ForwardForm, hit_map: &mut HitMap) {
@@ -1998,6 +2120,74 @@ mod tests {
     }
 
     #[test]
+    fn the_volumes_view_shows_each_volume_as_get_volumes_does() {
+        let mut app = App::new();
+        app.set_volumes(vec![super::super::app::tests::volume("apps", &["worker"])]);
+        app.view = View::Volumes;
+        let mut terminal = Terminal::new(TestBackend::new(100, 10)).expect("test terminal");
+        let hit_map = draw(&mut terminal, &app);
+        let text = buffer_text(&terminal);
+        assert!(text.contains("NAME") && text.contains("REVISION"), "{text}");
+        let row = text.lines().find(|line| line.contains("apps")).expect("volume row");
+        assert!(
+            row.contains("Ready") && row.contains("83200") && row.contains("679.0 MiB"),
+            "{row}"
+        );
+        assert_eq!(
+            hit_map.click_at(3, 3),
+            Some(HitTarget::Row(RowTarget::Volume("apps".into())))
+        );
+        assert!(
+            text.contains("apply again") && !text.contains("filter"),
+            "the view shows its own keys, not the tree's: {text}"
+        );
+    }
+
+    #[test]
+    fn the_apply_volume_form_says_whether_it_creates_or_applies_again() {
+        let mut app = App::new();
+        app.set_volumes(vec![super::super::app::tests::volume("apps", &[])]);
+        app.view = View::Volumes;
+        let candidates = ["apps", "docs"]
+            .map(|name| {
+                super::super::app::ManifestCandidate::new(
+                    std::path::PathBuf::from(format!("/work/agents/_volumes/{name}.yaml")),
+                    Ok(name.to_owned()),
+                )
+            })
+            .to_vec();
+        app.modal = Some(Modal::ApplyVolume(super::super::app::VolumeForm::new(
+            candidates,
+            &app.volumes,
+        )));
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).expect("test terminal");
+        let hit_map = draw(&mut terminal, &app);
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("apply volume") && text.contains("/work/agents/_volumes/docs.yaml"),
+            "{text}"
+        );
+        assert!(text.contains("Creates volume/docs and takes its first copy."), "{text}");
+
+        assert!(
+            (0..24)
+                .flat_map(|y| (0..120).map(move |x| (x, y)))
+                .any(|(x, y)| hit_map.click_at(x, y) == Some(HitTarget::Action(MouseAction::SelectVolumeManifest(-1)))),
+            "the picker's arrows are clickable"
+        );
+        let Some(Modal::ApplyVolume(form)) = &mut app.modal else {
+            unreachable!();
+        };
+        form.selected = 0;
+        draw(&mut terminal, &app);
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("volume/apps exists. Applying it takes a new copy when its source changed."),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn the_filter_is_typed_in_the_footer_and_named_in_the_header() {
         let mut app = triage_app();
         app.on_key(crossterm::event::KeyEvent::new(
@@ -2448,5 +2638,51 @@ mod tests {
             // The form pads one cell inside its border; the cell before that is the last one text uses.
             assert_eq!(inside[border - 2], ' ', "cut off at the border:\n{line}");
         }
+    }
+
+    #[test]
+    fn the_volumes_table_names_the_revision_a_failed_copy_was_for() {
+        let mut volume = super::super::app::tests::volume("apps", &["worker"]);
+        let ready = crate::format::volumes_table(std::slice::from_ref(&volume));
+        assert!(ready[1].contains(" 2         Ready "), "{ready:?}");
+
+        volume.status.copy = Some(agent::volumes::CopyStatus {
+            failure: Some("the source changed".into()),
+            ..super::super::app::tests::copying(3)
+        });
+        let failed = crate::format::volumes_table(&[volume]);
+        assert!(failed[1].contains(" 2         Failed (3) "), "{failed:?}");
+    }
+
+    #[test]
+    fn the_volumes_table_shows_how_much_of_a_copy_is_done() {
+        use sandbox::{ProgressEvent, ProgressUnit, StepId, progress::Progress};
+
+        let mut volume = super::super::app::tests::volume("apps", &[]);
+        let mut progress = Progress::new();
+        let step = StepId::generate();
+        progress.apply(&ProgressEvent::PhaseStarted {
+            phase: agent::volumes::COPY_SOURCE,
+        });
+        progress.apply(&ProgressEvent::StepStarted {
+            id: step.clone(),
+            name: "Read files".into(),
+            unit: Some(ProgressUnit::Bytes),
+            total: Some(200),
+        });
+        progress.apply(&ProgressEvent::StepProgress {
+            id: step,
+            completed: 84,
+            total: Some(200),
+        });
+        volume.status.copy = Some(agent::volumes::CopyStatus {
+            progress: Some(agent::progress::Provisioning {
+                pass: agent::resources::Changes::new().revision(),
+                progress,
+            }),
+            ..super::super::app::tests::copying(3)
+        });
+        let table = crate::format::volumes_table(&[volume]);
+        assert!(table[1].contains(" Copying 42% (3) "), "{table:?}");
     }
 }

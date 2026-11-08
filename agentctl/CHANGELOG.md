@@ -16,6 +16,13 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 
 - `optional: true` in `spec.instructions` and `spec.skills` leaves out a source that does not exist, so a committed manifest can name your own files, such as `~/agent-instructions/everywhere.md`. `agentctl describe` names what was left out, and the agent gets it once it exists. ([#331](https://github.com/digdir/digdir-agents/issues/331))
 - `optional: true` on a bind mount in `spec.sandbox.mounts` creates the agent without it when the source directory is missing, instead of failing `agentctl apply`. `agentctl describe` shows the `OptionalSources` condition naming it, and a directory that appears later is mounted once you recreate the agent. ([#401](https://github.com/digdir/digdir-agents/issues/401))
+- `kind: Volume` manifests share a read-only copy of a host directory between agents, which search it again without asking your machine for each file: ([#402](https://github.com/digdir/digdir-agents/issues/402))
+  - `type: volume` in `spec.sandbox.mounts` mounts one, and an agent keeps its first copy until you recreate it. The agent's `status.volumes` says which copy it has
+  - `readOnly` is required, as on a bind mount. `readOnly: false` lets the agent change the files, such as to build or `dotnet run` an app. The changes stay in that agent, outlast restarts and go when you recreate it. It needs `rootFilesystem.mode: direct`
+  - `optional: true` on a volume mount starts the agent without a volume that doesn't exist or whose copy failed, instead of waiting for it. As for a bind mount, `OptionalSources` names it, and it is mounted once you recreate the agent
+  - applying the volume again copies a changed directory. `--wait`, `agentctl get` and `agentctl tui` show how much of a copy is done
+  - `agentctl get`, `describe` and `delete` show and remove them
+  - `V` in `agentctl tui` does the same, and applies the volume manifests it finds under `agents/`, such as `agents/_volumes/<name>.yaml` for one several agents share or a `volume.yaml` in an agent's own directory
 - Your terminal tab is named after the agent and session you are attached to, such as `builder/b1`, and reads `agentctl` again when you return to `agentctl tui`. ([#343](https://github.com/digdir/digdir-agents/pull/343))
 - `agentctl get agents --watch -o json` prints the agents as one JSON line, then again each time they change, so a tool can follow them without polling. It exits once an `agentd` upgrade makes it incompatible. `get sessions --watch` works the same way. ([#349](https://github.com/digdir/digdir-agents/issues/349))
 - Claude Code and Codex logins have names, so you can keep one per subscription, such as work and private:

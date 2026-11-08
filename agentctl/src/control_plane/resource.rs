@@ -56,6 +56,9 @@ pub struct AgentRecord {
     /// The others are left out of its sandbox, whose mounts cannot change, until the agent is recreated.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub optional_mount_sources: std::collections::BTreeMap<::sandbox::SandboxPath, std::path::PathBuf>,
+    /// The volume revision each volume mount uses, by target, fixed once the agent first gets them all.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub volume_revisions: crate::volumes::VolumePins,
 }
 
 /// Default environment file name, resolved in the source directory.
@@ -71,14 +74,14 @@ impl AgentRecord {
     }
 
     /// Returns the mounts the agent's sandbox gets, which leave out the optional bind mounts whose source did not
-    /// exist when the agent was created.
+    /// exist when the agent was created, and volumes until the agent's revisions of them are fixed.
     #[must_use]
     pub fn sandbox_mounts(&self) -> Vec<Mount> {
         self.indexed_sandbox_mounts().map(|(_, mount)| mount).collect()
     }
 
     /// Returns [`Self::sandbox_mounts`], each with its index in `spec.sandbox.mounts`. An optional bind mount takes
-    /// the source it had when the agent was created.
+    /// the source it had when the agent was created, and a volume the copy of the agent's revision of it.
     pub(crate) fn indexed_sandbox_mounts(&self) -> impl Iterator<Item = (usize, Mount)> + '_ {
         self.agent
             .spec
@@ -101,6 +104,13 @@ impl AgentRecord {
                         },
                         target: target.clone(),
                         read_only: *read_only,
+                    },
+                    // A copy, the only kind of volume so far, never changes. Agent setup puts a writable
+                    // mount's writable layer over it.
+                    MountSpec::Volume { target, .. } => Mount::Volume {
+                        id: self.volume_revisions.get(target)?.as_ref()?.storage.volume.clone(),
+                        target: target.clone(),
+                        read_only: true,
                     },
                     MountSpec::Tmpfs { target, capacity } => Mount::Tmpfs {
                         target: target.clone(),

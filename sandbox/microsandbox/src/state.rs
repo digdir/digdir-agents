@@ -63,16 +63,23 @@ pub(crate) struct VolumeRecord {
     pub(crate) id: VolumeId,
     pub(crate) runtime_name: String,
     pub(crate) name: sandbox::volume::VolumeName,
+    #[serde(default, skip_serializing_if = "sandbox::volume::VolumeContents::is_empty")]
+    pub(crate) contents: sandbox::volume::VolumeContents,
 }
 
 impl VolumeRecord {
-    pub(crate) fn new(id: VolumeId, name: sandbox::volume::VolumeName) -> Self {
+    pub(crate) fn new(
+        id: VolumeId,
+        name: sandbox::volume::VolumeName,
+        contents: sandbox::volume::VolumeContents,
+    ) -> Self {
         let runtime_name = format!("volume-{}", id.as_uuid().simple());
         Self {
             schema_version: VOLUME_SCHEMA_VERSION,
             runtime_name,
             id,
             name,
+            contents,
         }
     }
 }
@@ -173,6 +180,14 @@ impl StateStore {
         .await?;
         validate_schema(record.schema_version, VOLUME_SCHEMA_VERSION)?;
         Ok(record)
+    }
+
+    pub(crate) async fn volume_records(&self) -> Result<Vec<VolumeRecord>, sandbox::Error> {
+        let records: Vec<VolumeRecord> = read_records(&self.volumes, sandbox::ResourceKind::Volume).await?;
+        for record in &records {
+            validate_schema(record.schema_version, VOLUME_SCHEMA_VERSION)?;
+        }
+        Ok(records)
     }
 
     pub(crate) async fn remove_volume(&self, record: &VolumeRecord) -> Result<(), sandbox::Error> {
@@ -453,7 +468,7 @@ mod tests {
             .parse()
             .expect("test Volume identifier should be valid");
         let name = sandbox::volume::VolumeName::new("home").expect("test Volume name should be valid");
-        let record = VolumeRecord::new(id, name.clone());
+        let record = VolumeRecord::new(id, name.clone(), sandbox::volume::VolumeContents::Empty);
         store.save_volume(&record).await.expect("record should be saved");
 
         assert_eq!(

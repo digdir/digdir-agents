@@ -100,6 +100,51 @@ pub struct Volume {
     pub id: VolumeId,
     /// Stable caller-provided name.
     pub name: VolumeName,
+    /// What the Volume held when it was created.
+    #[serde(default, skip_serializing_if = "VolumeContents::is_empty")]
+    pub contents: VolumeContents,
+}
+
+/// What a Volume holds when it is created.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum VolumeContents {
+    /// Empty storage that sandboxes can write.
+    #[default]
+    Empty,
+    /// A copy of a host directory, taken when the Volume is created. It never changes, so
+    /// sandboxes mount it read-only, and any number of them can share it.
+    DirectoryCopy {
+        /// Absolute host directory the copy is taken from.
+        source: std::path::PathBuf,
+        /// The sandbox user and group that own every entry of the copy.
+        #[serde(default)]
+        owner: Owner,
+    },
+}
+
+/// A sandbox user and group, by their numeric IDs. The default is root.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Owner {
+    /// The user ID.
+    pub uid: u32,
+    /// The group ID.
+    pub gid: u32,
+}
+
+impl VolumeContents {
+    /// Reports whether the Volume starts empty.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
+    /// Reports whether sandboxes may only mount the Volume read-only.
+    #[must_use]
+    pub const fn is_read_only(&self) -> bool {
+        matches!(self, Self::DirectoryCopy { .. })
+    }
 }
 
 /// Inputs used to ensure a Volume exists.
@@ -109,6 +154,8 @@ pub struct EnsureVolumeRequest {
     id: VolumeId,
     /// Stable caller-provided name.
     pub name: VolumeName,
+    /// What a new Volume holds. An existing Volume with other contents is an error.
+    pub contents: VolumeContents,
 }
 
 impl EnsureVolumeRequest {
@@ -118,7 +165,15 @@ impl EnsureVolumeRequest {
         Self {
             id: VolumeId::generate(),
             name,
+            contents: VolumeContents::Empty,
         }
+    }
+
+    /// Sets what a new Volume holds.
+    #[must_use]
+    pub fn with_contents(mut self, contents: VolumeContents) -> Self {
+        self.contents = contents;
+        self
     }
 
     /// Returns the identifier to use if the Volume is newly materialized.
@@ -129,7 +184,7 @@ impl EnsureVolumeRequest {
 
     /// Decomposes the request for a Backend implementation.
     #[must_use]
-    pub fn into_parts(self) -> (VolumeId, VolumeName) {
-        (self.id, self.name)
+    pub fn into_parts(self) -> (VolumeId, VolumeName, VolumeContents) {
+        (self.id, self.name, self.contents)
     }
 }

@@ -33,6 +33,10 @@ pub(crate) const METHOD_SESSION_TURNS: &str = "sessions.v1.turns";
 pub(crate) const METHOD_SESSION_DELETE: &str = "sessions.v1.delete";
 pub(crate) const METHOD_SESSION_ARCHIVE: &str = "sessions.v1.archive";
 pub(crate) const METHOD_SESSION_UNARCHIVE: &str = "sessions.v1.unarchive";
+pub(crate) const METHOD_VOLUME_APPLY: &str = "volumes.v1.apply";
+pub(crate) const METHOD_VOLUME_GET: &str = "volumes.v1.get";
+pub(crate) const METHOD_VOLUME_LIST: &str = "volumes.v1.list";
+pub(crate) const METHOD_VOLUME_DELETE: &str = "volumes.v1.delete";
 
 pub(crate) const CODE_PARSE_ERROR: i32 = -32700;
 pub(crate) const CODE_INVALID_REQUEST: i32 = -32600;

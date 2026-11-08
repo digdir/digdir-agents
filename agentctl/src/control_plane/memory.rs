@@ -84,6 +84,7 @@ impl AgentStore for InMemoryAgentStore {
             let result = (|| {
                 record.agent.status.progress = None;
                 record.agent.status.provenance = None;
+                record.agent.status.volumes.clear();
                 let id = record.id;
                 let name = record.agent.metadata.name.clone();
                 let mut state = self.state.borrow_mut();
@@ -108,6 +109,8 @@ impl AgentStore for InMemoryAgentStore {
                 }
                 // As in the database, they are decided when the agent is created.
                 record.optional_mount_sources = std::mem::take(&mut current.optional_mount_sources);
+                // Only the reconciler pins volume revisions, as in the database.
+                record.volume_revisions = std::mem::take(&mut current.volume_revisions);
                 *current = record;
                 Ok(())
             })();
@@ -125,6 +128,7 @@ impl AgentStore for InMemoryAgentStore {
             let result = (|| {
                 status.progress = None;
                 status.provenance = None;
+                status.volumes.clear();
                 let mut state = self.state.borrow_mut();
                 let name = state
                     .records
@@ -176,6 +180,22 @@ impl AgentStore for InMemoryAgentStore {
                     return Err(Error::NotFound);
                 }
                 state.active_names.remove(&name);
+                Ok(())
+            })();
+            self.changed(result)
+        })
+    }
+
+    fn set_volume_revisions(
+        &self,
+        id: AgentId,
+        revisions: crate::volumes::VolumePins,
+    ) -> LocalFuture<'_, Result<(), Error>> {
+        Box::pin(async move {
+            let result = (|| {
+                let mut state = self.state.borrow_mut();
+                let record = state.records.get_mut(&id).ok_or(Error::NotFound)?;
+                record.volume_revisions = revisions;
                 Ok(())
             })();
             self.changed(result)

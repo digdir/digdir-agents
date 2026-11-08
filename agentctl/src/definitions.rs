@@ -119,6 +119,64 @@ pub fn manifests(directory: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// Largest file read to learn whether it is a volume manifest. A manifest is a few lines.
+const VOLUME_MANIFEST_MAX_BYTES: u64 = 64 * 1024;
+
+/// Lists the volume manifests for `directory`: the YAML files declaring `kind: Volume` anywhere in its definition
+/// source's `agents/`, and beside every agent manifest [`manifests`] finds.
+///
+/// They are found by their kind rather than their filename, so a volume several agents share can live in a folder of
+/// its own, such as `agents/_volumes/`, and one that belongs with an agent can sit in its definition.
+///
+/// Reads the filesystem, so it blocks.
+#[must_use]
+pub fn volume_manifests(directory: &Path) -> Vec<PathBuf> {
+    let agents = repository_root(directory).unwrap_or(directory).join("agents");
+    let walked = agents
+        .is_dir()
+        .then(|| files(&agents, DISCOVERY_DEPTH))
+        .into_iter()
+        .flatten();
+    let beside_agents = manifests(directory)
+        .into_iter()
+        .filter_map(|manifest| manifest.parent().map(Path::to_path_buf))
+        .flat_map(|definition| files(&definition, 1));
+    let mut found: Vec<PathBuf> = walked
+        .chain(beside_agents)
+        .filter(|path| declares_volume(path))
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// The files below `directory`, at most `depth` levels down, skipping hidden and ignored ones.
+fn files(directory: &Path, depth: usize) -> impl Iterator<Item = PathBuf> + use<> {
+    WalkBuilder::new(directory)
+        .max_depth(Some(depth))
+        .require_git(false)
+        .follow_links(false)
+        .build()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
+        .map(ignore::DirEntry::into_path)
+}
+
+/// Whether `path` is a YAML file whose `kind` is a volume's.
+fn declares_volume(path: &Path) -> bool {
+    let yaml = path
+        .extension()
+        .is_some_and(|extension| extension == "yaml" || extension == "yml");
+    let small_file = || {
+        std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.len() <= VOLUME_MANIFEST_MAX_BYTES)
+    };
+    yaml && small_file()
+        && std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_yaml_ng::from_slice::<serde_yaml_ng::Value>(&bytes).ok())
+            .is_some_and(|value| value.get("kind").and_then(serde_yaml_ng::Value::as_str) == Some(crate::volumes::KIND))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DefinitionSource, source};

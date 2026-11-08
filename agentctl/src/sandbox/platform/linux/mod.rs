@@ -9,6 +9,7 @@ mod sources;
 pub(crate) mod ssh;
 mod systemd;
 pub(crate) mod vnc;
+mod volumes;
 
 use std::collections::BTreeSet;
 
@@ -27,9 +28,13 @@ use kvm::grant_kvm;
 use podman::{configure_podman, point_podman_at_socket};
 use sources::{read_instructions, read_skills};
 use systemd::{SYSTEMCTL, SYSTEMD_RUNNING, systemd_available, wait_for_systemd};
+use volumes::mount_writable_volumes;
 
 /// The platform-owned sandbox user every session, Execution and SSH login runs as.
 pub(crate) const USER: &str = "agent";
+/// The [`USER`]'s user and group, as the agent images' base image creates it. It owns volume
+/// copies, so an overlay over one gives the agent files it can change.
+pub(crate) const USER_OWNER: ::sandbox::volume::Owner = ::sandbox::volume::Owner { uid: 1000, gid: 1000 };
 pub(crate) const HOME: &str = "/home/agent";
 pub(crate) const WORKING_DIRECTORY: &str = "/home/agent/code";
 /// Holds the Platform API base URL reachable from the sandbox, read by harness hooks on every
@@ -139,6 +144,7 @@ impl Linux {
         let podman = configure_podman(sandbox).await?;
         let kvm = grant_kvm(sandbox).await?;
         step.complete().await;
+        mount_writable_volumes(record, sandbox, steps).await?;
         let step = steps.start_step("Sync home").await;
         set_up_home(record, sandbox, podman).await?;
         step.complete().await;

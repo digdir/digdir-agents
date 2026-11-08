@@ -175,8 +175,12 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     ));
     let (ssh, vnc) = access(&home, &database, store.clone())?;
     let immediate_stops = agent::control_plane::ImmediateStops::default();
+    let volume_store: Rc<dyn agent::volumes::VolumeStore> = store.clone();
+    // Agents choosing revisions and volume cleanup share its lock.
+    let volume_revisions = agent::volumes::VolumeRevisions::new(volume_store.clone());
     let reconciler = Rc::new(
         Reconciler::new(store.clone(), sandboxes.clone(), provisioning.clone())
+            .with_volumes(volume_revisions.clone())
             .with_immediate_stops(immediate_stops.clone())
             .with_session_notifier(session_notifier)
             .with_ssh_access(ssh.clone())
@@ -190,8 +194,25 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     );
     let control_plane = Rc::new(
         ControlPlane::new(store.clone(), Rc::new(wakeup.clone()))
+            .with_volumes(store.clone())
             .with_provisioning(provisioning)
             .with_immediate_stops(immediate_stops),
+    );
+    let copy_progress = agent::volumes::CopyProgress::new(changes.clone());
+    let (volume_controller, volume_wakeup) = agent::volumes::Controller::new(
+        volume_store.clone(),
+        Rc::new(
+            agent::volumes::Reconciler::new(volume_revisions, store.clone(), sandboxes.clone())
+                .with_agent_wakeup(wakeup.clone())
+                .with_progress(copy_progress.clone()),
+        ),
+        Duration::from_secs(30),
+        reconciliation_errors("Volume"),
+    );
+    let volumes = Rc::new(
+        agent::volumes::VolumeService::new(volume_store, store.clone(), volume_wakeup)
+            .with_progress(copy_progress)
+            .with_home(home.path().to_path_buf()),
     );
     let convergence = agent::control_plane::Convergence::new(wakeup, store.clone(), changes.clone());
     let executions = Rc::new(ExecutionService::new(store.clone(), convergence.clone()));
@@ -203,19 +224,23 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
         session_wakeup,
     ));
     agent::upgrade::consume_pending_session_relaunch(&home, &sessions).await?;
-    let server = Rc::new(Server::new(
-        control_plane,
-        credentials.clone(),
-        Rc::new(convergence.clone()),
-        executions,
-        sessions,
-        ssh,
-        vnc,
-        changes,
-        Rc::new(|error| tracing::error!(%error, "Control API connection failed")),
-    ));
+    let server = Rc::new(
+        Server::new(
+            control_plane,
+            credentials.clone(),
+            Rc::new(convergence.clone()),
+            executions,
+            sessions,
+            ssh,
+            vnc,
+            changes,
+            Rc::new(|error| tracing::error!(%error, "Control API connection failed")),
+        )
+        .with_volumes(volumes),
+    );
     let mut controller_task = tokio::task::spawn_local(controller.run());
     let mut session_controller_task = tokio::task::spawn_local(session_controller.run());
+    let mut volume_controller_task = tokio::task::spawn_local(volume_controller.run());
     let mut platform_api_task = tokio::task::spawn_local(platform_api_server.serve(platform_api_listener));
     let socket_path = home.socket_path();
 
@@ -230,6 +255,10 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
             Ok(()) => Err(Error::Daemon("Session reconciliation controller stopped".into())),
             Err(error) => Err(Error::Daemon(format!("Session reconciliation controller task failed: {error}"))),
         },
+        result = &mut volume_controller_task => match result {
+            Ok(()) => Err(Error::Daemon("Volume reconciliation controller stopped".into())),
+            Err(error) => Err(Error::Daemon(format!("Volume reconciliation controller task failed: {error}"))),
+        },
         result = &mut platform_api_task => match result {
             Ok(Ok(())) => Err(Error::Daemon("Platform API stopped".into())),
             Ok(Err(error)) => Err(Error::Daemon(format!("Platform API failed: {error}"))),
@@ -238,9 +267,11 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     };
     controller_task.abort();
     session_controller_task.abort();
+    volume_controller_task.abort();
     platform_api_task.abort();
     let _ = controller_task.await;
     let _ = session_controller_task.await;
+    let _ = volume_controller_task.await;
     let _ = platform_api_task.await;
     result
 }

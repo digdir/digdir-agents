@@ -13,9 +13,10 @@ use super::protocol::{
     METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
     METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
     METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
-    METHOD_VNC_ACCESS, NameParams, ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams,
-    SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams,
-    ShutdownResult, read_message,
+    METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams,
+    ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams,
+    SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult,
+    read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -190,8 +191,50 @@ impl Client {
         .await
     }
 
-    /// Waits for an agent or session to change after `after`, then returns
-    /// every agent and session. Without a revision, or with one from an earlier
+    /// Creates or updates a volume, requesting a new revision when its source changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the operation fails.
+    pub async fn apply_volume(
+        &self,
+        request: crate::volumes::ApplyVolumeRequest,
+    ) -> Result<crate::volumes::Volume, Error> {
+        self.call(METHOD_VOLUME_APPLY, request).await
+    }
+
+    /// Gets a volume by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the operation fails.
+    pub async fn get_volume(&self, name: &str) -> Result<crate::volumes::Volume, Error> {
+        self.call(METHOD_VOLUME_GET, NameParams { name: name.into() }).await
+    }
+
+    /// Lists every volume.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or storage fails.
+    pub async fn list_volumes(&self) -> Result<Vec<crate::volumes::Volume>, Error> {
+        self.call(METHOD_VOLUME_LIST, serde_json::json!({})).await
+    }
+
+    /// Requests a volume's deletion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the operation fails.
+    pub async fn delete_volume(&self, name: &str) -> Result<(), Error> {
+        let _result: serde_json::Value = self
+            .call(METHOD_VOLUME_DELETE, NameParams { name: name.into() })
+            .await?;
+        Ok(())
+    }
+
+    /// Waits for an agent, session or volume to change after `after`, then returns
+    /// every agent, session and volume. Without a revision, or with one from an earlier
     /// daemon process, it returns the current state at once; with a current
     /// revision it may return the unchanged state after a keepalive interval.
     ///

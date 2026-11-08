@@ -16,6 +16,7 @@ mod session_controller;
 mod ssh_access;
 mod variants;
 mod vnc_access;
+mod volumes;
 
 /// Cargo builds no test file that is not a module here, since the crate turns its automatic test targets off.
 #[test]

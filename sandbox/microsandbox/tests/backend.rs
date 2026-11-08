@@ -214,6 +214,26 @@ async fn unused_images_are_kept_for_at_least_an_hour() {
         .expect("an hour should be accepted");
 }
 
+/// A copy is built before its record is saved, so only the Provider that creates Volumes
+/// removes the copies no record claims. Another one, such as an Execution's, leaves a build alone.
+#[tokio::test(flavor = "local")]
+async fn only_the_provider_that_creates_volumes_removes_unclaimed_copies() {
+    let temporary = tempfile::tempdir().expect("temporary home should be created");
+    let home = temporary.path().join("provider");
+    let building = home.join("volume-copies/volume-building.partial");
+    std::fs::create_dir_all(building.parent().expect("copies directory")).expect("copies directory should be created");
+    std::fs::write(&building, b"image").expect("partial copy should be written");
+
+    MicrosandboxProvider::open(&home).await.expect("Provider should open");
+    assert!(building.exists(), "another Provider leaves a copy being built");
+    MicrosandboxProvider::builder(&home)
+        .remove_unclaimed_volume_copies()
+        .open()
+        .await
+        .expect("Provider should open");
+    assert!(!building.exists(), "the Provider that creates Volumes removes it");
+}
+
 #[tokio::test(flavor = "local")]
 async fn runtime_bundle_must_be_a_regular_file() {
     let temporary = tempfile::tempdir().expect("temporary home should be created");

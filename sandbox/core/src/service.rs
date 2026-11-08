@@ -68,6 +68,8 @@ pub enum ErrorKind {
     Io,
     /// A provider-specific operation failed.
     Backend,
+    /// A resource cannot be removed while something still uses it.
+    InUse,
 }
 
 #[derive(Debug, Error)]
@@ -98,6 +100,9 @@ pub enum Error {
     /// A requested Mount form is unavailable.
     #[error("unsupported sandbox mount kind: {0:?}")]
     UnsupportedMountKind(MountKind),
+    /// A Volume cannot be deleted while a sandbox mounts it.
+    #[error("Volume {0} is mounted by a sandbox")]
+    VolumeInUse(volume::VolumeId),
     /// A requested root filesystem mode is unavailable.
     #[error("unsupported sandbox root filesystem mode: {0:?}")]
     UnsupportedRootFilesystemMode(crate::RootFilesystemMode),
@@ -258,6 +263,7 @@ impl Error {
             Self::Io { .. } => ErrorKind::Io,
             Self::ExecutionFailed { .. } | Self::ExecutionStreamEnded { .. } => ErrorKind::Execution,
             Self::OperationStreamEnded | Self::Backend(_) => ErrorKind::Backend,
+            Self::VolumeInUse(_) => ErrorKind::InUse,
             Self::Component { source, .. } => source.kind(),
         }
     }
@@ -1080,13 +1086,20 @@ impl SandboxService {
         Ok(Some(backend))
     }
 
-    /// Creates or returns a named Volume.
+    /// Creates or returns a named Volume. Taking a directory copy reports its steps in the
+    /// caller's phase.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when the provider cannot materialize the Volume.
-    pub async fn ensure_volume(&self, request: volume::EnsureVolumeRequest) -> Result<volume::Volume, Error> {
-        self.backend().ensure_volume(request).await
+    /// The operation fails when the provider cannot materialize the Volume.
+    #[must_use]
+    pub fn ensure_volume(&self, request: volume::EnsureVolumeRequest) -> PendingOperation<'_, volume::Volume> {
+        if let volume::VolumeContents::DirectoryCopy { source, .. } = &request.contents
+            && !source.is_absolute()
+        {
+            return PendingOperation::run(|_| {
+                Box::pin(async { Err(Error::invalid("volume.contents.source", "must be absolute")) })
+            });
+        }
+        self.backend().ensure_volume(request)
     }
 
     /// Finds a named Volume.

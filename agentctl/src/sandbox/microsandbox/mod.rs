@@ -79,6 +79,7 @@ impl Adapter {
         let provider = Rc::new(
             MicrosandboxProvider::builder(home.join("microsandbox"))
                 .remove_unused_images_after(UNUSED_IMAGE_RETENTION)
+                .remove_unclaimed_volume_copies()
                 .open()
                 .await?,
         );
@@ -224,6 +225,25 @@ impl Provider for Adapter {
                 .await
                 .map_err(Error::from)
         })
+    }
+
+    fn ensure_volume(
+        &self,
+        request: ::sandbox::volume::EnsureVolumeRequest,
+        progress: ::sandbox::ProgressReporter,
+    ) -> LocalFuture<'_, Result<::sandbox::volume::Volume, Error>> {
+        Box::pin(async move { Ok(self.service.ensure_volume(request).forward(&progress).await?) })
+    }
+
+    fn find_volume<'a>(
+        &'a self,
+        name: &'a ::sandbox::volume::VolumeName,
+    ) -> LocalFuture<'a, Result<::sandbox::volume::Volume, Error>> {
+        Box::pin(async move { Ok(self.service.find_volume(name).await?) })
+    }
+
+    fn delete_volume<'a>(&'a self, id: &'a ::sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(async move { Ok(self.service.delete_volume(id).await?) })
     }
 
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {

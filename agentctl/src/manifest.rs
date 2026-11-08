@@ -389,6 +389,23 @@ pub enum MountSpec {
         #[serde(default, skip_serializing_if = "is_false")]
         optional: bool,
     },
+    /// A volume, by name. The agent keeps the revision it gets first, and waits until the volume has a revision
+    /// ready.
+    Volume {
+        /// Name of the volume.
+        volume: String,
+        /// Absolute path inside the sandbox.
+        target: SandboxPath,
+        /// Whether the sandbox may not change the files. A copy never changes, so the changes a writable mount makes
+        /// stay in the agent, on its root filesystem, and are lost when the agent is recreated.
+        read_only: bool,
+        /// Whether a volume that does not exist, or whose copies failed, leaves the mount out rather than
+        /// making the agent wait. As for a bind mount, this is decided when the agent gets its revisions:
+        /// a volume applied later is mounted once the agent is recreated. A volume taking its first copy
+        /// is still waited for.
+        #[serde(default, skip_serializing_if = "is_false")]
+        optional: bool,
+    },
     /// Anonymous in-memory storage with an explicit capacity.
     Tmpfs {
         /// Absolute path inside the sandbox.
@@ -401,9 +418,85 @@ pub enum MountSpec {
 impl MountSpec {
     const fn target(&self) -> &SandboxPath {
         match self {
-            Self::Bind { target, .. } | Self::Tmpfs { target, .. } => target,
+            Self::Bind { target, .. } | Self::Volume { target, .. } | Self::Tmpfs { target, .. } => target,
         }
     }
+}
+
+fn validate_mounts(mounts: &[MountSpec], root_filesystem: ::sandbox::RootFilesystemMode) -> Result<(), Error> {
+    let mut targets = std::collections::BTreeSet::new();
+    for (index, mount) in mounts.iter().enumerate() {
+        if let MountSpec::Bind { source, .. } = mount
+            && source.as_os_str().is_empty()
+        {
+            return Err(Error::Invalid(format!(
+                "spec.sandbox.mounts[{index}].source must not be empty"
+            )));
+        }
+        if let MountSpec::Volume {
+            volume,
+            target,
+            read_only,
+            ..
+        } = mount
+        {
+            validate_volume_mount(index, volume, target, *read_only)?;
+            // A writable layer's changes cannot be kept on an overlay, which a layered root filesystem is.
+            if !read_only && root_filesystem == ::sandbox::RootFilesystemMode::Layered {
+                return Err(Error::Invalid(format!(
+                    "spec.sandbox.mounts[{index}].readOnly: false needs spec.sandbox.resources.rootFilesystem.mode: \
+                     direct, as a layered root filesystem cannot keep the changes"
+                )));
+            }
+        }
+        let target = mount.target().as_str();
+        if !valid_sandbox_path(target) || !targets.insert(target) {
+            return Err(Error::Invalid(format!(
+                "spec.sandbox.mounts[{index}].target must be a unique absolute normalized sandbox path"
+            )));
+        }
+    }
+    reject_mounts_inside_writable_volumes(mounts)
+}
+
+/// A writable volume's layer is mounted over its target after the other mounts, so it would hide
+/// any of them inside the target.
+fn reject_mounts_inside_writable_volumes(mounts: &[MountSpec]) -> Result<(), Error> {
+    let writable = mounts.iter().enumerate().filter_map(|(index, mount)| match mount {
+        MountSpec::Volume {
+            target,
+            read_only: false,
+            ..
+        } => Some((index, target.as_str())),
+        _ => None,
+    });
+    for (index, writable) in writable {
+        if let Some(inner) = mounts.iter().position(|mount| {
+            mount
+                .target()
+                .as_str()
+                .strip_prefix(writable)
+                .is_some_and(|rest| rest.starts_with('/'))
+        }) {
+            return Err(Error::Invalid(format!(
+                "spec.sandbox.mounts[{inner}].target is inside writable volume mount \
+                 spec.sandbox.mounts[{index}], which would hide it; mount it elsewhere or make the volume read-only"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_volume_mount(index: usize, volume: &str, target: &SandboxPath, read_only: bool) -> Result<(), Error> {
+    SandboxName::new(volume.to_owned())
+        .map_err(|error| Error::Invalid(format!("spec.sandbox.mounts[{index}].volume: {error}")))?;
+    // These separate the options the writable layer is mounted with.
+    if !read_only && target.as_str().contains([',', ':', '\\']) {
+        return Err(Error::Invalid(format!(
+            "spec.sandbox.mounts[{index}].target of a writable volume must not contain `,`, `:` or `\\`"
+        )));
+    }
+    Ok(())
 }
 
 /// Platform constraints retained exactly as supplied by an agent manifest.
@@ -517,22 +610,7 @@ impl Spec {
     }
 
     fn validate(&self) -> Result<(), Error> {
-        let mut mount_targets = std::collections::BTreeSet::new();
-        for (index, mount) in self.sandbox.mounts.iter().enumerate() {
-            if let MountSpec::Bind { source, .. } = mount
-                && source.as_os_str().is_empty()
-            {
-                return Err(Error::Invalid(format!(
-                    "spec.sandbox.mounts[{index}].source must not be empty"
-                )));
-            }
-            let target = mount.target().as_str();
-            if !valid_sandbox_path(target) || !mount_targets.insert(target) {
-                return Err(Error::Invalid(format!(
-                    "spec.sandbox.mounts[{index}].target must be a unique absolute normalized sandbox path"
-                )));
-            }
-        }
+        validate_mounts(&self.sandbox.mounts, self.sandbox.resources.root_filesystem.mode())?;
         if self
             .home
             .as_ref()
@@ -915,10 +993,27 @@ pub struct Status {
     /// the stored agent record; stores scrub it, so it is never persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Provenance>,
+    /// The revision of each volume the agent mounts, once the reconciler has chosen them. Projected
+    /// onto API responses from the stored agent record; stores scrub it, so it is never persisted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<MountedVolume>,
+}
+
+/// The revision of a volume an agent mounts, chosen when its sandbox is created.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MountedVolume {
+    /// Where the volume is mounted.
+    pub target: SandboxPath,
+    /// The volume's name.
+    pub volume: String,
+    /// The revision mounted, or none for an optional volume left out until the agent is recreated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
 }
 
 impl Status {
-    /// Creates reconciler-observed state; progress and provenance stay API-projected.
+    /// Creates reconciler-observed state; progress, provenance and volumes stay API-projected.
     #[must_use]
     pub const fn observed(
         observed_generation: u64,
@@ -933,6 +1028,7 @@ impl Status {
             failure: None,
             progress: None,
             provenance: None,
+            volumes: Vec::new(),
         }
     }
 
@@ -944,6 +1040,7 @@ impl Status {
             && self.failure.is_none()
             && self.progress.is_none()
             && self.provenance.is_none()
+            && self.volumes.is_empty()
     }
 
     /// Carries each condition's transition time forward from `previous`, the
@@ -1018,7 +1115,7 @@ impl Condition {
     pub const SANDBOX_RESPONSIVE: &'static str = "SandboxResponsive";
     /// Condition type for whether the sandbox runs the nested sandboxes its agent asks for.
     pub const NESTED_SANDBOXES: &'static str = "NestedSandboxes";
-    /// Condition type for whether the optional bind mounts, instructions and skills an agent declares exist.
+    /// Condition type for whether the optional bind mounts, volumes, instructions and skills an agent declares exist.
     pub const OPTIONAL_SOURCES: &'static str = "OptionalSources";
     /// Condition type for declared SSH access underneath `Ready`.
     pub const SSH_READY: &'static str = "SshReady";
@@ -1031,6 +1128,8 @@ impl Condition {
     pub const REASON_STOPPED: &'static str = "Stopped";
     /// `Ready` reason while a pass starts a stopped sandbox.
     pub const REASON_STARTING: &'static str = "Starting";
+    /// `Ready` reason while an agent waits for the volumes it mounts.
+    pub const REASON_WAITING_FOR_VOLUMES: &'static str = "WaitingForVolumes";
 
     /// Finds the `Ready` condition in a condition list.
     #[must_use]
