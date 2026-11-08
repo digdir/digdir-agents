@@ -44,22 +44,22 @@ pub(crate) async fn login(client: &Client, name: &str, from_stdin: bool) -> Comm
     Ok(())
 }
 
-/// The ways a person at a terminal gets agents a token, in the order offered.
+/// The ways a person at a terminal gives agents access to GitHub, in the order offered.
 const SIGN_IN_OPTIONS: [&str; 2] = [
-    "Through the browser, as the account agents use",
-    "With a fine-grained token for chosen repositories",
+    "Sign in to the GitHub account they should use, in the browser",
+    "Create a token for chosen repositories",
 ];
 
 /// Asks how to get a token for the login `name` and gets it: through the browser with the GitHub
 /// CLI, or from GitHub's form. Without the GitHub CLI the form is the only way.
 async fn sign_in(name: &str) -> Result<Zeroizing<String>, Error> {
-    if prompt::choose("How should agents sign in to GitHub?", &SIGN_IN_OPTIONS)? == 0 {
+    if prompt::choose("How do you want to give agents access to GitHub?", &SIGN_IN_OPTIONS)? == 0 {
         let path = std::env::var_os("PATH");
         if let Some(gh) = agent::local::process::find_executable(path.as_deref(), &["gh", "gh.exe"]) {
             // Enter opens the default browser, which is usually signed in as the person.
             eprintln!(
-                "\nSign in as the account agents should use, not your own: open the address below in a browser \
-                 or private window signed in as that account, and enter the code."
+                "\nUse the account agents should act as, not your own: open the address below where that account \
+                 is signed in, such as a private window, and enter the code."
             );
             return agent::github::sign_in(&gh);
         }
