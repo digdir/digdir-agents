@@ -5,20 +5,18 @@
 //! acts as and when it expires. The token stays in the host's secret store. What is listed and
 //! returned about it never contains it.
 
-mod gh;
 mod inspect;
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-pub use gh::sign_in;
 pub use inspect::SCOPES;
 
 use crate::{
     Error, accounts,
     harness::MediatedSecret,
     persistence,
-    sandbox::{AccountSetup, GitCredential, GitIdentity},
+    sandbox::{AccountSetup, GitIdentity},
 };
 use sandbox::secret_store::SecretReference;
 
@@ -34,8 +32,6 @@ pub(crate) const ACCESS_ENVIRONMENT: &str = "GITHUB_TOKEN";
 const ACCESS_PLACEHOLDER: &str = "github_pat_AGENT_MEDIATED_GITHUB_TOKEN";
 /// The hosts `gh` and Git over HTTPS reach; the token is substituted nowhere else.
 const MEDIATED_HOSTS: [&str; 4] = ["github.com", "api.github.com", "gist.github.com", "uploads.github.com"];
-/// GitHub's SSH remotes, which Git reaches over HTTPS instead.
-const SSH_REMOTES: [&str; 2] = ["git@github.com:", "ssh://git@github.com/"];
 /// The longest login GitHub allows.
 const OWNER_MAX_LENGTH: usize = 39;
 
@@ -295,8 +291,8 @@ pub(crate) async fn stored(database: &persistence::Database, name: &str) -> Resu
 
 /// What setup configures for an agent asking for the token `name`, kept as `account` or not yet.
 ///
-/// That is Git over HTTPS with the mediated token, the account's identity for commits, and a line
-/// in the agent's instructions.
+/// That is the account's identity for commits and a line in the agent's instructions. Git reaches
+/// GitHub with the mediated token through the image's credential helper, `gh`.
 #[must_use]
 pub fn setup(name: &str, account: Option<&Account>) -> AccountSetup {
     AccountSetup {
@@ -304,12 +300,6 @@ pub fn setup(name: &str, account: Option<&Account>) -> AccountSetup {
             name: account.identity.name.clone(),
             email: account.identity.email.clone(),
         }),
-        git_credentials: vec![GitCredential {
-            url: "https://github.com",
-            username: "x-access-token",
-            environment: ACCESS_ENVIRONMENT,
-            rewrites: &SSH_REMOTES,
-        }],
         instructions: vec![("GitHub", instructions(name, account))],
     }
 }
@@ -331,7 +321,7 @@ fn instructions(name: &str, account: Option<&Account>) -> String {
         format!("for whatever `{login}` can reach")
     };
     format!(
-        "`gh` and `git` over HTTPS work as `{login}`, {reach}. SSH remotes on github.com go over HTTPS. When \
+        "`gh` and `git` over HTTPS work as `{login}`, {reach}. When \
          GitHub answers 403 or 404 for a repository, the token may not reach it or its organization may not \
          have approved it yet, so tell the person. Don't run `gh auth login` or replace `GITHUB_TOKEN`."
     )
@@ -908,7 +898,6 @@ mod tests {
                 setup.git_identity.map(|identity| identity.email),
                 account.map(|account| account.identity.email)
             );
-            assert_eq!(setup.git_credentials[0].environment, "GITHUB_TOKEN");
         }
     }
 

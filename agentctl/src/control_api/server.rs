@@ -182,24 +182,6 @@ pub trait AuthenticationApi {
 
     /// Lists the stored logins of every harness, without their credentials.
     fn logins(&self) -> LocalFuture<'_, Result<Vec<harness::StoredLogin>, Error>>;
-
-    /// Checks `credential` and keeps it as the account `name` of `account_type`.
-    fn account_login<'a>(
-        &'a self,
-        account_type: AccountType,
-        name: &'a str,
-        credential: &'a str,
-    ) -> LocalFuture<'a, Result<crate::accounts::Login, Error>>;
-
-    /// Forgets the account `name` of `account_type`, returning it, or `None` when there was none.
-    fn account_logout<'a>(
-        &'a self,
-        account_type: AccountType,
-        name: &'a str,
-    ) -> LocalFuture<'a, Result<Option<crate::accounts::Account>, Error>>;
-
-    /// The kept accounts of every type, without their credentials.
-    fn accounts(&self) -> LocalFuture<'_, Result<Vec<crate::accounts::Account>, Error>>;
 }
 
 impl AuthenticationApi for harness::AuthenticationManager {
@@ -227,26 +209,50 @@ impl AuthenticationApi for harness::AuthenticationManager {
     fn logins(&self) -> LocalFuture<'_, Result<Vec<harness::StoredLogin>, Error>> {
         Box::pin(self.logins())
     }
+}
 
-    fn account_login<'a>(
+/// The logins of the accounts agents act as, exposed through the local control API.
+pub trait AccountsApi {
+    /// Checks `credential` and keeps it as the login `login` for an account of `account_type`.
+    fn login<'a>(
         &'a self,
         account_type: AccountType,
-        name: &'a str,
+        login: &'a str,
+        credential: &'a str,
+    ) -> LocalFuture<'a, Result<crate::accounts::Login, Error>>;
+
+    /// Forgets the login `login` for an account of `account_type`, returning it, or `None` when
+    /// there was none.
+    fn logout<'a>(
+        &'a self,
+        account_type: AccountType,
+        login: &'a str,
+    ) -> LocalFuture<'a, Result<Option<crate::accounts::Account>, Error>>;
+
+    /// The kept logins of every type, without their credentials.
+    fn list(&self) -> LocalFuture<'_, Result<Vec<crate::accounts::Account>, Error>>;
+}
+
+impl AccountsApi for crate::accounts::Accounts {
+    fn login<'a>(
+        &'a self,
+        account_type: AccountType,
+        login: &'a str,
         credential: &'a str,
     ) -> LocalFuture<'a, Result<crate::accounts::Login, Error>> {
-        Box::pin(self.account_login(account_type, name, zeroize::Zeroizing::new(credential.to_owned())))
+        Box::pin(self.login(account_type, login, zeroize::Zeroizing::new(credential.to_owned())))
     }
 
-    fn account_logout<'a>(
+    fn logout<'a>(
         &'a self,
         account_type: AccountType,
-        name: &'a str,
+        login: &'a str,
     ) -> LocalFuture<'a, Result<Option<crate::accounts::Account>, Error>> {
-        Box::pin(self.account_logout(account_type, name))
+        Box::pin(self.logout(account_type, login))
     }
 
-    fn accounts(&self) -> LocalFuture<'_, Result<Vec<crate::accounts::Account>, Error>> {
-        Box::pin(self.accounts())
+    fn list(&self) -> LocalFuture<'_, Result<Vec<crate::accounts::Account>, Error>> {
+        Box::pin(self.list())
     }
 }
 
@@ -521,6 +527,7 @@ pub struct Server {
     ssh: Rc<dyn SshAccessApi>,
     vnc: Rc<dyn VncAccessApi>,
     volumes: Option<Rc<dyn VolumeApi>>,
+    accounts: Option<Rc<dyn AccountsApi>>,
     changes: Changes,
     on_error: ErrorHandler,
     lifecycle: Lifecycle,
@@ -553,6 +560,7 @@ impl Server {
             ssh,
             vnc,
             volumes: None,
+            accounts: None,
             changes,
             on_error,
             lifecycle: Lifecycle::default(),
@@ -563,6 +571,13 @@ impl Server {
     #[must_use]
     pub fn with_volumes(mut self, volumes: Rc<dyn VolumeApi>) -> Self {
         self.volumes = Some(volumes);
+        self
+    }
+
+    /// Serves the logins of the accounts agents act as as well.
+    #[must_use]
+    pub fn with_accounts(mut self, accounts: Rc<dyn AccountsApi>) -> Self {
+        self.accounts = Some(accounts);
         self
     }
 
@@ -695,7 +710,10 @@ impl Server {
             METHOD_AUTH_LOGINS => result_response(request.id, self.authentication.logins().await),
             METHOD_ACCOUNT_LOGIN => Box::pin(self.handle_account_login(request.id, request.params)).await,
             METHOD_ACCOUNT_LOGOUT => Box::pin(self.handle_account_logout(request.id, request.params)).await,
-            METHOD_ACCOUNT_LIST => result_response(request.id, self.authentication.accounts().await),
+            METHOD_ACCOUNT_LIST => match &self.accounts {
+                Some(accounts) => result_response(request.id, accounts.list().await),
+                None => accounts_unavailable(request.id),
+            },
             METHOD_SESSION_ENSURE => self.handle_session_ensure(request.id, request.params).await,
             METHOD_SESSION_GET => self.handle_session_get(request.id, request.params).await,
             METHOD_SESSION_LIST => self.handle_session_list(request.id, request.params).await,
@@ -997,9 +1015,11 @@ impl Server {
         let Ok(params) = serde_json::from_value::<AccountLoginParams>(value) else {
             return error_response(id, CODE_INVALID_PARAMS, "type, login and credential are required");
         };
-        let login = self
-            .authentication
-            .account_login(params.account_type, &params.login, &params.credential)
+        let Some(accounts) = &self.accounts else {
+            return accounts_unavailable(id);
+        };
+        let login = accounts
+            .login(params.account_type, &params.login, &params.credential)
             .await;
         if let Ok(login) = &login {
             self.wake_account(&login.account()).await;
@@ -1011,10 +1031,10 @@ impl Server {
         let Ok(params) = serde_json::from_value::<AccountParams>(value) else {
             return error_response(id, CODE_INVALID_PARAMS, "type and login are required");
         };
-        let forgotten = self
-            .authentication
-            .account_logout(params.account_type, &params.login)
-            .await;
+        let Some(accounts) = &self.accounts else {
+            return accounts_unavailable(id);
+        };
+        let forgotten = accounts.logout(params.account_type, &params.login).await;
         if let Ok(Some(account)) = &forgotten {
             self.wake_account(account).await;
         }
@@ -1185,6 +1205,10 @@ fn name_params(value: Value) -> Result<NameParams, Response> {
         .ok()
         .filter(|params| !params.name.is_empty())
         .ok_or_else(|| error_response(0, CODE_INVALID_PARAMS, "name is required"))
+}
+
+fn accounts_unavailable(id: u64) -> Response {
+    error_response(id, CODE_METHOD_NOT_FOUND, "this agentd keeps no account logins")
 }
 
 fn volumes_unavailable(id: u64) -> Response {

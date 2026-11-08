@@ -83,20 +83,6 @@ fn yes_or_no_key(code: KeyCode) -> Option<bool> {
     }
 }
 
-/// The index a single key picks among `count` options: a digit numbering one, or Enter for the first.
-fn option_key(code: KeyCode, count: usize) -> Option<usize> {
-    match code {
-        KeyCode::Enter => option_number("", count),
-        KeyCode::Char(digit @ '0'..='9') => option_number(digit.encode_utf8(&mut [0; 4]), count),
-        _ => None,
-    }
-}
-
-/// Whether a menu of `count` options takes a single key; from ten on, a `1` could start `12`.
-fn single_key_menu(count: usize) -> bool {
-    (1..=9).contains(&count)
-}
-
 /// Shows `question` and reads one key at the terminal that `answer` accepts, then echoes what it
 /// answered as `shown` gives it, so the scrollback keeps the answer.
 ///
@@ -224,53 +210,6 @@ fn read_secret() -> Result<Zeroizing<String>, Error> {
     }
 }
 
-/// Asks which of `options` to use, numbered from 1, on standard error, and returns its index.
-/// Pressing Enter picks the first. At a terminal, with up to nine options, a single digit answers.
-///
-/// # Errors
-///
-/// Returns an error when standard input cannot be read or ends, or Ctrl-C cancels.
-pub(crate) fn choose(asked: &str, options: &[&str]) -> Result<usize, Error> {
-    let mut lines = vec![asked.to_owned()];
-    lines.extend(
-        options
-            .iter()
-            .enumerate()
-            .map(|(index, option)| format!("{}. {option}", index + 1)),
-    );
-    let lines = lines.iter().map(String::as_str).collect::<Vec<_>>();
-    let suffix = "\n  Number [1]: ";
-    let count = options.len();
-    if single_key_menu(count) && std::io::stdin().is_terminal() {
-        return read_key(
-            &question(&lines, suffix),
-            |code| option_key(code, count),
-            |index| (index + 1).to_string(),
-        );
-    }
-    pose(&lines, suffix);
-    loop {
-        if let Some(index) = option_number(&read_answer()?, options.len()) {
-            return Ok(index);
-        }
-        eprint!("Type a number from 1 to {}: ", options.len());
-        std::io::stderr().flush().ok();
-    }
-}
-
-/// The index of the option `answer` numbers among `count`, the first for no answer.
-fn option_number(answer: &str, count: usize) -> Option<usize> {
-    let answer = answer.trim();
-    if answer.is_empty() {
-        return (count > 0).then_some(0);
-    }
-    answer
-        .parse::<usize>()
-        .ok()
-        .filter(|number| (1..=count).contains(number))
-        .map(|number| number - 1)
-}
-
 /// The answer `y`, `yes`, `n` or `no` gives, in any case; anything else is no answer.
 fn yes_or_no(answer: &str) -> Option<bool> {
     match answer.trim().to_ascii_lowercase().as_str() {
@@ -284,7 +223,7 @@ fn yes_or_no(answer: &str) -> Option<bool> {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-    use super::{Pressed, option_key, option_number, pressed, single_key_menu, yes_or_no, yes_or_no_key};
+    use super::{Pressed, pressed, yes_or_no, yes_or_no_key};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -316,50 +255,14 @@ mod tests {
     }
 
     #[test]
-    fn a_single_digit_picks_an_option_and_enter_the_first() {
-        let three = |code| option_key(code, 3);
-        assert_eq!(pressed(&key(KeyCode::Enter), three), Pressed::Answer(0));
-        assert_eq!(pressed(&key(KeyCode::Char('1')), three), Pressed::Answer(0));
-        assert_eq!(pressed(&key(KeyCode::Char('3')), three), Pressed::Answer(2));
-        for code in [
-            KeyCode::Char('0'),
-            KeyCode::Char('4'),
-            KeyCode::Char(' '),
-            KeyCode::Char('y'),
-        ] {
-            assert_eq!(pressed(&key(code), three), Pressed::Ignore, "{code:?}");
-        }
-    }
-
-    #[test]
     fn releases_and_held_modifiers_answer_nothing_and_ctrl_c_and_ctrl_d_end_the_question() {
         let mut release = key(KeyCode::Char('y'));
         release.kind = KeyEventKind::Release;
         assert_eq!(pressed(&release, yes_or_no_key), Pressed::Ignore);
-        release.code = KeyCode::Enter;
-        assert_eq!(pressed(&release, |code| option_key(code, 2)), Pressed::Ignore);
         let alt = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT);
         assert_eq!(pressed(&alt, yes_or_no_key), Pressed::Ignore);
         assert_eq!(pressed(&control('y'), yes_or_no_key), Pressed::Ignore);
         assert_eq!(pressed(&control('c'), yes_or_no_key), Pressed::Cancel);
-        assert_eq!(pressed(&control('d'), |code| option_key(code, 2)), Pressed::Ended);
-    }
-
-    #[test]
-    fn menus_of_ten_or_more_options_are_answered_by_line() {
-        assert!(!single_key_menu(0));
-        assert!(single_key_menu(1));
-        assert!(single_key_menu(9));
-        assert!(!single_key_menu(10));
-    }
-
-    #[test]
-    fn an_option_is_chosen_by_its_number_or_enter_for_the_first() {
-        assert_eq!(option_number("", 2), Some(0));
-        assert_eq!(option_number(" 2 ", 2), Some(1));
-        for answer in ["0", "3", "-1", "one", "1.0"] {
-            assert_eq!(option_number(answer, 2), None, "{answer:?}");
-        }
     }
 
     #[test]

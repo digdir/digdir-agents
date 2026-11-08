@@ -39,9 +39,9 @@ manifests that should use it:
 agentctl github login altinn-studio
 ```
 
-At a terminal you sign in through the browser as the account agents use, which needs the
-[GitHub CLI](https://cli.github.com), or create a fine-grained token for chosen repositories in GitHub's form.
-`--from-stdin` takes a token instead, such as `gh auth token`, which lets agents act as you everywhere you can reach.
+At a terminal it opens GitHub's form for a fine-grained token, filled in except for the repositories. Sign in there as
+the account agents should act as, such as in a private window. `--from-stdin` takes a token instead, such as
+`gh auth token`, which lets agents act as you everywhere you can reach.
 
 Give the coding agents on your machine, such as Claude Code, Codex and Pi, the skill for driving agents:
 

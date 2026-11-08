@@ -14,24 +14,25 @@ use zeroize::Zeroizing;
 
 use crate::{CommandResult, prompt};
 
-/// Has agentd keep a GitHub login as `name`. At a terminal the person signs in through the browser
-/// as the account agents use, or creates a fine-grained token in GitHub's pre-filled form and
-/// pastes it without it showing. With `from_stdin` the token comes from standard input instead.
-/// What GitHub says about the token, with warnings, is shown once it is kept.
+/// Has agentd keep a GitHub login as `name`. At a terminal the person creates a fine-grained token
+/// in GitHub's pre-filled form and pastes it without it showing. With `from_stdin` the token comes
+/// from standard input instead. What GitHub says about the token, with warnings, is shown once it
+/// is kept.
 ///
 /// # Errors
 ///
-/// Returns an error when the name is invalid, there is no terminal to sign in at without
-/// `from_stdin`, the sign-in fails, no token is given, GitHub rejects it, or agentd cannot keep it.
+/// Returns an error when the name is invalid, there is no terminal to paste on without
+/// `from_stdin`, no token is given, GitHub rejects it, or agentd cannot keep it.
 pub(crate) async fn login(client: &Client, name: &str, from_stdin: bool) -> CommandResult<()> {
     let name = token_name(name)?;
     let token = if from_stdin {
         crate::read_token_from_stdin()?
     } else if prompt::interactive() {
-        sign_in(&name).await?
+        let owner = ask_owner()?;
+        paste_from_form(&owner, &name).await?
     } else {
         return Err(Error::Invalid(
-            "no terminal to sign in at; pipe a token to `agentctl github login NAME --from-stdin`".into(),
+            "no terminal to paste the token on; pipe it to `agentctl github login NAME --from-stdin`".into(),
         )
         .into());
     };
@@ -42,34 +43,6 @@ pub(crate) async fn login(client: &Client, name: &str, from_stdin: bool) -> Comm
     println!("{}", stored_line(&login));
     println!("{}", manifest_line(&login.account.name));
     Ok(())
-}
-
-/// The ways a person at a terminal gives agents access to GitHub, in the order offered.
-const SIGN_IN_OPTIONS: [&str; 2] = [
-    "Sign in to the GitHub account they should use, in the browser",
-    "Create a token for chosen repositories",
-];
-
-/// Asks how to get a token for the login `name` and gets it: through the browser with the GitHub
-/// CLI, or from GitHub's form. Without the GitHub CLI the form is the only way.
-async fn sign_in(name: &str) -> Result<Zeroizing<String>, Error> {
-    if prompt::choose("How do you want to give agents access to GitHub?", &SIGN_IN_OPTIONS)? == 0 {
-        let path = std::env::var_os("PATH");
-        if let Some(gh) = agent::local::process::find_executable(path.as_deref(), &["gh", "gh.exe"]) {
-            // Enter opens the default browser, which is usually signed in as the person.
-            eprintln!(
-                "\nUse the account agents should act as, not your own: open the address below where that account \
-                 is signed in, such as a private window, and enter the code."
-            );
-            return agent::github::sign_in(&gh);
-        }
-        eprintln!(
-            "Signing in through the browser needs the GitHub CLI, `gh`, from https://cli.github.com. \
-             Create a token in GitHub's form instead, or install `gh` and run this again."
-        );
-    }
-    let owner = ask_owner()?;
-    paste_from_form(&owner, name).await
 }
 
 fn stored_line(login: &Login) -> String {

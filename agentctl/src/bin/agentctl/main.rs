@@ -586,10 +586,9 @@ enum CodexCommand {
 enum GithubCommand {
     /// Keep a GitHub login under a name, separate from your own `gh` login.
     ///
-    /// At a terminal you sign in through the browser as the account agents use, with the GitHub
-    /// CLI, or create a fine-grained token in GitHub's form, filled in except for the repositories,
-    /// and paste it without it showing. Agents whose manifest has `accounts: [{type: github, login:
-    /// NAME}]` use it at once.
+    /// At a terminal it opens GitHub's form for a fine-grained token, filled in except for the
+    /// repositories, and reads the token you paste without showing it. Agents whose manifest has
+    /// `accounts: [{type: github, login: NAME}]` use it at once.
     Login {
         /// The name manifests ask for the login by, such as `altinn-studio`.
         name: String,

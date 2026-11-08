@@ -9,8 +9,9 @@
 //! stored value, without touching the agents that use it.
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
-use crate::github;
+use crate::{Error, Spec, github, harness::MediatedSecret, manifest::AccountSpec, persistence, sandbox::AccountSetup};
 
 /// The longest name an account is kept under.
 pub(crate) const NAME_MAX_LENGTH: usize = 64;
@@ -95,6 +96,93 @@ impl Login {
             Self::Github(login) => Account::Github(login.account.clone()),
         }
     }
+}
+
+/// Checks credentials and keeps them as logins, lists and forgets them, for every type.
+pub struct Accounts {
+    github: github::Authentication,
+}
+
+impl Accounts {
+    /// Accounts kept in `database`.
+    #[must_use]
+    pub fn new(database: persistence::Database) -> Self {
+        Self {
+            github: github::Authentication::new(database),
+        }
+    }
+
+    /// Checks `credential` and keeps it as the login `login` for an account of `account_type`,
+    /// replacing an earlier one of that name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the login or credential is invalid, the credential is refused, or it
+    /// cannot be kept. Nothing is kept then, and no error contains the credential.
+    pub async fn login(
+        &self,
+        account_type: AccountType,
+        login: &str,
+        credential: Zeroizing<String>,
+    ) -> Result<Login, Error> {
+        match account_type {
+            AccountType::Github => self.github.login(credential, login).await.map(Login::Github),
+        }
+    }
+
+    /// Every kept login, by type, then name, without its credential.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database cannot be read or holds an unreadable login.
+    pub async fn list(&self) -> Result<Vec<Account>, Error> {
+        Ok(self.github.accounts().await?.into_iter().map(Account::Github).collect())
+    }
+
+    /// Forgets the login `login` for an account of `account_type`, returning it, or `None` when
+    /// there was none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database cannot be read or written.
+    pub async fn logout(&self, account_type: AccountType, login: &str) -> Result<Option<Account>, Error> {
+        match account_type {
+            AccountType::Github => Ok(self.github.forget(login).await?.map(Account::Github)),
+        }
+    }
+}
+
+/// What an agent's accounts give its sandbox.
+pub(crate) struct PreparedAccounts {
+    /// The mediated credentials to bind, one per account, whether or not its login is kept, so a
+    /// login or logout later changes no binding.
+    pub(crate) secrets: Vec<MediatedSecret>,
+    /// What setup configures in the guest.
+    pub(crate) setup: AccountSetup,
+}
+
+/// Prepares the accounts `spec` asks for, as `database` keeps them.
+///
+/// # Errors
+///
+/// Returns an error when a login's name is invalid or the database cannot be read.
+pub(crate) async fn prepare(database: &persistence::Database, spec: &Spec) -> Result<PreparedAccounts, Error> {
+    let mut prepared = PreparedAccounts {
+        secrets: Vec::new(),
+        setup: AccountSetup::default(),
+    };
+    for account in &spec.accounts {
+        match account {
+            AccountSpec::Github { login } => {
+                prepared.secrets.push(github::mediated_token(login)?);
+                let kept = github::stored(database, login).await?;
+                let setup = github::setup(login, kept.as_ref());
+                prepared.setup.git_identity = prepared.setup.git_identity.take().or(setup.git_identity);
+                prepared.setup.instructions.extend(setup.instructions);
+            }
+        }
+    }
+    Ok(prepared)
 }
 
 #[cfg(test)]

@@ -395,7 +395,7 @@ const LOGIN_STORES: [(Harness, &login::LoginStore); 2] = [
     (Harness::Codex, &codex::LOGINS),
 ];
 
-/// Dispatches host-side authentication to the selected harness adapter or the accounts.
+/// Dispatches host-side authentication to the selected harness adapter.
 pub struct AuthenticationManager {
     database: persistence::Database,
     claude_code: claude_code::authentication::Authentication,
@@ -404,7 +404,6 @@ pub struct AuthenticationManager {
     /// went on to succeed; see [`Self::assign_login`].
     assignments:
         std::cell::RefCell<std::collections::BTreeMap<crate::AgentId, std::collections::BTreeMap<Harness, LoginName>>>,
-    github: crate::github::Authentication,
 }
 
 impl AuthenticationManager {
@@ -414,63 +413,8 @@ impl AuthenticationManager {
         Self {
             database: database.clone(),
             claude_code: claude_code::authentication::Authentication::new(database.clone()),
-            codex: codex::authentication::Authentication::new(database.clone()),
-            github: crate::github::Authentication::new(database),
+            codex: codex::authentication::Authentication::new(database),
             assignments: std::cell::RefCell::default(),
-        }
-    }
-
-    /// Checks `credential` and keeps it as the account `name` of `account_type`, replacing an
-    /// earlier one of that name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the credential or name is invalid, the credential is refused, or it
-    /// cannot be persisted.
-    pub async fn account_login(
-        &self,
-        account_type: crate::accounts::AccountType,
-        name: &str,
-        credential: Zeroizing<String>,
-    ) -> Result<crate::accounts::Login, Error> {
-        match account_type {
-            crate::accounts::AccountType::Github => self
-                .github
-                .login(credential, name)
-                .await
-                .map(crate::accounts::Login::Github),
-        }
-    }
-
-    /// The kept accounts of every type, by type, then name, without their credentials.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the database cannot be read or holds an unreadable account.
-    pub async fn accounts(&self) -> Result<Vec<crate::accounts::Account>, Error> {
-        Ok(self
-            .github
-            .accounts()
-            .await?
-            .into_iter()
-            .map(crate::accounts::Account::Github)
-            .collect())
-    }
-
-    /// Forgets the account `name` of `account_type`, returning it, or `None` when there was none.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the database cannot be read or written.
-    pub async fn account_logout(
-        &self,
-        account_type: crate::accounts::AccountType,
-        name: &str,
-    ) -> Result<Option<crate::accounts::Account>, Error> {
-        match account_type {
-            crate::accounts::AccountType::Github => {
-                Ok(self.github.forget(name).await?.map(crate::accounts::Account::Github))
-            }
         }
     }
 

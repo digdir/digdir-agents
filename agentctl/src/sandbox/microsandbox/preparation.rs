@@ -91,7 +91,8 @@ impl Preparation {
                 installed,
                 logins,
             } = self.prepare_harnesses(record).await?;
-            let accounts = accounts(&self.database, &record.agent.spec, &mut managed_secrets).await?;
+            let accounts = crate::accounts::prepare(&self.database, &record.agent.spec).await?;
+            managed_secrets.extend(accounts.secrets);
             self.policy.set_agent(
                 &sandbox_name,
                 &record.agent,
@@ -118,7 +119,7 @@ impl Preparation {
                 environment: guest_environment,
                 harnesses: installed,
                 logins,
-                accounts,
+                accounts: accounts.setup,
             })
         }
         .await;
@@ -183,24 +184,6 @@ impl Preparation {
         self.policy.remove_agent(sandbox);
         self.network.remove_secret_bindings(sandbox);
     }
-}
-
-/// Adds the mediated credential of each account the agent acts as, whether or not one is kept,
-/// and returns what setup configures for them.
-///
-/// What setup configures reaches the guest through setup rather than the environment, since
-/// changing a running sandbox's environment restarts it.
-async fn accounts(
-    database: &persistence::Database,
-    spec: &crate::Spec,
-    managed_secrets: &mut Vec<harness::MediatedSecret>,
-) -> Result<crate::sandbox::AccountSetup, Error> {
-    let Some(name) = spec.account(crate::accounts::AccountType::Github) else {
-        return Ok(crate::sandbox::AccountSetup::default());
-    };
-    managed_secrets.push(crate::github::mediated_token(name)?);
-    let account = crate::github::stored(database, name).await?;
-    Ok(crate::github::setup(name, account.as_ref()))
 }
 
 fn secret_value<'a>(

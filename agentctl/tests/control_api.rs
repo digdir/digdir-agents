@@ -12,8 +12,8 @@ use agent::{
     Error,
     accounts::AccountType,
     control_api::{
-        AuthenticationApi, Client, Connection, Connector, ConvergenceApi, ExecutionApi, Server, SessionApi,
-        SshAccessApi, VncAccessApi,
+        AccountsApi, AuthenticationApi, Client, Connection, Connector, ConvergenceApi, ExecutionApi, Server,
+        SessionApi, SshAccessApi, VncAccessApi,
     },
     control_plane::WaitPolicy,
     control_plane::{ApplyRequest, ControlPlane, memory::InMemoryAgentStore},
@@ -159,9 +159,14 @@ impl AuthenticationApi for FakeAuthentication {
     fn logins(&self) -> LocalFuture<'_, Result<Vec<agent::harness::StoredLogin>, Error>> {
         Box::pin(async { Ok(Vec::new()) })
     }
+}
 
+/// Keeps one GitHub login, `digdir`.
+struct FakeAccounts;
+
+impl AccountsApi for FakeAccounts {
     /// Accepts only `github_pat_FAKE_good`, as GitHub would reject anything else.
-    fn account_login<'a>(
+    fn login<'a>(
         &'a self,
         _account_type: AccountType,
         name: &'a str,
@@ -179,7 +184,7 @@ impl AuthenticationApi for FakeAuthentication {
     }
 
     /// Has an account for `digdir` only.
-    fn account_logout<'a>(
+    fn logout<'a>(
         &'a self,
         _account_type: AccountType,
         name: &'a str,
@@ -187,7 +192,7 @@ impl AuthenticationApi for FakeAuthentication {
         Box::pin(async move { Ok((name == "digdir").then(|| agent::accounts::Account::Github(github_account(name)))) })
     }
 
-    fn accounts(&self) -> LocalFuture<'_, Result<Vec<agent::accounts::Account>, Error>> {
+    fn list(&self) -> LocalFuture<'_, Result<Vec<agent::accounts::Account>, Error>> {
         Box::pin(async { Ok(vec![agent::accounts::Account::Github(github_account("digdir"))]) })
     }
 }
@@ -461,26 +466,29 @@ fn api() -> ApiFixture {
     let convergence = FakeConvergence::default();
     let woken_all = convergence.woken_all.clone();
     let woken = convergence.woken.clone();
-    let server = Rc::new(Server::new(
-        control_plane,
-        Rc::new(FakeAuthentication),
-        Rc::new(convergence),
-        executions,
-        Rc::new(FakeSessions {
-            conversation: conversation.clone(),
-            ensured: ensured.clone(),
-            sent: sent.clone(),
-            deleted: deleted.clone(),
-            archived: archived.clone(),
-            upgrade_blockers: upgrade_blockers.clone(),
-            upgrade_warnings: upgrade_warnings.clone(),
-            upgrade_gates: upgrade_gates.clone(),
-        }),
-        Rc::new(FakeSshAccess),
-        Rc::new(FakeVncAccess),
-        changes.clone(),
-        Rc::new(move |error| observed_errors.borrow_mut().push(error.to_string())),
-    ));
+    let server = Rc::new(
+        Server::new(
+            control_plane,
+            Rc::new(FakeAuthentication),
+            Rc::new(convergence),
+            executions,
+            Rc::new(FakeSessions {
+                conversation: conversation.clone(),
+                ensured: ensured.clone(),
+                sent: sent.clone(),
+                deleted: deleted.clone(),
+                archived: archived.clone(),
+                upgrade_blockers: upgrade_blockers.clone(),
+                upgrade_warnings: upgrade_warnings.clone(),
+                upgrade_gates: upgrade_gates.clone(),
+            }),
+            Rc::new(FakeSshAccess),
+            Rc::new(FakeVncAccess),
+            changes.clone(),
+            Rc::new(move |error| observed_errors.borrow_mut().push(error.to_string())),
+        )
+        .with_accounts(Rc::new(FakeAccounts)),
+    );
     let client = Client::new(Rc::new(InProcessConnector { server: server.clone() }));
     ApiFixture {
         server,

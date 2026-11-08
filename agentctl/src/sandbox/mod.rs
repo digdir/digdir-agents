@@ -226,14 +226,15 @@ pub struct ProviderEnsureOutcome {
     pub accounts: AccountSetup,
 }
 
-/// What setup configures in the guest for the accounts an agent acts as. Preparation fills it in
-/// from each account type, so platform adapters need no knowledge of the types.
+/// What setup configures in the guest for the accounts an agent acts as.
+///
+/// Preparation fills it in from each account type, so platform adapters need no knowledge of the
+/// types. Git reaches an account's hosts through the image's own credential helper, such as `gh`,
+/// with the mediated placeholder.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AccountSetup {
     /// Who Git commits as, unless the manifest sets `GIT_USER_NAME` and `GIT_USER_EMAIL`.
     pub git_identity: Option<GitIdentity>,
-    /// The HTTPS hosts Git reaches with a mediated credential.
-    pub git_credentials: Vec<GitCredential>,
     /// Lines for the agent's instructions, each with its label, such as `GitHub`.
     pub instructions: Vec<(&'static str, String)>,
 }
@@ -245,21 +246,6 @@ pub struct GitIdentity {
     pub name: String,
     /// The commit author's email.
     pub email: String,
-}
-
-/// A credential Git sends over HTTPS: the inert value of a guest variable, which the network
-/// mediator replaces with the real credential.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GitCredential {
-    /// Where Git sends it, such as `https://github.com`, without a trailing slash.
-    pub url: &'static str,
-    /// The user name Git sends with it.
-    pub username: &'static str,
-    /// The guest variable holding the inert value Git sends as the password.
-    pub environment: &'static str,
-    /// Remote prefixes Git rewrites to `url`, such as SSH remotes, since the sandbox has no SSH
-    /// key and mediation covers HTTPS only.
-    pub rewrites: &'static [&'static str],
 }
 
 /// Whether a sandbox runs sandboxes of its own as its agent asks.

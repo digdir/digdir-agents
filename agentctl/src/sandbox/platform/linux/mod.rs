@@ -148,7 +148,7 @@ impl Linux {
         step.complete().await;
         mount_writable_volumes(record, sandbox, steps).await?;
         let step = steps.start_step("Sync home").await;
-        set_up_home(record, sandbox, podman, accounts).await?;
+        set_up_home(record, sandbox, podman, accounts.git_identity.as_ref()).await?;
         step.complete().await;
         let observed = preamble::Observed {
             harnesses,
@@ -259,12 +259,12 @@ async fn read_owned_instructions(sandbox: &SandboxHandle, path: &str) -> Result<
 }
 
 /// Copies the agent's home into the sandbox when it has one, points Podman at its socket when the
-/// image has Podman, and configures Git, with what the agent's `accounts` need.
+/// image has Podman, and sets the Git identity, from the manifest or else from the agent's account.
 async fn set_up_home(
     record: &control_plane::AgentRecord,
     sandbox: &SandboxHandle,
     podman: bool,
-    accounts: &crate::sandbox::AccountSetup,
+    account_identity: Option<&crate::sandbox::GitIdentity>,
 ) -> Result<(), Error> {
     if let Some(home) = &record.agent.spec.home {
         let archive = archive_home(record.source_directory.clone(), home.source.clone()).await?;
@@ -274,30 +274,34 @@ async fn set_up_home(
         // After the home sync, so a file of the same name in the agent's home cannot replace it.
         point_podman_at_socket(sandbox).await?;
     }
-    configure_git(sandbox, accounts).await
+    configure_git_identity(sandbox, account_identity).await
 }
 
-/// Configures Git for the agent's user when the image has it: the commit identity from
-/// `GIT_USER_NAME` and `GIT_USER_EMAIL`, or else from the `accounts`, and HTTPS access through
-/// each of their mediated credentials.
-async fn configure_git(sandbox: &SandboxHandle, accounts: &crate::sandbox::AccountSetup) -> Result<(), Error> {
+/// Sets Git's commit identity from `GIT_USER_NAME` and `GIT_USER_EMAIL`, or else from the agent's
+/// account, when the image has Git.
+async fn configure_git_identity(
+    sandbox: &SandboxHandle,
+    account_identity: Option<&crate::sandbox::GitIdentity>,
+) -> Result<(), Error> {
     let environment = &sandbox.snapshot().environment;
-    let identity = match (environment.get("GIT_USER_NAME"), environment.get("GIT_USER_EMAIL")) {
-        (Some(name), Some(email)) => Some((name.clone(), email.clone())),
-        (None, None) => accounts
-            .git_identity
-            .as_ref()
-            .map(|identity| (identity.name.clone(), identity.email.clone())),
+    let (name, email) = match (environment.get("GIT_USER_NAME"), environment.get("GIT_USER_EMAIL")) {
+        (Some(name), Some(email)) => (name, email),
+        (None, None) => match account_identity {
+            Some(identity) => (&identity.name, &identity.email),
+            None => return Ok(()),
+        },
         _ => {
             return Err(Error::Invalid(
                 "GIT_USER_NAME and GIT_USER_EMAIL must both be configured".into(),
             ));
         }
     };
-    if identity.is_none() && accounts.git_credentials.is_empty() {
-        return Ok(());
-    }
-    let present = run_git(sandbox, &["--version"]).await?;
+    let present = sandbox
+        .run_execution(ExecutionSpec::command(
+            SandboxPath::new("/usr/bin/env"),
+            ["git".into(), "--version".into()],
+        ))
+        .await?;
     match present.status.code {
         127 => return Ok(()),
         0 => {}
@@ -307,90 +311,8 @@ async fn configure_git(sandbox: &SandboxHandle, accounts: &crate::sandbox::Accou
             )));
         }
     }
-    if let Some((name, email)) = identity {
-        run_git_config(sandbox, "user.name", &name).await?;
-        run_git_config(sandbox, "user.email", &email).await?;
-    }
-    for credential in &accounts.git_credentials {
-        configure_credential(sandbox, credential).await?;
-    }
-    Ok(())
-}
-
-/// Gives Git `credential` for its host over HTTPS, and sends its remotes, such as SSH ones, over
-/// HTTPS instead. Git sends the inert value as the password, and the mediator replaces it in the
-/// Basic credentials.
-///
-/// The helper is added after any the image configured, which Git asks first, so an image's own
-/// helper still wins when it answers and ours answers when it does not, such as a generic `cache`
-/// or `store`. An image's own rewrite of one of the remotes is kept.
-async fn configure_credential(
-    sandbox: &SandboxHandle,
-    credential: &crate::sandbox::GitCredential,
-) -> Result<(), Error> {
-    let crate::sandbox::GitCredential {
-        url,
-        username,
-        environment,
-        rewrites,
-    } = credential;
-    let key = format!("credential.{url}.helper");
-    let helper = format!(
-        "!f() {{ test \"$1\" = get || exit 0; echo username={username}; echo \"password=${environment}\"; }}; f"
-    );
-    let helpers = git_lookup(sandbox, &["config", "--global", "--get-all", &key])
-        .await?
-        .unwrap_or_default();
-    if !helpers.lines().any(|existing| existing == helper) {
-        add_git_config(sandbox, &key, &helper).await?;
-    }
-    let existing = git_lookup(sandbox, &["config", "--get-regexp", r"^url\..*\.insteadof$"])
-        .await?
-        .unwrap_or_default();
-    let rewrite = format!("url.{url}/.insteadOf");
-    for remote in *rewrites {
-        if !existing
-            .lines()
-            .any(|line| line.split_whitespace().nth(1) == Some(remote))
-        {
-            add_git_config(sandbox, &rewrite, remote).await?;
-        }
-    }
-    Ok(())
-}
-
-/// Adds `value` to the user's multi-valued Git setting `key`.
-async fn add_git_config(sandbox: &SandboxHandle, key: &str, value: &str) -> Result<(), Error> {
-    let args = ["git", "config", "--global", "--add", key, value];
-    let output = run_git(sandbox, &args[1..]).await?;
-    checked_output("/usr/bin/env", &args, &output)
-}
-
-/// Runs a `git config` lookup: its output when set, `None` when Git reports it unset.
-async fn git_lookup(sandbox: &SandboxHandle, args: &[&str]) -> Result<Option<String>, Error> {
-    let output = run_git(sandbox, args).await?;
-    match output.status.code {
-        0 => {
-            let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            Ok((!value.is_empty()).then_some(value))
-        }
-        1 => Ok(None),
-        _ => {
-            let mut full = vec!["git"];
-            full.extend_from_slice(args);
-            checked_output("/usr/bin/env", &full, &output).map(|()| None)
-        }
-    }
-}
-
-async fn run_git(sandbox: &SandboxHandle, args: &[&str]) -> Result<::sandbox::execution::ExecutionOutput, Error> {
-    let args = std::iter::once("git").chain(args.iter().copied()).map(str::to_owned);
-    Ok(sandbox
-        .run_execution(
-            ExecutionSpec::command(SandboxPath::new("/usr/bin/env"), args)
-                .with_environment([("HOME".into(), HOME.into())]),
-        )
-        .await?)
+    run_git_config(sandbox, "user.name", name).await?;
+    run_git_config(sandbox, "user.email", email).await
 }
 
 async fn run_git_config(sandbox: &SandboxHandle, key: &str, value: &str) -> Result<(), Error> {
