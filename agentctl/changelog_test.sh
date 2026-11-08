@@ -6,6 +6,11 @@
 
 set -eu
 
+# Git hooks and `git rebase --exec` pass the repository on in GIT_DIR and its siblings, which would make the fixture
+# repository below write to that one instead: `git init` would mark it bare and the commits would land on its branches.
+# shellcheck disable=SC2046 # The names are split on purpose.
+unset $(git rev-parse --local-env-vars)
+
 SCRIPT_DIRECTORY="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 CHANGELOG="${SCRIPT_DIRECTORY}/changelog.sh"
 WORK="$(mktemp -d)"
