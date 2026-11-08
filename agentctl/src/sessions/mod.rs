@@ -720,6 +720,92 @@ pub async fn attach(home: &std::path::Path, target: &AttachTarget) -> Result<(),
     runtime::Tmux.attach(home, target).await
 }
 
+/// Opens a terminal on a running session for the caller to relay, such as into a window, instead
+/// of taking over the process's own terminal as [`attach`] does.
+///
+/// # Errors
+///
+/// Returns an error when the session is not running or the recorded sandbox Provider cannot start
+/// a terminal Execution.
+pub async fn open_terminal(
+    home: &std::path::Path,
+    target: &AttachTarget,
+    size: ::sandbox::terminal::TerminalSize,
+) -> Result<SessionTerminal, Error> {
+    runtime::Tmux.open_terminal(home, target, size).await
+}
+
+/// A terminal on a session that the caller relays: what it writes reaches the session, and what
+/// the session shows arrives as events.
+///
+/// Detaching or dropping it leaves the session running, as detaching from `agentctl attach` does.
+pub struct SessionTerminal {
+    /// Input, resizing and detaching.
+    pub control: SessionControl,
+    /// What the terminal shows, until the client exits or detaches.
+    pub events: ::sandbox::terminal::TerminalEventStream,
+}
+
+impl SessionTerminal {
+    pub(crate) fn new(started: ::sandbox::terminal::StartedTerminalExecution, detach: &'static [u8]) -> Self {
+        Self {
+            control: SessionControl {
+                terminal: started.control,
+                detach,
+            },
+            events: started.events,
+        }
+    }
+}
+
+impl std::fmt::Debug for SessionTerminal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("SessionTerminal").finish_non_exhaustive()
+    }
+}
+
+/// The controls of a [`SessionTerminal`], kept apart from its events so a relay can use both at once.
+#[derive(Clone)]
+pub struct SessionControl {
+    terminal: std::rc::Rc<dyn ::sandbox::terminal::TerminalControl>,
+    detach: &'static [u8],
+}
+
+impl SessionControl {
+    /// Types `bytes` into the session's terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the input cannot reach the terminal, as when it has ended.
+    pub async fn write(&self, bytes: bytes::Bytes) -> Result<(), Error> {
+        self.terminal.write_input(bytes).await.map_err(Error::from)
+    }
+
+    /// Changes the size of the session's terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the terminal has ended or cannot be resized.
+    pub async fn resize(&self, size: ::sandbox::terminal::TerminalSize) -> Result<(), Error> {
+        self.terminal.resize(size).await.map_err(Error::from)
+    }
+
+    /// Asks the session's terminal to let go of this client, which then exits and ends the events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the input cannot reach the terminal, as when it has already ended.
+    pub async fn detach(&self) -> Result<(), Error> {
+        self.write(bytes::Bytes::from_static(self.detach)).await
+    }
+}
+
+impl std::fmt::Debug for SessionControl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("SessionControl").finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Activity, LaunchToken, Lifecycle, LifecycleState, Phase, Reported, SessionName, State, Status};

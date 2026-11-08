@@ -1,4 +1,4 @@
-//! Hands addresses and editor sessions to applications on the machine running `agentctl`.
+//! Hands addresses, editor sessions and terminals to applications on the machine running the client.
 //!
 //! Everything here is best effort: no portable viewer or editor exists. A
 //! launcher that fails at once is reported; one that fails later, after it
@@ -6,6 +6,7 @@
 
 mod browser;
 mod host;
+mod terminal;
 
 use std::{
     ffi::OsStr,
@@ -14,8 +15,9 @@ use std::{
     time::Duration,
 };
 
-pub(crate) use browser::{as_browser, open_argument, sign_in};
-pub(crate) use host::{launch_blocked, open_url};
+pub use browser::{address_to_open, as_browser, sign_in};
+pub use host::{launch_blocked, open_url};
+pub use terminal::in_terminal;
 
 /// How long a launcher gets to fail before it is taken to have launched.
 const LAUNCH_GRACE: Duration = Duration::from_secs(2);
@@ -26,15 +28,16 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// An editor that opens an agent's working directory over SSH.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Editor {
+pub enum Editor {
     VsCode,
     Zed,
 }
 
 impl Editor {
-    pub(crate) const ALL: [Self; 2] = [Self::VsCode, Self::Zed];
+    pub const ALL: [Self; 2] = [Self::VsCode, Self::Zed];
 
-    pub(crate) const fn label(self) -> &'static str {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
         match self {
             Self::VsCode => "VS Code",
             Self::Zed => "Zed",
@@ -53,13 +56,15 @@ impl Editor {
     }
 
     /// Finds the editor's launcher on `path`, a `PATH`-style variable.
-    pub(crate) fn locate(self, path: Option<&OsStr>) -> Option<PathBuf> {
-        agent::local::process::find_executable(path, self.executables())
+    #[must_use]
+    pub fn locate(self, path: Option<&OsStr>) -> Option<PathBuf> {
+        crate::local::process::find_executable(path, self.executables())
     }
 
     /// How to open `directory` in the agent reached as the OpenSSH `alias`, given the launcher
     /// found on `PATH`. VS Code falls back to its URL handler; Zed has none to fall back to.
-    pub(crate) fn launch(self, launcher: Option<&Path>, alias: &str, directory: &str) -> Option<Launch> {
+    #[must_use]
+    pub fn launch(self, launcher: Option<&Path>, alias: &str, directory: &str) -> Option<Launch> {
         match (self, launcher) {
             (Self::VsCode, Some(program)) => Some(Launch::Command {
                 program: program.to_path_buf(),
@@ -77,7 +82,8 @@ impl Editor {
     }
 
     /// Why the editor cannot be launched without its command-line launcher, if it needs one.
-    pub(crate) fn missing_launcher(self) -> Option<String> {
+    #[must_use]
+    pub fn missing_launcher(self) -> Option<String> {
         match self {
             Self::VsCode => None,
             Self::Zed => Some(format!("not found on PATH ({})", self.executables().join(", "))),
@@ -87,7 +93,7 @@ impl Editor {
 
 /// One way to hand something to a local application.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Launch {
+pub enum Launch {
     /// Runs a program with arguments, detached from the terminal.
     Command { program: PathBuf, arguments: Vec<String> },
     /// Opens an address with whichever application handles its scheme.
@@ -102,7 +108,7 @@ impl Launch {
     ///
     /// Returns why the program could not be started or failed at once, such as
     /// an opener finding no application for the address.
-    pub(crate) async fn start(&self) -> Result<(), String> {
+    pub async fn start(&self) -> Result<(), String> {
         match self {
             Self::Command { program, arguments } => run_detached(program.as_os_str(), arguments, true).await,
             Self::Url(url) => open_url(url).await.map(|_| ()),
@@ -139,8 +145,8 @@ async fn run_detached(program: &OsStr, arguments: &[String], exit_tells: bool) -
 
 /// The address that opens a forward listening at `local` to `guest_port`: a
 /// VNC client for the desktop's RFB port, a browser for anything else.
-pub(crate) fn forward_url(local: impl std::fmt::Display, guest_port: u16) -> String {
-    if guest_port == agent::vnc::GUEST_PORT {
+pub fn forward_url(local: impl std::fmt::Display, guest_port: u16) -> String {
+    if guest_port == crate::vnc::GUEST_PORT {
         format!("vnc://{local}")
     } else {
         format!("http://{local}/")
@@ -148,10 +154,11 @@ pub(crate) fn forward_url(local: impl std::fmt::Display, guest_port: u16) -> Str
 }
 
 /// Names a forward to one of the desktop's ports, however it was made.
-pub(crate) const fn forward_label(guest_port: u16) -> Option<&'static str> {
+#[must_use]
+pub const fn forward_label(guest_port: u16) -> Option<&'static str> {
     match guest_port {
-        agent::vnc::WEB_GUEST_PORT => Some("desktop"),
-        agent::vnc::GUEST_PORT => Some("vnc"),
+        crate::vnc::WEB_GUEST_PORT => Some("desktop"),
+        crate::vnc::GUEST_PORT => Some("vnc"),
         _ => None,
     }
 }

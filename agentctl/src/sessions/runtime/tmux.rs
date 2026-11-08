@@ -9,7 +9,7 @@
 use ::sandbox::{
     SandboxHandle, SandboxPath,
     execution::{ExecutionOutput, ExecutionSpec, ExitStatus, StartExecutionRequest},
-    terminal::{AttachTerminalRequest, TerminalAttachOutcome},
+    terminal::{AttachTerminalRequest, StartTerminalExecutionRequest, TerminalAttachOutcome, TerminalSize},
 };
 
 use crate::{
@@ -18,7 +18,7 @@ use crate::{
 };
 
 use super::{LaunchContext, Observation};
-use crate::sessions::{Activity, AttachTarget, LaunchToken, LifecycleState, Phase, Session, Turn};
+use crate::sessions::{Activity, AttachTarget, LaunchToken, LifecycleState, Phase, Session, SessionTerminal, Turn};
 
 /// Quiet period after the latest hook event before input is pasted into a
 /// harness that is not waiting for input. The start hook fires before the
@@ -30,6 +30,8 @@ const INPUT_READY_GRACE: std::time::Duration = std::time::Duration::from_secs(2)
 const LIFECYCLE_EXECUTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const LIFECYCLE_EXECUTION_KILL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const DETACH_KEYS: &str = "ctrl-b,d";
+/// What a relayed terminal types to detach: tmux's own Ctrl-b d, which the status line shows.
+const DETACH_INPUT: &[u8] = b"\x02d";
 
 // Set history-limit before pane creation; reapply on attach for existing servers.
 // Mouse mode routes wheels to copy mode or the application: https://man.openbsd.org/tmux.1#mouse
@@ -394,6 +396,25 @@ async fn attach_terminal(home: &std::path::Path, target: &AttachTarget) -> Resul
     }
 }
 
+/// Opens a tmux client on the session in a terminal the caller relays.
+///
+/// # Errors
+///
+/// Returns an error unless the session is running and the sandbox provider can start a terminal
+/// Execution.
+async fn open_relayed_terminal(
+    home: &std::path::Path,
+    target: &AttachTarget,
+    size: TerminalSize,
+) -> Result<SessionTerminal, Error> {
+    if target.session.status.lifecycle.state != LifecycleState::Running {
+        return Err(target.session.not_running_error());
+    }
+    let request = StartTerminalExecutionRequest::new(attach_spec(&target.session), size);
+    let started = crate::sandbox::start_terminal_execution(home, &target.sandbox, request).await?;
+    Ok(SessionTerminal::new(started, DETACH_INPUT))
+}
+
 fn attach_arguments(session: &Session) -> Vec<String> {
     let mut arguments = terminal_options();
     // The host terminal's tab names the agent and the session it shows. The tmux server belongs
@@ -536,6 +557,15 @@ impl super::SessionRuntime for Tmux {
         target: &'a AttachTarget,
     ) -> ::sandbox::LocalFuture<'a, Result<(), Error>> {
         Box::pin(attach_terminal(home, target))
+    }
+
+    fn open_terminal<'a>(
+        &'a self,
+        home: &'a std::path::Path,
+        target: &'a AttachTarget,
+        size: TerminalSize,
+    ) -> ::sandbox::LocalFuture<'a, Result<SessionTerminal, Error>> {
+        Box::pin(open_relayed_terminal(home, target, size))
     }
 }
 
@@ -739,6 +769,26 @@ mod tests {
             activation_generation: 0,
             observed_activation_generation: 0,
         }
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn a_relayed_terminal_opens_only_on_a_running_session() {
+        let mut session = named_session();
+        session.status.lifecycle = crate::sessions::Lifecycle::archived();
+        let target = crate::sessions::AttachTarget {
+            session,
+            sandbox: crate::sandbox::Assignment::Selected {
+                provider: crate::sandbox::ProviderId::new("microsandbox").expect("provider"),
+            },
+        };
+        let home = tempfile::TempDir::new().expect("home");
+        let size = sandbox::terminal::TerminalSize::new(24, 80).expect("size");
+
+        let error = super::open_relayed_terminal(home.path(), &target, size)
+            .await
+            .expect_err("archived");
+
+        assert!(error.to_string().contains("archived"), "{error}");
     }
 
     #[test]

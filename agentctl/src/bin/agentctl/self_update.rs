@@ -446,7 +446,7 @@ async fn verify_target(
     Err(Error::Daemon(format!(
         "target agentd {target_version:?} did not become healthy and finish session relaunch within {} seconds; {}",
         TARGET_VERIFY_TIMEOUT.as_secs(),
-        super::daemon_startup_diagnostics(home)
+        agent::local::daemon::startup_diagnostics(home)
     )))
 }
 

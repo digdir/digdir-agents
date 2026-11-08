@@ -121,4 +121,13 @@ pub trait SessionRuntime {
         home: &'a std::path::Path,
         target: &'a AttachTarget,
     ) -> ::sandbox::LocalFuture<'a, Result<(), Error>>;
+
+    /// Opens a terminal on the session that the caller relays, as [`Self::attach`] does with the
+    /// process's own terminal. It never creates or resumes a session.
+    fn open_terminal<'a>(
+        &'a self,
+        home: &'a std::path::Path,
+        target: &'a AttachTarget,
+        size: ::sandbox::terminal::TerminalSize,
+    ) -> ::sandbox::LocalFuture<'a, Result<super::SessionTerminal, Error>>;
 }

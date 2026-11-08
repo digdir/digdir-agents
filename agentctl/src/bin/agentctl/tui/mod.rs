@@ -477,7 +477,7 @@ impl ActiveForwards {
             .find(|(name, forward)| {
                 *name == agent && forward.spec().guest_port == viewer.guest_port() && !forward.finished()
             })
-            .map(|(_, forward)| crate::launch::forward_url(forward.local_address(), forward.spec().guest_port))
+            .map(|(_, forward)| agent::launch::forward_url(forward.local_address(), forward.spec().guest_port))
     }
 
     fn entries(&self) -> Vec<ForwardEntry> {
@@ -589,7 +589,7 @@ fn spawn_ssh_check(inputs: Inputs, agent: String) {
 enum Outside {
     Editor {
         agent: String,
-        editor: crate::launch::Editor,
+        editor: agent::launch::Editor,
         launcher: Option<PathBuf>,
     },
     /// The agent's desktop, through a new forward.
@@ -643,10 +643,10 @@ fn spawn_open(
                 }
                 Outside::Desktop { agent, viewer } => {
                     let forward = desktop_forward(&client, home_path, &agent, viewer).await?;
-                    let url = crate::launch::forward_url(forward.local_address(), forward.spec().guest_port);
-                    (crate::launch::Launch::Url(url.clone()), url, Some((agent, forward)))
+                    let url = agent::launch::forward_url(forward.local_address(), forward.spec().guest_port);
+                    (agent::launch::Launch::Url(url.clone()), url, Some((agent, forward)))
                 }
-                Outside::Forward(url) => (crate::launch::Launch::Url(url.clone()), url, None),
+                Outside::Forward(url) => (agent::launch::Launch::Url(url.clone()), url, None),
             };
             hand_over(launch, &what, forward, copy).await
         }
@@ -659,14 +659,14 @@ fn spawn_open(
 /// open here. Every address is a forward's, so when launching it fails the
 /// forward is kept, since its address still works, and the address is copied.
 async fn hand_over(
-    launch: crate::launch::Launch,
+    launch: agent::launch::Launch,
     what: &str,
     forward: Option<(String, PortForward)>,
     copy: bool,
 ) -> Result<OpenOutcome, String> {
     let url = match &launch {
-        crate::launch::Launch::Url(url) => Some(url.clone()),
-        crate::launch::Launch::Command { .. } => None,
+        agent::launch::Launch::Url(url) => Some(url.clone()),
+        agent::launch::Launch::Command { .. } => None,
     };
     if let (Some(url), true) = (&url, copy) {
         return Ok(OpenOutcome {
@@ -1494,7 +1494,7 @@ mod tests {
         let sandbox = materialized("00000000-0000-0000-0000-00000000000a");
         let url = "http://127.0.0.1:50001/".to_owned();
         let copied = hand_over(
-            crate::launch::Launch::Url(url.clone()),
+            agent::launch::Launch::Url(url.clone()),
             &url,
             Some(("desk".into(), forward(&sandbox, 6080).await)),
             true,

@@ -509,6 +509,15 @@ impl agent::sessions::SessionRuntime for FakeRuntime {
     ) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async { Err(Error::Invalid("no terminal in tests".into())) })
     }
+
+    fn open_terminal<'a>(
+        &'a self,
+        _home: &'a std::path::Path,
+        _target: &'a agent::sessions::AttachTarget,
+        _size: sandbox::terminal::TerminalSize,
+    ) -> LocalFuture<'a, Result<agent::sessions::SessionTerminal, Error>> {
+        Box::pin(async { Err(Error::Invalid("no terminal in tests".into())) })
+    }
 }
 
 /// A database, a materialized memory sandbox for agent `worker`, and one

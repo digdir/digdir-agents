@@ -790,7 +790,8 @@ pub async fn attach_terminal(
 /// Starts a terminal Execution through the recorded sandbox provider, for the caller to relay.
 ///
 /// Unlike [`attach_terminal`], the caller owns the terminal: it writes the input, resizes it and
-/// reads the output from the returned Execution, so it can also scan what the program prints.
+/// reads the output from the returned Execution, so it can show it somewhere other than the
+/// process's own terminal, such as a window, or scan what the program prints.
 ///
 /// # Errors
 ///

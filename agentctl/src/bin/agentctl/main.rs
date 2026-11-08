@@ -1,7 +1,7 @@
 use std::{
     io::IsTerminal as _,
     path::{Path, PathBuf},
-    process::{Child, Command as ProcessCommand, ExitCode, Stdio},
+    process::{Command as ProcessCommand, ExitCode},
     time::Duration,
 };
 
@@ -10,11 +10,11 @@ use agent::{
     control_api::Client,
     control_plane::ApplyRequest,
     control_plane::WaitPolicy,
+    launch,
     local::home::ControlPlaneHome,
     manifest,
     sandbox::forward,
     sessions::{Session, SessionName, SessionRequest},
-    upgrade::InstallPaths,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -23,7 +23,6 @@ mod consent;
 mod environment_file;
 mod format;
 mod github;
-mod launch;
 mod new;
 mod progress;
 mod prompt;
@@ -741,7 +740,7 @@ enum GithubCommand {
 
 fn main() -> ExitCode {
     if launch::as_browser(|name| std::env::var_os(name)) {
-        return launch::open_argument();
+        return open_argument();
     }
     match run() {
         Ok(code) => code,
@@ -755,6 +754,22 @@ fn main() -> ExitCode {
 fn report_error(error: &CommandError, stderr: &mut impl std::io::Write) {
     // Nothing is left to tell when standard error cannot be written.
     writeln!(stderr, "agentctl: {error}").ok();
+}
+
+/// Opens the one address agentctl is given when it runs as a harness's browser.
+fn open_argument() -> ExitCode {
+    let opened = launch::address_to_open(std::env::args_os().skip(1)).and_then(|url| {
+        LocalRuntime::new()
+            .map_err(|error| format!("could not start: {error}"))
+            .and_then(|runtime| runtime.block_on(launch::open_url(&url)))
+    });
+    opened.map_or_else(
+        |error| {
+            eprintln!("agentctl: {error}");
+            ExitCode::FAILURE
+        },
+        |_| ExitCode::SUCCESS,
+    )
 }
 
 fn run() -> CommandResult<ExitCode> {
@@ -2540,78 +2555,9 @@ fn print_table(lines: &[String]) {
     }
 }
 
+/// Starts the `agentd` beside this `agentctl` unless one from this build answers.
 async fn ensure_daemon(home: &ControlPlaneHome, client: &Client) -> Result<(), Error> {
-    if let Ok(daemon) = client.health().await {
-        return daemon.require_compatible();
-    }
-    let mut daemon = spawn_daemon(home)?;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        if let Ok(daemon) = client.health().await {
-            return daemon.require_compatible();
-        }
-        if let Some(status) = daemon.try_wait()? {
-            return Err(startup_failure(
-                home,
-                &format!("automatic startup exited with {status}"),
-            ));
-        }
-    }
-    Err(startup_failure(
-        home,
-        "automatic startup did not become ready within 10 seconds",
-    ))
-}
-
-/// An update stops agentd and keeps it stopped until it starts the new one, so a command that
-/// tries to start agentd meanwhile fails. The update need not be for this command's home, so the
-/// usual diagnostics stay.
-fn startup_failure(home: &ControlPlaneHome, failure: &str) -> Error {
-    let diagnostics = daemon_startup_diagnostics(home);
-    if InstallPaths::resolve()
-        .and_then(|paths| paths.update_running())
-        .unwrap_or(false)
-    {
-        return Error::Daemon(format!(
-            "{failure}, likely because an agentctl update is running; rerun this command once it has finished, or {diagnostics}"
-        ));
-    }
-    Error::Daemon(format!("{failure}; {diagnostics}"))
-}
-
-fn daemon_startup_diagnostics(home: &ControlPlaneHome) -> String {
-    let log = home.daemon_log_path();
-    let marker = home.pending_session_relaunch_path();
-    if marker.exists() {
-        format!(
-            "see {}; pending post-upgrade session relaunch: {}",
-            log.display(),
-            marker.display()
-        )
-    } else {
-        format!("see {}", log.display())
-    }
-}
-
-fn spawn_daemon(home: &ControlPlaneHome) -> Result<Child, Error> {
-    home.check_socket_path()?;
-    home.prepare()?;
-    let log = home.open_daemon_log()?;
-    let executable = daemon_executable(&std::env::current_exe()?);
-    let mut command = ProcessCommand::new(executable);
-    command
-        .arg("--home")
-        .arg(home.path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(log);
-    agent::local::process::configure_detached(&mut command);
-    agent::local::process::configure_logging(&mut command);
-    command.spawn().map_err(Error::from)
-}
-
-fn daemon_executable(agentctl: &Path) -> PathBuf {
-    agentctl.with_file_name(format!("agentd{}", std::env::consts::EXE_SUFFIX))
+    agent::local::daemon::ensure(home, client, &agent::local::daemon::beside(&std::env::current_exe()?)).await
 }
 
 fn apply_manifest_path(
@@ -3466,39 +3412,6 @@ mod tests {
             .expect_err("preview daemon is incompatible");
         assert!(error.to_string().contains("protocol Some(\"v1\")"));
         assert!(!home.daemon_log_path().exists(), "no second daemon was spawned");
-    }
-
-    #[tokio::test(flavor = "local")]
-    async fn home_too_long_for_its_socket_is_reported_without_starting_agentd() {
-        let directory = tempfile::TempDir::new().expect("temporary directory");
-        let home = ControlPlaneHome::resolve(Some(&directory.path().join("a".repeat(120)))).expect("home");
-        let client = Client::for_path(home.socket_path());
-
-        let error = ensure_daemon(&home, &client)
-            .await
-            .expect_err("no agentd can listen on a socket path this long");
-
-        let message = error.to_string();
-        assert!(
-            message.contains(&home.socket_path().display().to_string()) && message.contains("too long"),
-            "the error names the socket path and the problem: {message}"
-        );
-        assert!(
-            !home.path().exists(),
-            "agentctl neither created the home nor started agentd, whose log is in it"
-        );
-    }
-
-    #[test]
-    fn startup_diagnostics_identify_a_pending_session_relaunch() {
-        let directory = tempfile::TempDir::new().expect("temporary home");
-        let home = ControlPlaneHome::resolve(Some(directory.path())).expect("home");
-        std::fs::write(home.pending_session_relaunch_path(), "pending").expect("marker");
-
-        let diagnostic = daemon_startup_diagnostics(&home);
-
-        assert!(diagnostic.contains(&home.daemon_log_path().display().to_string()));
-        assert!(diagnostic.contains(&home.pending_session_relaunch_path().display().to_string()));
     }
 
     impl agent::control_api::Connector for StalledConnector {

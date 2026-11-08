@@ -398,12 +398,12 @@ impl ForwardEntry {
 
     /// Names a forward to the desktop.
     pub(crate) const fn label(&self) -> Option<&'static str> {
-        crate::launch::forward_label(self.guest_port)
+        agent::launch::forward_label(self.guest_port)
     }
 
     /// The address that opens the forward: a VNC client for the RFB port, a browser otherwise.
     pub(crate) fn url(&self) -> String {
-        crate::launch::forward_url(&self.local, self.guest_port)
+        agent::launch::forward_url(&self.local, self.guest_port)
     }
 }
 
@@ -5682,7 +5682,7 @@ pub(crate) mod tests {
             app.on_key(key(KeyCode::Char('c'))),
             Action::Open {
                 agent: "worker".into(),
-                target: OpenTarget::Editor(crate::launch::Editor::VsCode),
+                target: OpenTarget::Editor(agent::launch::Editor::VsCode),
             }
         );
         app.on_key(key(KeyCode::Char('o')));
@@ -5702,7 +5702,7 @@ pub(crate) mod tests {
         app.selection = Some(TreeRowId::Agent("worker".into()));
         app.on_key(key(KeyCode::Char('o')));
         assert_eq!(app.on_key(key(KeyCode::Char('c'))), Action::None);
-        let editor = OpenTarget::Editor(crate::launch::Editor::VsCode);
+        let editor = OpenTarget::Editor(agent::launch::Editor::VsCode);
         assert!(matches!(&app.modal, Some(Modal::ConfirmSshSetup { then: Some(target), .. }) if *target == editor));
         assert_eq!(app.hints(), &CONFIRM_SSH_SETUP_THEN_HINTS);
         assert_eq!(
@@ -5834,7 +5834,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             menu.chosen(),
-            Some(MenuEntry::Open(OpenTarget::Editor(crate::launch::Editor::VsCode)))
+            Some(MenuEntry::Open(OpenTarget::Editor(agent::launch::Editor::VsCode)))
         );
 
         app.ssh_checked("worker", SshSetup::Installed);
@@ -5875,7 +5875,7 @@ pub(crate) mod tests {
     fn one_open_waits_per_agent_and_target_and_ends_in_a_notice_or_an_error() {
         let mut app = ssh_app(SshSetup::Installed);
         let now = Instant::now();
-        let vs_code = OpenTarget::Editor(crate::launch::Editor::VsCode);
+        let vs_code = OpenTarget::Editor(agent::launch::Editor::VsCode);
         assert!(app.start_opening("worker", vs_code, now));
         assert!(
             !app.start_opening("worker", vs_code, now),
@@ -5885,7 +5885,7 @@ pub(crate) mod tests {
             app.notice.as_ref().map(|(text, _)| text.as_str()),
             Some("already opening VS Code on worker")
         );
-        assert!(app.start_opening("worker", OpenTarget::Editor(crate::launch::Editor::Zed), now));
+        assert!(app.start_opening("worker", OpenTarget::Editor(agent::launch::Editor::Zed), now));
 
         app.opened(
             Some(("worker".into(), vs_code)),
@@ -5897,7 +5897,7 @@ pub(crate) mod tests {
             Some("opening VS Code on worker")
         );
         app.opened(
-            Some(("worker".into(), OpenTarget::Editor(crate::launch::Editor::Zed))),
+            Some(("worker".into(), OpenTarget::Editor(agent::launch::Editor::Zed))),
             Err("zed failed".into()),
             now,
         );
