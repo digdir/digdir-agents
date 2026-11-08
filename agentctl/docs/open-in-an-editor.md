@@ -22,11 +22,15 @@ This adds one `Include` line at the top of `~/.ssh/config`. The included file re
 agentctl tui
 ```
 
-Select the agent and press `o`. Then press `c` for VS Code or `z` for Zed. The editor opens the agent's project. If
-the menu offers "Set up SSH" instead, choose it, which does the same as `agentctl ssh-config install`.
+Select the agent and press `o`. Then press `c` for VS Code or `z` for Zed. The editor opens the agent's project, the
+folder `ssh-info` names as `Project`.
+
+If SSH isn't set up yet, the agent's panel says `SSH not set up; o offers it`, and the menu ends with "Set up SSH".
+Choose it and press `Enter` to add the line, as `agentctl ssh-config install` does.
 
 VS Code needs the [Remote - SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh)
-extension. Zed needs its command, `zed`, on your `PATH`.
+extension. Without its command, `code`, on your `PATH`, the TUI opens VS Code through a `vscode://` link instead. Zed
+needs its command, `zed`, on your `PATH`, and the menu says so when it isn't.
 
 ## Open it from the command line
 
@@ -36,7 +40,16 @@ Find the alias and the project:
 agentctl ssh-info agent/NAME
 ```
 
-Then open `Project` with `Alias`, here for an agent named `myapp`:
+For an agent named `myapp` that clones `OWNER/myapp`, the output includes:
+
+```text
+Alias:       agentctl-myapp
+User:        agent
+Directory:   /home/agent/code
+Project:     /home/agent/code/myapp
+```
+
+Then open `Project` with `Alias`:
 
 ```sh
 code --remote ssh-remote+agentctl-myapp /home/agent/code/myapp
@@ -62,4 +75,12 @@ missing, the clone failed. List what is there:
 agentctl ssh agent/NAME -- ls /home/agent/code
 ```
 
-A private repository needs `GITHUB_TOKEN` in the agent's `.env`.
+The clone's log says why it failed:
+
+```sh
+agentctl ssh agent/NAME -- sudo journalctl -u agent-workspace-init
+```
+
+The agent clones with the GitHub CLI, which needs `GITHUB_TOKEN` in the agent's `.env` even for a public repository.
+Without it, the log says `To get started with GitHub CLI, please run: gh auth login`. Add the token, apply the
+agent again and restart it with `agentctl restart agent/NAME`, which clones what is missing as it starts.
