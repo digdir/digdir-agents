@@ -35,9 +35,9 @@ agents. The Rust workspace version is a build detail and is not tracked here.
   - On agents with the desktop, `desktop record start` and `desktop record stop` record the screen.
   - `media check` shows when a recording holds still long enough to read, and `media frames` shows any moment at full size.
 - Each agentctl release publishes the base images it was made with as `ghcr.io/digdir/agentctl-base:ubuntu-26.04-<version>` and `ubuntu-26.04-desktop-<version>`, such as `ubuntu-26.04-v0.1.0-preview.14`, and these tags never move. Their `no.digdir.agentctl.base.version` label, which images built on them inherit, names that agentctl version. ([base images](https://github.com/digdir/digdir-agents/tree/main/images/agentctl-base), [#425](https://github.com/digdir/digdir-agents/pull/425))
-- `spec.accounts` gives an agent a GitHub account, with a token stored under a name the manifest asks for, such as `altinn-studio`: ([#316](https://github.com/digdir/digdir-agents/pull/316))
-  - `agentctl github login NAME --from-stdin`, `list` and `logout` store, show and forget tokens
-  - without a token the agent runs without GitHub access, and `agentctl status` names the login
+- `spec.accounts` gives an agent a GitHub account, a token kept under a name such as `altinn-studio`, which never enters the agent's sandbox: ([GitHub accounts](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/github-accounts.md), [#346](https://github.com/digdir/digdir-agents/issues/346))
+  - `agentctl github login NAME` opens GitHub's pre-filled form for a fine-grained token, or reads a classic token or `gh auth token` with `--from-stdin`
+  - `agentctl github list` and `logout` show and forget tokens, and `list` names those agents ask for that are missing
 
 ### Changed
 

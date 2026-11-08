@@ -867,10 +867,10 @@ async fn git_commands_during_setup(github_account: bool, image: ImageGit<'_>) ->
     git_commands_with_identity(github_account, None, &[], image).await
 }
 
-fn github_token() -> agent::github::GithubToken {
-    agent::github::GithubToken {
+fn github_account() -> agent::github::Account {
+    agent::github::Account {
         name: "digdir".into(),
-        account: agent::github::GithubAccount {
+        identity: agent::github::Identity {
             login: "digdir-bot".into(),
             name: "Digdir Bot".into(),
             email: "1+digdir-bot@users.noreply.github.com".into(),
@@ -884,7 +884,7 @@ fn github_token() -> agent::github::GithubToken {
 /// `environment`.
 async fn git_commands_with_identity(
     github_account: bool,
-    token: Option<&agent::github::GithubToken>,
+    token: Option<&agent::github::Account>,
     environment: &[(&str, &str)],
     image: ImageGit<'_>,
 ) -> Vec<Vec<String>> {
@@ -1033,7 +1033,7 @@ async fn linux_setup_adds_the_github_helper_once() {
 /// Sandbox's environment, so a login as another account does not restart the Agent.
 #[tokio::test(flavor = "local")]
 async fn linux_setup_commits_as_the_github_account() {
-    let token = github_token();
+    let token = github_account();
 
     let commands = git_commands_with_identity(true, Some(&token), &[], ImageGit::default()).await;
 
@@ -1057,7 +1057,7 @@ async fn linux_setup_commits_as_the_github_account() {
 /// A manifest's own `GIT_USER_NAME` and `GIT_USER_EMAIL` win over the GitHub account.
 #[tokio::test(flavor = "local")]
 async fn linux_setup_prefers_the_manifests_git_identity_to_the_github_account() {
-    let token = github_token();
+    let token = github_account();
 
     let commands = git_commands_with_identity(
         true,

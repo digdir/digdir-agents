@@ -107,10 +107,10 @@ impl PlatformAdapter for Linux {
         record: &'a control_plane::AgentRecord,
         sandbox: &'a SandboxHandle,
         harnesses: &'a [crate::Harness],
-        github_token: Option<&'a crate::github::GithubToken>,
+        github_account: Option<&'a crate::github::Account>,
         steps: &'a ::sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<PlatformSetup, Error>> {
-        Box::pin(self.setup(record, sandbox, harnesses, github_token, steps))
+        Box::pin(self.setup(record, sandbox, harnesses, github_account, steps))
     }
 }
 
@@ -122,7 +122,7 @@ impl Linux {
         record: &control_plane::AgentRecord,
         sandbox: &SandboxHandle,
         harnesses: &[crate::Harness],
-        github_token: Option<&crate::github::GithubToken>,
+        github_account: Option<&crate::github::Account>,
         steps: &::sandbox::SandboxProgress,
     ) -> Result<PlatformSetup, Error> {
         let installations: Vec<&crate::HarnessSpec> = record
@@ -148,14 +148,14 @@ impl Linux {
         step.complete().await;
         mount_writable_volumes(record, sandbox, steps).await?;
         let step = steps.start_step("Sync home").await;
-        set_up_home(record, sandbox, podman, github_token).await?;
+        set_up_home(record, sandbox, podman, github_account).await?;
         step.complete().await;
         let observed = preamble::Observed {
             harnesses,
             environment: &sandbox.snapshot().environment,
             kvm,
             podman,
-            github_token,
+            github_account,
         };
         let section = preamble::render(record, &observed);
         let mut missing = Vec::new();
@@ -259,12 +259,12 @@ async fn read_owned_instructions(sandbox: &SandboxHandle, path: &str) -> Result<
 }
 
 /// Copies the agent's home into the sandbox when it has one, points Podman at its socket when the
-/// image has Podman, and configures Git, with the stored `github_token` for an agent with a GitHub account.
+/// image has Podman, and configures Git, with the kept `github_account` for an agent with one.
 async fn set_up_home(
     record: &control_plane::AgentRecord,
     sandbox: &SandboxHandle,
     podman: bool,
-    github_token: Option<&crate::github::GithubToken>,
+    github_account: Option<&crate::github::Account>,
 ) -> Result<(), Error> {
     if let Some(home) = &record.agent.spec.home {
         let archive = archive_home(record.source_directory.clone(), home.source.clone()).await?;
@@ -276,24 +276,28 @@ async fn set_up_home(
     }
     configure_git(
         sandbox,
-        record.agent.spec.github_account().is_some(),
-        github_token.map(|token| &token.account),
+        record
+            .agent
+            .spec
+            .account(crate::accounts::AccountType::Github)
+            .is_some(),
+        github_account.map(|account| &account.identity),
     )
     .await
 }
 
 /// Configures Git for the agent's user when the image has it: the commit identity from
-/// `GIT_USER_NAME` and `GIT_USER_EMAIL`, or else from the GitHub `account`, and for an agent with
-/// a GitHub account, HTTPS access to GitHub through the mediated `GITHUB_TOKEN`.
+/// `GIT_USER_NAME` and `GIT_USER_EMAIL`, or else from the GitHub account's `identity`, and for an
+/// agent with a GitHub account, HTTPS access to GitHub through the mediated `GITHUB_TOKEN`.
 async fn configure_git(
     sandbox: &SandboxHandle,
     github_account: bool,
-    account: Option<&crate::github::GithubAccount>,
+    identity: Option<&crate::github::Identity>,
 ) -> Result<(), Error> {
     let environment = &sandbox.snapshot().environment;
     let identity = match (environment.get("GIT_USER_NAME"), environment.get("GIT_USER_EMAIL")) {
         (Some(name), Some(email)) => Some((name.clone(), email.clone())),
-        (None, None) => account.map(|account| (account.name.clone(), account.email.clone())),
+        (None, None) => identity.map(|identity| (identity.name.clone(), identity.email.clone())),
         _ => {
             return Err(Error::Invalid(
                 "GIT_USER_NAME and GIT_USER_EMAIL must both be configured".into(),

@@ -279,12 +279,30 @@ pub enum AccessSpec {
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase", tag = "type")]
 pub enum AccountSpec {
-    /// The GitHub token `agentctl github login <name>` stored: a mediated `GITHUB_TOKEN` for
+    /// The GitHub token `agentctl github login <name>` kept: a mediated `GITHUB_TOKEN` for
     /// GitHub's hosts, and the token's account as Git identity.
     Github {
         /// The name the token is stored under, such as `altinn-studio`.
         name: String,
     },
+}
+
+impl AccountSpec {
+    /// The account's type.
+    #[must_use]
+    pub const fn account_type(&self) -> crate::accounts::AccountType {
+        match self {
+            Self::Github { .. } => crate::accounts::AccountType::Github,
+        }
+    }
+
+    /// The name the account is kept under.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Github { name } => name,
+        }
+    }
 }
 
 /// Sandbox settings as supplied by an agent manifest.
@@ -627,13 +645,13 @@ impl Spec {
         self.access.contains(&AccessSpec::Vnc {})
     }
 
-    /// Returns the name of the GitHub token the Agent uses, when it has a GitHub account.
+    /// The name of the agent's account of `account_type`, when it has one.
     #[must_use]
-    pub fn github_account(&self) -> Option<&str> {
+    pub fn account(&self, account_type: crate::accounts::AccountType) -> Option<&str> {
         self.accounts
             .iter()
-            .map(|AccountSpec::Github { name }| name.as_str())
-            .next()
+            .find(|account| account.account_type() == account_type)
+            .map(AccountSpec::name)
     }
 
     fn validate(&self) -> Result<(), Error> {
@@ -725,18 +743,23 @@ impl Spec {
 }
 
 impl Spec {
+    /// An agent acts as at most one account of each type, so each type's credential has one
+    /// placeholder and one Git identity.
     fn validate_accounts(&self) -> Result<(), Error> {
-        if self.accounts.len() > 1 {
-            return Err(Error::Invalid("spec.accounts[1] duplicates the GitHub account".into()));
-        }
-        if self
-            .github_account()
-            .is_some_and(|name| !crate::github::valid_name(name))
-        {
-            return Err(Error::Invalid(format!(
-                "spec.accounts[0].name: {}",
-                crate::github::NAME_RULE
-            )));
+        let mut types = std::collections::BTreeSet::new();
+        for (index, account) in self.accounts.iter().enumerate() {
+            if !types.insert(account.account_type()) {
+                return Err(Error::Invalid(format!(
+                    "spec.accounts[{index}] is a second {} account; an agent has at most one of each type",
+                    account.account_type()
+                )));
+            }
+            if !crate::accounts::valid_name(account.name()) {
+                return Err(Error::Invalid(format!(
+                    "spec.accounts[{index}].name: {}",
+                    crate::accounts::NAME_RULE
+                )));
+            }
         }
         Ok(())
     }
@@ -773,7 +796,7 @@ impl Spec {
                         secret.placeholder.as_deref(),
                     )
                 })
-                || (self.github_account().is_some()
+                || (self.account(crate::accounts::AccountType::Github).is_some()
                     && crate::github::conflicts_with_managed_secret(&secret.environment, &placeholder))
                 || secret.allowed_hosts.is_empty()
                 || !environments.insert(&secret.environment)
@@ -800,7 +823,8 @@ impl Spec {
                     .harnesses
                     .iter()
                     .any(|installation| harness::manages_environment(installation.kind, &variable.name))
-                || (self.github_account().is_some() && variable.name == crate::github::ACCESS_ENVIRONMENT)
+                || (self.account(crate::accounts::AccountType::Github).is_some()
+                    && variable.name == crate::github::ACCESS_ENVIRONMENT)
                 || !names.insert(variable.name.as_str())
             {
                 return Err(Error::Invalid(format!(

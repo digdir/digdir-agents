@@ -769,11 +769,13 @@ fn rejects_unknown_duplicate_and_configured_access_capabilities() {
 
 #[test]
 fn a_github_account_names_its_token_and_round_trips() {
+    use agent::accounts::AccountType;
+
     let agent = manifest::decode(&manifest_with_access(
         "  accounts:\n    - type: github\n      name: Digdir-Team\n",
     ))
     .expect("a GitHub account");
-    assert_eq!(agent.spec.github_account(), Some("Digdir-Team"));
+    assert_eq!(agent.spec.account(AccountType::Github), Some("Digdir-Team"));
     let encoded = serde_yaml_ng::to_string(&agent).expect("encode");
     assert!(
         encoded.contains("accounts:\n  - type: github\n    name: Digdir-Team\n"),
@@ -783,7 +785,7 @@ fn a_github_account_names_its_token_and_round_trips() {
         manifest::decode(&manifest_with(&[]))
             .expect("no accounts")
             .spec
-            .github_account(),
+            .account(AccountType::Github),
         None
     );
 
@@ -800,7 +802,8 @@ fn a_github_account_names_its_token_and_round_trips() {
         manifest::decode(&manifest_with_access(
             "  accounts:\n    - type: github\n      name: digdir\n    - type: github\n      name: altinn\n"
         )),
-        Err(agent::Error::Invalid(message)) if message.contains("spec.accounts[1]")
+        Err(agent::Error::Invalid(message))
+            if message.contains("spec.accounts[1] is a second github account")
     ));
 }
 

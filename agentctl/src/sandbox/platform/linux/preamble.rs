@@ -11,7 +11,6 @@ use std::{collections::BTreeMap, fmt::Write as _};
 use crate::{
     Harness,
     control_plane::AgentRecord,
-    github::GithubToken,
     manifest::{AccessSpec, Spec},
 };
 
@@ -27,8 +26,8 @@ pub(super) struct Observed<'a> {
     pub(super) kvm: bool,
     /// Whether the image has Podman, which builds the images of nested agents.
     pub(super) podman: bool,
-    /// The GitHub token stored under the name the Agent's account asks for, without the token.
-    pub(super) github_token: Option<&'a GithubToken>,
+    /// The GitHub account kept under the name the agent asks for, without its token.
+    pub(super) github_account: Option<&'a crate::github::Account>,
 }
 
 /// Opens the section, so that a later pass can find and replace it in a file the image or the home
@@ -96,7 +95,7 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
                 .then(|| format!("{}.", code_list(spec.environment.iter().map(|variable| &variable.name)))),
         ),
         ("Network", Some(network(spec))),
-        ("GitHub", github(spec, observed.github_token)),
+        ("GitHub", github(spec, observed.github_account)),
         ("Access", access(spec, name)),
         ("Nested agents", Some(nested_agents(spec, observed).to_owned())),
     ];
@@ -144,11 +143,11 @@ fn harnesses(spec: &Spec, installed: &[Harness]) -> String {
 /// How GitHub works for an Agent with an account: as the account itself when its token reaches
 /// all the account can, else for the repositories the token was created for, as a fine-grained
 /// token is.
-fn github(spec: &Spec, token: Option<&GithubToken>) -> Option<String> {
-    let name = spec.github_account()?;
-    let reach = match token {
-        Some(token) if !token.kind.single_owner() => {
-            format!("as `{}`, for whatever that account can reach", token.account.login)
+fn github(spec: &Spec, account: Option<&crate::github::Account>) -> Option<String> {
+    let name = spec.account(crate::accounts::AccountType::Github)?;
+    let reach = match account {
+        Some(account) if !account.kind.single_owner() => {
+            format!("as `{}`, for whatever that account can reach", account.identity.login)
         }
         _ => format!("for the repositories the `{name}` token was created for"),
     };
@@ -270,9 +269,9 @@ spec:
     fn github_works_as_the_account_unless_the_token_is_for_one_owner() {
         assert_eq!(github(&spec("[]", ""), None), None);
         let spec = spec("[]", "  accounts: [{type: github, name: altinn-studio}]\n");
-        let token = |kind| GithubToken {
+        let token = |kind| crate::github::Account {
             name: "altinn-studio".into(),
-            account: crate::github::GithubAccount {
+            identity: crate::github::Identity {
                 login: "digdir-agent".into(),
                 name: "Digdir Agent".into(),
                 email: "1+digdir-agent@users.noreply.github.com".into(),

@@ -584,20 +584,23 @@ enum CodexCommand {
 
 #[derive(Subcommand)]
 enum GithubCommand {
-    /// Store a GitHub token under a name, separate from any `gh` login.
+    /// Keep a GitHub token under a name, separate from any `gh` login.
     ///
-    /// Agents whose manifest has `accounts: [{type: github, name: NAME}]` use it, and those that
-    /// failed for want of it start again.
+    /// At a terminal it opens GitHub's form for a fine-grained token, filled in except for the
+    /// repositories, and reads the token you paste without showing it. Fine-grained, classic and
+    /// GitHub CLI tokens are taken. Agents whose manifest has `accounts: [{type: github, name:
+    /// NAME}]` use it at once.
     Login {
         /// The name manifests ask for the token by; by default this repository's name.
         name: Option<String>,
-        /// Read the token from standard input instead, and store it without asking.
+        /// Read the token from standard input instead, such as `gh auth token | agentctl github
+        /// login NAME --from-stdin`.
         #[arg(long)]
         from_stdin: bool,
     },
-    /// List the stored tokens: name, account, kind and expiry.
+    /// List the kept tokens, and the names agents ask for that have none.
     List,
-    /// Forget a stored token; agents asking for it lose GitHub access at once, and nothing else.
+    /// Forget a kept token; agents asking for it lose GitHub access at once, and nothing else.
     ///
     /// The token keeps working on GitHub until it expires or you revoke it there.
     Logout {
@@ -2423,7 +2426,7 @@ mod tests {
     }
 
     #[test]
-fn github_takes_a_name_and_never_a_token_argument() {
+    fn github_takes_a_name_and_never_a_token_argument() {
         let parse = |arguments: &[&str]| Arguments::try_parse_from(arguments).map(|arguments| arguments.command);
         assert!(matches!(
             parse(&["agentctl", "github", "login", "altinn-studio", "--from-stdin"]),

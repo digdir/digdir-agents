@@ -1,9 +1,9 @@
-//! GitHub accounts for Agents.
+//! GitHub accounts for agents.
 //!
 //! agentd keeps GitHub tokens under names that manifests ask for, such as `altinn-studio`, separate
-//! from any `gh` login on the host. Before keeping a token it asks GitHub which
-//! account the token acts as and when it expires. The token stays in the host's secret store;
-//! what is listed and returned about it never contains it.
+//! from any `gh` login on the host. Before keeping a token it asks GitHub which account the token
+//! acts as and when it expires. The token stays in the host's secret store. What is listed and
+//! returned about it never contains it.
 
 mod inspect;
 
@@ -12,31 +12,28 @@ use zeroize::Zeroizing;
 
 pub use inspect::SCOPES;
 
-use crate::{Error, harness::MediatedSecret, persistence};
+use crate::{Error, accounts, harness::MediatedSecret, persistence};
 use sandbox::secret_store::SecretReference;
 
 /// Provider account namespace; each token's account is `github/<name>`.
 const PROVIDER: &str = "github";
 /// Secret name prefix; each token is `github-access-token/<name>`.
 const ACCESS_SECRET: &str = "github-access-token";
-/// The variable that carries the inert token in the Sandbox.
+/// The variable that carries the inert token in the sandbox.
 pub(crate) const ACCESS_ENVIRONMENT: &str = "GITHUB_TOKEN";
-/// `gh` attaches files only with a token it classifies by prefix, so the placeholder carries the
-/// fine-grained token prefix.
+/// `gh` attaches files only with a token it recognizes by prefix, so the placeholder carries one.
+/// It is the same for every kind of token, so replacing a token with one of another kind leaves
+/// the sandbox's environment, and so the sandbox, as it is.
 const ACCESS_PLACEHOLDER: &str = "github_pat_AGENT_MEDIATED_GITHUB_TOKEN";
 /// The hosts `gh` and Git over HTTPS reach; the token is substituted nowhere else.
 const MEDIATED_HOSTS: [&str; 4] = ["github.com", "api.github.com", "gist.github.com", "uploads.github.com"];
 /// The longest login GitHub allows.
 const OWNER_MAX_LENGTH: usize = 39;
-/// The longest name a token is stored under.
-const NAME_MAX_LENGTH: usize = 64;
-/// What a token's name must be, said without repeating the value, which may be a misplaced token.
-pub const NAME_RULE: &str = "the name must be letters, digits and inner hyphens, at most 64 characters";
 
-/// The GitHub account a token acts as.
+/// Who a token acts as on GitHub.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GithubAccount {
+pub struct Identity {
     /// The account's login, such as `octocat`.
     pub login: String,
     /// Name for Git commits: the profile name, or the login when the profile has none.
@@ -46,6 +43,9 @@ pub struct GithubAccount {
 }
 
 /// What kind of GitHub token a value is, by its documented prefix.
+///
+/// Only kinds that work until they expire are taken. GitHub App user tokens expire within hours
+/// and need refreshing, and installation tokens act as no person.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TokenKind {
@@ -53,25 +53,23 @@ pub enum TokenKind {
     FineGrained,
     /// A classic personal access token, limited only by its scopes.
     Classic,
-    /// An OAuth token, such as the GitHub CLI's own.
+    /// An OAuth token, such as the GitHub CLI's own login.
     Oauth,
-    /// Any other token GitHub accepted.
-    Other,
 }
 
 impl TokenKind {
-    /// The kind of `token`.
+    /// The kind of `token`, or `None` for a kind agents cannot use.
     #[must_use]
-    pub fn of(token: &str) -> Self {
+    pub fn of(token: &str) -> Option<Self> {
         let token = token.trim();
         if token.starts_with("github_pat_") {
-            Self::FineGrained
+            Some(Self::FineGrained)
         } else if token.starts_with("ghp_") {
-            Self::Classic
+            Some(Self::Classic)
         } else if token.starts_with("gho_") {
-            Self::Oauth
+            Some(Self::Oauth)
         } else {
-            Self::Other
+            None
         }
     }
 
@@ -82,7 +80,6 @@ impl TokenKind {
             Self::FineGrained => "fine-grained",
             Self::Classic => "classic",
             Self::Oauth => "OAuth",
-            Self::Other => "other",
         }
     }
 
@@ -92,7 +89,7 @@ impl TokenKind {
         match self {
             Self::FineGrained => "https://github.com/settings/personal-access-tokens",
             Self::Classic => "https://github.com/settings/tokens",
-            Self::Oauth | Self::Other => "https://github.com/settings/applications",
+            Self::Oauth => "https://github.com/settings/applications",
         }
     }
 
@@ -102,33 +99,37 @@ impl TokenKind {
     pub const fn single_owner(self) -> bool {
         matches!(self, Self::FineGrained)
     }
+
+    /// What a token of this kind acting as `login` lets agents reach beyond the repositories it
+    /// was created for, as a warning; `None` for a fine-grained token, which reaches only those.
+    #[must_use]
+    pub fn reach_warning(self, login: &str) -> Option<String> {
+        match self {
+            Self::FineGrained => None,
+            Self::Classic => Some(format!("this classic token reaches every repository {login} can")),
+            Self::Oauth => Some(format!(
+                "this OAuth token, such as a GitHub CLI login, lets agents act as {login} in every repository \
+                 and organization {login} can reach"
+            )),
+        }
+    }
 }
+
+/// What agents take, said when a token is of another kind, without repeating it.
+const KIND_RULE: &str = "agents take fine-grained (github_pat_), classic (ghp_) and GitHub CLI (gho_) tokens, \
+                         and this is none of them";
 
 /// Whether `owner` can be a GitHub user or organization login: ASCII letters, digits and inner
-/// hyphens, at most 39 characters. Owners name secrets and URL paths, so nothing else passes.
+/// hyphens, at most 39 characters. Owners name URL paths, so nothing else passes.
 #[must_use]
 pub fn valid_owner(owner: &str) -> bool {
-    !owner.is_empty()
-        && owner.len() <= OWNER_MAX_LENGTH
-        && !owner.starts_with('-')
-        && !owner.ends_with('-')
-        && owner.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    owner.len() <= OWNER_MAX_LENGTH && accounts::valid_name(owner)
 }
 
-/// Whether `name` can name a stored token: ASCII letters, digits and inner hyphens, at most 64
-/// characters. Names name secrets, so nothing else passes.
-#[must_use]
-pub fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= NAME_MAX_LENGTH
-        && !name.starts_with('-')
-        && !name.ends_with('-')
-        && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-}
-
-/// A token's name after `text`, such as a repository or folder name: in lowercase, with hyphens
-/// for anything [`valid_name`] does not take, such as `app-lib-net` for `App_Lib.NET`; `None`
-/// when nothing is left.
+/// A token's name after `text`, such as a repository or folder name.
+///
+/// It is in lowercase, with hyphens for anything [`accounts::valid_name`] does not take, such as
+/// `app-lib-net` for `App_Lib.NET`, and `None` when nothing is left.
 #[must_use]
 pub fn name_after(text: &str) -> Option<String> {
     let mut name = String::new();
@@ -140,12 +141,48 @@ pub fn name_after(text: &str) -> Option<String> {
         }
     }
     let name = name.trim_end_matches('-');
-    let name = name.get(..NAME_MAX_LENGTH).unwrap_or(name).trim_end_matches('-');
-    valid_name(name).then(|| name.to_owned())
+    let name = name
+        .get(..accounts::NAME_MAX_LENGTH)
+        .unwrap_or(name)
+        .trim_end_matches('-');
+    accounts::valid_name(name).then(|| name.to_owned())
 }
 
 /// How long before its expiry a token is called out at login.
 pub const EXPIRY_WARNING: time::Duration = time::Duration::days(7);
+/// Days a token created from [`token_form_url`] lives, unless the owner's policy allows less.
+pub const TOKEN_LIFETIME_DAYS: u32 = 90;
+/// Fine-grained repository permissions an agent needs: push code, work issues and pull requests,
+/// run workflows and read their logs, change workflow files, and read checks and commit statuses.
+pub const PERMISSIONS: [(&str, &str); 7] = [
+    ("contents", "write"),
+    ("issues", "write"),
+    ("pull_requests", "write"),
+    ("actions", "write"),
+    ("workflows", "write"),
+    ("checks", "read"),
+    ("statuses", "read"),
+];
+const TOKEN_FORM: &str = "https://github.com/settings/personal-access-tokens/new";
+
+/// GitHub's form creating a fine-grained token for `owner`, pre-filled.
+///
+/// `name`, `description`, [`PERMISSIONS`] and [`TOKEN_LIFETIME_DAYS`] are filled in. GitHub takes
+/// no parameter for the repositories, which the person picks in the form.
+#[must_use]
+pub fn token_form_url(owner: &str, name: &str, description: &str) -> String {
+    let lifetime = TOKEN_LIFETIME_DAYS.to_string();
+    let parameters = [
+        ("name", name),
+        ("description", description),
+        ("target_name", owner),
+        ("expires_in", lifetime.as_str()),
+    ]
+    .into_iter()
+    .chain(PERMISSIONS);
+    reqwest::Url::parse_with_params(TOKEN_FORM, parameters).map_or_else(|_| TOKEN_FORM.to_owned(), String::from)
+}
+
 /// A GitHub repository, shown as `owner/name`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Repository {
@@ -190,14 +227,14 @@ impl std::fmt::Display for Repository {
     }
 }
 
-/// A stored GitHub token, without the token.
+/// A kept GitHub account: a token under a name, without the token.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GithubToken {
-    /// The name the token is stored under and manifests ask for, lowercased.
+pub struct Account {
+    /// The name the token is kept under and manifests ask for, lowercased.
     pub name: String,
-    /// The account the token acts as.
-    pub account: GithubAccount,
+    /// Who the token acts as.
+    pub identity: Identity,
     /// What kind of token it is.
     pub kind: TokenKind,
     /// When GitHub said the token expires, at login; `None` when it does not, or did not say.
@@ -209,12 +246,20 @@ pub struct GithubToken {
     pub expires_at: Option<time::OffsetDateTime>,
 }
 
+impl Account {
+    /// Whether the token has expired at `now`.
+    #[must_use]
+    pub fn expired(&self, now: time::OffsetDateTime) -> bool {
+        self.expires_at.is_some_and(|expires_at| expires_at <= now)
+    }
+}
+
 /// What agentd keeps about a token beside it; the name is the key it is kept under.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Record {
     #[serde(flatten)]
-    account: GithubAccount,
+    identity: Identity,
     kind: TokenKind,
     #[serde(
         default,
@@ -225,38 +270,30 @@ struct Record {
 }
 
 impl Record {
-    fn of(token: &GithubToken) -> Self {
+    fn of(account: &Account) -> Self {
         Self {
-            account: token.account.clone(),
-            kind: token.kind,
-            expires_at: token.expires_at,
+            identity: account.identity.clone(),
+            kind: account.kind,
+            expires_at: account.expires_at,
         }
     }
 
-    fn named(self, name: &str) -> GithubToken {
-        GithubToken {
+    fn named(self, name: &str) -> Account {
+        Account {
             name: name.into(),
-            account: self.account,
+            identity: self.identity,
             kind: self.kind,
             expires_at: self.expires_at,
         }
     }
 }
 
-impl GithubToken {
-    /// Whether the token has expired at `now`.
-    #[must_use]
-    pub fn expired(&self, now: time::OffsetDateTime) -> bool {
-        self.expires_at.is_some_and(|expires_at| expires_at <= now)
-    }
-}
-
 /// A token as GitHub described it at login, and the recommended [`SCOPES`] it lacks.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GithubLogin {
-    /// The token, as it is or would be stored.
-    pub token: GithubToken,
+pub struct Login {
+    /// The account, as kept.
+    pub account: Account,
     /// Recommended [`SCOPES`] a classic or OAuth token lacks; fine-grained tokens report none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing_scopes: Vec<String>,
@@ -267,24 +304,24 @@ fn names(name: &str) -> (String, String) {
     (format!("{PROVIDER}/{name}"), format!("{ACCESS_SECRET}/{name}"))
 }
 
-/// The token named `name` read from its provider account's metadata.
-fn read(name: &str, metadata: &str) -> Result<GithubToken, Error> {
+/// The account named `name` read from its provider account's metadata.
+fn read(name: &str, metadata: &str) -> Result<Account, Error> {
     Ok(serde_json::from_str::<Record>(metadata)?.named(name))
 }
 
-/// The mediated `GITHUB_TOKEN` an Agent asking for `name` receives, bound to that token only.
+/// The mediated `GITHUB_TOKEN` an agent asking for `name` receives, bound to that token only.
 ///
-/// The binding does not depend on a token being stored: the mediator looks the token up on every
+/// The binding does not depend on a token being kept: the mediator looks the token up on every
 /// request, so a login or logout takes effect at once, and GitHub itself rejects an expired one.
-/// Requests that carry the placeholder while no token is stored are blocked; nothing else is.
+/// Requests that carry the placeholder while no token is kept are blocked; nothing else is.
 ///
 /// # Errors
 ///
 /// Returns an error when `name` is not a valid name.
 pub(crate) fn mediated_token(name: &str) -> Result<MediatedSecret, Error> {
     let name = name.to_ascii_lowercase();
-    if !valid_name(&name) {
-        return Err(Error::Invalid(NAME_RULE.into()));
+    if !accounts::valid_name(&name) {
+        return Err(Error::Invalid(accounts::NAME_RULE.into()));
     }
     let (_, secret) = names(&name);
     Ok(MediatedSecret {
@@ -295,15 +332,15 @@ pub(crate) fn mediated_token(name: &str) -> Result<MediatedSecret, Error> {
     })
 }
 
-/// The token stored as `name`, without the token, expired or not; `None` when none is stored or
+/// The account kept as `name`, without the token, expired or not; `None` when none is kept or
 /// `name` is not a valid name.
 ///
 /// # Errors
 ///
 /// Returns an error when the database cannot be read.
-pub(crate) async fn stored(database: &persistence::Database, name: &str) -> Result<Option<GithubToken>, Error> {
+pub(crate) async fn stored(database: &persistence::Database, name: &str) -> Result<Option<Account>, Error> {
     let name = name.to_ascii_lowercase();
-    if !valid_name(&name) {
+    if !accounts::valid_name(&name) {
         return Ok(None);
     }
     let (provider, _) = names(&name);
@@ -319,27 +356,41 @@ pub(crate) fn conflicts_with_managed_secret(name: &str, placeholder: &str) -> bo
     name == ACCESS_ENVIRONMENT || placeholder.contains(ACCESS_PLACEHOLDER) || ACCESS_PLACEHOLDER.contains(placeholder)
 }
 
-async fn check_at(api: &str, token: &str, name: &str) -> Result<GithubLogin, Error> {
+/// Whether `token` can see `repository` on GitHub. A fine-grained token sees only the
+/// repositories selected for it, and only once their owner approved it where that is required.
+///
+/// # Errors
+///
+/// Returns an error, never containing the token, when GitHub cannot be reached or answers
+/// unexpectedly.
+pub async fn can_see(token: &str, repository: &Repository) -> Result<bool, Error> {
+    inspect::can_see_at(inspect::API, token.trim(), repository).await
+}
+
+async fn check_at(api: &str, token: &str, name: &str) -> Result<Login, Error> {
     let token = token.trim();
     if token.is_empty() {
         return Err(Error::Invalid("no GitHub token was provided".into()));
     }
     // The name is not repeated: a token pasted in its place must not end up in the error.
-    if !valid_name(name) {
-        return Err(Error::Invalid(NAME_RULE.into()));
+    if !accounts::valid_name(name) {
+        return Err(Error::Invalid(accounts::NAME_RULE.into()));
     }
+    let Some(kind) = TokenKind::of(token) else {
+        return Err(Error::Invalid(KIND_RULE.into()));
+    };
     let inspection = inspect::inspect_at(api, token).await?;
-    let checked = GithubToken {
+    let account = Account {
         name: name.to_ascii_lowercase(),
-        account: inspection.account,
-        kind: TokenKind::of(token),
+        identity: inspection.identity,
+        kind,
         expires_at: inspection.expires_at,
     };
-    if checked.expired(time::OffsetDateTime::now_utc()) {
+    if account.expired(time::OffsetDateTime::now_utc()) {
         return Err(Error::Invalid("the GitHub token has already expired".into()));
     }
-    Ok(GithubLogin {
-        token: checked,
+    Ok(Login {
+        account,
         missing_scopes: inspection.missing_scopes,
     })
 }
@@ -362,12 +413,13 @@ impl Authentication {
     ///
     /// # Errors
     ///
-    /// Returns an error as [`check`] does, or when the token cannot be persisted. Nothing is
-    /// stored then, and no error contains the token.
-    pub(crate) async fn login(&self, token: Zeroizing<String>, name: &str) -> Result<GithubLogin, Error> {
+    /// Returns an error when the token or name is invalid, the token is of a kind agents cannot
+    /// use or has expired, GitHub rejects it or cannot be reached, or it cannot be persisted.
+    /// Nothing is kept then, and no error contains the token.
+    pub(crate) async fn login(&self, token: Zeroizing<String>, name: &str) -> Result<Login, Error> {
         let token = Zeroizing::new(token.trim().to_owned());
-        let checked = check_at(&self.api, &token, name).await?;
-        let (provider, secret) = names(&checked.token.name);
+        let login = check_at(&self.api, &token, name).await?;
+        let (provider, secret) = names(&login.account.name);
         self.database
             .put_provider_account(persistence::ProviderAccountWrite {
                 provider,
@@ -375,18 +427,18 @@ impl Authentication {
                     name: secret,
                     value: Zeroizing::new(token.as_bytes().to_vec()),
                 }],
-                metadata_json: serde_json::to_string(&Record::of(&checked.token))?,
+                metadata_json: serde_json::to_string(&Record::of(&login.account))?,
             })
             .await?;
-        Ok(checked)
+        Ok(login)
     }
 
-    /// Every stored GitHub token, by name.
+    /// Every kept GitHub account, by name.
     ///
     /// # Errors
     ///
-    /// Returns an error when the database cannot be read or holds an unreadable token record.
-    pub(crate) async fn tokens(&self) -> Result<Vec<GithubToken>, Error> {
+    /// Returns an error when the database cannot be read or holds an unreadable record.
+    pub(crate) async fn accounts(&self) -> Result<Vec<Account>, Error> {
         self.database
             .provider_accounts(PROVIDER)
             .await?
@@ -398,15 +450,15 @@ impl Authentication {
             .collect()
     }
 
-    /// Forgets the token named `name`, returning it, or `None` when there was none. The
+    /// Forgets the account named `name`, returning it, or `None` when there was none. The
     /// token stays valid on GitHub until it expires or is revoked there.
     ///
     /// # Errors
     ///
     /// Returns an error when the database cannot be read or written.
-    pub(crate) async fn forget(&self, name: &str) -> Result<Option<GithubToken>, Error> {
+    pub(crate) async fn forget(&self, name: &str) -> Result<Option<Account>, Error> {
         let name = name.to_ascii_lowercase();
-        if !valid_name(&name) {
+        if !accounts::valid_name(&name) {
             return Ok(None);
         }
         let (provider, secret) = names(&name);
@@ -500,7 +552,7 @@ mod tests {
     }
 
     impl Fixture {
-        async fn login(&self, token: &str, name: &str) -> Result<GithubLogin, Error> {
+        async fn login(&self, token: &str, name: &str) -> Result<Login, Error> {
             self.github.login(Zeroizing::new(token.into()), name).await
         }
 
@@ -514,8 +566,8 @@ mod tests {
         }
 
         async fn token_names(&self) -> Vec<String> {
-            let tokens = self.github.tokens().await.expect("tokens");
-            tokens.into_iter().map(|token| token.name).collect()
+            let accounts = self.github.accounts().await.expect("accounts");
+            accounts.into_iter().map(|account| account.name).collect()
         }
     }
 
@@ -528,9 +580,9 @@ mod tests {
             .expect("digdir");
         github.login("ghp_FAKE_altinn", "altinn").await.expect("altinn");
 
-        assert_eq!(login.token.name, "digdir");
-        assert_eq!(login.token.kind, TokenKind::FineGrained);
-        assert_eq!(login.token.account.login, "digdir-bot");
+        assert_eq!(login.account.name, "digdir");
+        assert_eq!(login.account.kind, TokenKind::FineGrained);
+        assert_eq!(login.account.identity.login, "digdir-bot");
         assert_eq!(github.token_names().await, ["altinn", "digdir"]);
         assert_eq!(
             github.stored("digdir").await.as_deref(),
@@ -556,7 +608,7 @@ mod tests {
         const TOKEN: &str = "github_pat_FAKE_canary";
         let github = fixture(BOT).await;
         let login = github.login(TOKEN, "digdir").await.expect("login");
-        let listed = github.github.tokens().await.expect("tokens");
+        let listed = github.github.accounts().await.expect("accounts");
 
         let metadata = github.database.provider_accounts(PROVIDER).await.expect("accounts");
         for (index, shown) in [
@@ -649,9 +701,9 @@ mod tests {
             .login("github_pat_FAKE_current", "digdir")
             .await
             .expect("current");
-        let expires_at = login.token.expires_at.expect("expiry");
-        assert!(!login.token.expired(expires_at - time::Duration::seconds(1)));
-        assert!(login.token.expired(expires_at));
+        let expires_at = login.account.expires_at.expect("expiry");
+        assert!(!login.account.expired(expires_at - time::Duration::seconds(1)));
+        assert!(login.account.expired(expires_at));
 
         let expired = Authentication::new(github.database.clone()).with_api(
             serve(Answer {
@@ -672,23 +724,21 @@ mod tests {
     }
 
     #[tokio::test(flavor = "local")]
-    async fn names_are_checked_before_the_token_is_sent() {
-        for name in ["digdir", "Digdir", "a", "a-b", "x2", "altinn-studio", &"a".repeat(64)] {
-            assert!(valid_name(name), "{name}");
-        }
-        let long = "a".repeat(65);
-        let invalid = [
-            "", "../x", "..", "a/b", "-a", "a-", "a_b", "a.b", "a b", "a%2fb", "æ", &long,
-        ];
-        for name in invalid {
-            assert!(!valid_name(name), "{name}");
-        }
+    async fn names_and_kinds_are_checked_before_the_token_is_sent() {
         assert!(!valid_owner(&"a".repeat(40)));
-
         let github = fixture(BOT).await;
-        for name in invalid {
+        for name in ["", "../x", "a/b", "-a", "a_b", "a.b", "a b", "a%2fb", &"a".repeat(65)] {
             github.login("ghp_FAKE", name).await.expect_err("invalid name");
             assert_eq!(github.github.forget(name).await.expect("forget"), None);
+        }
+        for token in ["ghu_FAKE_canary", "ghs_FAKE_canary", "ghr_FAKE_canary", "FAKE_canary"] {
+            let error = github
+                .login(token, "digdir")
+                .await
+                .expect_err("a kind agents cannot use");
+            let message = error.to_string();
+            assert!(message.contains("github_pat_"), "{message}");
+            assert!(!message.contains("FAKE_canary"), "{message}");
         }
         assert!(github.requests.borrow().is_empty(), "the token went to GitHub");
         assert_eq!(github.token_names().await, Vec::<String>::new());
@@ -702,7 +752,7 @@ mod tests {
 
         let forgotten = github.github.forget("DigDir").await.expect("forget");
 
-        assert_eq!(forgotten.map(|token| token.name).as_deref(), Some("digdir"));
+        assert_eq!(forgotten.map(|account| account.name).as_deref(), Some("digdir"));
         assert_eq!(github.stored("digdir").await, None, "the secret row is gone");
         assert_eq!(github.token_names().await, ["altinn"]);
         assert_eq!(
@@ -723,12 +773,12 @@ mod tests {
 
         let login = github.login("ghp_FAKE", "digdir").await.expect("login");
 
-        assert_eq!(login.token.kind, TokenKind::Classic);
-        assert!(!login.token.kind.single_owner());
+        assert_eq!(login.account.kind, TokenKind::Classic);
+        assert!(!login.account.kind.single_owner());
         assert_eq!(login.missing_scopes, ["workflow", "read:project"]);
-        assert_eq!(login.token.account.name, "digdir-bot");
-        assert_eq!(login.token.account.email, "42+digdir-bot@users.noreply.github.com");
-        assert_eq!(login.token.expires_at, None);
+        assert_eq!(login.account.identity.name, "digdir-bot");
+        assert_eq!(login.account.identity.email, "42+digdir-bot@users.noreply.github.com");
+        assert_eq!(login.account.expires_at, None);
         let fine_grained = fixture(BOT)
             .await
             .login("github_pat_FAKE", "digdir")
@@ -746,12 +796,12 @@ mod tests {
     ) {
         let (provider, secret) = names(name);
         let stored = Record {
-            account: GithubAccount {
+            identity: Identity {
                 login: format!("{name}-bot"),
                 name: format!("{name} bot"),
                 email: format!("1+{name}-bot@users.noreply.github.com"),
             },
-            kind: TokenKind::of(token),
+            kind: TokenKind::of(token).expect("a kind agents take"),
             expires_at,
         };
         database
@@ -801,7 +851,10 @@ mod tests {
         store(&github.database, "digdir", "github_pat_FAKE_canary", Some(expired)).await;
 
         let known = stored(&github.database, "Digdir").await.expect("account");
-        assert_eq!(known.map(|token| token.account.login).as_deref(), Some("digdir-bot"));
+        assert_eq!(
+            known.map(|account| account.identity.login).as_deref(),
+            Some("digdir-bot")
+        );
         assert_eq!(stored(&github.database, "altinn").await.expect("account"), None);
         assert_eq!(stored(&github.database, "not a name").await.expect("account"), None);
     }
@@ -821,11 +874,101 @@ mod tests {
 
     #[test]
     fn token_kinds_follow_githubs_prefixes() {
-        assert_eq!(TokenKind::of("github_pat_x"), TokenKind::FineGrained);
-        assert_eq!(TokenKind::of("ghp_x"), TokenKind::Classic);
-        assert_eq!(TokenKind::of("gho_x"), TokenKind::Oauth);
-        assert_eq!(TokenKind::of("ghu_x"), TokenKind::Other);
+        assert_eq!(TokenKind::of("github_pat_x"), Some(TokenKind::FineGrained));
+        assert_eq!(TokenKind::of(" ghp_x\n"), Some(TokenKind::Classic));
+        assert_eq!(TokenKind::of("gho_x"), Some(TokenKind::Oauth));
+        for token in ["ghu_x", "ghs_x", "ghr_x", "x"] {
+            assert_eq!(TokenKind::of(token), None, "{token}");
+        }
         assert!(TokenKind::FineGrained.single_owner());
+        assert!(!TokenKind::Oauth.single_owner());
+    }
+
+    #[test]
+    fn only_tokens_beyond_one_owner_warn_of_their_reach() {
+        assert_eq!(TokenKind::FineGrained.reach_warning("digdir-bot"), None);
+        assert_eq!(
+            TokenKind::Classic.reach_warning("digdir-bot").as_deref(),
+            Some("this classic token reaches every repository digdir-bot can")
+        );
+        let oauth = TokenKind::Oauth.reach_warning("digdir-bot").expect("a warning");
+        assert!(oauth.contains("GitHub CLI login"), "{oauth}");
+        assert!(
+            oauth.contains("every repository and organization digdir-bot can reach"),
+            "{oauth}"
+        );
+    }
+
+    #[test]
+    fn the_token_form_is_prefilled_with_the_owner_lifetime_and_permissions_and_nothing_secret() {
+        let url = reqwest::Url::parse(&token_form_url(
+            "digdir",
+            "agentctl digdir on my-mac",
+            "Agents for digdir on my-mac, stored by agentctl",
+        ))
+        .expect("valid URL");
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("github.com"));
+        assert_eq!(url.path(), "/settings/personal-access-tokens/new");
+        let mut query: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+        query.sort();
+        let mut expected: Vec<(String, String)> = [
+            ("name", "agentctl digdir on my-mac"),
+            ("description", "Agents for digdir on my-mac, stored by agentctl"),
+            ("target_name", "digdir"),
+            ("expires_in", "90"),
+            ("contents", "write"),
+            ("issues", "write"),
+            ("pull_requests", "write"),
+            ("actions", "write"),
+            ("workflows", "write"),
+            ("checks", "read"),
+            ("statuses", "read"),
+        ]
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .to_vec();
+        expected.sort();
+        assert_eq!(query, expected, "exactly these parameters, so no token or credential");
+        assert_eq!(url.username(), "");
+        assert_eq!(url.password(), None);
+        assert_eq!(url.fragment(), None);
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn whether_a_token_sees_a_repository_is_asked_of_github_with_it() {
+        let repository = Repository::from_remote("git@github.com:digdir/case-web.git").expect("repository");
+        let (api, requests) = serve(BOT).await;
+        assert!(
+            inspect::can_see_at(&api, "github_pat_FAKE_canary", &repository)
+                .await
+                .expect("visible")
+        );
+        let request = requests.borrow()[0].to_ascii_lowercase();
+        assert!(request.starts_with("get /repos/digdir/case-web "), "{request}");
+        assert!(
+            request.contains("authorization: bearer github_pat_fake_canary"),
+            "{request}"
+        );
+
+        for status in ["404 Not Found", "403 Forbidden"] {
+            let (api, _) = serve(Answer { status, ..BOT }).await;
+            assert!(
+                !inspect::can_see_at(&api, "github_pat_FAKE_canary", &repository)
+                    .await
+                    .expect("answered")
+            );
+        }
+        let (api, _) = serve(Answer {
+            status: "500 Internal Server Error",
+            ..BOT
+        })
+        .await;
+        let error = inspect::can_see_at(&api, "github_pat_FAKE_canary", &repository)
+            .await
+            .expect_err("unexpected answer");
+        let message = format!("{error} {error:?}");
+        assert!(message.contains("500"), "{message}");
+        assert!(!message.contains("FAKE_canary"), "{message}");
     }
 
     #[test]

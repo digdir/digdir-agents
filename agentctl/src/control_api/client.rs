@@ -7,17 +7,17 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, sessions};
 
 use super::protocol::{
-    DaemonInfo, DirectoryParams, ExecutionEnsureParams, GithubLoginParams, GithubLogoutResult, GithubNameParams,
-    JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN,
-    METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET,
-    METHOD_GITHUB_ACCOUNTS, METHOD_GITHUB_LOGIN, METHOD_GITHUB_LOGOUT, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS,
-    METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
-    METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
-    METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
-    METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams,
-    ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams,
-    SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult,
-    read_message,
+    AccountLoginParams, AccountLogoutResult, AccountParams, DaemonInfo, DirectoryParams, ExecutionEnsureParams,
+    JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST,
+    METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS,
+    METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH,
+    METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
+    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
+    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
+    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
+    METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, ProgressParams, ReadMessage, Request, ResourcesWatchParams,
+    Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
+    SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -367,40 +367,52 @@ impl Client {
         self.call(METHOD_AUTH_LOGINS, serde_json::json!({})).await
     }
 
-    /// Has agentd check `token` with GitHub and keep it as `name`, replacing an earlier token of
-    /// that name, then re-converge the Agents whose account asks for it.
+    /// Has agentd check `credential` and keep it as the account `name` of `account_type`,
+    /// replacing an earlier one of that name, then re-converge the agents that ask for it.
     ///
     /// # Errors
     ///
-    /// Returns an error when the token or name is invalid, GitHub rejects the token or cannot be
-    /// reached, or it cannot be persisted. No error contains the token.
-    pub async fn github_login(&self, token: &str, name: &str) -> Result<crate::github::GithubLogin, Error> {
-        let params = GithubLoginParams {
-            token: token.to_owned(),
+    /// Returns an error when the credential or name is invalid, the credential is refused, or it
+    /// cannot be persisted. No error contains the credential.
+    pub async fn account_login(
+        &self,
+        account_type: crate::accounts::AccountType,
+        name: &str,
+        credential: &str,
+    ) -> Result<crate::accounts::Login, Error> {
+        let params = AccountLoginParams {
+            account_type,
             name: name.to_owned(),
+            credential: credential.to_owned(),
         };
-        self.call(METHOD_GITHUB_LOGIN, params).await
+        self.call(METHOD_ACCOUNT_LOGIN, params).await
     }
 
-    /// Forgets the GitHub token named `name`, returning it, or `None` when there was none.
+    /// Forgets the account `name` of `account_type`, returning it, or `None` when there was none.
     ///
     /// # Errors
     ///
     /// Returns an error when the daemon cannot be reached or cannot update its database.
-    pub async fn github_logout(&self, name: &str) -> Result<Option<crate::github::GithubToken>, Error> {
-        let result: GithubLogoutResult = self
-            .call(METHOD_GITHUB_LOGOUT, GithubNameParams { name: name.into() })
-            .await?;
+    pub async fn account_logout(
+        &self,
+        account_type: crate::accounts::AccountType,
+        name: &str,
+    ) -> Result<Option<crate::accounts::Account>, Error> {
+        let params = AccountParams {
+            account_type,
+            name: name.into(),
+        };
+        let result: AccountLogoutResult = self.call(METHOD_ACCOUNT_LOGOUT, params).await?;
         Ok(result.forgotten)
     }
 
-    /// The stored GitHub tokens, by name, without the tokens.
+    /// The kept accounts of every type, without their credentials.
     ///
     /// # Errors
     ///
     /// Returns an error when the daemon cannot be reached or cannot read its database.
-    pub async fn github_accounts(&self) -> Result<Vec<crate::github::GithubToken>, Error> {
-        self.call(METHOD_GITHUB_ACCOUNTS, serde_json::json!({})).await
+    pub async fn accounts(&self) -> Result<Vec<crate::accounts::Account>, Error> {
+        self.call(METHOD_ACCOUNT_LIST, serde_json::json!({})).await
     }
 
     /// Creates or resolves one named session attach target.

@@ -222,8 +222,8 @@ pub struct ProviderEnsureOutcome {
     pub logins: BTreeMap<crate::Harness, crate::harness::LoginName>,
     /// Whether the sandbox got the nested sandboxes the agent asks for, when it asks for them.
     pub nested_sandboxes: Option<NestedSandboxesOutcome>,
-    /// The Agent's stored GitHub token, without the token, when it declares one and one is stored.
-    pub github_token: Option<crate::github::GithubToken>,
+    /// The agent's kept GitHub account, without its token, when it asks for one and one is kept.
+    pub github_account: Option<crate::github::Account>,
 }
 
 /// Whether a sandbox runs sandboxes of its own as its agent asks.
@@ -291,14 +291,14 @@ pub trait PlatformAdapter {
     fn supports(&self, platform: &Platform) -> bool;
 
     /// Idempotently applies agent and harness setup inside the sandbox,
-    /// reporting its steps through `steps`. `github_token` is the agent's stored
-    /// GitHub token, without the token, for the Git identity and the platform's instructions.
+    /// reporting its steps through `steps`. `github_account` is the agent's kept
+    /// GitHub account, without its token, for the Git identity and the platform's instructions.
     fn setup<'a>(
         &'a self,
         record: &'a AgentRecord,
         sandbox: &'a SandboxHandle,
         harnesses: &'a [crate::Harness],
-        github_token: Option<&'a crate::github::GithubToken>,
+        github_account: Option<&'a crate::github::Account>,
         steps: &'a ::sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<PlatformSetup, Error>>;
 }
@@ -398,7 +398,7 @@ impl Service {
                     record,
                     &sandbox,
                     &outcome.harnesses,
-                    outcome.github_token.as_ref(),
+                    outcome.github_account.as_ref(),
                     &progress.steps(),
                 ),
             )

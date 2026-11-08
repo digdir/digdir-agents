@@ -10,6 +10,7 @@ use std::{
 
 use agent::{
     Error,
+    accounts::AccountType,
     control_api::{
         AuthenticationApi, Client, Connection, Connector, ConvergenceApi, ExecutionApi, Server, SessionApi,
         SshAccessApi, VncAccessApi,
@@ -160,39 +161,41 @@ impl AuthenticationApi for FakeAuthentication {
     }
 
     /// Accepts only `github_pat_FAKE_good`, as GitHub would reject anything else.
-    fn github_login<'a>(
+    fn account_login<'a>(
         &'a self,
-        token: &'a str,
+        _account_type: AccountType,
         name: &'a str,
-    ) -> LocalFuture<'a, Result<agent::github::GithubLogin, Error>> {
+        credential: &'a str,
+    ) -> LocalFuture<'a, Result<agent::accounts::Login, Error>> {
         Box::pin(async move {
-            if token != "github_pat_FAKE_good" {
+            if credential != "github_pat_FAKE_good" {
                 return Err(Error::Invalid("GitHub rejected the token".into()));
             }
-            Ok(agent::github::GithubLogin {
-                token: github_token(&name.to_ascii_lowercase()),
+            Ok(agent::accounts::Login::Github(agent::github::Login {
+                account: github_account(&name.to_ascii_lowercase()),
                 missing_scopes: Vec::new(),
-            })
+            }))
         })
     }
 
-    /// Has a token for `digdir` only.
-    fn github_logout<'a>(
+    /// Has an account for `digdir` only.
+    fn account_logout<'a>(
         &'a self,
+        _account_type: AccountType,
         name: &'a str,
-    ) -> LocalFuture<'a, Result<Option<agent::github::GithubToken>, Error>> {
-        Box::pin(async move { Ok((name == "digdir").then(|| github_token(name))) })
+    ) -> LocalFuture<'a, Result<Option<agent::accounts::Account>, Error>> {
+        Box::pin(async move { Ok((name == "digdir").then(|| agent::accounts::Account::Github(github_account(name)))) })
     }
 
-    fn github_accounts(&self) -> LocalFuture<'_, Result<Vec<agent::github::GithubToken>, Error>> {
-        Box::pin(async { Ok(vec![github_token("digdir")]) })
+    fn accounts(&self) -> LocalFuture<'_, Result<Vec<agent::accounts::Account>, Error>> {
+        Box::pin(async { Ok(vec![agent::accounts::Account::Github(github_account("digdir"))]) })
     }
 }
 
-fn github_token(name: &str) -> agent::github::GithubToken {
-    agent::github::GithubToken {
+fn github_account(name: &str) -> agent::github::Account {
+    agent::github::Account {
         name: name.into(),
-        account: agent::github::GithubAccount {
+        identity: agent::github::Identity {
             login: format!("{name}-bot"),
             name: format!("{name} bot"),
             email: format!("1+{name}-bot@users.noreply.github.com"),
@@ -817,25 +820,34 @@ async fn a_github_login_or_logout_wakes_the_agents_asking_for_that_name_only() {
     }
 
     let error = client
-        .github_login("ghp_FAKE_canary", "digdir")
+        .account_login(AccountType::Github, "digdir", "ghp_FAKE_canary")
         .await
         .expect_err("rejected");
     assert!(!format!("{error} {error:?}").contains("FAKE_canary"), "{error:?}");
     assert!(fixture.woken.borrow().is_empty(), "a failed login wakes nothing");
 
     let login = client
-        .github_login("github_pat_FAKE_good", "Digdir")
+        .account_login(AccountType::Github, "Digdir", "github_pat_FAKE_good")
         .await
         .expect("login");
-    assert_eq!(login.token.name, "digdir");
+    assert_eq!(login.account().name(), "digdir");
     assert_eq!(*fixture.woken.borrow(), ["ours"]);
-    let listed = client.github_accounts().await.expect("accounts");
-    assert_eq!(listed, [github_token("digdir")]);
+    let listed = client.accounts().await.expect("accounts");
+    assert_eq!(listed, [agent::accounts::Account::Github(github_account("digdir"))]);
 
-    assert_eq!(client.github_logout("altinn").await.expect("nothing to forget"), None);
+    assert_eq!(
+        client
+            .account_logout(AccountType::Github, "altinn")
+            .await
+            .expect("nothing to forget"),
+        None
+    );
     assert_eq!(*fixture.woken.borrow(), ["ours"], "forgetting nothing wakes nothing");
-    let forgotten = client.github_logout("digdir").await.expect("logout");
-    assert_eq!(forgotten.map(|token| token.name).as_deref(), Some("digdir"));
+    let forgotten = client
+        .account_logout(AccountType::Github, "digdir")
+        .await
+        .expect("logout");
+    assert_eq!(forgotten.as_ref().map(agent::accounts::Account::name), Some("digdir"));
     assert_eq!(*fixture.woken.borrow(), ["ours", "ours"]);
 }
 

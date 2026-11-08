@@ -1,8 +1,9 @@
-//! Asking GitHub what a token is: whose it is, when it expires and which scopes it lacks.
+//! Asking GitHub what a token is: whose it is, when it expires, which scopes it lacks and which
+//! repositories it sees.
 
 use serde::Deserialize;
 
-use super::GithubAccount;
+use super::Identity;
 use crate::Error;
 
 pub(super) const API: &str = "https://api.github.com";
@@ -15,7 +16,7 @@ pub const SCOPES: [&str; 4] = ["repo", "workflow", "read:org", "read:project"];
 
 /// What GitHub reports about a token, without the token.
 pub(super) struct Inspection {
-    pub(super) account: GithubAccount,
+    pub(super) identity: Identity,
     pub(super) expires_at: Option<time::OffsetDateTime>,
     pub(super) missing_scopes: Vec<String>,
 }
@@ -47,10 +48,30 @@ pub(super) async fn inspect_at(api: &str, token: &str) -> Result<Inspection, Err
         .await
         .map_err(|_| Error::Invalid("GitHub returned an unexpected user profile".into()))?;
     Ok(Inspection {
-        account: user.into_account(),
+        identity: user.into_identity(),
         expires_at,
         missing_scopes,
     })
+}
+
+/// Whether `token` can see `repository`, asking GitHub at `api`. GitHub answers an unselected or
+/// unapproved private repository as missing.
+///
+/// # Errors
+///
+/// Returns an error, never containing the token, when GitHub cannot be reached or answers
+/// anything but success, not found or forbidden.
+pub(super) async fn can_see_at(api: &str, token: &str, repository: &super::Repository) -> Result<bool, Error> {
+    let response = request(&format!("{api}/repos/{repository}"), token)
+        .await
+        .map_err(|error| Error::Invalid(format!("could not reach GitHub to check the token: {error}")))?;
+    match response.status() {
+        status if status.is_success() => Ok(true),
+        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::FORBIDDEN => Ok(false),
+        status => Err(Error::Invalid(format!(
+            "GitHub answered {status} when asked whether the token can see {repository}"
+        ))),
+    }
 }
 
 async fn request(url: &str, token: &str) -> reqwest::Result<reqwest::Response> {
@@ -78,7 +99,7 @@ struct User {
 }
 
 impl User {
-    fn into_account(self) -> GithubAccount {
+    fn into_identity(self) -> Identity {
         let name = self
             .name
             .filter(|name| !name.trim().is_empty())
@@ -87,7 +108,7 @@ impl User {
             .email
             .filter(|email| !email.trim().is_empty())
             .unwrap_or_else(|| format!("{}+{}@users.noreply.github.com", self.id, self.login));
-        GithubAccount {
+        Identity {
             login: self.login,
             name,
             email,
