@@ -48,5 +48,7 @@ package-lock.json             @olebhansen
 /.editorconfig                @martinothamar
 /.github/workflows/rust.yml   @martinothamar
 /.github/workflows/agentctl-*.yml @martinothamar
+/.github/workflows/images.yml @martinothamar
+/.github/workflows/self-dev-images.yml @martinothamar
 # The agentctl agent that develops the platform itself
 /agents/self-dev/             @martinothamar

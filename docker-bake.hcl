@@ -1,6 +1,8 @@
-# The container images this repository publishes, for `docker buildx bake`. CI builds each architecture on its own
-# runner and publishes from main; `docker buildx bake -f docker-bake.hcl --load base-headless` builds one locally
-# under its published name. Always pass `-f docker-bake.hcl`: without it, bake also reads the root docker-compose.yml.
+# The images that are part of agentctl, published under ghcr.io/digdir, for `docker buildx bake`: the base images agents
+# build on and the image of agentctl and agentd. This repository's own agent has its own bake file,
+# agents/self-dev/docker-bake.hcl. CI builds each architecture on its own runner and publishes from main;
+# `docker buildx bake -f docker-bake.hcl --load base-headless` builds one locally under its published name. Always pass
+# `-f docker-bake.hcl`: without it, bake also reads the root docker-compose.yml.
 
 # Where the agentctl base images are published.
 variable "BASE_REPOSITORY" {
@@ -39,36 +41,6 @@ target "base-desktop" {
   tags     = ["${BASE_REPOSITORY}:${BASE_DISTRIBUTION}-desktop"]
   labels = {
     "org.opencontainers.image.description" = "Desktop base image for agentctl agents: the headless image plus Chromium and a VNC desktop"
-  }
-}
-
-group "self-dev" {
-  targets = ["self-dev-minimal", "self-dev-full"]
-}
-
-# The self-dev images build on the base image from this file rather than the published one, so that CI tests a change
-# to the base together with the image that develops the platform.
-target "self-dev-minimal" {
-  inherits = ["_source"]
-  context  = "agents/self-dev"
-  target   = "minimal"
-  contexts = {
-    ("${BASE_REPOSITORY}:${BASE_DISTRIBUTION}") = "target:base-headless"
-  }
-  tags = ["ghcr.io/digdir/digdir-agents/agentctl-self-dev-minimal:latest"]
-  labels = {
-    "org.opencontainers.image.title"       = "agentctl-self-dev-minimal"
-    "org.opencontainers.image.description" = "The agentctl self-development agent's image"
-  }
-}
-
-target "self-dev-full" {
-  inherits = ["self-dev-minimal"]
-  target   = "full"
-  tags     = ["ghcr.io/digdir/digdir-agents/agentctl-self-dev-full:latest"]
-  labels = {
-    "org.opencontainers.image.title"       = "agentctl-self-dev-full"
-    "org.opencontainers.image.description" = "The agentctl self-development agent's image, with a browser and a desktop"
   }
 }
 

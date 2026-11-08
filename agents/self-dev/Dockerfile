@@ -1,7 +1,7 @@
 # The self-development agent's images, built on the agentctl base images in images/agentctl-base. FROM names the base
-# tag without a digest, so that these images follow the platform they develop: CI builds them on the base built from
-# the same commit (docker-bake.hcl). A nested agent's build pulls the published base, so to try a local base, build it
-# under a localhost/ tag and point FROM at it while you test. renovate.json keeps Renovate from pinning it.
+# tag without a digest, so that these images follow the platform they develop: CI publishes them again whenever it
+# publishes the base. A nested agent's build pulls the published base, so to try a local base, build it under a
+# localhost/ tag and point FROM at it while you test. renovate.json keeps Renovate from pinning it.
 FROM ghcr.io/digdir/agentctl-base:ubuntu-26.04 AS minimal
 
 # The base ends as the unprivileged agent user; installing packages needs root again.
