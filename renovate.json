@@ -5,7 +5,7 @@
   ],
   "packageRules": [
     {
-      "description": "The self-dev images build on the agentctl base image from the same commit, so their FROM names the tag alone.",
+      "description": "The self-dev images follow the agentctl base image as published, so their FROM names the tag alone.",
       "matchFileNames": [
         "agents/self-dev/Dockerfile"
       ],
