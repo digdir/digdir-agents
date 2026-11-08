@@ -2,6 +2,9 @@
 
 | Doc | Kind | What it is for |
 | --- | --- | --- |
+| [first-agent.md](first-agent.md) | Tutorial | Give a repository an agent, from an empty folder to the repository open in your editor inside the agent |
+| [open-in-an-editor.md](open-in-an-editor.md) | How-to | Open an agent's project in VS Code, Zed or another editor that works over SSH |
+| [open-in-jetbrains.md](open-in-jetbrains.md) | How-to | Open an agent's project in a JetBrains IDE, such as Rider, through JetBrains Gateway |
 | [label-agents.md](label-agents.md) | How-to | Label agents for the client you open them in or the tool that created them, and list agents by label |
 | [variant-lists.md](variant-lists.md) | How-to | Add, change or remove one entry of an inherited list, such as `access` or `harnesses`, in a variant |
 | [web-views.md](web-views.md) | How-to | Declare the web UIs an agent serves, so clients can list them |
