@@ -74,6 +74,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 ### Fixed
 
 - Nested agents on macOS run memory-heavy work such as builds and package restores in seconds instead of minutes. Agents with `spec.sandbox.resources.nestedSandboxes` get this at their next start. ([#435](https://github.com/digdir/digdir-agents/pull/435))
+- A session attached from two terminals at once, such as `agentctl attach` in two windows, keeps running instead of failing with `tmux returned an invalid observation` until one of them detaches. ([#442](https://github.com/digdir/digdir-agents/pull/442))
 - `agentctl tui` no longer searches your whole home directory for manifests when the home directory is a Git repository, such as one for dotfiles. ([#309](https://github.com/digdir/digdir-agents/pull/309))
 - `clear`, `less` and editors no longer fail with `unknown terminal type` over `agentctl ssh`, the SSH shell in `agentctl tui` or plain `ssh agentctl-<name>` from a terminal such as Ghostty. ([#391](https://github.com/digdir/digdir-agents/pull/391))
 - `ssh agentctl-<name>`, `agentctl ssh`, editors connecting over SSH and the commands `agentctl vnc-info` prints now reach agents on a home chosen with `--home` or `AGENT_HOME`, instead of not finding them. ([#375](https://github.com/digdir/digdir-agents/pull/375))

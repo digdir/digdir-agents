@@ -179,19 +179,22 @@ fn classify_observation(status: ExitStatus, stdout: &[u8]) -> Result<Observation
 
 fn parse_observation(output: &str) -> Result<Observation, Error> {
     let mut fields = output.split_ascii_whitespace();
-    let attached = fields
+    // tmux counts the clients attached to the session, and more than one can be.
+    let clients = fields
         .next()
-        .ok_or_else(|| Error::Session("tmux returned an empty observation".into()))?;
+        .ok_or_else(|| Error::Session("tmux returned an empty observation".into()))?
+        .parse::<u32>()
+        .map_err(|error| Error::Session(format!("tmux returned an invalid attached client count: {error}")))?;
     let idle_seconds = fields
         .next()
         .ok_or_else(|| Error::Session("tmux omitted its activity age".into()))?
         .parse::<u64>()
         .map_err(|error| Error::Session(format!("tmux returned an invalid activity age: {error}")))?;
-    if fields.next().is_some() || !matches!(attached, "0" | "1") {
+    if fields.next().is_some() {
         return Err(Error::Session("tmux returned an invalid observation".into()));
     }
     Ok(Observation::Alive {
-        attached: attached == "1",
+        attached: clients > 0,
         idle_seconds,
     })
 }
@@ -903,6 +906,15 @@ mod tests {
         };
         assert!(!attached);
         assert_eq!(idle_seconds, 301);
+    }
+
+    #[test]
+    fn observes_a_session_with_several_clients_as_attached() {
+        let Observation::Alive { attached, .. } = super::parse_observation("2 0\n").expect("valid observation") else {
+            panic!("expected a live session");
+        };
+        assert!(attached);
+        assert!(super::parse_observation("x 0\n").is_err());
     }
 
     #[test]
