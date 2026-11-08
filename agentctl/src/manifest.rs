@@ -780,10 +780,10 @@ impl Spec {
                     account.account_type()
                 )));
             }
-            if !crate::accounts::valid_name(account.login()) {
+            if !crate::names::valid(account.login()) {
                 return Err(Error::Invalid(format!(
                     "spec.accounts[{index}].login: {}",
-                    crate::accounts::NAME_RULE
+                    crate::names::RULE
                 )));
             }
         }
@@ -804,10 +804,27 @@ impl Spec {
         let mut placeholders = std::collections::BTreeSet::new();
         for (index, secret) in self.secrets.iter().enumerate() {
             let placeholder = secret.inert_value();
-            if environments.contains(secret.environment.as_str()) || environment_sources.contains(secret.source()) {
+            if environments.contains(secret.environment.as_str())
+                || secret
+                    .source()
+                    .is_some_and(|source| environment_sources.contains(source))
+            {
                 return Err(Error::Invalid(format!(
                     "spec.environment collides with spec.secrets[{index}]"
                 )));
+            }
+            if let Some(name) = &secret.secret {
+                if secret.source.is_some() {
+                    return Err(Error::Invalid(format!(
+                        "spec.secrets[{index}] takes its value from the kept secret {name:?}, so it has no source"
+                    )));
+                }
+                if !crate::names::valid(name) {
+                    return Err(Error::Invalid(format!(
+                        "spec.secrets[{index}].secret is invalid: {}",
+                        crate::names::RULE
+                    )));
+                }
             }
             if !valid_environment_variable(&secret.environment)
                 || secret
@@ -970,7 +987,7 @@ impl SkillSpec {
 pub struct SecretSpec {
     /// Guest environment variable and stable secret binding name.
     pub environment: String,
-    /// Whether a missing or empty environment-file value omits this binding.
+    /// Whether the agent runs without it when its value is missing, rather than failing.
     #[serde(default, skip_serializing_if = "is_false")]
     pub optional: bool,
     /// Optional inert value; the selected Network Backend generates one when omitted.
@@ -981,6 +998,10 @@ pub struct SecretSpec {
     /// Optional variable name in the manifest directory's `.env`; defaults to `environment`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// The name of a secret kept on this machine, such as with `agentctl secret set`, that holds
+    /// the value instead of the environment file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -989,10 +1010,14 @@ const fn is_false(value: &bool) -> bool {
 }
 
 impl SecretSpec {
-    /// Returns the host `.env` variable that supplies the secret material.
+    /// Returns the host `.env` variable that supplies the secret material, or `None` when a kept
+    /// [`Self::secret`] does.
     #[must_use]
-    pub fn source(&self) -> &str {
-        self.source.as_deref().unwrap_or(&self.environment)
+    pub fn source(&self) -> Option<&str> {
+        match self.secret {
+            Some(_) => None,
+            None => Some(self.source.as_deref().unwrap_or(&self.environment)),
+        }
     }
 
     /// Returns the explicit or provider-neutral generated value exposed inside the sandbox.
@@ -1035,7 +1060,7 @@ pub struct NetworkSpec {
     pub deny: Vec<String>,
 }
 
-fn valid_host_pattern(pattern: &str) -> bool {
+pub(crate) fn valid_host_pattern(pattern: &str) -> bool {
     !pattern.is_empty()
         && !pattern.contains(['/', ':', '\\'])
         && pattern

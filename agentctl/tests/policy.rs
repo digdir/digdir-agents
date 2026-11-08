@@ -2,7 +2,7 @@
 
 use crate::support;
 
-use agent::{SecretSpec, authorization::AgentPolicyEngine};
+use agent::authorization::{AgentPolicyEngine, SecretHosts};
 use sandbox::SandboxName;
 use sandbox_authorization::{
     Action, AuthorizationContext, AuthorizationDecision, AuthorizationRequest, PolicyEngine as _, Principal, Resource,
@@ -13,16 +13,13 @@ use sandbox_authorization::{
 async fn allows_general_egress_but_scopes_each_secret_to_its_hosts() {
     let mut agent = support::agent("worker");
     agent.spec.network.deny.push("blocked.example".into());
-    agent.spec.secrets.push(SecretSpec {
-        environment: "GITHUB_TOKEN".into(),
-        optional: false,
-        placeholder: None,
-        allowed_hosts: vec!["github.com".into()],
-        source: Some("GH_PAT".into()),
-    });
     let policy = AgentPolicyEngine::new();
     let sandbox = SandboxName::new("agent-test-id").expect("Sandbox name");
-    policy.set_agent(&sandbox, &agent, []);
+    policy.set_agent(
+        &sandbox,
+        &agent,
+        [SecretHosts::new("GITHUB_TOKEN", vec!["github.com".into()])],
+    );
 
     assert_eq!(
         evaluate(
@@ -72,6 +69,44 @@ async fn allows_general_egress_but_scopes_each_secret_to_its_hosts() {
         .await,
         AuthorizationDecision::Deny
     );
+}
+
+/// A kept secret is substituted only at a host that both the manifest and the secret allow.
+#[tokio::test(flavor = "local")]
+async fn a_secret_with_several_host_lists_is_used_only_where_all_of_them_match() {
+    let agent = support::agent("worker");
+    let policy = AgentPolicyEngine::new();
+    let sandbox = SandboxName::new("agent-test-id").expect("Sandbox name");
+    policy.set_agent(
+        &sandbox,
+        &agent,
+        [SecretHosts {
+            environment: "API_KEY".into(),
+            hosts: vec![
+                vec!["*.example.com".into()],
+                vec!["api.example.com".into(), "other.test".into()],
+            ],
+        }],
+    );
+    for (host, decision) in [
+        ("api.example.com", AuthorizationDecision::Allow),
+        ("www.example.com", AuthorizationDecision::Deny),
+        ("other.test", AuthorizationDecision::Deny),
+    ] {
+        assert_eq!(
+            evaluate(
+                &policy,
+                sandbox.as_str(),
+                action::SECRET_USE,
+                resource_kind::SECRET,
+                "API_KEY",
+                host
+            )
+            .await,
+            decision,
+            "{host}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "local")]

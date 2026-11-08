@@ -8,7 +8,7 @@ use crate::Error;
 
 use super::database_error;
 
-pub(crate) const VERSION: u32 = 9;
+pub(crate) const VERSION: u32 = 10;
 
 const PREVIEW_1_SQL: &str = "
     CREATE TABLE agents (
@@ -90,6 +90,14 @@ const AGENT_ORIGINS_COLUMN_SQL: &str = "
     ALTER TABLE agents ADD COLUMN origin_json TEXT NOT NULL DEFAULT '{\"type\":\"local\"}';
 ";
 
+/// What a secret kept under a name says about itself. Only those rows have it: an agent's own
+/// secrets and a login's credentials take their hosts from elsewhere.
+const SHARED_SECRETS_SQL: &str = "
+    ALTER TABLE secrets ADD COLUMN allowed_hosts_json TEXT;
+    ALTER TABLE secrets ADD COLUMN created_at INTEGER;
+    ALTER TABLE secrets ADD COLUMN updated_at INTEGER;
+";
+
 struct Migration {
     version: u32,
     name: &'static str,
@@ -151,6 +159,12 @@ const MIGRATIONS: &[Migration] = &[
         name: "agent origins",
         schema: &[AGENT_ORIGINS_COLUMN_SQL],
         apply: add_agent_origins,
+    },
+    Migration {
+        version: 10,
+        name: "shared secrets",
+        schema: &[SHARED_SECRETS_SQL],
+        apply: add_shared_secrets,
     },
 ];
 
@@ -306,6 +320,15 @@ fn add_agent_origins(transaction: &Transaction<'_>) -> Result<(), Error> {
     transaction
         .execute_batch(AGENT_ORIGINS_COLUMN_SQL)
         .map_err(database_error)
+}
+
+/// Adds the hosts and times of secrets kept under a name. There were none before, so every
+/// existing row has neither.
+fn add_shared_secrets(transaction: &Transaction<'_>) -> Result<(), Error> {
+    if schema_difference(transaction, 10)?.is_none() {
+        return Ok(());
+    }
+    transaction.execute_batch(SHARED_SECRETS_SQL).map_err(database_error)
 }
 
 /// Keeps each harness's one earlier login as its login named `default`, the one agents use when

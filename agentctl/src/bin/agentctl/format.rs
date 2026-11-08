@@ -80,20 +80,33 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
         ),
     };
 
-    let secrets = if agent.spec.secrets.is_empty() {
+    // Where the values come from: the environment file, and the secrets kept under a name.
+    let mut sources = Vec::new();
+    if agent.spec.secrets.iter().any(|secret| secret.source().is_some())
+        && let Some(provenance) = &agent.status.provenance
+    {
+        sources.push(
+            provenance
+                .env_file
+                .clone()
+                .unwrap_or_else(|| provenance.source_directory.join(agent::control_plane::ENV_FILE))
+                .display()
+                .to_string(),
+        );
+    }
+    let kept = agent
+        .spec
+        .secrets
+        .iter()
+        .filter_map(|secret| secret.secret.as_deref())
+        .collect::<Vec<_>>();
+    if !kept.is_empty() {
+        sources.push(format!("kept {}", kept.join(", ")));
+    }
+    let secrets = if sources.is_empty() {
         "-".to_owned()
     } else {
-        agent.status.provenance.as_ref().map_or_else(
-            || "-".into(),
-            |provenance| {
-                provenance
-                    .env_file
-                    .clone()
-                    .unwrap_or_else(|| provenance.source_directory.join(agent::control_plane::ENV_FILE))
-                    .display()
-                    .to_string()
-            },
-        )
+        sources.join("; ")
     };
 
     let mut lines = vec![

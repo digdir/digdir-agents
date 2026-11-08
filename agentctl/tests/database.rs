@@ -765,7 +765,7 @@ fn released_preview_1_database_migrates_without_losing_state() {
         connection
             .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("schema version"),
-        9
+        10
     );
     assert_migrated_session_selections(&connection, 2, 2);
     assert_eq!(
@@ -917,7 +917,7 @@ fn preview_1_home_opened_by_the_expanded_version_1_build_migrates() {
     });
     drop(database);
 
-    assert_eq!(schema_snapshot(&path).0, 9);
+    assert_eq!(schema_snapshot(&path).0, 10);
     assert_eq!(
         connection_value(&path, EXPANDED_AGENT_ID, "desired_json"),
         expanded_desired,
@@ -974,7 +974,7 @@ fn version_2_home_records_the_model_existing_claude_code_sessions_launched_with(
         assert!(sessions[1].model_selection.is_empty());
     });
     drop(database);
-    assert_eq!(schema_snapshot(&path).0, 9);
+    assert_eq!(schema_snapshot(&path).0, 10);
     assert!(
         directory.path().join("backups").is_dir(),
         "a pending migration is backed up first"
@@ -1015,11 +1015,16 @@ fn expanded_version_1_schema_is_adopted_without_losing_state() {
     drop(database);
 
     let after = schema_snapshot(&path);
-    assert_eq!(after.0, 9);
+    assert_eq!(after.0, 10);
     let unchanged = |snapshot: &[(String, String)]| {
         snapshot
             .iter()
-            .filter(|(name, _)| name != "table:sessions" && name != "table:agents" && name != "table:volumes")
+            .filter(|(name, _)| {
+                !matches!(
+                    name.as_str(),
+                    "table:sessions" | "table:agents" | "table:volumes" | "table:secrets"
+                )
+            })
             .cloned()
             .collect::<Vec<_>>()
     };

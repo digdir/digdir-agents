@@ -22,6 +22,7 @@ mod github;
 mod launch;
 mod progress;
 mod prompt;
+mod secret;
 mod self_update;
 mod skills;
 mod tui;
@@ -186,6 +187,11 @@ enum Command {
     Github {
         #[command(subcommand)]
         command: GithubCommand,
+    },
+    /// Keep secrets, such as API keys, under names that agents' manifests ask for.
+    Secret {
+        #[command(subcommand)]
+        command: secret::SecretCommand,
     },
     /// Run a command in an agent.
     Exec {
@@ -727,6 +733,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             GithubCommand::List => github::list(client).await?,
             GithubCommand::Logout { name } => github::logout(client, &name).await?,
         },
+        Command::Secret { command } => secret::run(client, command).await?,
         Command::Apply {
             filename,
             variant,
@@ -2761,6 +2768,35 @@ mod tests {
             Arguments::try_parse_from(["agentctl", "ssh-proxy", "worker"]).is_ok(),
             "OpenSSH still runs the hidden command"
         );
+    }
+
+    #[test]
+    fn secret_set_takes_a_name_and_hosts_and_never_a_value_argument() {
+        let parse = |arguments: &[&str]| Arguments::try_parse_from(arguments).map(|arguments| arguments.command);
+        assert!(matches!(
+            parse(&["agentctl", "secret", "set", "aivar", "--hosts", "api.aivar.no,*.aivar.no", "--from-stdin"]),
+            Ok(Command::Secret {
+                command: secret::SecretCommand::Set { name, hosts: Some(hosts), from_stdin: true }
+            }) if name == "aivar" && hosts == ["api.aivar.no", "*.aivar.no"]
+        ));
+        assert!(matches!(
+            parse(&["agentctl", "secret", "set", "aivar"]),
+            Ok(Command::Secret {
+                command: secret::SecretCommand::Set {
+                    hosts: None,
+                    from_stdin: false,
+                    ..
+                }
+            })
+        ));
+        for arguments in [
+            &["agentctl", "secret", "set"][..],
+            &["agentctl", "secret", "set", "aivar", "sk-FAKE_canary"],
+            &["agentctl", "secret", "set", "aivar", "--value", "sk-FAKE_canary"],
+            &["agentctl", "secret", "remove", "aivar", "sk-FAKE_canary"],
+        ] {
+            assert!(parse(arguments).is_err(), "{arguments:?}");
+        }
     }
 
     #[test]

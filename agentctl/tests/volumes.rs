@@ -892,6 +892,7 @@ async fn an_agent_cannot_select_a_secret_file_inside_an_earlier_source_of_a_volu
         placeholder: None,
         allowed_hosts: vec!["github.com".into()],
         source: None,
+        secret: None,
     });
     let error = fixture
         .control_plane
@@ -928,6 +929,7 @@ async fn an_agent_cannot_select_a_secret_file_inside_a_copied_directory() {
         placeholder: None,
         allowed_hosts: vec!["github.com".into()],
         source: None,
+        secret: None,
     });
     request.env_file = Some(source.join("credentials.env"));
     let error = fixture

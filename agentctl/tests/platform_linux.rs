@@ -811,6 +811,7 @@ fn secret(environment: &str, hosts: &[&str]) -> agent::SecretSpec {
         placeholder: None,
         allowed_hosts: hosts.iter().map(|host| (*host).into()).collect(),
         source: None,
+        secret: None,
     }
 }
 

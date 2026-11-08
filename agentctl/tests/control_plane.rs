@@ -1201,6 +1201,7 @@ async fn an_optional_mount_is_checked_for_secrets_where_the_sandbox_has_it() {
         placeholder: None,
         allowed_hosts: vec!["github.com".into()],
         source: None,
+        secret: None,
     });
     request.env_file = Some(mounted.join("worker.env"));
     fixture
@@ -1676,6 +1677,7 @@ async fn secret_binding_definitions_are_mutable_desired_state() {
         placeholder: None,
         allowed_hosts: vec!["github.com".into()],
         source: Some("GH_PAT".into()),
+        secret: None,
     });
     let applied = fixture
         .control_plane
@@ -1723,6 +1725,7 @@ async fn selected_secret_file_inside_a_bind_mount_is_rejected() {
         placeholder: None,
         allowed_hosts: vec!["github.com".into()],
         source: None,
+        secret: None,
     });
     request.agent.spec.sandbox.mounts.push(agent::MountSpec::Bind {
         source: Some(root.path().to_path_buf()),
@@ -1878,6 +1881,7 @@ async fn existing_default_env_outside_bind_mount_is_allowed() {
         placeholder: None,
         allowed_hosts: vec!["github.com".into()],
         source: None,
+        secret: None,
     });
     request.agent.spec.sandbox.mounts.push(agent::MountSpec::Bind {
         source: Some(checkout.path().to_path_buf()),
@@ -1910,6 +1914,7 @@ async fn secret_file_reached_through_a_symlinked_ancestor_is_still_rejected() {
         placeholder: None,
         allowed_hosts: vec!["github.com".into()],
         source: None,
+        secret: None,
     });
     request.agent.spec.sandbox.mounts.push(agent::MountSpec::Bind {
         source: Some(checkout.path().to_path_buf()),
@@ -1945,6 +1950,7 @@ async fn bind_mount_exposing_another_agents_secret_file_is_rejected() {
         placeholder: None,
         allowed_hosts: vec!["github.com".into()],
         source: None,
+        secret: None,
     });
     fixture.control_plane.apply(secret_agent).await.expect("secret agent");
 

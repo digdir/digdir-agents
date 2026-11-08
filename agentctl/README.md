@@ -43,6 +43,16 @@ At a terminal it opens GitHub's form for a fine-grained token, filled in except 
 the account agents should act as, such as in a private window. `--from-stdin` takes a token instead, such as
 `gh auth token`, which lets agents act as you everywhere you can reach.
 
+Keep a secret that agents use, such as an API key, under a name with the hosts its value may reach, and set
+`secret: NAME` on that entry of `spec.secrets` instead of putting the value in each agent's environment file:
+
+```sh
+agentctl secret set aivar --hosts api.aivar.no
+```
+
+The value only reaches hosts that both the secret and the agent's manifest allow. Setting it again replaces it for
+every agent at once, and `agentctl secret list` shows the agents that use each secret.
+
 Give the coding agents on your machine, such as Claude Code, Codex and Pi, the skill for driving agents:
 
 ```sh

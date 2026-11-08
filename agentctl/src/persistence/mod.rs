@@ -29,6 +29,25 @@ pub(crate) struct ProviderAccountWrite {
     pub(crate) metadata_json: String,
 }
 
+/// A secret to keep under a name. Without hosts, it replaces the value of one already kept.
+pub(crate) struct NamedSecretWrite {
+    pub(crate) name: String,
+    pub(crate) value: Zeroizing<Vec<u8>>,
+    pub(crate) allowed_hosts_json: Option<String>,
+    /// Unix seconds.
+    pub(crate) at: i64,
+}
+
+/// A secret kept under a name, without its value.
+pub(crate) struct NamedSecret {
+    pub(crate) name: String,
+    pub(crate) allowed_hosts_json: String,
+    /// Unix seconds.
+    pub(crate) created_at: i64,
+    /// Unix seconds.
+    pub(crate) updated_at: i64,
+}
+
 pub(crate) struct StoredSecret {
     pub(crate) name: String,
     pub(crate) value: Zeroizing<Vec<u8>>,
@@ -113,6 +132,35 @@ impl Database {
         self.request(|response| Command::ReplaceAgentSecrets { id, secrets, response })
             .await?;
         Ok(references)
+    }
+
+    /// Keeps a secret under a name; `None` when it is new and has no hosts, so nothing was kept.
+    pub(crate) async fn put_named_secret(&self, secret: NamedSecretWrite) -> Result<Option<NamedSecret>, Error> {
+        self.request(|response| Command::PutNamedSecret { secret, response })
+            .await
+    }
+
+    /// The secret kept under `name`, without its value.
+    pub(crate) async fn named_secret(&self, name: &str) -> Result<Option<NamedSecret>, Error> {
+        self.request(|response| Command::NamedSecret {
+            name: name.into(),
+            response,
+        })
+        .await
+    }
+
+    /// Every secret kept under a name, by name, without their values.
+    pub(crate) async fn named_secrets(&self) -> Result<Vec<NamedSecret>, Error> {
+        self.request(|response| Command::NamedSecrets { response }).await
+    }
+
+    /// Removes the secret kept under `name`, returning it, or `None` when there was none.
+    pub(crate) async fn delete_named_secret(&self, name: &str) -> Result<Option<NamedSecret>, Error> {
+        self.request(|response| Command::DeleteNamedSecret {
+            name: name.into(),
+            response,
+        })
+        .await
     }
 
     pub(crate) async fn provider_account_exists(&self, provider: &str) -> Result<bool, Error> {
@@ -659,6 +707,21 @@ enum Command {
         name: String,
         response: oneshot::Sender<Result<sandbox::secret_store::SecretMaterial, Error>>,
     },
+    PutNamedSecret {
+        secret: NamedSecretWrite,
+        response: oneshot::Sender<Result<Option<NamedSecret>, Error>>,
+    },
+    NamedSecret {
+        name: String,
+        response: oneshot::Sender<Result<Option<NamedSecret>, Error>>,
+    },
+    NamedSecrets {
+        response: oneshot::Sender<Result<Vec<NamedSecret>, Error>>,
+    },
+    DeleteNamedSecret {
+        name: String,
+        response: oneshot::Sender<Result<Option<NamedSecret>, Error>>,
+    },
     PutProviderAccount {
         account: ProviderAccountWrite,
         response: oneshot::Sender<Result<(), Error>>,
@@ -801,6 +864,10 @@ impl Command {
             | Self::DeleteSecret { .. }
             | Self::ReplaceAgentSecrets { .. }
             | Self::ResolveSecret { .. }
+            | Self::PutNamedSecret { .. }
+            | Self::NamedSecret { .. }
+            | Self::NamedSecrets { .. }
+            | Self::DeleteNamedSecret { .. }
             | Self::PutProviderAccount { .. }
             | Self::ProviderAccountExists { .. }
             | Self::ProviderAccountMetadata { .. }
@@ -977,6 +1044,25 @@ fn execute(connection: &mut Connection, command: Command) {
         } => {
             let _ = response.send(agents::set_volume_revisions(connection, id, &revisions));
         }
+        secret_command @ (Command::SetSecret { .. }
+        | Command::DeleteSecret { .. }
+        | Command::ReplaceAgentSecrets { .. }
+        | Command::ResolveSecret { .. }
+        | Command::PutNamedSecret { .. }
+        | Command::NamedSecret { .. }
+        | Command::NamedSecrets { .. }
+        | Command::DeleteNamedSecret { .. }
+        | Command::PutProviderAccount { .. }
+        | Command::ProviderAccountExists { .. }
+        | Command::ProviderAccountMetadata { .. }
+        | Command::ProviderAccounts { .. }
+        | Command::DeleteProviderAccount { .. }) => execute_secret(connection, secret_command),
+        session_command => execute_session(connection, session_command),
+    }
+}
+
+fn execute_secret(connection: &mut Connection, command: Command) {
+    match command {
         Command::DeleteSecret { name, response } => {
             let _ignored = response.send(secrets::delete_secret(connection, &name));
         }
@@ -988,6 +1074,18 @@ fn execute(connection: &mut Connection, command: Command) {
         }
         Command::ResolveSecret { name, response } => {
             let _ = response.send(secrets::resolve_secret(connection, &name));
+        }
+        Command::PutNamedSecret { secret, response } => {
+            let _ = response.send(secrets::put_named_secret(connection, &secret));
+        }
+        Command::NamedSecret { name, response } => {
+            let _ = response.send(secrets::named_secret(connection, &name));
+        }
+        Command::NamedSecrets { response } => {
+            let _ = response.send(secrets::named_secrets(connection));
+        }
+        Command::DeleteNamedSecret { name, response } => {
+            let _ = response.send(secrets::delete_named_secret(connection, &name));
         }
         Command::PutProviderAccount { account, response } => {
             let _ = response.send(secrets::put_provider_account(connection, &account));
@@ -1008,7 +1106,7 @@ fn execute(connection: &mut Connection, command: Command) {
         } => {
             let _ = response.send(secrets::delete_provider_account(connection, &provider, &credentials));
         }
-        session_command => execute_session(connection, session_command),
+        _ => unreachable!("non-secret command routed to the secret executor"),
     }
 }
 
@@ -1161,6 +1259,11 @@ fn agent_secret_prefix(id: AgentId) -> String {
 /// `agent/<id>/` prefix so that replacing the manifest's secrets keeps it.
 pub(crate) fn ssh_host_key_name(id: AgentId) -> String {
     format!("agent-ssh/{id}/host-key")
+}
+
+/// Secret row holding the value of the secret kept under `name`, which manifests ask for by name.
+pub(crate) fn named_secret_name(name: &str) -> String {
+    format!("secret/{name}")
 }
 
 fn agent_secret_name(id: AgentId, name: &str) -> String {

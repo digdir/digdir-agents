@@ -30,6 +30,9 @@ pub(crate) const METHOD_AUTH_LOGINS: &str = "authentication.v1.logins";
 pub(crate) const METHOD_ACCOUNT_LOGIN: &str = "accounts.v1.login";
 pub(crate) const METHOD_ACCOUNT_LOGOUT: &str = "accounts.v1.logout";
 pub(crate) const METHOD_ACCOUNT_LIST: &str = "accounts.v1.list";
+pub(crate) const METHOD_SECRET_SET: &str = "secrets.v1.set";
+pub(crate) const METHOD_SECRET_LIST: &str = "secrets.v1.list";
+pub(crate) const METHOD_SECRET_REMOVE: &str = "secrets.v1.remove";
 pub(crate) const METHOD_SESSION_ENSURE: &str = "sessions.v1.ensure";
 pub(crate) const METHOD_SESSION_GET: &str = "sessions.v1.get";
 pub(crate) const METHOD_SESSION_LIST: &str = "sessions.v1.list";
@@ -284,6 +287,23 @@ pub(crate) struct AccountParams {
 #[derive(Deserialize, Serialize)]
 pub(crate) struct AccountLogoutResult {
     pub forgotten: Option<crate::accounts::Account>,
+}
+
+/// A value to keep as the secret `name`, for `allowed_hosts`, or for the hosts it already has when
+/// they are left out. Deliberately not `Debug`: it holds the value.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct SecretSetParams {
+    pub name: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_hosts: Option<Vec<String>>,
+}
+
+/// What `secrets.v1.remove` removed; a bare `null` result would read as no result at all.
+#[derive(Deserialize, Serialize)]
+pub(crate) struct SecretRemoveResult {
+    pub removed: Option<crate::secrets::SecretReport>,
 }
 
 /// Identity returned by the frozen lifecycle health method.

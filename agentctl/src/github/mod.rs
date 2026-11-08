@@ -13,9 +13,9 @@ use zeroize::Zeroizing;
 pub use inspect::SCOPES;
 
 use crate::{
-    Error, accounts,
+    Error,
     harness::MediatedSecret,
-    persistence,
+    names, persistence,
     sandbox::{AccountSetup, GitIdentity},
 };
 use sandbox::secret_store::SecretReference;
@@ -128,7 +128,7 @@ const KIND_RULE: &str = "agents take fine-grained (github_pat_), classic (ghp_) 
 /// hyphens, at most 39 characters.
 #[must_use]
 pub fn valid_owner(owner: &str) -> bool {
-    owner.len() <= OWNER_MAX_LENGTH && accounts::valid_name(owner)
+    owner.len() <= OWNER_MAX_LENGTH && names::valid(owner)
 }
 
 /// How long before its expiry a token is called out at login.
@@ -259,8 +259,8 @@ fn read(name: &str, metadata: &str) -> Result<Account, Error> {
 /// Returns an error when `name` is not a valid name.
 pub(crate) fn mediated_token(name: &str) -> Result<MediatedSecret, Error> {
     let name = name.to_ascii_lowercase();
-    if !accounts::valid_name(&name) {
-        return Err(Error::Invalid(accounts::NAME_RULE.into()));
+    if !names::valid(&name) {
+        return Err(Error::Invalid(names::RULE.into()));
     }
     let (_, secret) = names(&name);
     Ok(MediatedSecret {
@@ -279,7 +279,7 @@ pub(crate) fn mediated_token(name: &str) -> Result<MediatedSecret, Error> {
 /// Returns an error when the database cannot be read.
 pub(crate) async fn stored(database: &persistence::Database, name: &str) -> Result<Option<Account>, Error> {
     let name = name.to_ascii_lowercase();
-    if !accounts::valid_name(&name) {
+    if !names::valid(&name) {
         return Ok(None);
     }
     let (provider, _) = names(&name);
@@ -339,8 +339,8 @@ async fn check_at(api: &str, token: &str, name: &str) -> Result<Login, Error> {
         return Err(Error::Invalid("no GitHub token was provided".into()));
     }
     // The name is not repeated: a token pasted in its place must not end up in the error.
-    if !accounts::valid_name(name) {
-        return Err(Error::Invalid(accounts::NAME_RULE.into()));
+    if !names::valid(name) {
+        return Err(Error::Invalid(names::RULE.into()));
     }
     let Some(kind) = TokenKind::of(token) else {
         return Err(Error::Invalid(KIND_RULE.into()));
@@ -424,7 +424,7 @@ impl Authentication {
     /// Returns an error when the database cannot be read or written.
     pub(crate) async fn forget(&self, name: &str) -> Result<Option<Account>, Error> {
         let name = name.to_ascii_lowercase();
-        if !accounts::valid_name(&name) {
+        if !names::valid(&name) {
             return Ok(None);
         }
         let (provider, secret) = names(&name);

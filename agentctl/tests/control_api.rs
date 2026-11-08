@@ -12,8 +12,8 @@ use agent::{
     Error,
     accounts::AccountType,
     control_api::{
-        AccountsApi, AuthenticationApi, Client, Connection, Connector, ConvergenceApi, ExecutionApi, Server,
-        SessionApi, SshAccessApi, VncAccessApi, VolumeApi,
+        AccountsApi, AuthenticationApi, Client, Connection, Connector, ConvergenceApi, ExecutionApi, SecretsApi,
+        Server, SessionApi, SshAccessApi, VncAccessApi, VolumeApi,
     },
     control_plane::WaitPolicy,
     control_plane::{ApplyRequest, ControlPlane, memory::InMemoryAgentStore},
@@ -197,6 +197,54 @@ impl AccountsApi for FakeAccounts {
 
     fn list(&self) -> LocalFuture<'_, Result<Vec<agent::accounts::Account>, Error>> {
         Box::pin(async { Ok(vec![agent::accounts::Account::Github(github_account("digdir"))]) })
+    }
+}
+
+/// Keeps secrets in memory, as agentd keeps them in its database.
+#[derive(Default)]
+struct FakeSecrets {
+    kept: RefCell<Vec<agent::secrets::Secret>>,
+}
+
+impl SecretsApi for FakeSecrets {
+    fn set<'a>(
+        &'a self,
+        name: &'a str,
+        _value: &'a str,
+        allowed_hosts: Option<Vec<String>>,
+    ) -> LocalFuture<'a, Result<agent::secrets::Secret, Error>> {
+        Box::pin(async move {
+            let mut kept = self.kept.borrow_mut();
+            let earlier = kept
+                .iter()
+                .position(|secret| secret.name == name)
+                .map(|index| kept.remove(index));
+            let allowed_hosts = allowed_hosts
+                .or_else(|| earlier.map(|secret| secret.allowed_hosts))
+                .ok_or_else(|| Error::Invalid("a new secret needs the hosts its value may reach".into()))?;
+            let secret = agent::secrets::Secret {
+                name: name.into(),
+                allowed_hosts,
+                created_at: time::OffsetDateTime::UNIX_EPOCH,
+                updated_at: time::OffsetDateTime::UNIX_EPOCH,
+            };
+            kept.push(secret.clone());
+            Ok(secret)
+        })
+    }
+
+    fn list(&self) -> LocalFuture<'_, Result<Vec<agent::secrets::Secret>, Error>> {
+        Box::pin(async { Ok(self.kept.borrow().clone()) })
+    }
+
+    fn remove<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Option<agent::secrets::Secret>, Error>> {
+        Box::pin(async move {
+            let mut kept = self.kept.borrow_mut();
+            Ok(kept
+                .iter()
+                .position(|secret| secret.name == name)
+                .map(|index| kept.remove(index)))
+        })
     }
 }
 
@@ -538,7 +586,8 @@ fn api_serving(control_plane: Rc<ControlPlane>, volumes: Option<Rc<dyn VolumeApi
             changes.clone(),
             Rc::new(move |error| observed_errors.borrow_mut().push(error.to_string())),
         )
-        .with_accounts(Rc::new(FakeAccounts)),
+        .with_accounts(Rc::new(FakeAccounts))
+        .with_secrets(Rc::new(FakeSecrets::default())),
     );
     let server = match volumes {
         Some(volumes) => Rc::new(Rc::into_inner(server).expect("the only server").with_volumes(volumes)),
@@ -911,6 +960,67 @@ async fn a_github_login_or_logout_wakes_the_agents_asking_for_that_name_only() {
         .await
         .expect("logout");
     assert_eq!(forgotten.as_ref().map(agent::accounts::Account::name), Some("digdir"));
+    assert_eq!(*fixture.woken.borrow(), ["ours", "ours"]);
+}
+
+/// Keeping or removing a secret re-converges the agents that use it, so they get a new host list,
+/// or start or stop for a secret now kept or gone, at once. The list reports the agents from
+/// agentd, so every client shows the same.
+#[tokio::test(flavor = "local")]
+async fn keeping_or_removing_a_secret_wakes_the_agents_that_use_it_only() {
+    let fixture = api();
+    let client = &fixture.client;
+    for (name, secret) in [("ours", Some("aivar")), ("theirs", Some("models")), ("plain", None)] {
+        let mut request = request(name);
+        request.agent.spec.secrets = secret
+            .map(|secret| agent::SecretSpec {
+                environment: "API_KEY".into(),
+                optional: false,
+                placeholder: None,
+                allowed_hosts: vec!["api.example.com".into()],
+                source: None,
+                secret: Some(secret.into()),
+            })
+            .into_iter()
+            .collect();
+        client.apply(request).await.expect("apply");
+    }
+
+    client
+        .secret_set("aivar", "sk-FAKE", None)
+        .await
+        .expect_err("a new secret needs hosts");
+    assert!(fixture.woken.borrow().is_empty(), "a refused secret wakes nothing");
+
+    let kept = client
+        .secret_set("aivar", "sk-FAKE", Some(vec!["*.example.com".into()]))
+        .await
+        .expect("kept");
+    assert_eq!(
+        kept.used_by.iter().map(|used| used.agent.as_str()).collect::<Vec<_>>(),
+        ["ours"]
+    );
+    assert_eq!(*fixture.woken.borrow(), ["ours"]);
+
+    let report = client.secrets().await.expect("secrets");
+    assert_eq!(report.secrets, [kept]);
+    assert_eq!(
+        report
+            .missing
+            .iter()
+            .map(|missing| missing.name.as_str())
+            .collect::<Vec<_>>(),
+        ["models"]
+    );
+
+    assert_eq!(client.secret_remove("models").await.expect("nothing to remove"), None);
+    assert_eq!(*fixture.woken.borrow(), ["ours"], "removing nothing wakes nothing");
+    let removed = client
+        .secret_remove("aivar")
+        .await
+        .expect("remove")
+        .expect("it was kept");
+    assert_eq!(removed.used_by.len(), 1);
     assert_eq!(*fixture.woken.borrow(), ["ours", "ours"]);
 }
 

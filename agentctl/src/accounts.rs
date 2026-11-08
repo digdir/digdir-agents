@@ -13,12 +13,6 @@ use zeroize::Zeroizing;
 
 use crate::{Error, Spec, github, harness::MediatedSecret, manifest::AccountSpec, persistence, sandbox::AccountSetup};
 
-/// The longest name an account is kept under.
-pub(crate) const NAME_MAX_LENGTH: usize = 64;
-/// What an account's name must be, said without repeating the value, which may be a misplaced
-/// credential.
-pub const NAME_RULE: &str = "the name must be letters, digits and inner hyphens, at most 64 characters";
-
 /// The types of account an agent can act as.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,17 +35,6 @@ impl std::fmt::Display for AccountType {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.as_str())
     }
-}
-
-/// Whether `name` can name an account: ASCII letters, digits and inner hyphens, at most 64
-/// characters. Names become secret names, so nothing else passes. Names are compared in lowercase.
-#[must_use]
-pub fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= NAME_MAX_LENGTH
-        && !name.starts_with('-')
-        && !name.ends_with('-')
-        && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 /// A kept account, without its credential.
@@ -190,29 +173,6 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
-
-    #[test]
-    fn names_are_letters_digits_and_inner_hyphens() {
-        for name in ["digdir", "Digdir", "a", "a-b", "x2", "altinn-studio", &"a".repeat(64)] {
-            assert!(valid_name(name), "{name}");
-        }
-        for name in [
-            "",
-            "../x",
-            "..",
-            "a/b",
-            "-a",
-            "a-",
-            "a_b",
-            "a.b",
-            "a b",
-            "a%2fb",
-            "æ",
-            &"a".repeat(65),
-        ] {
-            assert!(!valid_name(name), "{name}");
-        }
-    }
 
     #[test]
     fn accounts_name_their_type_on_the_wire() {

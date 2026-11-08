@@ -241,7 +241,8 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
             Rc::new(|error| tracing::error!(%error, "Control API connection failed")),
         )
         .with_volumes(volumes)
-        .with_accounts(Rc::new(agent::accounts::Accounts::new(database.clone()))),
+        .with_accounts(Rc::new(agent::accounts::Accounts::new(database.clone())))
+        .with_secrets(Rc::new(agent::secrets::Secrets::new(database.clone()))),
     );
     let mut controller_task = tokio::task::spawn_local(controller.run());
     let mut session_controller_task = tokio::task::spawn_local(session_controller.run());
