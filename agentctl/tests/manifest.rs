@@ -772,13 +772,13 @@ fn a_github_account_names_its_token_and_round_trips() {
     use agent::accounts::AccountType;
 
     let agent = manifest::decode(&manifest_with_access(
-        "  accounts:\n    - type: github\n      name: Digdir-Team\n",
+        "  accounts:\n    - type: github\n      login: Digdir-Team\n",
     ))
     .expect("a GitHub account");
     assert_eq!(agent.spec.account(AccountType::Github), Some("Digdir-Team"));
     let encoded = serde_yaml_ng::to_string(&agent).expect("encode");
     assert!(
-        encoded.contains("accounts:\n  - type: github\n    name: Digdir-Team\n"),
+        encoded.contains("accounts:\n  - type: github\n    login: Digdir-Team\n"),
         "{encoded}"
     );
     assert_eq!(
@@ -792,15 +792,15 @@ fn a_github_account_names_its_token_and_round_trips() {
     for name in ["not/a/name", "-digdir", "a_b", "\"\""] {
         assert!(
             matches!(
-                manifest::decode(&manifest_with_access(&format!("  accounts:\n    - type: github\n      name: {name}\n"))),
-                Err(agent::Error::Invalid(message)) if message.contains("spec.accounts[0].name")
+                manifest::decode(&manifest_with_access(&format!("  accounts:\n    - type: github\n      login: {name}\n"))),
+                Err(agent::Error::Invalid(message)) if message.contains("spec.accounts[0].login")
             ),
             "{name}"
         );
     }
     assert!(matches!(
         manifest::decode(&manifest_with_access(
-            "  accounts:\n    - type: github\n      name: digdir\n    - type: github\n      name: altinn\n"
+            "  accounts:\n    - type: github\n      login: digdir\n    - type: github\n      login: altinn\n"
         )),
         Err(agent::Error::Invalid(message))
             if message.contains("spec.accounts[1] is a second github account")
@@ -811,8 +811,9 @@ fn a_github_account_names_its_token_and_round_trips() {
 fn a_github_account_takes_only_a_name() {
     for account in [
         "    - type: github\n",
-        "    - type: github\n      name: digdir\n      allowedHosts: [example.com]\n",
-        "    - type: github\n      name: digdir\n      user: bot\n",
+        "    - type: github\n      login: digdir\n      allowedHosts: [example.com]\n",
+        "    - type: github\n      login: digdir\n      user: bot\n",
+        "    - type: github\n      name: digdir\n",
         "    - type: gitlab\n      name: digdir\n",
     ] {
         assert!(
@@ -827,7 +828,7 @@ fn a_github_account_takes_only_a_name() {
 
 #[test]
 fn a_github_account_owns_github_token() {
-    const ACCOUNT: &str = "  accounts:\n    - type: github\n      name: digdir\n";
+    const ACCOUNT: &str = "  accounts:\n    - type: github\n      login: digdir\n";
     let own_secret = "  secrets:\n    - environment: GITHUB_TOKEN\n      allowedHosts: [github.com]\n";
     manifest::decode(&manifest_with_access(own_secret)).expect("without an account, a manifest may bind its own");
     for secrets in [

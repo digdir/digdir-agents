@@ -233,14 +233,14 @@ pub(crate) struct LogoutResult {
     pub forgotten: bool,
 }
 
-/// A credential to check and keep as the account `name` of its type. Deliberately not `Debug`: it
-/// holds the credential.
+/// A credential to check and keep as the login `login` for an account of its type. Deliberately
+/// not `Debug`: it holds the credential.
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AccountLoginParams {
     #[serde(rename = "type")]
     pub account_type: crate::accounts::AccountType,
-    pub name: String,
+    pub login: String,
     pub credential: String,
 }
 
@@ -249,7 +249,7 @@ pub(crate) struct AccountLoginParams {
 pub(crate) struct AccountParams {
     #[serde(rename = "type")]
     pub account_type: crate::accounts::AccountType,
-    pub name: String,
+    pub login: String,
 }
 
 /// What `accounts.v1.logout` forgot; a bare `null` result would read as no result at all.

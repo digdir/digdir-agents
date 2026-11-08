@@ -382,7 +382,7 @@ impl Client {
     ) -> Result<crate::accounts::Login, Error> {
         let params = AccountLoginParams {
             account_type,
-            name: name.to_owned(),
+            login: name.to_owned(),
             credential: credential.to_owned(),
         };
         self.call(METHOD_ACCOUNT_LOGIN, params).await
@@ -400,7 +400,7 @@ impl Client {
     ) -> Result<Option<crate::accounts::Account>, Error> {
         let params = AccountParams {
             account_type,
-            name: name.into(),
+            login: name.into(),
         };
         let result: AccountLogoutResult = self.call(METHOD_ACCOUNT_LOGOUT, params).await?;
         Ok(result.forgotten)

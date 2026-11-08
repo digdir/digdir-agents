@@ -279,11 +279,11 @@ pub enum AccessSpec {
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase", tag = "type")]
 pub enum AccountSpec {
-    /// The GitHub token `agentctl github login <name>` kept: a mediated `GITHUB_TOKEN` for
-    /// GitHub's hosts, and the token's account as Git identity.
+    /// The GitHub account behind the login `agentctl github login <login>` kept: a mediated
+    /// `GITHUB_TOKEN` for GitHub's hosts, and the account as Git identity.
     Github {
-        /// The name the token is stored under, such as `altinn-studio`.
-        name: String,
+        /// The login the agent uses, as it was kept, such as `altinn-studio`.
+        login: String,
     },
 }
 
@@ -296,11 +296,11 @@ impl AccountSpec {
         }
     }
 
-    /// The name the account is kept under.
+    /// The login the agent uses for the account, by the name it was kept under.
     #[must_use]
-    pub fn name(&self) -> &str {
+    pub fn login(&self) -> &str {
         match self {
-            Self::Github { name } => name,
+            Self::Github { login } => login,
         }
     }
 }
@@ -645,13 +645,13 @@ impl Spec {
         self.access.contains(&AccessSpec::Vnc {})
     }
 
-    /// The name of the agent's account of `account_type`, when it has one.
+    /// The login the agent uses for its account of `account_type`, when it has one.
     #[must_use]
     pub fn account(&self, account_type: crate::accounts::AccountType) -> Option<&str> {
         self.accounts
             .iter()
             .find(|account| account.account_type() == account_type)
-            .map(AccountSpec::name)
+            .map(AccountSpec::login)
     }
 
     fn validate(&self) -> Result<(), Error> {
@@ -754,9 +754,9 @@ impl Spec {
                     account.account_type()
                 )));
             }
-            if !crate::accounts::valid_name(account.name()) {
+            if !crate::accounts::valid_name(account.login()) {
                 return Err(Error::Invalid(format!(
-                    "spec.accounts[{index}].name: {}",
+                    "spec.accounts[{index}].login: {}",
                     crate::accounts::NAME_RULE
                 )));
             }

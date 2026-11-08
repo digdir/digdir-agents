@@ -387,9 +387,9 @@ spec:
   harnesses: []
   accounts:
     - type: github
-      name: Digdir
+      login: Digdir
 ";
-    const ACCOUNTS: &str = "  accounts:\n    - type: github\n      name: Digdir\n";
+    const ACCOUNTS: &str = "  accounts:\n    - type: github\n      login: Digdir\n";
 
     /// Stores a fake GitHub token as `name`, expiring at `expires_at` (RFC 3339) when given.
     async fn store_token(database: &crate::persistence::Database, name: &str, expires_at: Option<&str>) {

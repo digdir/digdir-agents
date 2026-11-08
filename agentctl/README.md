@@ -32,15 +32,16 @@ To keep more than one subscription, such as one for work and one of your own, st
 `login: [work, private]` or `login: any`, each agent gets whichever of them the fewest other running agents use, and
 keeps it. `agentctl claude list` shows the logins and the agents that use each.
 
-Give agents a GitHub account by keeping a token under a name, and set `accounts: [{type: github, name: NAME}]` in the
+Give agents a GitHub account with a login kept under a name, and set `accounts: [{type: github, login: NAME}]` in the
 manifests that should use it:
 
 ```sh
 agentctl github login altinn-studio
 ```
 
-At a terminal it opens GitHub's form for a fine-grained token, filled in except for the repositories. `--from-stdin`
-also takes a classic token or `gh auth token`, which lets agents act as you everywhere you can reach.
+At a terminal you sign in through the browser as the account agents use, which needs the
+[GitHub CLI](https://cli.github.com), or create a fine-grained token for chosen repositories in GitHub's form.
+`--from-stdin` takes a token instead, such as `gh auth token`, which lets agents act as you everywhere you can reach.
 
 Give the coding agents on your machine, such as Claude Code, Codex and Pi, the skill for driving agents:
 

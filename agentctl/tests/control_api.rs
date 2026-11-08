@@ -813,7 +813,7 @@ async fn a_github_login_or_logout_wakes_the_agents_asking_for_that_name_only() {
     for (name, account) in [("ours", Some("DigDir")), ("theirs", Some("altinn")), ("plain", None)] {
         let mut request = request(name);
         request.agent.spec.accounts = account
-            .map(|account| agent::AccountSpec::Github { name: account.into() })
+            .map(|account| agent::AccountSpec::Github { login: account.into() })
             .into_iter()
             .collect();
         client.apply(request).await.expect("apply");

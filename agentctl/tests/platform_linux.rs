@@ -926,7 +926,7 @@ async fn git_commands_with_identity(
     resource.metadata.generation = 1;
     resource.spec.home = None;
     if github_account {
-        resource.spec.accounts = vec![agent::AccountSpec::Github { name: "digdir".into() }];
+        resource.spec.accounts = vec![agent::AccountSpec::Github { login: "digdir".into() }];
     }
     let record = AgentRecord {
         id: "2f6c3a1e-7d4b-4c8e-9a0f-1b2c3d4e5f60".parse().expect("Agent ID"),

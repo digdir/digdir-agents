@@ -995,11 +995,11 @@ impl Server {
     async fn handle_account_login(&self, id: u64, value: Value) -> Response {
         // The parser's message could quote the credential, so it is never passed on.
         let Ok(params) = serde_json::from_value::<AccountLoginParams>(value) else {
-            return error_response(id, CODE_INVALID_PARAMS, "type, name and credential are required");
+            return error_response(id, CODE_INVALID_PARAMS, "type, login and credential are required");
         };
         let login = self
             .authentication
-            .account_login(params.account_type, &params.name, &params.credential)
+            .account_login(params.account_type, &params.login, &params.credential)
             .await;
         if let Ok(login) = &login {
             self.wake_account(&login.account()).await;
@@ -1009,11 +1009,11 @@ impl Server {
 
     async fn handle_account_logout(&self, id: u64, value: Value) -> Response {
         let Ok(params) = serde_json::from_value::<AccountParams>(value) else {
-            return error_response(id, CODE_INVALID_PARAMS, "type and name are required");
+            return error_response(id, CODE_INVALID_PARAMS, "type and login are required");
         };
         let forgotten = self
             .authentication
-            .account_logout(params.account_type, &params.name)
+            .account_logout(params.account_type, &params.login)
             .await;
         if let Ok(Some(account)) = &forgotten {
             self.wake_account(account).await;

@@ -138,7 +138,7 @@ enum Command {
         #[command(subcommand)]
         command: skills::SkillsCommand,
     },
-    /// Give agents a GitHub account, one token per user or organization they work for.
+    /// Give agents a GitHub account, through logins kept under names their manifests ask for.
     Github {
         #[command(subcommand)]
         command: GithubCommand,
@@ -584,27 +584,27 @@ enum CodexCommand {
 
 #[derive(Subcommand)]
 enum GithubCommand {
-    /// Keep a GitHub token under a name, separate from any `gh` login.
+    /// Keep a GitHub login under a name, separate from your own `gh` login.
     ///
-    /// At a terminal it opens GitHub's form for a fine-grained token, filled in except for the
-    /// repositories, and reads the token you paste without showing it. Fine-grained, classic and
-    /// GitHub CLI tokens are taken. Agents whose manifest has `accounts: [{type: github, name:
+    /// At a terminal you sign in through the browser as the account agents use, with the GitHub
+    /// CLI, or create a fine-grained token in GitHub's form, filled in except for the repositories,
+    /// and paste it without it showing. Agents whose manifest has `accounts: [{type: github, login:
     /// NAME}]` use it at once.
     Login {
-        /// The name manifests ask for the token by, such as `altinn-studio`.
+        /// The name manifests ask for the login by, such as `altinn-studio`.
         name: String,
-        /// Read the token from standard input instead, such as `gh auth token | agentctl github
-        /// login NAME --from-stdin`.
+        /// Read a token from standard input instead: fine-grained, classic or a GitHub CLI login's,
+        /// such as `gh auth token | agentctl github login NAME --from-stdin`.
         #[arg(long)]
         from_stdin: bool,
     },
-    /// List the kept tokens, and the names agents ask for that have none.
+    /// List the kept logins, and the logins agents ask for that are not kept.
     List,
-    /// Forget a kept token; agents asking for it lose GitHub access at once, and nothing else.
+    /// Forget a kept login; agents asking for it lose GitHub access at once, and nothing else.
     ///
-    /// The token keeps working on GitHub until it expires or you revoke it there.
+    /// Its token keeps working on GitHub until it expires or you revoke it there.
     Logout {
-        /// The token's name, as `agentctl github list` shows it.
+        /// The login's name, as `agentctl github list` shows it.
         name: String,
     },
 }

@@ -1,5 +1,5 @@
-//! `agentctl github`: the GitHub accounts agents use, each a token kept under a name manifests ask
-//! for.
+//! `agentctl github`: the GitHub accounts agents use, through logins kept under names manifests
+//! ask for.
 
 use std::fmt::Write as _;
 
@@ -14,28 +14,28 @@ use zeroize::Zeroizing;
 
 use crate::{CommandResult, prompt};
 
-/// Has agentd keep a GitHub token as `name`. At a terminal it walks the person through GitHub's
-/// pre-filled form for a fine-grained token and reads the pasted token without showing it. With
-/// `from_stdin` it reads the token from standard input instead. What GitHub says about the token,
-/// with warnings, is shown once it is kept.
+/// Has agentd keep a GitHub login as `name`. At a terminal the person signs in through the browser
+/// as the account agents use, or creates a fine-grained token in GitHub's pre-filled form and
+/// pastes it without it showing. With `from_stdin` the token comes from standard input instead.
+/// What GitHub says about the token, with warnings, is shown once it is kept.
 ///
 /// # Errors
 ///
-/// Returns an error when the name is invalid, there is no terminal to paste on without
-/// `from_stdin`, no token is given, GitHub rejects it, or agentd cannot keep it.
+/// Returns an error when the name is invalid, there is no terminal to sign in at without
+/// `from_stdin`, the sign-in fails, no token is given, GitHub rejects it, or agentd cannot keep it.
 pub(crate) async fn login(client: &Client, name: &str, from_stdin: bool) -> CommandResult<()> {
     let name = token_name(name)?;
     let token = if from_stdin {
         crate::read_token_from_stdin()?
     } else if prompt::interactive() {
-        let owner = ask_owner()?;
-        paste_from_form(&owner, &name).await?
+        sign_in(&name).await?
     } else {
         return Err(Error::Invalid(
-            "no terminal to paste the token on; pipe it to `agentctl github login NAME --from-stdin`".into(),
+            "no terminal to sign in at; pipe a token to `agentctl github login NAME --from-stdin`".into(),
         )
         .into());
     };
+    eprintln!("Checking the token with GitHub...");
     let accounts::Login::Github(login) = client.account_login(AccountType::Github, &name, &token).await?;
     let now = OffsetDateTime::now_utc();
     eprint!("{}", summary(&login, &warnings(&login, now), now));
@@ -44,16 +44,44 @@ pub(crate) async fn login(client: &Client, name: &str, from_stdin: bool) -> Comm
     Ok(())
 }
 
+/// The ways a person at a terminal gets agents a token, in the order offered.
+const SIGN_IN_OPTIONS: [&str; 2] = [
+    "Through the browser, as the account agents use",
+    "With a fine-grained token for chosen repositories",
+];
+
+/// Asks how to get a token for the login `name` and gets it: through the browser with the GitHub
+/// CLI, or from GitHub's form. Without the GitHub CLI the form is the only way.
+async fn sign_in(name: &str) -> Result<Zeroizing<String>, Error> {
+    if prompt::choose("How should agents sign in to GitHub?", &SIGN_IN_OPTIONS)? == 0 {
+        let path = std::env::var_os("PATH");
+        if let Some(gh) = agent::local::process::find_executable(path.as_deref(), &["gh", "gh.exe"]) {
+            // Enter opens the default browser, which is usually signed in as the person.
+            eprintln!(
+                "\nSign in as the account agents should use, not your own: open the address below in a browser \
+                 or private window signed in as that account, and enter the code."
+            );
+            return agent::github::sign_in(&gh);
+        }
+        eprintln!(
+            "Signing in through the browser needs the GitHub CLI, `gh`, from https://cli.github.com. \
+             Create a token in GitHub's form instead, or install `gh` and run this again."
+        );
+    }
+    let owner = ask_owner()?;
+    paste_from_form(&owner, name).await
+}
+
 fn stored_line(login: &Login) -> String {
     format!(
-        "Agents asking for {} now use GitHub as {}.",
+        "Agents asking for the login {} now use GitHub as {}.",
         login.account.name, login.account.identity.login
     )
 }
 
-/// What a manifest names to use the token kept as `name`.
+/// What a manifest names to use the login kept as `name`.
 fn manifest_line(name: &str) -> String {
-    format!("Agents use it with `accounts: [{{type: github, name: {name}}}]` in their manifest.")
+    format!("Agents use it with `accounts: [{{type: github, login: {name}}}]` in their manifest.")
 }
 
 /// The user or organization the person names as the owner of the repositories the token reaches.
@@ -105,8 +133,8 @@ async fn paste_from_form(owner: &str, name: &str) -> Result<Zeroizing<String>, E
     prompt::secret(&format!("Paste the GitHub token for {name} (it is not shown)"))
 }
 
-/// Lists the kept tokens: name, account, kind and expiry, then the names agents ask for that
-/// have no token.
+/// Lists the kept logins: name, account, kind and expiry, then the logins agents ask for that
+/// are not kept.
 ///
 /// # Errors
 ///
@@ -143,7 +171,7 @@ fn unkept(kept: &[Account], agents: &[Agent]) -> String {
     for (name, agents) in wanted {
         let _ = writeln!(
             text,
-            "\nNo token is kept as {name}, which {} ask for, so they run without GitHub access. \
+            "\nNo login named {name} is kept, which {} ask for, so they run without GitHub access. \
              Keep one with `agentctl github login {name}`.",
             agents.join(", ")
         );
@@ -151,7 +179,7 @@ fn unkept(kept: &[Account], agents: &[Agent]) -> String {
     text
 }
 
-/// Forgets the token named `name`, and says where to revoke it on GitHub.
+/// Forgets the login named `name`, and says where to revoke its token on GitHub.
 ///
 /// # Errors
 ///
@@ -160,7 +188,7 @@ pub(crate) async fn logout(client: &Client, name: &str) -> CommandResult<()> {
     let name = &token_name(name)?;
     match client.account_logout(AccountType::Github, name).await? {
         Some(accounts::Account::Github(account)) => print!("{}", forgotten(&account)),
-        None => println!("No GitHub token named {name} is kept; nothing changed."),
+        None => println!("No GitHub login named {name} is kept; nothing changed."),
     }
     Ok(())
 }
@@ -201,7 +229,7 @@ fn summary(login: &Login, warnings: &[String], now: OffsetDateTime) -> String {
     let account = &login.account;
     let identity = &account.identity;
     let mut text = format!(
-        "\n  Name:     {}\n  Acts as:  {} ({} <{}>)\n  Kind:     {}\n  Expires:  {}\n",
+        "\n  Login:    {}\n  Acts as:  {} ({} <{}>)\n  Kind:     {}\n  Expires:  {}\n",
         account.name,
         identity.login,
         identity.name,
@@ -217,7 +245,7 @@ fn summary(login: &Login, warnings: &[String], now: OffsetDateTime) -> String {
 
 fn table(accounts: &[Account], now: OffsetDateTime) -> String {
     if accounts.is_empty() {
-        return "No GitHub tokens are kept. Keep one with `agentctl github login NAME`.\n".into();
+        return "No GitHub logins are kept. Keep one with `agentctl github login NAME`.\n".into();
     }
     let rows: Vec<[String; 4]> = accounts
         .iter()
@@ -237,10 +265,10 @@ fn table(accounts: &[Account], now: OffsetDateTime) -> String {
             .max()
             .unwrap_or_default()
     };
-    let (name, account, kind) = (width(0, "NAME"), width(1, "ACCOUNT"), width(2, "KIND"));
+    let (name, account, kind) = (width(0, "LOGIN"), width(1, "ACCOUNT"), width(2, "KIND"));
     let mut text = format!(
         "{:<name$}  {:<account$}  {:<kind$}  EXPIRES\n",
-        "NAME", "ACCOUNT", "KIND"
+        "LOGIN", "ACCOUNT", "KIND"
     );
     for [n, a, k, e] in &rows {
         let _ = writeln!(text, "{n:<name$}  {a:<account$}  {k:<kind$}  {e}");
@@ -259,8 +287,8 @@ fn expiry(account: &Account, now: OffsetDateTime) -> String {
 
 fn forgotten(account: &Account) -> String {
     format!(
-        "Forgot the GitHub token {name}; agents asking for {name} lose GitHub access at once, and nothing else.\n\
-         It works on GitHub until it expires or is revoked: sign in as {login} at {page}\n",
+        "Forgot the GitHub login {name}; agents asking for it lose GitHub access at once, and nothing else.\n\
+         Its token works on GitHub until it expires or is revoked: sign in as {login} at {page}\n",
         name = account.name,
         login = account.identity.login,
         page = account.kind.revoke_page()
@@ -304,7 +332,7 @@ mod tests {
         let before = january() - time::Duration::days(30);
         assert_eq!(
             summary(&narrow, &warnings(&narrow, before), before),
-            "\n  Name:     digdir\n  Acts as:  digdir-bot (digdir bot <1+digdir-bot@users.noreply.github.com>)\n  Kind:     fine-grained\n  Expires:  2027-01-13\n"
+            "\n  Login:    digdir\n  Acts as:  digdir-bot (digdir bot <1+digdir-bot@users.noreply.github.com>)\n  Kind:     fine-grained\n  Expires:  2027-01-13\n"
         );
         let broad = checked("digdir", TokenKind::Classic, None, &["workflow"]);
         let text = summary(&broad, &warnings(&broad, january()), january());
@@ -344,13 +372,13 @@ mod tests {
     fn the_manifest_line_names_the_account() {
         assert_eq!(
             manifest_line("digdir-agent"),
-            "Agents use it with `accounts: [{type: github, name: digdir-agent}]` in their manifest."
+            "Agents use it with `accounts: [{type: github, login: digdir-agent}]` in their manifest."
         );
     }
 
     fn agent_asking_for(name: &str, account: Option<&str>) -> Agent {
         let accounts = account.map_or_else(String::new, |account| {
-            format!("  accounts: [{{type: github, name: {account}}}]\n")
+            format!("  accounts: [{{type: github, login: {account}}}]\n")
         });
         let manifest = format!(
             "apiVersion: agents.platform/v1alpha1
@@ -387,7 +415,7 @@ spec:
         let kept = [token("digdir", TokenKind::FineGrained, None)];
         assert_eq!(
             unkept(&kept, &agents),
-            "\nNo token is kept as case-web, which web, api ask for, so they run without GitHub access. \
+            "\nNo login named case-web is kept, which web, api ask for, so they run without GitHub access. \
              Keep one with `agentctl github login case-web`.\n"
         );
         assert_eq!(unkept(&kept, &agents[2..]), "");
@@ -403,12 +431,12 @@ spec:
         assert_eq!(
             text,
             "\
-NAME    ACCOUNT     KIND          EXPIRES
+LOGIN   ACCOUNT     KIND          EXPIRES
 digdir  digdir-bot  fine-grained  2027-01-13 (expired)
 altinn  altinn-bot  classic       none stated
 "
         );
-        assert!(table(&[], january()).starts_with("No GitHub tokens are kept."));
+        assert!(table(&[], january()).starts_with("No GitHub logins are kept."));
     }
 
     #[test]
@@ -416,8 +444,8 @@ altinn  altinn-bot  classic       none stated
         let text = forgotten(&token("digdir", TokenKind::FineGrained, None));
         assert_eq!(
             text,
-            "Forgot the GitHub token digdir; agents asking for digdir lose GitHub access at once, and nothing else.\n\
-             It works on GitHub until it expires or is revoked: sign in as digdir-bot at https://github.com/settings/personal-access-tokens\n"
+            "Forgot the GitHub login digdir; agents asking for it lose GitHub access at once, and nothing else.\n\
+             Its token works on GitHub until it expires or is revoked: sign in as digdir-bot at https://github.com/settings/personal-access-tokens\n"
         );
         assert!(forgotten(&token("digdir", TokenKind::Classic, None)).contains("https://github.com/settings/tokens\n"));
     }

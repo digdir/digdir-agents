@@ -5,11 +5,13 @@
 //! acts as and when it expires. The token stays in the host's secret store. What is listed and
 //! returned about it never contains it.
 
+mod gh;
 mod inspect;
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+pub use gh::sign_in;
 pub use inspect::SCOPES;
 
 use crate::{
@@ -312,18 +314,26 @@ pub fn setup(name: &str, account: Option<&Account>) -> AccountSetup {
     }
 }
 
-/// How GitHub works for the agent: as the account itself when its token reaches all the account
-/// can, else for the repositories the token was created for, as a fine-grained token is.
+/// How GitHub works for the agent: as the account, for what its token reaches, or not at all
+/// until the login `name` is kept. The agent is told what a refusal likely means, so it tells the
+/// person instead of working around it.
 fn instructions(name: &str, account: Option<&Account>) -> String {
-    let reach = match account {
-        Some(account) if !account.kind.single_owner() => {
-            format!("as `{}`, for whatever that account can reach", account.identity.login)
-        }
-        _ => format!("for the repositories the `{name}` token was created for"),
+    let Some(account) = account else {
+        return format!(
+            "GitHub doesn't work yet: no login named `{name}` is kept. Ask the person to run \
+             `agentctl github login {name}`, which takes effect at once."
+        );
+    };
+    let login = &account.identity.login;
+    let reach = if account.kind.single_owner() {
+        "for the repositories its token was created for".to_owned()
+    } else {
+        format!("for whatever `{login}` can reach")
     };
     format!(
-        "`gh` and `git` over HTTPS work {reach}, and SSH remotes on github.com go over HTTPS; \
-         `gh api user --jq .login` shows the account. Don't run `gh auth login` or replace `GITHUB_TOKEN`."
+        "`gh` and `git` over HTTPS work as `{login}`, {reach}. SSH remotes on github.com go over HTTPS. When \
+         GitHub answers 403 or 404 for a repository, the token may not reach it or its organization may not \
+         have approved it yet, so tell the person. Don't run `gh auth login` or replace `GITHUB_TOKEN`."
     )
 }
 
@@ -877,11 +887,13 @@ mod tests {
             kind,
             expires_at: None,
         };
+        let not_kept = "GitHub doesn't work yet: no login named `altinn-studio` is kept. Ask the person to run \
+                        `agentctl github login altinn-studio`";
         let repositories =
-            "`gh` and `git` over HTTPS work for the repositories the `altinn-studio` token was created for,";
-        let everywhere = "`gh` and `git` over HTTPS work as `digdir-agent`, for whatever that account can reach,";
+            "`gh` and `git` over HTTPS work as `digdir-agent`, for the repositories its token was created for.";
+        let everywhere = "`gh` and `git` over HTTPS work as `digdir-agent`, for whatever `digdir-agent` can reach.";
         for (account, expected) in [
-            (None, repositories),
+            (None, not_kept),
             (Some(account(TokenKind::FineGrained)), repositories),
             (Some(account(TokenKind::Oauth)), everywhere),
             (Some(account(TokenKind::Classic)), everywhere),
@@ -891,7 +903,7 @@ mod tests {
                 panic!("one GitHub line: {:?}", setup.instructions);
             };
             assert!(text.starts_with(expected), "{expected} in {text}");
-            assert!(text.contains("`gh api user --jq .login`"), "{text}");
+            assert_eq!(text.contains("403 or 404"), account.is_some(), "{text}");
             assert_eq!(
                 setup.git_identity.map(|identity| identity.email),
                 account.map(|account| account.identity.email)
