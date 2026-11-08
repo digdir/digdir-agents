@@ -107,9 +107,10 @@ impl PlatformAdapter for Linux {
         record: &'a control_plane::AgentRecord,
         sandbox: &'a SandboxHandle,
         harnesses: &'a [crate::Harness],
+        accounts: &'a crate::sandbox::AccountSetup,
         steps: &'a ::sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<PlatformSetup, Error>> {
-        Box::pin(self.setup(record, sandbox, harnesses, steps))
+        Box::pin(self.setup(record, sandbox, harnesses, accounts, steps))
     }
 }
 
@@ -121,6 +122,7 @@ impl Linux {
         record: &control_plane::AgentRecord,
         sandbox: &SandboxHandle,
         harnesses: &[crate::Harness],
+        accounts: &crate::sandbox::AccountSetup,
         steps: &::sandbox::SandboxProgress,
     ) -> Result<PlatformSetup, Error> {
         let installations: Vec<&crate::HarnessSpec> = record
@@ -146,13 +148,14 @@ impl Linux {
         step.complete().await;
         mount_writable_volumes(record, sandbox, steps).await?;
         let step = steps.start_step("Sync home").await;
-        set_up_home(record, sandbox, podman).await?;
+        set_up_home(record, sandbox, podman, accounts.git_identity.as_ref()).await?;
         step.complete().await;
         let observed = preamble::Observed {
             harnesses,
             environment: &sandbox.snapshot().environment,
             kvm,
             podman,
+            accounts,
         };
         let section = preamble::render(record, &observed);
         let mut missing = Vec::new();
@@ -256,8 +259,13 @@ async fn read_owned_instructions(sandbox: &SandboxHandle, path: &str) -> Result<
 }
 
 /// Copies the agent's home into the sandbox when it has one, points Podman at its socket when the
-/// image has Podman, and sets the Git identity.
-async fn set_up_home(record: &control_plane::AgentRecord, sandbox: &SandboxHandle, podman: bool) -> Result<(), Error> {
+/// image has Podman, and sets the Git identity, from the manifest or else from the agent's account.
+async fn set_up_home(
+    record: &control_plane::AgentRecord,
+    sandbox: &SandboxHandle,
+    podman: bool,
+    account_identity: Option<&crate::sandbox::GitIdentity>,
+) -> Result<(), Error> {
     if let Some(home) = &record.agent.spec.home {
         let archive = archive_home(record.source_directory.clone(), home.source.clone()).await?;
         sync_home(sandbox, archive).await?;
@@ -266,18 +274,27 @@ async fn set_up_home(record: &control_plane::AgentRecord, sandbox: &SandboxHandl
         // After the home sync, so a file of the same name in the agent's home cannot replace it.
         point_podman_at_socket(sandbox).await?;
     }
-    configure_git_identity(sandbox).await
+    configure_git_identity(sandbox, account_identity).await
 }
 
-async fn configure_git_identity(sandbox: &SandboxHandle) -> Result<(), Error> {
+/// Sets Git's commit identity from `GIT_USER_NAME` and `GIT_USER_EMAIL`, or else from the agent's
+/// account, when the image has Git.
+async fn configure_git_identity(
+    sandbox: &SandboxHandle,
+    account_identity: Option<&crate::sandbox::GitIdentity>,
+) -> Result<(), Error> {
     let environment = &sandbox.snapshot().environment;
-    let (Some(name), Some(email)) = (environment.get("GIT_USER_NAME"), environment.get("GIT_USER_EMAIL")) else {
-        if environment.contains_key("GIT_USER_NAME") || environment.contains_key("GIT_USER_EMAIL") {
+    let (name, email) = match (environment.get("GIT_USER_NAME"), environment.get("GIT_USER_EMAIL")) {
+        (Some(name), Some(email)) => (name, email),
+        (None, None) => match account_identity {
+            Some(identity) => (&identity.name, &identity.email),
+            None => return Ok(()),
+        },
+        _ => {
             return Err(Error::Invalid(
                 "GIT_USER_NAME and GIT_USER_EMAIL must both be configured".into(),
             ));
         }
-        return Ok(());
     };
     let present = sandbox
         .run_execution(ExecutionSpec::command(

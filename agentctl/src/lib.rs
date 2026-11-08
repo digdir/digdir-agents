@@ -3,12 +3,14 @@
 //! This crate depends on the generic sandbox crates. The reverse dependency is
 //! deliberately impossible in the workspace graph.
 
+pub mod accounts;
 pub mod authorization;
 pub mod control_api;
 pub mod control_plane;
 mod controller;
 pub mod definitions;
 mod environment;
+pub mod github;
 pub mod harness;
 pub mod local;
 pub mod manifest;
@@ -27,10 +29,10 @@ pub use control_plane::AgentId;
 pub use controller::{FailureKind, ReconcileFailure};
 pub use harness::{Effort, Harness, HarnessAuthMode, HarnessSpec, Model, ModelSelection};
 pub use manifest::{
-    API_VERSION, AccessSpec, Agent, AgentVariant, AgentVariantName, Condition, ConditionStatus, EnvironmentSpec,
-    HomeSpec, InstructionsSpec, KIND, Metadata, MountSpec, MountedVolume, NestedSandboxes, NetworkAllow, NetworkMode,
-    NetworkSpec, PlatformManifestSpec, Provenance, ResolvedManifest, ResourcesManifestSpec, RunState,
-    SandboxManifestSpec, SecretSpec, SkillSpec, Spec, Status, VARIANT_KIND,
+    API_VERSION, AccessSpec, AccountSpec, Agent, AgentVariant, AgentVariantName, Condition, ConditionStatus,
+    EnvironmentSpec, HomeSpec, InstructionsSpec, KIND, Metadata, MountSpec, MountedVolume, NestedSandboxes,
+    NetworkAllow, NetworkMode, NetworkSpec, PlatformManifestSpec, Provenance, ResolvedManifest, ResourcesManifestSpec,
+    RunState, SandboxManifestSpec, SecretSpec, SkillSpec, Spec, Status, VARIANT_KIND,
 };
 
 /// Version embedded in a matched `agentctl`/`agentd` build.

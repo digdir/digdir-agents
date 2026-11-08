@@ -236,6 +236,9 @@ pub struct Spec {
     /// Ways the agent's user reaches into the sandbox besides sessions and `exec`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub access: Vec<AccessSpec>,
+    /// Accounts the Agent acts as, each signed in once on the host with `agentctl`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<AccountSpec>,
     /// Sandbox egress mediation policy; mediated with every host allowed when omitted.
     #[serde(default)]
     pub network: NetworkSpec,
@@ -267,6 +270,39 @@ pub enum AccessSpec {
     Ssh {},
     /// VNC access to the desktop the image runs, reached through `agentctl vnc`.
     Vnc {},
+}
+
+/// One account the agent acts as.
+///
+/// The platform owns the credential, its placeholder and the hosts it is substituted for; a
+/// manifest only says which account.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase", tag = "type")]
+pub enum AccountSpec {
+    /// The GitHub account behind the login `agentctl github login <login>` kept: a mediated
+    /// `GITHUB_TOKEN` for GitHub's hosts, and the account as Git identity.
+    Github {
+        /// The login the agent uses, as it was kept, such as `altinn-studio`.
+        login: String,
+    },
+}
+
+impl AccountSpec {
+    /// The account's type.
+    #[must_use]
+    pub const fn account_type(&self) -> crate::accounts::AccountType {
+        match self {
+            Self::Github { .. } => crate::accounts::AccountType::Github,
+        }
+    }
+
+    /// The login the agent uses for the account, by the name it was kept under.
+    #[must_use]
+    pub fn login(&self) -> &str {
+        match self {
+            Self::Github { login } => login,
+        }
+    }
 }
 
 /// Sandbox settings as supplied by an agent manifest.
@@ -609,6 +645,15 @@ impl Spec {
         self.access.contains(&AccessSpec::Vnc {})
     }
 
+    /// The login the agent uses for its account of `account_type`, when it has one.
+    #[must_use]
+    pub fn account(&self, account_type: crate::accounts::AccountType) -> Option<&str> {
+        self.accounts
+            .iter()
+            .find(|account| account.account_type() == account_type)
+            .map(AccountSpec::login)
+    }
+
     fn validate(&self) -> Result<(), Error> {
         validate_mounts(&self.sandbox.mounts, self.sandbox.resources.root_filesystem.mode())?;
         if self
@@ -679,6 +724,7 @@ impl Spec {
                 harness.as_str()
             )));
         }
+        self.validate_accounts()?;
         self.validate_environment()?;
         self.validate_secrets()?;
         let mut access = std::collections::BTreeSet::new();
@@ -697,6 +743,27 @@ impl Spec {
 }
 
 impl Spec {
+    /// An agent acts as at most one account of each type, so each type's credential has one
+    /// placeholder and one Git identity.
+    fn validate_accounts(&self) -> Result<(), Error> {
+        let mut types = std::collections::BTreeSet::new();
+        for (index, account) in self.accounts.iter().enumerate() {
+            if !types.insert(account.account_type()) {
+                return Err(Error::Invalid(format!(
+                    "spec.accounts[{index}] is a second {} account; an agent has at most one of each type",
+                    account.account_type()
+                )));
+            }
+            if !crate::accounts::valid_name(account.login()) {
+                return Err(Error::Invalid(format!(
+                    "spec.accounts[{index}].login: {}",
+                    crate::accounts::NAME_RULE
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn validate_secrets(&self) -> Result<(), Error> {
         let mut environments = self
             .environment
@@ -729,6 +796,8 @@ impl Spec {
                         secret.placeholder.as_deref(),
                     )
                 })
+                || (self.account(crate::accounts::AccountType::Github).is_some()
+                    && crate::github::conflicts_with_managed_secret(&secret.environment, &placeholder))
                 || secret.allowed_hosts.is_empty()
                 || !environments.insert(&secret.environment)
                 || !placeholders.insert(placeholder)
@@ -754,10 +823,12 @@ impl Spec {
                     .harnesses
                     .iter()
                     .any(|installation| harness::manages_environment(installation.kind, &variable.name))
+                || (self.account(crate::accounts::AccountType::Github).is_some()
+                    && variable.name == crate::github::ACCESS_ENVIRONMENT)
                 || !names.insert(variable.name.as_str())
             {
                 return Err(Error::Invalid(format!(
-                    "spec.environment[{index}] is invalid, duplicated, or managed by a declared harness"
+                    "spec.environment[{index}] is invalid, duplicated, or managed by a declared harness or account"
                 )));
             }
         }

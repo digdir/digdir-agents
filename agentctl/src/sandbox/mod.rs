@@ -222,6 +222,30 @@ pub struct ProviderEnsureOutcome {
     pub logins: BTreeMap<crate::Harness, crate::harness::LoginName>,
     /// Whether the sandbox got the nested sandboxes the agent asks for, when it asks for them.
     pub nested_sandboxes: Option<NestedSandboxesOutcome>,
+    /// What setup configures in the guest for the accounts the agent acts as.
+    pub accounts: AccountSetup,
+}
+
+/// What setup configures in the guest for the accounts an agent acts as.
+///
+/// Preparation fills it in from each account type, so platform adapters need no knowledge of the
+/// types. Git reaches an account's hosts through the image's own credential helper, such as `gh`,
+/// with the mediated placeholder.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AccountSetup {
+    /// Who Git commits as, unless the manifest sets `GIT_USER_NAME` and `GIT_USER_EMAIL`.
+    pub git_identity: Option<GitIdentity>,
+    /// Lines for the agent's instructions, each with its label, such as `GitHub`.
+    pub instructions: Vec<(&'static str, String)>,
+}
+
+/// A name and email Git commits as.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitIdentity {
+    /// The commit author's name.
+    pub name: String,
+    /// The commit author's email.
+    pub email: String,
 }
 
 /// Whether a sandbox runs sandboxes of its own as its agent asks.
@@ -289,12 +313,14 @@ pub trait PlatformAdapter {
     fn supports(&self, platform: &Platform) -> bool;
 
     /// Idempotently applies agent and harness setup inside the sandbox,
-    /// reporting its steps through `steps`.
+    /// reporting its steps through `steps`. `accounts` is what it configures for the accounts
+    /// the agent acts as.
     fn setup<'a>(
         &'a self,
         record: &'a AgentRecord,
         sandbox: &'a SandboxHandle,
         harnesses: &'a [crate::Harness],
+        accounts: &'a AccountSetup,
         steps: &'a ::sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<PlatformSetup, Error>>;
 }
@@ -390,7 +416,13 @@ impl Service {
             .guard_guest(
                 record,
                 &sandbox.snapshot().id,
-                adapter.setup(record, &sandbox, &outcome.harnesses, &progress.steps()),
+                adapter.setup(
+                    record,
+                    &sandbox,
+                    &outcome.harnesses,
+                    &outcome.accounts,
+                    &progress.steps(),
+                ),
             )
             .await?;
         phase.complete().await;

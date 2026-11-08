@@ -12,6 +12,8 @@ the contract and explains each check in its
 - **Podman.** With Podman installed, systemd must run and provide `podman.socket`. `agentd` configures the socket and
   Podman's trust itself. The base images' `containers` feature installs Podman this way.
 - **Access.** `ssh` and `vnc` access need `initSystem: image` with systemd as the entrypoint.
+- **Git with a GitHub account.** Git reaches GitHub with the mediated `GITHUB_TOKEN` only through a credential helper
+  that reads it, such as `gh auth git-credential`. The base image configures it for `github.com`.
 - **Claude Code's first-run state.** `~/.claude/.claude.json`, with onboarding and trust settled, comes from the image.
   The base images ship it.
 

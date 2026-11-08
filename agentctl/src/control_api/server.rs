@@ -7,22 +7,23 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
 
 use crate::{
-    Agent, Error, control_plane, control_plane::WaitPolicy, harness, progress::AgentProgress, resources::Changes,
-    sessions,
+    Agent, Error, accounts::AccountType, control_plane, control_plane::WaitPolicy, harness, progress::AgentProgress,
+    resources::Changes, sessions,
 };
 
 use super::protocol::{
-    CODE_IMMUTABLE, CODE_INTERNAL, CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND,
-    CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams,
-    LogoutParams, LogoutResult, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN,
-    METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET,
-    METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
-    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
-    METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, PROTOCOL_VERSION, ProgressParams, ReadMessage, Request,
-    ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams,
-    SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
+    AccountLoginParams, AccountLogoutResult, AccountParams, CODE_IMMUTABLE, CODE_INTERNAL, CODE_INVALID_PARAMS,
+    CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND, CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams,
+    ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_REQUEST_BYTES,
+    MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY,
+    METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE,
+    METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH,
+    METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET,
+    METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN,
+    METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY,
+    METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, PROTOCOL_VERSION, ProgressParams,
+    ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams,
+    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -210,6 +211,51 @@ impl AuthenticationApi for harness::AuthenticationManager {
     }
 }
 
+/// The logins of the accounts agents act as, exposed through the local control API.
+pub trait AccountsApi {
+    /// Checks `credential` and keeps it as the login `login` for an account of `account_type`.
+    fn login<'a>(
+        &'a self,
+        account_type: AccountType,
+        login: &'a str,
+        credential: &'a str,
+    ) -> LocalFuture<'a, Result<crate::accounts::Login, Error>>;
+
+    /// Forgets the login `login` for an account of `account_type`, returning it, or `None` when
+    /// there was none.
+    fn logout<'a>(
+        &'a self,
+        account_type: AccountType,
+        login: &'a str,
+    ) -> LocalFuture<'a, Result<Option<crate::accounts::Account>, Error>>;
+
+    /// The kept logins of every type, without their credentials.
+    fn list(&self) -> LocalFuture<'_, Result<Vec<crate::accounts::Account>, Error>>;
+}
+
+impl AccountsApi for crate::accounts::Accounts {
+    fn login<'a>(
+        &'a self,
+        account_type: AccountType,
+        login: &'a str,
+        credential: &'a str,
+    ) -> LocalFuture<'a, Result<crate::accounts::Login, Error>> {
+        Box::pin(self.login(account_type, login, zeroize::Zeroizing::new(credential.to_owned())))
+    }
+
+    fn logout<'a>(
+        &'a self,
+        account_type: AccountType,
+        login: &'a str,
+    ) -> LocalFuture<'a, Result<Option<crate::accounts::Account>, Error>> {
+        Box::pin(self.logout(account_type, login))
+    }
+
+    fn list(&self) -> LocalFuture<'_, Result<Vec<crate::accounts::Account>, Error>> {
+        Box::pin(self.list())
+    }
+}
+
 /// Host-tracked session operations exposed through the local control API.
 pub trait SessionApi {
     /// Creates or resolves one named session attach target; see [`sessions::Service::ensure`].
@@ -334,6 +380,9 @@ pub trait ConvergenceApi {
 
     /// Hints convergence of every agent; see [`control_plane::Convergence::wake_all`].
     fn wake_all(&self) -> LocalFuture<'_, Result<(), Error>>;
+    /// Asks for a reconciliation pass of an Agent without waiting for it; see
+    /// [`control_plane::Convergence::wake`].
+    fn wake<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>>;
 }
 
 impl ConvergenceApi for control_plane::Convergence {
@@ -343,6 +392,10 @@ impl ConvergenceApi for control_plane::Convergence {
 
     fn wake_all(&self) -> LocalFuture<'_, Result<(), Error>> {
         Box::pin(self.wake_all())
+    }
+
+    fn wake<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(self.wake(name))
     }
 }
 
@@ -474,6 +527,7 @@ pub struct Server {
     ssh: Rc<dyn SshAccessApi>,
     vnc: Rc<dyn VncAccessApi>,
     volumes: Option<Rc<dyn VolumeApi>>,
+    accounts: Option<Rc<dyn AccountsApi>>,
     changes: Changes,
     on_error: ErrorHandler,
     lifecycle: Lifecycle,
@@ -506,6 +560,7 @@ impl Server {
             ssh,
             vnc,
             volumes: None,
+            accounts: None,
             changes,
             on_error,
             lifecycle: Lifecycle::default(),
@@ -516,6 +571,13 @@ impl Server {
     #[must_use]
     pub fn with_volumes(mut self, volumes: Rc<dyn VolumeApi>) -> Self {
         self.volumes = Some(volumes);
+        self
+    }
+
+    /// Serves the logins of the accounts agents act as as well.
+    #[must_use]
+    pub fn with_accounts(mut self, accounts: Rc<dyn AccountsApi>) -> Self {
+        self.accounts = Some(accounts);
         self
     }
 
@@ -646,6 +708,12 @@ impl Server {
             METHOD_AUTH_LOGIN => self.handle_auth_login(request.id, request.params).await,
             METHOD_AUTH_LOGOUT => self.handle_auth_logout(request.id, request.params).await,
             METHOD_AUTH_LOGINS => result_response(request.id, self.authentication.logins().await),
+            METHOD_ACCOUNT_LOGIN => Box::pin(self.handle_account_login(request.id, request.params)).await,
+            METHOD_ACCOUNT_LOGOUT => Box::pin(self.handle_account_logout(request.id, request.params)).await,
+            METHOD_ACCOUNT_LIST => match &self.accounts {
+                Some(accounts) => result_response(request.id, accounts.list().await),
+                None => accounts_unavailable(request.id),
+            },
             METHOD_SESSION_ENSURE => self.handle_session_ensure(request.id, request.params).await,
             METHOD_SESSION_GET => self.handle_session_get(request.id, request.params).await,
             METHOD_SESSION_LIST => self.handle_session_list(request.id, request.params).await,
@@ -942,6 +1010,56 @@ impl Server {
         }
     }
 
+    async fn handle_account_login(&self, id: u64, value: Value) -> Response {
+        // The parser's message could quote the credential, so it is never passed on.
+        let Ok(params) = serde_json::from_value::<AccountLoginParams>(value) else {
+            return error_response(id, CODE_INVALID_PARAMS, "type, login and credential are required");
+        };
+        let Some(accounts) = &self.accounts else {
+            return accounts_unavailable(id);
+        };
+        let login = accounts
+            .login(params.account_type, &params.login, &params.credential)
+            .await;
+        if let Ok(login) = &login {
+            self.wake_account(&login.account()).await;
+        }
+        result_response(id, login)
+    }
+
+    async fn handle_account_logout(&self, id: u64, value: Value) -> Response {
+        let Ok(params) = serde_json::from_value::<AccountParams>(value) else {
+            return error_response(id, CODE_INVALID_PARAMS, "type and login are required");
+        };
+        let Some(accounts) = &self.accounts else {
+            return accounts_unavailable(id);
+        };
+        let forgotten = accounts.logout(params.account_type, &params.login).await;
+        if let Ok(Some(account)) = &forgotten {
+            self.wake_account(account).await;
+        }
+        result_response(id, forgotten.map(|forgotten| AccountLogoutResult { forgotten }))
+    }
+
+    /// Re-converges the agents that ask for `account`, so their setup acts as the account now
+    /// kept at once instead of on the controller's next periodic pass.
+    async fn wake_account(&self, account: &crate::accounts::Account) {
+        let agents = match self.agents.list().await {
+            Ok(agents) => agents,
+            Err(error) => return self.report(&error),
+        };
+        for agent in agents {
+            if agent
+                .spec
+                .account(account.account_type())
+                .is_some_and(|declared| declared.eq_ignore_ascii_case(account.name()))
+                && let Err(error) = self.convergence.wake(&agent.metadata.name).await
+            {
+                self.report(&error);
+            }
+        }
+    }
+
     async fn handle_session_ensure(&self, id: u64, value: Value) -> Response {
         let params = match serde_json::from_value::<SessionEnsureParams>(value) {
             Ok(params) => params,
@@ -1072,6 +1190,8 @@ fn is_mutating(method: &str) -> bool {
             | METHOD_EXECUTION_ENSURE
             | METHOD_AUTH_LOGIN
             | METHOD_AUTH_LOGOUT
+            | METHOD_ACCOUNT_LOGIN
+            | METHOD_ACCOUNT_LOGOUT
             | METHOD_SESSION_ENSURE
             | METHOD_SESSION_PROMPT
             | METHOD_SESSION_DELETE
@@ -1085,6 +1205,10 @@ fn name_params(value: Value) -> Result<NameParams, Response> {
         .ok()
         .filter(|params| !params.name.is_empty())
         .ok_or_else(|| error_response(0, CODE_INVALID_PARAMS, "name is required"))
+}
+
+fn accounts_unavailable(id: u64) -> Response {
+    error_response(id, CODE_METHOD_NOT_FOUND, "this agentd keeps no account logins")
 }
 
 fn volumes_unavailable(id: u64) -> Response {

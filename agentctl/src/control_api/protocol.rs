@@ -25,6 +25,9 @@ pub(crate) const METHOD_VNC_ACCESS: &str = "agents.v1.vncAccess";
 pub(crate) const METHOD_AUTH_LOGIN: &str = "authentication.v1.login";
 pub(crate) const METHOD_AUTH_LOGOUT: &str = "authentication.v1.logout";
 pub(crate) const METHOD_AUTH_LOGINS: &str = "authentication.v1.logins";
+pub(crate) const METHOD_ACCOUNT_LOGIN: &str = "accounts.v1.login";
+pub(crate) const METHOD_ACCOUNT_LOGOUT: &str = "accounts.v1.logout";
+pub(crate) const METHOD_ACCOUNT_LIST: &str = "accounts.v1.list";
 pub(crate) const METHOD_SESSION_ENSURE: &str = "sessions.v1.ensure";
 pub(crate) const METHOD_SESSION_GET: &str = "sessions.v1.get";
 pub(crate) const METHOD_SESSION_LIST: &str = "sessions.v1.list";
@@ -228,6 +231,31 @@ pub(crate) struct LogoutParams {
 #[derive(Deserialize, Serialize)]
 pub(crate) struct LogoutResult {
     pub forgotten: bool,
+}
+
+/// A credential to check and keep as the login `login` for an account of its type. Deliberately
+/// not `Debug`: it holds the credential.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AccountLoginParams {
+    #[serde(rename = "type")]
+    pub account_type: crate::accounts::AccountType,
+    pub login: String,
+    pub credential: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AccountParams {
+    #[serde(rename = "type")]
+    pub account_type: crate::accounts::AccountType,
+    pub login: String,
+}
+
+/// What `accounts.v1.logout` forgot; a bare `null` result would read as no result at all.
+#[derive(Deserialize, Serialize)]
+pub(crate) struct AccountLogoutResult {
+    pub forgotten: Option<crate::accounts::Account>,
 }
 
 /// Identity returned by the frozen lifecycle health method.

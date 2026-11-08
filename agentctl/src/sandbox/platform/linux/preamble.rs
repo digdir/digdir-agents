@@ -26,6 +26,8 @@ pub(super) struct Observed<'a> {
     pub(super) kvm: bool,
     /// Whether the image has Podman, which builds the images of nested agents.
     pub(super) podman: bool,
+    /// What setup configures for the accounts the agent acts as, such as lines for these instructions.
+    pub(super) accounts: &'a crate::sandbox::AccountSetup,
 }
 
 /// Opens the section, so that a later pass can find and replace it in a file the image or the home
@@ -75,7 +77,7 @@ pub(super) fn without_section(existing: &[u8]) -> &[u8] {
 pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
     let spec = &record.agent.spec;
     let name = &record.agent.metadata.name;
-    let lines = [
+    let mut lines = vec![
         (
             "Computer",
             Some(format!(
@@ -93,9 +95,18 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
                 .then(|| format!("{}.", code_list(spec.environment.iter().map(|variable| &variable.name)))),
         ),
         ("Network", Some(network(spec))),
+    ];
+    lines.extend(
+        observed
+            .accounts
+            .instructions
+            .iter()
+            .map(|(label, text)| (*label, Some(text.clone()))),
+    );
+    lines.extend([
         ("Access", access(spec, name)),
         ("Nested agents", Some(nested_agents(spec, observed).to_owned())),
-    ];
+    ]);
     let mut section = format!(
         "{BEGIN}# Agent sandbox\n\n\
          Written by agentd {}. Instructions after this section are the agent's own and take precedence.\n\n",

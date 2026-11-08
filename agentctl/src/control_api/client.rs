@@ -7,16 +7,17 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, sessions};
 
 use super::protocol::{
-    DaemonInfo, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
-    MAX_RESPONSE_BYTES, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE,
-    METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS,
-    METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
-    METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
-    METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
-    METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams,
-    ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams,
-    SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult,
-    read_message,
+    AccountLoginParams, AccountLogoutResult, AccountParams, DaemonInfo, DirectoryParams, ExecutionEnsureParams,
+    JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST,
+    METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS,
+    METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH,
+    METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
+    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
+    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
+    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
+    METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, ProgressParams, ReadMessage, Request, ResourcesWatchParams,
+    Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
+    SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -364,6 +365,54 @@ impl Client {
     /// Returns an error when the daemon cannot read them.
     pub async fn auth_logins(&self) -> Result<Vec<harness::StoredLogin>, Error> {
         self.call(METHOD_AUTH_LOGINS, serde_json::json!({})).await
+    }
+
+    /// Has agentd check `credential` and keep it as the account `name` of `account_type`,
+    /// replacing an earlier one of that name, then re-converge the agents that ask for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the credential or name is invalid, the credential is refused, or it
+    /// cannot be persisted. No error contains the credential.
+    pub async fn account_login(
+        &self,
+        account_type: crate::accounts::AccountType,
+        name: &str,
+        credential: &str,
+    ) -> Result<crate::accounts::Login, Error> {
+        let params = AccountLoginParams {
+            account_type,
+            login: name.to_owned(),
+            credential: credential.to_owned(),
+        };
+        self.call(METHOD_ACCOUNT_LOGIN, params).await
+    }
+
+    /// Forgets the account `name` of `account_type`, returning it, or `None` when there was none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or cannot update its database.
+    pub async fn account_logout(
+        &self,
+        account_type: crate::accounts::AccountType,
+        name: &str,
+    ) -> Result<Option<crate::accounts::Account>, Error> {
+        let params = AccountParams {
+            account_type,
+            login: name.into(),
+        };
+        let result: AccountLogoutResult = self.call(METHOD_ACCOUNT_LOGOUT, params).await?;
+        Ok(result.forgotten)
+    }
+
+    /// The kept accounts of every type, without their credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or cannot read its database.
+    pub async fn accounts(&self) -> Result<Vec<crate::accounts::Account>, Error> {
+        self.call(METHOD_ACCOUNT_LIST, serde_json::json!({})).await
     }
 
     /// Creates or resolves one named session attach target.

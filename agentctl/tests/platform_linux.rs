@@ -17,6 +17,12 @@ use sandbox::{
 use tempfile::TempDir;
 use tokio::io::AsyncReadExt as _;
 
+/// Setup for an agent that acts as no account.
+static NO_ACCOUNTS: agent::sandbox::AccountSetup = agent::sandbox::AccountSetup {
+    git_identity: None,
+    instructions: Vec::new(),
+};
+
 const PLATFORM_API_URL: &str = "http://host.microsandbox.internal:4100";
 
 /// Setup steps whose progress is discarded.
@@ -201,7 +207,13 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         .expect("Sandbox");
 
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
+        .setup(
+            &record,
+            &sandbox,
+            &[agent::Harness::ClaudeCode],
+            &NO_ACCOUNTS,
+            &setup_phase(),
+        )
         .await
         .expect("setup");
 
@@ -318,15 +330,16 @@ async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns
         .await
         .expect("image instruction file");
     let platform = Linux::new(PLATFORM_API_URL);
+    let claude = [agent::Harness::ClaudeCode];
 
     platform
-        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
+        .setup(&record, &sandbox, &claude, &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("first setup");
     let first = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
     let writes = backend.file_writes().len();
     platform
-        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
+        .setup(&record, &sandbox, &claude, &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("second setup");
 
@@ -423,7 +436,13 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
     let platform = Linux::new(PLATFORM_API_URL);
 
     let first = platform
-        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
+        .setup(
+            &record,
+            &sandbox,
+            &[agent::Harness::ClaudeCode],
+            &NO_ACCOUNTS,
+            &setup_phase(),
+        )
         .await
         .expect("first setup");
     let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
@@ -436,7 +455,13 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
     record.agent.spec.skills = vec![skill("skills/review", Some("reviewing"))];
     record.agent.spec.instructions = Vec::new();
     let second = platform
-        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
+        .setup(
+            &record,
+            &sandbox,
+            &[agent::Harness::ClaudeCode],
+            &NO_ACCOUNTS,
+            &setup_phase(),
+        )
         .await
         .expect("second setup");
 
@@ -466,7 +491,13 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
     });
     let executions = backend.execution_specs().len();
     platform
-        .setup(&record, &sandbox, &[agent::Harness::ClaudeCode], &setup_phase())
+        .setup(
+            &record,
+            &sandbox,
+            &[agent::Harness::ClaudeCode],
+            &NO_ACCOUNTS,
+            &setup_phase(),
+        )
         .await
         .expect("third setup");
     assert_eq!(removals_since(&backend, executions), Vec::<Vec<String>>::new());
@@ -569,7 +600,7 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
 
     // Without a Codex login, only Claude Code's folder is written.
     let set_up = platform
-        .setup(&record, &sandbox, &claude, &setup_phase())
+        .setup(&record, &sandbox, &claude, &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("setup without Codex");
     assert_eq!(set_up.skills, placed(&[(CLAUDE, &["evidence", "review", "agentctl"])]));
@@ -579,7 +610,7 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
     record.agent.spec.skills = vec![skill("evidence")];
     let executions = backend.execution_specs().len();
     let set_up = platform
-        .setup(&record, &sandbox, &both, &setup_phase())
+        .setup(&record, &sandbox, &both, &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("setup with Codex");
     assert_eq!(removals_since(&backend, executions), [[format!("{CLAUDE}/review")]]);
@@ -597,7 +628,7 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
     record.agent.spec.skills = Vec::new();
     let executions = backend.execution_specs().len();
     let set_up = platform
-        .setup(&record, &sandbox, &claude, &setup_phase())
+        .setup(&record, &sandbox, &claude, &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("setup without Codex again");
     assert_eq!(removals_since(&backend, executions), [[format!("{CLAUDE}/evidence")]]);
@@ -610,7 +641,7 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
     // So the skill leaves Codex's folder once Codex is back.
     let executions = backend.execution_specs().len();
     let set_up = platform
-        .setup(&record, &sandbox, &both, &setup_phase())
+        .setup(&record, &sandbox, &both, &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("setup with Codex again");
     assert_eq!(removals_since(&backend, executions), [[format!("{AGENTS}/evidence")]]);
@@ -635,7 +666,7 @@ async fn linux_setup_keeps_a_placed_skill_whose_optional_source_goes_missing() {
     let platform = Linux::new(PLATFORM_API_URL);
 
     let set_up = platform
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("setup with the optional skill");
     assert_eq!(set_up.skills, placed(&[(SKILLS, &["review", "agentctl"])]));
@@ -644,7 +675,7 @@ async fn linux_setup_keeps_a_placed_skill_whose_optional_source_goes_missing() {
     std::fs::remove_dir_all(&skill).expect("remove the optional skill");
     let executions = backend.execution_specs().len();
     let set_up = platform
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("setup without the optional skill");
     assert_eq!(set_up.missing_sources, ["spec.skills[0].source skills/review"]);
@@ -659,7 +690,7 @@ async fn linux_setup_keeps_a_placed_skill_whose_optional_source_goes_missing() {
     record.agent.spec.skills = Vec::new();
     let executions = backend.execution_specs().len();
     let set_up = platform
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("setup once the agent drops the skill");
     assert_eq!(removals_since(&backend, executions), [[format!("{SKILLS}/review")]]);
@@ -719,12 +750,12 @@ async fn linux_setup_approves_claude_bash_requests_in_bypass_mode_for_every_clau
     let platform = Linux::new(PLATFORM_API_URL);
 
     platform
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("first setup");
     let writes = backend.file_writes().len();
     platform
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("second setup");
 
@@ -811,7 +842,7 @@ async fn linux_setup_without_a_home_copies_nothing_into_the_guest_home() {
         .expect("Sandbox");
 
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("setup without a home");
 
@@ -916,7 +947,7 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     let platform = Linux::new(PLATFORM_API_URL);
 
     platform
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("first setup");
     let first_pass_writes = backend.file_writes();
@@ -929,7 +960,7 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
         .await
         .expect("write harness-owned state");
     platform
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("second setup");
 
@@ -1036,7 +1067,7 @@ async fn linux_setup_waits_for_systemd_and_restores_managed_podman_configuration
         ],
     );
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("the first setup waits for systemd to boot");
     let managed = "/etc/containers/containers.conf.d/50-agent-ca.conf";
@@ -1046,7 +1077,7 @@ async fn linux_setup_waits_for_systemd_and_restores_managed_podman_configuration
         .await
         .expect("replace managed configuration");
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("second setup");
 
@@ -1103,7 +1134,7 @@ async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
         .expect("Sandbox");
 
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("setup without a declared version");
 }
@@ -1158,7 +1189,7 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
         .expect("Sandbox");
 
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("first setup");
     assert_eq!(
@@ -1169,7 +1200,7 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
     );
 
     Linux::new(RESTARTED_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("setup after a restart");
     assert_eq!(
@@ -1224,7 +1255,7 @@ async fn linux_setup_rejects_partial_git_identity() {
         .expect("Sandbox");
 
     let error = Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect_err("partial Git identity");
 
@@ -1274,7 +1305,7 @@ async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injectio
         .expect("Sandbox");
 
     let error = Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect_err("version mismatch");
 
@@ -1352,7 +1383,7 @@ async fn linux_setup_reads_home_instructions_and_skills_below_the_home_directory
         .expect("Sandbox");
 
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("setup");
 
@@ -1433,7 +1464,7 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
         .expect("Sandbox");
 
     let error = Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect_err("FIFO must be rejected");
 
@@ -1518,7 +1549,7 @@ async fn linux_setup_leaves_out_missing_optional_sources_until_they_exist() {
     let platform = Linux::new(PLATFORM_API_URL);
 
     let missing = platform
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("setup without the optional sources");
 
@@ -1540,7 +1571,7 @@ async fn linux_setup_leaves_out_missing_optional_sources_until_they_exist() {
     std::fs::create_dir_all(&skill).expect("skill directory");
     std::fs::write(skill.join("SKILL.md"), "review").expect("skill file");
     let missing = platform
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("setup with the optional sources");
 
@@ -1580,7 +1611,7 @@ async fn linux_setup_fails_on_optional_sources_that_exist_but_cannot_be_used() {
         let sandbox = claude_sandbox(&record, 1).await;
 
         let error = Linux::new(PLATFORM_API_URL)
-            .setup(&record, &sandbox, &declared(&record), &setup_phase())
+            .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
             .await
             .expect_err(expected);
 
@@ -1594,7 +1625,101 @@ async fn linux_setup_fails_on_optional_sources_that_exist_but_cannot_be_used() {
     record.agent.spec.instructions[1].optional = false;
     let sandbox = claude_sandbox(&record, 1).await;
     Linux::new(PLATFORM_API_URL)
-        .setup(&record, &sandbox, &declared(&record), &setup_phase())
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect_err("a required instruction file must exist");
+}
+
+/// Runs Linux setup in a sandbox with `environment`, for an agent whose `accounts` setup gives it,
+/// and returns the Git settings it wrote.
+async fn git_settings_written(
+    environment: &[(&str, &str)],
+    accounts: &agent::sandbox::AccountSetup,
+) -> Vec<(String, String)> {
+    let directory = TempDir::new().expect("temporary directory");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home = None;
+    resource.spec.instructions.clear();
+    // Without harnesses, setup writes no instruction file, which this sandbox has none of.
+    resource.spec.harnesses.clear();
+    let record = AgentRecord {
+        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
+        volume_revisions: std::collections::BTreeMap::new(),
+    };
+    let backend = Rc::new(memory::Provider::new());
+    backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
+    let sandbox = service
+        .ensure(
+            &EnsureSandboxRequest::new(record.sandbox_name().expect("Sandbox name"), spec).with_environment(
+                environment
+                    .iter()
+                    .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+            ),
+        )
+        .await
+        .expect("Sandbox");
+
+    Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), accounts, &setup_phase())
+        .await
+        .expect("setup");
+
+    backend
+        .execution_specs()
+        .iter()
+        .filter_map(|spec| match spec.program() {
+            Program::Command { args, .. } => match args.as_slice() {
+                [git, config, global, key, value] if git == "git" && config == "config" && global == "--global" => {
+                    Some((key.clone(), value.clone()))
+                }
+                _ => None,
+            },
+            Program::ImageEntrypoint => None,
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "local")]
+async fn linux_setup_commits_as_the_agents_account_unless_the_manifest_names_someone() {
+    let account = agent::sandbox::AccountSetup {
+        git_identity: Some(agent::sandbox::GitIdentity {
+            name: "Digdir Bot".into(),
+            email: "1+digdir-bot@users.noreply.github.com".into(),
+        }),
+        instructions: Vec::new(),
+    };
+    let setting = |key: &str, value: &str| (key.to_owned(), value.to_owned());
+
+    assert_eq!(
+        git_settings_written(&[], &account).await,
+        [
+            setting("user.name", "Digdir Bot"),
+            setting("user.email", "1+digdir-bot@users.noreply.github.com"),
+        ]
+    );
+    assert_eq!(
+        git_settings_written(
+            &[("GIT_USER_NAME", "Test User"), ("GIT_USER_EMAIL", "test@example.com")],
+            &account
+        )
+        .await,
+        [
+            setting("user.name", "Test User"),
+            setting("user.email", "test@example.com"),
+        ]
+    );
+    assert_eq!(git_settings_written(&[], &NO_ACCOUNTS).await, []);
 }
