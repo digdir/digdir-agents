@@ -3,6 +3,7 @@
 | Doc | Kind | What it is for |
 | --- | --- | --- |
 | [first-agent.md](first-agent.md) | Tutorial | Give a repository an agent, from an empty folder to the repository open in your editor inside the agent |
+| [start-from-a-definition.md](start-from-a-definition.md) | How-to | Start an agent for a repository that already has an agent definition, such as Altinn Studio's |
 | [open-in-an-editor.md](open-in-an-editor.md) | How-to | Open an agent's project in VS Code, Zed or another editor that works over SSH |
 | [open-in-jetbrains.md](open-in-jetbrains.md) | How-to | Open an agent's project in a JetBrains IDE, such as Rider, through JetBrains Gateway |
 | [label-agents.md](label-agents.md) | How-to | Label agents for the client you open them in or the tool that created them, and list agents by label |
