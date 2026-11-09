@@ -65,17 +65,20 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
         .and_then(agent::sandbox::Assignment::id)
         .map_or_else(|| "-".into(), ToString::to_string);
 
-    let source = agent.status.provenance.as_ref().map_or_else(
-        || "-".into(),
-        |provenance| {
-            provenance
-                .manifest_path
-                .as_ref()
-                .unwrap_or(&provenance.source_directory)
-                .display()
-                .to_string()
-        },
-    );
+    let source = match (&agent.status.origin, &agent.status.provenance) {
+        (Some(agent::Origin::Bundled { definition, .. }), _) => format!("agentd's definition {definition}"),
+        (_, provenance) => provenance.as_ref().map_or_else(
+            || "-".into(),
+            |provenance| {
+                provenance
+                    .manifest_path
+                    .as_ref()
+                    .unwrap_or(&provenance.source_directory)
+                    .display()
+                    .to_string()
+            },
+        ),
+    };
 
     let secrets = if agent.spec.secrets.is_empty() {
         "-".to_owned()
@@ -104,6 +107,12 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
         format!("Provider:   {provider}"),
         format!("Sandbox:    {sandbox}"),
     ];
+    if let Some(workspace) = &agent.status.workspace {
+        lines.insert(4, format!("Workspace:  {}", workspace.display()));
+    }
+    if agent.status.is_ephemeral() {
+        lines.insert(3, "Lifetime:   until its client is gone".to_owned());
+    }
     if let Some(failure) = agent.status.failure {
         lines.push(format!("Failure:    {}", failure_kind(failure)));
     }

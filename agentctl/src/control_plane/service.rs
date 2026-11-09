@@ -46,11 +46,12 @@ impl Notifier for Wakeup {
 
 /// Agent control plane facade for desired-state operations.
 pub struct ControlPlane {
-    store: SharedAgentStore,
-    notifier: Rc<dyn Notifier>,
+    pub(super) store: SharedAgentStore,
+    pub(super) notifier: Rc<dyn Notifier>,
     provisioning: ProvisioningState,
     immediate_stops: ImmediateStops,
     volumes: Rc<dyn crate::volumes::VolumeStore>,
+    pub(super) bundled: Option<super::ensure::Bundled>,
 }
 
 /// Agents whose stop ends their sandbox at once, without letting the guest shut down.
@@ -112,7 +113,21 @@ impl ControlPlane {
             provisioning: ProvisioningState::default(),
             immediate_stops: ImmediateStops::default(),
             volumes: Rc::new(crate::volumes::memory::InMemoryVolumeStore::new()),
+            bundled: None,
         }
+    }
+
+    /// Runs agents from `definitions` for [`Self::ensure`], keeping its copies of them in
+    /// `snapshots`. `home` is agentd's home, which no workspace may hold or be in.
+    #[must_use]
+    pub fn with_bundled(
+        mut self,
+        definitions: crate::bundled::Definitions,
+        snapshots: crate::bundled::Snapshots,
+        home: PathBuf,
+    ) -> Self {
+        self.bundled = Some(super::ensure::Bundled::new(definitions, snapshots, home));
+        self
     }
 
     /// Keeps an agent's selected secret file out of the directories volumes copy, as out of
@@ -164,6 +179,13 @@ impl ControlPlane {
                     if current.agent.metadata.deletion_timestamp.is_some() {
                         return Err(Error::Conflict);
                     }
+                    if let crate::Origin::Bundled { definition, .. } = &current.origin {
+                        return Err(Error::Invalid(format!(
+                            "agent {:?} is run by agentd from its definition {definition:?}, which apply does not \
+                             change; choose another name in metadata.name or pass `--name`",
+                            desired.metadata.name
+                        )));
+                    }
                     if current.source_directory != request.source_directory {
                         return Err(name_clash(&desired.metadata.name, &current.source_directory));
                     }
@@ -178,6 +200,9 @@ impl ControlPlane {
                         // Decided when the agent was created.
                         optional_mount_sources: current.optional_mount_sources.clone(),
                         volume_revisions: current.volume_revisions.clone(),
+                        origin: crate::Origin::Local,
+                        lifetime: crate::Lifetime::UntilDeleted,
+                        workspace: None,
                     };
                     self.reject_exposed_secrets(&record).await?;
                     if current.agent.spec == record.agent.spec
@@ -207,6 +232,9 @@ impl ControlPlane {
                         agent: desired.clone(),
                         optional_mount_sources: optional_mount_sources.clone(),
                         volume_revisions: std::collections::BTreeMap::new(),
+                        origin: crate::Origin::Local,
+                        lifetime: crate::Lifetime::UntilDeleted,
+                        workspace: None,
                     };
                     record.agent.metadata.generation = 1;
                     self.reject_exposed_secrets(&record).await?;
@@ -236,7 +264,7 @@ impl ControlPlane {
     /// symbolic link, keeps the directory the agent was created with. A volume's copy of a
     /// directory holding the agent's selected secret file is refused too, since any agent may
     /// mount it.
-    async fn reject_exposed_secrets(&self, record: &AgentRecord) -> Result<(), Error> {
+    pub(super) async fn reject_exposed_secrets(&self, record: &AgentRecord) -> Result<(), Error> {
         let desired = &record.agent;
         reject_dot_env_in_bind_mounts(bind_mount_sources(record), "bind-mounts").await?;
         let mut secret_files = Vec::new();
@@ -374,7 +402,10 @@ impl ControlPlane {
             return Err(Error::Invalid("directory must be absolute".into()));
         }
         let directory = canonical_or_original(directory).await;
-        let records = self.store.list().await?;
+        // Agents agentd runs from its own definitions belong to whoever asked for them, not to a
+        // folder, even the workspace they were made for.
+        let mut records = self.store.list().await?;
+        records.retain(|record| record.origin.is_local());
         let definition_sources = definition_sources(&records, &directory).await?;
         let mut matches = Vec::new();
         for (record, definition_source) in records.into_iter().zip(definition_sources) {
@@ -605,7 +636,7 @@ async fn reject_dot_env_in_bind_mounts(mounts: Vec<(String, PathBuf)>, verb: &'s
 impl ControlPlane {
     /// Converts a stored record to its API representation, projecting
     /// provisioning progress, provenance and volume revisions into status.
-    fn resource(&self, record: AgentRecord) -> Agent {
+    pub(super) fn resource(&self, record: AgentRecord) -> Agent {
         let progress = self.provisioning.summary(record.id);
         let mut agent = projected(record);
         agent.status.progress = progress;
@@ -613,9 +644,9 @@ impl ControlPlane {
     }
 }
 
-/// The agent a stored record holds, with its provenance and the revisions of the volumes it mounts
-/// projected into status.
-fn projected(record: AgentRecord) -> Agent {
+/// The agent a stored record holds, with its origin, provenance and the revisions of the volumes it
+/// mounts projected into status.
+pub(super) fn projected(record: AgentRecord) -> Agent {
     let mut agent = record.agent;
     agent.status.volumes = agent
         .spec
@@ -631,23 +662,28 @@ fn projected(record: AgentRecord) -> Agent {
             _ => None,
         })
         .collect();
-    agent.status.provenance = Some(crate::Provenance {
-        source_directory: record.source_directory,
-        manifest_path: record.manifest_path,
-        env_file: record.env_file,
-    });
+    if record.origin.is_local() {
+        agent.status.provenance = Some(crate::Provenance {
+            source_directory: record.source_directory,
+            manifest_path: record.manifest_path,
+            env_file: record.env_file,
+        });
+    }
+    agent.status.origin = Some(record.origin);
+    agent.status.lifetime = (record.lifetime != crate::Lifetime::UntilDeleted).then_some(record.lifetime);
+    agent.status.workspace = record.workspace;
     agent
 }
 
 /// The run state an apply stores: the manifest's, else the agent's own, so
 /// applying a manifest that omits it never stops or starts the agent.
-fn applied_run_state(requested: Option<crate::RunState>, current: Option<&AgentRecord>) -> crate::RunState {
+pub(super) fn applied_run_state(requested: Option<crate::RunState>, current: Option<&AgentRecord>) -> crate::RunState {
     requested
         .or_else(|| current.map(|current| current.agent.spec.run_state()))
         .unwrap_or_default()
 }
 
-fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) -> Result<(), Error> {
+pub(super) fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) -> Result<(), Error> {
     if current.agent.spec.sandbox.image != desired.spec.sandbox.image {
         return Err(Error::Immutable("spec.sandbox.image"));
     }

@@ -10,8 +10,8 @@ use super::protocol::{
     AccountLoginParams, AccountLogoutResult, AccountParams, DaemonInfo, DirectoryParams, ExecutionEnsureParams,
     JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST,
     METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS,
-    METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH,
-    METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
+    METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_ENSURE, METHOD_EXECUTION_ENSURE, METHOD_GET,
+    METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
     METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
     METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
     METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
@@ -98,6 +98,28 @@ impl Client {
     /// Returns an error when transport, protocol validation, or the control-plane operation fails.
     pub async fn apply(&self, request: control_plane::ApplyRequest) -> Result<Agent, Error> {
         self.call(METHOD_APPLY, request).await
+    }
+
+    /// Finds or makes an agent of a definition agentd carries; see
+    /// [`control_plane::ControlPlane::ensure`].
+    ///
+    /// An ephemeral agent lives while the returned lease does: dropping the lease, or this process
+    /// ending, closes the connection that asked for it, and agentd deletes it. The lease of an
+    /// agent kept until deleted holds nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the control-plane operation fails.
+    pub async fn ensure(
+        &self,
+        request: control_plane::EnsureRequest,
+    ) -> Result<(control_plane::Ensured, AgentLease), Error> {
+        let (ensured, connection) = self
+            .exchange::<_, control_plane::Ensured>(METHOD_ENSURE, request)
+            .await?;
+        let lease =
+            AgentLease((ensured.agent.status.lifetime == Some(crate::Lifetime::Ephemeral)).then_some(connection));
+        Ok((ensured, lease))
     }
 
     /// Gets an agent resource by name.
@@ -584,6 +606,15 @@ impl Client {
     }
 
     async fn call<P: Serialize, R: DeserializeOwned>(&self, method: &str, params: P) -> Result<R, Error> {
+        self.exchange(method, params).await.map(|(result, _)| result)
+    }
+
+    /// Calls `method` on a connection of its own, which it returns open.
+    async fn exchange<P: Serialize, R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: P,
+    ) -> Result<(R, Box<dyn Connection>), Error> {
         let id = self.next_id.get().wrapping_add(1);
         self.next_id.set(id);
         let request = Request {
@@ -615,11 +646,24 @@ impl Client {
         if let Some(error) = response.error {
             return Err(Error::Rpc(error));
         }
-        serde_json::from_value(
+        let result = serde_json::from_value(
             response
                 .result
                 .ok_or_else(|| Error::Invalid("Control API response has no result".into()))?,
-        )
-        .map_err(Error::from)
+        )?;
+        Ok((result, stream.into_inner()))
+    }
+}
+
+/// Keeps an ephemeral agent from [`Client::ensure`] alive until dropped.
+#[must_use = "agentd deletes an ephemeral agent once its lease is dropped"]
+pub struct AgentLease(Option<Box<dyn Connection>>);
+
+impl std::fmt::Debug for AgentLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("AgentLease")
+            .field(&self.0.as_ref().map(|_| "connection"))
+            .finish()
     }
 }

@@ -1060,10 +1060,23 @@ pub struct Status {
     /// scrub it, so it is never persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<crate::progress::Provisioning>,
-    /// Local origin of the desired state. Projected onto API responses from
-    /// the stored agent record; stores scrub it, so it is never persisted.
+    /// Where the manifest of a local agent is, absent for an agent agentd runs from its own
+    /// definitions. Projected onto API responses from the stored agent record; stores scrub it, so
+    /// it is never persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Provenance>,
+    /// Where the agent's definition comes from. Projected onto API responses from the stored agent
+    /// record; stores scrub it, so it is never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+    /// How long agentd keeps the agent, when it is not until someone deletes it. Projected like
+    /// [`Self::origin`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifetime: Option<Lifetime>,
+    /// The host folder agentd bound into the agent when it made it for a workspace. Projected like
+    /// [`Self::origin`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<std::path::PathBuf>,
     /// The revision of each volume the agent mounts, once the reconciler has chosen them. Projected
     /// onto API responses from the stored agent record; stores scrub it, so it is never persisted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1099,8 +1112,29 @@ impl Status {
             failure: None,
             progress: None,
             provenance: None,
+            origin: None,
+            lifetime: None,
+            workspace: None,
             volumes: Vec::new(),
         }
+    }
+
+    /// Whether agentd deletes the agent once the client that asked for it is gone. Such an agent
+    /// is that client's to show, so listings leave it out.
+    #[must_use]
+    pub fn is_ephemeral(&self) -> bool {
+        self.lifetime == Some(Lifetime::Ephemeral)
+    }
+
+    /// Removes what API responses project from the stored agent record and agentd's memory, which
+    /// is never stored.
+    pub(crate) fn scrub_projected(&mut self) {
+        self.progress = None;
+        self.provenance = None;
+        self.origin = None;
+        self.lifetime = None;
+        self.workspace = None;
+        self.volumes.clear();
     }
 
     const fn is_empty(&self) -> bool {
@@ -1111,6 +1145,9 @@ impl Status {
             && self.failure.is_none()
             && self.progress.is_none()
             && self.provenance.is_none()
+            && self.origin.is_none()
+            && self.lifetime.is_none()
+            && self.workspace.is_none()
             && self.volumes.is_empty()
     }
 
@@ -1238,6 +1275,46 @@ impl Condition {
 
 /// Conventional agent manifest filename, used when a record predates path recording.
 pub const MANIFEST_FILE: &str = "agent.yaml";
+
+/// Where an agent's definition comes from, which agentd sets and the agent keeps for life.
+///
+/// `apply` changes only local agents, and `ensure` only the agents agentd runs from its own
+/// definitions. Clients decide how to show an agent from it, never from its name.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum Origin {
+    /// A manifest on this machine, applied with `agentctl apply`. [`Status::provenance`] says where
+    /// it is.
+    #[default]
+    Local,
+    /// A definition carried by agentd's build, which the agent reads from agentd's copy of it.
+    Bundled {
+        /// The definition's name in the build.
+        definition: String,
+        /// The SHA-256 digest of the definition's files, which names agentd's copy of them.
+        digest: String,
+    },
+}
+
+impl Origin {
+    /// Returns whether the agent was applied from a manifest on this machine.
+    #[must_use]
+    pub const fn is_local(&self) -> bool {
+        matches!(self, Self::Local)
+    }
+}
+
+/// How long agentd keeps an agent it runs from its own definitions.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Lifetime {
+    /// Until someone deletes it, as any applied agent.
+    #[default]
+    UntilDeleted,
+    /// While the client that asked for it stays connected to agentd. agentd deletes it when that
+    /// connection closes, and any left over from an earlier run of agentd when it starts.
+    Ephemeral,
+}
 
 /// Local origin of an agent's desired state.
 ///

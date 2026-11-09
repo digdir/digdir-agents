@@ -7,7 +7,7 @@
 !rust-toolchain.toml
 !agentctl/Cargo.toml
 !agentctl/src/
-!agentctl/skills/
+!agentctl/bundled/
 !sandbox/authorization/Cargo.toml
 !sandbox/authorization/src/
 !sandbox/core/Cargo.toml

@@ -28,6 +28,9 @@ use tokio::{
 
 use support::{IgnoreNotifications, agent};
 
+use crate::bundled;
+use agent::control_plane::AgentStore as _;
+
 struct FakeAuthentication;
 /// Converges an agent at once, except `stuck`, which never converges, counts the hints to converge
 /// every agent, and records each agent woken.
@@ -447,10 +450,13 @@ impl Connector for ScriptedConnector {
 }
 
 fn api() -> ApiFixture {
-    let control_plane = Rc::new(ControlPlane::new(
+    api_with(Rc::new(ControlPlane::new(
         Rc::new(InMemoryAgentStore::new()),
         Rc::new(IgnoreNotifications),
-    ));
+    )))
+}
+
+fn api_with(control_plane: Rc<ControlPlane>) -> ApiFixture {
     let conversation = Rc::new(RefCell::new(vec![answered_turn("one", "1"), answered_turn("two", "2")]));
     let ensured = Rc::new(RefCell::new(Vec::new()));
     let sent = Rc::new(RefCell::new(Vec::new()));
@@ -863,14 +869,17 @@ async fn a_github_login_or_logout_wakes_the_agents_asking_for_that_name_only() {
 async fn health_reports_a_compatible_daemon() {
     let fixture = api();
     let daemon = fixture.client.require_compatible_daemon().await.expect("health check");
-    assert_eq!(daemon.protocol_version.as_deref(), Some("v4"));
+    assert_eq!(
+        daemon.protocol_version.as_deref(),
+        Some(agent::control_api::PROTOCOL_VERSION)
+    );
     assert_eq!(daemon.build_version.as_deref(), Some(agent::build_version()));
 }
 
 #[test]
 fn daemon_identity_rejects_preview_1_and_mixed_builds() {
     let extended: agent::control_api::DaemonInfo = serde_json::from_value(serde_json::json!({
-        "protocolVersion": "v4",
+        "protocolVersion": agent::control_api::PROTOCOL_VERSION,
         "buildVersion": agent::build_version(),
         "futureCapability": true
     }))
@@ -883,7 +892,7 @@ fn daemon_identity_rejects_preview_1_and_mixed_builds() {
             build_version: None,
         },
         agent::control_api::DaemonInfo {
-            protocol_version: Some("v4".into()),
+            protocol_version: Some(agent::control_api::PROTOCOL_VERSION.into()),
             build_version: Some("another-build".into()),
         },
     ] {
@@ -1422,4 +1431,72 @@ async fn unix_socket_transport_is_private_and_usable() {
         .expect("server should stop")
         .expect("server task")
         .expect("server result");
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_ephemeral_agent_lives_as_long_as_the_connection_that_asked_for_it() {
+    let fixture = bundled::Fixture::new();
+    let client = api_with(fixture.control_plane.clone()).client;
+    let workspace = fixture.workspace("repo");
+
+    let (first, first_lease) = client
+        .ensure(bundled::request("sign-in", None))
+        .await
+        .expect("first sign-in");
+    let (second, second_lease) = client
+        .ensure(bundled::request("sign-in", None))
+        .await
+        .expect("second sign-in");
+    let (kept, kept_lease) = client
+        .ensure(bundled::request("builder", Some(&workspace)))
+        .await
+        .expect("builder");
+
+    assert_eq!(first.outcome, agent::control_plane::EnsureOutcome::Created);
+    assert_eq!(
+        second.outcome,
+        agent::control_plane::EnsureOutcome::Created,
+        "an ephemeral agent belongs to one request"
+    );
+    assert_eq!(first.agent.metadata.name, "sign-in");
+    assert_eq!(second.agent.metadata.name, "sign-in-2");
+    assert_eq!(first.agent.status.lifetime, Some(agent::Lifetime::Ephemeral));
+    drop(first_lease);
+    assert!(
+        bundled::deleting(&fixture.store, "sign-in").await,
+        "deleted once its client is gone"
+    );
+    let second_record = fixture.store.get_by_name("sign-in-2").await.expect("second sign-in");
+    assert_eq!(
+        second_record.agent.metadata.deletion_timestamp, None,
+        "another client's agent stays"
+    );
+    drop(kept_lease);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let kept_record = fixture
+        .store
+        .get_by_name(&kept.agent.metadata.name)
+        .await
+        .expect("builder");
+    assert_eq!(
+        kept_record.agent.metadata.deletion_timestamp, None,
+        "kept until deleted"
+    );
+    drop(second_lease);
+    assert!(bundled::deleting(&fixture.store, "sign-in-2").await);
+
+    let (ephemeral_builder, lease) = client
+        .ensure(agent::control_plane::EnsureRequest {
+            lifetime: Some(agent::Lifetime::Ephemeral),
+            ..bundled::request("builder", Some(&workspace))
+        })
+        .await
+        .expect("a request may make an agent ephemeral");
+    assert_eq!(
+        ephemeral_builder.outcome,
+        agent::control_plane::EnsureOutcome::Created,
+        "an ephemeral agent never resumes one"
+    );
+    drop(lease);
+    assert!(bundled::deleting(&fixture.store, &ephemeral_builder.agent.metadata.name).await);
 }

@@ -59,6 +59,17 @@ pub struct AgentRecord {
     /// The volume revision each volume mount uses, by target, fixed once the agent first gets them all.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub volume_revisions: crate::volumes::VolumePins,
+    /// Where the agent's definition comes from. For a bundled definition, `source_directory` is
+    /// agentd's copy of the definition's files, so whatever reads an agent's files reads that copy.
+    #[serde(default)]
+    pub origin: crate::Origin,
+    /// How long agentd keeps the agent, fixed when it is created.
+    #[serde(default)]
+    pub lifetime: crate::Lifetime,
+    /// The host folder agentd bound into the agent for whoever asked for it, fixed when it is
+    /// created. Together with a bundled definition, it identifies the agent `ensure` finds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<std::path::PathBuf>,
 }
 
 /// Default environment file name, resolved in the source directory.

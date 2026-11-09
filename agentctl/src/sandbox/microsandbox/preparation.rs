@@ -248,6 +248,9 @@ spec:
             agent,
             optional_mount_sources: std::collections::BTreeMap::new(),
             volume_revisions: std::collections::BTreeMap::new(),
+            origin: crate::Origin::Local,
+            lifetime: crate::Lifetime::UntilDeleted,
+            workspace: None,
         }
     }
 
@@ -490,6 +493,9 @@ spec:
             agent: serde_yaml_ng::from_str(manifest).expect("manifest"),
             optional_mount_sources: std::collections::BTreeMap::new(),
             volume_revisions: std::collections::BTreeMap::new(),
+            origin: crate::Origin::Local,
+            lifetime: crate::Lifetime::UntilDeleted,
+            workspace: None,
         }
     }
 

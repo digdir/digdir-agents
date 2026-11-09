@@ -8,7 +8,7 @@ use crate::Error;
 
 use super::database_error;
 
-pub(crate) const VERSION: u32 = 8;
+pub(crate) const VERSION: u32 = 9;
 
 const PREVIEW_1_SQL: &str = "
     CREATE TABLE agents (
@@ -86,6 +86,10 @@ const VOLUMES_SQL: &str = "
     ALTER TABLE agents ADD COLUMN volume_revisions_json TEXT NOT NULL DEFAULT '{}';
 ";
 
+const AGENT_ORIGINS_COLUMN_SQL: &str = "
+    ALTER TABLE agents ADD COLUMN origin_json TEXT NOT NULL DEFAULT '{\"type\":\"local\"}';
+";
+
 struct Migration {
     version: u32,
     name: &'static str,
@@ -141,6 +145,12 @@ const MIGRATIONS: &[Migration] = &[
         name: "volumes",
         schema: &[VOLUMES_SQL],
         apply: add_volumes,
+    },
+    Migration {
+        version: 9,
+        name: "agent origins",
+        schema: &[AGENT_ORIGINS_COLUMN_SQL],
+        apply: add_agent_origins,
     },
 ];
 
@@ -285,6 +295,17 @@ fn add_volumes(transaction: &Transaction<'_>) -> Result<(), Error> {
         return Ok(());
     }
     transaction.execute_batch(VOLUMES_SQL).map_err(database_error)
+}
+
+/// Adds where each agent's definition comes from. Every agent from earlier schemas was applied from
+/// a manifest on this machine, so every existing row is local.
+fn add_agent_origins(transaction: &Transaction<'_>) -> Result<(), Error> {
+    if schema_difference(transaction, 9)?.is_none() {
+        return Ok(());
+    }
+    transaction
+        .execute_batch(AGENT_ORIGINS_COLUMN_SQL)
+        .map_err(database_error)
 }
 
 /// Keeps each harness's one earlier login as its login named `default`, the one agents use when

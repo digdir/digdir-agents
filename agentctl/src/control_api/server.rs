@@ -16,14 +16,15 @@ use super::protocol::{
     CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND, CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams,
     ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_REQUEST_BYTES,
     MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY,
-    METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE,
-    METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH,
-    METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET,
-    METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN,
-    METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY,
-    METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, PROTOCOL_VERSION, ProgressParams,
-    ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams,
-    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
+    METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_ENSURE,
+    METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
+    METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE,
+    METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE,
+    METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS,
+    METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, PROTOCOL_VERSION,
+    ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams,
+    SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response,
+    read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -80,6 +81,15 @@ pub trait AgentApi {
     /// Creates or updates desired agent state.
     fn apply(&self, request: control_plane::ApplyRequest) -> LocalFuture<'_, Result<Agent, Error>>;
 
+    /// Finds or makes an agent of a bundled definition; see [`control_plane::ControlPlane::ensure`].
+    fn ensure(
+        &self,
+        request: control_plane::EnsureRequest,
+    ) -> LocalFuture<'_, Result<(control_plane::Ensured, crate::AgentId), Error>>;
+
+    /// Deletes an ephemeral agent whose client is gone; see [`control_plane::ControlPlane::release`].
+    fn release(&self, id: crate::AgentId) -> LocalFuture<'_, Result<(), Error>>;
+
     /// Gets an agent by name.
     fn get<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Agent, Error>>;
 
@@ -118,6 +128,17 @@ pub trait AgentApi {
 impl AgentApi for control_plane::ControlPlane {
     fn apply(&self, request: control_plane::ApplyRequest) -> LocalFuture<'_, Result<Agent, Error>> {
         Box::pin(async move { Self::apply(self, request).await })
+    }
+
+    fn ensure(
+        &self,
+        request: control_plane::EnsureRequest,
+    ) -> LocalFuture<'_, Result<(control_plane::Ensured, crate::AgentId), Error>> {
+        Box::pin(async move { Self::ensure(self, request).await })
+    }
+
+    fn release(&self, id: crate::AgentId) -> LocalFuture<'_, Result<(), Error>> {
+        Box::pin(async move { Self::release(self, id).await })
     }
 
     fn get<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Agent, Error>> {
@@ -599,6 +620,23 @@ impl Server {
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
+        let owned = std::cell::RefCell::new(Vec::new());
+        let result = self.serve_requests(stream, &owned).await;
+        // The ephemeral agents this connection asked for live as long as it does, however it ends.
+        for id in owned.take() {
+            if let Err(error) = self.agents.release(id).await {
+                tracing::warn!(agent = %id, %error, "deleting an ephemeral agent failed; agentd deletes it when it starts");
+            }
+        }
+        result
+    }
+
+    /// Serves one JSON object per line until the client closes its stream, recording in `owned`
+    /// the ephemeral agents it asks for.
+    async fn serve_requests<S>(&self, stream: S, owned: &std::cell::RefCell<Vec<crate::AgentId>>) -> Result<(), Error>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
         let mut stream = BufReader::new(stream);
         loop {
             if self.is_draining() {
@@ -639,11 +677,11 @@ impl Server {
                 // A reply that is ready wins over a client that has half-closed.
                 tokio::select! {
                     biased;
-                    response = self.handle(request) => response,
+                    response = self.handle(request, owned) => response,
                     () = disconnected(&mut stream) => return Ok(()),
                 }
             } else {
-                self.handle(request).await
+                self.handle(request, owned).await
             };
             write_response(stream.get_mut(), &response, Some(&method)).await?;
         }
@@ -663,7 +701,7 @@ impl Server {
         }
     }
 
-    async fn handle(&self, request: Request) -> Response {
+    async fn handle(&self, request: Request, owned: &std::cell::RefCell<Vec<crate::AgentId>>) -> Response {
         if request.jsonrpc != JSON_RPC_VERSION || request.method.is_empty() {
             return error_response(request.id, CODE_INVALID_REQUEST, "invalid JSON-RPC 2.0 request");
         }
@@ -677,6 +715,7 @@ impl Server {
         };
         match request.method.as_str() {
             METHOD_APPLY => self.handle_apply(request.id, request.params).await,
+            METHOD_ENSURE => self.handle_ensure(request.id, request.params, owned).await,
             METHOD_HEALTH => result_response(
                 request.id,
                 Ok(serde_json::json!({
@@ -777,6 +816,19 @@ impl Server {
             return error_response(id, CODE_INVALID_PARAMS, "invalid apply parameters");
         };
         result_response(id, self.agents.apply(params).await)
+    }
+
+    async fn handle_ensure(&self, id: u64, value: Value, owned: &std::cell::RefCell<Vec<crate::AgentId>>) -> Response {
+        let Ok(params) = serde_json::from_value::<control_plane::EnsureRequest>(value) else {
+            return error_response(id, CODE_INVALID_PARAMS, "invalid ensure parameters");
+        };
+        let result = self.agents.ensure(params).await.map(|(ensured, agent)| {
+            if ensured.agent.status.lifetime == Some(crate::Lifetime::Ephemeral) {
+                owned.borrow_mut().push(agent);
+            }
+            ensured
+        });
+        result_response(id, result)
     }
 
     async fn handle_volume_apply(&self, id: u64, value: Value) -> Response {
@@ -1182,6 +1234,7 @@ fn is_mutating(method: &str) -> bool {
     matches!(
         method,
         METHOD_APPLY
+            | METHOD_ENSURE
             | METHOD_DELETE
             | METHOD_STOP
             | METHOD_STOP_NOW

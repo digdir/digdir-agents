@@ -5,7 +5,7 @@ mod protocol;
 mod server;
 mod socket;
 
-pub use client::{Client, Connection, Connector};
+pub use client::{AgentLease, Client, Connection, Connector};
 pub use protocol::{DaemonInfo, PROTOCOL_VERSION, ResponseError};
 pub use server::{
     AccountsApi, AgentApi, AuthenticationApi, ConvergenceApi, ErrorHandler, ExecutionApi, Server, SessionApi,

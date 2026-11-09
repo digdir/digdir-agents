@@ -10,7 +10,7 @@ pub(super) fn get(connection: &Connection, id: AgentId) -> Result<AgentRecord, E
     connection
         .query_row(
             "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
-                    optional_mount_sources_json, volume_revisions_json
+                    optional_mount_sources_json, volume_revisions_json, origin_json
              FROM agents WHERE id = ?1 AND active_name IS NOT NULL",
             [id.to_string()],
             decode_row,
@@ -24,7 +24,7 @@ pub(super) fn get_by_name(connection: &Connection, name: &str) -> Result<AgentRe
     let record = connection
         .query_row(
             "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
-                    optional_mount_sources_json, volume_revisions_json
+                    optional_mount_sources_json, volume_revisions_json, origin_json
              FROM agents WHERE active_name = ?1",
             [name],
             decode_row,
@@ -45,7 +45,7 @@ pub(super) fn list(connection: &Connection) -> Result<Vec<AgentRecord>, Error> {
     let mut statement = connection
         .prepare(
             "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
-                    optional_mount_sources_json, volume_revisions_json
+                    optional_mount_sources_json, volume_revisions_json, origin_json
              FROM agents WHERE active_name IS NOT NULL ORDER BY active_name",
         )
         .map_err(database_error)?;
@@ -65,14 +65,19 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
         env_file: record.env_file.clone(),
     })?;
     let desired = encode_desired(&record.agent)?;
+    let origin = serde_json::to_string(&StoredOrigin {
+        origin: record.origin.clone(),
+        lifetime: record.lifetime,
+        workspace: record.workspace.clone(),
+    })?;
     let transaction = connection.transaction().map_err(database_error)?;
     let changed = if expected_generation == 0 {
         transaction
             .execute(
                 "INSERT OR IGNORE INTO agents
                  (id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
-                  optional_mount_sources_json, volume_revisions_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                  optional_mount_sources_json, volume_revisions_json, origin_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     id.to_string(),
                     name,
@@ -81,7 +86,8 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
                     deletion_timestamp(&record.agent),
                     encode_status(&record.agent.status)?,
                     serde_json::to_string(&record.optional_mount_sources)?,
-                    serde_json::to_string(&record.volume_revisions)?
+                    serde_json::to_string(&record.volume_revisions)?,
+                    origin
                 ],
             )
             .map_err(database_error)?
@@ -95,9 +101,9 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
         }
         transaction
             .execute(
-                "UPDATE agents SET source_directory = ?1, desired_json = ?2
+                "UPDATE agents SET source_directory = ?1, desired_json = ?2, origin_json = ?5
                  WHERE id = ?3 AND active_name = ?4 AND deletion_timestamp IS NULL",
-                params![source, desired, id.to_string(), name],
+                params![source, desired, id.to_string(), name, origin],
             )
             .map_err(database_error)?
     };
@@ -118,7 +124,7 @@ pub(super) fn update_status(
     if record.agent.metadata.generation != generation || record.agent.metadata.deletion_timestamp.is_some() {
         return Err(Error::Conflict);
     }
-    scrub(&mut status);
+    status.scrub_projected();
     status.stamp_transitions(&record.agent.status, time::OffsetDateTime::now_utc());
     let changed = transaction
         .execute(
@@ -200,15 +206,8 @@ fn encode_desired(agent: &Agent) -> Result<String, Error> {
 /// Serializes status for storage, scrubbing what is API-projected.
 fn encode_status(status: &Status) -> Result<String, Error> {
     let mut status = status.clone();
-    scrub(&mut status);
+    status.scrub_projected();
     serde_json::to_string(&status).map_err(Error::from)
-}
-
-/// Removes what is projected onto responses and never stored.
-fn scrub(status: &mut Status) {
-    status.progress = None;
-    status.provenance = None;
-    status.volumes.clear();
 }
 
 /// Source-column payload: current writes store [`crate::Provenance`]; rows
@@ -218,6 +217,26 @@ fn scrub(status: &mut Status) {
 enum StoredSource {
     Provenance(crate::Provenance),
     Directory(std::path::PathBuf),
+}
+
+/// Origin-column payload: where the agent's definition comes from and how agentd runs it, which
+/// [`AgentRecord`] keeps as separate fields.
+#[derive(serde::Deserialize, serde::Serialize)]
+struct StoredOrigin {
+    #[serde(flatten)]
+    origin: crate::Origin,
+    #[serde(default, skip_serializing_if = "is_until_deleted")]
+    lifetime: crate::Lifetime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace: Option<std::path::PathBuf>,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+fn is_until_deleted(lifetime: &crate::Lifetime) -> bool {
+    *lifetime == crate::Lifetime::UntilDeleted
 }
 
 fn deletion_timestamp(agent: &Agent) -> Option<i64> {
@@ -236,6 +255,7 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
     let status = row.get::<_, String>(5)?;
     let optional_mount_sources = row.get::<_, String>(6)?;
     let volume_revisions = row.get::<_, String>(7)?;
+    let origin = serde_json::from_str::<StoredOrigin>(&row.get::<_, String>(8)?).map_err(conversion_error)?;
     let id = id.parse::<AgentId>().map_err(conversion_error)?;
     let (source_directory, manifest_path, env_file) = match serde_json::from_str(&source).map_err(conversion_error)? {
         StoredSource::Provenance(provenance) => (
@@ -262,6 +282,9 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
         agent,
         optional_mount_sources: serde_json::from_str(&optional_mount_sources).map_err(conversion_error)?,
         volume_revisions: serde_json::from_str(&volume_revisions).map_err(conversion_error)?,
+        origin: origin.origin,
+        lifetime: origin.lifetime,
+        workspace: origin.workspace,
     })
 }
 

@@ -2,6 +2,7 @@
 
 mod controller;
 mod convergence;
+mod ensure;
 pub mod memory;
 mod reconciler;
 mod resource;
@@ -15,6 +16,7 @@ use crate::{Error, Status};
 
 pub use controller::{Controller, ErrorHandler, Wakeup};
 pub use convergence::{Convergence, WaitPolicy};
+pub use ensure::{EnsureOutcome, EnsureRequest, Ensured};
 pub use reconciler::{Reconciler, SessionNotifier};
 pub use resource::{AgentId, AgentRecord, ENV_FILE};
 pub(crate) use service::reject_secrets_in_copy;

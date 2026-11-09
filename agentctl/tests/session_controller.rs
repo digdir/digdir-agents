@@ -275,6 +275,9 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        workspace: None,
     }
 }
 
@@ -2397,6 +2400,9 @@ async fn session_ensure_persists_intent_before_waiting_for_agent_convergence() {
                 agent: resource,
                 optional_mount_sources: std::collections::BTreeMap::new(),
                 volume_revisions: std::collections::BTreeMap::new(),
+                origin: agent::Origin::Local,
+                lifetime: agent::Lifetime::UntilDeleted,
+                workspace: None,
             },
             0,
         )

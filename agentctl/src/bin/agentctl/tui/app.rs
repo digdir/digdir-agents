@@ -1377,6 +1377,9 @@ impl App {
     }
 
     pub(crate) fn apply_snapshot(&mut self, mut agents: Vec<Agent>, mut sessions: Vec<Session>) {
+        // An ephemeral agent belongs to the client that asked for it, which shows it if it wants to.
+        agents.retain(|agent| !agent.status.is_ephemeral());
+        sessions.retain(|session| agents.iter().any(|agent| agent.metadata.name == session.agent));
         agents.sort_by(|left, right| left.metadata.name.cmp(&right.metadata.name));
         sessions.sort_by(|left, right| left.agent.cmp(&right.agent).then_with(|| left.name.cmp(&right.name)));
         // The selection's position is read before the rows it indexes are replaced.

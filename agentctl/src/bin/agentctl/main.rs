@@ -882,6 +882,40 @@ impl SessionFilter {
     }
 }
 
+/// Prints the agent `name`, or every agent but the ephemeral ones, which belong to the client that
+/// asked for them.
+async fn get_agents(client: &Client, name: Option<String>, watch: bool, output: OutputFormat) -> CommandResult<()> {
+    // A listing leaves out ephemeral agents, which belong to the client that asked for them.
+    let listed = |agent: &Agent| {
+        name.as_ref()
+            .map_or_else(|| !agent.status.is_ephemeral(), |name| agent.metadata.name == *name)
+    };
+    let agents = if let Some(name) = &name {
+        vec![client.get(name).await?]
+    } else {
+        let mut agents = client.list_agents().await?;
+        agents.retain(listed);
+        agents
+    };
+    if watch {
+        return watch::follow(
+            client,
+            |resources| {
+                let mut agents = resources.agents;
+                agents.retain(listed);
+                render_watched(output, &agents, agents_table)
+            },
+            &mut std::io::stdout(),
+        )
+        .await;
+    }
+    match output {
+        OutputFormat::Json => print_json(&agents)?,
+        OutputFormat::Table => print_table(&agents_table(&agents)),
+    }
+    Ok(())
+}
+
 async fn get_resources(
     client: &Client,
     resource: &str,
@@ -895,27 +929,7 @@ async fn get_resources(
     match resource {
         Resource::Agent => {
             reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
-            let agents = if let Some(name) = &name {
-                vec![client.get(name).await?]
-            } else {
-                client.list_agents().await?
-            };
-            if watch {
-                return watch::follow(
-                    client,
-                    |resources| {
-                        let mut agents = resources.agents;
-                        agents.retain(|agent| name.as_ref().is_none_or(|name| agent.metadata.name == *name));
-                        render_watched(output, &agents, agents_table)
-                    },
-                    &mut std::io::stdout(),
-                )
-                .await;
-            }
-            match output {
-                OutputFormat::Json => print_json(&agents)?,
-                OutputFormat::Table => print_table(&agents_table(&agents)),
-            }
+            return get_agents(client, name, watch, output).await;
         }
         Resource::Volume => {
             reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;

@@ -26,6 +26,7 @@ pub struct Reconciler {
     provisioning: ProvisioningState,
     immediate_stops: super::ImmediateStops,
     volumes: crate::volumes::VolumeRevisions,
+    snapshots: Option<crate::bundled::Snapshots>,
 }
 
 impl Reconciler {
@@ -45,7 +46,15 @@ impl Reconciler {
             provisioning,
             immediate_stops: super::ImmediateStops::default(),
             volumes: crate::volumes::VolumeRevisions::default(),
+            snapshots: None,
         }
+    }
+
+    /// Removes the copies of bundled definitions that no agent uses once it has deleted one that did.
+    #[must_use]
+    pub fn with_snapshots(mut self, snapshots: crate::bundled::Snapshots) -> Self {
+        self.snapshots = Some(snapshots);
+        self
     }
 
     /// Gives agents the volumes they mount from `volumes`. Without them, an agent that mounts a volume
@@ -557,6 +566,13 @@ impl Reconciler {
             .finalize_deletion(record.id, record.agent.metadata.generation)
             .await?;
         self.provisioning.forget(record.id);
+        if !record.origin.is_local()
+            && let Some(snapshots) = &self.snapshots
+            && let Err(error) = snapshots.remove_unused(self.store.as_ref()).await
+        {
+            // The agent is gone either way, and agentd removes what is left when it starts.
+            tracing::warn!(agent = %record.id, %error, "removing the bundled definitions no agent uses failed");
+        }
         Ok(())
     }
 
@@ -585,12 +601,8 @@ impl Reconciler {
             .or(record.agent.status.observed_restart_timestamp);
         // A resync that observes what is already stored writes nothing, so it
         // advances no revision and wakes no watcher.
-        let stored = Status {
-            progress: None,
-            provenance: None,
-            volumes: Vec::new(),
-            ..record.agent.status.clone()
-        };
+        let mut stored = record.agent.status.clone();
+        stored.scrub_projected();
         let mut unchanged = status.clone();
         unchanged.stamp_transitions(&stored, time::OffsetDateTime::UNIX_EPOCH);
         if unchanged == stored {

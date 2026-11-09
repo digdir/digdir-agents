@@ -30,6 +30,9 @@ fn record_with_id(name: &str, generation: u64, id: AgentId) -> AgentRecord {
         agent,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        workspace: None,
     }
 }
 
@@ -728,6 +731,12 @@ fn released_preview_1_database_migrates_without_losing_state() {
             .await
             .expect("migrated agent");
         assert_eq!(agent.source_directory, Path::new("/preview/source"));
+        assert_eq!(
+            agent.origin,
+            agent::Origin::Local,
+            "every earlier agent was applied from a local manifest"
+        );
+        assert_eq!(agent.lifetime, agent::Lifetime::UntilDeleted);
         assert_eq!(agent.agent.spec.instructions.len(), 1);
         assert_eq!(agent.agent.spec.skills, []);
         let sessions = database.list_agent_sessions("worker").await.expect("migrated sessions");
@@ -756,7 +765,7 @@ fn released_preview_1_database_migrates_without_losing_state() {
         connection
             .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .expect("schema version"),
-        8
+        9
     );
     assert_migrated_session_selections(&connection, 2, 2);
     assert_eq!(
@@ -908,7 +917,7 @@ fn preview_1_home_opened_by_the_expanded_version_1_build_migrates() {
     });
     drop(database);
 
-    assert_eq!(schema_snapshot(&path).0, 8);
+    assert_eq!(schema_snapshot(&path).0, 9);
     assert_eq!(
         connection_value(&path, EXPANDED_AGENT_ID, "desired_json"),
         expanded_desired,
@@ -965,7 +974,7 @@ fn version_2_home_records_the_model_existing_claude_code_sessions_launched_with(
         assert!(sessions[1].model_selection.is_empty());
     });
     drop(database);
-    assert_eq!(schema_snapshot(&path).0, 8);
+    assert_eq!(schema_snapshot(&path).0, 9);
     assert!(
         directory.path().join("backups").is_dir(),
         "a pending migration is backed up first"
@@ -1006,7 +1015,7 @@ fn expanded_version_1_schema_is_adopted_without_losing_state() {
     drop(database);
 
     let after = schema_snapshot(&path);
-    assert_eq!(after.0, 8);
+    assert_eq!(after.0, 9);
     let unchanged = |snapshot: &[(String, String)]| {
         snapshot
             .iter()
