@@ -239,7 +239,7 @@ impl ControlPlane {
                     let mut new = prepared.clone();
                     Box::pin(new.bind(&given)).await?;
                     new.agent.spec.set_run_state(applied_run_state(run_state, None));
-                    self.create(&new, crate::Lifetime::UntilDeleted).await
+                    Box::pin(self.create(&new, crate::Lifetime::UntilDeleted)).await
                 }
                 Err(error) => return Err(error),
             };

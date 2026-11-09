@@ -91,6 +91,6 @@ fn executable(metadata: &std::fs::Metadata) -> bool {
 }
 
 #[cfg(not(unix))]
-fn executable(_metadata: &std::fs::Metadata) -> bool {
+const fn executable(_metadata: &std::fs::Metadata) -> bool {
     false
 }

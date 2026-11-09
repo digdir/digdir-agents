@@ -112,6 +112,8 @@ impl Folders {
                     std::fs::create_dir_all(parent)?;
                 }
                 std::fs::write(&destination, &file.contents)?;
+                // Windows has no executable bit.
+                #[cfg(unix)]
                 set_executable(&destination, file.executable)?;
             }
             Ok::<_, std::io::Error>((root, target, partial.keep()))
@@ -174,10 +176,5 @@ fn set_executable(path: &Path, executable: bool) -> std::io::Result<()> {
     if executable {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &Path, _executable: bool) -> std::io::Result<()> {
     Ok(())
 }

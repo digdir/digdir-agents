@@ -150,7 +150,7 @@ impl ControlPlane {
             prepared.agent.validate()?;
             // Another request that took the name first is found on the next pass: it may be an
             // agent of this definition on these folders, which this one is then refused for.
-            match self.create(&prepared, lifetime).await {
+            match Box::pin(self.create(&prepared, lifetime)).await {
                 Ok(record) => break record,
                 Err(Error::Conflict) => {}
                 Err(error) => return Err(error),
