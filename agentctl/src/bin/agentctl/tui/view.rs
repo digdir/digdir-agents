@@ -1171,7 +1171,10 @@ fn render_create_agent(
                 form.field == CreateField::Agent,
                 form.agent,
                 form.agents.len(),
-                &abbreviate_home(&agent.directory.display().to_string()),
+                &agent.reference().map_or_else(
+                    || abbreviate_home(&agent.directory.display().to_string()),
+                    |_| "agentd's definition".to_owned(),
+                ),
                 detail_width,
             ),
         ))
@@ -1202,9 +1205,19 @@ fn render_create_agent(
             text_input(
                 &form.env_file,
                 form.field == CreateField::EnvironmentFile,
-                "default: .env beside manifest",
+                if candidate.reference.is_some() {
+                    "none: agentd's definitions read none"
+                } else {
+                    "default: .env beside manifest"
+                },
             ),
         ));
+    if let Some(workspace) = &candidate.workspace {
+        widget = widget.row(note_line(&format!(
+            "Works on {}",
+            abbreviate_home(&workspace.display().to_string())
+        )));
+    }
     let target = widget.render(frame, area, CREATE_AGENT_FORM_WIDTH, hit_map);
     for (row, field) in [
         (0, CreateField::Agent),

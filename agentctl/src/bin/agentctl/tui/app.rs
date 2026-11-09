@@ -719,6 +719,13 @@ pub(crate) struct ManifestCandidate {
     pub(crate) path: PathBuf,
     /// Decoded `metadata.name`, or why the manifest cannot be used.
     pub(crate) name: Result<String, String>,
+    /// The reference agentd runs it by, for one of agentd's definitions, whose manifest is
+    /// agentd's copy of it.
+    pub(crate) reference: Option<String>,
+    /// Whether it declares `spec.workspace`, so an agent needs a folder to work on.
+    pub(crate) needs_workspace: bool,
+    /// The folder an agent made from it works on: the working directory, when it needs one.
+    pub(crate) workspace: Option<PathBuf>,
     /// Other path spellings discovered for the same canonical file.
     equivalent_paths: Vec<PathBuf>,
 }
@@ -728,8 +735,17 @@ impl ManifestCandidate {
         Self {
             path,
             name,
+            reference: None,
+            needs_workspace: false,
+            workspace: None,
             equivalent_paths: Vec::new(),
         }
+    }
+
+    /// The candidate for agentd's definition `reference`, whose manifest is at `self.path`.
+    pub(crate) fn referenced_as(mut self, reference: String) -> Self {
+        self.reference = Some(reference);
+        self
     }
 
     pub(crate) fn add_equivalent_path(&mut self, path: PathBuf) {
@@ -753,8 +769,17 @@ pub(crate) struct AgentDefinition {
 }
 
 impl AgentDefinition {
-    /// User-facing agent label, taken from the expanded default when possible.
+    /// The reference agentd runs it by, for one of agentd's definitions.
+    pub(crate) fn reference(&self) -> Option<&str> {
+        self.variants.first()?.reference.as_deref()
+    }
+
+    /// User-facing agent label: the reference of one of agentd's definitions, else taken from the
+    /// expanded default when possible.
     pub(crate) fn label(&self) -> String {
+        if let Some(reference) = self.reference() {
+            return reference.to_owned();
+        }
         self.variants
             .iter()
             .find(|candidate| {
@@ -959,6 +984,12 @@ impl CreateForm {
             .candidate()
             .ok_or_else(|| "no agent manifests found; apply one with agentctl apply".to_owned())?;
         let manifest_name = candidate.name.as_ref().map_err(Clone::clone)?;
+        if candidate.reference.is_some() && !self.env_file.is_empty() {
+            return Err("agentd's definitions read no environment file".to_owned());
+        }
+        if candidate.needs_workspace && candidate.workspace.is_none() {
+            return Err("this definition works on a folder; start the TUI in it".to_owned());
+        }
         let name = if self.name.is_empty() {
             numbered_name(manifest_name, agents)
         } else {
@@ -972,6 +1003,7 @@ impl CreateForm {
             manifest: candidate.path.clone(),
             name,
             env_file: (!self.env_file.is_empty()).then(|| PathBuf::from(&self.env_file)),
+            workspace: candidate.workspace.clone(),
             form: self.clone(),
         })
     }
@@ -1239,6 +1271,8 @@ pub(crate) enum Action {
         manifest: PathBuf,
         name: String,
         env_file: Option<PathBuf>,
+        /// The folder the agent works on, for a definition with `spec.workspace`.
+        workspace: Option<PathBuf>,
         form: CreateForm,
     },
     Exec {
@@ -4461,6 +4495,55 @@ pub(crate) mod tests {
         assert_eq!(manifest, PathBuf::from("/b/agent.yaml"));
         assert_eq!(name, "my");
         assert_eq!(env_file, Some(PathBuf::from("../private/beta.env")));
+    }
+
+    #[test]
+    fn create_form_offers_agentds_definition_by_reference_on_the_working_directory() {
+        let mut app = populated();
+        let mut candidate = ManifestCandidate::new(
+            PathBuf::from("/agentd/bundled/abc/agent.yaml"),
+            Ok("builder".to_owned()),
+        )
+        .referenced_as("agent-builder".to_owned());
+        candidate.needs_workspace = true;
+        app.open_create(vec![candidate.clone()]);
+        assert_eq!(
+            create_form(&app).agent().map(AgentDefinition::label).as_deref(),
+            Some("agent-builder")
+        );
+        let Action::None = app.on_key(key(KeyCode::Enter)) else {
+            panic!("a definition that needs a workspace has none");
+        };
+        assert_eq!(
+            create_form(&app).error.as_deref(),
+            Some("this definition works on a folder; start the TUI in it")
+        );
+
+        candidate.workspace = Some(PathBuf::from("/src/app"));
+        app.modal = None;
+        app.open_create(vec![candidate]);
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Char('e')));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            create_form(&app).error.as_deref(),
+            Some("agentd's definitions read no environment file")
+        );
+        app.on_key(key(KeyCode::Backspace));
+        let Action::CreateAgent {
+            manifest,
+            workspace,
+            env_file,
+            ..
+        } = app.on_key(key(KeyCode::Enter))
+        else {
+            panic!("expected a CreateAgent action");
+        };
+        assert_eq!(manifest, PathBuf::from("/agentd/bundled/abc/agent.yaml"));
+        assert_eq!(workspace, Some(PathBuf::from("/src/app")));
+        assert_eq!(env_file, None);
     }
 
     #[test]

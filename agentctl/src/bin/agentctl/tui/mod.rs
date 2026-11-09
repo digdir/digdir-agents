@@ -327,15 +327,16 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
             Action::OpenCreate => {
                 if !app.discovering {
                     app.discovering = true;
-                    spawn_discovery(inputs.clone(), app.agents.clone());
+                    spawn_discovery(home.socket_path(), inputs.clone(), app.agents.clone());
                 }
             }
             Action::CreateAgent {
                 manifest,
                 name,
                 env_file,
+                workspace,
                 form,
-            } => create(&mut app, client, manifest, name, env_file, form).await,
+            } => create(&mut app, client, manifest, name, env_file, workspace, form).await,
             Action::CreateForward { agent, spec, replace } => {
                 if let Some(id) = replace {
                     forwards.remove(id);
@@ -817,9 +818,11 @@ fn spawn_create(home: &ControlPlaneHome, inputs: Inputs, agent: String, spec: Fo
 }
 
 /// Discovers create-agent candidates off the event loop so a slow filesystem never freezes the UI.
-fn spawn_discovery(inputs: Inputs, agents: Vec<Agent>) {
+fn spawn_discovery(socket_path: PathBuf, inputs: Inputs, agents: Vec<Agent>) {
     tokio::task::spawn_local(async move {
-        let candidates = manifest_candidates(std::env::current_dir().ok(), &agents).await;
+        // The ones on disk are still offered when agentd's cannot be listed.
+        let definitions = Client::for_path(socket_path).definitions().await.unwrap_or_default();
+        let candidates = manifest_candidates(std::env::current_dir().ok(), &agents, definitions).await;
         let _ = inputs.send(Input::ManifestsDiscovered(candidates));
     });
 }
@@ -850,21 +853,30 @@ async fn volume_candidates(
             std::fs::read(path)
                 .map_err(Error::from)
                 .and_then(|bytes| agent::volumes::decode(&bytes))
-                .map(|volume| volume.metadata.name)
+                .map(|volume| (volume.metadata.name, false))
         })
     })
     .await
     .unwrap_or_default()
 }
 
-/// Assembles create-agent candidates from the working tree and recorded agent manifests.
+/// Assembles create-agent candidates from the working tree, recorded agent manifests and the
+/// definitions agentd runs by reference, which come last. A definition with `spec.workspace`
+/// works on the working directory.
 ///
 /// Inside a git repository every manifest below the repository root is offered,
 /// skipping hidden and ignored directories; outside one only `agent.yaml` and
 /// `agents/*/agent.yaml` in the working directory are.
-async fn manifest_candidates(current_directory: Option<PathBuf>, agents: &[Agent]) -> Vec<ManifestCandidate> {
+async fn manifest_candidates(
+    current_directory: Option<PathBuf>,
+    agents: &[Agent],
+    definitions: Vec<agent::control_plane::DefinitionSummary>,
+) -> Vec<ManifestCandidate> {
+    // An agent run by reference records agentd's copy of the version it was made from, which the
+    // definitions agentd lists now replace.
     let recorded = agents
         .iter()
+        .filter(|agent| agent.status.origin.as_ref().is_none_or(agent::Origin::is_local))
         .filter_map(|agent| agent.status.provenance.as_ref())
         .map(agent::Provenance::manifest_or_default)
         .collect();
@@ -872,23 +884,40 @@ async fn manifest_candidates(current_directory: Option<PathBuf>, agents: &[Agent
         let found = current_directory
             .as_deref()
             .map_or_else(Vec::new, agent::definitions::manifests);
-        merge_candidates(found, recorded, |path| {
-            manifest::resolve(path).map(|resolved| resolved.agent.metadata.name)
-        })
+        let mut candidates = merge_candidates(found, recorded, |path| {
+            manifest::resolve(path)
+                .map(|resolved| (resolved.agent.metadata.name, resolved.agent.spec.workspace.is_some()))
+        });
+        candidates.extend(definitions.into_iter().map(|definition| {
+            let path = definition.path.join(MANIFEST_FILE);
+            let name = manifest::resolve(&path)
+                .map(|resolved| resolved.agent.metadata.name)
+                .map_err(|error| error.to_string());
+            let mut candidate = ManifestCandidate::new(path, name).referenced_as(definition.reference);
+            candidate.needs_workspace = definition.workspace.is_some();
+            candidate
+        }));
+        for candidate in &mut candidates {
+            if candidate.needs_workspace {
+                candidate.workspace.clone_from(&current_directory);
+            }
+        }
+        candidates
     })
     .await
     .unwrap_or_default()
 }
 
 /// Merges the manifests `found` for the working directory with the `recorded` ones resources were
-/// applied from into one candidate per file, however many paths reach it, named by `name`.
+/// applied from into one candidate per file, however many paths reach it, named by `read`, which
+/// also says whether the manifest declares a workspace.
 ///
 /// A recorded manifest that cannot be read stays listed so its error is visible. A found one that
 /// has gone since it was found is left out.
 fn merge_candidates(
     found: Vec<PathBuf>,
     mut recorded: Vec<PathBuf>,
-    name: impl Fn(&Path) -> Result<String, Error>,
+    read: impl Fn(&Path) -> Result<(String, bool), Error>,
 ) -> Vec<ManifestCandidate> {
     recorded.sort();
     recorded.dedup();
@@ -904,13 +933,15 @@ fn merge_candidates(
             candidates[index].add_equivalent_path(path);
             continue;
         }
-        let name = match name(&path) {
-            Ok(name) => Ok(name),
-            Err(error) if recorded || path.exists() => Err(error.to_string()),
+        let (name, needs_workspace) = match read(&path) {
+            Ok((name, needs_workspace)) => (Ok(name), needs_workspace),
+            Err(error) if recorded || path.exists() => (Err(error.to_string()), false),
             Err(_) => continue,
         };
         seen.insert(canonical, candidates.len());
-        candidates.push(ManifestCandidate::new(path, name));
+        let mut candidate = ManifestCandidate::new(path, name);
+        candidate.needs_workspace = needs_workspace;
+        candidates.push(candidate);
     }
     candidates
 }
@@ -922,9 +953,10 @@ async fn create(
     manifest: PathBuf,
     name: String,
     env_file: Option<PathBuf>,
+    workspace: Option<PathBuf>,
     mut form: CreateForm,
 ) {
-    match create_agent(client, manifest, name, env_file).await {
+    match create_agent(client, manifest, name, env_file, workspace).await {
         Ok(applied) => app.agent_applied(applied),
         Err(error) => {
             form.error = Some(error.to_string());
@@ -965,9 +997,11 @@ async fn create_agent(
     manifest: PathBuf,
     name: String,
     env_file: Option<PathBuf>,
+    workspace: Option<PathBuf>,
 ) -> Result<Agent, Error> {
     let mut request = crate::read_apply_request(manifest, env_file)?;
     request.agent.metadata.name = name;
+    request.workspace = workspace;
     request.create_only = true;
     client.apply(request).await
 }
@@ -1191,7 +1225,7 @@ mod tests {
             recorded_agent("unknown", None),
         ];
 
-        let candidates = manifest_candidates(Some(cwd.clone()), &agents).await;
+        let candidates = manifest_candidates(Some(cwd.clone()), &agents, Vec::new()).await;
 
         assert_eq!(candidates.len(), 4);
         assert_eq!(candidates[0].path, cwd.join(MANIFEST_FILE));
@@ -1202,6 +1236,42 @@ mod tests {
         assert!(candidates[2].name.is_err());
         assert_eq!(candidates[3].path, recorded.join(MANIFEST_FILE));
         assert_eq!(candidates[3].name.as_deref(), Ok("recorded"));
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn discovery_offers_agentds_definitions_last_instead_of_the_copies_its_agents_were_made_from() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let cwd = manifest_directory(root.path(), "cwd", &manifest_yaml("local"));
+        let current = manifest_directory(root.path(), "bundled/new", &manifest_yaml("builder"));
+        let earlier = manifest_directory(root.path(), "bundled/old", &manifest_yaml("builder"));
+        let mut made = recorded_agent("builder-cwd", Some(&earlier));
+        made.status.origin = Some(agent::Origin::Reference {
+            reference: "builder".into(),
+            digest: "old".into(),
+        });
+        let definitions = vec![agent::control_plane::DefinitionSummary {
+            reference: "builder".into(),
+            digest: "new".into(),
+            path: current.clone(),
+            workspace: Some(agent::WorkspaceSpec::default()),
+        }];
+
+        let candidates = manifest_candidates(Some(cwd.clone()), &[made], definitions).await;
+
+        assert_eq!(candidates.len(), 2, "{candidates:?}");
+        assert_eq!(candidates[0].path, cwd.join(MANIFEST_FILE));
+        assert_eq!(
+            (candidates[0].reference.as_deref(), candidates[0].workspace.as_deref()),
+            (None, None)
+        );
+        assert_eq!(candidates[1].path, current.join(MANIFEST_FILE));
+        assert_eq!(candidates[1].reference.as_deref(), Some("builder"));
+        assert_eq!(candidates[1].name.as_deref(), Ok("builder"));
+        assert_eq!(
+            candidates[1].workspace.as_deref(),
+            Some(cwd.as_path()),
+            "it works on the working directory"
+        );
     }
 
     #[cfg(unix)]
@@ -1220,7 +1290,7 @@ mod tests {
             .expect("recorded provenance")
             .manifest_path = Some(recorded_manifest.clone());
 
-        let candidates = manifest_candidates(Some(source.clone()), &[agent]).await;
+        let candidates = manifest_candidates(Some(source.clone()), &[agent], Vec::new()).await;
         let form = CreateForm::new(candidates, Some(&recorded_manifest));
 
         assert_eq!(form.agents.len(), 1);
@@ -1242,7 +1312,7 @@ mod tests {
         std::fs::write(cwd.join(".gitignore"), "target/\n").expect("ignore file should be written");
         let agents = vec![recorded_agent("nested", Some(&nested))];
 
-        let candidates = manifest_candidates(Some(cwd.clone()), &agents).await;
+        let candidates = manifest_candidates(Some(cwd.clone()), &agents, Vec::new()).await;
 
         let paths: Vec<&std::path::Path> = candidates.iter().map(|candidate| candidate.path.as_path()).collect();
         assert_eq!(
@@ -1270,7 +1340,7 @@ mod tests {
         manifest_directory(&cwd, "projects/checkout", &manifest_yaml("unrelated"));
         manifest_directory(&cwd, "agents/dev/nested", &manifest_yaml("nested"));
 
-        let candidates = manifest_candidates(Some(cwd.clone()), &[]).await;
+        let candidates = manifest_candidates(Some(cwd.clone()), &[], Vec::new()).await;
 
         let paths: Vec<&std::path::Path> = candidates.iter().map(|candidate| candidate.path.as_path()).collect();
         assert_eq!(
@@ -1357,7 +1427,7 @@ mod tests {
         )
         .expect("broken local variant");
 
-        let candidates = manifest_candidates(Some(agent.clone()), &[]).await;
+        let candidates = manifest_candidates(Some(agent.clone()), &[], Vec::new()).await;
 
         assert_eq!(candidates.len(), 3);
         assert_eq!(candidates[0].path, agent.join(MANIFEST_FILE));
@@ -1382,7 +1452,7 @@ mod tests {
         let sibling = manifest_directory(&repository, "agents/full", &manifest_yaml("full"));
         manifest_directory(root.path(), "outside", &manifest_yaml("outside"));
 
-        let candidates = manifest_candidates(Some(cwd), &[]).await;
+        let candidates = manifest_candidates(Some(cwd), &[], Vec::new()).await;
 
         let paths: Vec<&std::path::Path> = candidates.iter().map(|candidate| candidate.path.as_path()).collect();
         assert_eq!(paths, [repository.join(MANIFEST_FILE), sibling.join(MANIFEST_FILE)]);
@@ -1402,7 +1472,7 @@ mod tests {
             .expect("provenance should be recorded")
             .manifest_path = Some(manifest.clone());
 
-        let candidates = manifest_candidates(None, &[agent]).await;
+        let candidates = manifest_candidates(None, &[agent], Vec::new()).await;
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].path, manifest);
@@ -1415,7 +1485,7 @@ mod tests {
         let cwd = empty_directory(root.path(), "cwd");
         let agents = vec![recorded_agent("worker", Some(&cwd))];
 
-        let candidates = manifest_candidates(Some(cwd.clone()), &agents).await;
+        let candidates = manifest_candidates(Some(cwd.clone()), &agents, Vec::new()).await;
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].path, cwd.join(MANIFEST_FILE));
@@ -1427,8 +1497,8 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary directory");
         let cwd = empty_directory(root.path(), "cwd");
 
-        assert_eq!(manifest_candidates(Some(cwd), &[]).await, []);
-        assert_eq!(manifest_candidates(None, &[]).await, []);
+        assert_eq!(manifest_candidates(Some(cwd), &[], Vec::new()).await, []);
+        assert_eq!(manifest_candidates(None, &[], Vec::new()).await, []);
     }
 
     #[test]
