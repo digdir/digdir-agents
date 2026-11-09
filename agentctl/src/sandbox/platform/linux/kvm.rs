@@ -8,8 +8,8 @@ use super::{path_exists, run_checked, systemd_available, wait_for_systemd};
 
 /// The device a nested sandbox runtime opens, present only when the agent has nested sandboxes.
 const KVM: &str = "/dev/kvm";
-/// The guest kernel's transparent huge page policy, present only when the kernel has huge pages.
-const HUGE_PAGES: &str = "/sys/kernel/mm/transparent_hugepage/enabled";
+/// The guest kernel's transparent huge page controls, present only when the kernel has huge pages.
+const HUGE_PAGES: &str = "/sys/kernel/mm/transparent_hugepage";
 
 /// Prepares the guest to run nested sandboxes when it has `/dev/kvm`, and reports whether it has. With
 /// `huge_pages`, it also backs their memory with huge pages, as [`enable_huge_pages`] describes.
@@ -49,19 +49,29 @@ async fn grant_kvm(sandbox: &SandboxHandle) -> Result<bool, Error> {
 /// searching each mapping it holds, which makes memory-heavy work there hundreds of times slower. Other hosts'
 /// hypervisors don't have that cost, so there it only spends memory.
 ///
+/// Defragmentation is set to `always` too, so that a fault compacts memory for a huge page when the page cache has
+/// taken the free ones. Huge pages the kernel assembles later instead, by collapsing or compacting in the background,
+/// move memory a nested sandbox has mapped, and Hypervisor.framework answers each move by dropping all of that
+/// sandbox's mappings, which stalls it.
+///
 /// Memory a nested sandbox touched before the switch stays in 4 KiB pages, so it has to happen before the agent
 /// starts nested sandboxes, as setup does at every start. The policy lasts until the guest restarts, and changing
 /// nested sandboxes restarts it. A guest that refuses the switch only runs its nested sandboxes slower, so a
 /// failure is logged rather than failing setup.
 async fn enable_huge_pages(sandbox: &SandboxHandle) {
     let result = async {
-        if !path_exists(sandbox, "-f", HUGE_PAGES).await? {
+        if !path_exists(sandbox, "-f", &format!("{HUGE_PAGES}/enabled")).await? {
             return Ok(());
         }
         run_checked(
             sandbox,
             "/usr/bin/sudo",
-            ["-n", "/bin/sh", "-c", &format!("echo always > {HUGE_PAGES}")],
+            [
+                "-n",
+                "/bin/sh",
+                "-c",
+                &format!("echo always > {HUGE_PAGES}/enabled && echo always > {HUGE_PAGES}/defrag"),
+            ],
         )
         .await
     }

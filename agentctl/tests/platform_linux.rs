@@ -1174,13 +1174,13 @@ fn is_presence_check(spec: &sandbox::execution::ExecutionSpec, test: &str, path:
     )
 }
 
-/// Whether `spec` switches the guest kernel's transparent huge page policy to `always`.
+/// Whether `spec` switches the guest kernel's transparent huge page policy and defragmentation to `always`.
 fn is_huge_page_switch(spec: &sandbox::execution::ExecutionSpec) -> bool {
     matches!(
         spec.program(),
         Program::Command { executable, args }
             if executable.as_str() == "/usr/bin/sudo"
-                && args == &["-n", "/bin/sh", "-c", "echo always > /sys/kernel/mm/transparent_hugepage/enabled"]
+                && args == &["-n", "/bin/sh", "-c", "echo always > /sys/kernel/mm/transparent_hugepage/enabled && echo always > /sys/kernel/mm/transparent_hugepage/defrag"]
     )
 }
 
