@@ -50,14 +50,15 @@ async fn grant_kvm(sandbox: &SandboxHandle) -> Result<bool, Error> {
 /// hypervisors don't have that cost, so there it only spends memory.
 ///
 /// Defragmentation is set to `always` too, so that a fault compacts memory for a huge page when the page cache has
-/// taken the free ones. Huge pages the kernel assembles later instead, by collapsing or compacting in the background,
-/// move memory a nested sandbox has mapped, and Hypervisor.framework answers each move by dropping all of that
-/// sandbox's mappings, which stalls it.
+/// taken the free ones. Otherwise more of a nested sandbox's memory starts in 4 KiB pages and is assembled into huge
+/// pages later, in the background. That moves memory the nested sandbox has mapped, which is likely what stalled
+/// nested sandboxes for seconds when this was measured.
 ///
-/// Memory a nested sandbox touched before the switch stays in 4 KiB pages, so it has to happen before the agent
-/// starts nested sandboxes, as setup does at every start. The policy lasts until the guest restarts, and changing
-/// nested sandboxes restarts it. A guest that refuses the switch only runs its nested sandboxes slower, so a
-/// failure is logged rather than failing setup.
+/// Memory a nested sandbox touches before the switch starts in 4 KiB pages, so it has to happen before the agent
+/// starts nested sandboxes, as setup does at every start. Setup applies it on every pass, so it also replaces a
+/// policy someone changed by hand in the guest. It lasts until the guest restarts, and changing nested sandboxes
+/// restarts it. A guest that refuses the switch only runs its nested sandboxes slower, so a failure is logged
+/// rather than failing setup.
 async fn enable_huge_pages(sandbox: &SandboxHandle) {
     let result = async {
         if !path_exists(sandbox, "-f", &format!("{HUGE_PAGES}/enabled")).await? {
