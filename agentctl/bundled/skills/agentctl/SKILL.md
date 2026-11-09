@@ -32,9 +32,10 @@ agentctl claude login
 agentctl codex login
 ```
 
-**Store the accounts and secrets** the manifest asks for, from this agent's own variables: a GitHub login for each
-entry of `accounts`, and a secret for each `name` in `secrets`. The variables hold placeholders, which this agent's
-host replaces in requests to their hosts, so the nested agent reaches them through it:
+**Store the accounts and secrets** the manifest asks for, from this agent's own variables: a GitHub login under the
+`login` of each entry of `accounts`, and a secret under each `name` in `secrets`, with the hosts the entry lists. The
+variables hold placeholders, which this agent's host replaces in requests to their hosts, so the nested agent reaches
+them through it. For the agents in `agents/` of digdir-agents:
 
 ```sh
 printf '%s' "$GITHUB_TOKEN" | agentctl github login default --from-stdin
@@ -53,10 +54,10 @@ agent's disk can grow to its `rootFilesystem.capacity`, and every image built fo
 
 - The agents already there are the user's work. Change only those you create or the user names, and never run
   `stop --all` or `kill --all`.
-- Logins are the user's. When `apply` or `create` reports one missing, ask the user to run the login command it names,
-  such as `agentctl claude login work`; do not sign in yourself.
-- Logins, secrets and environment files hold real values: never read, write or print one. When `apply` reports a
-  secret or login missing, ask the user to run the command it names.
+- Logins and stored secrets are the user's. When `apply`, `create` or `describe` reports one missing, ask the user to
+  run the command it names, such as `agentctl claude login work` or `agentctl secret set aivar --hosts api.aivar.no`;
+  do not sign in or store one yourself.
+- Environment files hold real secrets: never read, write or print one.
 
 ## Apply
 
