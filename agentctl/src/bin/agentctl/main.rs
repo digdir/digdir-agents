@@ -2515,12 +2515,13 @@ impl Run {
     }
 }
 
-/// Whether `definition` is written as a path rather than as a reference: absolute, starting at `.`
+/// Whether `definition` is written as a path rather than as a reference: starting at a root, `.`
 /// or `..`, or a manifest file name. Others, such as `agents/reviewer`, are references, as
 /// `npm install` and `docker run` read such names, since a reference can hold a `/` too.
 fn is_written_as_path(definition: &str) -> bool {
     let path = Path::new(definition);
-    path.is_absolute()
+    // A root counts without a drive too, as in `/srv/agents/reviewer` on Windows.
+    path.has_root()
         || matches!(
             path.components().next(),
             Some(std::path::Component::CurDir | std::path::Component::ParentDir)

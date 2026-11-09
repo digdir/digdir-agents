@@ -524,6 +524,8 @@ async fn a_folder_that_is_not_one_projects_is_refused() {
     let file = fixture.workspaces.path().join("file");
     std::fs::write(&file, "").expect("file");
     let user_home = agent::local::home::user_home_directory().expect("home directory");
+    // `/`, or the drive's root on Windows.
+    let root = user_home.ancestors().last().expect("a root").to_path_buf();
     let refused = [
         (Path::new("relative").to_path_buf(), "absolute"),
         (fixture.workspaces.path().join("absent"), "cannot be resolved"),
@@ -540,7 +542,7 @@ async fn a_folder_that_is_not_one_projects_is_refused() {
             "agentd's home",
         ),
         (user_home, "your home folder"),
-        (Path::new("/").to_path_buf(), "home"),
+        (root, "home"),
     ];
     std::fs::create_dir_all(fixture.home.path().join("bundled")).expect("bundled folder");
     for (workspace, reason) in refused {
