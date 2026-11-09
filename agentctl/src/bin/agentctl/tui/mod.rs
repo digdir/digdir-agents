@@ -62,7 +62,8 @@ enum Input {
     ForwardCreated(CreateOutcome),
     /// The candidates found, or why the definitions could not be listed.
     ManifestsDiscovered(Vec<ManifestCandidate>, Option<String>),
-    VolumeManifestsDiscovered(Vec<ManifestCandidate>),
+    /// The volume manifests found, or why they could not be listed.
+    VolumeManifestsDiscovered(Vec<ManifestCandidate>, Option<String>),
     /// An action a finished step leads to, run in turn with the input already waiting.
     Then(Action),
     /// OpenSSH resolved an agent's alias.
@@ -240,9 +241,9 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                 app.manifests_discovered(candidates, unlisted);
                 continue;
             }
-            Input::VolumeManifestsDiscovered(candidates) => {
+            Input::VolumeManifestsDiscovered(candidates, unlisted) => {
                 mouse.reset();
-                app.volume_manifests_discovered(candidates);
+                app.volume_manifests_discovered(candidates, unlisted);
                 continue;
             }
             Input::Then(action) => action,
@@ -295,7 +296,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
             Action::OpenApplyVolume => {
                 if !app.discovering_volumes {
                     app.discovering_volumes = true;
-                    spawn_volume_discovery(inputs.clone(), app.volumes.clone());
+                    spawn_volume_discovery(home.socket_path(), inputs.clone());
                 }
             }
             Action::ApplyVolume { manifest, name, form } => apply_volume(&mut app, client, manifest, name, form).await,
@@ -830,46 +831,36 @@ fn spawn_discovery(socket_path: PathBuf, inputs: Inputs) {
     });
 }
 
-/// Discovers volume manifests off the event loop so a slow filesystem never freezes the UI.
-fn spawn_volume_discovery(inputs: Inputs, volumes: Vec<agent::volumes::Volume>) {
+/// Asks agentd for the volume manifests off the event loop, so a slow filesystem never freezes the UI.
+fn spawn_volume_discovery(socket_path: PathBuf, inputs: Inputs) {
     tokio::task::spawn_local(async move {
-        let candidates = volume_candidates(std::env::current_dir().ok(), volumes).await;
-        let _ = inputs.send(Input::VolumeManifestsDiscovered(candidates));
+        let directory = std::env::current_dir().ok();
+        let (candidates, unlisted) = match Client::for_path(socket_path).volume_manifests(directory).await {
+            Ok(manifests) => (volume_candidates(manifests), None),
+            Err(error) => (
+                Vec::new(),
+                Some(format!("could not list the volume manifests: {error}")),
+            ),
+        };
+        let _ = inputs.send(Input::VolumeManifestsDiscovered(candidates, unlisted));
     });
 }
 
-/// Assembles apply-volume candidates from the volume manifests found for the working directory and
-/// the manifests volumes were applied from.
-async fn volume_candidates(
-    current_directory: Option<PathBuf>,
-    volumes: Vec<agent::volumes::Volume>,
-) -> Vec<ManifestCandidate> {
-    tokio::task::spawn_blocking(move || {
-        let found = current_directory
-            .as_deref()
-            .map_or_else(Vec::new, agent::definitions::volume_manifests);
-        let recorded = volumes
-            .iter()
-            .filter_map(|volume| volume.status.manifest_path().map(Path::to_path_buf))
-            .collect();
-        agent::definitions::merge(found, recorded, |path| {
-            std::fs::read(path)
-                .map_err(Error::from)
-                .and_then(|bytes| agent::volumes::decode(&bytes))
-                .map(|volume| volume.metadata.name)
-        })
+/// The apply-volume candidates for the volume `manifests` agentd lists.
+fn volume_candidates(manifests: Vec<agent::definitions::VolumeManifestSummary>) -> Vec<ManifestCandidate> {
+    manifests
         .into_iter()
-        .map(|listed| {
-            let mut candidate = ManifestCandidate::new(listed.path, listed.read);
-            for alias in listed.aliases {
+        .map(|manifest| {
+            let name = manifest
+                .name
+                .ok_or_else(|| manifest.error.unwrap_or_else(|| "it names no volume".to_owned()));
+            let mut candidate = ManifestCandidate::new(manifest.path, name);
+            for alias in manifest.aliases {
                 candidate.add_equivalent_path(alias);
             }
             candidate
         })
         .collect()
-    })
-    .await
-    .unwrap_or_default()
 }
 
 /// The create-agent candidates for the `definitions` agentd lists for the working directory
@@ -1154,19 +1145,6 @@ mod tests {
         agent
     }
 
-    fn manifest_directory(root: &std::path::Path, name: &str, content: &str) -> PathBuf {
-        let directory = root.join(name);
-        std::fs::create_dir_all(&directory).expect("manifest directory should be created");
-        std::fs::write(directory.join(MANIFEST_FILE), content).expect("manifest should be written");
-        directory
-    }
-
-    fn empty_directory(root: &std::path::Path, name: &str) -> PathBuf {
-        let directory = root.join(name);
-        std::fs::create_dir_all(&directory).expect("directory should be created");
-        directory
-    }
-
     fn summary(path: PathBuf) -> agent::control_plane::DefinitionSummary {
         agent::control_plane::DefinitionSummary {
             path,
@@ -1232,60 +1210,29 @@ mod tests {
         );
     }
 
-    fn volume_yaml(name: &str) -> String {
-        format!(
-            "apiVersion: agents.platform/v1alpha1\nkind: Volume\nmetadata:\n  name: {name}\nspec:\n  type: copy\n  \
-             source: /data/{name}\n"
-        )
-    }
+    #[test]
+    fn volume_candidates_keep_errors_and_other_paths() {
+        let candidates = volume_candidates(vec![
+            agent::definitions::VolumeManifestSummary {
+                path: PathBuf::from("/work/agents/_volumes/apps.yaml"),
+                aliases: vec![PathBuf::from("/alias/apps.yaml")],
+                name: Some("apps".into()),
+                error: None,
+            },
+            agent::definitions::VolumeManifestSummary {
+                path: PathBuf::from("/work/agents/_volumes/broken.yaml"),
+                aliases: Vec::new(),
+                name: None,
+                error: Some("invalid YAML".into()),
+            },
+        ]);
 
-    fn recorded_volume(name: &str, manifest: &Path) -> agent::volumes::Volume {
-        let volume = agent::volumes::decode(volume_yaml(name).as_bytes()).expect("test volume should decode");
-        super::app::tests::applied_from(volume, manifest)
-    }
-
-    #[tokio::test(flavor = "local")]
-    async fn volume_discovery_finds_manifests_by_kind_under_agents_and_beside_agent_definitions() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let cwd = empty_directory(root.path(), "cwd");
-        let shared = empty_directory(&cwd, "agents/_volumes");
-        std::fs::write(shared.join("apps.yaml"), volume_yaml("apps")).expect("flat volume");
-        let docs = empty_directory(&shared, "docs");
-        std::fs::write(docs.join("volume.yaml"), volume_yaml("docs")).expect("volume in a directory");
-        let worker = manifest_directory(&cwd, "agents/worker", &manifest_yaml("worker"));
-        std::fs::write(worker.join("data.yml"), volume_yaml("data")).expect("volume in an agent definition");
-        std::fs::write(worker.join("config.yaml"), "kind: ConfigMap\n").expect("other yaml");
-        std::fs::write(worker.join(".local.yaml"), volume_yaml("local")).expect("hidden volume beside an agent");
-        std::fs::write(worker.join("scratch.yaml"), volume_yaml("scratch")).expect("ignored volume beside an agent");
-        std::fs::write(cwd.join(".gitignore"), "scratch.yaml\n").expect("ignore file");
-        std::fs::write(shared.join("broken.yaml"), "kind: Volume\nmetadata: [").expect("unparsable yaml");
-        let hidden = empty_directory(&cwd, "agents/.hidden");
-        std::fs::write(hidden.join("secret.yaml"), volume_yaml("hidden")).expect("hidden volume");
-        let elsewhere = empty_directory(root.path(), "elsewhere");
-        std::fs::write(elsewhere.join("logs.yaml"), volume_yaml("logs")).expect("recorded volume");
-        let invalid = elsewhere.join("invalid.yaml");
-        std::fs::write(&invalid, "apiVersion: agents.platform/v1alpha1\nkind: Volume\n").expect("invalid");
-        let volumes = [
-            recorded_volume("logs", &elsewhere.join("logs.yaml")),
-            recorded_volume("apps", &shared.join("apps.yaml")),
-            recorded_volume("invalid", &invalid),
-        ];
-
-        let candidates = volume_candidates(Some(cwd.clone()), volumes.to_vec()).await;
-
-        let found: Vec<(&Path, Result<&str, ()>)> = candidates
-            .iter()
-            .map(|candidate| (candidate.path.as_path(), candidate.name.as_deref().map_err(|_| ())))
-            .collect();
+        assert_eq!(candidates[0].name.as_deref(), Ok("apps"));
+        assert_eq!(candidates[1].name, Err("invalid YAML".to_owned()));
+        let form = VolumeForm::new(candidates, &[]);
         assert_eq!(
-            found,
-            [
-                (shared.join("apps.yaml").as_path(), Ok("apps")),
-                (docs.join("volume.yaml").as_path(), Ok("docs")),
-                (worker.join("data.yml").as_path(), Ok("data")),
-                (invalid.as_path(), Err(())),
-                (elsewhere.join("logs.yaml").as_path(), Ok("logs")),
-            ]
+            form.candidate().map(|candidate| candidate.name.as_deref()),
+            Some(Ok("apps"))
         );
     }
 

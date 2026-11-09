@@ -1965,9 +1965,12 @@ impl App {
     }
 
     /// Opens the apply volume form for finished discovery, unless the volumes view was left meanwhile.
-    pub(crate) fn volume_manifests_discovered(&mut self, candidates: Vec<ManifestCandidate>) {
+    /// `unlisted` says why the manifests could not be listed, which the form shows as its error.
+    pub(crate) fn volume_manifests_discovered(&mut self, candidates: Vec<ManifestCandidate>, unlisted: Option<String>) {
         if std::mem::take(&mut self.discovering_volumes) && self.idle() && self.view == View::Volumes {
-            self.modal = Some(Modal::ApplyVolume(VolumeForm::new(candidates, &self.volumes)));
+            let mut form = VolumeForm::new(candidates, &self.volumes);
+            form.error = unlisted;
+            self.modal = Some(Modal::ApplyVolume(form));
         }
     }
 
@@ -3292,10 +3295,13 @@ pub(crate) mod tests {
         app.on_key(key(KeyCode::Char('V')));
         assert_eq!(app.on_key(key(KeyCode::Char('c'))), Action::OpenApplyVolume);
         app.discovering_volumes = true;
-        app.volume_manifests_discovered(vec![
-            volume_candidate("/work/agents/_volumes/apps.yaml", "apps"),
-            volume_candidate("/work/agents/_volumes/docs/volume.yaml", "docs"),
-        ]);
+        app.volume_manifests_discovered(
+            vec![
+                volume_candidate("/work/agents/_volumes/apps.yaml", "apps"),
+                volume_candidate("/work/agents/_volumes/docs/volume.yaml", "docs"),
+            ],
+            None,
+        );
         assert_eq!(app.hints(), &APPLY_VOLUME_HINTS);
         let Some(Modal::ApplyVolume(form)) = &app.modal else {
             panic!("the apply volume form should open");
@@ -3323,7 +3329,7 @@ pub(crate) mod tests {
         app.on_key(key(KeyCode::Char('c')));
         app.discovering_volumes = true;
         app.on_key(key(KeyCode::Char('q')));
-        app.volume_manifests_discovered(vec![volume_candidate("/work/agents/_volumes/apps.yaml", "apps")]);
+        app.volume_manifests_discovered(vec![volume_candidate("/work/agents/_volumes/apps.yaml", "apps")], None);
         assert!(app.modal.is_none());
         assert!(!app.discovering_volumes);
     }
@@ -3333,7 +3339,7 @@ pub(crate) mod tests {
         let mut app = App::new();
         app.view = View::Volumes;
         app.discovering_volumes = true;
-        app.volume_manifests_discovered(Vec::new());
+        app.volume_manifests_discovered(Vec::new(), None);
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
         let Some(Modal::ApplyVolume(form)) = &app.modal else {
             panic!("the form should stay open");

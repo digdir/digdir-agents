@@ -112,6 +112,56 @@ fn copies(volume: &Volume) -> (Vec<u64>, Option<(u64, bool)>) {
 }
 
 #[tokio::test(flavor = "local")]
+async fn agentd_lists_a_folders_volume_manifests_then_the_ones_volumes_were_applied_from() {
+    let fixture = volume_fixture();
+    let folder = TempDirectory::new("volume-manifests-folder");
+    let shared = folder.path().join("agents/_volumes");
+    std::fs::create_dir_all(&shared).expect("volumes folder");
+    let manifest = |name: &str| {
+        format!(
+            "apiVersion: agents.platform/v1alpha1\nkind: Volume\nmetadata:\n  name: {name}\nspec:\n  type: copy\n  source: /data/{name}\n"
+        )
+    };
+    std::fs::write(shared.join("docs.yaml"), manifest("docs")).expect("manifest in the folder");
+    let elsewhere = TempDirectory::new("volume-manifests-applied");
+    let applied = elsewhere.path().join("logs.yaml");
+    std::fs::write(&applied, manifest("logs")).expect("applied manifest");
+    let source = TempDirectory::new("volume-manifests-source");
+    fixture
+        .service
+        .apply(ApplyVolumeRequest {
+            manifest_path: Some(applied.clone()),
+            ..volume_request("logs", source.path().to_path_buf())
+        })
+        .await
+        .expect("apply");
+
+    let listed = fixture
+        .service
+        .manifests(Some(folder.path().to_path_buf()))
+        .await
+        .expect("manifests");
+
+    let found = listed
+        .iter()
+        .map(|manifest| (manifest.path.clone(), manifest.name.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            (shared.join("docs.yaml"), Some("docs".to_owned())),
+            (applied, Some("logs".to_owned())),
+        ]
+    );
+    let error = fixture
+        .service
+        .manifests(Some("relative".into()))
+        .await
+        .expect_err("a relative folder");
+    assert!(error.to_string().contains("must be an absolute path"), "{error}");
+}
+
+#[tokio::test(flavor = "local")]
 async fn applying_a_copy_volume_takes_a_new_revision_only_when_its_source_changed() {
     let fixture = volume_fixture();
     let temporary = TempDirectory::new("volume-source");

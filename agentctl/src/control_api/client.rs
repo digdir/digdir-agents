@@ -7,18 +7,18 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, sessions};
 
 use super::protocol::{
-    AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, DaemonInfo, DefinitionListParams,
-    DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
-    MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY,
-    METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE,
+    AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, DaemonInfo, DirectoryParams,
+    ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_RESPONSE_BYTES,
+    METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN,
+    METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE,
     METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
     METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
     METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
     METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
-    METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams,
-    ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams,
-    SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult,
-    read_message,
+    METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST,
+    METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, ProgressParams, ReadMessage, Request,
+    ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams,
+    SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -126,7 +126,7 @@ impl Client {
         &self,
         directory: Option<std::path::PathBuf>,
     ) -> Result<Vec<control_plane::DefinitionSummary>, Error> {
-        self.call(METHOD_DEFINITIONS, DefinitionListParams { directory }).await
+        self.call(METHOD_DEFINITIONS, ManifestListParams { directory }).await
     }
 
     /// Gets an agent resource by name.
@@ -249,6 +249,20 @@ impl Client {
     /// Returns an error when transport, protocol validation, or storage fails.
     pub async fn list_volumes(&self) -> Result<Vec<crate::volumes::Volume>, Error> {
         self.call(METHOD_VOLUME_LIST, serde_json::json!({})).await
+    }
+
+    /// Lists the volume manifests a client can apply: those on disk for the absolute folder
+    /// `directory`, and the manifests volumes were applied from.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or storage fails.
+    pub async fn volume_manifests(
+        &self,
+        directory: Option<std::path::PathBuf>,
+    ) -> Result<Vec<crate::definitions::VolumeManifestSummary>, Error> {
+        self.call(METHOD_VOLUME_MANIFESTS, ManifestListParams { directory })
+            .await
     }
 
     /// Requests a volume's deletion.
