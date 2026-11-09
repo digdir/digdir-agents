@@ -27,6 +27,12 @@ impl Folders {
         Self { root }
     }
 
+    /// The folder holding every copy.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// The folder holding the copy of the definition named `name`.
     #[must_use]
     pub fn path(&self, name: &str) -> PathBuf {

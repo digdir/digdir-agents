@@ -141,15 +141,18 @@ impl ControlPlane {
         let Some(bundled) = &self.bundled else {
             return Origin::Local;
         };
+        // Any copy agentd keeps, including one of a definition this build no longer carries,
+        // which it keeps while an agent made from it remains.
         let directory = canonical(source_directory).await;
-        for definition in bundled.definitions.iter() {
-            if canonical(&bundled.folders.path(definition.name())).await == directory {
-                return Origin::Reference {
-                    reference: DefinitionReference::Bundled(definition.name().to_owned()).to_string(),
-                };
+        let name = directory.file_name().and_then(|name| name.to_str());
+        match name {
+            Some(name) if directory.parent() == Some(canonical(bundled.folders.root()).await.as_path()) => {
+                Origin::Reference {
+                    reference: DefinitionReference::Bundled(name.to_owned()).to_string(),
+                }
             }
+            _ => Origin::Local,
         }
-        Origin::Local
     }
 
     /// The `given` bind mount sources, each canonical, or why agentd refuses to mount one.

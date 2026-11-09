@@ -123,7 +123,8 @@ pub fn manifests(directory: &Path) -> Vec<PathBuf> {
 #[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DefinitionSummary {
-    /// Its manifest, in agentd's copy of it for a definition agentd carries, which is never changed.
+    /// Its manifest, in agentd's copy of it for a definition agentd carries, which agentd writes
+    /// again when it starts.
     pub path: PathBuf,
     /// The other paths that lead to the same manifest, such as through a symbolic link.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -595,6 +595,94 @@ fn an_optional_bind_mount_needs_a_source() {
 }
 
 #[tokio::test(flavor = "local")]
+async fn applying_a_manifest_that_now_names_the_given_folder_forgets_it_was_given() {
+    let fixture = Fixture::new();
+    let definition = TempDirectory::new("bundled-local");
+    std::fs::create_dir_all(definition.path().join("checkout")).expect("checkout");
+    let worktree = fixture
+        .workspace("worktree")
+        .canonicalize()
+        .expect("canonical worktree");
+    let declaring = |source: &Path| {
+        let mut manifest = manifest("dev", BASE_IMAGE);
+        manifest.spec.sandbox.mounts = vec![MountSpec::Bind {
+            source: Some(source.to_path_buf()),
+            target: sandbox::SandboxPath::new(CHECKOUT),
+            read_only: false,
+            optional: false,
+        }];
+        manifest
+    };
+    let local = |manifest: Agent, binds: Vec<BindSource>| RunRequest {
+        definition: RunDefinition::Local {
+            source_directory: definition.path().to_path_buf(),
+            manifest_path: definition.path().join("agent.yaml"),
+            env_file: None,
+            agent: Box::new(manifest),
+        },
+        binds,
+        lifetime: None,
+        name: None,
+    };
+    let (given, _) = fixture
+        .control_plane
+        .run(local(
+            declaring(Path::new("checkout")),
+            vec![BindSource {
+                source: worktree.clone(),
+                target: Some(sandbox::SandboxPath::new(CHECKOUT)),
+            }],
+        ))
+        .await
+        .expect("run on the worktree");
+    assert_eq!(given.agent.metadata.name, "dev-worktree");
+
+    let mut now = declaring(&worktree);
+    now.metadata.name = "dev-worktree".into();
+    let applied = fixture
+        .control_plane
+        .apply(apply(definition.path(), now))
+        .await
+        .expect("the manifest now names the worktree");
+
+    assert_eq!(applied.status.bindings, BTreeMap::new());
+    let error = fixture
+        .control_plane
+        .run(local(declaring(&worktree), Vec::new()))
+        .await
+        .expect_err("the same definition on the same folder");
+    assert!(error.to_string().contains("already runs"), "{error}");
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_kept_copy_of_a_definition_the_build_no_longer_carries_is_still_that_definition() {
+    let fixture = Fixture::new();
+    let (made, _) = fixture
+        .control_plane
+        .run(request("sign-in", None))
+        .await
+        .expect("run sign-in");
+    let rebuilt = fixture.rebuilt([builder("one")]);
+    rebuilt.remove_leftovers().await.expect("agentd starts");
+    let copy = fixture.folders().path("sign-in");
+    let mut manifest: Agent =
+        serde_yaml_ng::from_slice(&std::fs::read(copy.join("agent.yaml")).expect("kept manifest")).expect("manifest");
+    manifest.metadata.name.clone_from(&made.agent.metadata.name);
+
+    let applied = rebuilt
+        .apply(apply(&copy, manifest))
+        .await
+        .expect("the agent's own definition");
+
+    assert_eq!(
+        applied.status.origin,
+        Some(Origin::Reference {
+            reference: "bundled/sign-in".into()
+        })
+    );
+}
+
+#[tokio::test(flavor = "local")]
 async fn a_folder_given_for_a_bind_mount_replaces_the_manifests_and_makes_another_agent() {
     let fixture = Fixture::new();
     let definition = TempDirectory::new("bundled-local");

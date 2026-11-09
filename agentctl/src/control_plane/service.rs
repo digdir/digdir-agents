@@ -215,10 +215,12 @@ impl ControlPlane {
                         bindings: bound.bindings,
                     };
                     self.reject_exposed_secrets(&record).await?;
+                    // The folders it was given count too: `run` finds an agent by them.
                     if current.agent.spec == record.agent.spec
                         && current.source_directory == record.source_directory
                         && current.manifest_path == record.manifest_path
                         && current.env_file == record.env_file
+                        && current.bindings == record.bindings
                     {
                         self.notifier.notify(current.id);
                         return Ok(self.resource(current));
