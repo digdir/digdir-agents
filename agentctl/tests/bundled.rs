@@ -82,8 +82,8 @@ fn sign_in() -> Definition {
 }
 
 #[test]
-fn a_bundled_definition_takes_stored_secrets_but_no_environment_file() {
-    let with_secret = |secret: Option<&str>, source: Option<&str>| {
+fn a_bundled_definition_takes_stored_secrets_and_values_but_no_environment_file() {
+    let with = |secret: Option<&str>, source: Option<&str>, value: Option<&str>| {
         let mut manifest = manifest("builder", BASE_IMAGE);
         manifest.spec.secrets.push(agent::SecretSpec {
             environment: "MODELS_API_KEY".into(),
@@ -92,6 +92,11 @@ fn a_bundled_definition_takes_stored_secrets_but_no_environment_file() {
             allowed_hosts: vec!["api.example.com".into()],
             source: source.map(Into::into),
             name: secret.map(Into::into),
+        });
+        manifest.spec.environment.push(agent::EnvironmentSpec {
+            name: "EDITOR".into(),
+            source: None,
+            value: value.map(Into::into),
         });
         let mut definition = files("builder", BASE_IMAGE, "build", "home", true);
         definition.insert(
@@ -107,10 +112,17 @@ fn a_bundled_definition_takes_stored_secrets_but_no_environment_file() {
         Definition::new("builder", definition)
     };
 
-    with_secret(Some("models"), None).expect("a stored secret reads no environment file");
-    for refused in [with_secret(None, None), with_secret(None, Some("MODELS"))] {
+    with(Some("models"), None, Some("vim")).expect("a stored secret and a value read no environment file");
+    for (refused, reads) in [
+        (with(None, None, Some("vim")), "reads MODELS_API_KEY from"),
+        (
+            with(None, Some("MODELS"), Some("vim")),
+            "reads MODELS as MODELS_API_KEY from",
+        ),
+        (with(Some("models"), None, None), "reads EDITOR from"),
+    ] {
         assert!(
-            matches!(&refused, Err(Error::Invalid(message)) if message.contains("environment file")),
+            matches!(&refused, Err(Error::Invalid(message)) if message.contains(reads)),
             "{refused:?}"
         );
     }

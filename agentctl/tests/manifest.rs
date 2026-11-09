@@ -902,14 +902,18 @@ fn a_build_context_starting_with_a_tilde_resolves_below_the_home_directory() {
 #[test]
 fn an_environment_value_may_be_given_in_the_manifest_instead_of_the_environment_file() {
     let agent = manifest::decode(&manifest_with_access(
-        "  environment:\n    - name: EDITOR\n      value: vim\n    - name: PAGER\n  \
+        "  environment:\n    - name: EDITOR\n      value: vim\n    - name: PAGER\n    - name: VISUAL\n      \
+         source: HOST_VISUAL\n  \
          secrets:\n    - name: aivar\n      environment: AIVAR_API_KEY\n    - environment: OTHER_KEY\n      \
          allowedHosts: [other.example]\n",
     ))
     .expect("a value in the manifest");
     assert_eq!(agent.spec.environment[0].value.as_deref(), Some("vim"));
     assert_eq!(agent.spec.environment[0].source(), None);
-    assert_eq!(agent.spec.environment_file_variables(), ["PAGER", "OTHER_KEY"]);
+    assert_eq!(
+        agent.spec.environment_file_variables(),
+        ["PAGER", "HOST_VISUAL as VISUAL", "OTHER_KEY"]
+    );
 
     assert!(matches!(
         manifest::decode(&manifest_with_access(

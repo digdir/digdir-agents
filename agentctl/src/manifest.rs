@@ -664,19 +664,26 @@ impl Spec {
         self.access.contains(&AccessSpec::Vnc {})
     }
 
-    /// The variables the environment file supplies, which a later release stops reading: those of
-    /// `spec.environment` without a `value` and of `spec.secrets` without a `name`.
+    /// The variables read from the environment file, which a later release stops reading: those of
+    /// `spec.environment` without a `value` and of `spec.secrets` without a `name`. Each is named as
+    /// the file names it, followed by the variable it sets when that differs, such as
+    /// `HOST_EDITOR as EDITOR`.
     #[must_use]
-    pub fn environment_file_variables(&self) -> Vec<&str> {
+    pub fn environment_file_variables(&self) -> Vec<String> {
+        let named = |source: &str, name: &str| {
+            if source == name {
+                source.to_owned()
+            } else {
+                format!("{source} as {name}")
+            }
+        };
         self.environment
             .iter()
-            .filter(|variable| variable.source().is_some())
-            .map(|variable| variable.name.as_str())
+            .filter_map(|variable| variable.source().map(|source| named(source, &variable.name)))
             .chain(
                 self.secrets
                     .iter()
-                    .filter(|secret| secret.source().is_some())
-                    .map(|secret| secret.environment.as_str()),
+                    .filter_map(|secret| secret.source().map(|source| named(source, &secret.environment))),
             )
             .collect()
     }
