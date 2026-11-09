@@ -1,0 +1,77 @@
+# Builds the standard agents' images from agents/standard, and publishes them to ghcr.io/digdir/digdir-agents as
+# `latest` and `sha-<commit>`.
+#
+# They build as self-dev-images.yml builds the self-dev images: on main on the base images as published, and again
+# whenever those are published, and on pull requests on the base images from the same commit. A push that changes the
+# base images as well builds once on the old base, which the base images' run then replaces.
+name: standard images
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed]
+    paths:
+      - agents/standard/**
+      - images/agentctl-base/**
+      - docker-bake.hcl
+      - .github/workflows/standard-images.yml
+      - .github/workflows/images.yml
+      # Neither the images' .dockerignore nor the base's admits this Markdown. agentctl applies the standard agents'
+      # instructions and skills from their manifests.
+      - '!agents/standard/**/*.md'
+      - '!images/agentctl-base/*.md'
+  push:
+    branches:
+      - main
+    paths:
+      - agents/standard/**
+      - .github/workflows/standard-images.yml
+      - .github/workflows/images.yml
+      # The images' .dockerignore does not admit this Markdown. agentctl applies the standard agents' instructions and
+      # skills from their manifests.
+      - '!agents/standard/**/*.md'
+  # A publish of the base images on main. The run builds main as it is now, which may have moved past the commit that
+  # published them.
+  workflow_run:
+    workflows: [agentctl base images]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  images:
+    if: >-
+      ${{ (github.event_name == 'pull_request' && github.event.action != 'closed' && !github.event.pull_request.draft)
+      || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'pull_request') }}
+    name: Standard images
+    # A cancelled publish could leave the images' tags pointing at different commits.
+    concurrency:
+      group: standard-images-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    uses: ./.github/workflows/images.yml
+    with:
+      # A pull request reads the base images' bake file too, to build the base from the same commit, and its cache.
+      files: >-
+        ${{ github.event_name == 'pull_request' && 'docker-bake.hcl agents/standard/docker-bake.hcl'
+        || 'agents/standard/docker-bake.hcl' }}
+      group: standard
+      variables: ${{ github.event_name == 'pull_request' && 'BASE_CONTEXT=target:base-headless' || '' }}
+      set: |
+        ${{ github.event_name == 'pull_request' && 'base-headless.cache-from=type=registry,ref=ghcr.io/digdir/agentctl-base:buildcache-headless-{arch}' || '' }}
+      sparse-checkout: |
+        agents/standard
+        images/agentctl-base
+      mode: ${{ github.ref == 'refs/heads/main' && 'main' || 'build' }}
+      images: |
+        [
+          {
+            "target": "standard-dotnet-backend-developer",
+            "repository": "ghcr.io/digdir/digdir-agents/agent-dotnet-backend-developer",
+            "cache": "ghcr.io/digdir/digdir-agents/agent-dotnet-backend-developer:buildcache",
+            "tags": ["latest", "sha-{sha}"]
+          }
+        ]
