@@ -81,6 +81,41 @@ fn sign_in() -> Definition {
     Definition::new("sign-in", files("sign-in", BASE_IMAGE, "sign in", "home", false)).expect("sign-in definition")
 }
 
+#[test]
+fn a_bundled_definition_takes_kept_secrets_but_no_environment_file() {
+    let with_secret = |secret: Option<&str>, source: Option<&str>| {
+        let mut manifest = manifest("builder", BASE_IMAGE);
+        manifest.spec.secrets.push(agent::SecretSpec {
+            environment: "MODELS_API_KEY".into(),
+            optional: false,
+            placeholder: None,
+            allowed_hosts: vec!["api.example.com".into()],
+            source: source.map(Into::into),
+            secret: secret.map(Into::into),
+        });
+        let mut definition = files("builder", BASE_IMAGE, "build", "home", true);
+        definition.insert(
+            "agent.yaml".into(),
+            DefinitionFile {
+                contents: serde_yaml_ng::to_string(&manifest)
+                    .expect("manifest")
+                    .into_bytes()
+                    .into(),
+                executable: false,
+            },
+        );
+        Definition::new("builder", definition)
+    };
+
+    with_secret(Some("models"), None).expect("a kept secret reads no environment file");
+    for refused in [with_secret(None, None), with_secret(None, Some("MODELS"))] {
+        assert!(
+            matches!(&refused, Err(Error::Invalid(message)) if message.contains("environment file")),
+            "{refused:?}"
+        );
+    }
+}
+
 pub(crate) struct Fixture {
     pub(crate) store: Rc<memory::InMemoryAgentStore>,
     home: TempDirectory,

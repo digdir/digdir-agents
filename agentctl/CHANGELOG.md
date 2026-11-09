@@ -43,6 +43,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 - `secret: NAME` in `spec.secrets` takes the value from a secret kept on this machine instead of the environment file, so agents share it and a new value reaches them at once: ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#346](https://github.com/digdir/digdir-agents/issues/346))
   - `agentctl secret set NAME --hosts HOST` keeps one, used only at hosts both it and the manifest allow
   - `agentctl secret list` and `remove` show and remove them, and `list` names those agents ask for that are missing
+  - a definition you `agentctl run` without an environment file, such as one agentd carries, can use them too
 
 ### Changed
 

@@ -52,6 +52,37 @@ pub(crate) fn vnc_access_lines(access: &agent::vnc::AccessInfo, home: &Path) -> 
     ]
 }
 
+/// Where an agent's secrets come from: the environment file, and the secrets kept under a name.
+fn secret_sources(agent: &Agent) -> String {
+    let mut sources = Vec::new();
+    if agent.spec.reads_secret_file()
+        && let Some(provenance) = &agent.status.provenance
+    {
+        sources.push(
+            provenance
+                .env_file
+                .clone()
+                .unwrap_or_else(|| provenance.source_directory.join(agent::control_plane::ENV_FILE))
+                .display()
+                .to_string(),
+        );
+    }
+    let kept = agent
+        .spec
+        .secrets
+        .iter()
+        .filter_map(|secret| secret.secret.as_deref())
+        .collect::<Vec<_>>();
+    if !kept.is_empty() {
+        sources.push(format!("kept {}", kept.join(", ")));
+    }
+    if sources.is_empty() {
+        "-".to_owned()
+    } else {
+        sources.join("; ")
+    }
+}
+
 pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
     let provider = agent
         .status
@@ -80,34 +111,7 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
         ),
     };
 
-    // Where the values come from: the environment file, and the secrets kept under a name.
-    let mut sources = Vec::new();
-    if agent.spec.reads_secret_file()
-        && let Some(provenance) = &agent.status.provenance
-    {
-        sources.push(
-            provenance
-                .env_file
-                .clone()
-                .unwrap_or_else(|| provenance.source_directory.join(agent::control_plane::ENV_FILE))
-                .display()
-                .to_string(),
-        );
-    }
-    let kept = agent
-        .spec
-        .secrets
-        .iter()
-        .filter_map(|secret| secret.secret.as_deref())
-        .collect::<Vec<_>>();
-    if !kept.is_empty() {
-        sources.push(format!("kept {}", kept.join(", ")));
-    }
-    let secrets = if sources.is_empty() {
-        "-".to_owned()
-    } else {
-        sources.join("; ")
-    };
+    let secrets = secret_sources(agent);
 
     let mut lines = vec![
         format!("Name:       {}", agent.metadata.name),
