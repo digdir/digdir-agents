@@ -32,6 +32,11 @@ ignore = [
   # write and read snapshot archives; the advisory reports no vulnerability. Moving Microsandbox to another tar crate,
   # such as tar-codec, removes this entry.
   { id = "RUSTSEC-2026-0440", reason = "unmaintained astral-tokio-tar used by Microsandbox; no known vulnerability or safe upgrade" },
+  # The SQLite bundled with libsqlite3-sys 0.30 can return stale memory for a database whose -wal file another party
+  # wrote with a different page size. agentd and Microsandbox open only their own databases, agent.db and
+  # microsandbox/ in agentd's home. rusqlite stays on the libsqlite3-sys the Microsandbox fork resolves, so the fixed
+  # 0.39 waits for the fork to move. Moving both removes this entry.
+  { id = "RUSTSEC-2026-0459", reason = "SQLite -wal page size; agentd and Microsandbox open only their own databases in agentd's home" },
 ]
 
 [sources]
