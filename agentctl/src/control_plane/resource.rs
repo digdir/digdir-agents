@@ -85,30 +85,26 @@ impl AgentRecord {
             .unwrap_or_else(|| self.source_directory.join(ENV_FILE))
     }
 
-    /// Refuses an agent whose bind mounts agentd has not resolved, which it does before storing
-    /// one: each has a source, and its writable folders are bind mounts of their own. Otherwise
-    /// its sandbox would be made without them.
+    /// Refuses an agent with a bind mount agentd has not given a source, which it does before
+    /// storing one. Otherwise its sandbox would be made without it.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Database`] naming the first bind mount that is not resolved.
+    /// Returns [`Error::Database`] naming the first bind mount without a source.
     pub fn check_resolved(&self) -> Result<(), Error> {
-        for (index, mount) in self.agent.spec.sandbox.mounts.iter().enumerate() {
-            if let MountSpec::Bind { source, writable, .. } = mount {
-                let missing = if source.is_none() {
-                    "has no source"
-                } else if !writable.is_empty() {
-                    "still lists writable folders"
-                } else {
-                    continue;
-                };
-                return Err(Error::Database(format!(
-                    "agent {:?} is not stored: spec.sandbox.mounts[{index}] {missing}, which agentd resolves first",
-                    self.agent.metadata.name
-                )));
-            }
-        }
-        Ok(())
+        let unsourced = self
+            .agent
+            .spec
+            .sandbox
+            .mounts
+            .iter()
+            .position(|mount| matches!(mount, MountSpec::Bind { source: None, .. }));
+        unsourced.map_or(Ok(()), |index| {
+            Err(Error::Database(format!(
+                "agent {:?} is not stored: spec.sandbox.mounts[{index}] has no source, which agentd gives it first",
+                self.agent.metadata.name
+            )))
+        })
     }
 
     /// Returns the mounts the agent's sandbox gets, which leave out the optional bind mounts whose source did not
@@ -136,8 +132,8 @@ impl AgentRecord {
                         optional,
                         ..
                     } => Mount::Bind {
-                        // A stored agent's bind mounts all have their sources, and their writable
-                        // folders mounts of their own, as `check_resolved` makes sure.
+                        // A stored agent's bind mounts all have their sources, as
+                        // `check_resolved` makes sure.
                         source: if *optional {
                             self.optional_mount_sources.get(target)?.clone()
                         } else {

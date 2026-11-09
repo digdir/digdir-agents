@@ -225,7 +225,8 @@ impl Linux {
                 }
                 placed.insert(directory, names);
             }
-            harness::bootstrap_linux(installation.kind, sandbox, HOME, &instructions, &skills).await?;
+            let start = working_directory(record);
+            harness::bootstrap_linux(installation.kind, sandbox, HOME, start, &instructions, &skills).await?;
             step.complete().await;
         }
         Ok(PlatformSetup {
@@ -241,6 +242,16 @@ const MAX_OWNED_INSTRUCTIONS: usize = 1024 * 1024;
 /// What the image or home overlay put in a harness's instruction file: nothing when it does not
 /// exist. The sandbox user can replace the file, so it must be a regular file and is read only up
 /// to a bound; anything else fails setup rather than losing the file's text.
+/// Where the agent's sessions start.
+fn working_directory(record: &control_plane::AgentRecord) -> &str {
+    record
+        .agent
+        .spec
+        .working_directory
+        .as_ref()
+        .map_or(super::WORKING_DIRECTORY, ::sandbox::SandboxPath::as_str)
+}
+
 async fn read_owned_instructions(sandbox: &SandboxHandle, path: &str) -> Result<Vec<u8>, Error> {
     if !path_exists(sandbox, "-e", path).await? {
         return Ok(Vec::new());

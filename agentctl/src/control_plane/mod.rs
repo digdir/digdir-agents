@@ -1,8 +1,10 @@
 //! Declarative agent storage, reconciliation, and continuous repair.
 
+mod bundled;
 mod controller;
 mod convergence;
 pub mod memory;
+mod prepare;
 mod reconciler;
 mod resource;
 mod run;

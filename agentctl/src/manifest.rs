@@ -434,10 +434,6 @@ pub enum MountSpec {
         /// disappears later changes nothing until the agent is recreated.
         #[serde(default, skip_serializing_if = "is_false")]
         optional: bool,
-        /// Folders in a read-only mount, relative to its source, that the sandbox may change. agentd
-        /// mounts each over it, making a missing one first, as the sandbox cannot make it.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        writable: Vec<std::path::PathBuf>,
     },
     /// A volume, by name. The agent keeps the revision it gets first, and waits until the volume has a revision
     /// ready.
@@ -476,15 +472,8 @@ impl MountSpec {
 fn validate_mounts(mounts: &[MountSpec], root_filesystem: ::sandbox::RootFilesystemMode) -> Result<(), Error> {
     let mut targets = std::collections::BTreeSet::new();
     for (index, mount) in mounts.iter().enumerate() {
-        if let MountSpec::Bind {
-            source,
-            read_only,
-            optional,
-            writable,
-            ..
-        } = mount
-        {
-            validate_bind_mount(index, source.as_deref(), *read_only, *optional, writable)?;
+        if let MountSpec::Bind { source, optional, .. } = mount {
+            validate_bind_mount(index, source.as_deref(), *optional)?;
         }
         if let MountSpec::Volume {
             volume,
@@ -512,62 +501,17 @@ fn validate_mounts(mounts: &[MountSpec], root_filesystem: ::sandbox::RootFilesys
     reject_mounts_inside_writable_volumes(mounts)
 }
 
-fn validate_bind_mount(
-    index: usize,
-    source: Option<&std::path::Path>,
-    read_only: bool,
-    optional: bool,
-    writable: &[std::path::PathBuf],
-) -> Result<(), Error> {
+fn validate_bind_mount(index: usize, source: Option<&std::path::Path>, optional: bool) -> Result<(), Error> {
     let field = format!("spec.sandbox.mounts[{index}]");
     match source {
         Some(source) if source.as_os_str().is_empty() => {
-            return Err(Error::Invalid(format!("{field}.source must not be empty")));
+            Err(Error::Invalid(format!("{field}.source must not be empty")))
         }
-        None if optional => {
-            return Err(Error::Invalid(format!(
-                "{field} is optional, which needs a source to leave out when it is missing"
-            )));
-        }
-        _ => {}
+        None if optional => Err(Error::Invalid(format!(
+            "{field} is optional, which needs a source to leave out when it is missing"
+        ))),
+        _ => Ok(()),
     }
-    if writable.is_empty() {
-        return Ok(());
-    }
-    if !read_only {
-        return Err(Error::Invalid(format!(
-            "{field}.writable needs readOnly: true, since the agent may change the whole folder otherwise"
-        )));
-    }
-    if optional {
-        return Err(Error::Invalid(format!(
-            "{field}.writable cannot be used on an optional mount"
-        )));
-    }
-    for (folder_index, folder) in writable.iter().enumerate() {
-        let inside = folder.components().count() > 0
-            && folder
-                .components()
-                .all(|component| matches!(component, Component::Normal(_)));
-        if !inside {
-            return Err(Error::Invalid(format!(
-                "{field}.writable[{folder_index}] {} must be a folder inside the mount",
-                folder.display()
-            )));
-        }
-        // A folder inside another the agent may change could be replaced with a link to anywhere
-        // on the host, which agentd would mount when it recreates the sandbox.
-        if writable
-            .iter()
-            .any(|other| other != folder && folder.starts_with(other))
-        {
-            return Err(Error::Invalid(format!(
-                "{field}.writable[{folder_index}] {} is inside another writable folder",
-                folder.display()
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// A writable volume's layer is mounted over its target after the other mounts, so it would hide
@@ -1373,8 +1317,6 @@ pub enum Origin {
     Reference {
         /// The reference the agent was run from, in its full form, such as `bundled/agent-builder`.
         reference: String,
-        /// The SHA-256 digest of the definition's files, which names agentd's copy of them.
-        digest: String,
     },
 }
 

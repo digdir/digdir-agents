@@ -5,9 +5,9 @@ the files it names. They are for agents the platform runs for itself, such as th
 whose definitions are tied to the code of the build that runs them, so they cannot come from anywhere else.
 
 Otherwise they are ordinary definitions. Their reference is `bundled/<folder>`, or the folder's name for short. agentd
-writes each to a folder of its own, and `agentctl run NAME` and `agentctl apply --from NAME` use that folder as they
-would any other. `agentctl get definitions` and the TUI list them after the definitions on disk.
-[`agent::bundled`](../../src/bundled/mod.rs) checks them when they are built:
+writes each to a folder of its own when it starts, so it holds the version that build carries, and `agentctl run NAME`
+and `agentctl apply --from NAME` use that folder as they would any other. `agentctl get definitions` and the TUI list
+them after the definitions on disk. [`agent::bundled`](../../src/bundled/mod.rs) checks them when they are built:
 
 - Paths, such as `spec.home.source`, name files in the definition's folder, since nothing else comes with it.
 - Its bind mounts name no source, since the host it runs on is not known. One that works on a folder of the person's

@@ -4,7 +4,11 @@ use sandbox::SandboxHandle;
 
 use crate::{
     Error,
-    sandbox::platform::{files::write_if_changed, run_checked},
+    sandbox::platform::{
+        WORKING_DIRECTORY,
+        files::{read_existing, write_if_changed},
+        run_checked,
+    },
 };
 
 use super::super::ACCESS_PLACEHOLDER;
@@ -18,9 +22,14 @@ const TRANSCRIPT_RETENTION_DAYS: u32 = 36_500;
 const MANAGED_SETTINGS_DIRECTORY: &str = "/etc/claude-code/managed-settings.d";
 const MANAGED_SETTINGS_PATH: &str = "/etc/claude-code/managed-settings.d/10-agent-platform.json";
 
+/// Largest state file read to trust a folder in. Claude Code keeps a little about each project in
+/// it, so it stays far smaller.
+const STATE_LIMIT: usize = 16 * 1024 * 1024;
+
 pub(super) async fn configure(
     sandbox: &SandboxHandle,
     home: &str,
+    working_directory: &str,
     instructions: &[u8],
     skills: &[crate::harness::Skill],
 ) -> Result<(), Error> {
@@ -105,7 +114,52 @@ pub(super) async fn configure(
     )
     .await?;
     run_checked(sandbox, "/usr/bin/chmod", ["644", instructions_path.as_str()]).await?;
+    trust_folder(sandbox, &config, working_directory).await?;
     crate::harness::skills::install_linux(sandbox, &skills_path, skills).await
+}
+
+/// Marks `folder`, where sessions start, trusted in Claude Code's state file, so a session there
+/// does not ask first. The image trusts the sandbox's working directory, and a state file that
+/// cannot be read is left alone, so Claude Code asks as it would.
+async fn trust_folder(sandbox: &SandboxHandle, config: &str, folder: &str) -> Result<(), Error> {
+    if folder == WORKING_DIRECTORY {
+        return Ok(());
+    }
+    let path = format!("{config}/.claude.json");
+    let Some(trusted) = read_existing(sandbox, &path, STATE_LIMIT)
+        .await
+        .and_then(|state| trusting(&state, folder))
+    else {
+        return Ok(());
+    };
+    write_if_changed(sandbox, &path, &trusted).await?;
+    run_checked(
+        sandbox,
+        "/usr/bin/sudo",
+        ["/usr/bin/chown", "agent:agent", path.as_str()],
+    )
+    .await?;
+    run_checked(sandbox, "/usr/bin/chmod", ["600", path.as_str()]).await
+}
+
+/// Claude Code's state file `state` with `folder` trusted, keeping the rest, or `None` when it is
+/// trusted already or the file is not a JSON object.
+fn trusting(state: &[u8], folder: &str) -> Option<Vec<u8>> {
+    let mut state = serde_json::from_slice::<serde_json::Value>(state).ok()?;
+    let projects = state
+        .as_object_mut()?
+        .entry("projects")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()?;
+    let project = projects
+        .entry(folder)
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()?;
+    if project.get("hasTrustDialogAccepted") == Some(&serde_json::Value::Bool(true)) {
+        return None;
+    }
+    project.insert("hasTrustDialogAccepted".into(), true.into());
+    serde_json::to_vec_pretty(&state).ok()
 }
 
 /// Settings for every Claude Code process in the sandbox, whoever starts it.
@@ -133,4 +187,31 @@ fn sandbox_settings() -> serde_json::Map<String, serde_json::Value> {
             serde_json::json!({ "PermissionRequest": [super::super::hooks::bash_approval()] }),
         ),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::trusting;
+
+    #[test]
+    fn a_folder_is_trusted_once_keeping_the_rest_of_the_state() {
+        let state = br#"{"hasCompletedOnboarding": true, "projects": {"/w": {"hasTrustDialogAccepted": true}}}"#;
+
+        let trusted = trusting(state, "/w/checkout").expect("a folder not yet trusted");
+
+        let parsed: serde_json::Value = serde_json::from_slice(&trusted).expect("state JSON");
+        assert_eq!(parsed["hasCompletedOnboarding"], true, "the rest is kept");
+        assert_eq!(parsed["projects"]["/w"]["hasTrustDialogAccepted"], true);
+        assert_eq!(parsed["projects"]["/w/checkout"]["hasTrustDialogAccepted"], true);
+        assert_eq!(trusting(&trusted, "/w/checkout"), None, "trusted already");
+        assert!(trusting(b"{}", "/w/checkout").is_some(), "a state with no projects yet");
+        assert_eq!(
+            trusting(b"not json", "/w/checkout"),
+            None,
+            "left for Claude Code to ask"
+        );
+        assert_eq!(trusting(b"[]", "/w/checkout"), None);
+    }
 }

@@ -132,9 +132,6 @@ pub struct DefinitionSummary {
     /// `bundled/agent-builder`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
-    /// For a definition agentd carries, the SHA-256 digest of its files.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub digest: Option<String>,
     /// The name it gives its agent, `metadata.name`, when it can be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -169,7 +166,6 @@ pub fn on_disk(directory: Option<&Path>, recorded: Vec<PathBuf>) -> Vec<Definiti
             path: listed.path,
             aliases: listed.aliases,
             reference: None,
-            digest: None,
             name,
             error,
             slots,

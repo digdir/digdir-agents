@@ -837,7 +837,6 @@ async fn bind_mounts_resolve_from_the_manifest_and_drive_directory_inference_and
         target: SandboxPath::new("/home/agent/code/altinn-studio"),
         read_only: false,
         optional: false,
-        writable: Vec::new(),
     });
 
     let applied = fixture.control_plane.apply(request).await.expect("apply");
@@ -881,7 +880,6 @@ async fn a_bind_mount_source_starting_with_a_tilde_resolves_below_the_home_direc
         target: SandboxPath::new("/home/agent/code/workspace"),
         read_only: false,
         optional: false,
-        writable: Vec::new(),
     });
 
     let applied = fixture.control_plane.apply(request).await.expect("apply");
@@ -1039,7 +1037,6 @@ async fn changing_a_mount_is_rejected_for_an_existing_agent() {
         target: SandboxPath::new("/home/agent/code/first"),
         read_only: false,
         optional: false,
-        writable: Vec::new(),
     });
     fixture
         .control_plane
@@ -1051,7 +1048,6 @@ async fn changing_a_mount_is_rejected_for_an_existing_agent() {
         target: SandboxPath::new("/home/agent/code/second"),
         read_only: false,
         optional: false,
-        writable: Vec::new(),
     };
 
     let error = fixture
@@ -1080,7 +1076,6 @@ async fn an_optional_mount_is_decided_when_the_agent_is_created() {
             target: SandboxPath::new(format!("/home/agent/code/{name}")),
             read_only: true,
             optional: true,
-            writable: Vec::new(),
         });
     }
     let observe = async || {
@@ -1155,7 +1150,6 @@ async fn an_optional_mount_is_checked_for_dot_env_files_when_its_source_exists()
         target: SandboxPath::new("/home/agent/code/checkout"),
         read_only: true,
         optional: true,
-        writable: Vec::new(),
     });
 
     let error = fixture
@@ -1187,7 +1181,6 @@ async fn an_optional_mount_is_checked_for_secrets_where_the_sandbox_has_it() {
         target: SandboxPath::new("/home/agent/code/reference"),
         read_only: true,
         optional: true,
-        writable: Vec::new(),
     });
     fixture.control_plane.apply(request.clone()).await.expect("apply");
     std::fs::remove_file(&link).expect("remove reference link");
@@ -1736,7 +1729,6 @@ async fn selected_secret_file_inside_a_bind_mount_is_rejected() {
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
         optional: false,
-        writable: Vec::new(),
     });
 
     let initial = fixture
@@ -1811,7 +1803,6 @@ async fn git_ignored_nested_dot_env_is_rejected_case_insensitively_without_decla
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
         optional: false,
-        writable: Vec::new(),
     });
 
     let error = fixture
@@ -1839,7 +1830,6 @@ async fn a_directory_named_dot_env_is_allowed() {
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
         optional: false,
-        writable: Vec::new(),
     });
 
     fixture
@@ -1863,7 +1853,6 @@ async fn a_dot_env_symlink_is_rejected() {
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
         optional: false,
-        writable: Vec::new(),
     });
 
     fixture
@@ -1895,7 +1884,6 @@ async fn existing_default_env_outside_bind_mount_is_allowed() {
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
         optional: false,
-        writable: Vec::new(),
     });
 
     fixture
@@ -1928,7 +1916,6 @@ async fn secret_file_reached_through_a_symlinked_ancestor_is_still_rejected() {
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
         optional: false,
-        writable: Vec::new(),
     });
     // Neither the file nor its two parent directories exist yet, and the path enters the
     // mounted checkout through a symlink.
@@ -1969,7 +1956,6 @@ async fn bind_mount_exposing_another_agents_secret_file_is_rejected() {
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
         optional: false,
-        writable: Vec::new(),
     });
 
     let error = fixture

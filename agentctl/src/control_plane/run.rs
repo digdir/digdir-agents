@@ -6,13 +6,9 @@ use std::path::{Path, PathBuf};
 
 use ::sandbox::SandboxPath;
 
-use crate::{
-    Agent, AgentId, DefinitionReference, Error, Lifetime, Origin,
-    bundled::{Definitions, Snapshots},
-    definitions::DefinitionSummary,
-};
+use crate::{Agent, AgentId, Error, Lifetime, Origin};
 
-use super::{AgentRecord, ControlPlane, service};
+use super::{AgentRecord, ControlPlane, prepare::Prepared};
 
 /// A request to run an agent from a definition.
 #[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
@@ -79,58 +75,7 @@ pub struct Ran {
     pub agent: Agent,
 }
 
-/// The definitions agentd carries, and where it keeps their copies.
-pub(super) struct Bundled {
-    definitions: Definitions,
-    snapshots: Snapshots,
-    home: PathBuf,
-}
-
-impl Bundled {
-    pub(super) const fn new(definitions: Definitions, snapshots: Snapshots, home: PathBuf) -> Self {
-        Self {
-            definitions,
-            snapshots,
-            home,
-        }
-    }
-}
-
-/// An agent as a definition declares it, ready to store once it has a name and its bind mounts
-/// their sources.
-#[derive(Clone)]
-pub(super) struct Prepared {
-    pub(super) agent: Agent,
-    pub(super) source_directory: PathBuf,
-    pub(super) manifest_path: Option<PathBuf>,
-    pub(super) env_file: Option<PathBuf>,
-    pub(super) optional_mount_sources: std::collections::BTreeMap<SandboxPath, PathBuf>,
-    pub(super) origin: Origin,
-    /// The bind mount sources the request gave, by target, other than those the manifest names.
-    pub(super) bindings: std::collections::BTreeMap<SandboxPath, PathBuf>,
-}
-
 impl Prepared {
-    /// Whether `record` was made from the same definition, which an agent's definition can never
-    /// change to another: the same reference, to any version, or the same folder.
-    pub(super) fn same_definition(&self, record: &AgentRecord) -> bool {
-        match (&self.origin, &record.origin) {
-            (Origin::Reference { reference, .. }, Origin::Reference { reference: other, .. }) => reference == other,
-            (Origin::Local, Origin::Local) => self.source_directory == record.source_directory,
-            _ => false,
-        }
-    }
-
-    /// Resolves the bind mounts' sources, with the `given` ones, which are canonical, in place of
-    /// the manifest's.
-    pub(super) async fn bind(&mut self, given: &[BindSource]) -> Result<(), Error> {
-        let (optional, bindings) =
-            service::resolve_mount_sources(&mut self.agent, &self.source_directory, given).await?;
-        self.optional_mount_sources = optional;
-        self.bindings = bindings;
-        self.agent.validate()
-    }
-
     /// Whether `record` is an agent kept until deleted made from this definition on the same
     /// folders.
     fn made(&self, record: &AgentRecord) -> bool {
@@ -168,14 +113,6 @@ impl ControlPlane {
     pub async fn run(&self, request: RunRequest) -> Result<(Ran, AgentId), Error> {
         let lifetime = request.lifetime.unwrap_or_default();
         let binds = self.validate_bind_sources(&request.binds).await?;
-        // Held until the agent is stored, so cleanup cannot remove the copy of its definition first.
-        // It also has requests find or make their agents one at a time. Two that race anyway, with
-        // an apply between them, cannot both make the agent, since the store takes a name once.
-        let snapshots = self.bundled.as_ref().map(|bundled| &bundled.snapshots);
-        let guard = match snapshots {
-            Some(snapshots) => Some(snapshots.lock().await),
-            None => None,
-        };
         let mut prepared = match request.definition {
             RunDefinition::Reference { reference } => self.prepare_reference(&reference).await?,
             RunDefinition::Local {
@@ -211,28 +148,14 @@ impl ControlPlane {
                 )?,
             };
             prepared.agent.validate()?;
-            let mut record = AgentRecord {
-                id: AgentId::generate(),
-                source_directory: prepared.source_directory.clone(),
-                manifest_path: prepared.manifest_path.clone(),
-                env_file: prepared.env_file.clone(),
-                agent: prepared.agent.clone(),
-                optional_mount_sources: prepared.optional_mount_sources.clone(),
-                volume_revisions: std::collections::BTreeMap::new(),
-                origin: prepared.origin.clone(),
-                lifetime,
-                bindings: prepared.bindings.clone(),
-            };
-            record.agent.metadata.generation = 1;
-            self.reject_exposed_secrets(&record).await?;
-            match self.store.put(record.clone(), 0).await {
-                Ok(()) => break record,
-                // Another request took the name first.
+            // Another request that took the name first is found on the next pass: it may be an
+            // agent of this definition on these folders, which this one is then refused for.
+            match self.create(&prepared, lifetime).await {
+                Ok(record) => break record,
                 Err(Error::Conflict) => {}
                 Err(error) => return Err(error),
             }
         };
-        drop(guard);
 
         self.notifier.notify(record.id);
         let id = record.id;
@@ -242,77 +165,6 @@ impl ControlPlane {
             },
             id,
         ))
-    }
-
-    /// The definitions a client can apply or run: those on disk for `directory`, as
-    /// [`crate::definitions::manifests`] finds them, then the manifests agents kept until deleted
-    /// were applied from, then the ones agentd carries, each in the folder agentd keeps its copy
-    /// in, written if missing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `directory` is not absolute, the agents cannot be read, or a copy
-    /// cannot be written.
-    pub async fn definitions(&self, directory: Option<PathBuf>) -> Result<Vec<DefinitionSummary>, Error> {
-        if let Some(directory) = &directory
-            && !directory.is_absolute()
-        {
-            return Err(Error::Invalid(format!(
-                "directory {} must be an absolute path",
-                directory.display()
-            )));
-        }
-        // An agent run by reference was made from agentd's copy of a version of the definition,
-        // which the definitions agentd carries now stand for.
-        let recorded = self
-            .store
-            .list()
-            .await?
-            .into_iter()
-            .filter(|record| {
-                record.origin.is_local()
-                    && record.lifetime == Lifetime::UntilDeleted
-                    && record.agent.metadata.deletion_timestamp.is_none()
-            })
-            .map(|record| {
-                record
-                    .manifest_path
-                    .unwrap_or_else(|| record.source_directory.join(crate::manifest::MANIFEST_FILE))
-            })
-            .collect();
-        let mut listed =
-            tokio::task::spawn_blocking(move || crate::definitions::on_disk(directory.as_deref(), recorded))
-                .await
-                .map_err(|error| Error::Daemon(format!("listing the definitions on disk failed: {error}")))?;
-        listed.extend(self.bundled_definitions().await?);
-        Ok(listed)
-    }
-
-    /// The definitions agentd carries, each in the folder agentd keeps its copy in, written if
-    /// missing.
-    async fn bundled_definitions(&self) -> Result<Vec<DefinitionSummary>, Error> {
-        let Some(bundled) = &self.bundled else {
-            return Ok(Vec::new());
-        };
-        let _guard = bundled.snapshots.lock().await;
-        let mut listed = Vec::new();
-        for definition in bundled.definitions.iter() {
-            let agent = definition.agent();
-            listed.push(DefinitionSummary {
-                path: bundled
-                    .snapshots
-                    .write(definition)
-                    .await?
-                    .join(crate::manifest::MANIFEST_FILE),
-                aliases: Vec::new(),
-                reference: Some(DefinitionReference::Bundled(definition.name().to_owned()).to_string()),
-                digest: Some(definition.digest().to_owned()),
-                name: Some(agent.metadata.name.clone()),
-                error: None,
-                slots: crate::definitions::unsourced_binds(&agent),
-            });
-        }
-        Ok(listed)
     }
 
     /// Deletes the ephemeral agent `id` once the client it belongs to is gone. Repeated deletion,
@@ -331,180 +183,6 @@ impl ControlPlane {
             return Ok(());
         }
         self.delete(&record.agent.metadata.name).await
-    }
-
-    /// Deletes the ephemeral agents an earlier run of agentd left, whose clients are gone, writes
-    /// the copies of the bundled definitions this build carries, and removes the copies nothing
-    /// uses. agentd calls it when it starts, before any client can ask for an agent.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the agents cannot be read, a deletion cannot be stored, or a copy
-    /// cannot be written or removed.
-    pub async fn remove_leftovers(&self) -> Result<(), Error> {
-        for record in self.store.list().await? {
-            if record.lifetime == Lifetime::Ephemeral && record.agent.metadata.deletion_timestamp.is_none() {
-                tracing::info!(agent = %record.agent.metadata.name, "deleting an ephemeral agent whose client is gone");
-                self.delete(&record.agent.metadata.name).await?;
-            }
-        }
-        if let Some(bundled) = &self.bundled {
-            self.bundled_definitions().await?;
-            bundled.snapshots.remove_unused(self.store.as_ref()).await?;
-        }
-        Ok(())
-    }
-
-    /// Prepares the agent the definition `reference` names declares, from agentd's copy of it.
-    async fn prepare_reference(&self, reference: &str) -> Result<Prepared, Error> {
-        let reference = DefinitionReference::parse(reference)?;
-        let bundled = self
-            .bundled
-            .as_ref()
-            .ok_or_else(|| Error::Daemon("this agentd carries no agent definitions".into()))?;
-        let definition = bundled.definitions.get(reference.name())?;
-        let directory = bundled.snapshots.write(definition).await?;
-        let mut agent = definition.agent();
-        agent.clear_managed_fields();
-        Ok(Prepared {
-            agent,
-            manifest_path: Some(directory.join(crate::manifest::MANIFEST_FILE)),
-            source_directory: directory,
-            env_file: None,
-            optional_mount_sources: std::collections::BTreeMap::new(),
-            bindings: std::collections::BTreeMap::new(),
-            origin: Origin::Reference {
-                reference: reference.to_string(),
-                digest: definition.digest().to_owned(),
-            },
-        })
-    }
-
-    /// Prepares the agent a manifest on this machine declares, as `apply` does. A manifest in
-    /// agentd's copy of a definition it runs by reference is that definition.
-    pub(super) async fn prepare_local(
-        &self,
-        source_directory: PathBuf,
-        manifest_path: Option<PathBuf>,
-        env_file: Option<PathBuf>,
-        mut agent: Agent,
-    ) -> Result<Prepared, Error> {
-        service::validate_request_paths(&source_directory, manifest_path.as_deref(), env_file.as_deref())?;
-        agent.clear_managed_fields();
-        agent.validate()?;
-        let origin = self.origin_of(&source_directory).await;
-        if let Origin::Reference { reference, digest } = &origin {
-            if env_file.is_some() {
-                return Err(Error::Invalid(format!(
-                    "agent definition {reference:?} is agentd's and reads no environment file"
-                )));
-            }
-            // The copy's manifest names its image by `main`'s tag, and a release runs its own tag
-            // of it, so it gets the image running the definition gets.
-            if let Some(definition) = self.bundled.as_ref().and_then(|bundled| {
-                bundled
-                    .definitions
-                    .iter()
-                    .find(|definition| definition.digest() == digest)
-            }) {
-                agent.spec.sandbox.image = definition.agent().spec.sandbox.image;
-            }
-        }
-        Ok(Prepared {
-            agent,
-            source_directory,
-            manifest_path,
-            env_file,
-            optional_mount_sources: std::collections::BTreeMap::new(),
-            origin,
-            bindings: std::collections::BTreeMap::new(),
-        })
-    }
-
-    /// Where the definition in `source_directory` comes from: one of agentd's copies of a
-    /// definition this build carries is that definition, and anything else is local.
-    async fn origin_of(&self, source_directory: &Path) -> Origin {
-        let Some(bundled) = &self.bundled else {
-            return Origin::Local;
-        };
-        let directory = canonical(source_directory).await;
-        for definition in bundled.definitions.iter() {
-            if canonical(&bundled.snapshots.path(definition.digest())).await == directory {
-                return Origin::Reference {
-                    reference: DefinitionReference::Bundled(definition.name().to_owned()).to_string(),
-                    digest: definition.digest().to_owned(),
-                };
-            }
-        }
-        Origin::Local
-    }
-
-    /// Removes the copies of bundled definitions nothing uses, logging a failure, which agentd
-    /// retries when it starts.
-    pub(super) async fn remove_unused_definitions(&self) {
-        if let Some(bundled) = &self.bundled
-            && let Err(error) = bundled.snapshots.remove_unused(self.store.as_ref()).await
-        {
-            tracing::warn!(%error, "removing the bundled definitions no agent uses failed; agentd retries when it starts");
-        }
-    }
-
-    /// The `given` bind mount sources, each canonical, or why agentd refuses to mount one.
-    pub(super) async fn validate_bind_sources(&self, given: &[BindSource]) -> Result<Vec<BindSource>, Error> {
-        let mut validated = Vec::with_capacity(given.len());
-        for bind in given {
-            validated.push(BindSource {
-                source: self.validate_bind_source(&bind.source).await?,
-                target: bind.target.clone(),
-            });
-        }
-        Ok(validated)
-    }
-
-    /// The canonical form of the folder `path`, given for a bind mount, or why agentd refuses to
-    /// mount it: it must be a folder, and must not be or hold the person's home folder or agentd's
-    /// home, whose secrets and state an agent must not reach, nor be inside agentd's home.
-    async fn validate_bind_source(&self, path: &Path) -> Result<PathBuf, Error> {
-        if !path.is_absolute() {
-            return Err(Error::Invalid(format!(
-                "folder {} must be an absolute path",
-                path.display()
-            )));
-        }
-        let folder = tokio::fs::canonicalize(path)
-            .await
-            .map_err(|error| Error::Invalid(format!("folder {} cannot be resolved: {error}", path.display())))?;
-        if !tokio::fs::metadata(&folder).await?.is_dir() {
-            return Err(Error::Invalid(format!("{} must be a folder", folder.display())));
-        }
-        let home = match self.bundled.as_ref() {
-            Some(bundled) => Some(canonical(&bundled.home).await),
-            None => None,
-        };
-        if let Some(home) = &home
-            && folder.starts_with(home)
-        {
-            return Err(Error::Invalid(format!(
-                "folder {} is in agentd's home {}, which holds its state",
-                folder.display(),
-                home.display()
-            )));
-        }
-        let protected = [
-            crate::local::home::user_home_directory().map(|user| (user, "your home folder")),
-            home.map(|home| (home, "agentd's home, which holds its state,")),
-        ];
-        for (protected, what) in protected.into_iter().flatten() {
-            let protected = canonical(&protected).await;
-            if protected.starts_with(&folder) {
-                return Err(Error::Invalid(format!(
-                    "folder {} is or holds {what} {}; name the folder of one project instead",
-                    folder.display(),
-                    protected.display()
-                )));
-            }
-        }
-        Ok(folder)
     }
 }
 
@@ -574,12 +252,6 @@ fn name_part(text: &str) -> String {
         }
     }
     part.trim_end_matches('-').to_owned()
-}
-
-async fn canonical(path: &Path) -> PathBuf {
-    tokio::fs::canonicalize(path)
-        .await
-        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[cfg(test)]

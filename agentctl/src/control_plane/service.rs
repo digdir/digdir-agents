@@ -55,7 +55,7 @@ pub struct ControlPlane {
     provisioning: ProvisioningState,
     immediate_stops: ImmediateStops,
     volumes: Rc<dyn crate::volumes::VolumeStore>,
-    pub(super) bundled: Option<super::run::Bundled>,
+    pub(super) bundled: Option<super::bundled::Bundled>,
 }
 
 /// Agents whose stop ends their sandbox at once, without letting the guest shut down.
@@ -121,16 +121,11 @@ impl ControlPlane {
         }
     }
 
-    /// Runs agents from `definitions` for [`Self::ensure`], keeping its copies of them in
-    /// `snapshots`. `home` is agentd's home, which no folder given for a bind mount may hold or be in.
+    /// Runs agents from `definitions`, keeping its copies of them in `home`, agentd's home, which
+    /// no folder given for a bind mount may hold or be in.
     #[must_use]
-    pub fn with_bundled(
-        mut self,
-        definitions: crate::bundled::Definitions,
-        snapshots: crate::bundled::Snapshots,
-        home: PathBuf,
-    ) -> Self {
-        self.bundled = Some(super::run::Bundled::new(definitions, snapshots, home));
+    pub fn with_bundled(mut self, definitions: crate::bundled::Definitions, home: PathBuf) -> Self {
+        self.bundled = Some(super::bundled::Bundled::new(definitions, home));
         self
     }
 
@@ -236,11 +231,13 @@ impl ControlPlane {
                     self.store
                         .put(record.clone(), expected_generation)
                         .await
-                        .map(|()| (record, current.origin != prepared.origin))
+                        .map(|()| record)
                 }
                 Err(Error::NotFound) => {
-                    let record = Box::pin(self.new_record(&prepared, &given, run_state)).await?;
-                    self.store.put(record.clone(), 0).await.map(|()| (record, false))
+                    let mut new = prepared.clone();
+                    Box::pin(new.bind(&given)).await?;
+                    new.agent.spec.set_run_state(applied_run_state(run_state, None));
+                    self.create(&new, crate::Lifetime::UntilDeleted).await
                 }
                 Err(error) => return Err(error),
             };
@@ -248,44 +245,12 @@ impl ControlPlane {
             match result {
                 Err(Error::Conflict) => {}
                 Err(error) => return Err(error),
-                Ok((record, moved)) => {
+                Ok(record) => {
                     self.notifier.notify(record.id);
-                    if moved {
-                        // The agent no longer reads the copy of the definition's earlier version.
-                        self.remove_unused_definitions().await;
-                    }
                     return Ok(projected(record));
                 }
             }
         }
-    }
-
-    /// The record of a new agent `apply` makes from `prepared`, with the `given` folders mounted.
-    async fn new_record(
-        &self,
-        prepared: &super::run::Prepared,
-        given: &[super::BindSource],
-        run_state: Option<crate::RunState>,
-    ) -> Result<AgentRecord, Error> {
-        let mut prepared = prepared.clone();
-        prepared.bind(given).await?;
-        let mut desired = prepared.agent.clone();
-        desired.spec.set_run_state(applied_run_state(run_state, None));
-        let mut record = AgentRecord {
-            id: AgentId::generate(),
-            source_directory: prepared.source_directory.clone(),
-            manifest_path: prepared.manifest_path.clone(),
-            env_file: prepared.env_file.clone(),
-            agent: desired,
-            optional_mount_sources: prepared.optional_mount_sources.clone(),
-            volume_revisions: BTreeMap::new(),
-            origin: prepared.origin.clone(),
-            lifetime: crate::Lifetime::UntilDeleted,
-            bindings: prepared.bindings.clone(),
-        };
-        record.agent.metadata.generation = 1;
-        self.reject_exposed_secrets(&record).await?;
-        Ok(record)
     }
 
     /// Rejects desired state that would expose a `.env` file or a selected secret file inside a sandbox.
@@ -785,8 +750,7 @@ fn name_clash(name: &str, other: &AgentRecord) -> Error {
 ///
 /// A required source is replaced by its canonical form, so the sandbox keeps the directory it was
 /// created with. An optional one keeps the path it declares, so that applying the same manifest
-/// again compares equal whether the directory has since appeared or disappeared. Each `writable`
-/// folder becomes a writable bind mount of its own over the read-only one, made first if missing.
+/// again compares equal whether the directory has since appeared or disappeared.
 pub(super) async fn resolve_mount_sources(
     agent: &mut Agent,
     source_directory: &std::path::Path,
@@ -795,13 +759,11 @@ pub(super) async fn resolve_mount_sources(
     let mut chosen = given_sources(&agent.spec.sandbox.mounts, given)?;
     let mut optional_sources = BTreeMap::new();
     let mut bindings = BTreeMap::new();
-    let mut writable_mounts = Vec::new();
     for (index, mount) in agent.spec.sandbox.mounts.iter_mut().enumerate() {
         let MountSpec::Bind {
             source,
             target,
             optional,
-            writable,
             ..
         } = mount
         else {
@@ -855,12 +817,8 @@ pub(super) async fn resolve_mount_sources(
             optional_sources.insert(target.clone(), resolved);
             continue;
         }
-        for folder in std::mem::take(writable) {
-            writable_mounts.push(writable_mount(index, &resolved, target, &folder).await?);
-        }
         *source = Some(resolved);
     }
-    agent.spec.sandbox.mounts.extend(writable_mounts);
     Ok((optional_sources, bindings))
 }
 
@@ -906,66 +864,6 @@ fn given_sources(mounts: &[MountSpec], given: &[super::BindSource]) -> Result<BT
         }
     }
     Ok(chosen)
-}
-
-/// The writable bind mount of `folder` in the read-only bind mount of `source` at `target`. It
-/// must stay inside `source` when links are followed, so a link in a checkout cannot open the
-/// rest of the host to the agent.
-async fn writable_mount(
-    index: usize,
-    source: &std::path::Path,
-    target: &SandboxPath,
-    folder: &std::path::Path,
-) -> Result<MountSpec, Error> {
-    let field = format!("spec.sandbox.mounts[{index}].writable");
-    // One part at a time, each checked before the next is made in it, so a link cannot have
-    // agentd make a folder elsewhere either.
-    let mut resolved = source.to_path_buf();
-    for part in folder.components() {
-        let path = resolved.join(part);
-        match tokio::fs::symlink_metadata(&path).await {
-            Ok(_) => {
-                resolved = tokio::fs::canonicalize(&path).await.map_err(|error| {
-                    Error::Invalid(format!("{field} {} cannot be resolved: {error}", path.display()))
-                })?;
-                if resolved == source || !resolved.starts_with(source) {
-                    return Err(Error::Invalid(format!(
-                        "{field} {} leads to {}, outside the folder it is in",
-                        folder.display(),
-                        resolved.display()
-                    )));
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                tokio::fs::create_dir(&path)
-                    .await
-                    .map_err(|error| Error::Invalid(format!("{field} {} cannot be made: {error}", path.display())))?;
-                resolved = path;
-            }
-            Err(error) => {
-                return Err(Error::Invalid(format!(
-                    "{field} {} cannot be checked: {error}",
-                    path.display()
-                )));
-            }
-        }
-    }
-    if !tokio::fs::metadata(&resolved).await?.is_dir() {
-        return Err(Error::Invalid(format!(
-            "{field} {} must be a folder",
-            resolved.display()
-        )));
-    }
-    let relative = folder
-        .to_str()
-        .ok_or_else(|| Error::Invalid(format!("{field} {} must be UTF-8", folder.display())))?;
-    Ok(MountSpec::Bind {
-        source: Some(resolved),
-        target: SandboxPath::new(format!("{}/{}", target.as_str(), relative.replace('\\', "/"))),
-        read_only: false,
-        optional: false,
-        writable: Vec::new(),
-    })
 }
 
 pub(super) fn validate_request_paths(

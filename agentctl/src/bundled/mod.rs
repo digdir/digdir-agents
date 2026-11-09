@@ -5,16 +5,14 @@
 //! writes each to a folder of its own, and an agent is applied or run from that folder as from
 //! any other.
 
-mod snapshots;
+mod folders;
 
 use std::{
     collections::BTreeMap,
     path::{Component, Path},
 };
 
-use sha2::{Digest as _, Sha256};
-
-pub use snapshots::Snapshots;
+pub use folders::Folders;
 
 use crate::{Agent, Error, MountSpec, manifest::MANIFEST_FILE};
 
@@ -40,7 +38,6 @@ pub struct DefinitionFile {
 pub struct Definition {
     name: String,
     files: BTreeMap<String, DefinitionFile>,
-    digest: String,
     agent: Agent,
 }
 
@@ -62,24 +59,13 @@ impl Definition {
             .ok_or_else(|| invalid(format!("it has no {MANIFEST_FILE}")))?;
         let agent = crate::manifest::decode(&manifest.contents).map_err(|error| invalid(error.to_string()))?;
         check_contained(&agent, &files).map_err(invalid)?;
-        Ok(Self {
-            digest: digest(&files),
-            name,
-            files,
-            agent,
-        })
+        Ok(Self { name, files, agent })
     }
 
     /// The definition's name.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
-    }
-
-    /// The SHA-256 digest of its files, which names agentd's copy of them.
-    #[must_use]
-    pub fn digest(&self) -> &str {
-        &self.digest
     }
 
     /// Its files, by their `/`-separated paths in its folder.
@@ -210,27 +196,6 @@ fn is_release(version: &str) -> bool {
             preview
                 .strip_prefix("preview.")
                 .is_some_and(|number| numbers(number, 1))
-        })
-}
-
-/// The digest of `files`: of each one's path, whether it is executable and its contents, in path
-/// order.
-fn digest(files: &BTreeMap<String, DefinitionFile>) -> String {
-    let mut hasher = Sha256::new();
-    for (path, file) in files {
-        hasher.update((path.len() as u64).to_le_bytes());
-        hasher.update(path.as_bytes());
-        hasher.update([u8::from(file.executable)]);
-        hasher.update((file.contents.len() as u64).to_le_bytes());
-        hasher.update(&file.contents);
-    }
-    hasher
-        .finalize()
-        .iter()
-        .fold(String::with_capacity(64), |mut hex, byte| {
-            use std::fmt::Write as _;
-            let _ = write!(hex, "{byte:02x}");
-            hex
         })
 }
 

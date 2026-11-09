@@ -1172,7 +1172,6 @@ mod tests {
             path,
             aliases: Vec::new(),
             reference: None,
-            digest: None,
             name: Some("worker".into()),
             error: None,
             slots: Vec::new(),

@@ -719,15 +719,21 @@ pub(crate) fn manages_environment(harness: Harness, name: &str) -> bool {
     }
 }
 
+/// Configures `harness` in the sandbox: its instructions, skills and settings, and, for a harness
+/// that asks before working in a folder it has not been told to trust, `working_directory`, where
+/// sessions start.
 pub(crate) async fn bootstrap_linux(
     harness: Harness,
     sandbox: &sandbox::SandboxHandle,
     home: &str,
+    working_directory: &str,
     instructions: &[u8],
     skills: &[Skill],
 ) -> Result<(), Error> {
     match harness {
-        Harness::ClaudeCode => claude_code::bootstrap_linux(sandbox, home, instructions, skills).await,
+        Harness::ClaudeCode => {
+            claude_code::bootstrap_linux(sandbox, home, working_directory, instructions, skills).await
+        }
         Harness::Codex => codex::bootstrap_linux(sandbox, home, instructions, skills).await,
         Harness::Pi => pi::bootstrap_linux(sandbox, home, instructions, skills).await,
     }

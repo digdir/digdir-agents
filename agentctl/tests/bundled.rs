@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, path::Path, rc::Rc, time::Duration};
 
 use agent::{
     Agent, Error, Lifetime, MountSpec, Origin, RunState,
-    bundled::{Definition, DefinitionFile, Definitions, Snapshots},
+    bundled::{Definition, DefinitionFile, Definitions, Folders},
     control_plane::{
         AgentStore, ApplyRequest, BindSource, ControlPlane, Ran, Reconciler, RunDefinition, RunRequest, memory,
     },
@@ -25,20 +25,18 @@ const BASE_IMAGE: &str = "ghcr.io/digdir/agentctl-base:ubuntu-26.04";
 /// Where the definitions' checkout is mounted, and their sessions start.
 const CHECKOUT: &str = "/home/agent/code/checkout";
 
-/// The bind mount of a checkout whose folder is given when the definition runs, of which the
-/// agent may change only `agents/`.
+/// The bind mount of a checkout whose folder is given when the definition runs.
 fn checkout() -> MountSpec {
     MountSpec::Bind {
         source: None,
         target: sandbox::SandboxPath::new(CHECKOUT),
-        read_only: true,
+        read_only: false,
         optional: false,
-        writable: vec!["agents".into()],
     }
 }
 
 /// A manifest named `name` on `image`, reading `instructions.md` and a home, that works on a
-/// checkout it is given and may change only `agents/` of.
+/// checkout it is given.
 fn manifest(name: &str, image: &str) -> Agent {
     let mut manifest = agent(name);
     manifest.spec.sandbox.image = ImageSource::Reference {
@@ -109,8 +107,8 @@ impl Fixture {
         control_plane(&self.store, self.home.path(), definitions)
     }
 
-    fn snapshots(&self) -> Snapshots {
-        Snapshots::new(self.home.path().join("bundled"))
+    fn folders(&self) -> Folders {
+        Folders::new(self.home.path().join("bundled"))
     }
 
     pub(crate) fn workspace(&self, name: &str) -> std::path::PathBuf {
@@ -119,7 +117,7 @@ impl Fixture {
         path
     }
 
-    fn snapshot_folders(&self) -> Vec<String> {
+    fn copies(&self) -> Vec<String> {
         let mut names = std::fs::read_dir(self.home.path().join("bundled"))
             .map(|entries| {
                 entries
@@ -137,13 +135,8 @@ fn control_plane(
     home: &Path,
     definitions: impl IntoIterator<Item = Definition>,
 ) -> ControlPlane {
-    let definitions = Definitions::new(definitions);
-    let snapshots = Snapshots::new(home.join("bundled")).carrying(&definitions);
-    ControlPlane::new(store.clone(), Rc::new(IgnoreNotifications)).with_bundled(
-        definitions,
-        snapshots,
-        home.to_path_buf(),
-    )
+    ControlPlane::new(store.clone(), Rc::new(IgnoreNotifications))
+        .with_bundled(Definitions::new(definitions), home.to_path_buf())
 }
 
 pub(crate) fn request(definition: &str, workspace: Option<&Path>) -> RunRequest {
@@ -159,14 +152,6 @@ pub(crate) fn request(definition: &str, workspace: Option<&Path>) -> RunRequest 
 
 async fn run(control_plane: &ControlPlane, definition: &str, workspace: Option<&Path>) -> Ran {
     control_plane.run(request(definition, workspace)).await.expect("run").0
-}
-
-fn digest(agent: &Agent) -> String {
-    match agent.status.origin.as_ref() {
-        Some(Origin::Reference { digest, .. }) => Some(digest.clone()),
-        _ => None,
-    }
-    .expect("a bundled agent")
 }
 
 /// `folder`, given for the one bind mount without a source.
@@ -212,36 +197,22 @@ async fn run_makes_the_agent_with_its_folder_from_agentds_copy_of_the_definition
     );
     assert_eq!(
         agent.spec.sandbox.mounts,
-        [
-            MountSpec::Bind {
-                source: Some(workspace.clone()),
-                target: sandbox::SandboxPath::new(CHECKOUT),
-                read_only: true,
-                optional: false,
-                writable: Vec::new(),
-            },
-            MountSpec::Bind {
-                source: Some(workspace.join("agents")),
-                target: sandbox::SandboxPath::new(format!("{CHECKOUT}/agents")),
-                read_only: false,
-                optional: false,
-                writable: Vec::new(),
-            },
-        ]
-    );
-    assert!(
-        workspace.join("agents").is_dir(),
-        "the folder the agent may change is made"
+        [MountSpec::Bind {
+            source: Some(workspace),
+            target: sandbox::SandboxPath::new(CHECKOUT),
+            read_only: false,
+            optional: false,
+        }]
     );
 
-    let snapshot = fixture.snapshots().path(&digest(&agent));
+    let copy = fixture.folders().path("builder");
     let provenance = agent.status.provenance.expect("provenance");
     assert_eq!(
-        provenance.source_directory, snapshot,
+        provenance.source_directory, copy,
         "a bundled definition is a folder like any other"
     );
     assert_eq!(
-        std::fs::read_to_string(snapshot.join("instructions.md")).expect("copied instructions"),
+        std::fs::read_to_string(copy.join("instructions.md")).expect("copied instructions"),
         "one"
     );
 }
@@ -375,40 +346,26 @@ async fn definitions_lists_a_folders_then_the_applied_ones_then_agentds() {
 }
 
 #[tokio::test(flavor = "local")]
-async fn an_agent_whose_bind_mounts_are_not_resolved_is_never_stored() {
+async fn an_agent_with_a_bind_mount_without_a_source_is_never_stored() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("repo");
     run(&fixture.control_plane, "builder", Some(&workspace)).await;
-    let stored = fixture.store.get_by_name("builder-repo").await.expect("stored");
-
-    for (unresolve, expected) in [
-        (
-            (|mount: &mut MountSpec| {
-                if let MountSpec::Bind { source, .. } = mount {
-                    *source = None;
-                }
-            }) as fn(&mut MountSpec),
-            "spec.sandbox.mounts[0] has no source",
-        ),
-        (
-            |mount: &mut MountSpec| {
-                if let MountSpec::Bind { writable, .. } = mount {
-                    *writable = vec!["agents".into()];
-                }
-            },
-            "spec.sandbox.mounts[0] still lists writable folders",
-        ),
-    ] {
-        let mut record = stored.clone();
-        unresolve(&mut record.agent.spec.sandbox.mounts[0]);
-        let generation = record.agent.metadata.generation;
-        let error = fixture
-            .store
-            .put(record, generation)
-            .await
-            .expect_err("an unresolved bind mount");
-        assert!(error.to_string().contains(expected), "{error}");
+    let mut record = fixture.store.get_by_name("builder-repo").await.expect("stored");
+    if let MountSpec::Bind { source, .. } = &mut record.agent.spec.sandbox.mounts[0] {
+        *source = None;
     }
+    let generation = record.agent.metadata.generation;
+
+    let error = fixture
+        .store
+        .put(record, generation)
+        .await
+        .expect_err("a bind mount without a source");
+
+    assert!(
+        error.to_string().contains("spec.sandbox.mounts[0] has no source"),
+        "{error}"
+    );
 }
 
 #[tokio::test(flavor = "local")]
@@ -473,48 +430,34 @@ async fn a_definition_on_disk_runs_like_a_bundled_one() {
 }
 
 #[tokio::test(flavor = "local")]
-async fn applying_a_newer_definition_updates_the_agent_in_place_and_its_old_copy_goes() {
+async fn a_newer_build_replaces_agentds_copy_which_its_agents_then_read() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("repo");
     let created = run(&fixture.control_plane, "builder", Some(&workspace)).await;
 
     let rebuilt = fixture.rebuilt([builder("two")]);
+    rebuilt.remove_leftovers().await.expect("agentd starts");
+
+    let record = fixture.store.get_by_name("builder-repo").await.expect("stored");
+    assert_eq!(
+        record.agent.metadata.generation, created.agent.metadata.generation,
+        "the agent is left as it was"
+    );
+    assert_eq!(
+        std::fs::read_to_string(record.source_directory.join("instructions.md")).expect("new instructions"),
+        "two",
+        "as an agent applied from a checkout reads what a pull brings"
+    );
+    assert_eq!(
+        fixture.copies(),
+        ["builder"],
+        "the copy of sign-in goes, as no agent was made from it and this build no longer carries it"
+    );
     let error = rebuilt
         .run(request("builder", Some(&workspace)))
         .await
-        .expect_err("running a newer version on the same folder");
+        .expect_err("running it again on the same folder");
     assert!(error.to_string().contains("already runs bundled/builder"), "{error}");
-    let newer = rebuilt
-        .definitions(None)
-        .await
-        .expect("definitions")
-        .into_iter()
-        .find(|definition| definition.reference.as_deref() == Some("bundled/builder"))
-        .expect("builder");
-    let mut copy: Agent = serde_yaml_ng::from_slice(&std::fs::read(&newer.path).expect("manifest")).expect("manifest");
-    copy.metadata.name.clone_from(&created.agent.metadata.name);
-    let directory = newer.path.parent().expect("the copy's folder");
-    let updated = rebuilt
-        .apply(apply(directory, copy))
-        .await
-        .expect("apply the newer copy");
-
-    assert_eq!(updated.metadata.name, created.agent.metadata.name);
-    assert_ne!(digest(&updated), digest(&created.agent));
-    assert_eq!(
-        updated.spec.sandbox.mounts, created.agent.spec.sandbox.mounts,
-        "it keeps the folder it was given"
-    );
-    let record = fixture.store.get_by_name("builder-repo").await.expect("stored");
-    assert_eq!(
-        std::fs::read_to_string(record.source_directory.join("instructions.md")).expect("new instructions"),
-        "two"
-    );
-    assert_eq!(
-        fixture.snapshot_folders(),
-        [digest(&updated)],
-        "no agent uses the old copy, and this build no longer carries it"
-    );
 }
 
 #[tokio::test(flavor = "local")]
@@ -549,7 +492,12 @@ async fn a_bundled_definition_is_applied_from_agentds_copy_like_any_other() {
         .await
         .expect("apply the bundled definition");
     assert_eq!(applied.metadata.name, "builder");
-    assert_eq!(Some(digest(&applied)), builder.digest);
+    assert_eq!(
+        applied.status.origin,
+        Some(Origin::Reference {
+            reference: "bundled/builder".into()
+        })
+    );
     let again = fixture
         .control_plane
         .apply(apply(directory, copy.clone()))
@@ -632,30 +580,18 @@ async fn a_folder_that_is_not_one_projects_is_refused() {
 }
 
 #[test]
-fn only_folders_inside_a_read_only_bind_mount_can_be_writable() {
-    let bind = |read_only: bool, optional: bool, source: Option<&str>, writable: &[&str]| MountSpec::Bind {
-        source: source.map(Into::into),
+fn an_optional_bind_mount_needs_a_source() {
+    let mut agent = agent("worker");
+    agent.spec.sandbox.mounts = vec![MountSpec::Bind {
+        source: None,
         target: sandbox::SandboxPath::new(CHECKOUT),
-        read_only,
-        optional,
-        writable: writable.iter().map(Into::into).collect(),
-    };
-    for (mount, problem) in [
-        (bind(false, false, None, &["agents"]), "needs readOnly"),
-        (bind(true, false, None, &["../elsewhere"]), "inside the mount"),
-        (bind(true, false, None, &["/agents"]), "inside the mount"),
-        (
-            bind(true, false, None, &["agents", "agents/cache"]),
-            "inside another writable folder",
-        ),
-        (bind(true, true, Some("."), &["agents"]), "optional mount"),
-        (bind(true, true, None, &[]), "needs a source"),
-    ] {
-        let mut agent = agent("worker");
-        agent.spec.sandbox.mounts = vec![mount];
-        let error = agent.validate().expect_err("invalid bind mount");
-        assert!(error.to_string().contains(problem), "{error}");
-    }
+        read_only: true,
+        optional: true,
+    }];
+
+    let error = agent.validate().expect_err("an optional bind mount without a source");
+
+    assert!(error.to_string().contains("needs a source"), "{error}");
 }
 
 #[tokio::test(flavor = "local")]
@@ -671,7 +607,6 @@ async fn a_folder_given_for_a_bind_mount_replaces_the_manifests_and_makes_anothe
         target: sandbox::SandboxPath::new(CHECKOUT),
         read_only: false,
         optional: false,
-        writable: Vec::new(),
     }];
     let local = |binds: Vec<BindSource>| RunRequest {
         definition: RunDefinition::Local {
@@ -723,53 +658,6 @@ async fn a_folder_given_for_a_bind_mount_replaces_the_manifests_and_makes_anothe
         .await
         .expect_err("a folder for a target the manifest has no bind mount at");
     assert!(error.to_string().contains("no bind mount at /elsewhere"), "{error}");
-}
-
-#[cfg(unix)]
-#[tokio::test(flavor = "local")]
-async fn a_writable_folder_that_links_out_of_its_mount_is_refused_and_made_nowhere() {
-    let fixture = Fixture::new();
-    let outside = fixture.workspace("outside");
-    for (link, writable) in [("agents", "agents"), ("parent", "parent/agents")] {
-        let workspace = fixture.workspace(&format!("repo-{link}"));
-        std::os::unix::fs::symlink(&outside, workspace.join(link)).expect("link");
-        let mut builder = manifest("linked", BASE_IMAGE);
-        builder.spec.sandbox.mounts = vec![MountSpec::Bind {
-            source: None,
-            target: sandbox::SandboxPath::new(CHECKOUT),
-            read_only: true,
-            optional: false,
-            writable: vec![writable.into()],
-        }];
-        let definition = TempDirectory::new("bundled-linked");
-
-        let error = fixture
-            .control_plane
-            .run(RunRequest {
-                definition: RunDefinition::Local {
-                    source_directory: definition.path().to_path_buf(),
-                    manifest_path: definition.path().join("agent.yaml"),
-                    env_file: None,
-                    agent: Box::new(builder),
-                },
-                binds: vec![given(&workspace)],
-                lifetime: None,
-                name: None,
-            })
-            .await
-            .expect_err("a writable folder outside the mount");
-
-        assert!(
-            error.to_string().contains("outside the folder it is in"),
-            "{writable}: {error}"
-        );
-    }
-    assert_eq!(
-        std::fs::read_dir(&outside).expect("outside").count(),
-        0,
-        "no folder is made through a link"
-    );
-    assert_eq!(fixture.store.list().await.expect("agents"), []);
 }
 
 #[tokio::test(flavor = "local")]
@@ -846,53 +734,32 @@ async fn agentd_deletes_the_ephemeral_agents_an_earlier_run_left_when_it_starts(
         !fixture.home.path().join("bundled/.unfinished").exists(),
         "what no agent uses is removed"
     );
-    let carried = restarted.definitions(None).await.expect("definitions");
-    let mut digests = carried
-        .into_iter()
-        .filter_map(|definition| definition.digest)
-        .collect::<Vec<_>>();
-    digests.sort();
     assert_eq!(
-        fixture.snapshot_folders(),
-        digests,
+        fixture.copies(),
+        ["builder", "sign-in"],
         "copies of what this build carries stay"
     );
 }
 
 #[tokio::test(flavor = "local")]
-async fn a_copy_goes_once_no_agent_uses_it_and_the_build_no_longer_carries_it() {
+async fn a_copy_the_build_no_longer_carries_stays_while_an_agent_was_made_from_it() {
     let fixture = Fixture::new();
     let backend = Rc::new(sandbox_memory::Provider::new());
     let reconciler = Reconciler::new(
         fixture.store.clone(),
         sandbox_service(Rc::new(MemoryProvider::new(backend))),
         ProvisioningState::default(),
-    )
-    .with_snapshots(fixture.snapshots());
+    );
     let workspace = fixture.workspace("repo");
-    let other = fixture.workspace("other");
-    let first = run(&fixture.control_plane, "builder", Some(&workspace)).await;
-    let second = run(&fixture.control_plane, "builder", Some(&other)).await;
-    assert_eq!(digest(&first.agent), digest(&second.agent), "one copy for both");
-    let id = |name: &str| {
-        let store = fixture.store.clone();
-        let name = name.to_owned();
-        async move { store.get_by_name(&name).await.expect("agent").id }
-    };
+    run(&fixture.control_plane, "builder", Some(&workspace)).await;
+    let rebuilt = fixture.rebuilt([sign_in()]);
+
+    rebuilt.remove_leftovers().await.expect("agentd starts");
+    assert_eq!(fixture.copies(), ["builder", "sign-in"], "an agent was made from it");
 
     fixture.control_plane.delete("builder-repo").await.expect("delete");
-    reconciler.reconcile(id("builder-repo").await).await.expect("release");
-    assert_eq!(
-        fixture.snapshot_folders(),
-        [digest(&first.agent)],
-        "the other agent still uses it"
-    );
-
-    fixture.control_plane.delete("builder-other").await.expect("delete");
-    reconciler.reconcile(id("builder-other").await).await.expect("release");
-    assert_eq!(
-        fixture.snapshot_folders(),
-        Vec::<String>::new(),
-        "this reconciler's build carries none"
-    );
+    let id = fixture.store.get_by_name("builder-repo").await.expect("agent").id;
+    reconciler.reconcile(id).await.expect("release");
+    rebuilt.remove_leftovers().await.expect("agentd starts again");
+    assert_eq!(fixture.copies(), ["sign-in"]);
 }
