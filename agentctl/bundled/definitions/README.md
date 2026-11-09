@@ -14,5 +14,7 @@ them after the definitions on disk. [`agent::bundled`](../../src/bundled/mod.rs)
   leaves the source out, and they name the folder when they run it.
 - It reads nothing from an environment file, so an entry of `spec.environment` gives its `value`, and one of
   `spec.secrets` names a secret stored on the machine with `name`.
-- Its image names a base image by its `main` tag, such as `ghcr.io/digdir/agentctl-base:ubuntu-26.04`. A released
-  agentd runs that image as its own release tagged it, so a definition always runs on the image built with it.
+- Its image is one each release publishes, named by its `main` tag, such as `ghcr.io/digdir/agentctl-base:ubuntu-26.04`
+  or the agent builder's `ghcr.io/digdir/agentctl-agent-builder:main`. A released agentd runs that image as its own
+  release tagged it, so a definition always runs on the image built with it. A new image needs adding to
+  `RELEASED_IMAGES` in [`agent::bundled`](../../src/bundled/mod.rs) and to the release workflow.

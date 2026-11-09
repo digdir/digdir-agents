@@ -1,0 +1,168 @@
+# Builds the agent builder's image from images/agentctl-agent-builder, which `agentctl new` runs. Pull requests only
+# build it, on the base images from the same commit. Main, including a manual run on main, publishes it to
+# ghcr.io/digdir/agentctl-agent-builder as `main` and `sha-<commit>`. There it builds on the base images and the
+# agentctl image as published, and is published again whenever either of those is, so that it follows the platform it
+# runs on. The release workflow calls this one on a release pull request to build it on the release's base and agentctl
+# images and push it by digest, and tags it as `<version>` when the pull request lands, just before it publishes the
+# release. A release's agentctl runs the builder of its own version.
+name: agentctl agent builder image
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed]
+    paths:
+      # Its .dockerignore admits only the Dockerfile. agentctl carries the rest of the definition.
+      - images/agentctl-agent-builder/Dockerfile
+      - images/agentctl-agent-builder/.dockerignore
+      - images/agentctl-base/**
+      - docker-bake.hcl
+      - .github/workflows/agentctl-agent-builder-image.yml
+      - .github/workflows/images.yml
+      - .github/scripts/main-version.sh
+      # The top-level Markdown is not in the base's build context, which its .dockerignore limits.
+      - '!images/agentctl-base/*.md'
+  push:
+    branches:
+      - main
+    paths:
+      - images/agentctl-agent-builder/Dockerfile
+      - images/agentctl-agent-builder/.dockerignore
+      - .github/workflows/agentctl-agent-builder-image.yml
+  # A publish of the base images or the agentctl image on main. The run builds main as it is now, which may have moved
+  # past the commit that published them.
+  workflow_run:
+    workflows: [agentctl base images, agentctl image]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version the image holds agentctl of and is tagged with, such as v0.1.0-preview.13
+        type: string
+        required: true
+      publish:
+        description: >-
+          Push the image by digest for the release workflow to tag when the release pull request lands, rather than
+          only build it as a release dry run does
+        type: boolean
+        default: false
+      digests:
+        description: >-
+          The release's images to build on, pushed by digest, the headless base image and the agentctl image:
+          `{"base": {"amd64": "sha256:...", "arm64": "sha256:..."}, "agentctl": {...}}`
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # A push that also changes the base images leaves the build to the base images' run, which starts this workflow once
+  # it has published them. Built now, the image would get the base from before the push. A push that changes agentctl
+  # is built right away, on the agentctl image from before it, and again once the agentctl image is published.
+  plan:
+    name: Plan
+    # A release's build always runs, even from a draft.
+    if: >-
+      ${{ inputs.version != ''
+      || (github.event_name == 'pull_request' && github.event.action != 'closed' && !github.event.pull_request.draft)
+      || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'pull_request') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      mode: ${{ steps.plan.outputs.mode }}
+      variables: ${{ steps.plan.outputs.variables }}
+      set: ${{ steps.plan.outputs.set }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      # What the image builds on: a release's own base and agentctl images by digest, the base from the same commit for
+      # a pull request, or else the published ones.
+      - name: Plan the build
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          PUBLISH_RELEASE: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          build=true
+          contexts=""
+          set=""
+          if [ -n "${RELEASE_VERSION}" ]; then
+            version="${RELEASE_VERSION}"
+            if [ "${PUBLISH_RELEASE}" = true ]; then
+              mode=release
+            else
+              mode=build
+            fi
+            contexts="BASE_CONTEXT=docker-image://ghcr.io/digdir/agentctl-base@{base}"
+            contexts="${contexts} AGENTCTL_CONTEXT=docker-image://ghcr.io/digdir/agentctl@{agentctl}"
+          else
+            if [ "${GITHUB_EVENT_NAME}" = push ] \
+              && .github/scripts/changes-base-images.sh "${BEFORE}" "${GITHUB_SHA}"; then
+              echo "This push changes the base images; their run builds this image once it has published them"
+              build=false
+            fi
+            version="$(.github/scripts/main-version.sh "${GITHUB_SHA}")"
+            if [ "${GITHUB_REF}" = refs/heads/main ] && [ "${GITHUB_EVENT_NAME}" != pull_request ]; then
+              mode=main
+            else
+              mode=build
+            fi
+            if [ "${GITHUB_EVENT_NAME}" = pull_request ]; then
+              contexts="BASE_CONTEXT=target:base-headless"
+              set="base-headless.cache-from=type=registry,ref=ghcr.io/digdir/agentctl-base:buildcache-headless-{arch}"
+            fi
+          fi
+          echo "Building ${version} from ${GITHUB_SHA}"
+          {
+            echo "build=${build}"
+            echo "mode=${mode}"
+            echo "variables=AGENT_VERSION=${version} ${contexts}"
+            echo "set=${set}"
+          } >> "${GITHUB_OUTPUT}"
+
+  image:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    name: Agent builder image
+    # On this job rather than the workflow, so that a run that builds nothing never takes the place of a pending one
+    # that would. A release's build has its own group, so that it and the same pull request's own image check cannot
+    # cancel each other.
+    concurrency:
+      group: >-
+        agentctl-agent-builder-image-${{ inputs.version && format('release-{0}', inputs.version)
+        || github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    uses: ./.github/workflows/images.yml
+    with:
+      files: docker-bake.hcl
+      group: agent-builder
+      variables: ${{ needs.plan.outputs.variables }}
+      set: ${{ needs.plan.outputs.set }}
+      values: ${{ inputs.digests || '{}' }}
+      sparse-checkout: |
+        images/agentctl-agent-builder
+        images/agentctl-base
+      mode: ${{ needs.plan.outputs.mode }}
+      images: |
+        [
+          {
+            "target": "agent-builder",
+            "repository": "ghcr.io/digdir/agentctl-agent-builder",
+            "cache": "ghcr.io/digdir/agentctl-agent-builder:buildcache",
+            "tags": ["main", "sha-{sha}"]
+          }
+        ]

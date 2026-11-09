@@ -12,7 +12,7 @@ use sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
 use crate::{Error, local::files::walk_source, sandbox::platform::files::write_if_changed};
 
 /// One skill directory read on the host, keyed by its directory name.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Skill {
     pub(crate) name: String,
     /// Regular files below the skill directory, as `/`-separated relative paths, sorted.
@@ -20,7 +20,7 @@ pub struct Skill {
 }
 
 /// One regular file of a skill.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SkillFile {
     pub(crate) relative_path: String,
     pub(crate) contents: Vec<u8>,
@@ -73,7 +73,7 @@ impl Skill {
     /// The skills built into `agentctl`.
     #[must_use]
     pub fn bundled() -> Vec<Self> {
-        vec![platform_skill()]
+        platform_skills()
     }
 
     /// The directory name the skill is installed as.
@@ -100,19 +100,32 @@ pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty() && !name.starts_with('.') && !name.contains('/') && !name.contains('\\')
 }
 
-/// The skill every agent gets for driving agents with `agentctl`, nested ones included, which the
-/// agent sandbox section of its instructions points to.
-pub(crate) fn platform_skill() -> Skill {
-    Skill {
-        name: "agentctl".into(),
+/// The skills every agent gets: `agentctl`, for driving agents, nested ones included, which the agent
+/// sandbox section of its instructions points to, and `agent-definition`, for writing and changing
+/// the definitions agents are made from, its own included.
+pub(crate) fn platform_skills() -> Vec<Skill> {
+    // What the build embeds lives under agentctl/bundled/, the one folder CI and the image build
+    // treat as code. See agentctl/bundled/README.md.
+    [
+        (
+            "agentctl",
+            include_bytes!("../../bundled/skills/agentctl/SKILL.md").as_slice(),
+        ),
+        (
+            "agent-definition",
+            include_bytes!("../../bundled/skills/agent-definition/SKILL.md").as_slice(),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, contents)| Skill {
+        name: name.into(),
         files: vec![SkillFile {
             relative_path: "SKILL.md".into(),
-            // What the build embeds lives under agentctl/bundled/, the one folder CI and the image build
-            // treat as code. See agentctl/bundled/README.md.
-            contents: include_bytes!("../../bundled/skills/agentctl/SKILL.md").to_vec(),
+            contents: contents.to_vec(),
             executable: false,
         }],
-    }
+    })
+    .collect()
 }
 
 /// Places every skill below `root` as `root/<name>/<relative path>`, owned by the image user,

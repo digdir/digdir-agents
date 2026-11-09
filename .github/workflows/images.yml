@@ -28,9 +28,17 @@ on:
         type: string
         default: ''
       variables:
-        description: Bake variables, as NAME=value, one per line
+        description: >-
+          Bake variables, as NAME=value, separated by spaces or lines, in which `{arch}` stands for the architecture
         type: string
         default: ''
+      values:
+        description: >-
+          Values that differ by architecture, such as the digests of images pushed by digest, as a JSON object of
+          `{"name": {"amd64": "...", "arm64": "..."}}`. `{name}` in `set` and `variables` stands for the value for the
+          architecture being built
+        type: string
+        default: '{}'
       sparse-checkout:
         description: The directories the build needs, one per line. Cone mode also checks out the root's files
         type: string
@@ -79,6 +87,7 @@ jobs:
           IMAGES: ${{ inputs.images }}
           SET: ${{ inputs.set }}
           VARIABLES: ${{ inputs.variables }}
+          VALUES: ${{ inputs.values }}
           MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
@@ -88,11 +97,20 @@ jobs:
             *) echo "::error::unknown mode '${MODE}'"; exit 1 ;;
           esac
 
-          while IFS= read -r variable; do
-            if [ -n "${variable}" ]; then
-              export "${variable?}"
-            fi
-          done <<< "${VARIABLES}"
+          # Replaces `{arch}` and the names in VALUES with this architecture's values.
+          substitute() {
+            local text="${1//\{arch\}/${ARCH}}" name value
+            while IFS=$'\t' read -r name value; do
+              text="${text//\{${name}\}/${value}}"
+            done < <(jq -r --arg arch "${ARCH}" 'to_entries[] | [.key, .value[$arch]] | @tsv' <<< "${VALUES}")
+            printf '%s' "${text}"
+          }
+
+          read -r -a variables <<< "$(tr '\n' ' ' <<< "${VARIABLES}")"
+          for variable in "${variables[@]}"; do
+            variable="$(substitute "${variable}")"
+            export "${variable?}"
+          done
 
           args=()
           for file in ${FILES}; do
@@ -101,7 +119,7 @@ jobs:
           args+=(--set "*.platform=linux/${ARCH}")
           while IFS= read -r value; do
             if [ -n "${value}" ]; then
-              args+=(--set "${value//\{arch\}/${ARCH}}")
+              args+=(--set "$(substitute "${value}")")
             fi
           done <<< "${SET}"
           while IFS=$'\t' read -r target repository cache; do

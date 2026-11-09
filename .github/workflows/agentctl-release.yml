@@ -1,12 +1,12 @@
 # Releases agentctl from the pull request that dates a new version in agentctl/CHANGELOG.md. On that pull request it
-# builds and smoke-tests the archives for every host, pushes the version's agentctl image and base images by digest,
-# and assembles the release: the archives, the installers, the license and third-party notices, and the version's
-# changelog section as the release notes. When the pull request lands on main, it publishes exactly those files,
-# creating the `agentctl/v<version>` tag on the landed commit as it publishes the release, and tags those images
-# ghcr.io/digdir/agentctl:<version>, ghcr.io/digdir/agentctl-base:ubuntu-26.04-<version> and
-# ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop-<version>. Nothing is built after the merge, and a tag can never
-# be moved or deleted, so creating it last means a run that fails spends no version. Other pull requests and pushes
-# stop in the first job.
+# builds and smoke-tests the archives for every host, pushes the version's agentctl, base and agent builder images by
+# digest, and assembles the release: the archives, the installers, the license and third-party notices, and the
+# version's changelog section as the release notes. When the pull request lands on main, it publishes exactly those
+# files, creating the `agentctl/v<version>` tag on the landed commit as it publishes the release, and tags those images
+# ghcr.io/digdir/agentctl:<version>, ghcr.io/digdir/agentctl-base:ubuntu-26.04-<version>,
+# ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop-<version> and ghcr.io/digdir/agentctl-agent-builder:<version>.
+# Nothing is built after the merge, and a tag can never be moved or deleted, so creating it last means a run that fails
+# spends no version. Other pull requests and pushes stop in the first job.
 name: agentctl release
 
 on:
@@ -124,6 +124,59 @@ jobs:
       version: ${{ needs.version.outputs.version }}
       publish: true
 
+  # The agent builder holds the release's agentctl, on the release's base image, so the release builds it on those
+  # images as this run pushed them. They are pushed for each architecture by digest, and tagged only once the release
+  # is published.
+  agent-builder-digests:
+    name: Agent builder's images
+    needs: [version, image, base-images]
+    if: needs.version.outputs.release == 'true' && github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      digests: ${{ steps.digests.outputs.digests }}
+    steps:
+      - name: Download image digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: agentctl-image-digest-*
+          path: ${{ runner.temp }}/digests
+
+      - name: Download base image digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digests-base-*
+          path: ${{ runner.temp }}/digests
+
+      - name: Collect the digests
+        id: digests
+        run: |
+          set -euo pipefail
+          digests="$(jq -c -n --rawfile base_amd64 "${RUNNER_TEMP}/digests/digests-base-amd64/base-headless" \
+            --rawfile base_arm64 "${RUNNER_TEMP}/digests/digests-base-arm64/base-headless" \
+            --rawfile agentctl_amd64 "${RUNNER_TEMP}/digests/agentctl-image-digest-amd64/agentctl" \
+            --rawfile agentctl_arm64 "${RUNNER_TEMP}/digests/agentctl-image-digest-arm64/agentctl" \
+            '{base: {amd64: $base_amd64, arm64: $base_arm64}, agentctl: {amd64: $agentctl_amd64, arm64: $agentctl_arm64}}
+            | map_values(map_values(rtrimstr("\n")))')"
+          if ! jq -e '[.[][]] | all(startswith("sha256:"))' <<< "${digests}" > /dev/null; then
+            echo "::error::missing image digests: ${digests}"
+            exit 1
+          fi
+          echo "digests=${digests}" >> "${GITHUB_OUTPUT}"
+
+  agent-builder-image:
+    name: agentctl agent builder image
+    needs: [version, agent-builder-digests]
+    if: needs.version.outputs.release == 'true' && github.event_name != 'push'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/agentctl-agent-builder-image.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      publish: true
+      digests: ${{ needs.agent-builder-digests.outputs.digests }}
+
   notices:
     name: Third-party notices
     needs: version
@@ -161,7 +214,7 @@ jobs:
   # Pull requests that release nothing skip it.
   assemble:
     name: Assemble release
-    needs: [version, notices, build, image, base-images]
+    needs: [version, notices, build, image, base-images, agent-builder-digests, agent-builder-image]
     if: >-
       ${{ !cancelled() && github.event_name != 'push'
       && (needs.version.result != 'success' || needs.version.outputs.release == 'true') }}
@@ -244,6 +297,7 @@ jobs:
       REPOSITORY: ghcr.io/digdir/agentctl
       BASE_REPOSITORY: ghcr.io/digdir/agentctl-base
       BASE_DISTRIBUTION: ubuntu-26.04
+      BUILDER_REPOSITORY: ghcr.io/digdir/agentctl-agent-builder
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -317,6 +371,14 @@ jobs:
           run-id: ${{ steps.build.outputs.run-id }}
           github-token: ${{ github.token }}
 
+      - name: Download agent builder image digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digests-agent-builder-*
+          path: ${{ runner.temp }}/digests
+          run-id: ${{ steps.build.outputs.run-id }}
+          github-token: ${{ github.token }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -344,6 +406,10 @@ jobs:
               "${BASE_REPOSITORY}@$(cat "${RUNNER_TEMP}/digests/digests-base-arm64/base-${variant}")"
             docker buildx imagetools inspect "${BASE_REPOSITORY}:${tag}-${VERSION}"
           done
+          docker buildx imagetools create --tag "${BUILDER_REPOSITORY}:${VERSION}" \
+            "${BUILDER_REPOSITORY}@$(cat "${RUNNER_TEMP}/digests/digests-agent-builder-amd64/agent-builder")" \
+            "${BUILDER_REPOSITORY}@$(cat "${RUNNER_TEMP}/digests/digests-agent-builder-arm64/agent-builder")"
+          docker buildx imagetools inspect "${BUILDER_REPOSITORY}:${VERSION}"
 
       # Immutable releases lock their assets on publication, so upload every asset to a draft first and publish it
       # last. Publishing the draft creates its tag on the commit that landed. A draft left by a failed run has no tag
