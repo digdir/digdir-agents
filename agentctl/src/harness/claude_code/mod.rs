@@ -320,6 +320,23 @@ pub(super) async fn verify_linux(
     Ok(())
 }
 
+/// Marks the folder `argv[2]` trusted in Claude Code's state file `argv[1]`, unless it is, keeping
+/// the rest of the file. A file it cannot read is left alone, so Claude Code asks as it would.
+const TRUST_FOLDER: &str = r#"const [file, folder] = process.argv.slice(1);
+const fs = require("fs");
+let state = {};
+try {
+  state = JSON.parse(fs.readFileSync(file, "utf8"));
+} catch (error) {
+  if (error.code !== "ENOENT") process.exit(0);
+}
+if (!state.projects?.[folder]?.hasTrustDialogAccepted) {
+  state.projects ??= {};
+  state.projects[folder] = { ...state.projects[folder], hasTrustDialogAccepted: true };
+  fs.writeFileSync(`${file}.agentd`, JSON.stringify(state, null, 2), { mode: 0o600 });
+  fs.renameSync(`${file}.agentd`, file);
+}"#;
+
 pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
     let config = format!("{}/.claude", request.home);
     let mut base = format!("claude --dangerously-skip-permissions --settings {config}/agent-settings.json");
@@ -349,6 +366,18 @@ pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
              | /usr/bin/grep -q .; then exec {base} --resume {native}; else exec {fresh}; fi"
         ),
         None => fresh,
+    };
+    // The image trusts the sandbox's working directory. A session that starts elsewhere, such as
+    // in a checkout a bind mount puts in place, would ask first, so its folder is trusted too.
+    let command = if request.working_directory == crate::sandbox::platform::WORKING_DIRECTORY {
+        command
+    } else {
+        format!(
+            "node -e {} {} {} 2>/dev/null; {command}",
+            shell_single_quoted(TRUST_FOLDER),
+            shell_single_quoted(&format!("{config}/.claude.json")),
+            shell_single_quoted(request.working_directory),
+        )
     };
     ProcessLaunch {
         command,
@@ -499,6 +528,43 @@ mod launch_tests {
         );
         let settings = home.path().join(".claude/agent-settings.json");
         assert!(has_pair(&arguments, "--settings", settings.to_str().expect("UTF-8")));
+    }
+
+    #[test]
+    fn a_session_starting_outside_the_working_directory_trusts_its_folder_first() {
+        let home = home_with_transcript(None);
+        let state = home.path().join(".claude/.claude.json");
+        std::fs::write(
+            &state,
+            r#"{"hasCompletedOnboarding": true, "projects": {"/w": {"hasTrustDialogAccepted": true}}}"#,
+        )
+        .expect("state");
+
+        let arguments = launched(
+            &home,
+            &LaunchRequest {
+                working_directory: "/w/checkout",
+                ..test_launch_request(None, None)
+            },
+        );
+
+        assert_eq!(
+            arguments.first().map(String::as_str),
+            Some("--dangerously-skip-permissions"),
+            "Claude Code still starts"
+        );
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&state).expect("state")).expect("state JSON");
+        assert_eq!(state["hasCompletedOnboarding"], true, "the rest is kept");
+        assert_eq!(state["projects"]["/w"]["hasTrustDialogAccepted"], true);
+        assert_eq!(state["projects"]["/w/checkout"]["hasTrustDialogAccepted"], true);
+
+        let untouched = home_with_transcript(None);
+        launched(&untouched, &test_launch_request(None, None));
+        assert!(
+            !untouched.path().join(".claude/.claude.json").exists(),
+            "the working directory is trusted by the image"
+        );
     }
 
     #[test]
