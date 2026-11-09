@@ -1364,6 +1364,35 @@ async fn malformed_and_idle_connections_do_not_block_other_clients() {
 }
 
 #[tokio::test(flavor = "local")]
+async fn listing_manifests_rejects_params_that_are_not_an_object_with_a_folder() {
+    let fixture = api();
+    let (mut raw_client, raw_server) = tokio::io::duplex(4096);
+    let api = fixture.server.clone();
+    tokio::task::spawn_local(async move {
+        let _ignored = api.serve_connection(raw_server).await;
+    });
+    let mut reader = BufReader::new(&mut raw_client);
+    for (id, params, expected) in [
+        (1, "[]", "params must be an object"),
+        (2, r#"{"directory":3}"#, "invalid type"),
+        (3, r#"{"directory":"/work","extra":true}"#, "unknown field `extra`"),
+    ] {
+        let request = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"definitions.v1.list","params":{params}}}"#);
+        reader
+            .get_mut()
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .expect("write request");
+        let mut response = String::new();
+        reader.read_line(&mut response).await.expect("read response");
+        let response: serde_json::Value = serde_json::from_str(&response).expect("JSON-RPC response");
+        assert_eq!(response["error"]["code"], -32602, "{params}: {response}");
+        let message = response["error"]["message"].as_str().expect("message");
+        assert!(message.contains(expected), "{params}: {message}");
+    }
+}
+
+#[tokio::test(flavor = "local")]
 async fn session_ensure_rejects_invalid_selections_before_reaching_the_service() {
     let fixture = api();
     let (mut raw_client, raw_server) = tokio::io::duplex(4096);

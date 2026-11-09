@@ -1238,7 +1238,7 @@ impl Server {
     async fn handle_definitions(&self, id: u64, value: Value) -> Response {
         match manifest_list_params(value) {
             Ok(params) => result_response(id, self.agents.definitions(params.directory).await),
-            Err(()) => error_response(id, CODE_INVALID_PARAMS, "directory must be a path"),
+            Err(message) => error_response(id, CODE_INVALID_PARAMS, &message),
         }
     }
 
@@ -1248,7 +1248,7 @@ impl Server {
         };
         match manifest_list_params(value) {
             Ok(params) => result_response(id, volumes.manifests(params.directory).await),
-            Err(()) => error_response(id, CODE_INVALID_PARAMS, "directory must be a path"),
+            Err(message) => error_response(id, CODE_INVALID_PARAMS, &message),
         }
     }
 
@@ -1404,10 +1404,12 @@ async fn write_response<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// The parameters of a request listing the manifests for a folder, or `Err` when they are malformed.
-fn manifest_list_params(value: Value) -> Result<ManifestListParams, ()> {
-    if value.is_null() {
-        return Ok(ManifestListParams::default());
+/// The parameters of a request listing the manifests for a folder: none, or an object. `Err` says
+/// what is wrong with them.
+fn manifest_list_params(value: Value) -> Result<ManifestListParams, String> {
+    match value {
+        Value::Null => Ok(ManifestListParams::default()),
+        Value::Object(_) => serde_json::from_value(value).map_err(|error| error.to_string()),
+        _ => Err("params must be an object".to_owned()),
     }
-    serde_json::from_value(value).map_err(|_| ())
 }
