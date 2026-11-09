@@ -275,6 +275,7 @@ impl Reconciler {
         );
         conditions.extend(nested_sandboxes_condition(ensured.nested_sandboxes.as_ref()));
         conditions.extend(optional_sources_condition(record, &ensured.missing_sources));
+        conditions.extend(environment_file_condition(record));
         conditions.push(condition(Condition::READY, ConditionStatus::True, "SandboxReady", ""));
         let status = Status::observed(record.agent.metadata.generation, Some(assignment), conditions);
         // As on failure, readiness is stored before followers see the pass end.
@@ -720,6 +721,29 @@ fn optional_sources_condition(record: &AgentRecord, missing_files: &[String]) ->
             &format!("left out {}", missing.join(", ")),
         )
     })
+}
+
+/// Where to read how to move values out of an environment file.
+const ENVIRONMENT_FILE_GUIDE: &str =
+    "https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/moving-off-the-environment-file.md";
+
+/// Names the values an agent still reads from its environment file, so every client shows what to
+/// move before a later release stops reading it.
+fn environment_file_condition(record: &AgentRecord) -> Option<Condition> {
+    let variables = record.agent.spec.environment_file_variables();
+    if variables.is_empty() {
+        return None;
+    }
+    Some(condition(
+        Condition::ENVIRONMENT_FILE,
+        ConditionStatus::True,
+        "Deprecated",
+        &format!(
+            "reads {} from {}, which a later release stops reading; see {ENVIRONMENT_FILE_GUIDE}",
+            variables.join(", "),
+            record.env_file_path().display()
+        ),
+    ))
 }
 
 /// Reports the guest's heartbeat after a pass whose guest work finished. A

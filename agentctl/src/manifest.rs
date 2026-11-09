@@ -664,6 +664,23 @@ impl Spec {
         self.access.contains(&AccessSpec::Vnc {})
     }
 
+    /// The variables the environment file supplies, which a later release stops reading: those of
+    /// `spec.environment` without a `value` and of `spec.secrets` without a `name`.
+    #[must_use]
+    pub fn environment_file_variables(&self) -> Vec<&str> {
+        self.environment
+            .iter()
+            .filter(|variable| variable.source().is_some())
+            .map(|variable| variable.name.as_str())
+            .chain(
+                self.secrets
+                    .iter()
+                    .filter(|secret| secret.source().is_some())
+                    .map(|secret| secret.environment.as_str()),
+            )
+            .collect()
+    }
+
     /// Whether a secret takes its value from the agent's environment file, which then holds real
     /// values that must not reach a sandbox.
     #[must_use]
@@ -806,7 +823,7 @@ impl Spec {
         let environment_sources = self
             .environment
             .iter()
-            .map(EnvironmentSpec::source)
+            .filter_map(EnvironmentSpec::source)
             .collect::<std::collections::BTreeSet<_>>();
         let mut placeholders = std::collections::BTreeSet::new();
         for (index, secret) in self.secrets.iter().enumerate() {
@@ -869,6 +886,8 @@ impl Spec {
                     .source
                     .as_deref()
                     .is_some_and(|source| !valid_environment_variable(source))
+                || (variable.source.is_some() && variable.value.is_some())
+                || variable.value.as_ref().is_some_and(|value| value.contains('\0'))
                 || self
                     .harnesses
                     .iter()
@@ -922,13 +941,21 @@ pub struct EnvironmentSpec {
     /// Optional variable name in the agent environment file; defaults to `name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// The value itself, so the environment file supplies none. The sandbox sees it as it is, so it
+    /// is never a secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
 }
 
 impl EnvironmentSpec {
-    /// Returns the environment-file variable that supplies the plaintext value.
+    /// Returns the environment-file variable that supplies the plaintext value, or `None` when the
+    /// manifest gives the [`Self::value`].
     #[must_use]
-    pub fn source(&self) -> &str {
-        self.source.as_deref().unwrap_or(&self.name)
+    pub fn source(&self) -> Option<&str> {
+        match self.value {
+            Some(_) => None,
+            None => Some(self.source.as_deref().unwrap_or(&self.name)),
+        }
     }
 }
 
@@ -1284,6 +1311,9 @@ impl Condition {
     pub const NESTED_SANDBOXES: &'static str = "NestedSandboxes";
     /// Condition type for whether the optional bind mounts, volumes, instructions and skills an agent declares exist.
     pub const OPTIONAL_SOURCES: &'static str = "OptionalSources";
+    /// Condition type for an agent that still reads values from an environment file, which a later
+    /// release stops reading. Its message names them and where to move them.
+    pub const ENVIRONMENT_FILE: &'static str = "EnvironmentFile";
     /// Condition type for declared SSH access underneath `Ready`.
     pub const SSH_READY: &'static str = "SshReady";
     /// VNC access is reconciled and the bridge to the desktop is listening.

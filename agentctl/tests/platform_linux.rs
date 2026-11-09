@@ -167,6 +167,7 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
     resource.spec.environment = vec![agent::EnvironmentSpec {
         name: "GIT_USER_NAME".into(),
         source: None,
+        value: None,
     }];
     resource.spec.access = vec![agent::AccessSpec::Ssh {}];
     resource.spec.network.deny = vec!["metadata.google.internal".into()];

@@ -26,11 +26,10 @@ changes to the base images.
 ```sh
 make user-install
 agentctl claude login
-mkdir -p ~/.agent
-cp agents/self-dev/minimal/.env.sample ~/.agent/self-dev.env
-# Fill in ~/.agent/self-dev.env, then:
+agentctl github login default
+agentctl secret set aivar --hosts api.aivar.no   # optional, for Pi
 cd agents/self-dev/minimal
-agentctl apply --env-file ~/.agent/self-dev.env --wait
+agentctl apply --wait
 agentctl attach session/s1
 ```
 
@@ -41,20 +40,21 @@ when it creates an agent.
 To try a change to the image, apply the `nested` variant, which builds it from this checkout:
 
 ```sh
-agentctl apply --variant nested --env-file ~/.agent/self-dev.env --wait
+agentctl apply --variant nested --wait
 agentctl create session/s1 --variant nested --harness codex
 ```
 
 A variant of your own, such as `agent.mine.yaml`, which Git ignores, can extend any manifest beside it. Keep
-credentials outside the checkout.
+credentials out of it: they belong in `agentctl github login` and `agentctl secret set`.
 
 ## Credentials
 
-`GITHUB_TOKEN` is a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with
-`Contents` and `Pull requests` read and write.
+`agentctl github login default` takes a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new)
+with `Contents` and `Pull requests` read and write. The agent pushes and opens pull requests as that account, and Git
+commits as it.
 
-`AIVAR_API_KEY` is optional. It is the key for the company AI gateway at `api.aivar.no`, which Pi uses. Without it Pi
-starts but rejects every prompt, so `agentctl prompt --wait` times out.
+The `aivar` secret is optional. It is the key for the company AI gateway at `api.aivar.no`, which Pi uses. Without it
+Pi starts but rejects every prompt, so `agentctl prompt --wait` times out.
 
 ## Pi
 

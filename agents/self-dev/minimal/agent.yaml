@@ -42,20 +42,14 @@ spec:
     - type: pi
       defaults:
         model: aivar/sigma2:Qwen3.8-27B
-  environment:
-    - name: GIT_USER_NAME
-    - name: GIT_USER_EMAIL
+  # GITHUB_TOKEN and Git's name and email, from `agentctl github login default`.
+  accounts:
+    - type: github
+      login: default
   secrets:
-    - environment: GITHUB_TOKEN
-      # gh only attaches files with a token it classifies by prefix; the inert placeholder
-      # therefore carries the fine-grained PAT prefix and is far shorter than a real token.
-      placeholder: github_pat_AGENT_MEDIATED_GITHUB_TOKEN
-      allowedHosts:
-        - github.com
-        - api.github.com
-        - gist.github.com
-        - uploads.github.com
-    - environment: AIVAR_API_KEY
+    # From `agentctl secret set aivar --hosts api.aivar.no`.
+    - name: aivar
+      environment: AIVAR_API_KEY
       optional: true
       allowedHosts:
         - api.aivar.no

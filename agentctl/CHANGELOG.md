@@ -44,6 +44,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
   - `agentctl secret set NAME --hosts HOST` stores one, used only at those hosts, which `allowedHosts` on the entry can narrow
   - `agentctl secret list` and `remove` show and remove them, and `list` names those agents ask for that are missing
   - a definition you `agentctl run` without an environment file, such as one agentd carries, can use them too
+- `value` on an entry of `spec.environment` gives a plain value in the manifest, so it needs no environment file. ([moving off the environment file](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/moving-off-the-environment-file.md))
 
 ### Changed
 
@@ -71,6 +72,10 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 ### Removed
 
 - Breaking: the shared images no longer have `media-preview` and `video-to-gif`. Check a recording with `media check` instead, and attach a page or desktop recording as WebM or MP4, which GitHub plays, rather than as a GIF. ([#418](https://github.com/digdir/digdir-agents/pull/418))
+
+### Deprecated
+
+- An agent's environment file, `.env` or the file `--env-file` names: a later release stops reading it. Move a GitHub token and Git's name and email to `spec.accounts`, keys to stored secrets, and plain values to `value`. `agentctl describe` names what an agent still reads. ([moving off the environment file](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/moving-off-the-environment-file.md), [#346](https://github.com/digdir/digdir-agents/issues/346))
 
 ## [0.1.0-preview.13] - 2026-10-26
 

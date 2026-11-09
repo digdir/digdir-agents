@@ -57,7 +57,11 @@ secrets:
 ```
 
 The value only reaches the secret's hosts, and `allowedHosts` on the entry narrows them further. Setting it again
-replaces it for every agent at once, and `agentctl secret list` shows the agents that use each secret.
+replaces it for every agent at once, and `agentctl secret list` shows the agents that use each secret. A value that is
+not secret goes in the manifest, as `value` on an entry of `spec.environment`.
+
+agentctl stops reading an agent's environment file in a later release. [Moving off the environment
+file](docs/moving-off-the-environment-file.md) says where each of its values goes.
 
 Give the coding agents on your machine, such as Claude Code, Codex and Pi, the skill for driving agents:
 

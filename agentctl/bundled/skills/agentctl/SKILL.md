@@ -32,13 +32,17 @@ agentctl claude login
 agentctl codex login
 ```
 
-**Write the environment file** with the variables the manifest declares, from this agent's own, outside every
-checkout:
+**Store the accounts and secrets** the manifest asks for, from this agent's own variables: a GitHub login for each
+entry of `accounts`, and a secret for each `name` in `secrets`. The variables hold placeholders, which this agent's
+host replaces in requests to their hosts, so the nested agent reaches them through it:
 
 ```sh
-printf 'GITHUB_TOKEN=%s\nGIT_USER_NAME=%s\nGIT_USER_EMAIL=%s\n' \
-  "$GITHUB_TOKEN" "$GIT_USER_NAME" "$GIT_USER_EMAIL" > ~/nested.env
+printf '%s' "$GITHUB_TOKEN" | agentctl github login default --from-stdin
+printf '%s' "$AIVAR_API_KEY" | agentctl secret set aivar --hosts api.aivar.no --from-stdin
 ```
+
+A manifest that still reads an environment file names its values in `environment` and `secrets` without a `name`.
+Write that file outside every checkout, from this agent's variables, and pass it with `--env-file`.
 
 **Size** a nested agent to fit inside this sandbox beside your own work. Disk usually runs out first: the nested
 agent's disk can grow to its `rootFilesystem.capacity`, and every image built for one stays in Podman's storage. Check
@@ -51,22 +55,22 @@ agent's disk can grow to its `rootFilesystem.capacity`, and every image built fo
   `stop --all` or `kill --all`.
 - Logins are the user's. When `apply` or `create` reports one missing, ask the user to run the login command it names,
   such as `agentctl claude login work`; do not sign in yourself.
-- Environment files hold real secrets: never read, write or print one. When the manifest needs values and there is
-  no env file to use, as below, ask the user which to pass.
+- Logins, secrets and environment files hold real values: never read, write or print one. When `apply` reports a
+  secret or login missing, ask the user to run the command it names.
 
 ## Apply
 
 ```sh
-agentctl apply -f path/to/agent.yaml --env-file ENV_FILE --wait
+agentctl apply -f path/to/agent.yaml --wait
 # or, from the manifest's directory, a sibling variant such as agent.nested.yaml:
-agentctl apply --variant nested --env-file ENV_FILE --wait
+agentctl apply --variant nested --wait
 ```
 
 - **Name:** `apply` updates the agent of the manifest's name, and refuses one first applied from another directory.
   Others may share this `agentctl`, such as the user on a host or other sessions in an agent: check
   `agentctl get agents` first, and pass `--name` to give yours a name of its own.
-- **Env file:** without `--env-file`, the first `apply` uses `.env` beside the manifest, and later ones the file it
-  recorded.
+- **Env file:** only for a manifest that still reads one. Without `--env-file`, the first `apply` uses `.env` beside
+  the manifest, and later ones the file it recorded.
 - **Image:** `type: build` builds the image first and takes minutes; `type: reference` pulls it.
 
 When `--wait` fails or stalls, `agentctl describe agent/NAME` shows its conditions.

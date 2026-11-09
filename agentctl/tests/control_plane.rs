@@ -2015,10 +2015,12 @@ async fn selected_environment_converges_from_the_env_file_without_exporting_othe
         EnvironmentSpec {
             name: "GIT_USER_NAME".into(),
             source: Some("HOST_GIT_NAME".into()),
+            value: None,
         },
         EnvironmentSpec {
             name: "GIT_USER_EMAIL".into(),
             source: None,
+            value: None,
         },
     ];
     std::fs::write(
@@ -2068,6 +2070,55 @@ async fn selected_environment_converges_from_the_env_file_without_exporting_othe
     assert!(!second.environment.contains_key("UNSELECTED"));
 }
 
+/// A value the manifest gives needs no environment file, and one read from the file is flagged,
+/// with the variables to move, as a later release stops reading it.
+#[tokio::test(flavor = "local")]
+async fn manifest_values_need_no_environment_file_and_values_from_one_are_flagged() {
+    let fixture = fixture();
+    let source = tempfile::tempdir().expect("Agent source");
+    let mut request = apply_request_in("worker", source.path().to_path_buf());
+    request.agent.spec.environment = vec![EnvironmentSpec {
+        name: "EDITOR".into(),
+        source: None,
+        value: Some("vim".into()),
+    }];
+    fixture.control_plane.apply(request.clone()).await.expect("apply");
+    reconcile(&fixture, "worker").await;
+    let record = stored(&fixture, "worker").await;
+    let sandbox = fixture
+        .backend
+        .find(&sandbox_name(&record))
+        .await
+        .expect("Sandbox without an environment file");
+    assert_eq!(sandbox.environment.get("EDITOR").map(String::as_str), Some("vim"));
+    let flagged = |record: &agent::control_plane::AgentRecord| {
+        record
+            .agent
+            .status
+            .conditions
+            .iter()
+            .find(|condition| condition.kind == Condition::ENVIRONMENT_FILE)
+            .map(|condition| condition.message.clone())
+    };
+    assert_eq!(flagged(&record), None);
+
+    request.agent.spec.environment.push(EnvironmentSpec {
+        name: "PAGER".into(),
+        source: None,
+        value: None,
+    });
+    std::fs::write(source.path().join(".env"), "PAGER=less\n").expect("environment file");
+    fixture
+        .control_plane
+        .apply(request)
+        .await
+        .expect("apply with a value from the file");
+    reconcile(&fixture, "worker").await;
+    let message = flagged(&stored(&fixture, "worker").await).expect("flagged");
+    assert!(message.starts_with("reads PAGER from "), "{message}");
+    assert!(message.contains("moving-off-the-environment-file"), "{message}");
+}
+
 #[tokio::test(flavor = "local")]
 async fn selected_environment_requires_present_non_empty_values() {
     let fixture = fixture();
@@ -2077,10 +2128,12 @@ async fn selected_environment_requires_present_non_empty_values() {
         EnvironmentSpec {
             name: "GIT_USER_NAME".into(),
             source: None,
+            value: None,
         },
         EnvironmentSpec {
             name: "GIT_USER_EMAIL".into(),
             source: None,
+            value: None,
         },
     ];
     std::fs::write(source.path().join(".env"), "GIT_USER_NAME=\n").expect("incomplete environment file");

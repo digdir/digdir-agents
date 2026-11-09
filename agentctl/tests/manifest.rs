@@ -79,10 +79,12 @@ fn decodes_explicit_non_secret_environment_with_an_optional_source() {
         EnvironmentSpec {
             name: "GIT_USER_NAME".into(),
             source: Some("HOST_GIT_NAME".into()),
+            value: None,
         },
         EnvironmentSpec {
             name: "GIT_USER_EMAIL".into(),
             source: None,
+            value: None,
         },
     ];
 
@@ -90,8 +92,8 @@ fn decodes_explicit_non_secret_environment_with_an_optional_source() {
     let decoded = manifest::decode(encoded.as_bytes()).expect("manifest environment");
 
     assert_eq!(decoded.spec.environment[0].name, "GIT_USER_NAME");
-    assert_eq!(decoded.spec.environment[0].source(), "HOST_GIT_NAME");
-    assert_eq!(decoded.spec.environment[1].source(), "GIT_USER_EMAIL");
+    assert_eq!(decoded.spec.environment[0].source(), Some("HOST_GIT_NAME"));
+    assert_eq!(decoded.spec.environment[1].source(), Some("GIT_USER_EMAIL"));
 }
 
 #[test]
@@ -122,6 +124,7 @@ fn rejects_invalid_duplicate_and_unpaired_environment_names() {
     invalid.spec.environment.push(EnvironmentSpec {
         name: "NOT-PORTABLE".into(),
         source: None,
+        value: None,
     });
     assert!(matches!(
         invalid.validate(),
@@ -133,10 +136,12 @@ fn rejects_invalid_duplicate_and_unpaired_environment_names() {
         EnvironmentSpec {
             name: "EDITOR".into(),
             source: None,
+            value: None,
         },
         EnvironmentSpec {
             name: "EDITOR".into(),
             source: Some("HOST_EDITOR".into()),
+            value: None,
         },
     ];
     assert!(matches!(
@@ -148,6 +153,7 @@ fn rejects_invalid_duplicate_and_unpaired_environment_names() {
     unpaired.spec.environment.push(EnvironmentSpec {
         name: "GIT_USER_NAME".into(),
         source: None,
+        value: None,
     });
     assert!(matches!(
         unpaired.validate(),
@@ -161,6 +167,7 @@ fn rejects_environment_collisions_with_secrets_and_harness_owned_values() {
     secret_collision.spec.environment.push(EnvironmentSpec {
         name: "PLAIN_VALUE".into(),
         source: Some("SHARED_VALUE".into()),
+        value: None,
     });
     secret_collision.spec.secrets.push(SecretSpec {
         environment: "API_TOKEN".into(),
@@ -179,6 +186,7 @@ fn rejects_environment_collisions_with_secrets_and_harness_owned_values() {
     harness_collision.spec.environment.push(EnvironmentSpec {
         name: "CLAUDE_CONFIG_DIR".into(),
         source: None,
+        value: None,
     });
     assert!(matches!(
         harness_collision.validate(),
@@ -889,6 +897,26 @@ fn a_build_context_starting_with_a_tilde_resolves_below_the_home_directory() {
     assert_eq!(context_for("~"), home);
     assert_eq!(context_for("image"), source_directory.join("image"));
     assert_eq!(context_for("~other/image"), source_directory.join("~other/image"));
+}
+
+#[test]
+fn an_environment_value_may_be_given_in_the_manifest_instead_of_the_environment_file() {
+    let agent = manifest::decode(&manifest_with_access(
+        "  environment:\n    - name: EDITOR\n      value: vim\n    - name: PAGER\n  \
+         secrets:\n    - name: aivar\n      environment: AIVAR_API_KEY\n    - environment: OTHER_KEY\n      \
+         allowedHosts: [other.example]\n",
+    ))
+    .expect("a value in the manifest");
+    assert_eq!(agent.spec.environment[0].value.as_deref(), Some("vim"));
+    assert_eq!(agent.spec.environment[0].source(), None);
+    assert_eq!(agent.spec.environment_file_variables(), ["PAGER", "OTHER_KEY"]);
+
+    assert!(matches!(
+        manifest::decode(&manifest_with_access(
+            "  environment:\n    - name: EDITOR\n      value: vim\n      source: HOST_EDITOR\n",
+        )),
+        Err(agent::Error::Invalid(message)) if message.contains("spec.environment[0]")
+    ));
 }
 
 #[test]

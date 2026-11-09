@@ -769,6 +769,14 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                     "ready"
                 };
                 println!("agent/{name} {outcome}");
+                if let Some(condition) = converged
+                    .status
+                    .conditions
+                    .iter()
+                    .find(|condition| condition.kind == agent::Condition::ENVIRONMENT_FILE)
+                {
+                    eprintln!("Warning: {}", condition.message);
+                }
             }
         }
         Command::Get {
