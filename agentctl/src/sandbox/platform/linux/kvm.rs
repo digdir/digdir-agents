@@ -11,12 +11,15 @@ const KVM: &str = "/dev/kvm";
 /// The guest kernel's transparent huge page policy, present only when the kernel has huge pages.
 const HUGE_PAGES: &str = "/sys/kernel/mm/transparent_hugepage/enabled";
 
-/// Prepares the guest to run nested sandboxes when it has `/dev/kvm`, and reports whether it has.
-pub(super) async fn prepare_nested_sandboxes(sandbox: &SandboxHandle) -> Result<bool, Error> {
+/// Prepares the guest to run nested sandboxes when it has `/dev/kvm`, and reports whether it has. With
+/// `huge_pages`, it also backs their memory with huge pages, as [`enable_huge_pages`] describes.
+pub(super) async fn prepare_nested_sandboxes(sandbox: &SandboxHandle, huge_pages: bool) -> Result<bool, Error> {
     if !grant_kvm(sandbox).await? {
         return Ok(false);
     }
-    enable_huge_pages(sandbox).await?;
+    if huge_pages {
+        enable_huge_pages(sandbox).await;
+    }
     Ok(true)
 }
 
@@ -43,17 +46,27 @@ async fn grant_kvm(sandbox: &SandboxHandle) -> Result<bool, Error> {
 /// Lets the guest back the memory of its nested sandboxes with huge pages, by switching the guest kernel's
 /// transparent huge page policy to `always`. Nested sandbox runtimes don't ask for huge pages for their guests'
 /// memory, and with 4 KiB pages Hypervisor.framework on macOS handles every memory fault of a nested sandbox by
-/// searching each mapping it holds, which makes memory-heavy work there hundreds of times slower. The policy lasts
-/// until the guest restarts, and changing nested sandboxes restarts it, so setup sets it on every pass that finds
-/// the device.
-async fn enable_huge_pages(sandbox: &SandboxHandle) -> Result<(), Error> {
-    if !path_exists(sandbox, "-f", HUGE_PAGES).await? {
-        return Ok(());
+/// searching each mapping it holds, which makes memory-heavy work there hundreds of times slower. Other hosts'
+/// hypervisors don't have that cost, so there it only spends memory.
+///
+/// Memory a nested sandbox touched before the switch stays in 4 KiB pages, so it has to happen before the agent
+/// starts nested sandboxes, as setup does at every start. The policy lasts until the guest restarts, and changing
+/// nested sandboxes restarts it. A guest that refuses the switch only runs its nested sandboxes slower, so a
+/// failure is logged rather than failing setup.
+async fn enable_huge_pages(sandbox: &SandboxHandle) {
+    let result = async {
+        if !path_exists(sandbox, "-f", HUGE_PAGES).await? {
+            return Ok(());
+        }
+        run_checked(
+            sandbox,
+            "/usr/bin/sudo",
+            ["-n", "/bin/sh", "-c", &format!("echo always > {HUGE_PAGES}")],
+        )
+        .await
     }
-    run_checked(
-        sandbox,
-        "/usr/bin/sudo",
-        ["-n", "/bin/sh", "-c", &format!("echo always > {HUGE_PAGES}")],
-    )
-    .await
+    .await;
+    if let Err(error) = result {
+        tracing::warn!(%error, "could not back nested sandboxes with huge pages");
+    }
 }
