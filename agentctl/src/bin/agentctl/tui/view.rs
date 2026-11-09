@@ -251,6 +251,13 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App, hit_map: &mut HitMap)
             spans.push(Span::styled(format!(" · {count} {label}"), Style::new().fg(color)));
         }
     }
+    // Agents that belong to one client each, such as `agentctl run --rm`, are counted, not shown.
+    if app.ephemeral_agents > 0 {
+        spans.push(Span::styled(
+            format!(" · {} ephemeral", app.ephemeral_agents),
+            Style::new().fg(Color::DarkGray),
+        ));
+    }
     if !app.filter.is_empty() {
         spans.push(Span::styled(
             format!(" · filter: {}", app.filter),
@@ -1599,6 +1606,22 @@ mod tests {
             .draw(|frame| hit_map = Some(render(frame, app, state)))
             .expect("test draw");
         hit_map.expect("renderer returns a hit map")
+    }
+
+    #[test]
+    fn the_status_line_counts_the_ephemeral_agents_it_leaves_out() {
+        let mut app = tree_app(1);
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).expect("test terminal");
+        draw(&mut terminal, &app);
+        assert!(!buffer_text(&terminal).contains("ephemeral"));
+
+        app.ephemeral_agents = 2;
+        draw(&mut terminal, &app);
+        assert!(
+            buffer_text(&terminal).contains("· 2 ephemeral"),
+            "{}",
+            buffer_text(&terminal)
+        );
     }
 
     fn tree_app(count: usize) -> App {

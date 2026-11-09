@@ -12,19 +12,19 @@ use crate::{
 };
 
 use super::protocol::{
-    AccountLoginParams, AccountLogoutResult, AccountParams, CODE_IMMUTABLE, CODE_INTERNAL, CODE_INVALID_PARAMS,
-    CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND, CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams,
-    ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_REQUEST_BYTES,
-    MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY,
-    METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE,
-    METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
-    METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
-    METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
-    METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
-    METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams,
-    PROTOCOL_VERSION, ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams,
-    SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams,
-    error_response, read_message,
+    AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, CODE_IMMUTABLE, CODE_INTERNAL,
+    CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND, CODE_PARSE_ERROR, CODE_UPDATING,
+    DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
+    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT,
+    METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS,
+    METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS,
+    METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SESSION_ARCHIVE,
+    METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT,
+    METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP,
+    METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET,
+    METHOD_VOLUME_LIST, NameParams, PROTOCOL_VERSION, ProgressParams, ReadMessage, Request, ResourcesWatchParams,
+    Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
+    SessionTurnsParams, ShutdownParams, error_response, read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -733,7 +733,7 @@ impl Server {
             ),
             METHOD_SHUTDOWN => self.handle_shutdown(request.id, request.params).await,
             METHOD_GET => self.handle_get(request.id, request.params).await,
-            METHOD_LIST => result_response(request.id, self.agents.list().await),
+            METHOD_LIST => self.handle_list(request.id, request.params).await,
             METHOD_PROGRESS => self.handle_progress(request.id, request.params).await,
             METHOD_RESOURCES_WATCH => self.handle_resources_watch(request.id, request.params).await,
             METHOD_RESOLVE_DIRECTORY => self.handle_resolve_directory(request.id, request.params).await,
@@ -1002,10 +1002,14 @@ impl Server {
         }
         let revision = self.changes.revision();
         let resources = async {
+            let (agents, ephemeral) = listed(self.agents.list().await?, params.include_ephemeral);
+            let mut sessions = self.sessions.list(None).await?;
+            sessions.retain(|session| !ephemeral.contains(&session.agent));
             Ok(crate::resources::Resources {
                 revision,
-                agents: self.agents.list().await?,
-                sessions: self.sessions.list(None).await?,
+                agents,
+                ephemeral_agents: ephemeral.len(),
+                sessions,
                 volumes: match &self.volumes {
                     Some(volumes) => volumes.list().await?,
                     None => Vec::new(),
@@ -1199,8 +1203,48 @@ impl Server {
         let Ok(params) = serde_json::from_value::<SessionListParams>(value) else {
             return error_response(id, CODE_INVALID_PARAMS, "invalid session list parameters");
         };
-        result_response(id, self.sessions.list(params.agent.as_deref()).await)
+        let sessions = async {
+            let mut sessions = self.sessions.list(params.agent.as_deref()).await?;
+            // A named agent's sessions are listed whatever its lifetime, as the agent is shown.
+            if params.agent.is_none() {
+                let (_, ephemeral) = listed(self.agents.list().await?, params.include_ephemeral);
+                sessions.retain(|session| !ephemeral.contains(&session.agent));
+            }
+            Ok(sessions)
+        };
+        result_response(id, sessions.await)
     }
+
+    async fn handle_list(&self, id: u64, value: Value) -> Response {
+        let params = if value.is_null() {
+            AgentListParams::default()
+        } else {
+            match serde_json::from_value::<AgentListParams>(value) {
+                Ok(params) => params,
+                Err(_) => return error_response(id, CODE_INVALID_PARAMS, "includeEphemeral must be a boolean"),
+            }
+        };
+        let agents = async { Ok(listed(self.agents.list().await?, params.include_ephemeral).0) };
+        result_response(id, agents.await)
+    }
+}
+
+/// `agents` as a listing shows them: without the ephemeral ones unless `include_ephemeral`, as
+/// each belongs to the client that ran it, which shows it if it wants to. Also the names of those
+/// left out.
+fn listed(mut agents: Vec<crate::Agent>, include_ephemeral: bool) -> (Vec<crate::Agent>, Vec<String>) {
+    if include_ephemeral {
+        return (agents, Vec::new());
+    }
+    let mut ephemeral = Vec::new();
+    agents.retain(|agent| {
+        let keep = !agent.status.is_ephemeral();
+        if !keep {
+            ephemeral.push(agent.metadata.name.clone());
+        }
+        keep
+    });
+    (agents, ephemeral)
 }
 
 const fn wait_policy(follow: bool) -> WaitPolicy {

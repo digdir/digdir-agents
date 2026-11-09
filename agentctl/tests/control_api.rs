@@ -1090,7 +1090,7 @@ async fn client_and_server_exchange_versioned_agent_operations() {
     let applied = client.apply(request("worker")).await.expect("apply");
     let fetched = client.get("worker").await.expect("get");
     assert_eq!(applied, fetched);
-    assert_eq!(client.list_agents().await.expect("list"), vec![applied.clone()]);
+    assert_eq!(client.list_agents(false).await.expect("list"), vec![applied.clone()]);
     assert_eq!(
         client
             .resolve_agent(request("worker").source_directory.join("nested"))
@@ -1104,7 +1104,7 @@ async fn client_and_server_exchange_versioned_agent_operations() {
         .expect("execution target");
     assert_eq!(execution.operating_system, "linux");
     assert_eq!(execution.sandbox.provider().as_str(), "memory");
-    assert_eq!(client.list_sessions(None).await.expect("list all sessions"), []);
+    assert_eq!(client.list_sessions(None, false).await.expect("list all sessions"), []);
     let session_error = client
         .get_session("worker", agent::sessions::SessionName::new("s1").expect("Session name"))
         .await
@@ -1119,7 +1119,11 @@ async fn client_and_server_exchange_versioned_agent_operations() {
 #[tokio::test(flavor = "local")]
 async fn resource_watch_returns_current_state_then_waits_for_the_next_change() {
     let fixture = api();
-    let initial = fixture.client.watch_resources(None).await.expect("initial state");
+    let initial = fixture
+        .client
+        .watch_resources(None, false)
+        .await
+        .expect("initial state");
     assert_eq!(initial.agents, []);
     assert_eq!(initial.sessions, []);
 
@@ -1127,7 +1131,7 @@ async fn resource_watch_returns_current_state_then_waits_for_the_next_change() {
         server: fixture.server.clone(),
     }));
     let revision = initial.revision;
-    let watch = tokio::task::spawn_local(async move { watcher.watch_resources(Some(revision)).await });
+    let watch = tokio::task::spawn_local(async move { watcher.watch_resources(Some(revision), false).await });
     tokio::task::yield_now().await;
     assert!(!watch.is_finished(), "a current revision waits for a change");
 
@@ -1141,11 +1145,15 @@ async fn resource_watch_returns_current_state_then_waits_for_the_next_change() {
 #[tokio::test(flavor = "local", start_paused = true)]
 async fn resource_watch_replies_unchanged_after_the_keepalive() {
     let fixture = api();
-    let current = fixture.client.watch_resources(None).await.expect("initial state");
+    let current = fixture
+        .client
+        .watch_resources(None, false)
+        .await
+        .expect("initial state");
     let started = tokio::time::Instant::now();
     let unchanged = fixture
         .client
-        .watch_resources(Some(current.revision))
+        .watch_resources(Some(current.revision), false)
         .await
         .expect("keepalive state");
     assert_eq!(unchanged, current);
@@ -1155,11 +1163,15 @@ async fn resource_watch_replies_unchanged_after_the_keepalive() {
 #[tokio::test(flavor = "local")]
 async fn resource_watch_neither_holds_nor_outlives_an_upgrade_drain() {
     let fixture = api();
-    let current = fixture.client.watch_resources(None).await.expect("initial state");
+    let current = fixture
+        .client
+        .watch_resources(None, false)
+        .await
+        .expect("initial state");
     let watcher = Client::new(Rc::new(InProcessConnector {
         server: fixture.server.clone(),
     }));
-    let watch = tokio::task::spawn_local(async move { watcher.watch_resources(Some(current.revision)).await });
+    let watch = tokio::task::spawn_local(async move { watcher.watch_resources(Some(current.revision), false).await });
     tokio::task::yield_now().await;
 
     fixture
@@ -1498,4 +1510,52 @@ async fn an_ephemeral_agent_lives_as_long_as_the_connection_that_asked_for_it() 
     );
     drop(lease);
     assert!(bundled::deleting(&fixture.store, &ephemeral_builder.agent.metadata.name).await);
+}
+
+#[tokio::test(flavor = "local")]
+async fn listings_leave_out_ephemeral_agents_unless_asked_and_count_them() {
+    let fixture = bundled::Fixture::new();
+    let client = api_with(fixture.control_plane.clone()).client;
+    let workspace = fixture.workspace("repo");
+    let (kept, _kept_lease) = client
+        .run(bundled::request("builder", Some(&workspace)))
+        .await
+        .expect("builder");
+    let (ephemeral, _lease) = client
+        .run(agent::control_plane::RunRequest {
+            lifetime: Some(agent::Lifetime::Ephemeral),
+            ..bundled::request("sign-in", None)
+        })
+        .await
+        .expect("sign-in");
+    let names = |agents: &[agent::Agent]| {
+        agents
+            .iter()
+            .map(|agent| agent.metadata.name.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let listed = client.list_agents(false).await.expect("list");
+    let all = client.list_agents(true).await.expect("list all");
+    let watched = client.watch_resources(None, false).await.expect("watch");
+    let watched_all = client.watch_resources(None, true).await.expect("watch all");
+
+    assert_eq!(names(&listed), std::slice::from_ref(&kept.agent.metadata.name));
+    assert_eq!(
+        names(&all),
+        [kept.agent.metadata.name.clone(), ephemeral.agent.metadata.name.clone()]
+    );
+    assert_eq!(names(&watched.agents), names(&listed));
+    assert_eq!(watched.ephemeral_agents, 1, "the agents left out are counted");
+    assert_eq!(names(&watched_all.agents), names(&all));
+    assert_eq!(watched_all.ephemeral_agents, 0);
+    assert_eq!(
+        client
+            .get(&ephemeral.agent.metadata.name)
+            .await
+            .expect("an ephemeral agent by name")
+            .status
+            .lifetime,
+        Some(agent::Lifetime::Ephemeral)
+    );
 }

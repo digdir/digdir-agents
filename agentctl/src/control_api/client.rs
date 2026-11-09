@@ -7,17 +7,18 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, sessions};
 
 use super::protocol::{
-    AccountLoginParams, AccountLogoutResult, AccountParams, DaemonInfo, DirectoryParams, ExecutionEnsureParams,
-    JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST,
-    METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS,
-    METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET,
-    METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
-    METHOD_RUN, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET,
-    METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN,
-    METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY,
-    METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, ProgressParams, ReadMessage, Request,
-    ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams,
-    SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
+    AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, DaemonInfo, DirectoryParams,
+    ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_RESPONSE_BYTES,
+    METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN,
+    METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE,
+    METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
+    METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
+    METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
+    METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
+    METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams,
+    ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams,
+    SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult,
+    read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -138,8 +139,8 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error when transport, protocol validation, or storage fails.
-    pub async fn list_agents(&self) -> Result<Vec<Agent>, Error> {
-        self.call(METHOD_LIST, serde_json::json!({})).await
+    pub async fn list_agents(&self, include_ephemeral: bool) -> Result<Vec<Agent>, Error> {
+        self.call(METHOD_LIST, AgentListParams { include_ephemeral }).await
     }
 
     /// Resolves the closest persisted agent source directory containing `directory`.
@@ -269,8 +270,16 @@ impl Client {
     pub async fn watch_resources(
         &self,
         after: Option<crate::resources::Revision>,
+        include_ephemeral: bool,
     ) -> Result<crate::resources::Resources, Error> {
-        self.call(METHOD_RESOURCES_WATCH, ResourcesWatchParams { after }).await
+        self.call(
+            METHOD_RESOURCES_WATCH,
+            ResourcesWatchParams {
+                after,
+                include_ephemeral,
+            },
+        )
+        .await
     }
 
     /// Describes how to reach an agent over SSH.
@@ -597,11 +606,16 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error when the scoped agent is missing or the registry cannot be read.
-    pub async fn list_sessions(&self, agent: Option<&str>) -> Result<Vec<sessions::Session>, Error> {
+    pub async fn list_sessions(
+        &self,
+        agent: Option<&str>,
+        include_ephemeral: bool,
+    ) -> Result<Vec<sessions::Session>, Error> {
         self.call(
             METHOD_SESSION_LIST,
             SessionListParams {
                 agent: agent.map(str::to_owned),
+                include_ephemeral,
             },
         )
         .await

@@ -335,6 +335,9 @@ pub(crate) struct App {
     /// Volumes, by name, as last reported.
     pub(crate) volumes: Vec<agent::volumes::Volume>,
     pub(crate) volume_selected: usize,
+    /// How many ephemeral agents agentd left out of the last state, which belong to the clients
+    /// that ran them, so the status line can say they exist.
+    pub(crate) ephemeral_agents: usize,
     pub(crate) creating: usize,
     /// Prompts being sent.
     pub(crate) prompting: usize,
@@ -1397,6 +1400,7 @@ impl App {
             forward_selected: 0,
             volumes: Vec::new(),
             volume_selected: 0,
+            ephemeral_agents: 0,
             creating: 0,
             prompting: 0,
             transcript: None,
@@ -1417,9 +1421,6 @@ impl App {
     }
 
     pub(crate) fn apply_snapshot(&mut self, mut agents: Vec<Agent>, mut sessions: Vec<Session>) {
-        // An ephemeral agent belongs to the client that asked for it, which shows it if it wants to.
-        agents.retain(|agent| !agent.status.is_ephemeral());
-        sessions.retain(|session| agents.iter().any(|agent| agent.metadata.name == session.agent));
         agents.sort_by(|left, right| left.metadata.name.cmp(&right.metadata.name));
         sessions.sort_by(|left, right| left.agent.cmp(&right.agent).then_with(|| left.name.cmp(&right.name)));
         // The selection's position is read before the rows it indexes are replaced.

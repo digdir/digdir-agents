@@ -114,7 +114,7 @@ async fn paste_from_form(owner: &str, name: &str) -> Result<Zeroizing<String>, E
 /// Returns an error when agentd cannot be reached.
 pub(crate) async fn list(client: &Client) -> CommandResult<()> {
     let kept = github_accounts(client.accounts().await?);
-    let agents = client.list_agents().await?;
+    let agents = client.list_agents(true).await?;
     print!("{}{}", table(&kept, OffsetDateTime::now_utc()), unkept(&kept, &agents));
     Ok(())
 }

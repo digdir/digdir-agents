@@ -199,6 +199,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                 app.connection_error = None;
                 forwards.prune(&resources.agents);
                 app.set_volumes(resources.volumes);
+                app.ephemeral_agents = resources.ephemeral_agents;
                 app.apply_snapshot(resources.agents, resources.sessions);
                 continue;
             }
@@ -502,7 +503,7 @@ fn spawn_watch(socket_path: PathBuf, inputs: Inputs) {
         let client = Client::for_path(socket_path);
         let mut after = None;
         loop {
-            let reply = match client.watch_resources(after).await {
+            let reply = match client.watch_resources(after, false).await {
                 Ok(resources) => {
                     after = Some(resources.revision);
                     Ok(resources)

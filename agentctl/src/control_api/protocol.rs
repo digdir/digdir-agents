@@ -135,6 +135,10 @@ pub(crate) struct ResourcesWatchParams {
     /// Revision of the previous reply; absent requests the current state now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<crate::resources::Revision>,
+    /// Whether the reply also holds ephemeral agents and their sessions, which belong to the
+    /// client that ran them, and a listing leaves out otherwise.
+    #[serde(default, rename = "includeEphemeral", skip_serializing_if = "is_false")]
+    pub include_ephemeral: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -208,6 +212,18 @@ pub(crate) struct DirectoryParams {
 pub(crate) struct SessionListParams {
     #[serde(default)]
     pub agent: Option<String>,
+    /// Whether a listing of every agent's sessions also holds those of ephemeral agents.
+    #[serde(default, rename = "includeEphemeral", skip_serializing_if = "is_false")]
+    pub include_ephemeral: bool,
+}
+
+/// Parameters of `agents.v1.list`.
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AgentListParams {
+    /// Whether the list also holds ephemeral agents, which belong to the client that ran them.
+    #[serde(default, rename = "includeEphemeral", skip_serializing_if = "is_false")]
+    pub include_ephemeral: bool,
 }
 
 #[derive(Deserialize, Serialize)]

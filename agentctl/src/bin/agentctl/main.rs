@@ -304,6 +304,10 @@ enum Command {
         /// Include archived sessions in a session listing.
         #[arg(long)]
         archived: bool,
+        /// Include ephemeral agents and their sessions, which belong to the client that ran them,
+        /// such as `agentctl run --rm`, and listings leave out otherwise.
+        #[arg(long)]
+        all: bool,
         /// Keep printing the resources each time they change, as one line each with `-o json`.
         #[arg(short = 'w', long)]
         watch: bool,
@@ -766,6 +770,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             variant,
             all_agents,
             archived,
+            all,
             watch,
             output,
         } => {
@@ -774,6 +779,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 variant,
                 all_agents,
                 archived,
+                ephemeral: all,
             };
             get_resources(client, &resource, name, scope, watch, output).await?;
         }
@@ -934,6 +940,8 @@ struct SessionScope {
     variant: Option<AgentVariantName>,
     all_agents: bool,
     archived: bool,
+    /// Whether a listing includes ephemeral agents and their sessions.
+    ephemeral: bool,
 }
 
 /// The sessions `get` shows, once the owning agent is resolved.
@@ -955,27 +963,28 @@ impl SessionFilter {
     }
 }
 
-/// Prints the agent `name`, or every agent but the ephemeral ones, which belong to the client that
-/// asked for them.
-async fn get_agents(client: &Client, name: Option<String>, watch: bool, output: OutputFormat) -> CommandResult<()> {
-    // A listing leaves out ephemeral agents, which belong to the client that asked for them.
-    let listed = |agent: &Agent| {
-        name.as_ref()
-            .map_or_else(|| !agent.status.is_ephemeral(), |name| agent.metadata.name == *name)
-    };
+/// Prints the agent `name`, or every agent, which agentd lists without the ephemeral ones unless
+/// `ephemeral`, as they belong to the client that asked for them.
+async fn get_agents(
+    client: &Client,
+    name: Option<String>,
+    ephemeral: bool,
+    watch: bool,
+    output: OutputFormat,
+) -> CommandResult<()> {
     let agents = if let Some(name) = &name {
         vec![client.get(name).await?]
     } else {
-        let mut agents = client.list_agents().await?;
-        agents.retain(listed);
-        agents
+        client.list_agents(ephemeral).await?
     };
     if watch {
+        // A named agent is shown whatever its lifetime.
         return watch::follow(
             client,
+            ephemeral || name.is_some(),
             |resources| {
                 let mut agents = resources.agents;
-                agents.retain(listed);
+                agents.retain(|agent| name.as_ref().is_none_or(|name| agent.metadata.name == *name));
                 render_watched(output, &agents, agents_table)
             },
             &mut std::io::stdout(),
@@ -1002,7 +1011,7 @@ async fn get_resources(
     match resource {
         Resource::Agent => {
             reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
-            return get_agents(client, name, watch, output).await;
+            return get_agents(client, name, scope.ephemeral, watch, output).await;
         }
         Resource::Volume => {
             reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
@@ -1014,6 +1023,7 @@ async fn get_resources(
             if watch {
                 return watch::follow(
                     client,
+                    false,
                     |resources| {
                         let mut volumes = resources.volumes;
                         volumes.retain(|volume| name.as_ref().is_none_or(|name| volume.metadata.name == *name));
@@ -1048,7 +1058,7 @@ async fn get_resources(
             let sessions = if let (Some(agent), Some(name)) = (&filter.agent, &filter.name) {
                 vec![client.get_session(agent, name.clone()).await?]
             } else {
-                let mut sessions = client.list_sessions(filter.agent.as_deref()).await?;
+                let mut sessions = client.list_sessions(filter.agent.as_deref(), scope.ephemeral).await?;
                 sessions.retain(|session| filter.matches(session));
                 sessions
             };
@@ -1056,6 +1066,7 @@ async fn get_resources(
             if watch {
                 return watch::follow(
                     client,
+                    scope.ephemeral || filter.agent.is_some(),
                     |resources| {
                         let mut sessions = resources.sessions;
                         sessions.retain(|session| filter.matches(session));
@@ -1936,8 +1947,9 @@ fn stopped_or_restarted(name: &str, converged: &Agent) -> Result<(), String> {
 /// stop under way; after asking at a terminal unless `--all` was passed. `None` when there is
 /// none or the person declined.
 async fn agents_to_stop(client: &Client, target: &StopTarget) -> CommandResult<Option<Vec<String>>> {
+    // An emergency stop stops what listings leave out too.
     let agents: Vec<Agent> = client
-        .list_agents()
+        .list_agents(true)
         .await?
         .into_iter()
         .filter(|agent| {
@@ -2115,6 +2127,19 @@ fn agents_table(agents: &[Agent]) -> Vec<String> {
             ]
         })
         .collect::<Vec<_>>();
+    // Ephemeral agents are listed only when asked for, and then said to be.
+    if agents.iter().any(|agent| agent.status.is_ephemeral()) {
+        let rows = agents
+            .iter()
+            .zip(rows)
+            .map(|(agent, mut row)| {
+                let lifetime = if agent.status.is_ephemeral() { "ephemeral" } else { "-" };
+                row.insert(1, lifetime.into());
+                row
+            })
+            .collect::<Vec<_>>();
+        return table_lines(&["NAME", "LIFETIME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows);
+    }
     table_lines(&["NAME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows)
 }
 
@@ -2300,7 +2325,7 @@ async fn apply_volume(
         let mut after = None;
         loop {
             // Each reply follows a change, such as the copy advancing.
-            let resources = client.watch_resources(after).await?;
+            let resources = client.watch_resources(after, false).await?;
             after = Some(resources.revision);
             let status = resources
                 .volumes
@@ -2568,7 +2593,7 @@ async fn print_logins(client: &Client, harness: agent::Harness) -> CommandResult
             logins.entry(stored.login).or_default().0 = true;
         }
     }
-    for agent in client.list_agents().await? {
+    for agent in client.list_agents(true).await? {
         let Some(installation) = agent.spec.harness(harness) else {
             continue;
         };
