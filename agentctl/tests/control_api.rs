@@ -1463,14 +1463,11 @@ async fn an_ephemeral_agent_lives_as_long_as_the_connection_that_asked_for_it() 
         .await
         .expect("builder");
 
-    assert_eq!(first.outcome, agent::control_plane::RunOutcome::Created);
+    assert_eq!(first.agent.metadata.name, "sign-in");
     assert_eq!(
-        second.outcome,
-        agent::control_plane::RunOutcome::Created,
+        second.agent.metadata.name, "sign-in-2",
         "an ephemeral agent belongs to one request"
     );
-    assert_eq!(first.agent.metadata.name, "sign-in");
-    assert_eq!(second.agent.metadata.name, "sign-in-2");
     assert_eq!(first.agent.status.lifetime, Some(agent::Lifetime::Ephemeral));
     drop(first_lease);
     assert!(
@@ -1502,12 +1499,8 @@ async fn an_ephemeral_agent_lives_as_long_as_the_connection_that_asked_for_it() 
             ..bundled::request("builder", Some(&workspace))
         })
         .await
-        .expect("a request may make an agent ephemeral");
-    assert_eq!(
-        ephemeral_builder.outcome,
-        agent::control_plane::RunOutcome::Created,
-        "an ephemeral agent never resumes one"
-    );
+        .expect("an ephemeral agent is made beside one kept until deleted");
+    assert_ne!(ephemeral_builder.agent.metadata.name, kept.agent.metadata.name);
     drop(lease);
     assert!(bundled::deleting(&fixture.store, &ephemeral_builder.agent.metadata.name).await);
 }

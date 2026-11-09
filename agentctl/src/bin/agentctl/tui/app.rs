@@ -353,7 +353,8 @@ pub(crate) struct App {
     /// The outcome of a session change and when it was shown.
     pub(crate) notice: Option<(String, Instant)>,
     pub(crate) discovering: bool,
-    pub(crate) queued_candidates: Option<Vec<ManifestCandidate>>,
+    /// Candidates found while another view was open, or why the definitions could not be listed.
+    pub(crate) queued_candidates: Option<(Vec<ManifestCandidate>, Option<String>)>,
     pub(crate) discovering_volumes: bool,
     /// Editors and whether the terminal is remote, which the open menu depends on.
     pub(crate) environment: Environment,
@@ -2250,24 +2251,32 @@ impl App {
     }
 
     /// Opens the create-agent modal for finished discovery, or queues the
-    /// candidates while another view is open.
-    pub(crate) fn manifests_discovered(&mut self, candidates: Vec<ManifestCandidate>) {
+    /// candidates while another view is open. `unlisted` says why the definitions could not be
+    /// listed, which the form shows as its error.
+    pub(crate) fn manifests_discovered(&mut self, candidates: Vec<ManifestCandidate>, unlisted: Option<String>) {
         if !std::mem::take(&mut self.discovering) {
             return;
         }
         if self.idle() {
-            self.open_create(candidates);
+            self.open_discovered(candidates, unlisted);
         } else {
-            self.queued_candidates = Some(candidates);
+            self.queued_candidates = Some((candidates, unlisted));
         }
     }
 
     /// Opens the create-agent modal for candidates queued behind another view once it closes.
     pub(crate) fn open_queued_create(&mut self) {
         if self.idle()
-            && let Some(candidates) = self.queued_candidates.take()
+            && let Some((candidates, unlisted)) = self.queued_candidates.take()
         {
-            self.open_create(candidates);
+            self.open_discovered(candidates, unlisted);
+        }
+    }
+
+    fn open_discovered(&mut self, candidates: Vec<ManifestCandidate>, unlisted: Option<String>) {
+        self.open_create(candidates);
+        if let Some(Modal::CreateAgent(form)) = &mut self.modal {
+            form.error = unlisted;
         }
     }
 
@@ -4421,12 +4430,12 @@ pub(crate) mod tests {
     #[test]
     fn discovery_results_wait_for_an_open_view_to_close() {
         let mut app = populated();
-        app.manifests_discovered(candidates(&[("/sources/stale", "stale")]));
+        app.manifests_discovered(candidates(&[("/sources/stale", "stale")]), None);
         assert!(app.modal.is_none());
 
         app.discovering = true;
         app.on_key(key(KeyCode::Char('s')));
-        app.manifests_discovered(candidates(&[("/sources/worker", "worker")]));
+        app.manifests_discovered(candidates(&[("/sources/worker", "worker")]), None);
         assert!(!app.discovering);
         assert!(app.modal.is_none());
         app.open_queued_create();
@@ -4439,8 +4448,24 @@ pub(crate) mod tests {
 
         let mut app = populated();
         app.discovering = true;
-        app.manifests_discovered(candidates(&[("/sources/worker", "worker")]));
+        app.manifests_discovered(candidates(&[("/sources/worker", "worker")]), None);
         assert_eq!(create_form(&app).placeholder(&app.agents).as_deref(), Some("worker-1"));
+        assert_eq!(create_form(&app).error, None);
+    }
+
+    #[test]
+    fn the_create_form_says_why_the_definitions_could_not_be_listed() {
+        let mut app = populated();
+        app.discovering = true;
+        app.manifests_discovered(
+            candidates(&[("/sources/worker", "worker")]),
+            Some("could not list the definitions: refused".to_owned()),
+        );
+        assert_eq!(create_form(&app).placeholder(&app.agents).as_deref(), Some("worker-1"));
+        assert_eq!(
+            create_form(&app).error.as_deref(),
+            Some("could not list the definitions: refused")
+        );
     }
 
     #[test]

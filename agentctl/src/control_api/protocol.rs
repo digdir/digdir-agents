@@ -217,6 +217,15 @@ pub(crate) struct SessionListParams {
     pub include_ephemeral: bool,
 }
 
+/// Parameters of `definitions.v1.list`.
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DefinitionListParams {
+    /// The absolute folder whose definitions on disk are listed with the others.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<std::path::PathBuf>,
+}
+
 /// Parameters of `agents.v1.list`.
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

@@ -57,6 +57,7 @@ pub(super) fn list(connection: &Connection) -> Result<Vec<AgentRecord>, Error> {
 }
 
 pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_generation: u64) -> Result<(), Error> {
+    record.check_resolved()?;
     let id = record.id;
     let name = &record.agent.metadata.name;
     let source = serde_json::to_string(&crate::Provenance {

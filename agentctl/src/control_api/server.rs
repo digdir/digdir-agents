@@ -14,17 +14,17 @@ use crate::{
 use super::protocol::{
     AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, CODE_IMMUTABLE, CODE_INTERNAL,
     CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND, CODE_PARSE_ERROR, CODE_UPDATING,
-    DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
-    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT,
-    METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS,
-    METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS,
-    METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SESSION_ARCHIVE,
-    METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT,
-    METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP,
-    METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET,
-    METHOD_VOLUME_LIST, NameParams, PROTOCOL_VERSION, ProgressParams, ReadMessage, Request, ResourcesWatchParams,
-    Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
-    SessionTurnsParams, ShutdownParams, error_response, read_message,
+    DefinitionListParams, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams,
+    LogoutResult, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN,
+    METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE,
+    METHOD_DEFINITIONS, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST,
+    METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN,
+    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
+    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
+    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
+    METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, PROTOCOL_VERSION, ProgressParams, ReadMessage, Request,
+    ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams,
+    SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -87,8 +87,11 @@ pub trait AgentApi {
         request: control_plane::RunRequest,
     ) -> LocalFuture<'_, Result<(control_plane::Ran, crate::AgentId), Error>>;
 
-    /// Lists the definitions agentd runs by reference; see [`control_plane::ControlPlane::definitions`].
-    fn definitions(&self) -> LocalFuture<'_, Result<Vec<control_plane::DefinitionSummary>, Error>>;
+    /// Lists the definitions a client can apply or run; see [`control_plane::ControlPlane::definitions`].
+    fn definitions(
+        &self,
+        directory: Option<std::path::PathBuf>,
+    ) -> LocalFuture<'_, Result<Vec<control_plane::DefinitionSummary>, Error>>;
 
     /// Deletes an ephemeral agent whose client is gone; see [`control_plane::ControlPlane::release`].
     fn release(&self, id: crate::AgentId) -> LocalFuture<'_, Result<(), Error>>;
@@ -140,8 +143,11 @@ impl AgentApi for control_plane::ControlPlane {
         Box::pin(async move { Self::run(self, request).await })
     }
 
-    fn definitions(&self) -> LocalFuture<'_, Result<Vec<control_plane::DefinitionSummary>, Error>> {
-        Box::pin(async move { Self::definitions(self).await })
+    fn definitions(
+        &self,
+        directory: Option<std::path::PathBuf>,
+    ) -> LocalFuture<'_, Result<Vec<control_plane::DefinitionSummary>, Error>> {
+        Box::pin(async move { Self::definitions(self, directory).await })
     }
 
     fn release(&self, id: crate::AgentId) -> LocalFuture<'_, Result<(), Error>> {
@@ -723,7 +729,7 @@ impl Server {
         match request.method.as_str() {
             METHOD_APPLY => self.handle_apply(request.id, request.params).await,
             METHOD_RUN => self.handle_run(request.id, request.params, owned).await,
-            METHOD_DEFINITIONS => result_response(request.id, self.agents.definitions().await),
+            METHOD_DEFINITIONS => self.handle_definitions(request.id, request.params).await,
             METHOD_HEALTH => result_response(
                 request.id,
                 Ok(serde_json::json!({
@@ -1213,6 +1219,18 @@ impl Server {
             Ok(sessions)
         };
         result_response(id, sessions.await)
+    }
+
+    async fn handle_definitions(&self, id: u64, value: Value) -> Response {
+        let params = if value.is_null() {
+            DefinitionListParams::default()
+        } else {
+            match serde_json::from_value::<DefinitionListParams>(value) {
+                Ok(params) => params,
+                Err(_) => return error_response(id, CODE_INVALID_PARAMS, "directory must be a path"),
+            }
+        };
+        result_response(id, self.agents.definitions(params.directory).await)
     }
 
     async fn handle_list(&self, id: u64, value: Value) -> Response {

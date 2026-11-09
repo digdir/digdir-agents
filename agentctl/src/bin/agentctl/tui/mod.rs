@@ -5,7 +5,6 @@ mod terminal;
 mod view;
 
 use std::{
-    collections::HashMap,
     io::IsTerminal as _,
     path::{Path, PathBuf},
     process::ExitCode,
@@ -13,8 +12,8 @@ use std::{
 };
 
 use agent::{
-    Agent, Error, control_api::Client, control_plane::WaitPolicy, local::home::ControlPlaneHome, manifest,
-    resources::Resources, sessions::Session, sessions::SessionName, sessions::SessionRequest, sessions::Turn,
+    Agent, Error, control_api::Client, control_plane::WaitPolicy, local::home::ControlPlaneHome, resources::Resources,
+    sessions::Session, sessions::SessionName, sessions::SessionRequest, sessions::Turn,
 };
 use crossterm::event::{
     Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -61,7 +60,8 @@ enum Input {
     /// A session was archived or unarchived, as recorded.
     ArchiveChanged(Session),
     ForwardCreated(CreateOutcome),
-    ManifestsDiscovered(Vec<ManifestCandidate>),
+    /// The candidates found, or why the definitions could not be listed.
+    ManifestsDiscovered(Vec<ManifestCandidate>, Option<String>),
     VolumeManifestsDiscovered(Vec<ManifestCandidate>),
     /// An action a finished step leads to, run in turn with the input already waiting.
     Then(Action),
@@ -235,9 +235,9 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                 forward_created(&mut app, &mut forwards, outcome);
                 continue;
             }
-            Input::ManifestsDiscovered(candidates) => {
+            Input::ManifestsDiscovered(candidates, unlisted) => {
                 mouse.reset();
-                app.manifests_discovered(candidates);
+                app.manifests_discovered(candidates, unlisted);
                 continue;
             }
             Input::VolumeManifestsDiscovered(candidates) => {
@@ -328,7 +328,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
             Action::OpenCreate => {
                 if !app.discovering {
                     app.discovering = true;
-                    spawn_discovery(home.socket_path(), inputs.clone(), app.agents.clone());
+                    spawn_discovery(home.socket_path(), inputs.clone());
                 }
             }
             Action::CreateAgent {
@@ -819,12 +819,14 @@ fn spawn_create(home: &ControlPlaneHome, inputs: Inputs, agent: String, spec: Fo
 }
 
 /// Discovers create-agent candidates off the event loop so a slow filesystem never freezes the UI.
-fn spawn_discovery(socket_path: PathBuf, inputs: Inputs, agents: Vec<Agent>) {
+fn spawn_discovery(socket_path: PathBuf, inputs: Inputs) {
     tokio::task::spawn_local(async move {
-        // The ones on disk are still offered when agentd's cannot be listed.
-        let definitions = Client::for_path(socket_path).definitions().await.unwrap_or_default();
-        let candidates = manifest_candidates(std::env::current_dir().ok(), &agents, definitions).await;
-        let _ = inputs.send(Input::ManifestsDiscovered(candidates));
+        let directory = std::env::current_dir().ok();
+        let (candidates, unlisted) = match Client::for_path(socket_path).definitions(directory.clone()).await {
+            Ok(definitions) => (manifest_candidates(definitions, directory.as_deref()), None),
+            Err(error) => (Vec::new(), Some(format!("could not list the definitions: {error}"))),
+        };
+        let _ = inputs.send(Input::ManifestsDiscovered(candidates, unlisted));
     });
 }
 
@@ -850,113 +852,52 @@ async fn volume_candidates(
             .iter()
             .filter_map(|volume| volume.status.manifest_path().map(Path::to_path_buf))
             .collect();
-        merge_candidates(found, recorded, |path| {
+        agent::definitions::merge(found, recorded, |path| {
             std::fs::read(path)
                 .map_err(Error::from)
                 .and_then(|bytes| agent::volumes::decode(&bytes))
-                .map(|volume| (volume.metadata.name, 0))
+                .map(|volume| volume.metadata.name)
         })
-    })
-    .await
-    .unwrap_or_default()
-}
-
-/// Assembles create-agent candidates from the working tree, recorded agent manifests and the
-/// definitions agentd runs by reference, which come last. A definition with one bind mount
-/// without a source gets the working directory for it.
-///
-/// Inside a git repository every manifest below the repository root is offered,
-/// skipping hidden and ignored directories; outside one only `agent.yaml` and
-/// `agents/*/agent.yaml` in the working directory are.
-async fn manifest_candidates(
-    current_directory: Option<PathBuf>,
-    agents: &[Agent],
-    definitions: Vec<agent::control_plane::DefinitionSummary>,
-) -> Vec<ManifestCandidate> {
-    // An agent run by reference records agentd's copy of the version it was made from, which the
-    // definitions agentd lists now replace.
-    let recorded = agents
-        .iter()
-        .filter(|agent| agent.status.origin.as_ref().is_none_or(agent::Origin::is_local))
-        .filter_map(|agent| agent.status.provenance.as_ref())
-        .map(agent::Provenance::manifest_or_default)
-        .collect();
-    tokio::task::spawn_blocking(move || {
-        let found = current_directory
-            .as_deref()
-            .map_or_else(Vec::new, agent::definitions::manifests);
-        let mut candidates = merge_candidates(found, recorded, |path| {
-            manifest::resolve(path)
-                .map(|resolved| (unsourced_binds(&resolved.agent), resolved.agent.metadata.name))
-                .map(|(slots, name)| (name, slots))
-        });
-        candidates.extend(definitions.into_iter().map(|definition| {
-            let path = definition.path.join(MANIFEST_FILE);
-            let name = manifest::resolve(&path)
-                .map(|resolved| resolved.agent.metadata.name)
-                .map_err(|error| error.to_string());
-            let mut candidate = ManifestCandidate::new(path, name).referenced_as(definition.reference);
-            candidate.slots = definition.slots.len();
-            candidate
-        }));
-        for candidate in &mut candidates {
-            if candidate.slots == 1 {
-                candidate.folder.clone_from(&current_directory);
-            }
-        }
-        candidates
-    })
-    .await
-    .unwrap_or_default()
-}
-
-/// Merges the manifests `found` for the working directory with the `recorded` ones resources were
-/// applied from into one candidate per file, however many paths reach it, named by `read`, which
-/// also counts the manifest's bind mounts without a source.
-///
-/// A recorded manifest that cannot be read stays listed so its error is visible. A found one that
-/// has gone since it was found is left out.
-fn merge_candidates(
-    found: Vec<PathBuf>,
-    mut recorded: Vec<PathBuf>,
-    read: impl Fn(&Path) -> Result<(String, usize), Error>,
-) -> Vec<ManifestCandidate> {
-    recorded.sort();
-    recorded.dedup();
-    let paths = found
         .into_iter()
-        .map(|path| (path, false))
-        .chain(recorded.into_iter().map(|path| (path, true)));
-    let mut seen = HashMap::<PathBuf, usize>::new();
-    let mut candidates = Vec::<ManifestCandidate>::new();
-    for (path, recorded) in paths {
-        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-        if let Some(index) = seen.get(&canonical).copied() {
-            candidates[index].add_equivalent_path(path);
-            continue;
-        }
-        let (name, slots) = match read(&path) {
-            Ok((name, slots)) => (Ok(name), slots),
-            Err(error) if recorded || path.exists() => (Err(error.to_string()), 0),
-            Err(_) => continue,
-        };
-        seen.insert(canonical, candidates.len());
-        let mut candidate = ManifestCandidate::new(path, name);
-        candidate.slots = slots;
-        candidates.push(candidate);
-    }
-    candidates
+        .map(|listed| {
+            let mut candidate = ManifestCandidate::new(listed.path, listed.read);
+            for alias in listed.aliases {
+                candidate.add_equivalent_path(alias);
+            }
+            candidate
+        })
+        .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
-/// How many of `agent`'s bind mounts name no source, which it needs a folder for each of.
-fn unsourced_binds(agent: &Agent) -> usize {
-    agent
-        .spec
-        .sandbox
-        .mounts
-        .iter()
-        .filter(|mount| matches!(mount, agent::MountSpec::Bind { source: None, .. }))
-        .count()
+/// The create-agent candidates for the `definitions` agentd lists for the working directory
+/// `directory`. A definition with one bind mount without a source gets the working directory for it.
+fn manifest_candidates(
+    definitions: Vec<agent::control_plane::DefinitionSummary>,
+    directory: Option<&Path>,
+) -> Vec<ManifestCandidate> {
+    definitions
+        .into_iter()
+        .map(|definition| {
+            let name = definition
+                .name
+                .ok_or_else(|| definition.error.unwrap_or_else(|| "it names no agent".to_owned()));
+            let mut candidate = ManifestCandidate::new(definition.path, name);
+            if let Some(reference) = definition.reference {
+                candidate = candidate.referenced_as(reference);
+            }
+            for alias in definition.aliases {
+                candidate.add_equivalent_path(alias);
+            }
+            candidate.slots = definition.slots.len();
+            if candidate.slots == 1 {
+                candidate.folder = directory.map(Path::to_path_buf);
+            }
+            candidate
+        })
+        .collect()
 }
 
 /// Applies the manifest under the chosen name; a rejection reopens the form with the error.
@@ -1204,7 +1145,7 @@ mod tests {
     }
 
     fn recorded_agent(name: &str, source: Option<&std::path::Path>) -> Agent {
-        let mut agent = manifest::decode(manifest_yaml(name).as_bytes()).expect("test manifest should decode");
+        let mut agent = agent::manifest::decode(manifest_yaml(name).as_bytes()).expect("test manifest should decode");
         agent.status.provenance = source.map(|directory| agent::Provenance {
             source_directory: directory.to_path_buf(),
             manifest_path: None,
@@ -1226,148 +1167,70 @@ mod tests {
         directory
     }
 
-    #[tokio::test(flavor = "local")]
-    async fn discovery_offers_the_working_directory_and_recorded_manifests_once() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let cwd = manifest_directory(root.path(), "a-cwd", &manifest_yaml("local"));
-        let broken = manifest_directory(root.path(), "broken", "not a manifest");
-        let missing = empty_directory(root.path(), "missing");
-        let recorded = manifest_directory(root.path(), "recorded", &manifest_yaml("recorded"));
-        let agents = vec![
-            recorded_agent("recorded", Some(&recorded)),
-            recorded_agent("duplicate", Some(&cwd)),
-            recorded_agent("missing", Some(&missing)),
-            recorded_agent("broken", Some(&broken)),
-            recorded_agent("unknown", None),
-        ];
-
-        let candidates = manifest_candidates(Some(cwd.clone()), &agents, Vec::new()).await;
-
-        assert_eq!(candidates.len(), 4);
-        assert_eq!(candidates[0].path, cwd.join(MANIFEST_FILE));
-        assert_eq!(candidates[0].name.as_deref(), Ok("local"));
-        assert_eq!(candidates[1].path, broken.join(MANIFEST_FILE));
-        assert!(candidates[1].name.is_err());
-        assert_eq!(candidates[2].path, missing.join(MANIFEST_FILE));
-        assert!(candidates[2].name.is_err());
-        assert_eq!(candidates[3].path, recorded.join(MANIFEST_FILE));
-        assert_eq!(candidates[3].name.as_deref(), Ok("recorded"));
+    fn summary(path: PathBuf) -> agent::control_plane::DefinitionSummary {
+        agent::control_plane::DefinitionSummary {
+            path,
+            aliases: Vec::new(),
+            reference: None,
+            digest: None,
+            name: Some("worker".into()),
+            error: None,
+            slots: Vec::new(),
+        }
     }
 
-    #[tokio::test(flavor = "local")]
-    async fn discovery_offers_agentds_definitions_last_instead_of_the_copies_its_agents_were_made_from() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let cwd = manifest_directory(root.path(), "cwd", &manifest_yaml("local"));
-        let current = manifest_directory(root.path(), "bundled/new", &manifest_yaml("builder"));
-        let earlier = manifest_directory(root.path(), "bundled/old", &manifest_yaml("builder"));
-        let mut made = recorded_agent("builder-cwd", Some(&earlier));
-        made.status.origin = Some(agent::Origin::Reference {
-            reference: "builder".into(),
-            digest: "old".into(),
-        });
-        let definitions = vec![agent::control_plane::DefinitionSummary {
-            reference: "builder".into(),
-            digest: "new".into(),
-            path: current.clone(),
+    #[test]
+    fn candidates_give_the_working_directory_to_a_definition_that_needs_one_folder() {
+        let cwd = PathBuf::from("/src/app");
+        let builder = agent::control_plane::DefinitionSummary {
+            reference: Some("bundled/builder".into()),
             slots: vec![::sandbox::SandboxPath::new("/work/checkout")],
-        }];
+            ..summary(PathBuf::from("/home/bundled/1/agent.yaml"))
+        };
+        let pair = agent::control_plane::DefinitionSummary {
+            slots: vec![
+                ::sandbox::SandboxPath::new("/work/a"),
+                ::sandbox::SandboxPath::new("/work/b"),
+            ],
+            ..summary(PathBuf::from("/src/app/agents/pair/agent.yaml"))
+        };
+        let broken = agent::control_plane::DefinitionSummary {
+            name: None,
+            error: Some("invalid YAML".into()),
+            ..summary(PathBuf::from("/src/app/agents/broken/agent.yaml"))
+        };
 
-        let candidates = manifest_candidates(Some(cwd.clone()), &[made], definitions).await;
+        let candidates = manifest_candidates(
+            vec![summary(PathBuf::from("/src/app/agent.yaml")), builder, pair, broken],
+            Some(&cwd),
+        );
 
-        assert_eq!(candidates.len(), 2, "{candidates:?}");
-        assert_eq!(candidates[0].path, cwd.join(MANIFEST_FILE));
-        assert_eq!(
-            (candidates[0].reference.as_deref(), candidates[0].folder.as_deref()),
-            (None, None)
-        );
-        assert_eq!(candidates[1].path, current.join(MANIFEST_FILE));
-        assert_eq!(candidates[1].reference.as_deref(), Some("builder"));
-        assert_eq!(candidates[1].name.as_deref(), Ok("builder"));
-        assert_eq!(
-            candidates[1].folder.as_deref(),
-            Some(cwd.as_path()),
-            "it works on the working directory"
-        );
+        let folders = candidates
+            .iter()
+            .map(|candidate| (candidate.slots, candidate.folder.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(folders, [(0, None), (1, Some(cwd.as_path())), (2, None), (0, None)]);
+        assert_eq!(candidates[1].reference.as_deref(), Some("bundled/builder"));
+        assert_eq!(candidates[3].name, Err("invalid YAML".to_owned()));
     }
 
-    #[cfg(unix)]
-    #[tokio::test(flavor = "local")]
-    async fn discovery_retains_equivalent_recorded_paths_for_picker_preselection() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let source = manifest_directory(root.path(), "source", &manifest_yaml("worker"));
-        let alias = root.path().join("alias");
-        std::os::unix::fs::symlink(&source, &alias).expect("manifest directory symlink");
-        let recorded_manifest = alias.join(MANIFEST_FILE);
-        let mut agent = recorded_agent("worker", Some(&alias));
-        agent
-            .status
-            .provenance
-            .as_mut()
-            .expect("recorded provenance")
-            .manifest_path = Some(recorded_manifest.clone());
+    #[test]
+    fn candidates_keep_the_other_paths_to_a_manifest_for_picker_preselection() {
+        let recorded = PathBuf::from("/alias/agent.yaml");
+        let candidates = manifest_candidates(
+            vec![agent::control_plane::DefinitionSummary {
+                aliases: vec![recorded.clone()],
+                ..summary(PathBuf::from("/source/agent.yaml"))
+            }],
+            None,
+        );
 
-        let candidates = manifest_candidates(Some(source.clone()), &[agent], Vec::new()).await;
-        let form = CreateForm::new(candidates, Some(&recorded_manifest));
+        let form = CreateForm::new(candidates, Some(&recorded));
 
-        assert_eq!(form.agents.len(), 1);
         assert_eq!(
             form.candidate().map(|candidate| candidate.path.as_path()),
-            Some(source.join(MANIFEST_FILE).as_path())
+            Some(Path::new("/source/agent.yaml"))
         );
-    }
-
-    #[tokio::test(flavor = "local")]
-    async fn discovery_walks_the_repository_but_not_hidden_or_ignored_directories() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let cwd = manifest_directory(root.path(), "cwd", &manifest_yaml("top"));
-        std::fs::write(cwd.join(".git"), "gitdir: elsewhere\n").expect("worktree marker should be written");
-        let nested = manifest_directory(&cwd, "examples/deeper", &manifest_yaml("nested"));
-        let sibling = manifest_directory(&cwd, "examples/other", &manifest_yaml("other"));
-        manifest_directory(&cwd, ".hidden", &manifest_yaml("hidden"));
-        manifest_directory(&cwd, "target/ignored", &manifest_yaml("ignored"));
-        std::fs::write(cwd.join(".gitignore"), "target/\n").expect("ignore file should be written");
-        let agents = vec![recorded_agent("nested", Some(&nested))];
-
-        let candidates = manifest_candidates(Some(cwd.clone()), &agents, Vec::new()).await;
-
-        let paths: Vec<&std::path::Path> = candidates.iter().map(|candidate| candidate.path.as_path()).collect();
-        assert_eq!(
-            paths,
-            [
-                cwd.join(MANIFEST_FILE),
-                nested.join(MANIFEST_FILE),
-                sibling.join(MANIFEST_FILE)
-            ]
-        );
-        assert_eq!(candidates[1].name.as_deref(), Ok("nested"));
-    }
-
-    #[tokio::test(flavor = "local")]
-    async fn discovery_outside_a_repository_checks_only_the_conventional_layout() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let cwd = manifest_directory(root.path(), "cwd", &manifest_yaml("top"));
-        let dev = manifest_directory(&cwd, "agents/dev", &manifest_yaml("dev"));
-        std::fs::write(
-            dev.join("agent.mine.yaml"),
-            "apiVersion: agents.platform/v1alpha1\nkind: AgentVariant\nextends: agent.yaml\nmetadata:\n  name: mine\n",
-        )
-        .expect("local variant");
-        empty_directory(&cwd, "agents/empty");
-        manifest_directory(&cwd, "projects/checkout", &manifest_yaml("unrelated"));
-        manifest_directory(&cwd, "agents/dev/nested", &manifest_yaml("nested"));
-
-        let candidates = manifest_candidates(Some(cwd.clone()), &[], Vec::new()).await;
-
-        let paths: Vec<&std::path::Path> = candidates.iter().map(|candidate| candidate.path.as_path()).collect();
-        assert_eq!(
-            paths,
-            [
-                cwd.join(MANIFEST_FILE),
-                dev.join(MANIFEST_FILE),
-                dev.join("agent.mine.yaml")
-            ]
-        );
-        assert_eq!(candidates[2].name.as_deref(), Ok("mine"));
     }
 
     fn volume_yaml(name: &str) -> String {
@@ -1425,96 +1288,6 @@ mod tests {
                 (elsewhere.join("logs.yaml").as_path(), Ok("logs")),
             ]
         );
-    }
-
-    #[tokio::test(flavor = "local")]
-    async fn discovery_includes_ignored_sibling_variants_and_their_resolution_errors() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let agent = manifest_directory(root.path(), "configured-agent", &manifest_yaml("default"));
-        std::fs::write(agent.join(".gitignore"), "agent.*.yaml\n").expect("Agent ignore file");
-        std::fs::write(
-            agent.join("agent.mine.yaml"),
-            "apiVersion: agents.platform/v1alpha1\nkind: AgentVariant\nextends: agent.yaml\nmetadata:\n  name: mine\n",
-        )
-        .expect("local variant");
-        std::fs::write(
-            agent.join("agent.broken.yaml"),
-            "apiVersion: agents.platform/v1alpha1\nkind: AgentVariant\nextends: missing.yaml\nmetadata:\n  name: broken\n",
-        )
-        .expect("broken local variant");
-
-        let candidates = manifest_candidates(Some(agent.clone()), &[], Vec::new()).await;
-
-        assert_eq!(candidates.len(), 3);
-        assert_eq!(candidates[0].path, agent.join(MANIFEST_FILE));
-        assert_eq!(candidates[0].name.as_deref(), Ok("default"));
-        assert_eq!(candidates[1].path, agent.join("agent.broken.yaml"));
-        assert!(
-            candidates[1]
-                .name
-                .as_ref()
-                .is_err_and(|error| error.contains("extends must name"))
-        );
-        assert_eq!(candidates[2].path, agent.join("agent.mine.yaml"));
-        assert_eq!(candidates[2].name.as_deref(), Ok("mine"));
-    }
-
-    #[tokio::test(flavor = "local")]
-    async fn discovery_walks_the_whole_git_repository_from_a_nested_working_directory() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let repository = manifest_directory(root.path(), "repository", &manifest_yaml("root"));
-        std::fs::write(repository.join(".git"), "gitdir: elsewhere\n").expect("worktree marker should be written");
-        let cwd = empty_directory(&repository, "src/deep/inside");
-        let sibling = manifest_directory(&repository, "agents/full", &manifest_yaml("full"));
-        manifest_directory(root.path(), "outside", &manifest_yaml("outside"));
-
-        let candidates = manifest_candidates(Some(cwd), &[], Vec::new()).await;
-
-        let paths: Vec<&std::path::Path> = candidates.iter().map(|candidate| candidate.path.as_path()).collect();
-        assert_eq!(paths, [repository.join(MANIFEST_FILE), sibling.join(MANIFEST_FILE)]);
-    }
-
-    #[tokio::test(flavor = "local")]
-    async fn discovery_uses_the_recorded_manifest_filename() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let source = empty_directory(root.path(), "custom");
-        let manifest = source.join("worker.yml");
-        std::fs::write(&manifest, manifest_yaml("custom")).expect("manifest should be written");
-        let mut agent = recorded_agent("custom", Some(&source));
-        agent
-            .status
-            .provenance
-            .as_mut()
-            .expect("provenance should be recorded")
-            .manifest_path = Some(manifest.clone());
-
-        let candidates = manifest_candidates(None, &[agent], Vec::new()).await;
-
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].path, manifest);
-        assert_eq!(candidates[0].name.as_deref(), Ok("custom"));
-    }
-
-    #[tokio::test(flavor = "local")]
-    async fn a_manifest_less_working_directory_never_hides_its_recorded_source() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let cwd = empty_directory(root.path(), "cwd");
-        let agents = vec![recorded_agent("worker", Some(&cwd))];
-
-        let candidates = manifest_candidates(Some(cwd.clone()), &agents, Vec::new()).await;
-
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].path, cwd.join(MANIFEST_FILE));
-        assert!(candidates[0].name.is_err());
-    }
-
-    #[tokio::test(flavor = "local")]
-    async fn discovery_skips_a_working_directory_without_a_manifest() {
-        let root = tempfile::tempdir().expect("temporary directory");
-        let cwd = empty_directory(root.path(), "cwd");
-
-        assert_eq!(manifest_candidates(Some(cwd), &[], Vec::new()).await, []);
-        assert_eq!(manifest_candidates(None, &[], Vec::new()).await, []);
     }
 
     #[test]

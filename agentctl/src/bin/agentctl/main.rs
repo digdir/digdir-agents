@@ -83,10 +83,10 @@ enum Command {
         #[arg(long, default_value = "10m", value_parser = parse_duration, requires = "wait")]
         timeout: Duration,
     },
-    /// Run an agent from a definition and attach to a session in it.
+    /// Make an agent from a definition and attach to a session in it.
     ///
-    /// Running a definition on the same folders again goes back to the same agent, brought up to
-    /// date with the definition when it can be, and starts it if it was stopped.
+    /// An agent of the definition that already works on the same folders is refused, with the
+    /// command that attaches to it. `--name` makes another one, and `apply` updates one.
     Run {
         /// A definition by reference, such as `bundled/agent-builder`, or `agent-builder` for short,
         /// or a definition folder or manifest on disk, written as a path, such as `./agents/reviewer`
@@ -420,6 +420,7 @@ enum Resource {
     Agent,
     Session,
     Volume,
+    Definition,
 }
 
 /// The agent `start` or `restart` acts on: `agent/NAME` or `agent NAME`, and how long to wait.
@@ -824,6 +825,12 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                     client.delete_session(&agent, name.clone()).await?;
                     println!("session/{agent}/{name} deleted");
                 }
+                Resource::Definition => {
+                    return Err(Error::Invalid(
+                        "a definition is a folder or one agentd carries, which agentctl does not delete".into(),
+                    )
+                    .into());
+                }
             }
         }
         Command::Stop { target } => stop(client, target).await?,
@@ -1012,6 +1019,22 @@ async fn get_resources(
         Resource::Agent => {
             reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
             return get_agents(client, name, scope.ephemeral, watch, output).await;
+        }
+        Resource::Definition => {
+            reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
+            if name.is_some() || watch || scope.ephemeral || scope.archived {
+                return Err(Error::Invalid(
+                    "definitions are listed for the current directory, without a name, --watch, --all or --archived"
+                        .into(),
+                )
+                .into());
+            }
+            let directory = std::env::current_dir().map_err(Error::from)?;
+            let definitions = client.definitions(Some(directory.clone())).await?;
+            match output {
+                OutputFormat::Json => print_json(&definitions)?,
+                OutputFormat::Table => print_table(&format::definitions_table(&definitions, &directory)),
+            }
         }
         Resource::Volume => {
             reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
@@ -1772,6 +1795,7 @@ fn resource_reference(resource: &str, name: Option<String>) -> Result<(Resource,
         "agent" | "agents" | "ag" => Resource::Agent,
         "session" | "sessions" => Resource::Session,
         "volume" | "volumes" | "vol" => Resource::Volume,
+        "definition" | "definitions" | "def" => Resource::Definition,
         _ => return Err(Error::Invalid(format!("unknown resource type {kind:?}"))),
     };
     Ok((resource, embedded_name.or(name)))
@@ -2414,25 +2438,22 @@ fn read_apply_request_in(
 /// The manifest of agentd's copy of the definition `reference` names.
 async fn referenced_manifest(client: &Client, reference: &str) -> Result<PathBuf, Error> {
     let reference = agent::DefinitionReference::parse(reference)?.to_string();
-    let definitions = client.definitions().await?;
-    definitions
+    let definitions = client.definitions(None).await?;
+    let references = definitions
         .iter()
-        .find(|definition| definition.reference == reference)
-        .map(|definition| definition.path.join(manifest::MANIFEST_FILE))
-        .ok_or_else(|| {
-            let references = definitions
-                .iter()
-                .map(|definition| definition.reference.as_str())
-                .collect::<Vec<_>>();
-            Error::Invalid(if references.is_empty() {
-                format!("agentd has no definition {reference:?}, nor any other")
-            } else {
-                format!(
-                    "agentd has no definition {reference:?}; it has {}",
-                    references.join(", ")
-                )
-            })
-        })
+        .filter_map(|definition| Some((definition.reference.as_deref()?, &definition.path)));
+    if let Some((_, path)) = references.clone().find(|(listed, _)| *listed == reference) {
+        return Ok(path.clone());
+    }
+    let references = references.map(|(listed, _)| listed).collect::<Vec<_>>();
+    Err(Error::Invalid(if references.is_empty() {
+        format!("agentd has no definition {reference:?}, nor any other")
+    } else {
+        format!(
+            "agentd has no definition {reference:?}; it has {}",
+            references.join(", ")
+        )
+    }))
 }
 
 /// What `agentctl run` runs, as given on its command line.
@@ -2520,15 +2541,7 @@ async fn run_agent(
 ) -> CommandResult<()> {
     let (ran, _lease) = client.run(run.request()?).await?;
     let name = ran.agent.metadata.name;
-    match ran.outcome {
-        agent::control_plane::RunOutcome::Created => println!("agent/{name} created"),
-        agent::control_plane::RunOutcome::Resumed => println!("agent/{name} resumed"),
-        agent::control_plane::RunOutcome::Updated => println!("agent/{name} updated"),
-        agent::control_plane::RunOutcome::Outdated { reason } => println!(
-            "agent/{name} resumed as it was: {reason}. To make it from the definition as it is now, \
-             delete it with `agentctl delete agent {name}` and run it again"
-        ),
-    }
+    println!("agent/{name} created");
     let Some(session) = session else {
         return Ok(());
     };

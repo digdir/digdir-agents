@@ -1,14 +1,15 @@
 //! Running an agent from a definition: one agentd resolves from a reference, or one on disk. Running
-//! finds or makes the agent in one request, mounts the folders it is given, and can tie its life to
-//! the client that asked for it.
+//! makes the agent in one request, mounts the folders it is given, and can tie its life to the
+//! client that asked for it.
 
 use std::path::{Path, PathBuf};
 
 use ::sandbox::SandboxPath;
 
 use crate::{
-    Agent, AgentId, DefinitionReference, Error, Lifetime, MountSpec, Origin,
+    Agent, AgentId, DefinitionReference, Error, Lifetime, Origin,
     bundled::{Definitions, Snapshots},
+    definitions::DefinitionSummary,
 };
 
 use super::{AgentRecord, ControlPlane, service};
@@ -20,8 +21,8 @@ pub struct RunRequest {
     /// The definition to run.
     pub definition: RunDefinition,
     /// Host folders for the definition's bind mounts, in place of the sources it names or for
-    /// those it names none. Which of them an agent was given, with its definition, says which agent
-    /// running it again finds.
+    /// those it names none. An agent kept until deleted is the only one of its definition on these
+    /// folders unless it is named.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub binds: Vec<BindSource>,
     /// How long agentd keeps the agent; until it is deleted when omitted.
@@ -70,50 +71,12 @@ pub enum RunDefinition {
     },
 }
 
-/// The agent a [`RunRequest`] found or made, and what agentd did to it.
+/// The agent a [`RunRequest`] made.
 #[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Ran {
     /// The agent as stored, which runs once the reconciler has started it.
     pub agent: Agent,
-    /// What agentd did to it.
-    pub outcome: RunOutcome,
-}
-
-/// What [`ControlPlane::run`] did to the agent it returns.
-#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum RunOutcome {
-    /// It made the agent.
-    Created,
-    /// It found the agent, made from the definition as it is now, and started it if it was stopped.
-    Resumed,
-    /// It found the agent, made from an earlier version of the definition, and changed it in place,
-    /// starting it if it was stopped.
-    Updated,
-    /// It found the agent, made from an earlier version of the definition, which changes something
-    /// an agent cannot change in place. It left the agent as it was: deleting it and running the
-    /// definition again makes it anew.
-    Outdated {
-        /// What cannot change in place.
-        reason: String,
-    },
-}
-
-/// A definition agentd can run by reference, as it keeps it on disk, where it is applied from as
-/// any other.
-#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct DefinitionSummary {
-    /// The reference that runs it, in its full form, such as `bundled/agent-builder`.
-    pub reference: String,
-    /// The SHA-256 digest of its files.
-    pub digest: String,
-    /// The folder holding agentd's copy of it, which is never changed.
-    pub path: PathBuf,
-    /// The targets of its bind mounts without a source, which running it needs a folder for each of.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub slots: Vec<SandboxPath>,
 }
 
 /// The definitions agentd carries, and where it keeps their copies.
@@ -168,6 +131,17 @@ impl Prepared {
         self.agent.validate()
     }
 
+    /// Whether `record` is an agent kept until deleted made from this definition on the same
+    /// folders.
+    fn made(&self, record: &AgentRecord) -> bool {
+        record.lifetime == Lifetime::UntilDeleted
+            && record.agent.metadata.deletion_timestamp.is_none()
+            && record.bindings == self.bindings
+            && self.same_definition(record)
+            // Variants share a folder but are different definitions.
+            && (!self.origin.is_local() || record.manifest_path == self.manifest_path)
+    }
+
     /// The name of the definition, for an agent named after it.
     fn base_name(&self) -> &str {
         match &self.origin {
@@ -178,18 +152,19 @@ impl Prepared {
 }
 
 impl ControlPlane {
-    /// Runs an agent from a definition and starts it.
+    /// Makes an agent from a definition and starts it.
     ///
-    /// An agent kept until deleted is the one agent for its definition and the folders it is
-    /// given, so running the definition again on them resumes it, and brings it to the definition
-    /// as it is now when it can. An ephemeral one belongs to the request alone, so each request
-    /// makes its own, which agentd deletes once the client that asked for it is gone. agentd names
-    /// the agent after the definition and the folder it is given unless the request names it.
+    /// Running never changes an agent that exists. Without a name, an agent kept until deleted is
+    /// refused when one of the same definition already works on the same folders, which the
+    /// error names so the client can attach to it, and agentd names the new one after the
+    /// definition and the folder it is given. An ephemeral one belongs to the request alone, so
+    /// each request makes its own, which agentd deletes once the client that asked for it is gone.
     ///
     /// # Errors
     ///
-    /// Returns an error when the definition is invalid or unknown, a folder is refused, the
-    /// name belongs to another agent, the agent is being deleted, or it cannot be stored.
+    /// Returns an error when the definition is invalid or unknown, a folder is refused, the name
+    /// belongs to another agent, an agent of the definition already works on the folders, or the
+    /// agent cannot be stored.
     pub async fn run(&self, request: RunRequest) -> Result<(Ran, AgentId), Error> {
         let lifetime = request.lifetime.unwrap_or_default();
         let binds = self.validate_bind_sources(&request.binds).await?;
@@ -216,109 +191,125 @@ impl ControlPlane {
         Box::pin(prepared.bind(&binds)).await?;
         prepared.agent.spec.set_run_state(crate::RunState::Running);
 
-        let ran = loop {
+        let record = loop {
             let records = self.store.list().await?;
-            let keeps = |record: &&AgentRecord| {
-                record.lifetime == Lifetime::UntilDeleted
-                    && record.bindings == prepared.bindings
-                    && prepared.same_definition(record)
-                    // Variants share a folder but are different definitions. The manifest of a
-                    // definition run by reference moves with each version of it.
-                    && (!prepared.origin.is_local() || record.manifest_path == prepared.manifest_path)
+            if let Some(name) = &request.name {
+                if records.iter().any(|record| record.agent.metadata.name == *name) {
+                    return Err(Error::Invalid(format!("an agent named {name:?} already exists")));
+                }
+            } else if lifetime == Lifetime::UntilDeleted
+                && let Some(running) = records.iter().find(|record| prepared.made(record))
+            {
+                return Err(already_running(running));
+            }
+            prepared.agent.metadata.name = match &request.name {
+                Some(name) => name.clone(),
+                None => available_name(
+                    prepared.base_name(),
+                    prepared.bindings.values().next().map(PathBuf::as_path),
+                    &records,
+                )?,
             };
-            let current = match &request.name {
-                Some(name) => match records.iter().find(|record| record.agent.metadata.name == *name) {
-                    Some(record) if lifetime == Lifetime::UntilDeleted && keeps(&record) => Some(record),
-                    Some(_) => return Err(Error::Invalid(format!("an agent named {name:?} already exists"))),
-                    None => None,
-                },
-                None if lifetime == Lifetime::UntilDeleted => records.iter().find(keeps),
-                None => None,
+            prepared.agent.validate()?;
+            let mut record = AgentRecord {
+                id: AgentId::generate(),
+                source_directory: prepared.source_directory.clone(),
+                manifest_path: prepared.manifest_path.clone(),
+                env_file: prepared.env_file.clone(),
+                agent: prepared.agent.clone(),
+                optional_mount_sources: prepared.optional_mount_sources.clone(),
+                volume_revisions: std::collections::BTreeMap::new(),
+                origin: prepared.origin.clone(),
+                lifetime,
+                bindings: prepared.bindings.clone(),
             };
-            let result = if let Some(current) = current {
-                self.resume(current, &prepared).await
-            } else {
-                prepared.agent.metadata.name = match &request.name {
-                    Some(name) => name.clone(),
-                    None => available_name(
-                        prepared.base_name(),
-                        prepared.bindings.values().next().map(PathBuf::as_path),
-                        &records,
-                    )?,
-                };
-                prepared.agent.validate()?;
-                let mut record = AgentRecord {
-                    id: AgentId::generate(),
-                    source_directory: prepared.source_directory.clone(),
-                    manifest_path: prepared.manifest_path.clone(),
-                    env_file: prepared.env_file.clone(),
-                    agent: prepared.agent.clone(),
-                    optional_mount_sources: prepared.optional_mount_sources.clone(),
-                    volume_revisions: std::collections::BTreeMap::new(),
-                    origin: prepared.origin.clone(),
-                    lifetime,
-                    bindings: prepared.bindings.clone(),
-                };
-                record.agent.metadata.generation = 1;
-                self.reject_exposed_secrets(&record).await?;
-                self.store
-                    .put(record.clone(), 0)
-                    .await
-                    .map(|()| (record, RunOutcome::Created))
-            };
-            match result {
-                // Another request stored the agent or took its name first.
+            record.agent.metadata.generation = 1;
+            self.reject_exposed_secrets(&record).await?;
+            match self.store.put(record.clone(), 0).await {
+                Ok(()) => break record,
+                // Another request took the name first.
                 Err(Error::Conflict) => {}
-                result => break result?,
+                Err(error) => return Err(error),
             }
         };
         drop(guard);
 
-        let (record, outcome) = ran;
         self.notifier.notify(record.id);
-        if outcome == RunOutcome::Updated {
-            self.remove_unused_definitions().await;
-        }
         let id = record.id;
         Ok((
             Ran {
                 agent: self.resource(record),
-                outcome,
             },
             id,
         ))
     }
 
-    /// The definitions agentd can run by reference, each in the folder agentd keeps its copy in,
-    /// written if missing.
+    /// The definitions a client can apply or run: those on disk for `directory`, as
+    /// [`crate::definitions::manifests`] finds them, then the manifests agents kept until deleted
+    /// were applied from, then the ones agentd carries, each in the folder agentd keeps its copy
+    /// in, written if missing.
     ///
     /// # Errors
     ///
-    /// Returns an error when a copy cannot be written.
-    pub async fn definitions(&self) -> Result<Vec<DefinitionSummary>, Error> {
+    /// Returns an error when `directory` is not absolute, the agents cannot be read, or a copy
+    /// cannot be written.
+    pub async fn definitions(&self, directory: Option<PathBuf>) -> Result<Vec<DefinitionSummary>, Error> {
+        if let Some(directory) = &directory
+            && !directory.is_absolute()
+        {
+            return Err(Error::Invalid(format!(
+                "directory {} must be an absolute path",
+                directory.display()
+            )));
+        }
+        // An agent run by reference was made from agentd's copy of a version of the definition,
+        // which the definitions agentd carries now stand for.
+        let recorded = self
+            .store
+            .list()
+            .await?
+            .into_iter()
+            .filter(|record| {
+                record.origin.is_local()
+                    && record.lifetime == Lifetime::UntilDeleted
+                    && record.agent.metadata.deletion_timestamp.is_none()
+            })
+            .map(|record| {
+                record
+                    .manifest_path
+                    .unwrap_or_else(|| record.source_directory.join(crate::manifest::MANIFEST_FILE))
+            })
+            .collect();
+        let mut listed =
+            tokio::task::spawn_blocking(move || crate::definitions::on_disk(directory.as_deref(), recorded))
+                .await
+                .map_err(|error| Error::Daemon(format!("listing the definitions on disk failed: {error}")))?;
+        listed.extend(self.bundled_definitions().await?);
+        Ok(listed)
+    }
+
+    /// The definitions agentd carries, each in the folder agentd keeps its copy in, written if
+    /// missing.
+    async fn bundled_definitions(&self) -> Result<Vec<DefinitionSummary>, Error> {
         let Some(bundled) = &self.bundled else {
             return Ok(Vec::new());
         };
         let _guard = bundled.snapshots.lock().await;
         let mut listed = Vec::new();
         for definition in bundled.definitions.iter() {
+            let agent = definition.agent();
             listed.push(DefinitionSummary {
-                reference: DefinitionReference::Bundled(definition.name().to_owned()).to_string(),
-                digest: definition.digest().to_owned(),
-                path: bundled.snapshots.write(definition).await?,
-                slots: definition
-                    .agent()
-                    .spec
-                    .sandbox
-                    .mounts
-                    .iter()
-                    .filter_map(|mount| match mount {
-                        MountSpec::Bind {
-                            source: None, target, ..
-                        } => Some(target.clone()),
-                        _ => None,
-                    })
-                    .collect(),
+                path: bundled
+                    .snapshots
+                    .write(definition)
+                    .await?
+                    .join(crate::manifest::MANIFEST_FILE),
+                aliases: Vec::new(),
+                reference: Some(DefinitionReference::Bundled(definition.name().to_owned()).to_string()),
+                digest: Some(definition.digest().to_owned()),
+                name: Some(agent.metadata.name.clone()),
+                error: None,
+                slots: crate::definitions::unsourced_binds(&agent),
             });
         }
         Ok(listed)
@@ -358,7 +349,7 @@ impl ControlPlane {
             }
         }
         if let Some(bundled) = &self.bundled {
-            self.definitions().await?;
+            self.bundled_definitions().await?;
             bundled.snapshots.remove_unused(self.store.as_ref()).await?;
         }
         Ok(())
@@ -515,65 +506,35 @@ impl ControlPlane {
         }
         Ok(folder)
     }
+}
 
-    /// Brings `current` to the agent `prepared` declares when it can change in place, and says
-    /// what it did.
-    async fn resume(&self, current: &AgentRecord, prepared: &Prepared) -> Result<(AgentRecord, RunOutcome), Error> {
-        if current.agent.metadata.deletion_timestamp.is_some() {
-            return Err(Error::Invalid(format!(
-                "agent {:?} is being deleted; run it again once it is gone",
-                current.agent.metadata.name
-            )));
-        }
-        let mut desired = prepared.agent.clone();
-        desired.metadata.name.clone_from(&current.agent.metadata.name);
-        desired.validate()?;
-        let outdated = |reason: String| Ok((current.clone(), RunOutcome::Outdated { reason }));
-        match service::validate_immutable_fields(current, &desired) {
-            Ok(()) => {}
-            Err(Error::Immutable(field)) => {
-                return outdated(format!("the definition changes {field}, which the agent cannot change"));
-            }
-            Err(error) => return Err(error),
-        }
-        let updated = current.origin != prepared.origin;
-        if updated && let Some(home) = &desired.spec.home {
-            // A home is copied into the agent once, when it is made, so a new one cannot reach it.
-            let (old, new) = (
-                current.source_directory.join(&home.source),
-                prepared.source_directory.join(&home.source),
-            );
-            if !same_tree(old, new).await? {
-                return outdated(
-                    "the definition changes the files of spec.home, which the agent got when it was made".into(),
-                );
-            }
-        }
-        let mut record = current.clone();
-        record.source_directory.clone_from(&prepared.source_directory);
-        record.manifest_path.clone_from(&prepared.manifest_path);
-        if prepared.env_file.is_some() {
-            record.env_file.clone_from(&prepared.env_file);
-        }
-        record.origin = prepared.origin.clone();
-        record.agent = desired;
-        if !updated && record.agent.spec == current.agent.spec && record.env_file == current.env_file {
-            return Ok((current.clone(), RunOutcome::Resumed));
-        }
-        record.agent.metadata.generation = current.agent.metadata.generation + 1;
-        record.agent.metadata.restart_timestamp = current.agent.metadata.restart_timestamp;
-        record.agent.status = current.agent.status.clone();
-        self.reject_exposed_secrets(&record).await?;
-        self.store
-            .put(record.clone(), current.agent.metadata.generation)
-            .await?;
-        let outcome = if updated {
-            RunOutcome::Updated
-        } else {
-            RunOutcome::Resumed
-        };
-        Ok((record, outcome))
-    }
+/// Why running a definition is refused when `running` is already an agent of it on the same
+/// folders: the request can attach to it, or name another.
+fn already_running(running: &AgentRecord) -> Error {
+    let name = &running.agent.metadata.name;
+    let definition = match &running.origin {
+        Origin::Reference { reference, .. } => reference.clone(),
+        Origin::Local => running
+            .manifest_path
+            .as_deref()
+            .unwrap_or(&running.source_directory)
+            .display()
+            .to_string(),
+    };
+    let folders = running
+        .bindings
+        .values()
+        .map(|folder| folder.display().to_string())
+        .collect::<Vec<_>>();
+    let on = if folders.is_empty() {
+        String::new()
+    } else {
+        format!(" on {}", folders.join(", "))
+    };
+    Error::Invalid(format!(
+        "agent {name:?} already runs {definition}{on}; attach to it with `agentctl attach session/main --agent {name}`, \
+         or name another with --name"
+    ))
 }
 
 /// The name of a new agent of the definition named `definition`: its name, followed by the name
@@ -619,49 +580,6 @@ async fn canonical(path: &Path) -> PathBuf {
     tokio::fs::canonicalize(path)
         .await
         .unwrap_or_else(|_| path.to_path_buf())
-}
-
-/// Whether the folders `old` and `new` hold the same files, with the same contents and
-/// executable bits. A folder that does not exist holds none.
-async fn same_tree(old: PathBuf, new: PathBuf) -> Result<bool, Error> {
-    tokio::task::spawn_blocking(move || Ok::<_, std::io::Error>(read_tree(&old)? == read_tree(&new)?))
-        .await
-        .map_err(|error| Error::Daemon(format!("comparing agent definitions failed: {error}")))?
-        .map_err(Error::from)
-}
-
-fn read_tree(root: &Path) -> std::io::Result<std::collections::BTreeMap<PathBuf, (bool, Vec<u8>)>> {
-    let mut files = std::collections::BTreeMap::new();
-    let mut folders = vec![root.to_path_buf()];
-    while let Some(folder) = folders.pop() {
-        let entries = match std::fs::read_dir(&folder) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
-        };
-        for entry in entries {
-            let entry = entry?;
-            let metadata = entry.metadata()?;
-            if metadata.is_dir() {
-                folders.push(entry.path());
-            } else {
-                let relative = entry.path().strip_prefix(root).unwrap_or(&entry.path()).to_path_buf();
-                files.insert(relative, (executable(&metadata), std::fs::read(entry.path())?));
-            }
-        }
-    }
-    Ok(files)
-}
-
-#[cfg(unix)]
-fn executable(metadata: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    metadata.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-fn executable(_metadata: &std::fs::Metadata) -> bool {
-    false
 }
 
 #[cfg(test)]

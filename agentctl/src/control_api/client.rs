@@ -7,10 +7,10 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, sessions};
 
 use super::protocol::{
-    AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, DaemonInfo, DirectoryParams,
-    ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_RESPONSE_BYTES,
-    METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN,
-    METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE,
+    AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, DaemonInfo, DefinitionListParams,
+    DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
+    MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY,
+    METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE,
     METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
     METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
     METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
@@ -116,13 +116,17 @@ impl Client {
         Ok((ran, lease))
     }
 
-    /// Lists the definitions agentd runs by reference, each in the folder agentd keeps it in.
+    /// Lists the definitions a client can apply or run: those on disk for the absolute folder
+    /// `directory`, the manifests agents were applied from, and the ones agentd carries.
     ///
     /// # Errors
     ///
     /// Returns an error when transport, protocol validation, or the control-plane operation fails.
-    pub async fn definitions(&self) -> Result<Vec<control_plane::DefinitionSummary>, Error> {
-        self.call(METHOD_DEFINITIONS, serde_json::json!({})).await
+    pub async fn definitions(
+        &self,
+        directory: Option<std::path::PathBuf>,
+    ) -> Result<Vec<control_plane::DefinitionSummary>, Error> {
+        self.call(METHOD_DEFINITIONS, DefinitionListParams { directory }).await
     }
 
     /// Gets an agent resource by name.

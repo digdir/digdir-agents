@@ -351,6 +351,62 @@ fn row_line(values: &[String], widths: &[usize]) -> String {
 /// One row per volume: its latest revision, its state, and how many agents use it. The state of a
 /// copy being taken or failed names the revision it becomes, such as `Failed (3)` beside revision 2,
 /// so it doesn't read as the state of the revision shown.
+/// The definitions agentd lists for `directory`, each as `agentctl run` takes it: by reference, or
+/// as a path, relative to `directory` when it is inside it. A definition that cannot be read shows
+/// why in place of its name.
+pub(crate) fn definitions_table(
+    definitions: &[agent::control_plane::DefinitionSummary],
+    directory: &Path,
+) -> Vec<String> {
+    if definitions.is_empty() {
+        return Vec::new();
+    }
+    let rows = definitions
+        .iter()
+        .map(|definition| {
+            let written = definition.reference.clone().unwrap_or_else(|| {
+                // A folder runs its agent.yaml, and a variant is named by its file.
+                let path = if definition
+                    .path
+                    .file_name()
+                    .is_some_and(|name| name == agent::manifest::MANIFEST_FILE)
+                {
+                    definition.path.parent().unwrap_or(&definition.path)
+                } else {
+                    &definition.path
+                };
+                path.strip_prefix(directory).map_or_else(
+                    |_| path.display().to_string(),
+                    |relative| {
+                        if relative.as_os_str().is_empty() {
+                            ".".to_owned()
+                        } else {
+                            format!("./{}", relative.display())
+                        }
+                    },
+                )
+            });
+            let name = match (&definition.name, &definition.error) {
+                (Some(name), _) => name.clone(),
+                (None, Some(error)) => format!("invalid: {}", error.lines().next().unwrap_or_default()),
+                (None, None) => "-".to_owned(),
+            };
+            let folders = if definition.slots.is_empty() {
+                "-".to_owned()
+            } else {
+                definition
+                    .slots
+                    .iter()
+                    .map(::sandbox::SandboxPath::as_str)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            vec![written, folders, name]
+        })
+        .collect::<Vec<_>>();
+    table_lines(&["DEFINITION", "NEEDS FOLDERS FOR", "NAME"], &rows)
+}
+
 pub(crate) fn volumes_table(volumes: &[agent::volumes::Volume]) -> Vec<String> {
     if volumes.is_empty() {
         return Vec::new();

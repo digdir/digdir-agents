@@ -9,8 +9,7 @@ use agent::{
     Agent, Error, Lifetime, MountSpec, Origin, RunState,
     bundled::{Definition, DefinitionFile, Definitions, Snapshots},
     control_plane::{
-        AgentStore, ApplyRequest, BindSource, ControlPlane, Ran, Reconciler, RunDefinition, RunOutcome, RunRequest,
-        memory,
+        AgentStore, ApplyRequest, BindSource, ControlPlane, Ran, Reconciler, RunDefinition, RunRequest, memory,
     },
     progress::ProvisioningState,
 };
@@ -197,7 +196,6 @@ async fn run_makes_the_agent_with_its_folder_from_agentds_copy_of_the_definition
 
     let ran = run(&fixture.control_plane, "builder", Some(&workspace)).await;
 
-    assert_eq!(ran.outcome, RunOutcome::Created);
     let agent = ran.agent;
     assert_eq!(agent.metadata.name, "builder-some-repo");
     assert_eq!(agent.spec.run_state(), RunState::Running);
@@ -253,18 +251,20 @@ async fn concurrent_runs_make_one_agent_for_a_workspace() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("repo");
     let other = fixture.workspace("other");
+    let attempt = || fixture.control_plane.run(request("builder", Some(&workspace)));
 
     let (first, second, elsewhere) = tokio::join!(
-        run(&fixture.control_plane, "builder", Some(&workspace)),
-        run(&fixture.control_plane, "builder", Some(&workspace)),
+        attempt(),
+        attempt(),
         run(&fixture.control_plane, "builder", Some(&other)),
     );
 
-    let mut outcomes = [first.outcome, second.outcome];
-    outcomes.sort_by_key(|outcome| format!("{outcome:?}"));
-    assert_eq!(outcomes, [RunOutcome::Created, RunOutcome::Resumed]);
-    assert_eq!(first.agent.metadata.name, second.agent.metadata.name);
-    assert_eq!(elsewhere.outcome, RunOutcome::Created);
+    let (made, refused) = match (first, second) {
+        (Ok((made, _)), Err(refused)) | (Err(refused), Ok((made, _))) => (made, refused),
+        (first, second) => panic!("one run makes the agent, and the other is refused: {first:?} {second:?}"),
+    };
+    assert_eq!(made.agent.metadata.name, "builder-repo");
+    assert!(refused.to_string().contains("already runs"), "{refused}");
     assert_eq!(elsewhere.agent.metadata.name, "builder-other");
     let names = fixture
         .store
@@ -278,31 +278,137 @@ async fn concurrent_runs_make_one_agent_for_a_workspace() {
 }
 
 #[tokio::test(flavor = "local")]
-async fn running_again_resumes_the_agent_and_starts_it() {
+async fn running_again_on_the_same_folders_is_refused_with_the_command_that_attaches() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("repo");
-    let created = run(&fixture.control_plane, "builder", Some(&workspace)).await;
+    run(&fixture.control_plane, "builder", Some(&workspace)).await;
     fixture
         .control_plane
         .set_run_state("builder-repo", RunState::Stopped)
         .await
         .expect("stop");
+    let stopped = fixture.store.get_by_name("builder-repo").await.expect("stored");
 
-    let resumed = run(&fixture.control_plane, "builder", Some(&workspace)).await;
+    for reference in ["builder", "bundled/builder"] {
+        let error = fixture
+            .control_plane
+            .run(request(reference, Some(&workspace)))
+            .await
+            .expect_err("an agent of the definition already works on the folder");
+        let message = error.to_string();
+        assert!(
+            message.contains("agent \"builder-repo\" already runs bundled/builder on ")
+                && message.contains("`agentctl attach session/main --agent builder-repo`"),
+            "{reference}: {message}"
+        );
+    }
+    let record = fixture.store.get_by_name("builder-repo").await.expect("stored");
+    assert_eq!(
+        record.agent.metadata.generation, stopped.agent.metadata.generation,
+        "running never changes the agent"
+    );
+    assert_eq!(record.agent.spec.run_state(), RunState::Stopped);
 
-    assert_eq!(resumed.outcome, RunOutcome::Resumed);
-    assert_eq!(resumed.agent.metadata.name, created.agent.metadata.name);
-    assert_eq!(resumed.agent.spec.run_state(), RunState::Running);
-    let again = run(&fixture.control_plane, "bundled/builder", Some(&workspace)).await;
+    let (named, _) = fixture
+        .control_plane
+        .run(RunRequest {
+            name: Some("second".into()),
+            ..request("builder", Some(&workspace))
+        })
+        .await
+        .expect("a name makes another");
+    assert_eq!(named.agent.metadata.name, "second");
+}
+
+#[tokio::test(flavor = "local")]
+async fn definitions_lists_a_folders_then_the_applied_ones_then_agentds() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("repo");
+    run(&fixture.control_plane, "builder", Some(&workspace)).await;
+    let folder = TempDirectory::new("bundled-listed");
+    let dev = folder.path().join("agents/dev");
+    std::fs::create_dir_all(&dev).expect("definition folder");
+    let yaml = |name: &str| serde_yaml_ng::to_string(&agent(name)).expect("manifest");
+    std::fs::write(dev.join("agent.yaml"), yaml("dev")).expect("manifest");
+    let applied = TempDirectory::new("bundled-applied");
+    std::fs::write(applied.path().join("agent.yaml"), yaml("applied")).expect("manifest");
+    fixture
+        .control_plane
+        .apply(apply(applied.path(), agent("applied")))
+        .await
+        .expect("apply");
+
+    let listed = fixture
+        .control_plane
+        .definitions(Some(folder.path().to_path_buf()))
+        .await
+        .expect("definitions");
+
+    let entries = listed
+        .iter()
+        .map(|definition| {
+            (
+                definition.reference.as_deref(),
+                definition.name.as_deref(),
+                definition.slots.len(),
+            )
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        again.outcome,
-        RunOutcome::Resumed,
-        "the full reference is the same definition"
+        entries,
+        [
+            (None, Some("dev"), 0),
+            (None, Some("applied"), 0),
+            (Some("bundled/builder"), Some("builder"), 1),
+            (Some("bundled/sign-in"), Some("sign-in"), 0),
+        ],
+        "the copy the builder's agent was made from is listed once, by its reference"
     );
-    assert_eq!(
-        again.agent.metadata.generation, resumed.agent.metadata.generation,
-        "a running agent of the same definition is left as it is"
-    );
+    assert_eq!(listed[0].path, dev.join("agent.yaml"));
+    assert_eq!(listed[1].path, applied.path().join("agent.yaml"));
+    let error = fixture
+        .control_plane
+        .definitions(Some("relative".into()))
+        .await
+        .expect_err("a relative folder");
+    assert!(error.to_string().contains("must be an absolute path"), "{error}");
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_agent_whose_bind_mounts_are_not_resolved_is_never_stored() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("repo");
+    run(&fixture.control_plane, "builder", Some(&workspace)).await;
+    let stored = fixture.store.get_by_name("builder-repo").await.expect("stored");
+
+    for (unresolve, expected) in [
+        (
+            (|mount: &mut MountSpec| {
+                if let MountSpec::Bind { source, .. } = mount {
+                    *source = None;
+                }
+            }) as fn(&mut MountSpec),
+            "spec.sandbox.mounts[0] has no source",
+        ),
+        (
+            |mount: &mut MountSpec| {
+                if let MountSpec::Bind { writable, .. } = mount {
+                    *writable = vec!["agents".into()];
+                }
+            },
+            "spec.sandbox.mounts[0] still lists writable folders",
+        ),
+    ] {
+        let mut record = stored.clone();
+        unresolve(&mut record.agent.spec.sandbox.mounts[0]);
+        let generation = record.agent.metadata.generation;
+        let error = fixture
+            .store
+            .put(record, generation)
+            .await
+            .expect_err("an unresolved bind mount");
+        assert!(error.to_string().contains(expected), "{error}");
+    }
 }
 
 #[tokio::test(flavor = "local")]
@@ -342,16 +448,19 @@ async fn a_definition_on_disk_runs_like_a_bundled_one() {
     };
 
     let (created, _) = fixture.control_plane.run(local(None)).await.expect("run");
-    let (resumed, _) = fixture.control_plane.run(local(None)).await.expect("run again");
+    let again = fixture.control_plane.run(local(None)).await.expect_err("run again");
     let (named, _) = fixture.control_plane.run(local(Some("mine"))).await.expect("run named");
 
-    assert_eq!(created.outcome, RunOutcome::Created);
     assert_eq!(created.agent.metadata.name, "reviewer-repo");
     assert_eq!(created.agent.status.origin, Some(Origin::Local));
-    assert_eq!(resumed.outcome, RunOutcome::Resumed);
-    assert_eq!(resumed.agent.metadata.name, "reviewer-repo");
-    assert_eq!(named.outcome, RunOutcome::Created, "a name of its own is another agent");
-    assert_eq!(named.agent.metadata.name, "mine");
+    let manifest = definition.path().join("agent.yaml");
+    assert!(
+        again
+            .to_string()
+            .contains(&format!("agent \"reviewer-repo\" already runs {}", manifest.display())),
+        "{again}"
+    );
+    assert_eq!(named.agent.metadata.name, "mine", "a name of its own is another agent");
     let error = fixture
         .control_plane
         .run(RunRequest {
@@ -364,17 +473,38 @@ async fn a_definition_on_disk_runs_like_a_bundled_one() {
 }
 
 #[tokio::test(flavor = "local")]
-async fn a_newer_definition_updates_the_agent_in_place_and_its_old_copy_goes() {
+async fn applying_a_newer_definition_updates_the_agent_in_place_and_its_old_copy_goes() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("repo");
     let created = run(&fixture.control_plane, "builder", Some(&workspace)).await;
 
     let rebuilt = fixture.rebuilt([builder("two")]);
-    let updated = run(&rebuilt, "builder", Some(&workspace)).await;
+    let error = rebuilt
+        .run(request("builder", Some(&workspace)))
+        .await
+        .expect_err("running a newer version on the same folder");
+    assert!(error.to_string().contains("already runs bundled/builder"), "{error}");
+    let newer = rebuilt
+        .definitions(None)
+        .await
+        .expect("definitions")
+        .into_iter()
+        .find(|definition| definition.reference.as_deref() == Some("bundled/builder"))
+        .expect("builder");
+    let mut copy: Agent = serde_yaml_ng::from_slice(&std::fs::read(&newer.path).expect("manifest")).expect("manifest");
+    copy.metadata.name.clone_from(&created.agent.metadata.name);
+    let directory = newer.path.parent().expect("the copy's folder");
+    let updated = rebuilt
+        .apply(apply(directory, copy))
+        .await
+        .expect("apply the newer copy");
 
-    assert_eq!(updated.outcome, RunOutcome::Updated);
-    assert_eq!(updated.agent.metadata.name, created.agent.metadata.name);
-    assert_ne!(digest(&updated.agent), digest(&created.agent));
+    assert_eq!(updated.metadata.name, created.agent.metadata.name);
+    assert_ne!(digest(&updated), digest(&created.agent));
+    assert_eq!(
+        updated.spec.sandbox.mounts, created.agent.spec.sandbox.mounts,
+        "it keeps the folder it was given"
+    );
     let record = fixture.store.get_by_name("builder-repo").await.expect("stored");
     assert_eq!(
         std::fs::read_to_string(record.source_directory.join("instructions.md")).expect("new instructions"),
@@ -382,70 +512,31 @@ async fn a_newer_definition_updates_the_agent_in_place_and_its_old_copy_goes() {
     );
     assert_eq!(
         fixture.snapshot_folders(),
-        [digest(&updated.agent)],
+        [digest(&updated)],
         "no agent uses the old copy, and this build no longer carries it"
     );
-}
-
-#[tokio::test(flavor = "local")]
-async fn a_definition_that_changes_what_cannot_change_in_place_reports_the_agent_outdated() {
-    let fixture = Fixture::new();
-    let workspace = fixture.workspace("repo");
-    let created = run(&fixture.control_plane, "builder", Some(&workspace)).await;
-
-    for (definition, field) in [
-        (
-            builder_with("ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop", "one", "home"),
-            "spec.sandbox.image",
-        ),
-        (builder_with(BASE_IMAGE, "one", "a new home"), "spec.home"),
-    ] {
-        let rebuilt = fixture.rebuilt([definition]);
-        let outdated = rebuilt
-            .run(request("builder", Some(&workspace)))
-            .await
-            .expect("an outdated agent is an outcome, not an error")
-            .0;
-
-        let RunOutcome::Outdated { reason } = outdated.outcome else {
-            panic!("{field}: {:?}", outdated.outcome);
-        };
-        assert!(reason.contains(field), "{reason}");
-        assert_eq!(outdated.agent.metadata.generation, created.agent.metadata.generation);
-        assert_eq!(
-            digest(&outdated.agent),
-            digest(&created.agent),
-            "the agent is left as it was"
-        );
-    }
-    let record = fixture.store.get_by_name("builder-repo").await.expect("stored");
-    assert_eq!(
-        record.source_directory,
-        fixture.snapshots().path(&digest(&created.agent))
-    );
-    assert!(record.source_directory.is_dir(), "the copy the agent uses stays");
 }
 
 #[tokio::test(flavor = "local")]
 async fn a_bundled_definition_is_applied_from_agentds_copy_like_any_other() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("repo");
-    let definitions = fixture.control_plane.definitions().await.expect("definitions");
+    let definitions = fixture.control_plane.definitions(None).await.expect("definitions");
     let builder = definitions
         .iter()
-        .find(|definition| definition.reference == "bundled/builder")
+        .find(|definition| definition.reference.as_deref() == Some("bundled/builder"))
         .expect("builder");
+    let directory = builder.path.parent().expect("the copy's folder");
     assert_eq!(
         builder.slots,
         [sandbox::SandboxPath::new(CHECKOUT)],
         "the list says it needs a folder"
     );
-    let copy: Agent = serde_yaml_ng::from_slice(&std::fs::read(builder.path.join("agent.yaml")).expect("manifest"))
-        .expect("manifest");
+    let copy: Agent = serde_yaml_ng::from_slice(&std::fs::read(&builder.path).expect("manifest")).expect("manifest");
 
     let error = fixture
         .control_plane
-        .apply(apply(&builder.path, copy.clone()))
+        .apply(apply(directory, copy.clone()))
         .await
         .expect_err("a definition that needs a folder applied without one");
     assert!(error.to_string().contains("names no source"), "{error}");
@@ -453,15 +544,15 @@ async fn a_bundled_definition_is_applied_from_agentds_copy_like_any_other() {
         .control_plane
         .apply(ApplyRequest {
             binds: vec![given(&workspace)],
-            ..apply(&builder.path, copy.clone())
+            ..apply(directory, copy.clone())
         })
         .await
         .expect("apply the bundled definition");
     assert_eq!(applied.metadata.name, "builder");
-    assert_eq!(digest(&applied), builder.digest);
+    assert_eq!(Some(digest(&applied)), builder.digest);
     let again = fixture
         .control_plane
-        .apply(apply(&builder.path, copy.clone()))
+        .apply(apply(directory, copy.clone()))
         .await
         .expect("an update keeps the agent's folder");
     assert_eq!(again.metadata.generation, applied.metadata.generation);
@@ -599,11 +690,11 @@ async fn a_folder_given_for_a_bind_mount_replaces_the_manifests_and_makes_anothe
     };
 
     let (own, _) = fixture.control_plane.run(local(Vec::new())).await.expect("run");
-    let (same, _) = fixture
+    let same = fixture
         .control_plane
         .run(local(vec![at(&checkout)]))
         .await
-        .expect("run on its own folder");
+        .expect_err("run on its own folder");
     let (other, _) = fixture
         .control_plane
         .run(local(vec![at(&worktree)]))
@@ -612,13 +703,10 @@ async fn a_folder_given_for_a_bind_mount_replaces_the_manifests_and_makes_anothe
 
     assert_eq!(own.agent.metadata.name, "dev");
     assert_eq!(own.agent.status.bindings, BTreeMap::new());
-    assert_eq!(
-        same.outcome,
-        RunOutcome::Resumed,
-        "the manifest's own folder given is the same agent"
+    assert!(
+        same.to_string().contains("agent \"dev\" already runs"),
+        "the manifest's own folder given is the same: {same}"
     );
-    assert_eq!(same.agent.metadata.name, "dev");
-    assert_eq!(other.outcome, RunOutcome::Created);
     assert_eq!(other.agent.metadata.name, "dev-worktree");
     let worktree = worktree.canonicalize().expect("canonical worktree");
     assert!(
@@ -758,10 +846,10 @@ async fn agentd_deletes_the_ephemeral_agents_an_earlier_run_left_when_it_starts(
         !fixture.home.path().join("bundled/.unfinished").exists(),
         "what no agent uses is removed"
     );
-    let carried = restarted.definitions().await.expect("definitions");
+    let carried = restarted.definitions(None).await.expect("definitions");
     let mut digests = carried
         .into_iter()
-        .map(|definition| definition.digest)
+        .filter_map(|definition| definition.digest)
         .collect::<Vec<_>>();
     digests.sort();
     assert_eq!(
