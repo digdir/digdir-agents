@@ -235,20 +235,22 @@ fn digest(files: &BTreeMap<String, DefinitionFile>) -> String {
 }
 
 /// Checks that `agent` reads only the files the definition holds: an agent of a bundled definition
-/// reads agentd's copy of them, never the host's files, and gets no bind mount but the workspace
-/// agentd adds.
+/// reads agentd's copy of them, never the host's files, and binds only the folders it is given.
 fn check_contained(agent: &Agent, files: &BTreeMap<String, DefinitionFile>) -> Result<(), String> {
     let spec = &agent.spec;
     if let ::sandbox::image::ImageSource::Build { .. } = spec.sandbox.image {
         return Err("spec.sandbox.image must be a reference, since a build context is a host folder".into());
     }
-    if spec
+    if let Some(index) = spec
         .sandbox
         .mounts
         .iter()
-        .any(|mount| matches!(mount, MountSpec::Bind { .. }))
+        .position(|mount| matches!(mount, MountSpec::Bind { source: Some(_), .. }))
     {
-        return Err("spec.sandbox.mounts has a bind mount; agentd binds only the workspace".into());
+        return Err(format!(
+            "spec.sandbox.mounts[{index}] names a source, a folder on a host the definition does not know; \
+             leave it out, and whoever runs the definition gives the folder"
+        ));
     }
     if !spec.environment.is_empty() || !spec.secrets.is_empty() {
         return Err(

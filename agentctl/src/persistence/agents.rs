@@ -68,7 +68,7 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
     let origin = serde_json::to_string(&StoredOrigin {
         origin: record.origin.clone(),
         lifetime: record.lifetime,
-        workspace: record.workspace.clone(),
+        bindings: record.bindings.clone(),
     })?;
     let transaction = connection.transaction().map_err(database_error)?;
     let changed = if expected_generation == 0 {
@@ -227,8 +227,8 @@ struct StoredOrigin {
     origin: crate::Origin,
     #[serde(default, skip_serializing_if = "is_until_deleted")]
     lifetime: crate::Lifetime,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    workspace: Option<std::path::PathBuf>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    bindings: std::collections::BTreeMap<::sandbox::SandboxPath, std::path::PathBuf>,
 }
 
 #[allow(
@@ -284,7 +284,7 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
         volume_revisions: serde_json::from_str(&volume_revisions).map_err(conversion_error)?,
         origin: origin.origin,
         lifetime: origin.lifetime,
-        workspace: origin.workspace,
+        bindings: origin.bindings,
     })
 }
 

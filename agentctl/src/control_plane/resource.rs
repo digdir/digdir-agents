@@ -66,10 +66,11 @@ pub struct AgentRecord {
     /// How long agentd keeps the agent, fixed when it is created.
     #[serde(default)]
     pub lifetime: crate::Lifetime,
-    /// The host folder agentd bound into the agent for whoever asked for it, fixed when it is
-    /// created. Together with a bundled definition, it identifies the agent `ensure` finds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<std::path::PathBuf>,
+    /// The canonical bind mount sources the agent was given when it was applied or run, by target,
+    /// other than those its manifest names. With its definition, they identify the agent `run`
+    /// finds.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub bindings: std::collections::BTreeMap<::sandbox::SandboxPath, std::path::PathBuf>,
 }
 
 /// Default environment file name, resolved in the source directory.
@@ -107,11 +108,14 @@ impl AgentRecord {
                         target,
                         read_only,
                         optional,
+                        ..
                     } => Mount::Bind {
+                        // A stored agent's bind mounts all have their sources, and their writable
+                        // folders mounts of their own.
                         source: if *optional {
                             self.optional_mount_sources.get(target)?.clone()
                         } else {
-                            source.clone()
+                            source.clone()?
                         },
                         target: target.clone(),
                         read_only: *read_only,

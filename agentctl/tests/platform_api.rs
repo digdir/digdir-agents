@@ -49,7 +49,7 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
         volume_revisions: std::collections::BTreeMap::new(),
         origin: agent::Origin::Local,
         lifetime: agent::Lifetime::UntilDeleted,
-        workspace: None,
+        bindings: std::collections::BTreeMap::new(),
     }
 }
 

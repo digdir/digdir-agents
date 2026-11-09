@@ -10,8 +10,8 @@ would any other. [`agent::bundled`](../../src/bundled/mod.rs)
 checks them when they are built:
 
 - Paths, such as `spec.home.source`, name files in the definition's folder, since nothing else comes with it.
-- It has no bind mounts, since the host it runs on is not known. One that works on a folder of the person's declares
-  `spec.workspace`, and they name the folder when they run it.
+- Its bind mounts name no source, since the host it runs on is not known. One that works on a folder of the person's
+  leaves the source out, and they name the folder when they run it.
 - It reads nothing from an environment file, so it declares no `spec.environment` or `spec.secrets`.
 - Its image names a base image by its `main` tag, such as `ghcr.io/digdir/agentctl-base:ubuntu-26.04`. A released
   agentd runs that image as its own release tagged it, so a definition always runs on the image built with it.

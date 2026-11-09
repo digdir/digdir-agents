@@ -107,8 +107,11 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
         format!("Provider:   {provider}"),
         format!("Sandbox:    {sandbox}"),
     ];
-    if let Some(workspace) = &agent.status.workspace {
-        lines.insert(4, format!("Workspace:  {}", workspace.display()));
+    for (offset, (target, source)) in agent.status.bindings.iter().enumerate() {
+        lines.insert(
+            4 + offset,
+            format!("Mounted:    {} at {}", source.display(), target.as_str()),
+        );
     }
     if agent.status.is_ephemeral() {
         lines.insert(3, "Lifetime:   until its client is gone".to_owned());

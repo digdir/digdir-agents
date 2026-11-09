@@ -57,7 +57,7 @@ pub(crate) fn agent(name: &str) -> Agent {
             home: Some(HomeSpec {
                 source: PathBuf::from("home"),
             }),
-            workspace: None,
+            working_directory: None,
             instructions: vec![InstructionsSpec {
                 source: PathBuf::from("instructions.md"),
                 optional: false,

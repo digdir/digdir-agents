@@ -500,7 +500,7 @@ fn mounting_agent(name: &str, volume: &str) -> ApplyRequest {
         source_directory: std::env::temp_dir().join("agent-platform-source"),
         manifest_path: None,
         env_file: None,
-        workspace: None,
+        binds: Vec::new(),
         create_only: false,
         agent,
     }
@@ -849,7 +849,7 @@ async fn an_agent_cannot_select_a_secret_file_inside_an_earlier_source_of_a_volu
             source_directory: std::env::temp_dir().join("agent-platform-source"),
             manifest_path: None,
             env_file: Some(earlier.join("credentials.env")),
-            workspace: None,
+            binds: Vec::new(),
             create_only: false,
             agent: request,
         })

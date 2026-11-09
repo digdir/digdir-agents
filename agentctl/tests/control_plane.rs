@@ -520,7 +520,7 @@ fn apply_request_in(name: &str, source_directory: PathBuf) -> agent::control_pla
     agent::control_plane::ApplyRequest {
         manifest_path: Some(source_directory.join("agent.yaml")),
         env_file: None,
-        workspace: None,
+        binds: Vec::new(),
         source_directory,
         create_only: false,
         agent: agent(name),
@@ -833,17 +833,21 @@ async fn bind_mounts_resolve_from_the_manifest_and_drive_directory_inference_and
     std::fs::create_dir_all(&nested).expect("nested workspace directory");
     let mut request = apply_request_in("worker", manifest);
     request.agent.spec.sandbox.mounts.push(MountSpec::Bind {
-        source: PathBuf::from("../.."),
+        source: Some(PathBuf::from("../..")),
         target: SandboxPath::new("/home/agent/code/altinn-studio"),
         read_only: false,
         optional: false,
+        writable: Vec::new(),
     });
 
     let applied = fixture.control_plane.apply(request).await.expect("apply");
     let MountSpec::Bind { source, .. } = &applied.spec.sandbox.mounts[0] else {
         panic!("expected bind Mount");
     };
-    assert_eq!(source, &std::fs::canonicalize(&root).expect("canonical workspace"));
+    assert_eq!(
+        source.as_deref(),
+        Some(std::fs::canonicalize(&root).expect("canonical workspace").as_path())
+    );
     assert_eq!(
         fixture
             .control_plane
@@ -873,17 +877,25 @@ async fn a_bind_mount_source_starting_with_a_tilde_resolves_below_the_home_direc
     std::fs::create_dir_all(&workspace).expect("workspace directory");
     let mut request = apply_request("worker");
     request.agent.spec.sandbox.mounts.push(MountSpec::Bind {
-        source: support::via_home(&workspace),
+        source: Some(support::via_home(&workspace)),
         target: SandboxPath::new("/home/agent/code/workspace"),
         read_only: false,
         optional: false,
+        writable: Vec::new(),
     });
 
     let applied = fixture.control_plane.apply(request).await.expect("apply");
     let MountSpec::Bind { source, .. } = &applied.spec.sandbox.mounts[0] else {
         panic!("expected bind Mount");
     };
-    assert_eq!(source, &std::fs::canonicalize(&workspace).expect("canonical workspace"));
+    assert_eq!(
+        source.as_deref(),
+        Some(
+            std::fs::canonicalize(&workspace)
+                .expect("canonical workspace")
+                .as_path()
+        )
+    );
 }
 
 #[tokio::test(flavor = "local")]
@@ -1023,10 +1035,11 @@ async fn changing_a_mount_is_rejected_for_an_existing_agent() {
     let root = TempDirectory::new("immutable-mount");
     let mut request = apply_request_in("worker", root.path().to_path_buf());
     request.agent.spec.sandbox.mounts.push(MountSpec::Bind {
-        source: PathBuf::from("."),
+        source: Some(PathBuf::from(".")),
         target: SandboxPath::new("/home/agent/code/first"),
         read_only: false,
         optional: false,
+        writable: Vec::new(),
     });
     fixture
         .control_plane
@@ -1034,10 +1047,11 @@ async fn changing_a_mount_is_rejected_for_an_existing_agent() {
         .await
         .expect("initial apply");
     request.agent.spec.sandbox.mounts[0] = MountSpec::Bind {
-        source: PathBuf::from("."),
+        source: Some(PathBuf::from(".")),
         target: SandboxPath::new("/home/agent/code/second"),
         read_only: false,
         optional: false,
+        writable: Vec::new(),
     };
 
     let error = fixture
@@ -1062,10 +1076,11 @@ async fn an_optional_mount_is_decided_when_the_agent_is_created() {
     let mut request = apply_request_in("worker", root.path().to_path_buf());
     for name in ["present", "missing"] {
         request.agent.spec.sandbox.mounts.push(MountSpec::Bind {
-            source: PathBuf::from(name),
+            source: Some(PathBuf::from(name)),
             target: SandboxPath::new(format!("/home/agent/code/{name}")),
             read_only: true,
             optional: true,
+            writable: Vec::new(),
         });
     }
     let observe = async || {
@@ -1136,10 +1151,11 @@ async fn an_optional_mount_is_checked_for_dot_env_files_when_its_source_exists()
     let source = tempfile::tempdir().expect("manifest directory");
     let mut request = apply_request_in("worker", source.path().to_path_buf());
     request.agent.spec.sandbox.mounts.push(MountSpec::Bind {
-        source: checkout.path().to_path_buf(),
+        source: Some(checkout.path().to_path_buf()),
         target: SandboxPath::new("/home/agent/code/checkout"),
         read_only: true,
         optional: true,
+        writable: Vec::new(),
     });
 
     let error = fixture
@@ -1167,10 +1183,11 @@ async fn an_optional_mount_is_checked_for_secrets_where_the_sandbox_has_it() {
     std::os::unix::fs::symlink(&mounted, &link).expect("reference link");
     let mut request = apply_request_in("worker", root.path().join("manifest"));
     request.agent.spec.sandbox.mounts.push(MountSpec::Bind {
-        source: link.clone(),
+        source: Some(link.clone()),
         target: SandboxPath::new("/home/agent/code/reference"),
         read_only: true,
         optional: true,
+        writable: Vec::new(),
     });
     fixture.control_plane.apply(request.clone()).await.expect("apply");
     std::fs::remove_file(&link).expect("remove reference link");
@@ -1715,10 +1732,11 @@ async fn selected_secret_file_inside_a_bind_mount_is_rejected() {
         source: None,
     });
     request.agent.spec.sandbox.mounts.push(agent::MountSpec::Bind {
-        source: root.path().to_path_buf(),
+        source: Some(root.path().to_path_buf()),
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
         optional: false,
+        writable: Vec::new(),
     });
 
     let initial = fixture
@@ -1789,10 +1807,11 @@ async fn git_ignored_nested_dot_env_is_rejected_case_insensitively_without_decla
     let source = tempfile::tempdir().expect("manifest directory");
     let mut request = apply_request_in("worker", source.path().to_path_buf());
     request.agent.spec.sandbox.mounts.push(agent::MountSpec::Bind {
-        source: checkout.path().to_path_buf(),
+        source: Some(checkout.path().to_path_buf()),
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
         optional: false,
+        writable: Vec::new(),
     });
 
     let error = fixture
@@ -1816,10 +1835,11 @@ async fn a_directory_named_dot_env_is_allowed() {
     let source = tempfile::tempdir().expect("manifest directory");
     let mut request = apply_request_in("worker", source.path().to_path_buf());
     request.agent.spec.sandbox.mounts.push(agent::MountSpec::Bind {
-        source: checkout.path().to_path_buf(),
+        source: Some(checkout.path().to_path_buf()),
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
         optional: false,
+        writable: Vec::new(),
     });
 
     fixture
@@ -1839,10 +1859,11 @@ async fn a_dot_env_symlink_is_rejected() {
     let source = tempfile::tempdir().expect("manifest directory");
     let mut request = apply_request_in("worker", source.path().to_path_buf());
     request.agent.spec.sandbox.mounts.push(agent::MountSpec::Bind {
-        source: checkout.path().to_path_buf(),
+        source: Some(checkout.path().to_path_buf()),
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
         optional: false,
+        writable: Vec::new(),
     });
 
     fixture
@@ -1870,10 +1891,11 @@ async fn existing_default_env_outside_bind_mount_is_allowed() {
         source: None,
     });
     request.agent.spec.sandbox.mounts.push(agent::MountSpec::Bind {
-        source: checkout.path().to_path_buf(),
+        source: Some(checkout.path().to_path_buf()),
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
         optional: false,
+        writable: Vec::new(),
     });
 
     fixture
@@ -1902,10 +1924,11 @@ async fn secret_file_reached_through_a_symlinked_ancestor_is_still_rejected() {
         source: None,
     });
     request.agent.spec.sandbox.mounts.push(agent::MountSpec::Bind {
-        source: checkout.path().to_path_buf(),
+        source: Some(checkout.path().to_path_buf()),
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
         optional: false,
+        writable: Vec::new(),
     });
     // Neither the file nor its two parent directories exist yet, and the path enters the
     // mounted checkout through a symlink.
@@ -1942,10 +1965,11 @@ async fn bind_mount_exposing_another_agents_secret_file_is_rejected() {
     std::fs::create_dir_all(&mounted).expect("mounted agent source directory");
     let mut worktree = apply_request_in("worktree", mounted);
     worktree.agent.spec.sandbox.mounts.push(agent::MountSpec::Bind {
-        source: root.path().to_path_buf(),
+        source: Some(root.path().to_path_buf()),
         target: sandbox::SandboxPath::new("/home/agent/code/checkout"),
         read_only: false,
         optional: false,
+        writable: Vec::new(),
     });
 
     let error = fixture

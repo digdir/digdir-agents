@@ -1212,10 +1212,10 @@ fn render_create_agent(
                 },
             ),
         ));
-    if let Some(workspace) = &candidate.workspace {
+    if let Some(folder) = candidate.folder.as_ref().filter(|_| candidate.slots == 1) {
         widget = widget.row(note_line(&format!(
             "Works on {}",
-            abbreviate_home(&workspace.display().to_string())
+            abbreviate_home(&folder.display().to_string())
         )));
     }
     let target = widget.render(frame, area, CREATE_AGENT_FORM_WIDTH, hit_map);

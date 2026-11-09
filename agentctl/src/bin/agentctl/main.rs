@@ -64,10 +64,11 @@ enum Command {
         /// instead of a manifest on disk.
         #[arg(long, value_name = "REFERENCE")]
         from: Option<String>,
-        /// The folder the agent works on, for a definition with `spec.workspace`. An update that
-        /// leaves it out keeps the agent's.
-        #[arg(long)]
-        workspace: Option<PathBuf>,
+        /// A host folder for a bind mount, as `SOURCE:TARGET`, in place of the source the manifest
+        /// names, or as `SOURCE` for the one bind mount it names no source for. Repeatable. An
+        /// update that gives none keeps the agent's.
+        #[arg(long = "mount", value_name = "SOURCE[:TARGET]", value_parser = parse_bind_source)]
+        mounts: Vec<agent::control_plane::BindSource>,
         /// Override metadata.name so one manifest can create multiple agents.
         #[arg(long)]
         name: Option<String>,
@@ -84,22 +85,27 @@ enum Command {
     },
     /// Run an agent from a definition and attach to a session in it.
     ///
-    /// Running a definition on the same workspace again goes back to the same agent, brought up to
+    /// Running a definition on the same folders again goes back to the same agent, brought up to
     /// date with the definition when it can be, and starts it if it was stopped.
     Run {
         /// A definition by reference, such as `bundled/agent-builder`, or `agent-builder` for short,
         /// or a definition folder or manifest on disk, written as a path, such as `./agents/reviewer`
         /// or `agent.yaml`.
         definition: String,
-        /// The folder the agent works on, for a definition with `spec.workspace`.
-        workspace: Option<PathBuf>,
+        /// The folder for the definition's one bind mount without a source, such as the checkout
+        /// it works on.
+        folder: Option<PathBuf>,
+        /// A host folder for a bind mount, as `SOURCE:TARGET`, in place of the source the definition
+        /// names, or as `SOURCE` for the one bind mount it names no source for. Repeatable.
+        #[arg(long = "mount", value_name = "SOURCE[:TARGET]", value_parser = parse_bind_source)]
+        mounts: Vec<agent::control_plane::BindSource>,
         /// Delete the agent when this command ends.
         #[arg(long, conflicts_with = "detach")]
         rm: bool,
         /// Start the agent without attaching to a session.
         #[arg(short = 'd', long)]
         detach: bool,
-        /// Name the agent instead of having it named after the definition and workspace.
+        /// Name the agent instead of having it named after the definition and folder.
         #[arg(long)]
         name: Option<String>,
         /// Session to attach to, made if it does not exist.
@@ -720,7 +726,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             filename,
             variant,
             from,
-            workspace,
+            mounts,
             name,
             env_file,
             wait,
@@ -739,9 +745,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             if let Some(name) = name {
                 request.agent.metadata.name = name;
             }
-            request.workspace = workspace
-                .map(|path| absolute(std::env::current_dir, path))
-                .transpose()?;
+            request.binds = absolute_binds(mounts)?;
             let applied = client.apply(request).await?;
             let name = applied.metadata.name;
             println!("agent/{name} applied");
@@ -831,7 +835,8 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         } => attach(home, client, &resource, name, agent, variant, selection).await?,
         Command::Run {
             definition,
-            workspace,
+            folder,
+            mounts,
             rm,
             detach,
             name,
@@ -839,9 +844,11 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             env_file,
             selection,
         } => {
+            let mut binds = mounts;
+            binds.extend(folder.map(|source| agent::control_plane::BindSource { source, target: None }));
             let run = Run {
                 definition,
-                workspace,
+                binds,
                 lifetime: rm.then_some(agent::Lifetime::Ephemeral),
                 name,
                 env_file,
@@ -2016,6 +2023,40 @@ fn wait_timeout_message(name: &str, ready: Option<&agent::Condition>) -> String 
     )
 }
 
+/// Parses `--mount SOURCE[:TARGET]`. The target is what follows the last `:` before a `/`, so a
+/// Windows drive, as in `C:\\src`, stays part of the source.
+fn parse_bind_source(value: &str) -> Result<agent::control_plane::BindSource, String> {
+    let split = value
+        .rmatch_indices(":/")
+        .map(|(index, _)| index)
+        .find(|index| !(*index == 1 && value.as_bytes()[0].is_ascii_alphabetic()));
+    let (source, target) = split.map_or((value, None), |index| {
+        (&value[..index], Some(::sandbox::SandboxPath::new(&value[index + 1..])))
+    });
+    if source.is_empty() {
+        return Err("the source folder is missing".into());
+    }
+    Ok(agent::control_plane::BindSource {
+        source: PathBuf::from(source),
+        target,
+    })
+}
+
+/// `binds` with their sources made absolute against the current folder.
+fn absolute_binds(
+    binds: Vec<agent::control_plane::BindSource>,
+) -> Result<Vec<agent::control_plane::BindSource>, Error> {
+    binds
+        .into_iter()
+        .map(|bind| {
+            Ok(agent::control_plane::BindSource {
+                source: absolute(std::env::current_dir, bind.source)?,
+                target: bind.target,
+            })
+        })
+        .collect()
+}
+
 fn parse_duration(value: &str) -> Result<Duration, String> {
     let (number, multiplier) = match value.as_bytes().last() {
         Some(b's') => (&value[..value.len() - 1], 1),
@@ -2339,7 +2380,7 @@ fn read_apply_request_in(
         source_directory,
         manifest_path: Some(filename),
         env_file,
-        workspace: None,
+        binds: Vec::new(),
         create_only: false,
         agent,
     })
@@ -2372,7 +2413,7 @@ async fn referenced_manifest(client: &Client, reference: &str) -> Result<PathBuf
 /// What `agentctl run` runs, as given on its command line.
 struct Run {
     definition: String,
-    workspace: Option<PathBuf>,
+    binds: Vec<agent::control_plane::BindSource>,
     lifetime: Option<agent::Lifetime>,
     name: Option<String>,
     env_file: Option<PathBuf>,
@@ -2421,10 +2462,7 @@ impl Run {
         };
         Ok(agent::control_plane::RunRequest {
             definition,
-            workspace: self
-                .workspace
-                .map(|path| absolute(std::env::current_dir, path))
-                .transpose()?,
+            binds: absolute_binds(self.binds)?,
             lifetime: self.lifetime,
             name: self.name,
         })
@@ -2615,6 +2653,29 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn a_mount_names_its_target_after_the_last_colon_before_a_slash() {
+        let parsed = |value: &str| {
+            super::parse_bind_source(value).map(|bind| {
+                (
+                    bind.source.display().to_string(),
+                    bind.target.map(|target| target.as_str().to_owned()),
+                )
+            })
+        };
+        assert_eq!(parsed("../app"), Ok(("../app".into(), None)));
+        assert_eq!(
+            parsed("~/wt/a:b:/work/app"),
+            Ok(("~/wt/a:b".into(), Some("/work/app".into())))
+        );
+        assert_eq!(parsed("C:/src/app"), Ok(("C:/src/app".into(), None)));
+        assert_eq!(
+            parsed("C:/src/app:/work/app"),
+            Ok(("C:/src/app".into(), Some("/work/app".into())))
+        );
+        assert!(parsed(":/work/app").is_err());
+    }
 
     #[test]
     fn run_reads_a_definition_written_as_a_path_as_one_on_disk_and_anything_else_as_a_reference() {

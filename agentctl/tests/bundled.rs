@@ -1,15 +1,16 @@
 //! Running agents from definitions, the bundled ones agentd carries among them: `run`, lifetimes,
-//! workspaces, applying a bundled definition, and agentd's copies of them.
+//! the folders a run gives bind mounts, applying a bundled definition, and agentd's copies of them.
 
 #![allow(clippy::expect_used)]
 
 use std::{collections::BTreeMap, path::Path, rc::Rc, time::Duration};
 
 use agent::{
-    Agent, Error, Lifetime, MountSpec, Origin, RunState, WorkspaceSpec,
+    Agent, Error, Lifetime, MountSpec, Origin, RunState,
     bundled::{Definition, DefinitionFile, Definitions, Snapshots},
     control_plane::{
-        AgentStore, ApplyRequest, ControlPlane, Ran, Reconciler, RunDefinition, RunOutcome, RunRequest, memory,
+        AgentStore, ApplyRequest, BindSource, ControlPlane, Ran, Reconciler, RunDefinition, RunOutcome, RunRequest,
+        memory,
     },
     progress::ProvisioningState,
 };
@@ -22,26 +23,40 @@ use crate::{
 
 const BASE_IMAGE: &str = "ghcr.io/digdir/agentctl-base:ubuntu-26.04";
 
-/// A manifest named `name` on `image`, reading `instructions.md` and a home, that takes a workspace
-/// it may change only `agents/` of.
+/// Where the definitions' checkout is mounted, and their sessions start.
+const CHECKOUT: &str = "/home/agent/code/checkout";
+
+/// The bind mount of a checkout whose folder is given when the definition runs, of which the
+/// agent may change only `agents/`.
+fn checkout() -> MountSpec {
+    MountSpec::Bind {
+        source: None,
+        target: sandbox::SandboxPath::new(CHECKOUT),
+        read_only: true,
+        optional: false,
+        writable: vec!["agents".into()],
+    }
+}
+
+/// A manifest named `name` on `image`, reading `instructions.md` and a home, that works on a
+/// checkout it is given and may change only `agents/` of.
 fn manifest(name: &str, image: &str) -> Agent {
     let mut manifest = agent(name);
     manifest.spec.sandbox.image = ImageSource::Reference {
         reference: image.into(),
     };
-    manifest.spec.workspace = Some(WorkspaceSpec {
-        read_only: true,
-        writable: vec!["agents".into()],
-    });
+    manifest.spec.sandbox.mounts = vec![checkout()];
+    manifest.spec.working_directory = Some(sandbox::SandboxPath::new(CHECKOUT));
     manifest
 }
 
 /// The files of a definition named `name`, whose agent reads `instructions` and a home holding
-/// `home`, on `image`. One without a workspace when `workspace` is false.
-fn files(name: &str, image: &str, instructions: &str, home: &str, workspace: bool) -> BTreeMap<String, DefinitionFile> {
+/// `home`, on `image`. One with no checkout when `checkout` is false.
+fn files(name: &str, image: &str, instructions: &str, home: &str, checkout: bool) -> BTreeMap<String, DefinitionFile> {
     let mut manifest = manifest(name, image);
-    if !workspace {
-        manifest.spec.workspace = None;
+    if !checkout {
+        manifest.spec.sandbox.mounts.clear();
+        manifest.spec.working_directory = None;
     }
     let file = |contents: &[u8]| DefinitionFile {
         contents: contents.to_vec().into(),
@@ -137,7 +152,7 @@ pub(crate) fn request(definition: &str, workspace: Option<&Path>) -> RunRequest 
         definition: RunDefinition::Reference {
             reference: definition.into(),
         },
-        workspace: workspace.map(Path::to_path_buf),
+        binds: workspace.map(given).into_iter().collect(),
         lifetime: None,
         name: None,
     }
@@ -155,20 +170,28 @@ fn digest(agent: &Agent) -> String {
     .expect("a bundled agent")
 }
 
+/// `folder`, given for the one bind mount without a source.
+fn given(folder: &Path) -> BindSource {
+    BindSource {
+        source: folder.to_path_buf(),
+        target: None,
+    }
+}
+
 /// A request to apply the manifest in `directory`.
 fn apply(directory: &Path, agent: Agent) -> ApplyRequest {
     ApplyRequest {
         source_directory: directory.to_path_buf(),
         manifest_path: Some(directory.join("agent.yaml")),
         env_file: None,
-        workspace: None,
+        binds: Vec::new(),
         create_only: false,
         agent,
     }
 }
 
 #[tokio::test(flavor = "local")]
-async fn run_makes_the_agent_with_its_workspace_from_agentds_copy_of_the_definition() {
+async fn run_makes_the_agent_with_its_folder_from_agentds_copy_of_the_definition() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("Some Repo");
 
@@ -185,21 +208,26 @@ async fn run_makes_the_agent_with_its_workspace_from_agentds_copy_of_the_definit
     );
     assert_eq!(agent.status.lifetime, None, "kept until deleted");
     let workspace = workspace.canonicalize().expect("canonical workspace");
-    assert_eq!(agent.status.workspace.as_deref(), Some(workspace.as_path()));
+    assert_eq!(
+        agent.status.bindings,
+        BTreeMap::from([(sandbox::SandboxPath::new(CHECKOUT), workspace.clone())])
+    );
     assert_eq!(
         agent.spec.sandbox.mounts,
         [
             MountSpec::Bind {
-                source: workspace.clone(),
-                target: sandbox::SandboxPath::new("/home/agent/code/Some Repo"),
+                source: Some(workspace.clone()),
+                target: sandbox::SandboxPath::new(CHECKOUT),
                 read_only: true,
                 optional: false,
+                writable: Vec::new(),
             },
             MountSpec::Bind {
-                source: workspace.join("agents"),
-                target: sandbox::SandboxPath::new("/home/agent/code/Some Repo/agents"),
+                source: Some(workspace.join("agents")),
+                target: sandbox::SandboxPath::new(format!("{CHECKOUT}/agents")),
                 read_only: false,
                 optional: false,
+                writable: Vec::new(),
             },
         ]
     );
@@ -308,7 +336,7 @@ async fn a_definition_on_disk_runs_like_a_bundled_one() {
             env_file: None,
             agent: Box::new(manifest("reviewer", BASE_IMAGE)),
         },
-        workspace: Some(workspace.clone()),
+        binds: vec![given(&workspace)],
         lifetime: None,
         name: name.map(str::to_owned),
     };
@@ -407,7 +435,11 @@ async fn a_bundled_definition_is_applied_from_agentds_copy_like_any_other() {
         .iter()
         .find(|definition| definition.reference == "bundled/builder")
         .expect("builder");
-    assert!(builder.workspace.is_some(), "the list says it needs a workspace");
+    assert_eq!(
+        builder.slots,
+        [sandbox::SandboxPath::new(CHECKOUT)],
+        "the list says it needs a folder"
+    );
     let copy: Agent = serde_yaml_ng::from_slice(&std::fs::read(builder.path.join("agent.yaml")).expect("manifest"))
         .expect("manifest");
 
@@ -415,12 +447,12 @@ async fn a_bundled_definition_is_applied_from_agentds_copy_like_any_other() {
         .control_plane
         .apply(apply(&builder.path, copy.clone()))
         .await
-        .expect_err("a workspace definition applied without one");
-    assert!(error.to_string().contains("needs a workspace"), "{error}");
+        .expect_err("a definition that needs a folder applied without one");
+    assert!(error.to_string().contains("names no source"), "{error}");
     let applied = fixture
         .control_plane
         .apply(ApplyRequest {
-            workspace: Some(workspace.clone()),
+            binds: vec![given(&workspace)],
             ..apply(&builder.path, copy.clone())
         })
         .await
@@ -431,7 +463,7 @@ async fn a_bundled_definition_is_applied_from_agentds_copy_like_any_other() {
         .control_plane
         .apply(apply(&builder.path, copy.clone()))
         .await
-        .expect("an update keeps the agent's workspace");
+        .expect("an update keeps the agent's folder");
     assert_eq!(again.metadata.generation, applied.metadata.generation);
     assert_eq!(again.spec.sandbox.mounts, applied.spec.sandbox.mounts);
 
@@ -448,7 +480,7 @@ async fn a_bundled_definition_is_applied_from_agentds_copy_like_any_other() {
 }
 
 #[tokio::test(flavor = "local")]
-async fn a_workspace_that_is_not_one_projects_folder_is_refused() {
+async fn a_folder_that_is_not_one_projects_is_refused() {
     let fixture = Fixture::new();
     let file = fixture.workspaces.path().join("file");
     std::fs::write(&file, "").expect("file");
@@ -490,14 +522,14 @@ async fn a_workspace_that_is_not_one_projects_folder_is_refused() {
         .control_plane
         .run(request("sign-in", Some(&workspace)))
         .await
-        .expect_err("a workspace for a definition that takes none");
-    assert!(error.to_string().contains("takes no workspace"), "{error}");
+        .expect_err("a folder for a definition that takes none");
+    assert!(error.to_string().contains("no bind mount without a source"), "{error}");
     let error = fixture
         .control_plane
         .run(request("builder", None))
         .await
-        .expect_err("no workspace for a definition that needs one");
-    assert!(error.to_string().contains("needs a workspace"), "{error}");
+        .expect_err("no folder for a definition that needs one");
+    assert!(error.to_string().contains("names no source"), "{error}");
     std::fs::write(workspace.join(".env"), "TOKEN=secret").expect(".env");
     let error = fixture
         .control_plane
@@ -509,35 +541,174 @@ async fn a_workspace_that_is_not_one_projects_folder_is_refused() {
 }
 
 #[test]
-fn only_folders_inside_a_read_only_workspace_can_be_writable() {
-    for (workspace, problem) in [
+fn only_folders_inside_a_read_only_bind_mount_can_be_writable() {
+    let bind = |read_only: bool, optional: bool, source: Option<&str>, writable: &[&str]| MountSpec::Bind {
+        source: source.map(Into::into),
+        target: sandbox::SandboxPath::new(CHECKOUT),
+        read_only,
+        optional,
+        writable: writable.iter().map(Into::into).collect(),
+    };
+    for (mount, problem) in [
+        (bind(false, false, None, &["agents"]), "needs readOnly"),
+        (bind(true, false, None, &["../elsewhere"]), "inside the mount"),
+        (bind(true, false, None, &["/agents"]), "inside the mount"),
         (
-            WorkspaceSpec {
-                read_only: false,
-                writable: vec!["agents".into()],
-            },
-            "needs readOnly",
+            bind(true, false, None, &["agents", "agents/cache"]),
+            "inside another writable folder",
         ),
-        (
-            WorkspaceSpec {
-                read_only: true,
-                writable: vec!["../elsewhere".into()],
-            },
-            "inside the workspace",
-        ),
-        (
-            WorkspaceSpec {
-                read_only: true,
-                writable: vec!["/agents".into()],
-            },
-            "inside the workspace",
-        ),
+        (bind(true, true, Some("."), &["agents"]), "optional mount"),
+        (bind(true, true, None, &[]), "needs a source"),
     ] {
         let mut agent = agent("worker");
-        agent.spec.workspace = Some(workspace);
-        let error = agent.validate().expect_err("invalid workspace");
+        agent.spec.sandbox.mounts = vec![mount];
+        let error = agent.validate().expect_err("invalid bind mount");
         assert!(error.to_string().contains(problem), "{error}");
     }
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_folder_given_for_a_bind_mount_replaces_the_manifests_and_makes_another_agent() {
+    let fixture = Fixture::new();
+    let definition = TempDirectory::new("bundled-local");
+    let checkout = definition.path().join("checkout");
+    std::fs::create_dir_all(&checkout).expect("checkout");
+    let worktree = fixture.workspace("worktree");
+    let mut manifest = manifest("dev", BASE_IMAGE);
+    manifest.spec.sandbox.mounts = vec![MountSpec::Bind {
+        source: Some("checkout".into()),
+        target: sandbox::SandboxPath::new(CHECKOUT),
+        read_only: false,
+        optional: false,
+        writable: Vec::new(),
+    }];
+    let local = |binds: Vec<BindSource>| RunRequest {
+        definition: RunDefinition::Local {
+            source_directory: definition.path().to_path_buf(),
+            manifest_path: definition.path().join("agent.yaml"),
+            env_file: None,
+            agent: Box::new(manifest.clone()),
+        },
+        binds,
+        lifetime: None,
+        name: None,
+    };
+    let at = |folder: &Path| BindSource {
+        source: folder.to_path_buf(),
+        target: Some(sandbox::SandboxPath::new(CHECKOUT)),
+    };
+
+    let (own, _) = fixture.control_plane.run(local(Vec::new())).await.expect("run");
+    let (same, _) = fixture
+        .control_plane
+        .run(local(vec![at(&checkout)]))
+        .await
+        .expect("run on its own folder");
+    let (other, _) = fixture
+        .control_plane
+        .run(local(vec![at(&worktree)]))
+        .await
+        .expect("run on another");
+
+    assert_eq!(own.agent.metadata.name, "dev");
+    assert_eq!(own.agent.status.bindings, BTreeMap::new());
+    assert_eq!(
+        same.outcome,
+        RunOutcome::Resumed,
+        "the manifest's own folder given is the same agent"
+    );
+    assert_eq!(same.agent.metadata.name, "dev");
+    assert_eq!(other.outcome, RunOutcome::Created);
+    assert_eq!(other.agent.metadata.name, "dev-worktree");
+    let worktree = worktree.canonicalize().expect("canonical worktree");
+    assert!(
+        matches!(&other.agent.spec.sandbox.mounts[..], [MountSpec::Bind { source: Some(source), .. }] if *source == worktree),
+        "{:?}",
+        other.agent.spec.sandbox.mounts
+    );
+    let error = fixture
+        .control_plane
+        .run(local(vec![BindSource {
+            source: worktree,
+            target: Some(sandbox::SandboxPath::new("/elsewhere")),
+        }]))
+        .await
+        .expect_err("a folder for a target the manifest has no bind mount at");
+    assert!(error.to_string().contains("no bind mount at /elsewhere"), "{error}");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "local")]
+async fn a_writable_folder_that_links_out_of_its_mount_is_refused_and_made_nowhere() {
+    let fixture = Fixture::new();
+    let outside = fixture.workspace("outside");
+    for (link, writable) in [("agents", "agents"), ("parent", "parent/agents")] {
+        let workspace = fixture.workspace(&format!("repo-{link}"));
+        std::os::unix::fs::symlink(&outside, workspace.join(link)).expect("link");
+        let mut builder = manifest("linked", BASE_IMAGE);
+        builder.spec.sandbox.mounts = vec![MountSpec::Bind {
+            source: None,
+            target: sandbox::SandboxPath::new(CHECKOUT),
+            read_only: true,
+            optional: false,
+            writable: vec![writable.into()],
+        }];
+        let definition = TempDirectory::new("bundled-linked");
+
+        let error = fixture
+            .control_plane
+            .run(RunRequest {
+                definition: RunDefinition::Local {
+                    source_directory: definition.path().to_path_buf(),
+                    manifest_path: definition.path().join("agent.yaml"),
+                    env_file: None,
+                    agent: Box::new(builder),
+                },
+                binds: vec![given(&workspace)],
+                lifetime: None,
+                name: None,
+            })
+            .await
+            .expect_err("a writable folder outside the mount");
+
+        assert!(
+            error.to_string().contains("outside the folder it is in"),
+            "{writable}: {error}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_dir(&outside).expect("outside").count(),
+        0,
+        "no folder is made through a link"
+    );
+    assert_eq!(fixture.store.list().await.expect("agents"), []);
+}
+
+#[tokio::test(flavor = "local")]
+async fn the_agent_is_checked_with_the_folders_it_is_given() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("repo");
+    let definition = TempDirectory::new("bundled-hidden");
+    let mut hidden = manifest("hidden", BASE_IMAGE);
+    hidden.spec.sandbox.resources.root_filesystem =
+        sandbox::RootFilesystem::direct("4Gi".parse::<sandbox::ByteQuantity>().expect("capacity"));
+    hidden.spec.sandbox.mounts.push(MountSpec::Volume {
+        volume: "code".into(),
+        target: sandbox::SandboxPath::new("/home/agent/code"),
+        read_only: false,
+        optional: false,
+    });
+
+    let error = fixture
+        .control_plane
+        .apply(ApplyRequest {
+            binds: vec![given(&workspace)],
+            ..apply(definition.path(), hidden)
+        })
+        .await
+        .expect_err("a writable volume over the given folder");
+
+    assert!(error.to_string().contains("which would hide it"), "{error}");
 }
 
 /// Waits until agentd has asked to delete `name`.

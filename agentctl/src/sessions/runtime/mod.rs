@@ -45,6 +45,9 @@ pub struct LaunchContext<'a> {
     pub source_directory: &'a std::path::Path,
     /// The host machine's name.
     pub host: &'a str,
+    /// Where the session starts: the agent's `spec.workingDirectory`, or the sandbox's working
+    /// directory.
+    pub working_directory: &'a str,
 }
 
 /// One harness session carried inside a sandbox.

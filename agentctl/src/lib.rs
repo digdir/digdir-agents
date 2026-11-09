@@ -35,7 +35,6 @@ pub use manifest::{
     EnvironmentSpec, HomeSpec, InstructionsSpec, KIND, Lifetime, Metadata, MountSpec, MountedVolume, NestedSandboxes,
     NetworkAllow, NetworkMode, NetworkSpec, Origin, PlatformManifestSpec, Provenance, ResolvedManifest,
     ResourcesManifestSpec, RunState, SandboxManifestSpec, SecretSpec, SkillSpec, Spec, Status, VARIANT_KIND,
-    WorkspaceSpec,
 };
 pub use reference::DefinitionReference;
 

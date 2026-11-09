@@ -334,9 +334,9 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                 manifest,
                 name,
                 env_file,
-                workspace,
+                folder,
                 form,
-            } => create(&mut app, client, manifest, name, env_file, workspace, form).await,
+            } => create(&mut app, client, manifest, name, env_file, folder, form).await,
             Action::CreateForward { agent, spec, replace } => {
                 if let Some(id) = replace {
                     forwards.remove(id);
@@ -853,7 +853,7 @@ async fn volume_candidates(
             std::fs::read(path)
                 .map_err(Error::from)
                 .and_then(|bytes| agent::volumes::decode(&bytes))
-                .map(|volume| (volume.metadata.name, false))
+                .map(|volume| (volume.metadata.name, 0))
         })
     })
     .await
@@ -861,8 +861,8 @@ async fn volume_candidates(
 }
 
 /// Assembles create-agent candidates from the working tree, recorded agent manifests and the
-/// definitions agentd runs by reference, which come last. A definition with `spec.workspace`
-/// works on the working directory.
+/// definitions agentd runs by reference, which come last. A definition with one bind mount
+/// without a source gets the working directory for it.
 ///
 /// Inside a git repository every manifest below the repository root is offered,
 /// skipping hidden and ignored directories; outside one only `agent.yaml` and
@@ -886,7 +886,8 @@ async fn manifest_candidates(
             .map_or_else(Vec::new, agent::definitions::manifests);
         let mut candidates = merge_candidates(found, recorded, |path| {
             manifest::resolve(path)
-                .map(|resolved| (resolved.agent.metadata.name, resolved.agent.spec.workspace.is_some()))
+                .map(|resolved| (unsourced_binds(&resolved.agent), resolved.agent.metadata.name))
+                .map(|(slots, name)| (name, slots))
         });
         candidates.extend(definitions.into_iter().map(|definition| {
             let path = definition.path.join(MANIFEST_FILE);
@@ -894,12 +895,12 @@ async fn manifest_candidates(
                 .map(|resolved| resolved.agent.metadata.name)
                 .map_err(|error| error.to_string());
             let mut candidate = ManifestCandidate::new(path, name).referenced_as(definition.reference);
-            candidate.needs_workspace = definition.workspace.is_some();
+            candidate.slots = definition.slots.len();
             candidate
         }));
         for candidate in &mut candidates {
-            if candidate.needs_workspace {
-                candidate.workspace.clone_from(&current_directory);
+            if candidate.slots == 1 {
+                candidate.folder.clone_from(&current_directory);
             }
         }
         candidates
@@ -910,14 +911,14 @@ async fn manifest_candidates(
 
 /// Merges the manifests `found` for the working directory with the `recorded` ones resources were
 /// applied from into one candidate per file, however many paths reach it, named by `read`, which
-/// also says whether the manifest declares a workspace.
+/// also counts the manifest's bind mounts without a source.
 ///
 /// A recorded manifest that cannot be read stays listed so its error is visible. A found one that
 /// has gone since it was found is left out.
 fn merge_candidates(
     found: Vec<PathBuf>,
     mut recorded: Vec<PathBuf>,
-    read: impl Fn(&Path) -> Result<(String, bool), Error>,
+    read: impl Fn(&Path) -> Result<(String, usize), Error>,
 ) -> Vec<ManifestCandidate> {
     recorded.sort();
     recorded.dedup();
@@ -933,17 +934,28 @@ fn merge_candidates(
             candidates[index].add_equivalent_path(path);
             continue;
         }
-        let (name, needs_workspace) = match read(&path) {
-            Ok((name, needs_workspace)) => (Ok(name), needs_workspace),
-            Err(error) if recorded || path.exists() => (Err(error.to_string()), false),
+        let (name, slots) = match read(&path) {
+            Ok((name, slots)) => (Ok(name), slots),
+            Err(error) if recorded || path.exists() => (Err(error.to_string()), 0),
             Err(_) => continue,
         };
         seen.insert(canonical, candidates.len());
         let mut candidate = ManifestCandidate::new(path, name);
-        candidate.needs_workspace = needs_workspace;
+        candidate.slots = slots;
         candidates.push(candidate);
     }
     candidates
+}
+
+/// How many of `agent`'s bind mounts name no source, which it needs a folder for each of.
+fn unsourced_binds(agent: &Agent) -> usize {
+    agent
+        .spec
+        .sandbox
+        .mounts
+        .iter()
+        .filter(|mount| matches!(mount, agent::MountSpec::Bind { source: None, .. }))
+        .count()
 }
 
 /// Applies the manifest under the chosen name; a rejection reopens the form with the error.
@@ -953,10 +965,10 @@ async fn create(
     manifest: PathBuf,
     name: String,
     env_file: Option<PathBuf>,
-    workspace: Option<PathBuf>,
+    folder: Option<PathBuf>,
     mut form: CreateForm,
 ) {
-    match create_agent(client, manifest, name, env_file, workspace).await {
+    match create_agent(client, manifest, name, env_file, folder).await {
         Ok(applied) => app.agent_applied(applied),
         Err(error) => {
             form.error = Some(error.to_string());
@@ -997,11 +1009,14 @@ async fn create_agent(
     manifest: PathBuf,
     name: String,
     env_file: Option<PathBuf>,
-    workspace: Option<PathBuf>,
+    folder: Option<PathBuf>,
 ) -> Result<Agent, Error> {
     let mut request = crate::read_apply_request(manifest, env_file)?;
     request.agent.metadata.name = name;
-    request.workspace = workspace;
+    request.binds = folder
+        .map(|source| agent::control_plane::BindSource { source, target: None })
+        .into_iter()
+        .collect();
     request.create_only = true;
     client.apply(request).await
 }
@@ -1253,7 +1268,7 @@ mod tests {
             reference: "builder".into(),
             digest: "new".into(),
             path: current.clone(),
-            workspace: Some(agent::WorkspaceSpec::default()),
+            slots: vec![::sandbox::SandboxPath::new("/work/checkout")],
         }];
 
         let candidates = manifest_candidates(Some(cwd.clone()), &[made], definitions).await;
@@ -1261,14 +1276,14 @@ mod tests {
         assert_eq!(candidates.len(), 2, "{candidates:?}");
         assert_eq!(candidates[0].path, cwd.join(MANIFEST_FILE));
         assert_eq!(
-            (candidates[0].reference.as_deref(), candidates[0].workspace.as_deref()),
+            (candidates[0].reference.as_deref(), candidates[0].folder.as_deref()),
             (None, None)
         );
         assert_eq!(candidates[1].path, current.join(MANIFEST_FILE));
         assert_eq!(candidates[1].reference.as_deref(), Some("builder"));
         assert_eq!(candidates[1].name.as_deref(), Ok("builder"));
         assert_eq!(
-            candidates[1].workspace.as_deref(),
+            candidates[1].folder.as_deref(),
             Some(cwd.as_path()),
             "it works on the working directory"
         );

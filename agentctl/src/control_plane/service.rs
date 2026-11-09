@@ -25,10 +25,10 @@ pub struct ApplyRequest {
     /// manifest; omitted on an update keeps the recorded path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_file: Option<PathBuf>,
-    /// Absolute host folder to mount as the agent's workspace, for a definition with
-    /// `spec.workspace`. Omitted on an update keeps the agent's.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<PathBuf>,
+    /// Host folders for the manifest's bind mounts, in place of the sources it names or for those
+    /// it names none, as for `run`. Omitted on an update keeps the agent's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub binds: Vec<super::BindSource>,
     /// Fail instead of updating when the name already identifies an agent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub create_only: bool,
@@ -122,7 +122,7 @@ impl ControlPlane {
     }
 
     /// Runs agents from `definitions` for [`Self::ensure`], keeping its copies of them in
-    /// `snapshots`. `home` is agentd's home, which no workspace may hold or be in.
+    /// `snapshots`. `home` is agentd's home, which no folder given for a bind mount may hold or be in.
     #[must_use]
     pub fn with_bundled(
         mut self,
@@ -163,10 +163,7 @@ impl ControlPlane {
     /// Returns an error when the request is invalid, changes an immutable field, conflicts with deletion,
     /// or cannot be stored.
     pub async fn apply(&self, request: ApplyRequest) -> Result<Agent, Error> {
-        let requested_workspace = match &request.workspace {
-            Some(path) => Some(self.validate_workspace(path).await?),
-            None => None,
-        };
+        let given = self.validate_bind_sources(&request.binds).await?;
         // Boxed, as preparing reads the filesystem through several steps that would otherwise
         // make every caller's future as large.
         let prepared = Box::pin(self.prepare_local(
@@ -191,14 +188,22 @@ impl ControlPlane {
                     if !prepared.same_definition(&current) {
                         return Err(name_clash(&name, &current));
                     }
-                    // An update that names no workspace keeps the agent's, as its mounts cannot change.
-                    let workspace = requested_workspace.clone().or_else(|| current.workspace.clone());
-                    let mut desired = prepared.agent.clone();
-                    desired
-                        .spec
-                        .sandbox
-                        .mounts
-                        .extend(Box::pin(super::run::workspace_mounts(&desired, workspace.as_deref())).await?);
+                    // An update that gives no folders keeps the agent's, as its mounts cannot change.
+                    let given = if request.binds.is_empty() {
+                        current
+                            .bindings
+                            .iter()
+                            .map(|(target, source)| super::BindSource {
+                                source: source.clone(),
+                                target: Some(target.clone()),
+                            })
+                            .collect()
+                    } else {
+                        given.clone()
+                    };
+                    let mut bound = prepared.clone();
+                    Box::pin(bound.bind(&given)).await?;
+                    let mut desired = bound.agent;
                     validate_immutable_fields(&current, &desired)?;
                     desired.spec.set_run_state(applied_run_state(run_state, Some(&current)));
                     let mut record = AgentRecord {
@@ -212,7 +217,7 @@ impl ControlPlane {
                         volume_revisions: current.volume_revisions.clone(),
                         origin: prepared.origin.clone(),
                         lifetime: current.lifetime,
-                        workspace,
+                        bindings: bound.bindings,
                     };
                     self.reject_exposed_secrets(&record).await?;
                     if current.agent.spec == record.agent.spec
@@ -234,7 +239,7 @@ impl ControlPlane {
                         .map(|()| (record, current.origin != prepared.origin))
                 }
                 Err(Error::NotFound) => {
-                    let record = Box::pin(self.new_record(&prepared, requested_workspace.clone(), run_state)).await?;
+                    let record = Box::pin(self.new_record(&prepared, &given, run_state)).await?;
                     self.store.put(record.clone(), 0).await.map(|()| (record, false))
                 }
                 Err(error) => return Err(error),
@@ -255,19 +260,16 @@ impl ControlPlane {
         }
     }
 
-    /// The record of a new agent `apply` makes from `prepared`, with `workspace` mounted.
+    /// The record of a new agent `apply` makes from `prepared`, with the `given` folders mounted.
     async fn new_record(
         &self,
         prepared: &super::run::Prepared,
-        workspace: Option<PathBuf>,
+        given: &[super::BindSource],
         run_state: Option<crate::RunState>,
     ) -> Result<AgentRecord, Error> {
+        let mut prepared = prepared.clone();
+        prepared.bind(given).await?;
         let mut desired = prepared.agent.clone();
-        desired
-            .spec
-            .sandbox
-            .mounts
-            .extend(super::run::workspace_mounts(&desired, workspace.as_deref()).await?);
         desired.spec.set_run_state(applied_run_state(run_state, None));
         let mut record = AgentRecord {
             id: AgentId::generate(),
@@ -279,7 +281,7 @@ impl ControlPlane {
             volume_revisions: BTreeMap::new(),
             origin: prepared.origin.clone(),
             lifetime: crate::Lifetime::UntilDeleted,
-            workspace,
+            bindings: prepared.bindings.clone(),
         };
         record.agent.metadata.generation = 1;
         self.reject_exposed_secrets(&record).await?;
@@ -698,7 +700,7 @@ pub(super) fn projected(record: AgentRecord) -> Agent {
     });
     agent.status.origin = Some(record.origin);
     agent.status.lifetime = (record.lifetime != crate::Lifetime::UntilDeleted).then_some(record.lifetime);
-    agent.status.workspace = record.workspace;
+    agent.status.bindings = record.bindings;
     agent
 }
 
@@ -777,29 +779,62 @@ fn name_clash(name: &str, other: &AgentRecord) -> Error {
     ))
 }
 
-/// Resolves each bind mount's source, returning the canonical sources of the optional ones that exist. A required
-/// source is replaced by its canonical form, so the sandbox keeps the directory it was created with. An optional one
-/// keeps the path it declares, so that applying the same manifest again compares equal whether the directory has
-/// since appeared or disappeared.
+/// Resolves each bind mount's source, the one `given` for it or else the manifest's, returning the
+/// canonical sources of the optional ones that exist, and the given ones that differ from the
+/// manifest's, by target. The `given` sources are canonical.
+///
+/// A required source is replaced by its canonical form, so the sandbox keeps the directory it was
+/// created with. An optional one keeps the path it declares, so that applying the same manifest
+/// again compares equal whether the directory has since appeared or disappeared. Each `writable`
+/// folder becomes a writable bind mount of its own over the read-only one, made first if missing.
 pub(super) async fn resolve_mount_sources(
     agent: &mut Agent,
     source_directory: &std::path::Path,
-) -> Result<BTreeMap<SandboxPath, PathBuf>, Error> {
+    given: &[super::BindSource],
+) -> Result<(BTreeMap<SandboxPath, PathBuf>, BTreeMap<SandboxPath, PathBuf>), Error> {
+    let mut chosen = given_sources(&agent.spec.sandbox.mounts, given)?;
     let mut optional_sources = BTreeMap::new();
+    let mut bindings = BTreeMap::new();
+    let mut writable_mounts = Vec::new();
     for (index, mount) in agent.spec.sandbox.mounts.iter_mut().enumerate() {
         let MountSpec::Bind {
             source,
             target,
             optional,
+            writable,
             ..
         } = mount
         else {
             continue;
         };
         let field = format!("spec.sandbox.mounts[{index}].source");
-        let unresolved = crate::manifest::resolve_host_path(source_directory, source, &field)?;
+        let declared = source
+            .as_deref()
+            .map(|source| crate::manifest::resolve_host_path(source_directory, source, &field))
+            .transpose()?;
+        let unresolved = match (chosen.remove(&index), declared) {
+            (Some(given), declared) => {
+                // A folder that is the manifest's own source is not one the agent was given.
+                let declared = match declared {
+                    Some(declared) => Some(canonical_or_original(&declared).await),
+                    None => None,
+                };
+                if declared.as_ref() != Some(&given) {
+                    bindings.insert(target.clone(), given.clone());
+                }
+                given
+            }
+            (None, Some(declared)) => declared,
+            (None, None) => {
+                return Err(Error::Invalid(format!(
+                    "spec.sandbox.mounts[{index}] names no source, so it needs a folder for {}: \
+                     give one with `--mount FOLDER`, or as the folder of `agentctl run DEFINITION FOLDER`",
+                    target.as_str()
+                )));
+            }
+        };
         if *optional {
-            source.clone_from(&unresolved);
+            *source = Some(unresolved.clone());
             let present = tokio::fs::try_exists(&unresolved).await.map_err(|error| {
                 Error::Invalid(format!("{field} {} cannot be checked: {error}", unresolved.display()))
             })?;
@@ -818,11 +853,119 @@ pub(super) async fn resolve_mount_sources(
         }
         if *optional {
             optional_sources.insert(target.clone(), resolved);
+            continue;
+        }
+        for folder in std::mem::take(writable) {
+            writable_mounts.push(writable_mount(index, &resolved, target, &folder).await?);
+        }
+        *source = Some(resolved);
+    }
+    agent.spec.sandbox.mounts.extend(writable_mounts);
+    Ok((optional_sources, bindings))
+}
+
+/// Which bind mount, by its index, each of the `given` sources is for: the one with its target, or
+/// the one without a source.
+fn given_sources(mounts: &[MountSpec], given: &[super::BindSource]) -> Result<BTreeMap<usize, PathBuf>, Error> {
+    let mut chosen = BTreeMap::new();
+    for bind in given {
+        let index = if let Some(target) = &bind.target {
+            mounts
+                .iter()
+                .position(|mount| matches!(mount, MountSpec::Bind { target: bound, .. } if bound == target))
+                .ok_or_else(|| Error::Invalid(format!("the manifest has no bind mount at {}", target.as_str())))?
         } else {
-            *source = resolved;
+            let unsourced = mounts
+                .iter()
+                .enumerate()
+                .filter(|(_, mount)| matches!(mount, MountSpec::Bind { source: None, .. }))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            match unsourced.as_slice() {
+                [index] => *index,
+                [] => {
+                    return Err(Error::Invalid(format!(
+                        "the manifest has no bind mount without a source for {} to fill; name the target \
+                         of the one it replaces, as `--mount SOURCE:TARGET`",
+                        bind.source.display()
+                    )));
+                }
+                _ => {
+                    return Err(Error::Invalid(format!(
+                        "the manifest has {} bind mounts without a source; name each one's target, as \
+                         `--mount SOURCE:TARGET`",
+                        unsourced.len()
+                    )));
+                }
+            }
+        };
+        if chosen.insert(index, bind.source.clone()).is_some() {
+            return Err(Error::Invalid(format!(
+                "two folders are given for spec.sandbox.mounts[{index}]"
+            )));
         }
     }
-    Ok(optional_sources)
+    Ok(chosen)
+}
+
+/// The writable bind mount of `folder` in the read-only bind mount of `source` at `target`. It
+/// must stay inside `source` when links are followed, so a link in a checkout cannot open the
+/// rest of the host to the agent.
+async fn writable_mount(
+    index: usize,
+    source: &std::path::Path,
+    target: &SandboxPath,
+    folder: &std::path::Path,
+) -> Result<MountSpec, Error> {
+    let field = format!("spec.sandbox.mounts[{index}].writable");
+    // One part at a time, each checked before the next is made in it, so a link cannot have
+    // agentd make a folder elsewhere either.
+    let mut resolved = source.to_path_buf();
+    for part in folder.components() {
+        let path = resolved.join(part);
+        match tokio::fs::symlink_metadata(&path).await {
+            Ok(_) => {
+                resolved = tokio::fs::canonicalize(&path).await.map_err(|error| {
+                    Error::Invalid(format!("{field} {} cannot be resolved: {error}", path.display()))
+                })?;
+                if resolved == source || !resolved.starts_with(source) {
+                    return Err(Error::Invalid(format!(
+                        "{field} {} leads to {}, outside the folder it is in",
+                        folder.display(),
+                        resolved.display()
+                    )));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tokio::fs::create_dir(&path)
+                    .await
+                    .map_err(|error| Error::Invalid(format!("{field} {} cannot be made: {error}", path.display())))?;
+                resolved = path;
+            }
+            Err(error) => {
+                return Err(Error::Invalid(format!(
+                    "{field} {} cannot be checked: {error}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    if !tokio::fs::metadata(&resolved).await?.is_dir() {
+        return Err(Error::Invalid(format!(
+            "{field} {} must be a folder",
+            resolved.display()
+        )));
+    }
+    let relative = folder
+        .to_str()
+        .ok_or_else(|| Error::Invalid(format!("{field} {} must be UTF-8", folder.display())))?;
+    Ok(MountSpec::Bind {
+        source: Some(resolved),
+        target: SandboxPath::new(format!("{}/{}", target.as_str(), relative.replace('\\', "/"))),
+        read_only: false,
+        optional: false,
+        writable: Vec::new(),
+    })
 }
 
 pub(super) fn validate_request_paths(

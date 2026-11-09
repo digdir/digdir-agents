@@ -250,7 +250,7 @@ spec:
             volume_revisions: std::collections::BTreeMap::new(),
             origin: crate::Origin::Local,
             lifetime: crate::Lifetime::UntilDeleted,
-            workspace: None,
+            bindings: std::collections::BTreeMap::new(),
         }
     }
 
@@ -495,7 +495,7 @@ spec:
             volume_revisions: std::collections::BTreeMap::new(),
             origin: crate::Origin::Local,
             lifetime: crate::Lifetime::UntilDeleted,
-            workspace: None,
+            bindings: std::collections::BTreeMap::new(),
         }
     }
 

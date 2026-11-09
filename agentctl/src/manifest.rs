@@ -1,6 +1,9 @@
 //! Declarative agent manifest and observed resource status.
 
-use std::path::{Component, Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Component, Path, PathBuf},
+};
 
 use time::OffsetDateTime;
 
@@ -219,10 +222,10 @@ pub struct Spec {
     /// Host directory synchronized into the sandbox user's home at bootstrap, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home: Option<HomeSpec>,
-    /// The folder the agent works on, which whoever runs it names, such as with
-    /// `agentctl run DEFINITION WORKSPACE`, so that one definition serves any checkout.
+    /// Where sessions start, such as the folder a bind mount puts the agent's checkout in. The
+    /// sandbox's working directory when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<WorkspaceSpec>,
+    pub working_directory: Option<SandboxPath>,
     /// Agent-wide guidance installed through every declared Harness Adapter, concatenated in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instructions: Vec<InstructionsSpec>,
@@ -417,8 +420,11 @@ impl SandboxManifestSpec {
 pub enum MountSpec {
     /// A caller-host directory mapped into the sandbox.
     Bind {
-        /// Host path, resolved relative to the manifest directory at apply time.
-        source: std::path::PathBuf,
+        /// Host path, resolved relative to the manifest directory at apply time. Whoever applies or
+        /// runs the agent can give another, as with `--mount SOURCE:TARGET`. Without one, they must:
+        /// the definition leaves the folder to them, as one that works on any checkout does.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<std::path::PathBuf>,
         /// Absolute path inside the sandbox.
         target: SandboxPath,
         /// Whether the sandbox may modify the host directory.
@@ -428,6 +434,10 @@ pub enum MountSpec {
         /// disappears later changes nothing until the agent is recreated.
         #[serde(default, skip_serializing_if = "is_false")]
         optional: bool,
+        /// Folders in a read-only mount, relative to its source, that the sandbox may change. agentd
+        /// mounts each over it, making a missing one first, as the sandbox cannot make it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        writable: Vec<std::path::PathBuf>,
     },
     /// A volume, by name. The agent keeps the revision it gets first, and waits until the volume has a revision
     /// ready.
@@ -466,12 +476,15 @@ impl MountSpec {
 fn validate_mounts(mounts: &[MountSpec], root_filesystem: ::sandbox::RootFilesystemMode) -> Result<(), Error> {
     let mut targets = std::collections::BTreeSet::new();
     for (index, mount) in mounts.iter().enumerate() {
-        if let MountSpec::Bind { source, .. } = mount
-            && source.as_os_str().is_empty()
+        if let MountSpec::Bind {
+            source,
+            read_only,
+            optional,
+            writable,
+            ..
+        } = mount
         {
-            return Err(Error::Invalid(format!(
-                "spec.sandbox.mounts[{index}].source must not be empty"
-            )));
+            validate_bind_mount(index, source.as_deref(), *read_only, *optional, writable)?;
         }
         if let MountSpec::Volume {
             volume,
@@ -497,6 +510,64 @@ fn validate_mounts(mounts: &[MountSpec], root_filesystem: ::sandbox::RootFilesys
         }
     }
     reject_mounts_inside_writable_volumes(mounts)
+}
+
+fn validate_bind_mount(
+    index: usize,
+    source: Option<&std::path::Path>,
+    read_only: bool,
+    optional: bool,
+    writable: &[std::path::PathBuf],
+) -> Result<(), Error> {
+    let field = format!("spec.sandbox.mounts[{index}]");
+    match source {
+        Some(source) if source.as_os_str().is_empty() => {
+            return Err(Error::Invalid(format!("{field}.source must not be empty")));
+        }
+        None if optional => {
+            return Err(Error::Invalid(format!(
+                "{field} is optional, which needs a source to leave out when it is missing"
+            )));
+        }
+        _ => {}
+    }
+    if writable.is_empty() {
+        return Ok(());
+    }
+    if !read_only {
+        return Err(Error::Invalid(format!(
+            "{field}.writable needs readOnly: true, since the agent may change the whole folder otherwise"
+        )));
+    }
+    if optional {
+        return Err(Error::Invalid(format!(
+            "{field}.writable cannot be used on an optional mount"
+        )));
+    }
+    for (folder_index, folder) in writable.iter().enumerate() {
+        let inside = folder.components().count() > 0
+            && folder
+                .components()
+                .all(|component| matches!(component, Component::Normal(_)));
+        if !inside {
+            return Err(Error::Invalid(format!(
+                "{field}.writable[{folder_index}] {} must be a folder inside the mount",
+                folder.display()
+            )));
+        }
+        // A folder inside another the agent may change could be replaced with a link to anywhere
+        // on the host, which agentd would mount when it recreates the sandbox.
+        if writable
+            .iter()
+            .any(|other| other != folder && folder.starts_with(other))
+        {
+            return Err(Error::Invalid(format!(
+                "{field}.writable[{folder_index}] {} is inside another writable folder",
+                folder.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// A writable volume's layer is mounted over its target after the other mounts, so it would hide
@@ -660,8 +731,12 @@ impl Spec {
 
     fn validate(&self) -> Result<(), Error> {
         validate_mounts(&self.sandbox.mounts, self.sandbox.resources.root_filesystem.mode())?;
-        if let Some(workspace) = &self.workspace {
-            workspace.validate()?;
+        if let Some(directory) = &self.working_directory
+            && !valid_sandbox_path(directory.as_str())
+        {
+            return Err(Error::Invalid(
+                "spec.workingDirectory must be an absolute normalized sandbox path".into(),
+            ));
         }
         if self
             .home
@@ -906,44 +981,6 @@ pub struct HomeSpec {
     pub source: std::path::PathBuf,
 }
 
-/// The folder an agent works on, which is named when the agent is made rather than in its
-/// definition. agentd mounts it in the sandbox's working directory, under the folder's name.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct WorkspaceSpec {
-    /// Whether the agent may only read the workspace, except the `writable` folders.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub read_only: bool,
-    /// Folders in a read-only workspace, relative to it, that the agent may change. One the
-    /// workspace lacks is made when the agent is, as the sandbox cannot make it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub writable: Vec<std::path::PathBuf>,
-}
-
-impl WorkspaceSpec {
-    fn validate(&self) -> Result<(), Error> {
-        if !self.read_only && !self.writable.is_empty() {
-            return Err(Error::Invalid(
-                "spec.workspace.writable needs readOnly: true, since the agent may change the whole workspace otherwise"
-                    .into(),
-            ));
-        }
-        for (index, folder) in self.writable.iter().enumerate() {
-            let inside = folder.components().count() > 0
-                && folder
-                    .components()
-                    .all(|component| matches!(component, Component::Normal(_)));
-            if !inside {
-                return Err(Error::Invalid(format!(
-                    "spec.workspace.writable[{index}] {} must be a folder inside the workspace",
-                    folder.display()
-                )));
-            }
-        }
-        Ok(())
-    }
-}
-
 /// One harness-neutral instruction file; several are concatenated in manifest order.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -1117,10 +1154,10 @@ pub struct Status {
     /// [`Self::origin`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifetime: Option<Lifetime>,
-    /// The host folder agentd bound into the agent when it made it for a workspace. Projected like
-    /// [`Self::origin`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<std::path::PathBuf>,
+    /// The bind mount sources given when the agent was applied or run, by target, other than
+    /// those its manifest names. Projected like [`Self::origin`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<SandboxPath, std::path::PathBuf>,
     /// The revision of each volume the agent mounts, once the reconciler has chosen them. Projected
     /// onto API responses from the stored agent record; stores scrub it, so it is never persisted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1158,7 +1195,7 @@ impl Status {
             provenance: None,
             origin: None,
             lifetime: None,
-            workspace: None,
+            bindings: BTreeMap::new(),
             volumes: Vec::new(),
         }
     }
@@ -1177,11 +1214,11 @@ impl Status {
         self.provenance = None;
         self.origin = None;
         self.lifetime = None;
-        self.workspace = None;
+        self.bindings.clear();
         self.volumes.clear();
     }
 
-    const fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.observed_generation == 0
             && self.observed_restart_timestamp.is_none()
             && self.sandbox.is_none()
@@ -1191,7 +1228,7 @@ impl Status {
             && self.provenance.is_none()
             && self.origin.is_none()
             && self.lifetime.is_none()
-            && self.workspace.is_none()
+            && self.bindings.is_empty()
             && self.volumes.is_empty()
     }
 

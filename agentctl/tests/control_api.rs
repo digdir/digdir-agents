@@ -1077,7 +1077,7 @@ fn request(name: &str) -> ApplyRequest {
         source_directory: std::env::temp_dir().join("agent-platform-source"),
         manifest_path: None,
         env_file: None,
-        workspace: None,
+        binds: Vec::new(),
         create_only: false,
         agent: agent(name),
     }

@@ -700,7 +700,10 @@ fn optional_sources_condition(record: &AgentRecord, missing_files: &[String]) ->
             } => {
                 declares = true;
                 if !record.optional_mount_sources.contains_key(target) {
-                    missing.push(format!("spec.sandbox.mounts[{index}].source {}", source.display()));
+                    missing.push(format!(
+                        "spec.sandbox.mounts[{index}].source {}",
+                        source.as_deref().unwrap_or_else(|| std::path::Path::new("-")).display()
+                    ));
                 }
             }
             crate::MountSpec::Volume {

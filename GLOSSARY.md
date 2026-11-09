@@ -33,4 +33,3 @@ identifiers and code, such as `kind: Agent` or a Rust type.
 | Session | One harness running in an agent, durable and resumable. An agent can have several. |
 | Volume | Storage that agents mount by name and share, declared in its own manifest with `kind: Volume`. A `copy` volume holds a read-only copy of a host directory. |
 | Volume revision | One copy a volume holds. Applying the volume again takes a new one when its source changed. An agent keeps the revision it got first, so it never sees its files change. |
-| Workspace | The folder on the host an agent works on, which you name when you run its definition, as in `agentctl run agent-builder ~/src/app`. The definition says, in `spec.workspace`, what the agent may change in it. |

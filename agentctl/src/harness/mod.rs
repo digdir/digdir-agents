@@ -809,6 +809,8 @@ pub struct LaunchRequest<'a> {
     pub initial_prompt: Option<&'a str>,
     /// Model and effort level the session was created with.
     pub model_selection: &'a ModelSelection,
+    /// Where the session starts, which the harness trusts as a project.
+    pub working_directory: &'a str,
 }
 
 /// Resolves the selected harness's terminal launch configuration.
@@ -927,6 +929,7 @@ pub(crate) const fn test_launch_request<'a>(
         resume_transcript: None,
         initial_prompt,
         model_selection: &UNSELECTED,
+        working_directory: crate::sandbox::platform::WORKING_DIRECTORY,
     }
 }
 

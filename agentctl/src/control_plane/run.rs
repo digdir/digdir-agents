@@ -1,13 +1,13 @@
 //! Running an agent from a definition: one agentd resolves from a reference, or one on disk. Running
-//! finds or makes the agent in one request, mounts the workspace it is named for, and can tie its
-//! life to the client that asked for it.
+//! finds or makes the agent in one request, mounts the folders it is given, and can tie its life to
+//! the client that asked for it.
 
 use std::path::{Path, PathBuf};
 
 use ::sandbox::SandboxPath;
 
 use crate::{
-    Agent, AgentId, DefinitionReference, Error, Lifetime, MountSpec, Origin, WorkspaceSpec,
+    Agent, AgentId, DefinitionReference, Error, Lifetime, MountSpec, Origin,
     bundled::{Definitions, Snapshots},
 };
 
@@ -19,16 +19,30 @@ use super::{AgentRecord, ControlPlane, service};
 pub struct RunRequest {
     /// The definition to run.
     pub definition: RunDefinition,
-    /// An absolute host folder to mount as the agent's workspace, for a definition with
-    /// `spec.workspace`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<PathBuf>,
+    /// Host folders for the definition's bind mounts, in place of the sources it names or for
+    /// those it names none. Which of them an agent was given, with its definition, says which agent
+    /// running it again finds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub binds: Vec<BindSource>,
     /// How long agentd keeps the agent; until it is deleted when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifetime: Option<Lifetime>,
-    /// The agent's name. agentd chooses one from the definition and workspace when omitted.
+    /// The agent's name. agentd chooses one from the definition and the folder it is given when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+/// A host folder given for a bind mount when an agent is applied or run, as with
+/// `--mount SOURCE[:TARGET]`.
+#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct BindSource {
+    /// The absolute host folder.
+    pub source: PathBuf,
+    /// The target of the bind mount it is for. Without one, it is for the one bind mount the
+    /// manifest names no source for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<SandboxPath>,
 }
 
 /// The definition a [`RunRequest`] runs.
@@ -46,7 +60,7 @@ pub enum RunDefinition {
     Local {
         /// Absolute directory against which the manifest's sources are resolved.
         source_directory: PathBuf,
-        /// Absolute path of the manifest, which with the workspace identifies the agent.
+        /// Absolute path of the manifest, which with the folders it is given identifies the agent.
         manifest_path: PathBuf,
         /// Absolute path of the file supplying declared manifest values, when not `.env` beside it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,9 +111,9 @@ pub struct DefinitionSummary {
     pub digest: String,
     /// The folder holding agentd's copy of it, which is never changed.
     pub path: PathBuf,
-    /// The workspace it declares, which running it needs one for.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<WorkspaceSpec>,
+    /// The targets of its bind mounts without a source, which running it needs a folder for each of.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<SandboxPath>,
 }
 
 /// The definitions agentd carries, and where it keeps their copies.
@@ -119,7 +133,9 @@ impl Bundled {
     }
 }
 
-/// An agent as a definition declares it, ready to store, before it has a name or a workspace.
+/// An agent as a definition declares it, ready to store once it has a name and its bind mounts
+/// their sources.
+#[derive(Clone)]
 pub(super) struct Prepared {
     pub(super) agent: Agent,
     pub(super) source_directory: PathBuf,
@@ -127,6 +143,8 @@ pub(super) struct Prepared {
     pub(super) env_file: Option<PathBuf>,
     pub(super) optional_mount_sources: std::collections::BTreeMap<SandboxPath, PathBuf>,
     pub(super) origin: Origin,
+    /// The bind mount sources the request gave, by target, other than those the manifest names.
+    pub(super) bindings: std::collections::BTreeMap<SandboxPath, PathBuf>,
 }
 
 impl Prepared {
@@ -138,6 +156,16 @@ impl Prepared {
             (Origin::Local, Origin::Local) => self.source_directory == record.source_directory,
             _ => false,
         }
+    }
+
+    /// Resolves the bind mounts' sources, with the `given` ones, which are canonical, in place of
+    /// the manifest's.
+    pub(super) async fn bind(&mut self, given: &[BindSource]) -> Result<(), Error> {
+        let (optional, bindings) =
+            service::resolve_mount_sources(&mut self.agent, &self.source_directory, given).await?;
+        self.optional_mount_sources = optional;
+        self.bindings = bindings;
+        self.agent.validate()
     }
 
     /// The name of the definition, for an agent named after it.
@@ -152,22 +180,19 @@ impl Prepared {
 impl ControlPlane {
     /// Runs an agent from a definition and starts it.
     ///
-    /// An agent kept until deleted is the one agent for its definition and workspace, so running
-    /// the definition again resumes it, and brings it to the definition as it is now when it can.
-    /// An ephemeral one belongs to the request alone, so each request makes its own, which agentd
-    /// deletes once the client that asked for it is gone. agentd names the agent after the
-    /// definition and the workspace unless the request names it.
+    /// An agent kept until deleted is the one agent for its definition and the folders it is
+    /// given, so running the definition again on them resumes it, and brings it to the definition
+    /// as it is now when it can. An ephemeral one belongs to the request alone, so each request
+    /// makes its own, which agentd deletes once the client that asked for it is gone. agentd names
+    /// the agent after the definition and the folder it is given unless the request names it.
     ///
     /// # Errors
     ///
-    /// Returns an error when the definition is invalid or unknown, the workspace is refused, the
+    /// Returns an error when the definition is invalid or unknown, a folder is refused, the
     /// name belongs to another agent, the agent is being deleted, or it cannot be stored.
     pub async fn run(&self, request: RunRequest) -> Result<(Ran, AgentId), Error> {
         let lifetime = request.lifetime.unwrap_or_default();
-        let workspace = match &request.workspace {
-            Some(path) => Some(self.validate_workspace(path).await?),
-            None => None,
-        };
+        let binds = self.validate_bind_sources(&request.binds).await?;
         // Held until the agent is stored, so cleanup cannot remove the copy of its definition first.
         // It also has requests find or make their agents one at a time. Two that race anyway, with
         // an apply between them, cannot both make the agent, since the store takes a name once.
@@ -188,19 +213,14 @@ impl ControlPlane {
                     .await?
             }
         };
+        Box::pin(prepared.bind(&binds)).await?;
         prepared.agent.spec.set_run_state(crate::RunState::Running);
-        prepared
-            .agent
-            .spec
-            .sandbox
-            .mounts
-            .extend(workspace_mounts(&prepared.agent, workspace.as_deref()).await?);
 
         let ran = loop {
             let records = self.store.list().await?;
             let keeps = |record: &&AgentRecord| {
                 record.lifetime == Lifetime::UntilDeleted
-                    && record.workspace == workspace
+                    && record.bindings == prepared.bindings
                     && prepared.same_definition(record)
                     // Variants share a folder but are different definitions. The manifest of a
                     // definition run by reference moves with each version of it.
@@ -220,7 +240,11 @@ impl ControlPlane {
             } else {
                 prepared.agent.metadata.name = match &request.name {
                     Some(name) => name.clone(),
-                    None => available_name(prepared.base_name(), workspace.as_deref(), &records)?,
+                    None => available_name(
+                        prepared.base_name(),
+                        prepared.bindings.values().next().map(PathBuf::as_path),
+                        &records,
+                    )?,
                 };
                 prepared.agent.validate()?;
                 let mut record = AgentRecord {
@@ -233,7 +257,7 @@ impl ControlPlane {
                     volume_revisions: std::collections::BTreeMap::new(),
                     origin: prepared.origin.clone(),
                     lifetime,
-                    workspace: workspace.clone(),
+                    bindings: prepared.bindings.clone(),
                 };
                 record.agent.metadata.generation = 1;
                 self.reject_exposed_secrets(&record).await?;
@@ -282,7 +306,19 @@ impl ControlPlane {
                 reference: DefinitionReference::Bundled(definition.name().to_owned()).to_string(),
                 digest: definition.digest().to_owned(),
                 path: bundled.snapshots.write(definition).await?,
-                workspace: definition.agent().spec.workspace,
+                slots: definition
+                    .agent()
+                    .spec
+                    .sandbox
+                    .mounts
+                    .iter()
+                    .filter_map(|mount| match mount {
+                        MountSpec::Bind {
+                            source: None, target, ..
+                        } => Some(target.clone()),
+                        _ => None,
+                    })
+                    .collect(),
             });
         }
         Ok(listed)
@@ -345,6 +381,7 @@ impl ControlPlane {
             source_directory: directory,
             env_file: None,
             optional_mount_sources: std::collections::BTreeMap::new(),
+            bindings: std::collections::BTreeMap::new(),
             origin: Origin::Reference {
                 reference: reference.to_string(),
                 digest: definition.digest().to_owned(),
@@ -363,23 +400,33 @@ impl ControlPlane {
     ) -> Result<Prepared, Error> {
         service::validate_request_paths(&source_directory, manifest_path.as_deref(), env_file.as_deref())?;
         agent.clear_managed_fields();
-        let optional_mount_sources = service::resolve_mount_sources(&mut agent, &source_directory).await?;
         agent.validate()?;
         let origin = self.origin_of(&source_directory).await;
-        if let Origin::Reference { reference, .. } = &origin
-            && env_file.is_some()
-        {
-            return Err(Error::Invalid(format!(
-                "agent definition {reference:?} is agentd's and reads no environment file"
-            )));
+        if let Origin::Reference { reference, digest } = &origin {
+            if env_file.is_some() {
+                return Err(Error::Invalid(format!(
+                    "agent definition {reference:?} is agentd's and reads no environment file"
+                )));
+            }
+            // The copy's manifest names its image by `main`'s tag, and a release runs its own tag
+            // of it, so it gets the image running the definition gets.
+            if let Some(definition) = self.bundled.as_ref().and_then(|bundled| {
+                bundled
+                    .definitions
+                    .iter()
+                    .find(|definition| definition.digest() == digest)
+            }) {
+                agent.spec.sandbox.image = definition.agent().spec.sandbox.image;
+            }
         }
         Ok(Prepared {
             agent,
             source_directory,
             manifest_path,
             env_file,
-            optional_mount_sources,
+            optional_mount_sources: std::collections::BTreeMap::new(),
             origin,
+            bindings: std::collections::BTreeMap::new(),
         })
     }
 
@@ -411,35 +458,44 @@ impl ControlPlane {
         }
     }
 
-    /// The canonical form of the workspace `path`, or why agentd refuses to mount it: it must be a
-    /// folder, and must not be or hold the person's home folder or agentd's home, whose secrets and
-    /// state an agent must not reach, nor be inside agentd's home.
-    pub(super) async fn validate_workspace(&self, path: &Path) -> Result<PathBuf, Error> {
+    /// The `given` bind mount sources, each canonical, or why agentd refuses to mount one.
+    pub(super) async fn validate_bind_sources(&self, given: &[BindSource]) -> Result<Vec<BindSource>, Error> {
+        let mut validated = Vec::with_capacity(given.len());
+        for bind in given {
+            validated.push(BindSource {
+                source: self.validate_bind_source(&bind.source).await?,
+                target: bind.target.clone(),
+            });
+        }
+        Ok(validated)
+    }
+
+    /// The canonical form of the folder `path`, given for a bind mount, or why agentd refuses to
+    /// mount it: it must be a folder, and must not be or hold the person's home folder or agentd's
+    /// home, whose secrets and state an agent must not reach, nor be inside agentd's home.
+    async fn validate_bind_source(&self, path: &Path) -> Result<PathBuf, Error> {
         if !path.is_absolute() {
             return Err(Error::Invalid(format!(
-                "workspace {} must be an absolute path",
+                "folder {} must be an absolute path",
                 path.display()
             )));
         }
-        let workspace = tokio::fs::canonicalize(path)
+        let folder = tokio::fs::canonicalize(path)
             .await
-            .map_err(|error| Error::Invalid(format!("workspace {} cannot be resolved: {error}", path.display())))?;
-        if !tokio::fs::metadata(&workspace).await?.is_dir() {
-            return Err(Error::Invalid(format!(
-                "workspace {} must be a folder",
-                workspace.display()
-            )));
+            .map_err(|error| Error::Invalid(format!("folder {} cannot be resolved: {error}", path.display())))?;
+        if !tokio::fs::metadata(&folder).await?.is_dir() {
+            return Err(Error::Invalid(format!("{} must be a folder", folder.display())));
         }
         let home = match self.bundled.as_ref() {
             Some(bundled) => Some(canonical(&bundled.home).await),
             None => None,
         };
         if let Some(home) = &home
-            && workspace.starts_with(home)
+            && folder.starts_with(home)
         {
             return Err(Error::Invalid(format!(
-                "workspace {} is in agentd's home {}, which holds its state",
-                workspace.display(),
+                "folder {} is in agentd's home {}, which holds its state",
+                folder.display(),
                 home.display()
             )));
         }
@@ -447,17 +503,17 @@ impl ControlPlane {
             crate::local::home::user_home_directory().map(|user| (user, "your home folder")),
             home.map(|home| (home, "agentd's home, which holds its state,")),
         ];
-        for (folder, what) in protected.into_iter().flatten() {
-            let folder = canonical(&folder).await;
-            if folder.starts_with(&workspace) {
+        for (protected, what) in protected.into_iter().flatten() {
+            let protected = canonical(&protected).await;
+            if protected.starts_with(&folder) {
                 return Err(Error::Invalid(format!(
-                    "workspace {} is or holds {what} {}; name the folder of one project instead",
-                    workspace.display(),
-                    folder.display()
+                    "folder {} is or holds {what} {}; name the folder of one project instead",
+                    folder.display(),
+                    protected.display()
                 )));
             }
         }
-        Ok(workspace)
+        Ok(folder)
     }
 
     /// Brings `current` to the agent `prepared` declares when it can change in place, and says
@@ -520,75 +576,11 @@ impl ControlPlane {
     }
 }
 
-/// The bind mounts that give `agent` its workspace as `spec.workspace` allows, in a folder of the
-/// sandbox's working directory named as the workspace is. A folder the agent may change but the
-/// workspace lacks is made, since the sandbox cannot make a mount point in a read-only mount.
-///
-/// # Errors
-///
-/// Returns [`Error::Invalid`] when the agent declares a workspace and has none, or has one it does
-/// not declare.
-pub(super) async fn workspace_mounts(agent: &Agent, workspace: Option<&Path>) -> Result<Vec<MountSpec>, Error> {
-    let spec = match (&agent.spec.workspace, workspace) {
-        (None, None) => return Ok(Vec::new()),
-        (Some(spec), Some(_)) => spec,
-        (None, Some(_)) => {
-            return Err(Error::Invalid(format!(
-                "agent {:?} takes no workspace, as its definition has no spec.workspace",
-                agent.metadata.name
-            )));
-        }
-        (Some(_), None) => {
-            return Err(Error::Invalid(format!(
-                "agent {:?} needs a workspace, the folder it works on, as its definition has spec.workspace",
-                agent.metadata.name
-            )));
-        }
-    };
-    let workspace = workspace.unwrap_or_else(|| Path::new(""));
-    let working = crate::sandbox::platform::working_directory(&agent.spec.sandbox.platform.os).ok_or_else(|| {
-        Error::Invalid(format!(
-            "agentd has no working directory on {:?} to mount a workspace in",
-            agent.spec.sandbox.platform.os
-        ))
-    })?;
-    let name = workspace
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| Error::Invalid(format!("workspace {} needs a UTF-8 folder name", workspace.display())))?;
-    let target = |relative: &Path| {
-        let mut target = format!("{working}/{name}");
-        for part in relative.components() {
-            target.push('/');
-            target.push_str(&part.as_os_str().to_string_lossy());
-        }
-        SandboxPath::new(target)
-    };
-    let WorkspaceSpec { read_only, writable } = spec;
-    let mut mounts = vec![MountSpec::Bind {
-        source: workspace.to_path_buf(),
-        target: target(Path::new("")),
-        read_only: *read_only,
-        optional: false,
-    }];
-    for folder in writable {
-        let source = workspace.join(folder);
-        tokio::fs::create_dir_all(&source).await?;
-        mounts.push(MountSpec::Bind {
-            source: canonical(&source).await,
-            target: target(folder),
-            read_only: false,
-            optional: false,
-        });
-    }
-    Ok(mounts)
-}
-
-/// The name of a new agent of the definition named `definition`: its name, followed by the
-/// workspace folder's, and a number when an agent has that name already.
-fn available_name(definition: &str, workspace: Option<&Path>, records: &[AgentRecord]) -> Result<String, Error> {
+/// The name of a new agent of the definition named `definition`: its name, followed by the name
+/// of the folder it was given, and a number when an agent has that name already.
+fn available_name(definition: &str, folder: Option<&Path>, records: &[AgentRecord]) -> Result<String, Error> {
     const MAX: usize = 63;
-    let folder = workspace
+    let folder = folder
         .and_then(Path::file_name)
         .and_then(|name| name.to_str())
         .map(name_part)
@@ -677,7 +669,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_name_is_the_definitions_and_the_workspace_folders() {
+    fn a_name_is_the_definitions_and_the_given_folders() {
         assert_eq!(
             available_name("builder", Some(Path::new("/src/My_Repo.git")), &[]).ok(),
             Some("builder-my-repo-git".into())
