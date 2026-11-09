@@ -24,7 +24,7 @@ use super::{
 pub(crate) use command::run_checked;
 use command::{checked_output, path_exists};
 use home::{archive_home, sync_home};
-use kvm::grant_kvm;
+use kvm::prepare_nested_sandboxes;
 use podman::{configure_podman, point_podman_at_socket};
 use sources::{read_instructions, read_skills};
 use systemd::{SYSTEMCTL, SYSTEMD_RUNNING, systemd_available, wait_for_systemd};
@@ -57,6 +57,7 @@ pub(crate) const PORTABLE_TERMINAL: &str = "xterm-256color";
 /// Agent setup for Linux sandboxes.
 pub struct Linux {
     platform_api_url: String,
+    nested_huge_pages: bool,
 }
 
 impl Linux {
@@ -66,7 +67,16 @@ impl Linux {
     pub fn new(platform_api_url: impl Into<String>) -> Self {
         Self {
             platform_api_url: platform_api_url.into(),
+            nested_huge_pages: cfg!(target_os = "macos"),
         }
+    }
+
+    /// Sets whether setup backs an agent's nested sandboxes with huge pages. It defaults to whether the host
+    /// is macOS, the only host whose hypervisor makes nested sandboxes slow without them.
+    #[must_use]
+    pub const fn with_nested_huge_pages(mut self, enabled: bool) -> Self {
+        self.nested_huge_pages = enabled;
+        self
     }
 }
 
@@ -144,7 +154,7 @@ impl Linux {
         let step = steps.start_step("Prepare workspace and Podman").await;
         run_checked(sandbox, "/usr/bin/install", ["-d", "-m", "0755", WORKING_DIRECTORY]).await?;
         let podman = configure_podman(sandbox).await?;
-        let kvm = grant_kvm(sandbox).await?;
+        let kvm = prepare_nested_sandboxes(sandbox, self.nested_huge_pages).await?;
         step.complete().await;
         mount_writable_volumes(record, sandbox, steps).await?;
         let step = steps.start_step("Sync home").await;

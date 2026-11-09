@@ -1166,6 +1166,88 @@ async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
         .expect("setup without a declared version");
 }
 
+fn is_presence_check(spec: &sandbox::execution::ExecutionSpec, test: &str, path: &str) -> bool {
+    matches!(
+        spec.program(),
+        Program::Command { executable, args }
+            if executable.as_str() == "/usr/bin/test" && args == &[test, path]
+    )
+}
+
+/// Whether `spec` switches the guest kernel's transparent huge page policy and defragmentation to `always`.
+fn is_huge_page_switch(spec: &sandbox::execution::ExecutionSpec) -> bool {
+    matches!(
+        spec.program(),
+        Program::Command { executable, args }
+            if executable.as_str() == "/usr/bin/sudo"
+                && args == &["-n", "/bin/sh", "-c", "echo always > /sys/kernel/mm/transparent_hugepage/enabled && echo always > /sys/kernel/mm/transparent_hugepage/defrag"]
+    )
+}
+
+/// With nested huge pages on, setup switches the guest to huge pages when it has `/dev/kvm` and a kernel with huge
+/// pages, and a guest that refuses the switch still finishes setup.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_enables_huge_pages_only_for_nested_sandboxes() {
+    // (nested huge pages, has /dev/kvm, kernel has huge pages, the switch succeeds, expected switches)
+    for (enabled, kvm, huge_pages, accepted, switches) in [
+        (true, true, true, true, 1),
+        (false, true, true, true, 0),
+        (true, false, true, true, 0),
+        (true, true, false, true, 0),
+        (true, true, true, false, 1),
+    ] {
+        let directory = TempDir::new().expect("temporary directory");
+        let home = directory.path().join("home");
+        std::fs::create_dir_all(&home).expect("home directory");
+        std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
+        let mut resource = support::agent("worker");
+        resource.metadata.generation = 1;
+        resource.spec.home = Some(HomeSpec { source: home });
+        let record = AgentRecord {
+            id: "8d1b0d3e-3c55-4a8f-9e0a-2f3f1f6c9b21".parse().expect("Agent ID"),
+            source_directory: PathBuf::from(directory.path()),
+            manifest_path: None,
+            env_file: None,
+            agent: resource,
+            optional_mount_sources: std::collections::BTreeMap::new(),
+            volume_revisions: std::collections::BTreeMap::new(),
+            origin: agent::Origin::Local,
+            lifetime: agent::Lifetime::UntilDeleted,
+            bindings: std::collections::BTreeMap::new(),
+        };
+        let backend = Rc::new(memory::Provider::new());
+        if !kvm {
+            backend.queue_execution_events_matching(|spec| is_presence_check(spec, "-c", "/dev/kvm"), completed(1));
+        }
+        if !huge_pages {
+            backend.queue_execution_events_matching(
+                |spec| is_presence_check(spec, "-f", "/sys/kernel/mm/transparent_hugepage/enabled"),
+                completed(1),
+            );
+        }
+        if !accepted {
+            backend.queue_execution_events_matching(is_huge_page_switch, completed(1));
+        }
+        let sandbox = claude_sandbox_on(backend.clone(), &record, 1).await;
+
+        Linux::new(PLATFORM_API_URL)
+            .with_nested_huge_pages(enabled)
+            .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+            .await
+            .expect("setup");
+
+        assert_eq!(
+            backend
+                .execution_specs()
+                .iter()
+                .filter(|spec| is_huge_page_switch(spec))
+                .count(),
+            switches,
+            "nested huge pages: {enabled}, /dev/kvm: {kvm}, huge pages in the kernel: {huge_pages}"
+        );
+    }
+}
+
 /// A restarted `agentd` listens on a new port; its first setup pass moves harnesses that kept
 /// running onto it.
 #[tokio::test(flavor = "local")]
