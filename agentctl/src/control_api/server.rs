@@ -26,6 +26,9 @@ use super::protocol::{
     ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams,
     SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
 };
+use super::protocol::{
+    METHOD_SECRET_LIST, METHOD_SECRET_REMOVE, METHOD_SECRET_SET, SecretRemoveResult, SecretSetParams,
+};
 
 /// Quiet period after a change before a progress reply, so a burst of byte
 /// progress costs one reply.
@@ -278,6 +281,43 @@ pub trait AccountsApi {
 
     /// The kept logins of every type, without their credentials.
     fn list(&self) -> LocalFuture<'_, Result<Vec<crate::accounts::Account>, Error>>;
+}
+
+/// The secrets stored under a name, exposed through the local control API.
+pub trait SecretsApi {
+    /// Stores `value` as the secret `name`, for `allowed_hosts`, or for the hosts it already has
+    /// when `None`.
+    fn set<'a>(
+        &'a self,
+        name: &'a str,
+        value: &'a str,
+        allowed_hosts: Option<Vec<String>>,
+    ) -> LocalFuture<'a, Result<crate::secrets::Secret, Error>>;
+
+    /// Every stored secret, without its value.
+    fn list(&self) -> LocalFuture<'_, Result<Vec<crate::secrets::Secret>, Error>>;
+
+    /// Removes the secret `name`, returning it, or `None` when there was none.
+    fn remove<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Option<crate::secrets::Secret>, Error>>;
+}
+
+impl SecretsApi for crate::secrets::Secrets {
+    fn set<'a>(
+        &'a self,
+        name: &'a str,
+        value: &'a str,
+        allowed_hosts: Option<Vec<String>>,
+    ) -> LocalFuture<'a, Result<crate::secrets::Secret, Error>> {
+        Box::pin(self.set(name, zeroize::Zeroizing::new(value.to_owned()), allowed_hosts))
+    }
+
+    fn list(&self) -> LocalFuture<'_, Result<Vec<crate::secrets::Secret>, Error>> {
+        Box::pin(self.list())
+    }
+
+    fn remove<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Option<crate::secrets::Secret>, Error>> {
+        Box::pin(self.remove(name))
+    }
 }
 
 impl AccountsApi for crate::accounts::Accounts {
@@ -575,6 +615,7 @@ pub struct Server {
     vnc: Rc<dyn VncAccessApi>,
     volumes: Option<Rc<dyn VolumeApi>>,
     accounts: Option<Rc<dyn AccountsApi>>,
+    secrets: Option<Rc<dyn SecretsApi>>,
     changes: Changes,
     on_error: ErrorHandler,
     lifecycle: Lifecycle,
@@ -608,6 +649,7 @@ impl Server {
             vnc,
             volumes: None,
             accounts: None,
+            secrets: None,
             changes,
             on_error,
             lifecycle: Lifecycle::default(),
@@ -625,6 +667,13 @@ impl Server {
     #[must_use]
     pub fn with_accounts(mut self, accounts: Rc<dyn AccountsApi>) -> Self {
         self.accounts = Some(accounts);
+        self
+    }
+
+    /// Serves the secrets stored under a name as well.
+    #[must_use]
+    pub fn with_secrets(mut self, secrets: Rc<dyn SecretsApi>) -> Self {
+        self.secrets = Some(secrets);
         self
     }
 
@@ -780,6 +829,9 @@ impl Server {
                 Some(accounts) => result_response(request.id, accounts.list().await),
                 None => accounts_unavailable(request.id),
             },
+            METHOD_SECRET_SET => Box::pin(self.handle_secret_set(request.id, request.params)).await,
+            METHOD_SECRET_LIST => Box::pin(self.handle_secret_list(request.id)).await,
+            METHOD_SECRET_REMOVE => Box::pin(self.handle_secret_remove(request.id, request.params)).await,
             METHOD_SESSION_ENSURE => self.handle_session_ensure(request.id, request.params).await,
             METHOD_SESSION_GET => self.handle_session_get(request.id, request.params).await,
             METHOD_SESSION_LIST => self.handle_session_list(request.id, request.params).await,
@@ -1144,6 +1196,75 @@ impl Server {
         }
     }
 
+    async fn handle_secret_set(&self, id: u64, value: Value) -> Response {
+        // The parser's message could quote the value, so it is never passed on.
+        let Ok(params) = serde_json::from_value::<SecretSetParams>(value) else {
+            return error_response(
+                id,
+                CODE_INVALID_PARAMS,
+                "name and value are required, and allowedHosts is a list of hosts",
+            );
+        };
+        let Some(secrets) = &self.secrets else {
+            return secrets_unavailable(id);
+        };
+        let stored = secrets.set(&params.name, &params.value, params.allowed_hosts).await;
+        match stored {
+            Ok(secret) => result_response(id, Ok::<_, Error>(self.wake_secret_users(secret).await)),
+            Err(error) => result_response(id, Err::<(), _>(error)),
+        }
+    }
+
+    async fn handle_secret_list(&self, id: u64) -> Response {
+        let Some(secrets) = &self.secrets else {
+            return secrets_unavailable(id);
+        };
+        let report = async {
+            let stored = secrets.list().await?;
+            Ok::<_, Error>(crate::secrets::report(stored, &self.agents.list().await?))
+        };
+        result_response(id, report.await)
+    }
+
+    async fn handle_secret_remove(&self, id: u64, value: Value) -> Response {
+        let params = match name_params(value) {
+            Ok(params) => params,
+            Err(response) => return response_with_id(id, response),
+        };
+        let Some(secrets) = &self.secrets else {
+            return secrets_unavailable(id);
+        };
+        let removed = match secrets.remove(&params.name).await {
+            Ok(Some(secret)) => Some(self.wake_secret_users(secret).await),
+            Ok(None) => None,
+            Err(error) => return result_response(id, Err::<(), _>(error)),
+        };
+        result_response(id, Ok::<_, Error>(SecretRemoveResult { removed }))
+    }
+
+    /// Reports `secret` with the agents that use it, and re-converges those agents, so a changed
+    /// host list or a secret now stored or gone reaches them at once.
+    async fn wake_secret_users(&self, secret: crate::secrets::Secret) -> crate::secrets::SecretReport {
+        let agents = self.agents.list().await.unwrap_or_else(|error| {
+            self.report(&error);
+            Vec::new()
+        });
+        let mut report = crate::secrets::report(vec![secret.clone()], &agents).secrets;
+        let report = report.pop().unwrap_or(crate::secrets::SecretReport {
+            secret,
+            used_by: Vec::new(),
+        });
+        let mut woken = std::collections::BTreeSet::new();
+        for used in &report.used_by {
+            if woken.insert(used.agent.as_str())
+                && let Err(error) = self.convergence.wake(&used.agent).await
+            {
+                self.report(&error);
+            }
+        }
+        report
+    }
+
     async fn handle_session_ensure(&self, id: u64, value: Value) -> Response {
         let params = match serde_json::from_value::<SessionEnsureParams>(value) {
             Ok(params) => params,
@@ -1334,6 +1455,8 @@ fn is_mutating(method: &str) -> bool {
             | METHOD_AUTH_LOGOUT
             | METHOD_ACCOUNT_LOGIN
             | METHOD_ACCOUNT_LOGOUT
+            | METHOD_SECRET_SET
+            | METHOD_SECRET_REMOVE
             | METHOD_SESSION_ENSURE
             | METHOD_SESSION_PROMPT
             | METHOD_SESSION_DELETE
@@ -1351,6 +1474,10 @@ fn name_params(value: Value) -> Result<NameParams, Response> {
 
 fn accounts_unavailable(id: u64) -> Response {
     error_response(id, CODE_METHOD_NOT_FOUND, "this agentd keeps no account logins")
+}
+
+fn secrets_unavailable(id: u64) -> Response {
+    error_response(id, CODE_METHOD_NOT_FOUND, "this agentd stores no secrets")
 }
 
 fn volumes_unavailable(id: u64) -> Response {

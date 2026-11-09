@@ -12,13 +12,14 @@ use super::protocol::{
     METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN,
     METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE,
     METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
-    METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
-    METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
-    METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
-    METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST,
-    METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, ProgressParams, ReadMessage, Request,
-    ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams,
-    SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
+    METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SECRET_LIST, METHOD_SECRET_REMOVE, METHOD_SECRET_SET,
+    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
+    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
+    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
+    METHOD_VOLUME_GET, METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, ProgressParams,
+    ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SecretRemoveResult, SecretSetParams,
+    SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams,
+    ShutdownResult, read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -464,6 +465,50 @@ impl Client {
     /// Returns an error when the daemon cannot be reached or cannot read its database.
     pub async fn accounts(&self) -> Result<Vec<crate::accounts::Account>, Error> {
         self.call(METHOD_ACCOUNT_LIST, serde_json::json!({})).await
+    }
+
+    /// Has agentd store `value` as the secret `name`, for `allowed_hosts`, or for the hosts it
+    /// already has when `None`, then re-converge the agents that use it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name, value or a host is invalid, when a new secret has no hosts,
+    /// or when it cannot be stored. No error contains the value.
+    pub async fn secret_set(
+        &self,
+        name: &str,
+        value: &str,
+        allowed_hosts: Option<Vec<String>>,
+    ) -> Result<crate::secrets::SecretReport, Error> {
+        let params = SecretSetParams {
+            name: name.to_owned(),
+            value: value.to_owned(),
+            allowed_hosts,
+        };
+        self.call(METHOD_SECRET_SET, params).await
+    }
+
+    /// The stored secrets with the agents that use them, and the secrets agents ask for that are
+    /// not stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or cannot read its database.
+    pub async fn secrets(&self) -> Result<crate::secrets::SecretsReport, Error> {
+        self.call(METHOD_SECRET_LIST, serde_json::json!({})).await
+    }
+
+    /// Removes the secret `name`, returning it with the agents that used it, or `None` when there
+    /// was none, then re-converges those agents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon cannot be reached or cannot update its database.
+    pub async fn secret_remove(&self, name: &str) -> Result<Option<crate::secrets::SecretReport>, Error> {
+        let result: SecretRemoveResult = self
+            .call(METHOD_SECRET_REMOVE, NameParams { name: name.into() })
+            .await?;
+        Ok(result.removed)
     }
 
     /// Creates or resolves one named session attach target.

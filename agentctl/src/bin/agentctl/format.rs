@@ -52,6 +52,37 @@ pub(crate) fn vnc_access_lines(access: &agent::vnc::AccessInfo, home: &Path) -> 
     ]
 }
 
+/// Where an agent's secrets come from: the environment file, and the secrets stored under a name.
+fn secret_sources(agent: &Agent) -> String {
+    let mut sources = Vec::new();
+    if agent.spec.reads_secret_file()
+        && let Some(provenance) = &agent.status.provenance
+    {
+        sources.push(
+            provenance
+                .env_file
+                .clone()
+                .unwrap_or_else(|| provenance.source_directory.join(agent::control_plane::ENV_FILE))
+                .display()
+                .to_string(),
+        );
+    }
+    let stored = agent
+        .spec
+        .secrets
+        .iter()
+        .filter_map(|secret| secret.name.as_deref())
+        .collect::<Vec<_>>();
+    if !stored.is_empty() {
+        sources.push(format!("stored {}", stored.join(", ")));
+    }
+    if sources.is_empty() {
+        "-".to_owned()
+    } else {
+        sources.join("; ")
+    }
+}
+
 pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
     let provider = agent
         .status
@@ -80,21 +111,7 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
         ),
     };
 
-    let secrets = if agent.spec.secrets.is_empty() {
-        "-".to_owned()
-    } else {
-        agent.status.provenance.as_ref().map_or_else(
-            || "-".into(),
-            |provenance| {
-                provenance
-                    .env_file
-                    .clone()
-                    .unwrap_or_else(|| provenance.source_directory.join(agent::control_plane::ENV_FILE))
-                    .display()
-                    .to_string()
-            },
-        )
-    };
+    let secrets = secret_sources(agent);
 
     let mut lines = vec![
         format!("Name:       {}", agent.metadata.name),
@@ -229,7 +246,7 @@ fn measurement(measurement: Option<sandbox::progress::Measurement>) -> String {
 
 pub(crate) const fn failure_kind(kind: agent::FailureKind) -> &'static str {
     match kind {
-        agent::FailureKind::Invalid => "Invalid (change the agent to continue)",
+        agent::FailureKind::Invalid => "Invalid (waits for the change Ready names)",
         agent::FailureKind::Transient => "Transient (retrying in the background)",
     }
 }
@@ -547,6 +564,12 @@ mod tests {
 
         let lines = describe_agent_lines(&agent);
         assert!(lines.contains(&"Failure:    Transient (retrying in the background)".to_owned()));
+        // What Ready names may be outside the agent, such as a secret to store, so the line does not
+        // send the reader to change the agent.
+        agent.status.failure = Some(agent::FailureKind::Invalid);
+        assert!(
+            describe_agent_lines(&agent).contains(&"Failure:    Invalid (waits for the change Ready names)".to_owned())
+        );
         for expected in [
             "Provisioning:",
             "  Failed: registry unavailable",

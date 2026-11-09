@@ -40,9 +40,15 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 - `spec.accounts` gives an agent a GitHub account, through a login kept under a name such as `altinn-studio`, and its token never enters the agent's sandbox: ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#346](https://github.com/digdir/digdir-agents/issues/346))
   - `agentctl github login NAME` opens GitHub's pre-filled form for a fine-grained token, or reads a classic token or `gh auth token` with `--from-stdin`
   - `agentctl github list` and `logout` show and forget logins, and `list` names those agents ask for that are missing
+- `name: NAME` in `spec.secrets` takes the value from a secret stored on this machine instead of the environment file, so agents share it and a new value reaches them at once: ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#346](https://github.com/digdir/digdir-agents/issues/346))
+  - `agentctl secret set NAME --hosts HOST` stores one, used only at those hosts, which `allowedHosts` on the entry can narrow
+  - `agentctl secret list` and `remove` show and remove them, and `list` names those agents ask for that are missing
+  - a definition you `agentctl run` without an environment file, such as one agentd carries, can use them too
+- `value` on an entry of `spec.environment` gives a plain value in the manifest, so it needs no environment file. ([moving off the environment file](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/moving-off-the-environment-file.md))
 
 ### Changed
 
+- Breaking: the self-dev and dotnet-dev agents take GitHub from `agentctl github login default` and Pi's key from `agentctl secret set aivar --hosts api.aivar.no`, instead of `.env`. Run both before applying them again, or they run without GitHub and Pi. ([moving off the environment file](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/moving-off-the-environment-file.md))
 - Applying a manifest that adds, removes or renames instruction files or skills updates the agent in place, keeping its disk and sessions, instead of being refused. A skill the agent no longer declares is removed from its harnesses, while the skills its image ships stay.
 - The Agent sandbox section at the top of an agent's instructions now tells the agent that what it sends through the host, such as pushes, pull requests, comments and API calls, reaches real services and people. ([#372](https://github.com/digdir/digdir-agents/pull/372))
 - Newly created agents using the shared images ship Claude Code 2.1.321, Codex CLI 0.167.0 and Pi 1.5.0. ([#392](https://github.com/digdir/digdir-agents/pull/392), [#434](https://github.com/digdir/digdir-agents/pull/434))
@@ -67,6 +73,10 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 ### Removed
 
 - Breaking: the shared images no longer have `media-preview` and `video-to-gif`. Check a recording with `media check` instead, and attach a page or desktop recording as WebM or MP4, which GitHub plays, rather than as a GIF. ([#418](https://github.com/digdir/digdir-agents/pull/418))
+
+### Deprecated
+
+- An agent's environment file, `.env` or the file `--env-file` names: a later release stops reading it. Move a GitHub token and Git's name and email to `spec.accounts`, keys to stored secrets, and plain values to `value`. `agentctl describe` names what an agent still reads. ([moving off the environment file](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/moving-off-the-environment-file.md), [#346](https://github.com/digdir/digdir-agents/issues/346))
 
 ## [0.1.0-preview.13] - 2026-10-26
 

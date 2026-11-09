@@ -1,0 +1,78 @@
+# Moving off the environment file
+
+A later release of agentctl stops reading values from an agent's environment file, the `.env` beside its manifest or
+the file `--env-file` named. The file sat in or near a checkout, where it was easy to commit or to mount into an
+agent, and every agent kept its own copy of the same keys. Each kind of value now has a place of its own.
+
+`agentctl describe agent/NAME` shows the agents that still read the file: their `EnvironmentFile` condition names the
+variables to move. Once you have moved them, apply the agent again, and delete the file when no agent reads it.
+
+## A GitHub token, and Git's name and email
+
+Sign in to GitHub under a name, and give the agent that account. It gets a `GITHUB_TOKEN` for GitHub's hosts, and Git
+commits as the account, so it no longer needs `GIT_USER_NAME` and `GIT_USER_EMAIL`:
+
+```sh
+agentctl github login default
+```
+
+```yaml
+spec:
+  accounts:
+    - type: github
+      login: default
+  # Remove the GITHUB_TOKEN secret, and GIT_USER_NAME and GIT_USER_EMAIL from environment.
+```
+
+## An API key, or another secret
+
+Store it under a name, with the hosts its value may reach, and ask for it by that name:
+
+```sh
+agentctl secret set aivar --hosts api.aivar.no
+```
+
+```yaml
+spec:
+  secrets:
+    - name: aivar
+      environment: AIVAR_API_KEY
+```
+
+Every agent that names it shares the stored value, and `agentctl secret set` replaces it for all of them at once.
+`allowedHosts` on the entry narrows the secret's hosts for this agent.
+
+## A plain value
+
+Give a value that is the same for everyone in the manifest itself. The agent sees it as it is, so never give a secret
+this way:
+
+```yaml
+spec:
+  environment:
+    - name: DOTNET_CLI_TELEMETRY_OPTOUT
+      value: "1"
+```
+
+A value of your own goes in a variant of your own beside the manifest, such as `agent.mine.yaml`, which you keep out of
+Git. A variant replaces a list rather than adding to it, so it repeats the entries it keeps:
+
+```yaml
+apiVersion: agents.platform/v1alpha1
+kind: AgentVariant
+extends: agent.yaml
+spec:
+  environment:
+    - name: EDITOR
+      value: vim
+```
+
+## Inside an agent
+
+An agent that runs agents of its own stores their secrets from its own variables. These hold placeholders, which the
+host it runs on replaces with the real values in requests to their hosts, so the agents it runs reach them too:
+
+```sh
+printf '%s' "$GITHUB_TOKEN" | agentctl github login default --from-stdin
+printf '%s' "$AIVAR_API_KEY" | agentctl secret set aivar --hosts api.aivar.no --from-stdin
+```

@@ -136,7 +136,7 @@ async fn open_sandboxes(
 async fn run_control_plane(home: ControlPlaneHome, database: persistence::Database) -> Result<(), Error> {
     let store = Rc::new(database.clone());
     let credentials = Rc::new(agent::harness::AuthenticationManager::new(database.clone()));
-    let policy = Rc::new(agent::authorization::AgentPolicyEngine::new());
+    let policy = Rc::new(agent::authorization::AgentPolicyEngine::new().with_stored_secrets(database.clone()));
     let platform_api_listener = agent::platform_api::bind().await?;
     // Earlier releases reused a port persisted here; nothing reads it any more.
     // TODO: Remove with `AGENT_SESSION_HOOK_URL` in the session launch environment.
@@ -241,7 +241,8 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
             Rc::new(|error| tracing::error!(%error, "Control API connection failed")),
         )
         .with_volumes(volumes)
-        .with_accounts(Rc::new(agent::accounts::Accounts::new(database.clone()))),
+        .with_accounts(Rc::new(agent::accounts::Accounts::new(database.clone())))
+        .with_secrets(Rc::new(agent::secrets::Secrets::new(database.clone()))),
     );
     let mut controller_task = tokio::task::spawn_local(controller.run());
     let mut session_controller_task = tokio::task::spawn_local(session_controller.run());

@@ -217,10 +217,13 @@ fn check_contained(agent: &Agent, files: &BTreeMap<String, DefinitionFile>) -> R
              leave it out, and whoever runs the definition gives the folder"
         ));
     }
-    if !spec.environment.is_empty() || !spec.secrets.is_empty() {
-        return Err(
-            "spec.environment and spec.secrets read an environment file, which a bundled definition has none of".into(),
-        );
+    let from_file = spec.environment_file_variables();
+    if !from_file.is_empty() {
+        return Err(format!(
+            "it reads {} from an environment file, which a bundled definition has none of; give a plain value \
+             with `value`, and name a secret stored on the machine with `name`",
+            from_file.join(", ")
+        ));
     }
     let holds_file = |path: &str| files.contains_key(path);
     let holds_folder = |path: &str| {

@@ -6,7 +6,10 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 
 use crate::{AgentId, Error};
 
-use super::{ProviderAccountWrite, StoredSecret, agent_secret_name, agent_secret_prefix, database_error};
+use super::{
+    NamedSecret, NamedSecretWrite, ProviderAccountWrite, StoredSecret, agent_secret_name, agent_secret_prefix,
+    database_error, named_secret_name,
+};
 
 pub(super) fn set_secret(connection: &Connection, name: &str, value: &[u8]) -> Result<(), Error> {
     connection
@@ -152,4 +155,99 @@ pub(super) fn delete_provider_account(
         .execute("DELETE FROM provider_accounts WHERE provider = ?1", [provider])
         .map_err(database_error)?;
     transaction.commit().map_err(database_error)
+}
+
+const NAMED_SECRET_COLUMNS: &str = "substr(name, length(?1) + 1), allowed_hosts_json, created_at, updated_at";
+
+/// Stores a secret under a name, replacing its value and, when given, its hosts. A new secret needs
+/// hosts, so it is not stored without them, and `None` says so.
+pub(super) fn put_named_secret(
+    connection: &mut Connection,
+    secret: &NamedSecretWrite,
+) -> Result<Option<NamedSecret>, Error> {
+    let transaction = connection.transaction().map_err(database_error)?;
+    if secret.allowed_hosts_json.is_none() && named_secret(&transaction, &secret.name)?.is_none() {
+        return Ok(None);
+    }
+    transaction
+        .execute(
+            "INSERT INTO secrets (name, value, allowed_hosts_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(name) DO UPDATE SET
+                 value = excluded.value,
+                 allowed_hosts_json = coalesce(excluded.allowed_hosts_json, secrets.allowed_hosts_json),
+                 updated_at = excluded.updated_at",
+            params![
+                named_secret_name(&secret.name),
+                secret.value.as_slice(),
+                secret.allowed_hosts_json,
+                secret.at
+            ],
+        )
+        .map_err(database_error)?;
+    let stored = named_secret(&transaction, &secret.name)?;
+    transaction.commit().map_err(database_error)?;
+    Ok(stored)
+}
+
+/// Replaces the hosts of the secret stored under `name`, keeping its value, when there is one.
+pub(super) fn set_named_secret_hosts(
+    connection: &Connection,
+    name: &str,
+    allowed_hosts_json: &str,
+    at: i64,
+) -> Result<(), Error> {
+    connection
+        .execute(
+            "UPDATE secrets SET allowed_hosts_json = ?2, updated_at = ?3 WHERE name = ?1",
+            params![named_secret_name(name), allowed_hosts_json, at],
+        )
+        .map(|_| ())
+        .map_err(database_error)
+}
+
+/// The secret stored under `name`, without its value.
+pub(super) fn named_secret(connection: &Connection, name: &str) -> Result<Option<NamedSecret>, Error> {
+    connection
+        .query_row(
+            &format!("SELECT {NAMED_SECRET_COLUMNS} FROM secrets WHERE name = ?1 || ?2"),
+            params![named_secret_name(""), name],
+            named_secret_row,
+        )
+        .optional()
+        .map_err(database_error)
+}
+
+/// Every secret stored under a name, by name, without their values.
+pub(super) fn named_secrets(connection: &Connection) -> Result<Vec<NamedSecret>, Error> {
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT {NAMED_SECRET_COLUMNS} FROM secrets WHERE substr(name, 1, length(?1)) = ?1 ORDER BY name"
+        ))
+        .map_err(database_error)?;
+    statement
+        .query_map([named_secret_name("")], named_secret_row)
+        .map_err(database_error)?
+        .collect::<Result<_, _>>()
+        .map_err(database_error)
+}
+
+/// Removes the secret stored under `name`, returning it, or `None` when there was none.
+pub(super) fn delete_named_secret(connection: &mut Connection, name: &str) -> Result<Option<NamedSecret>, Error> {
+    let transaction = connection.transaction().map_err(database_error)?;
+    let removed = named_secret(&transaction, name)?;
+    if removed.is_some() {
+        delete_secret(&transaction, &named_secret_name(name))?;
+    }
+    transaction.commit().map_err(database_error)?;
+    Ok(removed)
+}
+
+fn named_secret_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NamedSecret> {
+    Ok(NamedSecret {
+        name: row.get(0)?,
+        allowed_hosts_json: row.get(1)?,
+        created_at: row.get(2)?,
+        updated_at: row.get(3)?,
+    })
 }

@@ -79,10 +79,12 @@ fn decodes_explicit_non_secret_environment_with_an_optional_source() {
         EnvironmentSpec {
             name: "GIT_USER_NAME".into(),
             source: Some("HOST_GIT_NAME".into()),
+            value: None,
         },
         EnvironmentSpec {
             name: "GIT_USER_EMAIL".into(),
             source: None,
+            value: None,
         },
     ];
 
@@ -90,8 +92,8 @@ fn decodes_explicit_non_secret_environment_with_an_optional_source() {
     let decoded = manifest::decode(encoded.as_bytes()).expect("manifest environment");
 
     assert_eq!(decoded.spec.environment[0].name, "GIT_USER_NAME");
-    assert_eq!(decoded.spec.environment[0].source(), "HOST_GIT_NAME");
-    assert_eq!(decoded.spec.environment[1].source(), "GIT_USER_EMAIL");
+    assert_eq!(decoded.spec.environment[0].source(), Some("HOST_GIT_NAME"));
+    assert_eq!(decoded.spec.environment[1].source(), Some("GIT_USER_EMAIL"));
 }
 
 #[test]
@@ -103,6 +105,7 @@ fn optional_secret_round_trips_without_changing_the_required_default() {
         placeholder: None,
         allowed_hosts: vec!["example.com".into()],
         source: None,
+        name: None,
     });
 
     let encoded = serde_yaml_ng::to_string(&agent).expect("encoded manifest");
@@ -121,6 +124,7 @@ fn rejects_invalid_duplicate_and_unpaired_environment_names() {
     invalid.spec.environment.push(EnvironmentSpec {
         name: "NOT-PORTABLE".into(),
         source: None,
+        value: None,
     });
     assert!(matches!(
         invalid.validate(),
@@ -132,10 +136,12 @@ fn rejects_invalid_duplicate_and_unpaired_environment_names() {
         EnvironmentSpec {
             name: "EDITOR".into(),
             source: None,
+            value: None,
         },
         EnvironmentSpec {
             name: "EDITOR".into(),
             source: Some("HOST_EDITOR".into()),
+            value: None,
         },
     ];
     assert!(matches!(
@@ -147,6 +153,7 @@ fn rejects_invalid_duplicate_and_unpaired_environment_names() {
     unpaired.spec.environment.push(EnvironmentSpec {
         name: "GIT_USER_NAME".into(),
         source: None,
+        value: None,
     });
     assert!(matches!(
         unpaired.validate(),
@@ -160,6 +167,7 @@ fn rejects_environment_collisions_with_secrets_and_harness_owned_values() {
     secret_collision.spec.environment.push(EnvironmentSpec {
         name: "PLAIN_VALUE".into(),
         source: Some("SHARED_VALUE".into()),
+        value: None,
     });
     secret_collision.spec.secrets.push(SecretSpec {
         environment: "API_TOKEN".into(),
@@ -167,6 +175,7 @@ fn rejects_environment_collisions_with_secrets_and_harness_owned_values() {
         placeholder: None,
         allowed_hosts: vec!["example.com".into()],
         source: Some("SHARED_VALUE".into()),
+        name: None,
     });
     assert!(matches!(
         secret_collision.validate(),
@@ -177,6 +186,7 @@ fn rejects_environment_collisions_with_secrets_and_harness_owned_values() {
     harness_collision.spec.environment.push(EnvironmentSpec {
         name: "CLAUDE_CONFIG_DIR".into(),
         source: None,
+        value: None,
     });
     assert!(matches!(
         harness_collision.validate(),
@@ -217,6 +227,7 @@ fn rejects_a_custom_placeholder_that_collides_with_a_generated_one() {
             placeholder: None,
             allowed_hosts: vec!["example.com".into()],
             source: None,
+            name: None,
         },
         SecretSpec {
             environment: "SECOND_TOKEN".into(),
@@ -224,6 +235,7 @@ fn rejects_a_custom_placeholder_that_collides_with_a_generated_one() {
             placeholder: Some("$AGENT_SECRET_FIRST_TOKEN".into()),
             allowed_hosts: vec!["example.com".into()],
             source: None,
+            name: None,
         },
     ];
 
@@ -291,6 +303,7 @@ fn rejects_manifest_secrets_owned_by_a_declared_harness() {
         placeholder: None,
         allowed_hosts: vec!["chatgpt.com".into()],
         source: None,
+        name: None,
     });
 
     assert!(matches!(
@@ -884,4 +897,69 @@ fn a_build_context_starting_with_a_tilde_resolves_below_the_home_directory() {
     assert_eq!(context_for("~"), home);
     assert_eq!(context_for("image"), source_directory.join("image"));
     assert_eq!(context_for("~other/image"), source_directory.join("~other/image"));
+}
+
+#[test]
+fn an_environment_value_may_be_given_in_the_manifest_instead_of_the_environment_file() {
+    let agent = manifest::decode(&manifest_with_access(
+        "  environment:\n    - name: EDITOR\n      value: vim\n    - name: PAGER\n    - name: VISUAL\n      \
+         source: HOST_VISUAL\n  \
+         secrets:\n    - name: aivar\n      environment: AIVAR_API_KEY\n    - environment: OTHER_KEY\n      \
+         allowedHosts: [other.example]\n",
+    ))
+    .expect("a value in the manifest");
+    assert_eq!(agent.spec.environment[0].value.as_deref(), Some("vim"));
+    assert_eq!(agent.spec.environment[0].source(), None);
+    assert_eq!(
+        agent.spec.environment_file_variables(),
+        ["PAGER", "HOST_VISUAL as VISUAL", "OTHER_KEY"]
+    );
+
+    assert!(matches!(
+        manifest::decode(&manifest_with_access(
+            "  environment:\n    - name: EDITOR\n      value: vim\n      source: HOST_EDITOR\n",
+        )),
+        Err(agent::Error::Invalid(message)) if message.contains("spec.environment[0]")
+    ));
+}
+
+#[test]
+fn a_secret_may_take_its_value_from_a_stored_secret_instead_of_a_source() {
+    let agent = manifest::decode(&manifest_with_access(
+        "  secrets:\n    - environment: AIVAR_API_KEY\n      name: Aivar\n      allowedHosts: [api.aivar.no]\n",
+    ))
+    .expect("a stored secret");
+    let secret = &agent.spec.secrets[0];
+    assert_eq!(secret.name.as_deref(), Some("Aivar"));
+    assert_eq!(secret.source(), None, "the environment file supplies nothing");
+    let encoded = serde_yaml_ng::to_string(&agent).expect("encode");
+    assert!(encoded.contains("name: Aivar"), "{encoded}");
+
+    let narrowed_nowhere = manifest::decode(&manifest_with_access(
+        "  secrets:\n    - name: aivar\n      environment: AIVAR_API_KEY\n",
+    ))
+    .expect("a stored secret takes its hosts from where it is stored");
+    assert_eq!(narrowed_nowhere.spec.secrets[0].allowed_hosts, Vec::<String>::new());
+
+    for (secret, refused) in [
+        (
+            "      name: aivar\n      source: AIVAR\n      allowedHosts: [api.aivar.no]\n",
+            "so it has no source",
+        ),
+        (
+            "      name: a/b\n      allowedHosts: [api.aivar.no]\n",
+            agent::names::RULE,
+        ),
+        ("      optional: true\n", "spec.secrets[0] is invalid"),
+    ] {
+        assert!(
+            matches!(
+                manifest::decode(&manifest_with_access(&format!(
+                    "  secrets:\n    - environment: AIVAR_API_KEY\n{secret}"
+                ))),
+                Err(agent::Error::Invalid(message)) if message.contains(refused)
+            ),
+            "{secret}"
+        );
+    }
 }

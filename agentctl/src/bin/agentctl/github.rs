@@ -8,6 +8,7 @@ use agent::{
     accounts::{self, AccountType},
     control_api::Client,
     github::{Account, Login},
+    names,
 };
 use time::OffsetDateTime;
 use zeroize::Zeroizing;
@@ -169,10 +170,10 @@ pub(crate) async fn logout(client: &Client, name: &str) -> CommandResult<()> {
 /// `value` as a token's name, lowercased. Clap would repeat a rejected value, which may be a
 /// token pasted in the wrong place, so names are checked here instead.
 fn token_name(value: &str) -> Result<String, Error> {
-    if accounts::valid_name(value) {
+    if names::valid(value) {
         Ok(value.to_ascii_lowercase())
     } else {
-        Err(Error::Invalid(accounts::NAME_RULE.into()))
+        Err(Error::Invalid(names::RULE.into()))
     }
 }
 

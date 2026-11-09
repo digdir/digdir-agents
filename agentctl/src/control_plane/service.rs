@@ -269,7 +269,7 @@ impl ControlPlane {
         let desired = &record.agent;
         reject_dot_env_in_bind_mounts(bind_mount_sources(record), "bind-mounts").await?;
         let mut secret_files = Vec::new();
-        if !desired.spec.secrets.is_empty() {
+        if desired.spec.reads_secret_file() {
             let path = record.env_file_path();
             if record.env_file.is_some() || tokio::fs::try_exists(&path).await? {
                 secret_files.push((desired.metadata.name.clone(), canonical_secret_file(&path).await));
@@ -279,7 +279,7 @@ impl ControlPlane {
             .into_iter()
             .map(|(field, source)| (field, "bind-mounts", source))
             .collect::<Vec<_>>();
-        if !desired.spec.secrets.is_empty() {
+        if desired.spec.reads_secret_file() {
             // A copy any agent may mount must not hold the file, whichever agent selects it.
             for volume in self.volumes.list().await? {
                 let crate::volumes::VolumeSpec::Copy { source } = volume.volume.spec;
@@ -302,13 +302,13 @@ impl ControlPlane {
             if other.id == record.id || other.agent.metadata.deletion_timestamp.is_some() {
                 continue;
             }
-            if !other.agent.spec.secrets.is_empty() {
+            if other.agent.spec.reads_secret_file() {
                 let path = other.env_file_path();
                 if other.env_file.is_some() || tokio::fs::try_exists(&path).await? {
                     secret_files.push((other.agent.metadata.name.clone(), canonical_secret_file(&path).await));
                 }
             }
-            if !desired.spec.secrets.is_empty() {
+            if desired.spec.reads_secret_file() {
                 mounts.extend(
                     bind_mount_sources(&other)
                         .into_iter()
@@ -921,7 +921,7 @@ pub(crate) async fn reject_secrets_in_copy(
     source: &std::path::Path,
 ) -> Result<(), Error> {
     for agent in agents.list().await? {
-        if agent.agent.metadata.deletion_timestamp.is_some() || agent.agent.spec.secrets.is_empty() {
+        if agent.agent.metadata.deletion_timestamp.is_some() || !agent.agent.spec.reads_secret_file() {
             continue;
         }
         let path = agent.env_file_path();

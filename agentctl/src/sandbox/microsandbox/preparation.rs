@@ -2,7 +2,11 @@
 
 use std::{collections::BTreeMap, rc::Rc};
 
-use crate::{Error, authorization::AgentPolicyEngine, control_plane, environment, harness, persistence};
+use crate::{
+    Error,
+    authorization::{AgentPolicyEngine, SecretHosts},
+    control_plane, environment, harness, persistence,
+};
 use ::sandbox::{SandboxHandle, SandboxId, SandboxName, network::NetworkBackend as _};
 use sandbox_microsandbox::{MicrosandboxNetworkBackend, SecretBinding};
 
@@ -59,33 +63,7 @@ impl Preparation {
     pub(super) async fn prepare(&self, record: &control_plane::AgentRecord) -> Result<PreparedNetwork, Error> {
         let sandbox_name = record.sandbox_name()?;
         let result = async {
-            let secrets = &record.agent.spec.secrets;
-            let environment = if secrets.is_empty() {
-                BTreeMap::new()
-            } else if secrets.iter().all(|secret| secret.optional) {
-                environment::read_or_empty(&record.env_file_path()).await?
-            } else {
-                environment::read(&record.env_file_path()).await?
-            };
-            let mut configured_secrets = Vec::with_capacity(secrets.len());
-            let mut secret_writes = Vec::with_capacity(secrets.len());
-            for secret in secrets {
-                let value = secret_value(&environment, secret)?;
-                let Some(value) = value else {
-                    continue;
-                };
-                configured_secrets.push(secret);
-                secret_writes.push(persistence::StoredSecret {
-                    name: secret.environment.clone(),
-                    value: zeroize::Zeroizing::new(value.as_bytes().to_vec()),
-                });
-            }
-            let references = self.database.replace_agent_secrets(record.id, secret_writes).await?;
-            let mut bindings = Vec::with_capacity(configured_secrets.len() + 1);
-            for (secret, reference) in configured_secrets.into_iter().zip(references) {
-                let binding = SecretBinding::with_placeholder(&secret.environment, secret.inert_value(), reference)?;
-                bindings.push(binding);
-            }
+            let (mut bindings, mut policy) = self.prepare_secrets(record).await?;
             let PreparedHarnesses {
                 secrets: mut managed_secrets,
                 installed,
@@ -93,13 +71,12 @@ impl Preparation {
             } = self.prepare_harnesses(record).await?;
             let accounts = crate::accounts::prepare(&self.database, &record.agent.spec).await?;
             managed_secrets.extend(accounts.secrets);
-            self.policy.set_agent(
-                &sandbox_name,
-                &record.agent,
+            policy.extend(
                 managed_secrets
                     .iter()
-                    .map(|secret| (secret.environment.into(), secret.allowed_hosts.clone())),
+                    .map(|secret| SecretHosts::new(secret.environment, secret.allowed_hosts.clone())),
             );
+            self.policy.set_agent(&sandbox_name, &record.agent, policy);
             for secret in managed_secrets {
                 bindings.push(SecretBinding::with_placeholder(
                     secret.environment,
@@ -127,6 +104,84 @@ impl Preparation {
             self.remove(&sandbox_name);
         }
         result
+    }
+
+    /// The bindings of the secrets `record`'s manifest declares, with where each may be
+    /// substituted. Those from the environment file are saved as the agent's own; a stored secret is
+    /// bound by its name, so replacing it reaches the agent at once.
+    async fn prepare_secrets(
+        &self,
+        record: &control_plane::AgentRecord,
+    ) -> Result<(Vec<SecretBinding>, Vec<SecretHosts>), Error> {
+        let secrets = &record.agent.spec.secrets;
+        let from_file = || secrets.iter().filter(|secret| secret.source().is_some());
+        let environment = if from_file().next().is_none() {
+            BTreeMap::new()
+        } else if from_file().all(|secret| secret.optional) {
+            environment::read_or_empty(&record.env_file_path()).await?
+        } else {
+            environment::read(&record.env_file_path()).await?
+        };
+        let mut bindings = Vec::with_capacity(secrets.len());
+        let mut policy = Vec::with_capacity(secrets.len());
+        let mut configured_secrets = Vec::with_capacity(secrets.len());
+        let mut secret_writes = Vec::with_capacity(secrets.len());
+        for (index, secret) in secrets.iter().enumerate() {
+            if let Some(name) = &secret.name {
+                if crate::secrets::stored(&self.database, name).await?.is_none() {
+                    if secret.optional {
+                        continue;
+                    }
+                    let name = name.to_ascii_lowercase();
+                    let hosts = if secret.allowed_hosts.is_empty() {
+                        "HOST".to_owned()
+                    } else {
+                        secret.allowed_hosts.join(",")
+                    };
+                    return Err(Error::Invalid(format!(
+                        "spec.secrets[{index}] uses the secret {name}, which is not stored here; run \
+                         `agentctl secret set {name} --hosts {hosts}`"
+                    )));
+                }
+                bindings.push(SecretBinding::with_placeholder(
+                    &secret.environment,
+                    secret.inert_value(),
+                    crate::secrets::reference(name),
+                )?);
+                policy.push(SecretHosts {
+                    environment: secret.environment.clone(),
+                    // Without hosts of its own, the manifest leaves them to the stored secret.
+                    hosts: if secret.allowed_hosts.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![secret.allowed_hosts.clone()]
+                    },
+                    stored: Some(name.to_ascii_lowercase()),
+                });
+                continue;
+            }
+            let Some(value) = secret_value(&environment, secret)? else {
+                continue;
+            };
+            configured_secrets.push(secret);
+            secret_writes.push(persistence::StoredSecret {
+                name: secret.environment.clone(),
+                value: zeroize::Zeroizing::new(value.as_bytes().to_vec()),
+            });
+        }
+        let references = self.database.replace_agent_secrets(record.id, secret_writes).await?;
+        for (secret, reference) in configured_secrets.into_iter().zip(references) {
+            bindings.push(SecretBinding::with_placeholder(
+                &secret.environment,
+                secret.inert_value(),
+                reference,
+            )?);
+            policy.push(SecretHosts::new(
+                secret.environment.clone(),
+                secret.allowed_hosts.clone(),
+            ));
+        }
+        Ok((bindings, policy))
     }
 
     /// The harness installations `record`'s sandbox gets, with the host login each mediated one uses
@@ -190,10 +245,11 @@ fn secret_value<'a>(
     environment: &'a BTreeMap<String, zeroize::Zeroizing<String>>,
     secret: &crate::SecretSpec,
 ) -> Result<Option<&'a str>, Error> {
+    let source = secret.source().unwrap_or(&secret.environment);
     if secret.optional {
-        Ok(environment::optional(environment, secret.source()))
+        Ok(environment::optional(environment, source))
     } else {
-        Ok(Some(environment::required(environment, secret.source())?))
+        Ok(Some(environment::required(environment, source)?))
     }
 }
 
@@ -409,7 +465,7 @@ spec:
         for name in ["digdir", "altinn"] {
             store_token(&database, name, None).await;
         }
-        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
+        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new().with_stored_secrets(database.clone()));
         let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
         (
             super::Preparation::new(
@@ -602,6 +658,142 @@ spec:
         assert_eq!(resolved.expose(), b"github_pat_FAKE_digdir");
     }
 
+    /// An agent without accounts whose `AIVAR_API_KEY` is the stored secret `Aivar`, sent to
+    /// `api.aivar.no` and `models.example`.
+    fn stored_secret_record(directory: &tempfile::TempDir, optional: bool) -> crate::control_plane::AgentRecord {
+        let mut record = github_record(directory, &GITHUB_MANIFEST.replace(ACCOUNTS, ""));
+        record.agent.spec.secrets.push(SecretSpec {
+            environment: "AIVAR_API_KEY".into(),
+            optional,
+            placeholder: None,
+            allowed_hosts: vec!["api.aivar.no".into(), "models.example".into()],
+            source: None,
+            name: Some("Aivar".into()),
+        });
+        record
+    }
+
+    /// A stored secret is read where it is stored, so replacing it reaches the agent without preparing
+    /// it again, and it is used only at a host both its manifest and the secret allow. It needs no
+    /// environment file.
+    #[tokio::test(flavor = "local")]
+    async fn a_stored_secret_is_used_where_the_manifest_and_the_secret_both_allow() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let (preparation, policy, database) = with_tokens(&directory).await;
+        let secrets = crate::secrets::Secrets::new(database.clone());
+        secrets
+            .set(
+                "aivar",
+                Zeroizing::new("sk-FAKE-first".into()),
+                Some(vec!["*.aivar.no".into()]),
+            )
+            .await
+            .expect("store the secret");
+        let record = stored_secret_record(&directory, false);
+
+        let prepared = preparation.prepare(&record).await.expect("prepare");
+
+        assert_eq!(
+            prepared.environment,
+            BTreeMap::from([("AIVAR_API_KEY".into(), "$AGENT_SECRET_AIVAR_API_KEY".into())])
+        );
+        assert!(may_use(&policy, &record, "AIVAR_API_KEY", "api.aivar.no").await);
+        for host in ["models.example", "www.aivar.no", "evil.example"] {
+            assert!(!may_use(&policy, &record, "AIVAR_API_KEY", host).await, "{host}");
+        }
+        let reference = crate::secrets::reference("aivar");
+        assert_eq!(
+            database.resolve(&reference).await.expect("resolve").expose(),
+            b"sk-FAKE-first"
+        );
+        secrets
+            .set("aivar", Zeroizing::new("sk-FAKE-second".into()), None)
+            .await
+            .expect("replace the value");
+        assert_eq!(
+            database.resolve(&reference).await.expect("resolve").expose(),
+            b"sk-FAKE-second"
+        );
+
+        // A host the secret stops allowing gets no value from then on, before the agent is prepared
+        // again, so a value set together with the change never reaches it.
+        secrets
+            .set(
+                "aivar",
+                Zeroizing::new("sk-FAKE-third".into()),
+                Some(vec!["models.example".into()]),
+            )
+            .await
+            .expect("move the secret");
+        assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "api.aivar.no").await);
+        assert!(may_use(&policy, &record, "AIVAR_API_KEY", "models.example").await);
+        secrets.remove("aivar").await.expect("remove").expect("it was stored");
+        assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "models.example").await);
+    }
+
+    /// A manifest that names no hosts for a stored secret leaves them to the secret.
+    #[tokio::test(flavor = "local")]
+    async fn a_stored_secret_without_hosts_in_the_manifest_goes_where_the_secret_allows() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let (preparation, policy, database) = with_tokens(&directory).await;
+        let secrets = crate::secrets::Secrets::new(database);
+        let mut record = stored_secret_record(&directory, false);
+        record.agent.spec.secrets[0].allowed_hosts.clear();
+
+        let Err(error) = preparation.prepare(&record).await else {
+            panic!("a required secret that is not stored fails");
+        };
+        assert!(
+            error.to_string().contains("`agentctl secret set aivar --hosts HOST`"),
+            "{error}"
+        );
+        secrets
+            .set(
+                "aivar",
+                Zeroizing::new("sk-FAKE".into()),
+                Some(vec!["*.aivar.no".into()]),
+            )
+            .await
+            .expect("store the secret");
+        preparation.prepare(&record).await.expect("prepare");
+
+        assert!(may_use(&policy, &record, "AIVAR_API_KEY", "api.aivar.no").await);
+        assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "models.example").await);
+        secrets
+            .set(
+                "aivar",
+                Zeroizing::new("sk-FAKE".into()),
+                Some(vec!["models.example".into()]),
+            )
+            .await
+            .expect("move the secret");
+        assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "api.aivar.no").await);
+        assert!(may_use(&policy, &record, "AIVAR_API_KEY", "models.example").await);
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn a_secret_that_is_not_stored_fails_a_required_binding_and_leaves_out_an_optional_one() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let (preparation, policy, _database) = with_tokens(&directory).await;
+
+        let error = preparation
+            .prepare(&stored_secret_record(&directory, false))
+            .await
+            .err()
+            .expect("a required secret that is not stored fails");
+        assert!(
+            error
+                .to_string()
+                .contains("run `agentctl secret set aivar --hosts api.aivar.no,models.example`"),
+            "{error}"
+        );
+
+        let record = stored_secret_record(&directory, true);
+        let prepared = preparation.prepare(&record).await.expect("prepare");
+        assert!(prepared.environment.is_empty(), "{:?}", prepared.environment);
+        assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "api.aivar.no").await);
+    }
+
     fn secret(optional: bool) -> SecretSpec {
         SecretSpec {
             environment: "API_TOKEN".into(),
@@ -609,6 +801,7 @@ spec:
             placeholder: None,
             allowed_hosts: vec!["example.com".into()],
             source: None,
+            name: None,
         }
     }
 

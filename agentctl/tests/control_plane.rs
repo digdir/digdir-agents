@@ -1195,12 +1195,30 @@ async fn an_optional_mount_is_checked_for_secrets_where_the_sandbox_has_it() {
         .expect_err("a .env in the directory the sandbox has");
     std::fs::remove_file(mounted.join(".env")).expect("remove environment file");
 
+    // A stored secret reads no file, so the one the agent names is only a file in the directory.
+    let mut stored_only = request.clone();
+    stored_only.agent.spec.secrets.push(SecretSpec {
+        environment: "AIVAR_API_KEY".into(),
+        optional: false,
+        placeholder: None,
+        allowed_hosts: vec!["api.aivar.no".into()],
+        source: None,
+        name: Some("aivar".into()),
+    });
+    stored_only.env_file = Some(mounted.join("worker.env"));
+    fixture
+        .control_plane
+        .apply(stored_only)
+        .await
+        .expect("a stored secret reads no file in the directory the sandbox has");
+
     request.agent.spec.secrets.push(SecretSpec {
         environment: "GITHUB_TOKEN".into(),
         optional: false,
         placeholder: None,
         allowed_hosts: vec!["github.com".into()],
         source: None,
+        name: None,
     });
     request.env_file = Some(mounted.join("worker.env"));
     fixture
@@ -1676,6 +1694,7 @@ async fn secret_binding_definitions_are_mutable_desired_state() {
         placeholder: None,
         allowed_hosts: vec!["github.com".into()],
         source: Some("GH_PAT".into()),
+        name: None,
     });
     let applied = fixture
         .control_plane
@@ -1723,6 +1742,7 @@ async fn selected_secret_file_inside_a_bind_mount_is_rejected() {
         placeholder: None,
         allowed_hosts: vec!["github.com".into()],
         source: None,
+        name: None,
     });
     request.agent.spec.sandbox.mounts.push(agent::MountSpec::Bind {
         source: Some(root.path().to_path_buf()),
@@ -1878,6 +1898,7 @@ async fn existing_default_env_outside_bind_mount_is_allowed() {
         placeholder: None,
         allowed_hosts: vec!["github.com".into()],
         source: None,
+        name: None,
     });
     request.agent.spec.sandbox.mounts.push(agent::MountSpec::Bind {
         source: Some(checkout.path().to_path_buf()),
@@ -1910,6 +1931,7 @@ async fn secret_file_reached_through_a_symlinked_ancestor_is_still_rejected() {
         placeholder: None,
         allowed_hosts: vec!["github.com".into()],
         source: None,
+        name: None,
     });
     request.agent.spec.sandbox.mounts.push(agent::MountSpec::Bind {
         source: Some(checkout.path().to_path_buf()),
@@ -1945,6 +1967,7 @@ async fn bind_mount_exposing_another_agents_secret_file_is_rejected() {
         placeholder: None,
         allowed_hosts: vec!["github.com".into()],
         source: None,
+        name: None,
     });
     fixture.control_plane.apply(secret_agent).await.expect("secret agent");
 
@@ -1992,10 +2015,12 @@ async fn selected_environment_converges_from_the_env_file_without_exporting_othe
         EnvironmentSpec {
             name: "GIT_USER_NAME".into(),
             source: Some("HOST_GIT_NAME".into()),
+            value: None,
         },
         EnvironmentSpec {
             name: "GIT_USER_EMAIL".into(),
             source: None,
+            value: None,
         },
     ];
     std::fs::write(
@@ -2045,6 +2070,55 @@ async fn selected_environment_converges_from_the_env_file_without_exporting_othe
     assert!(!second.environment.contains_key("UNSELECTED"));
 }
 
+/// A value the manifest gives needs no environment file, and one read from the file is flagged,
+/// with the variables to move, as a later release stops reading it.
+#[tokio::test(flavor = "local")]
+async fn manifest_values_need_no_environment_file_and_values_from_one_are_flagged() {
+    let fixture = fixture();
+    let source = tempfile::tempdir().expect("Agent source");
+    let mut request = apply_request_in("worker", source.path().to_path_buf());
+    request.agent.spec.environment = vec![EnvironmentSpec {
+        name: "EDITOR".into(),
+        source: None,
+        value: Some("vim".into()),
+    }];
+    fixture.control_plane.apply(request.clone()).await.expect("apply");
+    reconcile(&fixture, "worker").await;
+    let record = stored(&fixture, "worker").await;
+    let sandbox = fixture
+        .backend
+        .find(&sandbox_name(&record))
+        .await
+        .expect("Sandbox without an environment file");
+    assert_eq!(sandbox.environment.get("EDITOR").map(String::as_str), Some("vim"));
+    let flagged = |record: &agent::control_plane::AgentRecord| {
+        record
+            .agent
+            .status
+            .conditions
+            .iter()
+            .find(|condition| condition.kind == Condition::ENVIRONMENT_FILE)
+            .map(|condition| condition.message.clone())
+    };
+    assert_eq!(flagged(&record), None);
+
+    request.agent.spec.environment.push(EnvironmentSpec {
+        name: "PAGER".into(),
+        source: None,
+        value: None,
+    });
+    std::fs::write(source.path().join(".env"), "PAGER=less\n").expect("environment file");
+    fixture
+        .control_plane
+        .apply(request)
+        .await
+        .expect("apply with a value from the file");
+    reconcile(&fixture, "worker").await;
+    let message = flagged(&stored(&fixture, "worker").await).expect("flagged");
+    assert!(message.starts_with("reads PAGER from "), "{message}");
+    assert!(message.contains("moving-off-the-environment-file"), "{message}");
+}
+
 #[tokio::test(flavor = "local")]
 async fn selected_environment_requires_present_non_empty_values() {
     let fixture = fixture();
@@ -2054,10 +2128,12 @@ async fn selected_environment_requires_present_non_empty_values() {
         EnvironmentSpec {
             name: "GIT_USER_NAME".into(),
             source: None,
+            value: None,
         },
         EnvironmentSpec {
             name: "GIT_USER_EMAIL".into(),
             source: None,
+            value: None,
         },
     ];
     std::fs::write(source.path().join(".env"), "GIT_USER_NAME=\n").expect("incomplete environment file");

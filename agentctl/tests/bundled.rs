@@ -81,6 +81,53 @@ fn sign_in() -> Definition {
     Definition::new("sign-in", files("sign-in", BASE_IMAGE, "sign in", "home", false)).expect("sign-in definition")
 }
 
+#[test]
+fn a_bundled_definition_takes_stored_secrets_and_values_but_no_environment_file() {
+    let with = |secret: Option<&str>, source: Option<&str>, value: Option<&str>| {
+        let mut manifest = manifest("builder", BASE_IMAGE);
+        manifest.spec.secrets.push(agent::SecretSpec {
+            environment: "MODELS_API_KEY".into(),
+            optional: false,
+            placeholder: None,
+            allowed_hosts: vec!["api.example.com".into()],
+            source: source.map(Into::into),
+            name: secret.map(Into::into),
+        });
+        manifest.spec.environment.push(agent::EnvironmentSpec {
+            name: "EDITOR".into(),
+            source: None,
+            value: value.map(Into::into),
+        });
+        let mut definition = files("builder", BASE_IMAGE, "build", "home", true);
+        definition.insert(
+            "agent.yaml".into(),
+            DefinitionFile {
+                contents: serde_yaml_ng::to_string(&manifest)
+                    .expect("manifest")
+                    .into_bytes()
+                    .into(),
+                executable: false,
+            },
+        );
+        Definition::new("builder", definition)
+    };
+
+    with(Some("models"), None, Some("vim")).expect("a stored secret and a value read no environment file");
+    for (refused, reads) in [
+        (with(None, None, Some("vim")), "reads MODELS_API_KEY from"),
+        (
+            with(None, Some("MODELS"), Some("vim")),
+            "reads MODELS as MODELS_API_KEY from",
+        ),
+        (with(Some("models"), None, None), "reads EDITOR from"),
+    ] {
+        assert!(
+            matches!(&refused, Err(Error::Invalid(message)) if message.contains(reads)),
+            "{refused:?}"
+        );
+    }
+}
+
 pub(crate) struct Fixture {
     pub(crate) store: Rc<memory::InMemoryAgentStore>,
     home: TempDirectory,

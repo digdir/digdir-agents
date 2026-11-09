@@ -15,6 +15,8 @@ use sandbox::SandboxName;
 pub struct AgentPolicyEngine {
     agents: RefCell<BTreeMap<String, AgentPolicy>>,
     platform_endpoint: RefCell<Option<PlatformEndpoint>>,
+    /// Where the secrets stored under a name are, whose hosts are read at every use.
+    stored_secrets: Option<crate::persistence::Database>,
 }
 
 struct PlatformEndpoint {
@@ -29,6 +31,14 @@ impl AgentPolicyEngine {
         Self::default()
     }
 
+    /// Reads the hosts of secrets stored under a name from `database`. Without it, a stored secret is
+    /// substituted nowhere.
+    #[must_use]
+    pub fn with_stored_secrets(mut self, database: crate::persistence::Database) -> Self {
+        self.stored_secrets = Some(database);
+        self
+    }
+
     /// Registers the one sandbox-reachable host endpoint exposed by the platform.
     ///
     /// Host-destined traffic (the Network Backend's host alias, and raw dials
@@ -41,19 +51,11 @@ impl AgentPolicyEngine {
         });
     }
 
-    /// Replaces the policy for one desired agent generation.
-    pub fn set_agent(
-        &self,
-        sandbox: &SandboxName,
-        agent: &Agent,
-        managed_secrets: impl IntoIterator<Item = (String, Vec<String>)>,
-    ) {
-        let secrets = agent
-            .spec
-            .secrets
-            .iter()
-            .map(|secret| (secret.environment.clone(), secret.allowed_hosts.clone()))
-            .chain(managed_secrets)
+    /// Replaces the policy for one desired agent generation, whose sandbox gets `secrets`.
+    pub fn set_agent(&self, sandbox: &SandboxName, agent: &Agent, secrets: impl IntoIterator<Item = SecretHosts>) {
+        let secrets = secrets
+            .into_iter()
+            .map(|secret| (secret.environment.clone(), secret))
             .collect();
         self.agents.borrow_mut().insert(
             sandbox.as_str().into(),
@@ -70,9 +72,36 @@ impl AgentPolicyEngine {
     }
 }
 
+/// Where a sandbox's secret may be substituted: at a host that each of its host lists matches,
+/// such as both the hosts a manifest sends a stored secret to and those the secret allows.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretHosts {
+    /// The environment variable holding the secret's placeholder.
+    pub environment: String,
+    /// Host patterns, such as `api.example.com` or `*.example.com`. A host must match one pattern
+    /// of every list. Only a stored secret may have none, as its own hosts are checked.
+    pub hosts: Vec<Vec<String>>,
+    /// The secret stored under this name, whose hosts a host must match as well. They are read
+    /// where it is stored at every use, as its value is, so changing them applies at once and a
+    /// host they no longer allow never receives a value set with them.
+    pub stored: Option<String>,
+}
+
+impl SecretHosts {
+    /// A secret substituted at the hosts one list of patterns matches.
+    #[must_use]
+    pub fn new(environment: impl Into<String>, hosts: Vec<String>) -> Self {
+        Self {
+            environment: environment.into(),
+            hosts: vec![hosts],
+            stored: None,
+        }
+    }
+}
+
 struct AgentPolicy {
     denied_hosts: Vec<String>,
-    secrets: BTreeMap<String, Vec<String>>,
+    secrets: BTreeMap<String, SecretHosts>,
 }
 
 impl PolicyEngine for AgentPolicyEngine {
@@ -80,7 +109,15 @@ impl PolicyEngine for AgentPolicyEngine {
         &self,
         request: AuthorizationRequest,
     ) -> sandbox_authorization::LocalFuture<'_, Result<AuthorizationDecision, sandbox_authorization::Error>> {
-        Box::pin(async move { Ok(self.evaluate_request(&request)) })
+        Box::pin(async move {
+            let decided = self.evaluate_request(&request);
+            Ok(match self.stored_secret_to_check(&request) {
+                Some((name, host)) if decided == AuthorizationDecision::Allow => {
+                    decision(self.stored_secret_allows(&name, &host).await)
+                }
+                _ => decided,
+            })
+        })
     }
 }
 
@@ -113,12 +150,15 @@ impl AgentPolicyEngine {
                 let Some(host) = host else {
                     return AuthorizationDecision::Deny;
                 };
-                decision(
-                    policy
-                        .secrets
-                        .get(&request.resource.id)
-                        .is_some_and(|patterns| patterns.iter().any(|pattern| host_matches(pattern, host))),
-                )
+                // A secret with no host list is allowed nowhere, unless it is stored, whose own
+                // hosts are checked next.
+                decision(policy.secrets.get(&request.resource.id).is_some_and(|secret| {
+                    (!secret.hosts.is_empty() || secret.stored.is_some())
+                        && secret
+                            .hosts
+                            .iter()
+                            .all(|patterns| patterns.iter().any(|pattern| host_matches(pattern, host)))
+                }))
             }
             _ => AuthorizationDecision::Deny,
         }
@@ -126,6 +166,30 @@ impl AgentPolicyEngine {
 }
 
 impl AgentPolicyEngine {
+    /// The stored secret, and the host, that a use of a secret must also be allowed by.
+    fn stored_secret_to_check(&self, request: &AuthorizationRequest) -> Option<(String, String)> {
+        if request.action.as_str() != action::SECRET_USE {
+            return None;
+        }
+        let agent = request.context.get(context::SANDBOX_NAME)?.as_str()?;
+        let agents = self.agents.borrow();
+        let stored = agents.get(agent)?.secrets.get(&request.resource.id)?.stored.clone()?;
+        Some((stored, request_host(request)?.to_owned()))
+    }
+
+    /// Whether the secret stored as `name` allows `host` now. One that is gone, or cannot be read,
+    /// allows nothing.
+    async fn stored_secret_allows(&self, name: &str, host: &str) -> bool {
+        let Some(database) = &self.stored_secrets else {
+            return false;
+        };
+        crate::secrets::stored(database, name)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|secret| secret.allowed_hosts.iter().any(|pattern| host_matches(pattern, host)))
+    }
+
     /// Decides host-destined traffic: the Network Backend rewrites its host
     /// alias (and only its gateway addresses) to host loopback, so anything
     /// aimed at the host must match the registered Platform API endpoint exactly.
@@ -256,10 +320,46 @@ fn host_matches(pattern: &str, host: &str) -> bool {
     )
 }
 
+/// Whether every host that `inner` matches is one that `outer` matches too.
+pub(crate) fn host_pattern_covers(outer: &str, inner: &str) -> bool {
+    // `*.suffix` is every host below the domain `suffix`: covered by the same pattern, or by one
+    // matching the domain itself as a host below its own.
+    inner.strip_prefix("*.").map_or_else(
+        || host_matches(outer, inner),
+        |suffix| outer.eq_ignore_ascii_case(inner) || (outer.starts_with("*.") && host_matches(outer, suffix)),
+    )
+}
+
 const fn decision(allowed: bool) -> AuthorizationDecision {
     if allowed {
         AuthorizationDecision::Allow
     } else {
         AuthorizationDecision::Deny
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::host_pattern_covers;
+
+    #[test]
+    fn a_pattern_covers_the_hosts_it_matches_and_the_patterns_below_it() {
+        for (outer, inner) in [
+            ("api.example.com", "api.example.com"),
+            ("*.example.com", "api.example.com"),
+            ("*.example.com", "*.example.com"),
+            ("*.example.com", "*.api.example.com"),
+            ("*.EXAMPLE.com", "API.example.com"),
+        ] {
+            assert!(host_pattern_covers(outer, inner), "{outer} covers {inner}");
+        }
+        for (outer, inner) in [
+            ("api.example.com", "*.example.com"),
+            ("api.example.com", "www.example.com"),
+            ("*.example.com", "example.com"),
+            ("*.api.example.com", "*.example.com"),
+        ] {
+            assert!(!host_pattern_covers(outer, inner), "{outer} does not cover {inner}");
+        }
     }
 }

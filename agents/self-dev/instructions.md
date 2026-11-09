@@ -8,10 +8,10 @@ it builds on are cloned beside it, each with an `upstream` remote and a `CONTRIB
 Read `AGENTS.md` at the root of the checkout first.
 
 To try a change in a nested agent, apply the `nested` variant from the task's worktree, since it builds its image from
-the checkout it is applied from. Add `AIVAR_API_KEY`, which Pi uses, to the environment file the `agentctl` skill
-has you write. Use `full` instead of `minimal` for a browser and a desktop.
+the checkout it is applied from. Store its GitHub login and the `aivar` secret, which Pi uses, as the `agentctl` skill
+says. Use `full` instead of `minimal` for a browser and a desktop.
 
 ```sh
 cd /home/agent/code/.worktrees/<task>/agents/self-dev/minimal
-agentctl apply --variant nested --name <task>-nested --env-file ~/nested.env --wait
+agentctl apply --variant nested --name <task>-nested --wait
 ```

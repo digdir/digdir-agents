@@ -7,17 +7,19 @@ use zeroize::Zeroizing;
 use crate::{Error, control_plane::AgentRecord};
 
 pub(crate) async fn resolve(record: &AgentRecord) -> Result<BTreeMap<String, String>, Error> {
-    if record.agent.spec.environment.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-    let values = read(&record.env_file_path()).await?;
-    record
-        .agent
-        .spec
-        .environment
+    let environment = &record.agent.spec.environment;
+    let values = if environment.iter().any(|variable| variable.source().is_some()) {
+        read(&record.env_file_path()).await?
+    } else {
+        BTreeMap::new()
+    };
+    environment
         .iter()
         .map(|variable| {
-            let value = required(&values, variable.source())?;
+            let value = match &variable.value {
+                Some(value) => value.as_str(),
+                None => required(&values, variable.source.as_deref().unwrap_or(&variable.name))?,
+            };
             Ok((variable.name.clone(), value.to_owned()))
         })
         .collect()
