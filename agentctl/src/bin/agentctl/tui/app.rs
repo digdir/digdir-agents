@@ -758,7 +758,7 @@ impl ManifestCandidate {
         }
     }
 
-    fn matches_path(&self, path: &Path) -> bool {
+    pub(crate) fn matches_path(&self, path: &Path) -> bool {
         self.path == path || self.equivalent_paths.iter().any(|candidate| candidate == path)
     }
 }

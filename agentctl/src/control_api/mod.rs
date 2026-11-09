@@ -9,5 +9,5 @@ pub use client::{AgentLease, Client, Connection, Connector};
 pub use protocol::{DaemonInfo, PROTOCOL_VERSION, ResponseError};
 pub use server::{
     AccountsApi, AgentApi, AuthenticationApi, ConvergenceApi, ErrorHandler, ExecutionApi, Server, SessionApi,
-    SshAccessApi, VncAccessApi,
+    SshAccessApi, VncAccessApi, VolumeApi,
 };

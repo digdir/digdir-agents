@@ -1228,6 +1228,10 @@ mod tests {
         ]);
 
         assert_eq!(candidates[0].name.as_deref(), Ok("apps"));
+        assert!(
+            candidates[0].matches_path(Path::new("/alias/apps.yaml")),
+            "the other path to the manifest is kept"
+        );
         assert_eq!(candidates[1].name, Err("invalid YAML".to_owned()));
         let form = VolumeForm::new(candidates, &[]);
         assert_eq!(
