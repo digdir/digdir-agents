@@ -13,7 +13,7 @@ use agent::{
     accounts::AccountType,
     control_api::{
         AccountsApi, AuthenticationApi, Client, Connection, Connector, ConvergenceApi, ExecutionApi, Server,
-        SessionApi, SshAccessApi, VncAccessApi,
+        SessionApi, SshAccessApi, VncAccessApi, VolumeApi,
     },
     control_plane::WaitPolicy,
     control_plane::{ApplyRequest, ControlPlane, memory::InMemoryAgentStore},
@@ -457,6 +457,51 @@ fn api() -> ApiFixture {
 }
 
 fn api_with(control_plane: Rc<ControlPlane>) -> ApiFixture {
+    api_serving(control_plane, None)
+}
+
+/// Lists one volume manifest in the folder it is asked about, and serves nothing else.
+struct FakeVolumes;
+
+impl VolumeApi for FakeVolumes {
+    fn apply(
+        &self,
+        _request: agent::volumes::ApplyVolumeRequest,
+    ) -> LocalFuture<'_, Result<agent::volumes::Volume, Error>> {
+        Box::pin(async { Err(Error::Invalid("not served".into())) })
+    }
+
+    fn get<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<agent::volumes::Volume, Error>> {
+        Box::pin(async move { Err(Error::VolumeNotFound(name.to_owned())) })
+    }
+
+    fn list(&self) -> LocalFuture<'_, Result<Vec<agent::volumes::Volume>, Error>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn manifests(
+        &self,
+        directory: Option<std::path::PathBuf>,
+    ) -> LocalFuture<'_, Result<Vec<agent::definitions::VolumeManifestSummary>, Error>> {
+        Box::pin(async move {
+            Ok(directory
+                .map(|directory| agent::definitions::VolumeManifestSummary {
+                    path: directory.join("agents/_volumes/docs.yaml"),
+                    aliases: Vec::new(),
+                    name: Some("docs".into()),
+                    error: None,
+                })
+                .into_iter()
+                .collect())
+        })
+    }
+
+    fn delete<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>> {
+        Box::pin(async move { Err(Error::VolumeNotFound(name.to_owned())) })
+    }
+}
+
+fn api_serving(control_plane: Rc<ControlPlane>, volumes: Option<Rc<dyn VolumeApi>>) -> ApiFixture {
     let conversation = Rc::new(RefCell::new(vec![answered_turn("one", "1"), answered_turn("two", "2")]));
     let ensured = Rc::new(RefCell::new(Vec::new()));
     let sent = Rc::new(RefCell::new(Vec::new()));
@@ -495,6 +540,10 @@ fn api_with(control_plane: Rc<ControlPlane>) -> ApiFixture {
         )
         .with_accounts(Rc::new(FakeAccounts)),
     );
+    let server = match volumes {
+        Some(volumes) => Rc::new(Rc::into_inner(server).expect("the only server").with_volumes(volumes)),
+        None => server,
+    };
     let client = Client::new(Rc::new(InProcessConnector { server: server.clone() }));
     ApiFixture {
         server,
@@ -1361,6 +1410,66 @@ async fn malformed_and_idle_connections_do_not_block_other_clients() {
         .expect("active client should not wait for idle connection")
         .expect("get");
     assert_eq!(fetched.metadata.name, "worker");
+}
+
+#[tokio::test(flavor = "local")]
+async fn volume_manifests_are_listed_for_the_folder_a_client_names() {
+    let fixture = api_serving(
+        Rc::new(ControlPlane::new(
+            Rc::new(InMemoryAgentStore::new()),
+            Rc::new(IgnoreNotifications),
+        )),
+        Some(Rc::new(FakeVolumes)),
+    );
+
+    let listed = fixture
+        .client
+        .volume_manifests(Some("/work".into()))
+        .await
+        .expect("volume manifests");
+
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].path, std::path::Path::new("/work/agents/_volumes/docs.yaml"));
+    assert_eq!(listed[0].name.as_deref(), Some("docs"));
+}
+
+#[tokio::test(flavor = "local")]
+async fn listing_manifests_rejects_params_that_are_not_an_object_with_a_folder() {
+    let fixture = api_serving(
+        Rc::new(ControlPlane::new(
+            Rc::new(InMemoryAgentStore::new()),
+            Rc::new(IgnoreNotifications),
+        )),
+        Some(Rc::new(FakeVolumes)),
+    );
+    let (mut raw_client, raw_server) = tokio::io::duplex(4096);
+    let api = fixture.server.clone();
+    tokio::task::spawn_local(async move {
+        let _ignored = api.serve_connection(raw_server).await;
+    });
+    let mut reader = BufReader::new(&mut raw_client);
+    let mut id = 0;
+    for method in ["definitions.v1.list", "volumes.v1.manifests"] {
+        for (params, expected) in [
+            ("[]", "params must be an object"),
+            (r#"{"directory":3}"#, "invalid type"),
+            (r#"{"directory":"/work","extra":true}"#, "unknown field `extra`"),
+        ] {
+            id += 1;
+            let request = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{params}}}"#);
+            reader
+                .get_mut()
+                .write_all(format!("{request}\n").as_bytes())
+                .await
+                .expect("write request");
+            let mut response = String::new();
+            reader.read_line(&mut response).await.expect("read response");
+            let response: serde_json::Value = serde_json::from_str(&response).expect("JSON-RPC response");
+            assert_eq!(response["error"]["code"], -32602, "{method} {params}: {response}");
+            let message = response["error"]["message"].as_str().expect("message");
+            assert!(message.contains(expected), "{method} {params}: {message}");
+        }
+    }
 }
 
 #[tokio::test(flavor = "local")]

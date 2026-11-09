@@ -175,6 +175,53 @@ pub fn on_disk(directory: Option<&Path>, recorded: Vec<PathBuf>) -> Vec<Definiti
     .collect()
 }
 
+/// A volume manifest a client can apply, as agentd lists it.
+#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct VolumeManifestSummary {
+    /// The manifest.
+    pub path: PathBuf,
+    /// The other paths that lead to the same manifest, such as through a symbolic link.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<PathBuf>,
+    /// The name it gives its volume, `metadata.name`, when it can be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Why it cannot be read, in place of its name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Lists the volume manifests for `directory`, as [`volume_manifests`] finds them, then the `recorded`
+/// manifests volumes were applied from, each file once however many paths lead to it, as [`merge`]
+/// lists them.
+///
+/// Reads the filesystem, so it blocks.
+#[must_use]
+pub fn volume_manifests_on_disk(directory: Option<&Path>, recorded: Vec<PathBuf>) -> Vec<VolumeManifestSummary> {
+    let found = directory.map_or_else(Vec::new, volume_manifests);
+    merge(found, recorded, |path| {
+        std::fs::read(path)
+            .map_err(crate::Error::from)
+            .and_then(|bytes| crate::volumes::decode(&bytes))
+            .map(|volume| volume.metadata.name)
+    })
+    .into_iter()
+    .map(|listed| {
+        let (name, error) = match listed.read {
+            Ok(name) => (Some(name), None),
+            Err(error) => (None, Some(error)),
+        };
+        VolumeManifestSummary {
+            path: listed.path,
+            aliases: listed.aliases,
+            name,
+            error,
+        }
+    })
+    .collect()
+}
+
 /// The targets of `agent`'s bind mounts without a source, which running it needs a folder for each of.
 #[must_use]
 pub fn unsourced_binds(agent: &crate::Agent) -> Vec<::sandbox::SandboxPath> {
@@ -309,7 +356,7 @@ fn declares_volume(path: &Path) -> bool {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{DefinitionSource, DefinitionSummary, on_disk, source};
+    use super::{DefinitionSource, DefinitionSummary, on_disk, source, volume_manifests_on_disk};
     use crate::manifest::MANIFEST_FILE;
 
     fn manifest_yaml(name: &str) -> String {
@@ -545,6 +592,57 @@ mod tests {
 
         assert_eq!(paths(&listed), [manifest.as_path()]);
         assert_eq!(listed[0].name.as_deref(), Some("custom"));
+    }
+
+    fn volume_yaml(name: &str) -> String {
+        format!(
+            "apiVersion: agents.platform/v1alpha1\nkind: Volume\nmetadata:\n  name: {name}\nspec:\n  type: copy\n  \
+             source: /data/{name}\n"
+        )
+    }
+
+    #[test]
+    fn volume_manifests_are_found_by_kind_under_agents_and_beside_agent_definitions_then_recorded() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let cwd = empty_directory(root.path(), "cwd");
+        let shared = empty_directory(&cwd, "agents/_volumes");
+        std::fs::write(shared.join("apps.yaml"), volume_yaml("apps")).expect("flat volume");
+        let docs = empty_directory(&shared, "docs");
+        std::fs::write(docs.join("volume.yaml"), volume_yaml("docs")).expect("volume in a directory");
+        let worker = manifest_directory(&cwd, "agents/worker", &manifest_yaml("worker"));
+        std::fs::write(worker.join("data.yml"), volume_yaml("data")).expect("volume in an agent definition");
+        std::fs::write(worker.join("config.yaml"), "kind: ConfigMap\n").expect("other yaml");
+        std::fs::write(worker.join(".local.yaml"), volume_yaml("local")).expect("hidden volume beside an agent");
+        std::fs::write(worker.join("scratch.yaml"), volume_yaml("scratch")).expect("ignored volume beside an agent");
+        std::fs::write(cwd.join(".gitignore"), "scratch.yaml\n").expect("ignore file");
+        std::fs::write(shared.join("broken.yaml"), "kind: Volume\nmetadata: [").expect("unparsable yaml");
+        let hidden = empty_directory(&cwd, "agents/.hidden");
+        std::fs::write(hidden.join("secret.yaml"), volume_yaml("hidden")).expect("hidden volume");
+        let elsewhere = empty_directory(root.path(), "elsewhere");
+        std::fs::write(elsewhere.join("logs.yaml"), volume_yaml("logs")).expect("recorded volume");
+        let invalid = elsewhere.join("invalid.yaml");
+        std::fs::write(&invalid, "apiVersion: agents.platform/v1alpha1\nkind: Volume\n").expect("invalid");
+
+        let listed = volume_manifests_on_disk(
+            Some(&cwd),
+            vec![elsewhere.join("logs.yaml"), shared.join("apps.yaml"), invalid.clone()],
+        );
+
+        let found: Vec<(&Path, Option<&str>)> = listed
+            .iter()
+            .map(|manifest| (manifest.path.as_path(), manifest.name.as_deref()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (shared.join("apps.yaml").as_path(), Some("apps")),
+                (docs.join("volume.yaml").as_path(), Some("docs")),
+                (worker.join("data.yml").as_path(), Some("data")),
+                (invalid.as_path(), None),
+                (elsewhere.join("logs.yaml").as_path(), Some("logs")),
+            ]
+        );
+        assert!(listed[3].error.is_some(), "an invalid recorded manifest says why");
     }
 
     #[test]

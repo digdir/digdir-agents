@@ -41,6 +41,7 @@ pub(crate) const METHOD_SESSION_UNARCHIVE: &str = "sessions.v1.unarchive";
 pub(crate) const METHOD_VOLUME_APPLY: &str = "volumes.v1.apply";
 pub(crate) const METHOD_VOLUME_GET: &str = "volumes.v1.get";
 pub(crate) const METHOD_VOLUME_LIST: &str = "volumes.v1.list";
+pub(crate) const METHOD_VOLUME_MANIFESTS: &str = "volumes.v1.manifests";
 pub(crate) const METHOD_VOLUME_DELETE: &str = "volumes.v1.delete";
 
 pub(crate) const CODE_PARSE_ERROR: i32 = -32700;
@@ -217,11 +218,11 @@ pub(crate) struct SessionListParams {
     pub include_ephemeral: bool,
 }
 
-/// Parameters of `definitions.v1.list`.
+/// Parameters of `definitions.v1.list` and `volumes.v1.manifests`.
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DefinitionListParams {
-    /// The absolute folder whose definitions on disk are listed with the others.
+pub(crate) struct ManifestListParams {
+    /// The absolute folder whose manifests on disk are listed with the others.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory: Option<std::path::PathBuf>,
 }

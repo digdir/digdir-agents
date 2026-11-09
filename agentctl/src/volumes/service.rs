@@ -212,6 +212,38 @@ impl VolumeService {
             .collect())
     }
 
+    /// The volume manifests a client can apply: those on disk for `directory`, as
+    /// [`crate::definitions::volume_manifests`] finds them, then the manifests volumes were applied from.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `directory` is not absolute or the volumes cannot be read.
+    pub async fn manifests(
+        &self,
+        directory: Option<PathBuf>,
+    ) -> Result<Vec<crate::definitions::VolumeManifestSummary>, Error> {
+        if let Some(directory) = &directory
+            && !directory.is_absolute()
+        {
+            return Err(Error::Invalid(format!(
+                "directory {} must be an absolute path",
+                directory.display()
+            )));
+        }
+        let recorded = self
+            .store
+            .list()
+            .await?
+            .into_iter()
+            .filter_map(|record| record.volume.status.manifest_path().map(std::path::Path::to_path_buf))
+            .collect();
+        tokio::task::spawn_blocking(move || {
+            crate::definitions::volume_manifests_on_disk(directory.as_deref(), recorded)
+        })
+        .await
+        .map_err(|error| Error::Daemon(format!("listing the volume manifests on disk failed: {error}")))
+    }
+
     /// Requests a volume's deletion. New agents can no longer mount it, and it goes once no agent
     /// uses any of its revisions.
     ///

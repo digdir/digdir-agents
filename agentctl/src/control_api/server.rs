@@ -14,17 +14,17 @@ use crate::{
 use super::protocol::{
     AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, CODE_IMMUTABLE, CODE_INTERNAL,
     CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND, CODE_PARSE_ERROR, CODE_UPDATING,
-    DefinitionListParams, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams,
-    LogoutResult, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN,
-    METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE,
-    METHOD_DEFINITIONS, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST,
-    METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN,
-    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
-    METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, PROTOCOL_VERSION, ProgressParams, ReadMessage, Request,
-    ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams,
-    SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
+    DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
+    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT,
+    METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS,
+    METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS,
+    METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SESSION_ARCHIVE,
+    METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT,
+    METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP,
+    METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET,
+    METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, PROTOCOL_VERSION, ProgressParams,
+    ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams,
+    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -51,6 +51,12 @@ pub trait VolumeApi {
     /// Lists every volume.
     fn list(&self) -> LocalFuture<'_, Result<Vec<crate::volumes::Volume>, Error>>;
 
+    /// Lists the volume manifests a client can apply; see [`crate::volumes::VolumeService::manifests`].
+    fn manifests(
+        &self,
+        directory: Option<std::path::PathBuf>,
+    ) -> LocalFuture<'_, Result<Vec<crate::definitions::VolumeManifestSummary>, Error>>;
+
     /// Requests a volume's deletion.
     fn delete<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>>;
 }
@@ -69,6 +75,13 @@ impl VolumeApi for crate::volumes::VolumeService {
 
     fn list(&self) -> LocalFuture<'_, Result<Vec<crate::volumes::Volume>, Error>> {
         Box::pin(async move { Self::list(self).await })
+    }
+
+    fn manifests(
+        &self,
+        directory: Option<std::path::PathBuf>,
+    ) -> LocalFuture<'_, Result<Vec<crate::definitions::VolumeManifestSummary>, Error>> {
+        Box::pin(async move { Self::manifests(self, directory).await })
     }
 
     fn delete<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<(), Error>> {
@@ -781,6 +794,7 @@ impl Server {
                 Some(volumes) => result_response(request.id, volumes.list().await),
                 None => volumes_unavailable(request.id),
             },
+            METHOD_VOLUME_MANIFESTS => self.handle_volume_manifests(request.id, request.params).await,
             METHOD_VOLUME_DELETE => self.handle_volume_delete(request.id, request.params).await,
             _ => error_response(request.id, CODE_METHOD_NOT_FOUND, "method not found"),
         }
@@ -1222,15 +1236,20 @@ impl Server {
     }
 
     async fn handle_definitions(&self, id: u64, value: Value) -> Response {
-        let params = if value.is_null() {
-            DefinitionListParams::default()
-        } else {
-            match serde_json::from_value::<DefinitionListParams>(value) {
-                Ok(params) => params,
-                Err(_) => return error_response(id, CODE_INVALID_PARAMS, "directory must be a path"),
-            }
+        match manifest_list_params(value) {
+            Ok(params) => result_response(id, self.agents.definitions(params.directory).await),
+            Err(message) => error_response(id, CODE_INVALID_PARAMS, &message),
+        }
+    }
+
+    async fn handle_volume_manifests(&self, id: u64, value: Value) -> Response {
+        let Some(volumes) = &self.volumes else {
+            return volumes_unavailable(id);
         };
-        result_response(id, self.agents.definitions(params.directory).await)
+        match manifest_list_params(value) {
+            Ok(params) => result_response(id, volumes.manifests(params.directory).await),
+            Err(message) => error_response(id, CODE_INVALID_PARAMS, &message),
+        }
     }
 
     async fn handle_list(&self, id: u64, value: Value) -> Response {
@@ -1383,4 +1402,14 @@ async fn write_response<W: AsyncWrite + Unpin>(
     writer.write_all(&bytes).await?;
     writer.flush().await?;
     Ok(())
+}
+
+/// The parameters of a request listing the manifests for a folder: none, or an object. `Err` says
+/// what is wrong with them.
+fn manifest_list_params(value: Value) -> Result<ManifestListParams, String> {
+    match value {
+        Value::Null => Ok(ManifestListParams::default()),
+        Value::Object(_) => serde_json::from_value(value).map_err(|error| error.to_string()),
+        _ => Err("params must be an object".to_owned()),
+    }
 }
