@@ -151,8 +151,8 @@ RUN git config --system credential.https://github.com.helper '!/usr/local/bin/gh
 
 # The harness pins agentd's adapters are tested with (agentctl/docs/harness-upgrades.md). agentd verifies and
 # configures the harnesses an agent declares, but never installs one.
-ARG CLAUDE_CODE_VERSION=2.1.316
-ARG CODEX_VERSION=0.166.0
+ARG CLAUDE_CODE_VERSION=2.1.321
+ARG CODEX_VERSION=0.167.0
 ARG PI_VERSION=1.5.0
 
 # Agent sandboxes mount their CA bundle here; this step's Node downloads trust it.
