@@ -178,6 +178,9 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
 
     let backend = Rc::new(memory::Provider::new());
@@ -294,6 +297,9 @@ async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
@@ -399,6 +405,9 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..3 {
@@ -551,6 +560,9 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..4 {
@@ -720,6 +732,9 @@ async fn linux_setup_approves_claude_bash_requests_in_bypass_mode_for_every_clau
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
@@ -815,6 +830,9 @@ async fn linux_setup_without_a_home_copies_nothing_into_the_guest_home() {
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
@@ -908,6 +926,9 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
 
     let backend = Rc::new(memory::Provider::new());
@@ -1019,6 +1040,9 @@ async fn linux_setup_waits_for_systemd_and_restores_managed_podman_configuration
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
@@ -1107,6 +1131,9 @@ async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
@@ -1160,6 +1187,9 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
@@ -1228,6 +1258,9 @@ async fn linux_setup_rejects_partial_git_identity() {
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
@@ -1279,6 +1312,9 @@ async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injectio
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
@@ -1356,6 +1392,9 @@ async fn linux_setup_reads_home_instructions_and_skills_below_the_home_directory
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
@@ -1437,6 +1476,9 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
@@ -1536,6 +1578,9 @@ fn optional_sources_record(directory: &std::path::Path, instructions: &str, skil
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     }
 }
 
@@ -1651,6 +1696,9 @@ async fn git_settings_written(
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     };
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(is_podman_presence_check, completed(1));

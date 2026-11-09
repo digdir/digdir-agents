@@ -270,6 +270,10 @@ impl Reconciler {
                     agent: &agent.agent.metadata.name,
                     source_directory: &agent.source_directory,
                     host: &self.host,
+                    working_directory: agent.agent.spec.working_directory.as_ref().map_or(
+                        crate::sandbox::platform::WORKING_DIRECTORY,
+                        ::sandbox::SandboxPath::as_str,
+                    ),
                 },
                 &token,
                 resume,

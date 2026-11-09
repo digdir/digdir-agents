@@ -585,12 +585,8 @@ impl Reconciler {
             .or(record.agent.status.observed_restart_timestamp);
         // A resync that observes what is already stored writes nothing, so it
         // advances no revision and wakes no watcher.
-        let stored = Status {
-            progress: None,
-            provenance: None,
-            volumes: Vec::new(),
-            ..record.agent.status.clone()
-        };
+        let mut stored = record.agent.status.clone();
+        stored.scrub_projected();
         let mut unchanged = status.clone();
         unchanged.stamp_transitions(&stored, time::OffsetDateTime::UNIX_EPOCH);
         if unchanged == stored {
@@ -688,7 +684,10 @@ fn optional_sources_condition(record: &AgentRecord, missing_files: &[String]) ->
             } => {
                 declares = true;
                 if !record.optional_mount_sources.contains_key(target) {
-                    missing.push(format!("spec.sandbox.mounts[{index}].source {}", source.display()));
+                    missing.push(format!(
+                        "spec.sandbox.mounts[{index}].source {}",
+                        source.as_deref().unwrap_or_else(|| std::path::Path::new("-")).display()
+                    ));
                 }
             }
             crate::MountSpec::Volume {

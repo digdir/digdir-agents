@@ -251,6 +251,13 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App, hit_map: &mut HitMap)
             spans.push(Span::styled(format!(" · {count} {label}"), Style::new().fg(color)));
         }
     }
+    // Agents that belong to one client each, such as `agentctl run --rm`, are counted, not shown.
+    if app.ephemeral_agents > 0 {
+        spans.push(Span::styled(
+            format!(" · {} ephemeral", app.ephemeral_agents),
+            Style::new().fg(Color::DarkGray),
+        ));
+    }
     if !app.filter.is_empty() {
         spans.push(Span::styled(
             format!(" · filter: {}", app.filter),
@@ -1171,7 +1178,10 @@ fn render_create_agent(
                 form.field == CreateField::Agent,
                 form.agent,
                 form.agents.len(),
-                &abbreviate_home(&agent.directory.display().to_string()),
+                &agent.reference().map_or_else(
+                    || abbreviate_home(&agent.directory.display().to_string()),
+                    |_| "agentd's definition".to_owned(),
+                ),
                 detail_width,
             ),
         ))
@@ -1202,9 +1212,19 @@ fn render_create_agent(
             text_input(
                 &form.env_file,
                 form.field == CreateField::EnvironmentFile,
-                "default: .env beside manifest",
+                if candidate.reference.is_some() {
+                    "none: agentd's definitions read none"
+                } else {
+                    "default: .env beside manifest"
+                },
             ),
         ));
+    if let Some(folder) = candidate.folder.as_ref().filter(|_| candidate.slots == 1) {
+        widget = widget.row(note_line(&format!(
+            "Works on {}",
+            abbreviate_home(&folder.display().to_string())
+        )));
+    }
     let target = widget.render(frame, area, CREATE_AGENT_FORM_WIDTH, hit_map);
     for (row, field) in [
         (0, CreateField::Agent),
@@ -1586,6 +1606,22 @@ mod tests {
             .draw(|frame| hit_map = Some(render(frame, app, state)))
             .expect("test draw");
         hit_map.expect("renderer returns a hit map")
+    }
+
+    #[test]
+    fn the_status_line_counts_the_ephemeral_agents_it_leaves_out() {
+        let mut app = tree_app(1);
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).expect("test terminal");
+        draw(&mut terminal, &app);
+        assert!(!buffer_text(&terminal).contains("ephemeral"));
+
+        app.ephemeral_agents = 2;
+        draw(&mut terminal, &app);
+        assert!(
+            buffer_text(&terminal).contains("· 2 ephemeral"),
+            "{}",
+            buffer_text(&terminal)
+        );
     }
 
     fn tree_app(count: usize) -> App {

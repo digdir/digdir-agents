@@ -271,6 +271,7 @@ fn launch_arguments(
             resume_transcript: session.status.reported.harness_transcript_path.as_deref(),
             initial_prompt: initial_message,
             model_selection: &session.model_selection,
+            working_directory: context.working_directory,
         },
     );
     let mut arguments = terminal_options();
@@ -325,11 +326,12 @@ async fn launch(
     resume: Option<&str>,
     initial_message: Option<&str>,
 ) -> Result<(), Error> {
+    let working_directory = SandboxPath::new(context.working_directory);
     let arguments = launch_arguments(session, context, token, resume, initial_message);
     let created = run_lifecycle_execution(
         sandbox,
         ExecutionSpec::command(SandboxPath::new("/usr/bin/tmux"), arguments)
-            .with_working_directory(SandboxPath::new(crate::sandbox::platform::WORKING_DIRECTORY))
+            .with_working_directory(working_directory)
             .with_environment([
                 ("HOME".into(), crate::sandbox::platform::HOME.into()),
                 ("LANG".into(), UTF8_LOCALE.into()),
@@ -735,6 +737,7 @@ mod tests {
                 agent: "worker",
                 source_directory: std::path::Path::new("/Users/someone/code/app"),
                 host: "laptop",
+                working_directory: crate::sandbox::platform::WORKING_DIRECTORY,
             },
             &crate::sessions::LaunchToken::generate(),
             None,

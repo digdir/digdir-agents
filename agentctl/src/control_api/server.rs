@@ -12,18 +12,19 @@ use crate::{
 };
 
 use super::protocol::{
-    AccountLoginParams, AccountLogoutResult, AccountParams, CODE_IMMUTABLE, CODE_INTERNAL, CODE_INVALID_PARAMS,
-    CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND, CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams,
-    ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_REQUEST_BYTES,
-    MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY,
-    METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE,
-    METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH,
-    METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET,
-    METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN,
-    METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY,
-    METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, PROTOCOL_VERSION, ProgressParams,
-    ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams,
-    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
+    AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, CODE_IMMUTABLE, CODE_INTERNAL,
+    CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND, CODE_PARSE_ERROR, CODE_UPDATING,
+    DefinitionListParams, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams,
+    LogoutResult, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN,
+    METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE,
+    METHOD_DEFINITIONS, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST,
+    METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN,
+    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
+    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
+    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
+    METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, PROTOCOL_VERSION, ProgressParams, ReadMessage, Request,
+    ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams,
+    SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -80,6 +81,21 @@ pub trait AgentApi {
     /// Creates or updates desired agent state.
     fn apply(&self, request: control_plane::ApplyRequest) -> LocalFuture<'_, Result<Agent, Error>>;
 
+    /// Runs an agent from a definition; see [`control_plane::ControlPlane::run`].
+    fn run(
+        &self,
+        request: control_plane::RunRequest,
+    ) -> LocalFuture<'_, Result<(control_plane::Ran, crate::AgentId), Error>>;
+
+    /// Lists the definitions a client can apply or run; see [`control_plane::ControlPlane::definitions`].
+    fn definitions(
+        &self,
+        directory: Option<std::path::PathBuf>,
+    ) -> LocalFuture<'_, Result<Vec<control_plane::DefinitionSummary>, Error>>;
+
+    /// Deletes an ephemeral agent whose client is gone; see [`control_plane::ControlPlane::release`].
+    fn release(&self, id: crate::AgentId) -> LocalFuture<'_, Result<(), Error>>;
+
     /// Gets an agent by name.
     fn get<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Agent, Error>>;
 
@@ -118,6 +134,24 @@ pub trait AgentApi {
 impl AgentApi for control_plane::ControlPlane {
     fn apply(&self, request: control_plane::ApplyRequest) -> LocalFuture<'_, Result<Agent, Error>> {
         Box::pin(async move { Self::apply(self, request).await })
+    }
+
+    fn run(
+        &self,
+        request: control_plane::RunRequest,
+    ) -> LocalFuture<'_, Result<(control_plane::Ran, crate::AgentId), Error>> {
+        Box::pin(async move { Self::run(self, request).await })
+    }
+
+    fn definitions(
+        &self,
+        directory: Option<std::path::PathBuf>,
+    ) -> LocalFuture<'_, Result<Vec<control_plane::DefinitionSummary>, Error>> {
+        Box::pin(async move { Self::definitions(self, directory).await })
+    }
+
+    fn release(&self, id: crate::AgentId) -> LocalFuture<'_, Result<(), Error>> {
+        Box::pin(async move { Self::release(self, id).await })
     }
 
     fn get<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Agent, Error>> {
@@ -599,6 +633,23 @@ impl Server {
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
+        let owned = std::cell::RefCell::new(Vec::new());
+        let result = self.serve_requests(stream, &owned).await;
+        // The ephemeral agents this connection asked for live as long as it does, however it ends.
+        for id in owned.take() {
+            if let Err(error) = self.agents.release(id).await {
+                tracing::warn!(agent = %id, %error, "deleting an ephemeral agent failed; agentd deletes it when it starts");
+            }
+        }
+        result
+    }
+
+    /// Serves one JSON object per line until the client closes its stream, recording in `owned`
+    /// the ephemeral agents it asks for.
+    async fn serve_requests<S>(&self, stream: S, owned: &std::cell::RefCell<Vec<crate::AgentId>>) -> Result<(), Error>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
         let mut stream = BufReader::new(stream);
         loop {
             if self.is_draining() {
@@ -639,11 +690,11 @@ impl Server {
                 // A reply that is ready wins over a client that has half-closed.
                 tokio::select! {
                     biased;
-                    response = self.handle(request) => response,
+                    response = self.handle(request, owned) => response,
                     () = disconnected(&mut stream) => return Ok(()),
                 }
             } else {
-                self.handle(request).await
+                self.handle(request, owned).await
             };
             write_response(stream.get_mut(), &response, Some(&method)).await?;
         }
@@ -663,7 +714,7 @@ impl Server {
         }
     }
 
-    async fn handle(&self, request: Request) -> Response {
+    async fn handle(&self, request: Request, owned: &std::cell::RefCell<Vec<crate::AgentId>>) -> Response {
         if request.jsonrpc != JSON_RPC_VERSION || request.method.is_empty() {
             return error_response(request.id, CODE_INVALID_REQUEST, "invalid JSON-RPC 2.0 request");
         }
@@ -677,6 +728,8 @@ impl Server {
         };
         match request.method.as_str() {
             METHOD_APPLY => self.handle_apply(request.id, request.params).await,
+            METHOD_RUN => self.handle_run(request.id, request.params, owned).await,
+            METHOD_DEFINITIONS => self.handle_definitions(request.id, request.params).await,
             METHOD_HEALTH => result_response(
                 request.id,
                 Ok(serde_json::json!({
@@ -686,7 +739,7 @@ impl Server {
             ),
             METHOD_SHUTDOWN => self.handle_shutdown(request.id, request.params).await,
             METHOD_GET => self.handle_get(request.id, request.params).await,
-            METHOD_LIST => result_response(request.id, self.agents.list().await),
+            METHOD_LIST => self.handle_list(request.id, request.params).await,
             METHOD_PROGRESS => self.handle_progress(request.id, request.params).await,
             METHOD_RESOURCES_WATCH => self.handle_resources_watch(request.id, request.params).await,
             METHOD_RESOLVE_DIRECTORY => self.handle_resolve_directory(request.id, request.params).await,
@@ -777,6 +830,19 @@ impl Server {
             return error_response(id, CODE_INVALID_PARAMS, "invalid apply parameters");
         };
         result_response(id, self.agents.apply(params).await)
+    }
+
+    async fn handle_run(&self, id: u64, value: Value, owned: &std::cell::RefCell<Vec<crate::AgentId>>) -> Response {
+        let Ok(params) = serde_json::from_value::<control_plane::RunRequest>(value) else {
+            return error_response(id, CODE_INVALID_PARAMS, "invalid run parameters");
+        };
+        let result = self.agents.run(params).await.map(|(ran, agent)| {
+            if ran.agent.status.is_ephemeral() {
+                owned.borrow_mut().push(agent);
+            }
+            ran
+        });
+        result_response(id, result)
     }
 
     async fn handle_volume_apply(&self, id: u64, value: Value) -> Response {
@@ -942,10 +1008,14 @@ impl Server {
         }
         let revision = self.changes.revision();
         let resources = async {
+            let (agents, ephemeral) = listed(self.agents.list().await?, params.include_ephemeral);
+            let mut sessions = self.sessions.list(None).await?;
+            sessions.retain(|session| !ephemeral.contains(&session.agent));
             Ok(crate::resources::Resources {
                 revision,
-                agents: self.agents.list().await?,
-                sessions: self.sessions.list(None).await?,
+                agents,
+                ephemeral_agents: ephemeral.len(),
+                sessions,
                 volumes: match &self.volumes {
                     Some(volumes) => volumes.list().await?,
                     None => Vec::new(),
@@ -1139,8 +1209,60 @@ impl Server {
         let Ok(params) = serde_json::from_value::<SessionListParams>(value) else {
             return error_response(id, CODE_INVALID_PARAMS, "invalid session list parameters");
         };
-        result_response(id, self.sessions.list(params.agent.as_deref()).await)
+        let sessions = async {
+            let mut sessions = self.sessions.list(params.agent.as_deref()).await?;
+            // A named agent's sessions are listed whatever its lifetime, as the agent is shown.
+            if params.agent.is_none() {
+                let (_, ephemeral) = listed(self.agents.list().await?, params.include_ephemeral);
+                sessions.retain(|session| !ephemeral.contains(&session.agent));
+            }
+            Ok(sessions)
+        };
+        result_response(id, sessions.await)
     }
+
+    async fn handle_definitions(&self, id: u64, value: Value) -> Response {
+        let params = if value.is_null() {
+            DefinitionListParams::default()
+        } else {
+            match serde_json::from_value::<DefinitionListParams>(value) {
+                Ok(params) => params,
+                Err(_) => return error_response(id, CODE_INVALID_PARAMS, "directory must be a path"),
+            }
+        };
+        result_response(id, self.agents.definitions(params.directory).await)
+    }
+
+    async fn handle_list(&self, id: u64, value: Value) -> Response {
+        let params = if value.is_null() {
+            AgentListParams::default()
+        } else {
+            match serde_json::from_value::<AgentListParams>(value) {
+                Ok(params) => params,
+                Err(_) => return error_response(id, CODE_INVALID_PARAMS, "includeEphemeral must be a boolean"),
+            }
+        };
+        let agents = async { Ok(listed(self.agents.list().await?, params.include_ephemeral).0) };
+        result_response(id, agents.await)
+    }
+}
+
+/// `agents` as a listing shows them: without the ephemeral ones unless `include_ephemeral`, as
+/// each belongs to the client that ran it, which shows it if it wants to. Also the names of those
+/// left out.
+fn listed(mut agents: Vec<crate::Agent>, include_ephemeral: bool) -> (Vec<crate::Agent>, Vec<String>) {
+    if include_ephemeral {
+        return (agents, Vec::new());
+    }
+    let mut ephemeral = Vec::new();
+    agents.retain(|agent| {
+        let keep = !agent.status.is_ephemeral();
+        if !keep {
+            ephemeral.push(agent.metadata.name.clone());
+        }
+        keep
+    });
+    (agents, ephemeral)
 }
 
 const fn wait_policy(follow: bool) -> WaitPolicy {
@@ -1182,6 +1304,7 @@ fn is_mutating(method: &str) -> bool {
     matches!(
         method,
         METHOD_APPLY
+            | METHOD_RUN
             | METHOD_DELETE
             | METHOD_STOP
             | METHOD_STOP_NOW

@@ -178,6 +178,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     let volume_store: Rc<dyn agent::volumes::VolumeStore> = store.clone();
     // Agents choosing revisions and volume cleanup share its lock.
     let volume_revisions = agent::volumes::VolumeRevisions::new(volume_store.clone());
+    let definitions = agent::bundled::Definitions::bundled()?;
     let reconciler = Rc::new(
         Reconciler::new(store.clone(), sandboxes.clone(), provisioning.clone())
             .with_volumes(volume_revisions.clone())
@@ -196,8 +197,11 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
         ControlPlane::new(store.clone(), Rc::new(wakeup.clone()))
             .with_volumes(store.clone())
             .with_provisioning(provisioning)
-            .with_immediate_stops(immediate_stops),
+            .with_immediate_stops(immediate_stops)
+            .with_bundled(definitions, home.path().to_path_buf()),
     );
+    // Before the server accepts a client, so none of their agents is taken for a leftover.
+    control_plane.remove_leftovers().await?;
     let copy_progress = agent::volumes::CopyProgress::new(changes.clone());
     let (volume_controller, volume_wakeup) = agent::volumes::Controller::new(
         volume_store.clone(),

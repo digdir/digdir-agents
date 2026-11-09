@@ -59,6 +59,18 @@ pub struct AgentRecord {
     /// The volume revision each volume mount uses, by target, fixed once the agent first gets them all.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub volume_revisions: crate::volumes::VolumePins,
+    /// Where the agent's definition comes from. For a bundled definition, `source_directory` is
+    /// agentd's copy of the definition's files, so whatever reads an agent's files reads that copy.
+    #[serde(default)]
+    pub origin: crate::Origin,
+    /// How long agentd keeps the agent, fixed when it is created.
+    #[serde(default)]
+    pub lifetime: crate::Lifetime,
+    /// The canonical bind mount sources the agent was given when it was applied or run, by target,
+    /// other than those its manifest names. With its definition, they identify the agent `run`
+    /// finds.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub bindings: std::collections::BTreeMap<::sandbox::SandboxPath, std::path::PathBuf>,
 }
 
 /// Default environment file name, resolved in the source directory.
@@ -71,6 +83,28 @@ impl AgentRecord {
         self.env_file
             .clone()
             .unwrap_or_else(|| self.source_directory.join(ENV_FILE))
+    }
+
+    /// Refuses an agent with a bind mount agentd has not given a source, which it does before
+    /// storing one. Otherwise its sandbox would be made without it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Database`] naming the first bind mount without a source.
+    pub fn check_resolved(&self) -> Result<(), Error> {
+        let unsourced = self
+            .agent
+            .spec
+            .sandbox
+            .mounts
+            .iter()
+            .position(|mount| matches!(mount, MountSpec::Bind { source: None, .. }));
+        unsourced.map_or(Ok(()), |index| {
+            Err(Error::Database(format!(
+                "agent {:?} is not stored: spec.sandbox.mounts[{index}] has no source, which agentd gives it first",
+                self.agent.metadata.name
+            )))
+        })
     }
 
     /// Returns the mounts the agent's sandbox gets, which leave out the optional bind mounts whose source did not
@@ -96,11 +130,14 @@ impl AgentRecord {
                         target,
                         read_only,
                         optional,
+                        ..
                     } => Mount::Bind {
+                        // A stored agent's bind mounts all have their sources, as
+                        // `check_resolved` makes sure.
                         source: if *optional {
                             self.optional_mount_sources.get(target)?.clone()
                         } else {
-                            source.clone()
+                            source.clone()?
                         },
                         target: target.clone(),
                         read_only: *read_only,

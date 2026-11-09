@@ -28,6 +28,9 @@ use tokio::{
 
 use support::{IgnoreNotifications, agent};
 
+use crate::bundled;
+use agent::control_plane::AgentStore as _;
+
 struct FakeAuthentication;
 /// Converges an agent at once, except `stuck`, which never converges, counts the hints to converge
 /// every agent, and records each agent woken.
@@ -447,10 +450,13 @@ impl Connector for ScriptedConnector {
 }
 
 fn api() -> ApiFixture {
-    let control_plane = Rc::new(ControlPlane::new(
+    api_with(Rc::new(ControlPlane::new(
         Rc::new(InMemoryAgentStore::new()),
         Rc::new(IgnoreNotifications),
-    ));
+    )))
+}
+
+fn api_with(control_plane: Rc<ControlPlane>) -> ApiFixture {
     let conversation = Rc::new(RefCell::new(vec![answered_turn("one", "1"), answered_turn("two", "2")]));
     let ensured = Rc::new(RefCell::new(Vec::new()));
     let sent = Rc::new(RefCell::new(Vec::new()));
@@ -863,14 +869,17 @@ async fn a_github_login_or_logout_wakes_the_agents_asking_for_that_name_only() {
 async fn health_reports_a_compatible_daemon() {
     let fixture = api();
     let daemon = fixture.client.require_compatible_daemon().await.expect("health check");
-    assert_eq!(daemon.protocol_version.as_deref(), Some("v4"));
+    assert_eq!(
+        daemon.protocol_version.as_deref(),
+        Some(agent::control_api::PROTOCOL_VERSION)
+    );
     assert_eq!(daemon.build_version.as_deref(), Some(agent::build_version()));
 }
 
 #[test]
 fn daemon_identity_rejects_preview_1_and_mixed_builds() {
     let extended: agent::control_api::DaemonInfo = serde_json::from_value(serde_json::json!({
-        "protocolVersion": "v4",
+        "protocolVersion": agent::control_api::PROTOCOL_VERSION,
         "buildVersion": agent::build_version(),
         "futureCapability": true
     }))
@@ -883,7 +892,7 @@ fn daemon_identity_rejects_preview_1_and_mixed_builds() {
             build_version: None,
         },
         agent::control_api::DaemonInfo {
-            protocol_version: Some("v4".into()),
+            protocol_version: Some(agent::control_api::PROTOCOL_VERSION.into()),
             build_version: Some("another-build".into()),
         },
     ] {
@@ -1068,6 +1077,7 @@ fn request(name: &str) -> ApplyRequest {
         source_directory: std::env::temp_dir().join("agent-platform-source"),
         manifest_path: None,
         env_file: None,
+        binds: Vec::new(),
         create_only: false,
         agent: agent(name),
     }
@@ -1080,7 +1090,7 @@ async fn client_and_server_exchange_versioned_agent_operations() {
     let applied = client.apply(request("worker")).await.expect("apply");
     let fetched = client.get("worker").await.expect("get");
     assert_eq!(applied, fetched);
-    assert_eq!(client.list_agents().await.expect("list"), vec![applied.clone()]);
+    assert_eq!(client.list_agents(false).await.expect("list"), vec![applied.clone()]);
     assert_eq!(
         client
             .resolve_agent(request("worker").source_directory.join("nested"))
@@ -1094,7 +1104,7 @@ async fn client_and_server_exchange_versioned_agent_operations() {
         .expect("execution target");
     assert_eq!(execution.operating_system, "linux");
     assert_eq!(execution.sandbox.provider().as_str(), "memory");
-    assert_eq!(client.list_sessions(None).await.expect("list all sessions"), []);
+    assert_eq!(client.list_sessions(None, false).await.expect("list all sessions"), []);
     let session_error = client
         .get_session("worker", agent::sessions::SessionName::new("s1").expect("Session name"))
         .await
@@ -1109,7 +1119,11 @@ async fn client_and_server_exchange_versioned_agent_operations() {
 #[tokio::test(flavor = "local")]
 async fn resource_watch_returns_current_state_then_waits_for_the_next_change() {
     let fixture = api();
-    let initial = fixture.client.watch_resources(None).await.expect("initial state");
+    let initial = fixture
+        .client
+        .watch_resources(None, false)
+        .await
+        .expect("initial state");
     assert_eq!(initial.agents, []);
     assert_eq!(initial.sessions, []);
 
@@ -1117,7 +1131,7 @@ async fn resource_watch_returns_current_state_then_waits_for_the_next_change() {
         server: fixture.server.clone(),
     }));
     let revision = initial.revision;
-    let watch = tokio::task::spawn_local(async move { watcher.watch_resources(Some(revision)).await });
+    let watch = tokio::task::spawn_local(async move { watcher.watch_resources(Some(revision), false).await });
     tokio::task::yield_now().await;
     assert!(!watch.is_finished(), "a current revision waits for a change");
 
@@ -1131,11 +1145,15 @@ async fn resource_watch_returns_current_state_then_waits_for_the_next_change() {
 #[tokio::test(flavor = "local", start_paused = true)]
 async fn resource_watch_replies_unchanged_after_the_keepalive() {
     let fixture = api();
-    let current = fixture.client.watch_resources(None).await.expect("initial state");
+    let current = fixture
+        .client
+        .watch_resources(None, false)
+        .await
+        .expect("initial state");
     let started = tokio::time::Instant::now();
     let unchanged = fixture
         .client
-        .watch_resources(Some(current.revision))
+        .watch_resources(Some(current.revision), false)
         .await
         .expect("keepalive state");
     assert_eq!(unchanged, current);
@@ -1145,11 +1163,15 @@ async fn resource_watch_replies_unchanged_after_the_keepalive() {
 #[tokio::test(flavor = "local")]
 async fn resource_watch_neither_holds_nor_outlives_an_upgrade_drain() {
     let fixture = api();
-    let current = fixture.client.watch_resources(None).await.expect("initial state");
+    let current = fixture
+        .client
+        .watch_resources(None, false)
+        .await
+        .expect("initial state");
     let watcher = Client::new(Rc::new(InProcessConnector {
         server: fixture.server.clone(),
     }));
-    let watch = tokio::task::spawn_local(async move { watcher.watch_resources(Some(current.revision)).await });
+    let watch = tokio::task::spawn_local(async move { watcher.watch_resources(Some(current.revision), false).await });
     tokio::task::yield_now().await;
 
     fixture
@@ -1422,4 +1444,111 @@ async fn unix_socket_transport_is_private_and_usable() {
         .expect("server should stop")
         .expect("server task")
         .expect("server result");
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_ephemeral_agent_lives_as_long_as_the_connection_that_asked_for_it() {
+    let ephemeral = |definition: &str| agent::control_plane::RunRequest {
+        lifetime: Some(agent::Lifetime::Ephemeral),
+        ..bundled::request(definition, None)
+    };
+    let fixture = bundled::Fixture::new();
+    let client = api_with(fixture.control_plane.clone()).client;
+    let workspace = fixture.workspace("repo");
+
+    let (first, first_lease) = client.run(ephemeral("sign-in")).await.expect("first sign-in");
+    let (second, second_lease) = client.run(ephemeral("sign-in")).await.expect("second sign-in");
+    let (kept, kept_lease) = client
+        .run(bundled::request("builder", Some(&workspace)))
+        .await
+        .expect("builder");
+
+    assert_eq!(first.agent.metadata.name, "sign-in");
+    assert_eq!(
+        second.agent.metadata.name, "sign-in-2",
+        "an ephemeral agent belongs to one request"
+    );
+    assert_eq!(first.agent.status.lifetime, Some(agent::Lifetime::Ephemeral));
+    drop(first_lease);
+    assert!(
+        bundled::deleting(&fixture.store, "sign-in").await,
+        "deleted once its client is gone"
+    );
+    let second_record = fixture.store.get_by_name("sign-in-2").await.expect("second sign-in");
+    assert_eq!(
+        second_record.agent.metadata.deletion_timestamp, None,
+        "another client's agent stays"
+    );
+    drop(kept_lease);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let kept_record = fixture
+        .store
+        .get_by_name(&kept.agent.metadata.name)
+        .await
+        .expect("builder");
+    assert_eq!(
+        kept_record.agent.metadata.deletion_timestamp, None,
+        "kept until deleted"
+    );
+    drop(second_lease);
+    assert!(bundled::deleting(&fixture.store, "sign-in-2").await);
+
+    let (ephemeral_builder, lease) = client
+        .run(agent::control_plane::RunRequest {
+            lifetime: Some(agent::Lifetime::Ephemeral),
+            ..bundled::request("builder", Some(&workspace))
+        })
+        .await
+        .expect("an ephemeral agent is made beside one kept until deleted");
+    assert_ne!(ephemeral_builder.agent.metadata.name, kept.agent.metadata.name);
+    drop(lease);
+    assert!(bundled::deleting(&fixture.store, &ephemeral_builder.agent.metadata.name).await);
+}
+
+#[tokio::test(flavor = "local")]
+async fn listings_leave_out_ephemeral_agents_unless_asked_and_count_them() {
+    let fixture = bundled::Fixture::new();
+    let client = api_with(fixture.control_plane.clone()).client;
+    let workspace = fixture.workspace("repo");
+    let (kept, _kept_lease) = client
+        .run(bundled::request("builder", Some(&workspace)))
+        .await
+        .expect("builder");
+    let (ephemeral, _lease) = client
+        .run(agent::control_plane::RunRequest {
+            lifetime: Some(agent::Lifetime::Ephemeral),
+            ..bundled::request("sign-in", None)
+        })
+        .await
+        .expect("sign-in");
+    let names = |agents: &[agent::Agent]| {
+        agents
+            .iter()
+            .map(|agent| agent.metadata.name.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let listed = client.list_agents(false).await.expect("list");
+    let all = client.list_agents(true).await.expect("list all");
+    let watched = client.watch_resources(None, false).await.expect("watch");
+    let watched_all = client.watch_resources(None, true).await.expect("watch all");
+
+    assert_eq!(names(&listed), std::slice::from_ref(&kept.agent.metadata.name));
+    assert_eq!(
+        names(&all),
+        [kept.agent.metadata.name.clone(), ephemeral.agent.metadata.name.clone()]
+    );
+    assert_eq!(names(&watched.agents), names(&listed));
+    assert_eq!(watched.ephemeral_agents, 1, "the agents left out are counted");
+    assert_eq!(names(&watched_all.agents), names(&all));
+    assert_eq!(watched_all.ephemeral_agents, 0);
+    assert_eq!(
+        client
+            .get(&ephemeral.agent.metadata.name)
+            .await
+            .expect("an ephemeral agent by name")
+            .status
+            .lifetime,
+        Some(agent::Lifetime::Ephemeral)
+    );
 }

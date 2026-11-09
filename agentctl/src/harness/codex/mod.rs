@@ -256,6 +256,20 @@ pub(super) fn launch_linux(request: &LaunchRequest<'_>) -> ProcessLaunch {
          -c 'projects.{}.trust_level=\"trusted\"'",
         crate::sandbox::platform::WORKING_DIRECTORY
     );
+    // Codex trusts a project by its own folder, so one a session starts in elsewhere, such as a
+    // bind-mounted checkout, is trusted too. Its key is a dotted path, written unquoted, so only a
+    // folder whose name needs no quoting is; Codex asks once about any other.
+    let plain = |path: &str| {
+        path.bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'-'))
+    };
+    if request.working_directory != crate::sandbox::platform::WORKING_DIRECTORY && plain(request.working_directory) {
+        let _infallible = write!(
+            configuration,
+            " -c 'projects.{}.trust_level=\"trusted\"'",
+            request.working_directory
+        );
+    }
     // Codex takes the model as `-m`; effort has no flag of its own and travels as the
     // `model_reasoning_effort` config override. Validated selections need no TOML escaping.
     if let Some(model) = &request.model_selection.model {

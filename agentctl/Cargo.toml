@@ -6,6 +6,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 autotests = false
+# Kept with the files it embeds, as agentctl/bundled/README.md explains.
+build = "bundled/build.rs"
 
 [[test]]
 name = "integration"

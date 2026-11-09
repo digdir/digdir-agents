@@ -55,11 +55,20 @@ enum Command {
     /// Create or update an agent, or a volume, from a manifest.
     Apply {
         /// Agent or volume manifest path; defaults to ./agent.yaml.
-        #[arg(short = 'f', long = "filename", conflicts_with = "variant")]
+        #[arg(short = 'f', long = "filename", conflicts_with_all = ["variant", "from"])]
         filename: Option<PathBuf>,
         /// Variant of the agent in the current directory.
-        #[arg(long, value_parser = parse_variant_name, conflicts_with = "filename")]
+        #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["filename", "from"])]
         variant: Option<AgentVariantName>,
+        /// A definition by reference, such as `bundled/agent-builder`, or `agent-builder` for short,
+        /// instead of a manifest on disk.
+        #[arg(long, value_name = "REFERENCE")]
+        from: Option<String>,
+        /// A host folder for a bind mount, as `SOURCE:TARGET`, in place of the source the manifest
+        /// names, or as `SOURCE` for the one bind mount it names no source for. Repeatable. An
+        /// update that gives none keeps the agent's.
+        #[arg(long = "mount", value_name = "SOURCE[:TARGET]", value_parser = parse_bind_source)]
+        mounts: Vec<agent::control_plane::BindSource>,
         /// Override metadata.name so one manifest can create multiple agents.
         #[arg(long)]
         name: Option<String>,
@@ -73,6 +82,41 @@ enum Command {
         /// Maximum wait with `--wait`, written as seconds, minutes, or hours (for example `10m`).
         #[arg(long, default_value = "10m", value_parser = parse_duration, requires = "wait")]
         timeout: Duration,
+    },
+    /// Make an agent from a definition and attach to a session in it.
+    ///
+    /// An agent of the definition that already works on the same folders is refused, with the
+    /// command that attaches to it. `--name` makes another one, and `apply` updates one.
+    Run {
+        /// A definition by reference, such as `bundled/agent-builder`, or `agent-builder` for short,
+        /// or a definition folder or manifest on disk, written as a path, such as `./agents/reviewer`
+        /// or `agent.yaml`.
+        definition: String,
+        /// The folder for the definition's one bind mount without a source, such as the checkout
+        /// it works on.
+        folder: Option<PathBuf>,
+        /// A host folder for a bind mount, as `SOURCE:TARGET`, in place of the source the definition
+        /// names, or as `SOURCE` for the one bind mount it names no source for. Repeatable.
+        #[arg(long = "mount", value_name = "SOURCE[:TARGET]", value_parser = parse_bind_source)]
+        mounts: Vec<agent::control_plane::BindSource>,
+        /// Delete the agent when this command ends.
+        #[arg(long, conflicts_with = "detach")]
+        rm: bool,
+        /// Start the agent without attaching to a session.
+        #[arg(short = 'd', long)]
+        detach: bool,
+        /// Name the agent instead of having it named after the definition and folder.
+        #[arg(long)]
+        name: Option<String>,
+        /// Session to attach to, made if it does not exist.
+        #[arg(long, default_value = "main")]
+        session: String,
+        /// File supplying declared manifest environment and secret values, for a definition on
+        /// disk; defaults to `.env` beside its manifest.
+        #[arg(long)]
+        env_file: Option<PathBuf>,
+        #[command(flatten)]
+        selection: SessionSelection,
     },
     /// Create or attach to a named session in an agent sandbox.
     Attach {
@@ -260,6 +304,10 @@ enum Command {
         /// Include archived sessions in a session listing.
         #[arg(long)]
         archived: bool,
+        /// Include ephemeral agents and their sessions, which belong to the client that ran them,
+        /// such as `agentctl run --rm`, and listings leave out otherwise.
+        #[arg(long)]
+        all: bool,
         /// Keep printing the resources each time they change, as one line each with `-o json`.
         #[arg(short = 'w', long)]
         watch: bool,
@@ -372,6 +420,7 @@ enum Resource {
     Agent,
     Session,
     Volume,
+    Definition,
 }
 
 /// The agent `start` or `restart` acts on: `agent/NAME` or `agent NAME`, and how long to wait.
@@ -681,13 +730,18 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         Command::Apply {
             filename,
             variant,
+            from,
+            mounts,
             name,
             env_file,
             wait,
             timeout,
         } => {
             let directory = std::env::current_dir().map_err(Error::from)?;
-            let filename = apply_manifest_path(filename, variant, &directory)?;
+            let filename = match from {
+                Some(reference) => referenced_manifest(client, &reference).await?,
+                None => apply_manifest_path(filename, variant, &directory)?,
+            };
             if manifest_kind(&filename).as_deref() == Some(agent::volumes::KIND) {
                 apply_volume(client, filename, name, env_file, wait.then_some(timeout)).await?;
                 return Ok(ExitCode::SUCCESS);
@@ -696,6 +750,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             if let Some(name) = name {
                 request.agent.metadata.name = name;
             }
+            request.binds = absolute_binds(mounts)?;
             let applied = client.apply(request).await?;
             let name = applied.metadata.name;
             println!("agent/{name} applied");
@@ -716,6 +771,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             variant,
             all_agents,
             archived,
+            all,
             watch,
             output,
         } => {
@@ -724,6 +780,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 variant,
                 all_agents,
                 archived,
+                ephemeral: all,
             };
             get_resources(client, &resource, name, scope, watch, output).await?;
         }
@@ -768,6 +825,12 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                     client.delete_session(&agent, name.clone()).await?;
                     println!("session/{agent}/{name} deleted");
                 }
+                Resource::Definition => {
+                    return Err(Error::Invalid(
+                        "a definition is a folder or one agentd carries, which agentctl does not delete".into(),
+                    )
+                    .into());
+                }
             }
         }
         Command::Stop { target } => stop(client, target).await?,
@@ -783,6 +846,29 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             variant,
             selection,
         } => attach(home, client, &resource, name, agent, variant, selection).await?,
+        Command::Run {
+            definition,
+            folder,
+            mounts,
+            rm,
+            detach,
+            name,
+            session,
+            env_file,
+            selection,
+        } => {
+            let mut binds = mounts;
+            binds.extend(folder.map(|source| agent::control_plane::BindSource { source, target: None }));
+            let run = Run {
+                definition,
+                binds,
+                lifetime: rm.then_some(agent::Lifetime::Ephemeral),
+                name,
+                env_file,
+            };
+            let session = (!detach).then(|| SessionName::new(session)).transpose()?;
+            run_agent(home, client, run, session, selection).await?;
+        }
         Command::Exec {
             stdin,
             tty,
@@ -861,6 +947,8 @@ struct SessionScope {
     variant: Option<AgentVariantName>,
     all_agents: bool,
     archived: bool,
+    /// Whether a listing includes ephemeral agents and their sessions.
+    ephemeral: bool,
 }
 
 /// The sessions `get` shows, once the owning agent is resolved.
@@ -882,6 +970,41 @@ impl SessionFilter {
     }
 }
 
+/// Prints the agent `name`, or every agent, which agentd lists without the ephemeral ones unless
+/// `ephemeral`, as they belong to the client that asked for them.
+async fn get_agents(
+    client: &Client,
+    name: Option<String>,
+    ephemeral: bool,
+    watch: bool,
+    output: OutputFormat,
+) -> CommandResult<()> {
+    let agents = if let Some(name) = &name {
+        vec![client.get(name).await?]
+    } else {
+        client.list_agents(ephemeral).await?
+    };
+    if watch {
+        // A named agent is shown whatever its lifetime.
+        return watch::follow(
+            client,
+            ephemeral || name.is_some(),
+            |resources| {
+                let mut agents = resources.agents;
+                agents.retain(|agent| name.as_ref().is_none_or(|name| agent.metadata.name == *name));
+                render_watched(output, &agents, agents_table)
+            },
+            &mut std::io::stdout(),
+        )
+        .await;
+    }
+    match output {
+        OutputFormat::Json => print_json(&agents)?,
+        OutputFormat::Table => print_table(&agents_table(&agents)),
+    }
+    Ok(())
+}
+
 async fn get_resources(
     client: &Client,
     resource: &str,
@@ -895,26 +1018,22 @@ async fn get_resources(
     match resource {
         Resource::Agent => {
             reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
-            let agents = if let Some(name) = &name {
-                vec![client.get(name).await?]
-            } else {
-                client.list_agents().await?
-            };
-            if watch {
-                return watch::follow(
-                    client,
-                    |resources| {
-                        let mut agents = resources.agents;
-                        agents.retain(|agent| name.as_ref().is_none_or(|name| agent.metadata.name == *name));
-                        render_watched(output, &agents, agents_table)
-                    },
-                    &mut std::io::stdout(),
+            return get_agents(client, name, scope.ephemeral, watch, output).await;
+        }
+        Resource::Definition => {
+            reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
+            if name.is_some() || watch || scope.ephemeral || scope.archived {
+                return Err(Error::Invalid(
+                    "definitions are listed for the current directory, without a name, --watch, --all or --archived"
+                        .into(),
                 )
-                .await;
+                .into());
             }
+            let directory = std::env::current_dir().map_err(Error::from)?;
+            let definitions = client.definitions(Some(directory.clone())).await?;
             match output {
-                OutputFormat::Json => print_json(&agents)?,
-                OutputFormat::Table => print_table(&agents_table(&agents)),
+                OutputFormat::Json => print_json(&definitions)?,
+                OutputFormat::Table => print_table(&format::definitions_table(&definitions, &directory)),
             }
         }
         Resource::Volume => {
@@ -927,6 +1046,7 @@ async fn get_resources(
             if watch {
                 return watch::follow(
                     client,
+                    false,
                     |resources| {
                         let mut volumes = resources.volumes;
                         volumes.retain(|volume| name.as_ref().is_none_or(|name| volume.metadata.name == *name));
@@ -961,7 +1081,7 @@ async fn get_resources(
             let sessions = if let (Some(agent), Some(name)) = (&filter.agent, &filter.name) {
                 vec![client.get_session(agent, name.clone()).await?]
             } else {
-                let mut sessions = client.list_sessions(filter.agent.as_deref()).await?;
+                let mut sessions = client.list_sessions(filter.agent.as_deref(), scope.ephemeral).await?;
                 sessions.retain(|session| filter.matches(session));
                 sessions
             };
@@ -969,6 +1089,7 @@ async fn get_resources(
             if watch {
                 return watch::follow(
                     client,
+                    scope.ephemeral || filter.agent.is_some(),
                     |resources| {
                         let mut sessions = resources.sessions;
                         sessions.retain(|session| filter.matches(session));
@@ -1674,6 +1795,7 @@ fn resource_reference(resource: &str, name: Option<String>) -> Result<(Resource,
         "agent" | "agents" | "ag" => Resource::Agent,
         "session" | "sessions" => Resource::Session,
         "volume" | "volumes" | "vol" => Resource::Volume,
+        "definition" | "definitions" | "def" => Resource::Definition,
         _ => return Err(Error::Invalid(format!("unknown resource type {kind:?}"))),
     };
     Ok((resource, embedded_name.or(name)))
@@ -1849,8 +1971,9 @@ fn stopped_or_restarted(name: &str, converged: &Agent) -> Result<(), String> {
 /// stop under way; after asking at a terminal unless `--all` was passed. `None` when there is
 /// none or the person declined.
 async fn agents_to_stop(client: &Client, target: &StopTarget) -> CommandResult<Option<Vec<String>>> {
+    // An emergency stop stops what listings leave out too.
     let agents: Vec<Agent> = client
-        .list_agents()
+        .list_agents(true)
         .await?
         .into_iter()
         .filter(|agent| {
@@ -1936,6 +2059,40 @@ fn wait_timeout_message(name: &str, ready: Option<&agent::Condition>) -> String 
     )
 }
 
+/// Parses `--mount SOURCE[:TARGET]`. The target is what follows the last `:` before a `/`, so a
+/// Windows drive, as in `C:\\src`, stays part of the source.
+fn parse_bind_source(value: &str) -> Result<agent::control_plane::BindSource, String> {
+    let split = value
+        .rmatch_indices(":/")
+        .map(|(index, _)| index)
+        .find(|index| !(*index == 1 && value.as_bytes()[0].is_ascii_alphabetic()));
+    let (source, target) = split.map_or((value, None), |index| {
+        (&value[..index], Some(::sandbox::SandboxPath::new(&value[index + 1..])))
+    });
+    if source.is_empty() {
+        return Err("the source folder is missing".into());
+    }
+    Ok(agent::control_plane::BindSource {
+        source: PathBuf::from(source),
+        target,
+    })
+}
+
+/// `binds` with their sources made absolute against the current folder.
+fn absolute_binds(
+    binds: Vec<agent::control_plane::BindSource>,
+) -> Result<Vec<agent::control_plane::BindSource>, Error> {
+    binds
+        .into_iter()
+        .map(|bind| {
+            Ok(agent::control_plane::BindSource {
+                source: absolute(std::env::current_dir, bind.source)?,
+                target: bind.target,
+            })
+        })
+        .collect()
+}
+
 fn parse_duration(value: &str) -> Result<Duration, String> {
     let (number, multiplier) = match value.as_bytes().last() {
         Some(b's') => (&value[..value.len() - 1], 1),
@@ -1994,6 +2151,19 @@ fn agents_table(agents: &[Agent]) -> Vec<String> {
             ]
         })
         .collect::<Vec<_>>();
+    // Ephemeral agents are listed only when asked for, and then said to be.
+    if agents.iter().any(|agent| agent.status.is_ephemeral()) {
+        let rows = agents
+            .iter()
+            .zip(rows)
+            .map(|(agent, mut row)| {
+                let lifetime = if agent.status.is_ephemeral() { "ephemeral" } else { "-" };
+                row.insert(1, lifetime.into());
+                row
+            })
+            .collect::<Vec<_>>();
+        return table_lines(&["NAME", "LIFETIME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows);
+    }
     table_lines(&["NAME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows)
 }
 
@@ -2179,7 +2349,7 @@ async fn apply_volume(
         let mut after = None;
         loop {
             // Each reply follows a change, such as the copy advancing.
-            let resources = client.watch_resources(after).await?;
+            let resources = client.watch_resources(after, false).await?;
             after = Some(resources.revision);
             let status = resources
                 .volumes
@@ -2259,9 +2429,132 @@ fn read_apply_request_in(
         source_directory,
         manifest_path: Some(filename),
         env_file,
+        binds: Vec::new(),
         create_only: false,
         agent,
     })
+}
+
+/// The manifest of agentd's copy of the definition `reference` names.
+async fn referenced_manifest(client: &Client, reference: &str) -> Result<PathBuf, Error> {
+    let reference = agent::DefinitionReference::parse(reference)?.to_string();
+    let definitions = client.definitions(None).await?;
+    let references = definitions
+        .iter()
+        .filter_map(|definition| Some((definition.reference.as_deref()?, &definition.path)));
+    if let Some((_, path)) = references.clone().find(|(listed, _)| *listed == reference) {
+        return Ok(path.clone());
+    }
+    let references = references.map(|(listed, _)| listed).collect::<Vec<_>>();
+    Err(Error::Invalid(if references.is_empty() {
+        format!("agentd has no definition {reference:?}, nor any other")
+    } else {
+        format!(
+            "agentd has no definition {reference:?}; it has {}",
+            references.join(", ")
+        )
+    }))
+}
+
+/// What `agentctl run` runs, as given on its command line.
+struct Run {
+    definition: String,
+    binds: Vec<agent::control_plane::BindSource>,
+    lifetime: Option<agent::Lifetime>,
+    name: Option<String>,
+    env_file: Option<PathBuf>,
+}
+
+impl Run {
+    /// The request for agentd: a definition written as a path is one on disk, and anything else
+    /// is a reference agentd resolves.
+    fn request(self) -> Result<agent::control_plane::RunRequest, Error> {
+        if !is_written_as_path(&self.definition)
+            && self.definition.contains(['/', '\\'])
+            && Path::new(&self.definition).exists()
+        {
+            return Err(Error::Invalid(format!(
+                "{:?} is read as a definition reference; write ./{} for the folder here",
+                self.definition, self.definition
+            )));
+        }
+        let definition = if is_written_as_path(&self.definition) {
+            // Canonical, as running the same definition again finds its agent by its manifest's path.
+            let path = std::fs::canonicalize(&self.definition)
+                .map_err(|error| Error::Invalid(format!("definition {}: {error}", self.definition)))?;
+            let manifest = if path.is_dir() {
+                path.join(manifest::MANIFEST_FILE)
+            } else {
+                path
+            };
+            let read = read_apply_request(manifest, self.env_file)?;
+            agent::control_plane::RunDefinition::Local {
+                source_directory: read.source_directory,
+                manifest_path: read
+                    .manifest_path
+                    .ok_or_else(|| Error::Invalid("the manifest has no path".into()))?,
+                env_file: read.env_file,
+                agent: Box::new(read.agent),
+            }
+        } else if self.env_file.is_some() {
+            return Err(Error::Invalid(format!(
+                "--env-file is for a definition on disk, and {:?} is a reference; write ./{} for a folder here",
+                self.definition, self.definition
+            )));
+        } else {
+            agent::control_plane::RunDefinition::Reference {
+                reference: self.definition,
+            }
+        };
+        Ok(agent::control_plane::RunRequest {
+            definition,
+            binds: absolute_binds(self.binds)?,
+            lifetime: self.lifetime,
+            name: self.name,
+        })
+    }
+}
+
+/// Whether `definition` is written as a path rather than as a reference: starting at a root, `.`
+/// or `..`, or a manifest file name. Others, such as `agents/reviewer`, are references, as
+/// `npm install` and `docker run` read such names, since a reference can hold a `/` too.
+fn is_written_as_path(definition: &str) -> bool {
+    let path = Path::new(definition);
+    // A root counts without a drive too, as in `/srv/agents/reviewer` on Windows.
+    path.has_root()
+        || matches!(
+            path.components().next(),
+            Some(std::path::Component::CurDir | std::path::Component::ParentDir)
+        )
+        || path
+            .extension()
+            .is_some_and(|extension| extension == "yaml" || extension == "yml")
+}
+
+/// Runs an agent and, given a session, attaches to it. An ephemeral agent lives until this
+/// returns, however it ends.
+async fn run_agent(
+    home: &ControlPlaneHome,
+    client: &Client,
+    run: Run,
+    session: Option<SessionName>,
+    selection: SessionSelection,
+) -> CommandResult<()> {
+    let (ran, _lease) = client.run(run.request()?).await?;
+    let name = ran.agent.metadata.name;
+    println!("agent/{name} created");
+    let Some(session) = session else {
+        return Ok(());
+    };
+    let target = progress::Wait::start()
+        .until(
+            client,
+            &name,
+            client.ensure_session(&name, session, selection.request(None), WaitPolicy::UntilConverged),
+        )
+        .await?;
+    agent::sessions::attach(home.path(), &target).await?;
+    Ok(())
 }
 
 /// Stores a harness login: the credential on standard input when given, else, inside an agent with
@@ -2314,7 +2607,7 @@ async fn print_logins(client: &Client, harness: agent::Harness) -> CommandResult
             logins.entry(stored.login).or_default().0 = true;
         }
     }
-    for agent in client.list_agents().await? {
+    for agent in client.list_agents(true).await? {
         let Some(installation) = agent.spec.harness(harness) else {
             continue;
         };
@@ -2401,6 +2694,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_mount_names_its_target_after_the_last_colon_before_a_slash() {
+        let parsed = |value: &str| {
+            super::parse_bind_source(value).map(|bind| {
+                (
+                    bind.source.display().to_string(),
+                    bind.target.map(|target| target.as_str().to_owned()),
+                )
+            })
+        };
+        assert_eq!(parsed("../app"), Ok(("../app".into(), None)));
+        assert_eq!(
+            parsed("~/wt/a:b:/work/app"),
+            Ok(("~/wt/a:b".into(), Some("/work/app".into())))
+        );
+        assert_eq!(parsed("C:/src/app"), Ok(("C:/src/app".into(), None)));
+        assert_eq!(
+            parsed("C:/src/app:/work/app"),
+            Ok(("C:/src/app".into(), Some("/work/app".into())))
+        );
+        assert!(parsed(":/work/app").is_err());
+    }
+
+    #[test]
+    fn run_reads_a_definition_written_as_a_path_as_one_on_disk_and_anything_else_as_a_reference() {
+        for path in [
+            ".",
+            "..",
+            "./agents/reviewer",
+            "../reviewer",
+            "/srv/agents/reviewer",
+            "agent.yaml",
+            "x/agent.yml",
+        ] {
+            assert!(super::is_written_as_path(path), "{path}");
+        }
+        for reference in [
+            "agent-builder",
+            "bundled/agent-builder",
+            "agents/reviewer",
+            "kihub.digdir.no/dotnet-dev",
+        ] {
+            assert!(!super::is_written_as_path(reference), "{reference}");
+        }
+    }
+
+    #[test]
     fn help_leads_with_the_purpose_and_the_commands_people_use_first() {
         let help = <Arguments as clap::CommandFactory>::command().render_help().to_string();
         assert!(
@@ -2414,7 +2753,7 @@ mod tests {
             .take_while(|line| !line.trim().is_empty())
             .filter_map(|line| line.split_whitespace().next())
             .collect::<Vec<_>>();
-        assert_eq!(commands[..5], ["tui", "apply", "attach", "stop", "start"], "{help}");
+        assert_eq!(commands[..5], ["tui", "apply", "run", "attach", "stop"], "{help}");
         for hidden in ["ssh-proxy", "vnc-proxy"] {
             assert!(!commands.contains(&hidden), "{help}");
         }

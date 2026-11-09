@@ -18,6 +18,7 @@ pub(crate) const RECONNECT_INTERVAL: Duration = Duration::from_secs(1);
 /// upgrade, so that its caller can start it again from the new binary.
 pub(crate) async fn follow(
     client: &Client,
+    include_ephemeral: bool,
     render: impl Fn(Resources) -> CommandResult<String>,
     out: &mut impl std::io::Write,
 ) -> CommandResult<()> {
@@ -29,7 +30,7 @@ pub(crate) async fn follow(
         let reply = match client.health().await {
             Ok(daemon) => {
                 daemon.require_compatible()?;
-                client.watch_resources(after).await
+                client.watch_resources(after, include_ephemeral).await
             }
             Err(error) => Err(error),
         };
@@ -172,6 +173,7 @@ mod tests {
 
         let error = follow(
             &client,
+            false,
             |resources| {
                 let names = resources
                     .sessions

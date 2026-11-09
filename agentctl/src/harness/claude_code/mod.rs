@@ -285,10 +285,11 @@ fn read_pasted_token(input: &mut impl std::io::BufRead) -> Result<zeroize::Zeroi
 pub(super) async fn bootstrap_linux(
     sandbox: &sandbox::SandboxHandle,
     home: &str,
+    working_directory: &str,
     instructions: &[u8],
     skills: &[crate::harness::Skill],
 ) -> Result<(), Error> {
-    bootstrap::configure_linux(sandbox, home, instructions, skills).await
+    bootstrap::configure_linux(sandbox, home, working_directory, instructions, skills).await
 }
 
 pub(super) async fn verify_linux(

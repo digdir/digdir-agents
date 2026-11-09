@@ -335,6 +335,9 @@ pub(crate) struct App {
     /// Volumes, by name, as last reported.
     pub(crate) volumes: Vec<agent::volumes::Volume>,
     pub(crate) volume_selected: usize,
+    /// How many ephemeral agents agentd left out of the last state, which belong to the clients
+    /// that ran them, so the status line can say they exist.
+    pub(crate) ephemeral_agents: usize,
     pub(crate) creating: usize,
     /// Prompts being sent.
     pub(crate) prompting: usize,
@@ -350,7 +353,8 @@ pub(crate) struct App {
     /// The outcome of a session change and when it was shown.
     pub(crate) notice: Option<(String, Instant)>,
     pub(crate) discovering: bool,
-    pub(crate) queued_candidates: Option<Vec<ManifestCandidate>>,
+    /// Candidates found while another view was open, or why the definitions could not be listed.
+    pub(crate) queued_candidates: Option<(Vec<ManifestCandidate>, Option<String>)>,
     pub(crate) discovering_volumes: bool,
     /// Editors and whether the terminal is remote, which the open menu depends on.
     pub(crate) environment: Environment,
@@ -719,6 +723,13 @@ pub(crate) struct ManifestCandidate {
     pub(crate) path: PathBuf,
     /// Decoded `metadata.name`, or why the manifest cannot be used.
     pub(crate) name: Result<String, String>,
+    /// The reference agentd runs it by, for one of agentd's definitions, whose manifest is
+    /// agentd's copy of it.
+    pub(crate) reference: Option<String>,
+    /// How many of its bind mounts name no source, so an agent needs a folder for each.
+    pub(crate) slots: usize,
+    /// The folder an agent made from it works on: the working directory, when it needs one.
+    pub(crate) folder: Option<PathBuf>,
     /// Other path spellings discovered for the same canonical file.
     equivalent_paths: Vec<PathBuf>,
 }
@@ -728,8 +739,17 @@ impl ManifestCandidate {
         Self {
             path,
             name,
+            reference: None,
+            slots: 0,
+            folder: None,
             equivalent_paths: Vec::new(),
         }
+    }
+
+    /// The candidate for agentd's definition `reference`, whose manifest is at `self.path`.
+    pub(crate) fn referenced_as(mut self, reference: String) -> Self {
+        self.reference = Some(reference);
+        self
     }
 
     pub(crate) fn add_equivalent_path(&mut self, path: PathBuf) {
@@ -753,8 +773,17 @@ pub(crate) struct AgentDefinition {
 }
 
 impl AgentDefinition {
-    /// User-facing agent label, taken from the expanded default when possible.
+    /// The reference agentd runs it by, for one of agentd's definitions.
+    pub(crate) fn reference(&self) -> Option<&str> {
+        self.variants.first()?.reference.as_deref()
+    }
+
+    /// User-facing agent label: the reference of one of agentd's definitions, else taken from the
+    /// expanded default when possible.
     pub(crate) fn label(&self) -> String {
+        if let Some(reference) = self.reference() {
+            return reference.to_owned();
+        }
         self.variants
             .iter()
             .find(|candidate| {
@@ -959,6 +988,18 @@ impl CreateForm {
             .candidate()
             .ok_or_else(|| "no agent manifests found; apply one with agentctl apply".to_owned())?;
         let manifest_name = candidate.name.as_ref().map_err(Clone::clone)?;
+        if candidate.reference.is_some() && !self.env_file.is_empty() {
+            return Err("agentd's definitions read no environment file".to_owned());
+        }
+        match (candidate.slots, &candidate.folder) {
+            (0, _) | (1, Some(_)) => {}
+            (1, None) => return Err("this definition works on a folder; start the TUI in it".to_owned()),
+            (slots, _) => {
+                return Err(format!(
+                    "this definition needs {slots} folders; run it with agentctl run --mount SOURCE:TARGET"
+                ));
+            }
+        }
         let name = if self.name.is_empty() {
             numbered_name(manifest_name, agents)
         } else {
@@ -972,6 +1013,7 @@ impl CreateForm {
             manifest: candidate.path.clone(),
             name,
             env_file: (!self.env_file.is_empty()).then(|| PathBuf::from(&self.env_file)),
+            folder: candidate.folder.clone().filter(|_| candidate.slots == 1),
             form: self.clone(),
         })
     }
@@ -1239,6 +1281,8 @@ pub(crate) enum Action {
         manifest: PathBuf,
         name: String,
         env_file: Option<PathBuf>,
+        /// The folder for the definition's one bind mount without a source.
+        folder: Option<PathBuf>,
         form: CreateForm,
     },
     Exec {
@@ -1357,6 +1401,7 @@ impl App {
             forward_selected: 0,
             volumes: Vec::new(),
             volume_selected: 0,
+            ephemeral_agents: 0,
             creating: 0,
             prompting: 0,
             transcript: None,
@@ -2206,24 +2251,32 @@ impl App {
     }
 
     /// Opens the create-agent modal for finished discovery, or queues the
-    /// candidates while another view is open.
-    pub(crate) fn manifests_discovered(&mut self, candidates: Vec<ManifestCandidate>) {
+    /// candidates while another view is open. `unlisted` says why the definitions could not be
+    /// listed, which the form shows as its error.
+    pub(crate) fn manifests_discovered(&mut self, candidates: Vec<ManifestCandidate>, unlisted: Option<String>) {
         if !std::mem::take(&mut self.discovering) {
             return;
         }
         if self.idle() {
-            self.open_create(candidates);
+            self.open_discovered(candidates, unlisted);
         } else {
-            self.queued_candidates = Some(candidates);
+            self.queued_candidates = Some((candidates, unlisted));
         }
     }
 
     /// Opens the create-agent modal for candidates queued behind another view once it closes.
     pub(crate) fn open_queued_create(&mut self) {
         if self.idle()
-            && let Some(candidates) = self.queued_candidates.take()
+            && let Some((candidates, unlisted)) = self.queued_candidates.take()
         {
-            self.open_create(candidates);
+            self.open_discovered(candidates, unlisted);
+        }
+    }
+
+    fn open_discovered(&mut self, candidates: Vec<ManifestCandidate>, unlisted: Option<String>) {
+        self.open_create(candidates);
+        if let Some(Modal::CreateAgent(form)) = &mut self.modal {
+            form.error = unlisted;
         }
     }
 
@@ -4377,12 +4430,12 @@ pub(crate) mod tests {
     #[test]
     fn discovery_results_wait_for_an_open_view_to_close() {
         let mut app = populated();
-        app.manifests_discovered(candidates(&[("/sources/stale", "stale")]));
+        app.manifests_discovered(candidates(&[("/sources/stale", "stale")]), None);
         assert!(app.modal.is_none());
 
         app.discovering = true;
         app.on_key(key(KeyCode::Char('s')));
-        app.manifests_discovered(candidates(&[("/sources/worker", "worker")]));
+        app.manifests_discovered(candidates(&[("/sources/worker", "worker")]), None);
         assert!(!app.discovering);
         assert!(app.modal.is_none());
         app.open_queued_create();
@@ -4395,8 +4448,24 @@ pub(crate) mod tests {
 
         let mut app = populated();
         app.discovering = true;
-        app.manifests_discovered(candidates(&[("/sources/worker", "worker")]));
+        app.manifests_discovered(candidates(&[("/sources/worker", "worker")]), None);
         assert_eq!(create_form(&app).placeholder(&app.agents).as_deref(), Some("worker-1"));
+        assert_eq!(create_form(&app).error, None);
+    }
+
+    #[test]
+    fn the_create_form_says_why_the_definitions_could_not_be_listed() {
+        let mut app = populated();
+        app.discovering = true;
+        app.manifests_discovered(
+            candidates(&[("/sources/worker", "worker")]),
+            Some("could not list the definitions: refused".to_owned()),
+        );
+        assert_eq!(create_form(&app).placeholder(&app.agents).as_deref(), Some("worker-1"));
+        assert_eq!(
+            create_form(&app).error.as_deref(),
+            Some("could not list the definitions: refused")
+        );
     }
 
     #[test]
@@ -4458,6 +4527,55 @@ pub(crate) mod tests {
         assert_eq!(manifest, PathBuf::from("/b/agent.yaml"));
         assert_eq!(name, "my");
         assert_eq!(env_file, Some(PathBuf::from("../private/beta.env")));
+    }
+
+    #[test]
+    fn create_form_offers_agentds_definition_by_reference_on_the_working_directory() {
+        let mut app = populated();
+        let mut candidate = ManifestCandidate::new(
+            PathBuf::from("/agentd/bundled/abc/agent.yaml"),
+            Ok("builder".to_owned()),
+        )
+        .referenced_as("agent-builder".to_owned());
+        candidate.slots = 1;
+        app.open_create(vec![candidate.clone()]);
+        assert_eq!(
+            create_form(&app).agent().map(AgentDefinition::label).as_deref(),
+            Some("agent-builder")
+        );
+        let Action::None = app.on_key(key(KeyCode::Enter)) else {
+            panic!("a definition that needs a folder has none");
+        };
+        assert_eq!(
+            create_form(&app).error.as_deref(),
+            Some("this definition works on a folder; start the TUI in it")
+        );
+
+        candidate.folder = Some(PathBuf::from("/src/app"));
+        app.modal = None;
+        app.open_create(vec![candidate]);
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Char('e')));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            create_form(&app).error.as_deref(),
+            Some("agentd's definitions read no environment file")
+        );
+        app.on_key(key(KeyCode::Backspace));
+        let Action::CreateAgent {
+            manifest,
+            folder,
+            env_file,
+            ..
+        } = app.on_key(key(KeyCode::Enter))
+        else {
+            panic!("expected a CreateAgent action");
+        };
+        assert_eq!(manifest, PathBuf::from("/agentd/bundled/abc/agent.yaml"));
+        assert_eq!(folder, Some(PathBuf::from("/src/app")));
+        assert_eq!(env_file, None);
     }
 
     #[test]

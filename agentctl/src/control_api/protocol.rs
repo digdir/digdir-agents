@@ -2,10 +2,12 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt as _};
 
 /// Control API version, independent of the JSON-RPC envelope.
-pub const PROTOCOL_VERSION: &str = "v4";
+pub const PROTOCOL_VERSION: &str = "v5";
 pub(crate) const JSON_RPC_VERSION: &str = "2.0";
 
 pub(crate) const METHOD_APPLY: &str = "agents.v1.apply";
+pub(crate) const METHOD_RUN: &str = "agents.v1.run";
+pub(crate) const METHOD_DEFINITIONS: &str = "definitions.v1.list";
 pub(crate) const METHOD_HEALTH: &str = "control.v1.health";
 pub(crate) const METHOD_SHUTDOWN: &str = "control.v1.shutdown";
 pub(crate) const METHOD_GET: &str = "agents.v1.get";
@@ -133,6 +135,10 @@ pub(crate) struct ResourcesWatchParams {
     /// Revision of the previous reply; absent requests the current state now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<crate::resources::Revision>,
+    /// Whether the reply also holds ephemeral agents and their sessions, which belong to the
+    /// client that ran them, and a listing leaves out otherwise.
+    #[serde(default, rename = "includeEphemeral", skip_serializing_if = "is_false")]
+    pub include_ephemeral: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -206,6 +212,27 @@ pub(crate) struct DirectoryParams {
 pub(crate) struct SessionListParams {
     #[serde(default)]
     pub agent: Option<String>,
+    /// Whether a listing of every agent's sessions also holds those of ephemeral agents.
+    #[serde(default, rename = "includeEphemeral", skip_serializing_if = "is_false")]
+    pub include_ephemeral: bool,
+}
+
+/// Parameters of `definitions.v1.list`.
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DefinitionListParams {
+    /// The absolute folder whose definitions on disk are listed with the others.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<std::path::PathBuf>,
+}
+
+/// Parameters of `agents.v1.list`.
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AgentListParams {
+    /// Whether the list also holds ephemeral agents, which belong to the client that ran them.
+    #[serde(default, rename = "includeEphemeral", skip_serializing_if = "is_false")]
+    pub include_ephemeral: bool,
 }
 
 #[derive(Deserialize, Serialize)]

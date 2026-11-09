@@ -47,6 +47,9 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
         agent: resource,
         optional_mount_sources: std::collections::BTreeMap::new(),
         volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
     }
 }
 

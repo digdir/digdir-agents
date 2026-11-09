@@ -7,17 +7,18 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, sessions};
 
 use super::protocol::{
-    AccountLoginParams, AccountLogoutResult, AccountParams, DaemonInfo, DirectoryParams, ExecutionEnsureParams,
-    JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST,
-    METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS,
-    METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH,
-    METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
-    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
-    METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, ProgressParams, ReadMessage, Request, ResourcesWatchParams,
-    Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
-    SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
+    AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, DaemonInfo, DefinitionListParams,
+    DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
+    MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY,
+    METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE,
+    METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
+    METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
+    METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
+    METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
+    METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams,
+    ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams,
+    SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult,
+    read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -100,6 +101,34 @@ impl Client {
         self.call(METHOD_APPLY, request).await
     }
 
+    /// Runs an agent from a definition; see [`control_plane::ControlPlane::run`].
+    ///
+    /// An ephemeral agent lives while the returned lease does: dropping the lease, or this process
+    /// ending, closes the connection that asked for it, and agentd deletes it. The lease of an
+    /// agent kept until deleted holds nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the control-plane operation fails.
+    pub async fn run(&self, request: control_plane::RunRequest) -> Result<(control_plane::Ran, AgentLease), Error> {
+        let (ran, connection) = self.exchange::<_, control_plane::Ran>(METHOD_RUN, request).await?;
+        let lease = AgentLease(ran.agent.status.is_ephemeral().then_some(connection));
+        Ok((ran, lease))
+    }
+
+    /// Lists the definitions a client can apply or run: those on disk for the absolute folder
+    /// `directory`, the manifests agents were applied from, and the ones agentd carries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the control-plane operation fails.
+    pub async fn definitions(
+        &self,
+        directory: Option<std::path::PathBuf>,
+    ) -> Result<Vec<control_plane::DefinitionSummary>, Error> {
+        self.call(METHOD_DEFINITIONS, DefinitionListParams { directory }).await
+    }
+
     /// Gets an agent resource by name.
     ///
     /// # Errors
@@ -114,8 +143,8 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error when transport, protocol validation, or storage fails.
-    pub async fn list_agents(&self) -> Result<Vec<Agent>, Error> {
-        self.call(METHOD_LIST, serde_json::json!({})).await
+    pub async fn list_agents(&self, include_ephemeral: bool) -> Result<Vec<Agent>, Error> {
+        self.call(METHOD_LIST, AgentListParams { include_ephemeral }).await
     }
 
     /// Resolves the closest persisted agent source directory containing `directory`.
@@ -245,8 +274,16 @@ impl Client {
     pub async fn watch_resources(
         &self,
         after: Option<crate::resources::Revision>,
+        include_ephemeral: bool,
     ) -> Result<crate::resources::Resources, Error> {
-        self.call(METHOD_RESOURCES_WATCH, ResourcesWatchParams { after }).await
+        self.call(
+            METHOD_RESOURCES_WATCH,
+            ResourcesWatchParams {
+                after,
+                include_ephemeral,
+            },
+        )
+        .await
     }
 
     /// Describes how to reach an agent over SSH.
@@ -573,17 +610,31 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error when the scoped agent is missing or the registry cannot be read.
-    pub async fn list_sessions(&self, agent: Option<&str>) -> Result<Vec<sessions::Session>, Error> {
+    pub async fn list_sessions(
+        &self,
+        agent: Option<&str>,
+        include_ephemeral: bool,
+    ) -> Result<Vec<sessions::Session>, Error> {
         self.call(
             METHOD_SESSION_LIST,
             SessionListParams {
                 agent: agent.map(str::to_owned),
+                include_ephemeral,
             },
         )
         .await
     }
 
     async fn call<P: Serialize, R: DeserializeOwned>(&self, method: &str, params: P) -> Result<R, Error> {
+        self.exchange(method, params).await.map(|(result, _)| result)
+    }
+
+    /// Calls `method` on a connection of its own, which it returns open.
+    async fn exchange<P: Serialize, R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: P,
+    ) -> Result<(R, Box<dyn Connection>), Error> {
         let id = self.next_id.get().wrapping_add(1);
         self.next_id.set(id);
         let request = Request {
@@ -615,11 +666,24 @@ impl Client {
         if let Some(error) = response.error {
             return Err(Error::Rpc(error));
         }
-        serde_json::from_value(
+        let result = serde_json::from_value(
             response
                 .result
                 .ok_or_else(|| Error::Invalid("Control API response has no result".into()))?,
-        )
-        .map_err(Error::from)
+        )?;
+        Ok((result, stream.into_inner()))
+    }
+}
+
+/// Keeps an ephemeral agent from [`Client::run`] alive until dropped.
+#[must_use = "agentd deletes an ephemeral agent once its lease is dropped"]
+pub struct AgentLease(Option<Box<dyn Connection>>);
+
+impl std::fmt::Debug for AgentLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("AgentLease")
+            .field(&self.0.as_ref().map(|_| "connection"))
+            .finish()
     }
 }

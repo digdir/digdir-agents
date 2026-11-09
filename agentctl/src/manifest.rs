@@ -1,6 +1,9 @@
 //! Declarative agent manifest and observed resource status.
 
-use std::path::{Component, Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Component, Path, PathBuf},
+};
 
 use time::OffsetDateTime;
 
@@ -219,6 +222,10 @@ pub struct Spec {
     /// Host directory synchronized into the sandbox user's home at bootstrap, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home: Option<HomeSpec>,
+    /// Where sessions start, such as the folder a bind mount puts the agent's checkout in. The
+    /// sandbox's working directory when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<SandboxPath>,
     /// Agent-wide guidance installed through every declared Harness Adapter, concatenated in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instructions: Vec<InstructionsSpec>,
@@ -413,8 +420,11 @@ impl SandboxManifestSpec {
 pub enum MountSpec {
     /// A caller-host directory mapped into the sandbox.
     Bind {
-        /// Host path, resolved relative to the manifest directory at apply time.
-        source: std::path::PathBuf,
+        /// Host path, resolved relative to the manifest directory at apply time. Whoever applies or
+        /// runs the agent can give another, as with `--mount SOURCE:TARGET`. Without one, they must:
+        /// the definition leaves the folder to them, as one that works on any checkout does.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<std::path::PathBuf>,
         /// Absolute path inside the sandbox.
         target: SandboxPath,
         /// Whether the sandbox may modify the host directory.
@@ -462,12 +472,8 @@ impl MountSpec {
 fn validate_mounts(mounts: &[MountSpec], root_filesystem: ::sandbox::RootFilesystemMode) -> Result<(), Error> {
     let mut targets = std::collections::BTreeSet::new();
     for (index, mount) in mounts.iter().enumerate() {
-        if let MountSpec::Bind { source, .. } = mount
-            && source.as_os_str().is_empty()
-        {
-            return Err(Error::Invalid(format!(
-                "spec.sandbox.mounts[{index}].source must not be empty"
-            )));
+        if let MountSpec::Bind { source, optional, .. } = mount {
+            validate_bind_mount(index, source.as_deref(), *optional)?;
         }
         if let MountSpec::Volume {
             volume,
@@ -493,6 +499,19 @@ fn validate_mounts(mounts: &[MountSpec], root_filesystem: ::sandbox::RootFilesys
         }
     }
     reject_mounts_inside_writable_volumes(mounts)
+}
+
+fn validate_bind_mount(index: usize, source: Option<&std::path::Path>, optional: bool) -> Result<(), Error> {
+    let field = format!("spec.sandbox.mounts[{index}]");
+    match source {
+        Some(source) if source.as_os_str().is_empty() => {
+            Err(Error::Invalid(format!("{field}.source must not be empty")))
+        }
+        None if optional => Err(Error::Invalid(format!(
+            "{field} is optional, which needs a source to leave out when it is missing"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// A writable volume's layer is mounted over its target after the other mounts, so it would hide
@@ -656,6 +675,13 @@ impl Spec {
 
     fn validate(&self) -> Result<(), Error> {
         validate_mounts(&self.sandbox.mounts, self.sandbox.resources.root_filesystem.mode())?;
+        if let Some(directory) = &self.working_directory
+            && !valid_sandbox_path(directory.as_str())
+        {
+            return Err(Error::Invalid(
+                "spec.workingDirectory must be an absolute normalized sandbox path".into(),
+            ));
+        }
         if self
             .home
             .as_ref()
@@ -1060,10 +1086,22 @@ pub struct Status {
     /// scrub it, so it is never persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<crate::progress::Provisioning>,
-    /// Local origin of the desired state. Projected onto API responses from
-    /// the stored agent record; stores scrub it, so it is never persisted.
+    /// Where the agent's manifest is. Projected onto API responses from the stored agent record;
+    /// stores scrub it, so it is never persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Provenance>,
+    /// Where the agent's definition comes from. Projected onto API responses from the stored agent
+    /// record; stores scrub it, so it is never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+    /// How long agentd keeps the agent, when it is not until someone deletes it. Projected like
+    /// [`Self::origin`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifetime: Option<Lifetime>,
+    /// The bind mount sources given when the agent was applied or run, by target, other than
+    /// those its manifest names. Projected like [`Self::origin`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<SandboxPath, std::path::PathBuf>,
     /// The revision of each volume the agent mounts, once the reconciler has chosen them. Projected
     /// onto API responses from the stored agent record; stores scrub it, so it is never persisted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1099,11 +1137,32 @@ impl Status {
             failure: None,
             progress: None,
             provenance: None,
+            origin: None,
+            lifetime: None,
+            bindings: BTreeMap::new(),
             volumes: Vec::new(),
         }
     }
 
-    const fn is_empty(&self) -> bool {
+    /// Whether agentd deletes the agent once the client that asked for it is gone. Such an agent
+    /// is that client's to show, so listings leave it out.
+    #[must_use]
+    pub fn is_ephemeral(&self) -> bool {
+        self.lifetime == Some(Lifetime::Ephemeral)
+    }
+
+    /// Removes what API responses project from the stored agent record and agentd's memory, which
+    /// is never stored.
+    pub(crate) fn scrub_projected(&mut self) {
+        self.progress = None;
+        self.provenance = None;
+        self.origin = None;
+        self.lifetime = None;
+        self.bindings.clear();
+        self.volumes.clear();
+    }
+
+    fn is_empty(&self) -> bool {
         self.observed_generation == 0
             && self.observed_restart_timestamp.is_none()
             && self.sandbox.is_none()
@@ -1111,6 +1170,9 @@ impl Status {
             && self.failure.is_none()
             && self.progress.is_none()
             && self.provenance.is_none()
+            && self.origin.is_none()
+            && self.lifetime.is_none()
+            && self.bindings.is_empty()
             && self.volumes.is_empty()
     }
 
@@ -1238,6 +1300,45 @@ impl Condition {
 
 /// Conventional agent manifest filename, used when a record predates path recording.
 pub const MANIFEST_FILE: &str = "agent.yaml";
+
+/// Where an agent's definition comes from, which agentd sets when it stores the agent.
+///
+/// An agent's definition can be updated but never replaced by another, so `apply` refuses a
+/// manifest of another origin under the agent's name. Clients decide how to show an agent from
+/// it, never from its name.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum Origin {
+    /// A manifest on this machine. [`Status::provenance`] says where it is.
+    #[default]
+    Local,
+    /// A definition agentd resolved from a reference, as an image is named, which the agent reads
+    /// from agentd's copy of it, as `status.provenance` says. See [`crate::DefinitionReference`].
+    Reference {
+        /// The reference the agent was run from, in its full form, such as `bundled/agent-builder`.
+        reference: String,
+    },
+}
+
+impl Origin {
+    /// Returns whether the agent was applied from a manifest on this machine.
+    #[must_use]
+    pub const fn is_local(&self) -> bool {
+        matches!(self, Self::Local)
+    }
+}
+
+/// How long agentd keeps an agent it runs from its own definitions.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Lifetime {
+    /// Until someone deletes it, as any applied agent.
+    #[default]
+    UntilDeleted,
+    /// While the client that asked for it stays connected to agentd. agentd deletes it when that
+    /// connection closes, and any left over from an earlier run of agentd when it starts.
+    Ephemeral,
+}
 
 /// Local origin of an agent's desired state.
 ///

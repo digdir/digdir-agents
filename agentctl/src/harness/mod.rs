@@ -719,15 +719,21 @@ pub(crate) fn manages_environment(harness: Harness, name: &str) -> bool {
     }
 }
 
+/// Configures `harness` in the sandbox: its instructions, skills and settings, and, for a harness
+/// that asks before working in a folder it has not been told to trust, `working_directory`, where
+/// sessions start.
 pub(crate) async fn bootstrap_linux(
     harness: Harness,
     sandbox: &sandbox::SandboxHandle,
     home: &str,
+    working_directory: &str,
     instructions: &[u8],
     skills: &[Skill],
 ) -> Result<(), Error> {
     match harness {
-        Harness::ClaudeCode => claude_code::bootstrap_linux(sandbox, home, instructions, skills).await,
+        Harness::ClaudeCode => {
+            claude_code::bootstrap_linux(sandbox, home, working_directory, instructions, skills).await
+        }
         Harness::Codex => codex::bootstrap_linux(sandbox, home, instructions, skills).await,
         Harness::Pi => pi::bootstrap_linux(sandbox, home, instructions, skills).await,
     }
@@ -809,6 +815,8 @@ pub struct LaunchRequest<'a> {
     pub initial_prompt: Option<&'a str>,
     /// Model and effort level the session was created with.
     pub model_selection: &'a ModelSelection,
+    /// Where the session starts, which the harness trusts as a project.
+    pub working_directory: &'a str,
 }
 
 /// Resolves the selected harness's terminal launch configuration.
@@ -927,6 +935,7 @@ pub(crate) const fn test_launch_request<'a>(
         resume_transcript: None,
         initial_prompt,
         model_selection: &UNSELECTED,
+        working_directory: crate::sandbox::platform::WORKING_DIRECTORY,
     }
 }
 

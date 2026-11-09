@@ -5,6 +5,7 @@
 
 pub mod accounts;
 pub mod authorization;
+pub mod bundled;
 pub mod control_api;
 pub mod control_plane;
 mod controller;
@@ -17,6 +18,7 @@ pub mod manifest;
 pub mod persistence;
 pub mod platform_api;
 pub mod progress;
+pub mod reference;
 pub mod resources;
 pub mod sandbox;
 pub mod sessions;
@@ -30,10 +32,11 @@ pub use controller::{FailureKind, ReconcileFailure};
 pub use harness::{Effort, Harness, HarnessAuthMode, HarnessSpec, Model, ModelSelection};
 pub use manifest::{
     API_VERSION, AccessSpec, AccountSpec, Agent, AgentVariant, AgentVariantName, Condition, ConditionStatus,
-    EnvironmentSpec, HomeSpec, InstructionsSpec, KIND, Metadata, MountSpec, MountedVolume, NestedSandboxes,
-    NetworkAllow, NetworkMode, NetworkSpec, PlatformManifestSpec, Provenance, ResolvedManifest, ResourcesManifestSpec,
-    RunState, SandboxManifestSpec, SecretSpec, SkillSpec, Spec, Status, VARIANT_KIND,
+    EnvironmentSpec, HomeSpec, InstructionsSpec, KIND, Lifetime, Metadata, MountSpec, MountedVolume, NestedSandboxes,
+    NetworkAllow, NetworkMode, NetworkSpec, Origin, PlatformManifestSpec, Provenance, ResolvedManifest,
+    ResourcesManifestSpec, RunState, SandboxManifestSpec, SecretSpec, SkillSpec, Spec, Status, VARIANT_KIND,
 };
+pub use reference::DefinitionReference;
 
 /// Version embedded in a matched `agentctl`/`agentd` build.
 #[must_use]

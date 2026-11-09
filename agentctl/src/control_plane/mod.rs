@@ -1,10 +1,13 @@
 //! Declarative agent storage, reconciliation, and continuous repair.
 
+mod bundled;
 mod controller;
 mod convergence;
 pub mod memory;
+mod prepare;
 mod reconciler;
 mod resource;
+mod run;
 mod service;
 
 use std::rc::Rc;
@@ -13,10 +16,12 @@ use ::sandbox::LocalFuture;
 
 use crate::{Error, Status};
 
+pub use crate::definitions::DefinitionSummary;
 pub use controller::{Controller, ErrorHandler, Wakeup};
 pub use convergence::{Convergence, WaitPolicy};
 pub use reconciler::{Reconciler, SessionNotifier};
 pub use resource::{AgentId, AgentRecord, ENV_FILE};
+pub use run::{BindSource, Ran, RunDefinition, RunRequest};
 pub(crate) use service::reject_secrets_in_copy;
 pub use service::{ApplyRequest, ControlPlane, ImmediateStops, Notifier};
 
@@ -31,7 +36,8 @@ pub trait AgentStore {
     /// Lists an independent snapshot of every record.
     fn list(&self) -> LocalFuture<'_, Result<Vec<AgentRecord>, Error>>;
 
-    /// Creates or replaces desired state if the stored generation still matches.
+    /// Creates or replaces desired state if the stored generation still matches. Refuses a record
+    /// whose bind mounts are not resolved; see [`AgentRecord::check_resolved`].
     fn put(&self, record: AgentRecord, expected_generation: u64) -> LocalFuture<'_, Result<(), Error>>;
 
     /// Replaces observed state if the reconciled generation is still current

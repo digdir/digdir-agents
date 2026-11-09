@@ -128,11 +128,22 @@ pub struct Resources {
     pub revision: Revision,
     /// Active agents ordered by name, with provisioning progress projected.
     pub agents: Vec<crate::Agent>,
+    /// How many ephemeral agents the reply leaves out, as it does unless asked for them.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ephemeral_agents: usize,
     /// Durable sessions of those agents.
     pub sessions: Vec<crate::sessions::Session>,
     /// Volumes, by name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<crate::volumes::Volume>,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn is_zero(count: &usize) -> bool {
+    *count == 0
 }
 
 #[cfg(test)]

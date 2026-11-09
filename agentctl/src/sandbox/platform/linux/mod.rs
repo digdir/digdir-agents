@@ -225,7 +225,8 @@ impl Linux {
                 }
                 placed.insert(directory, names);
             }
-            harness::bootstrap_linux(installation.kind, sandbox, HOME, &instructions, &skills).await?;
+            let start = working_directory(record);
+            harness::bootstrap_linux(installation.kind, sandbox, HOME, start, &instructions, &skills).await?;
             step.complete().await;
         }
         Ok(PlatformSetup {
@@ -233,6 +234,16 @@ impl Linux {
             skills: placed,
         })
     }
+}
+
+/// Where the agent's sessions start.
+fn working_directory(record: &control_plane::AgentRecord) -> &str {
+    record
+        .agent
+        .spec
+        .working_directory
+        .as_ref()
+        .map_or(super::WORKING_DIRECTORY, ::sandbox::SandboxPath::as_str)
 }
 
 /// The most of an instruction file the image or home overlay owns that setup reads back.

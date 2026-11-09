@@ -82,6 +82,7 @@ impl AgentStore for InMemoryAgentStore {
     fn put(&self, mut record: AgentRecord, expected_generation: u64) -> LocalFuture<'_, Result<(), Error>> {
         Box::pin(async move {
             let result = (|| {
+                record.check_resolved()?;
                 record.agent.status.progress = None;
                 record.agent.status.provenance = None;
                 record.agent.status.volumes.clear();

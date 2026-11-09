@@ -5,13 +5,15 @@ identifiers and code, such as `kind: Agent` or a Rust type.
 
 | Term | Meaning |
 | --- | --- |
-| Agent | A computer that runs coding work for you: what its manifest declares, the sandbox that runs it and the sessions in it. It lives on until you delete it. |
+| Agent | A computer that runs coding work for you: what its manifest declares, the sandbox that runs it and the sessions in it. It lives on until you delete it, or, run with `agentctl run --rm`, until the command that ran it ends. |
 | Agent definition | The files that define an agent, kept together in one directory: its manifest and variants, and what they refer to, such as a Dockerfile, instructions, skills and a home overlay. |
 | Agent manifest | The `agent.yaml` file that declares an agent. |
 | Agent variant | An agent manifest, `agent.<variant>.yaml`, that extends another one beside it and changes only what differs. |
 | `agentctl` | The command-line tool and TUI for agents. It talks to `agentd` and holds no state of its own. |
 | `agentd` | The daemon on the host that owns agents: it stores what each manifest declares and keeps the sandbox and sessions matching it. Not to be confused with Microsandbox's guest agent, which also runs as `agentd` inside the sandbox. |
+| Bundled definition | An agent definition `agentd` carries in its build, for an agent the platform runs for itself, such as the builder that writes definitions. `agentctl run` and `agentctl apply --from` take one by its definition reference, `bundled/<name>`, and `agentctl get definitions` lists them. |
 | Control API | How `agentctl`, or any other client, talks to `agentd`. Local to the host. |
+| Definition reference | What names a definition for `agentd` to find, as a reference names an image: where it is, then its name. `bundled/agent-builder` is a bundled definition, and `agent-builder` is short for it. One that starts with a host, such as `kihub.digdir.no/dotnet-dev`, is not resolved yet. A definition on disk is written as a path instead, such as `./agents/reviewer`. An agent records the full reference it was run from in `status.origin`. |
 | Definition source | A folder that holds agent definitions, and volume manifests anywhere in its `agents/`: a Git repository, or a folder outside one that keeps them in `agents/<name>/`, such as the home directory. An agent is found from anywhere in its repository, or only from that folder itself. |
 | Execution | A command run in a sandbox from the host, such as `agentctl exec` or a setup step. |
 | Harness | The program that runs a model in a loop with tools, such as Claude Code, Codex or Pi. A session runs one. |

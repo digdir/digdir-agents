@@ -61,7 +61,7 @@ jobs:
           names='.filename, (.previous_filename // empty)'
           gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq ".[] | ${names}" > files.txt
           # Markdown files that a build bundles, which count like code.
-          bundled='^agentctl/skills/'
+          bundled='^agentctl/bundled/'
           grep -E -v '\.md$' files.txt > changed.txt || true
           grep -E "${bundled}" files.txt >> changed.txt || true
           for area in "${areas[@]}"; do

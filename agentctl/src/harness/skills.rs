@@ -107,9 +107,9 @@ pub(crate) fn platform_skill() -> Skill {
         name: "agentctl".into(),
         files: vec![SkillFile {
             relative_path: "SKILL.md".into(),
-            // CI skips Markdown changes, except under agentctl/skills/. Bundling Markdown from
-            // elsewhere needs it added to `bundled` in ci.yml and the paths in agentctl-image.yml.
-            contents: include_bytes!("../../skills/agentctl/SKILL.md").to_vec(),
+            // What the build embeds lives under agentctl/bundled/, the one folder CI and the image build
+            // treat as code. See agentctl/bundled/README.md.
+            contents: include_bytes!("../../bundled/skills/agentctl/SKILL.md").to_vec(),
             executable: false,
         }],
     }

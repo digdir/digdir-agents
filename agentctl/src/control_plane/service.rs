@@ -25,6 +25,10 @@ pub struct ApplyRequest {
     /// manifest; omitted on an update keeps the recorded path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_file: Option<PathBuf>,
+    /// Host folders for the manifest's bind mounts, in place of the sources it names or for those
+    /// it names none, as for `run`. Omitted on an update keeps the agent's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub binds: Vec<super::BindSource>,
     /// Fail instead of updating when the name already identifies an agent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub create_only: bool,
@@ -46,11 +50,12 @@ impl Notifier for Wakeup {
 
 /// Agent control plane facade for desired-state operations.
 pub struct ControlPlane {
-    store: SharedAgentStore,
-    notifier: Rc<dyn Notifier>,
+    pub(super) store: SharedAgentStore,
+    pub(super) notifier: Rc<dyn Notifier>,
     provisioning: ProvisioningState,
     immediate_stops: ImmediateStops,
     volumes: Rc<dyn crate::volumes::VolumeStore>,
+    pub(super) bundled: Option<super::bundled::Bundled>,
 }
 
 /// Agents whose stop ends their sandbox at once, without letting the guest shut down.
@@ -112,7 +117,16 @@ impl ControlPlane {
             provisioning: ProvisioningState::default(),
             immediate_stops: ImmediateStops::default(),
             volumes: Rc::new(crate::volumes::memory::InMemoryVolumeStore::new()),
+            bundled: None,
         }
+    }
+
+    /// Runs agents from `definitions`, keeping its copies of them in `home`, agentd's home, which
+    /// no folder given for a bind mount may hold or be in.
+    #[must_use]
+    pub fn with_bundled(mut self, definitions: crate::bundled::Definitions, home: PathBuf) -> Self {
+        self.bundled = Some(super::bundled::Bundled::new(definitions, home));
+        self
     }
 
     /// Keeps an agent's selected secret file out of the directories volumes copy, as out of
@@ -144,45 +158,69 @@ impl ControlPlane {
     /// Returns an error when the request is invalid, changes an immutable field, conflicts with deletion,
     /// or cannot be stored.
     pub async fn apply(&self, request: ApplyRequest) -> Result<Agent, Error> {
-        validate_request_paths(&request)?;
-
-        let mut desired = request.agent;
-        desired.clear_managed_fields();
-        let optional_mount_sources = resolve_mount_sources(&mut desired, &request.source_directory).await?;
-        desired.validate()?;
-        let run_state = desired.spec.run_state;
+        let given = self.validate_bind_sources(&request.binds).await?;
+        // Boxed, as preparing reads the filesystem through several steps that would otherwise
+        // make every caller's future as large.
+        let prepared = Box::pin(self.prepare_local(
+            request.source_directory,
+            request.manifest_path,
+            request.env_file,
+            request.agent,
+        ))
+        .await?;
+        let name = prepared.agent.metadata.name.clone();
+        let run_state = prepared.agent.spec.run_state;
 
         loop {
-            let result = match self.store.get_by_name(&desired.metadata.name).await {
+            let result = match self.store.get_by_name(&name).await {
                 Ok(current) => {
                     if request.create_only {
-                        return Err(Error::Invalid(format!(
-                            "an agent named {:?} already exists",
-                            desired.metadata.name
-                        )));
+                        return Err(Error::Invalid(format!("an agent named {name:?} already exists")));
                     }
                     if current.agent.metadata.deletion_timestamp.is_some() {
                         return Err(Error::Conflict);
                     }
-                    if current.source_directory != request.source_directory {
-                        return Err(name_clash(&desired.metadata.name, &current.source_directory));
+                    if !prepared.same_definition(&current) {
+                        return Err(name_clash(&name, &current));
                     }
+                    // An update that gives no folders keeps the agent's, as its mounts cannot change.
+                    let given = if request.binds.is_empty() {
+                        current
+                            .bindings
+                            .iter()
+                            .map(|(target, source)| super::BindSource {
+                                source: source.clone(),
+                                target: Some(target.clone()),
+                            })
+                            .collect()
+                    } else {
+                        given.clone()
+                    };
+                    let mut bound = prepared.clone();
+                    Box::pin(bound.bind(&given)).await?;
+                    let mut desired = bound.agent;
                     validate_immutable_fields(&current, &desired)?;
                     desired.spec.set_run_state(applied_run_state(run_state, Some(&current)));
                     let mut record = AgentRecord {
                         id: current.id,
-                        source_directory: request.source_directory.clone(),
-                        manifest_path: request.manifest_path.clone().or_else(|| current.manifest_path.clone()),
-                        env_file: request.env_file.clone().or_else(|| current.env_file.clone()),
-                        agent: desired.clone(),
+                        source_directory: prepared.source_directory.clone(),
+                        manifest_path: prepared.manifest_path.clone().or_else(|| current.manifest_path.clone()),
+                        env_file: prepared.env_file.clone().or_else(|| current.env_file.clone()),
+                        agent: desired,
                         // Decided when the agent was created.
                         optional_mount_sources: current.optional_mount_sources.clone(),
                         volume_revisions: current.volume_revisions.clone(),
+                        origin: prepared.origin.clone(),
+                        lifetime: current.lifetime,
+                        bindings: bound.bindings,
                     };
                     self.reject_exposed_secrets(&record).await?;
+                    // The folders it was given count too: `run` finds an agent by them.
                     if current.agent.spec == record.agent.spec
+                        && current.source_directory == record.source_directory
                         && current.manifest_path == record.manifest_path
                         && current.env_file == record.env_file
+                        && current.bindings == record.bindings
                     {
                         self.notifier.notify(current.id);
                         return Ok(self.resource(current));
@@ -191,26 +229,17 @@ impl ControlPlane {
                     let expected_generation = current.agent.metadata.generation;
                     record.agent.metadata.generation = expected_generation + 1;
                     record.agent.metadata.restart_timestamp = current.agent.metadata.restart_timestamp;
-                    record.agent.status = current.agent.status;
+                    record.agent.status = current.agent.status.clone();
                     self.store
                         .put(record.clone(), expected_generation)
                         .await
                         .map(|()| record)
                 }
                 Err(Error::NotFound) => {
-                    desired.spec.set_run_state(applied_run_state(run_state, None));
-                    let mut record = AgentRecord {
-                        id: AgentId::generate(),
-                        source_directory: request.source_directory.clone(),
-                        manifest_path: request.manifest_path.clone(),
-                        env_file: request.env_file.clone(),
-                        agent: desired.clone(),
-                        optional_mount_sources: optional_mount_sources.clone(),
-                        volume_revisions: std::collections::BTreeMap::new(),
-                    };
-                    record.agent.metadata.generation = 1;
-                    self.reject_exposed_secrets(&record).await?;
-                    self.store.put(record.clone(), 0).await.map(|()| record)
+                    let mut new = prepared.clone();
+                    Box::pin(new.bind(&given)).await?;
+                    new.agent.spec.set_run_state(applied_run_state(run_state, None));
+                    Box::pin(self.create(&new, crate::Lifetime::UntilDeleted)).await
                 }
                 Err(error) => return Err(error),
             };
@@ -236,7 +265,7 @@ impl ControlPlane {
     /// symbolic link, keeps the directory the agent was created with. A volume's copy of a
     /// directory holding the agent's selected secret file is refused too, since any agent may
     /// mount it.
-    async fn reject_exposed_secrets(&self, record: &AgentRecord) -> Result<(), Error> {
+    pub(super) async fn reject_exposed_secrets(&self, record: &AgentRecord) -> Result<(), Error> {
         let desired = &record.agent;
         reject_dot_env_in_bind_mounts(bind_mount_sources(record), "bind-mounts").await?;
         let mut secret_files = Vec::new();
@@ -605,7 +634,7 @@ async fn reject_dot_env_in_bind_mounts(mounts: Vec<(String, PathBuf)>, verb: &'s
 impl ControlPlane {
     /// Converts a stored record to its API representation, projecting
     /// provisioning progress, provenance and volume revisions into status.
-    fn resource(&self, record: AgentRecord) -> Agent {
+    pub(super) fn resource(&self, record: AgentRecord) -> Agent {
         let progress = self.provisioning.summary(record.id);
         let mut agent = projected(record);
         agent.status.progress = progress;
@@ -613,9 +642,9 @@ impl ControlPlane {
     }
 }
 
-/// The agent a stored record holds, with its provenance and the revisions of the volumes it mounts
-/// projected into status.
-fn projected(record: AgentRecord) -> Agent {
+/// The agent a stored record holds, with its origin, provenance and the revisions of the volumes it
+/// mounts projected into status.
+pub(super) fn projected(record: AgentRecord) -> Agent {
     let mut agent = record.agent;
     agent.status.volumes = agent
         .spec
@@ -636,18 +665,21 @@ fn projected(record: AgentRecord) -> Agent {
         manifest_path: record.manifest_path,
         env_file: record.env_file,
     });
+    agent.status.origin = Some(record.origin);
+    agent.status.lifetime = (record.lifetime != crate::Lifetime::UntilDeleted).then_some(record.lifetime);
+    agent.status.bindings = record.bindings;
     agent
 }
 
 /// The run state an apply stores: the manifest's, else the agent's own, so
 /// applying a manifest that omits it never stops or starts the agent.
-fn applied_run_state(requested: Option<crate::RunState>, current: Option<&AgentRecord>) -> crate::RunState {
+pub(super) fn applied_run_state(requested: Option<crate::RunState>, current: Option<&AgentRecord>) -> crate::RunState {
     requested
         .or_else(|| current.map(|current| current.agent.spec.run_state()))
         .unwrap_or_default()
 }
 
-fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) -> Result<(), Error> {
+pub(super) fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) -> Result<(), Error> {
     if current.agent.spec.sandbox.image != desired.spec.sandbox.image {
         return Err(Error::Immutable("spec.sandbox.image"));
     }
@@ -703,23 +735,32 @@ fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) -> Result<(
     Ok(())
 }
 
-/// Another directory's agent has the name: nothing about this agent changed, so it is not an immutable field.
-fn name_clash(name: &str, other_directory: &std::path::Path) -> Error {
+/// Another definition's agent has the name: nothing about this agent changed, so it is not an immutable field.
+fn name_clash(name: &str, other: &AgentRecord) -> Error {
+    let from = match &other.origin {
+        crate::Origin::Reference { reference, .. } => format!("from definition {reference:?}"),
+        crate::Origin::Local => format!("from {}", other.source_directory.display()),
+    };
     Error::Invalid(format!(
-        "an agent named {name:?} was already applied from {}; choose another name in metadata.name or pass `--name`",
-        other_directory.display()
+        "an agent named {name:?} was already applied {from}; choose another name in metadata.name or pass `--name`"
     ))
 }
 
-/// Resolves each bind mount's source, returning the canonical sources of the optional ones that exist. A required
-/// source is replaced by its canonical form, so the sandbox keeps the directory it was created with. An optional one
-/// keeps the path it declares, so that applying the same manifest again compares equal whether the directory has
-/// since appeared or disappeared.
-async fn resolve_mount_sources(
+/// Resolves each bind mount's source, the one `given` for it or else the manifest's, returning the
+/// canonical sources of the optional ones that exist, and the given ones that differ from the
+/// manifest's, by target. The `given` sources are canonical.
+///
+/// A required source is replaced by its canonical form, so the sandbox keeps the directory it was
+/// created with. An optional one keeps the path it declares, so that applying the same manifest
+/// again compares equal whether the directory has since appeared or disappeared.
+pub(super) async fn resolve_mount_sources(
     agent: &mut Agent,
     source_directory: &std::path::Path,
-) -> Result<BTreeMap<SandboxPath, PathBuf>, Error> {
+    given: &[super::BindSource],
+) -> Result<(BTreeMap<SandboxPath, PathBuf>, BTreeMap<SandboxPath, PathBuf>), Error> {
+    let mut chosen = given_sources(&agent.spec.sandbox.mounts, given)?;
     let mut optional_sources = BTreeMap::new();
+    let mut bindings = BTreeMap::new();
     for (index, mount) in agent.spec.sandbox.mounts.iter_mut().enumerate() {
         let MountSpec::Bind {
             source,
@@ -731,9 +772,33 @@ async fn resolve_mount_sources(
             continue;
         };
         let field = format!("spec.sandbox.mounts[{index}].source");
-        let unresolved = crate::manifest::resolve_host_path(source_directory, source, &field)?;
+        let declared = source
+            .as_deref()
+            .map(|source| crate::manifest::resolve_host_path(source_directory, source, &field))
+            .transpose()?;
+        let unresolved = match (chosen.remove(&index), declared) {
+            (Some(given), declared) => {
+                // A folder that is the manifest's own source is not one the agent was given.
+                let declared = match declared {
+                    Some(declared) => Some(canonical_or_original(&declared).await),
+                    None => None,
+                };
+                if declared.as_ref() != Some(&given) {
+                    bindings.insert(target.clone(), given.clone());
+                }
+                given
+            }
+            (None, Some(declared)) => declared,
+            (None, None) => {
+                return Err(Error::Invalid(format!(
+                    "spec.sandbox.mounts[{index}] names no source, so it needs a folder for {}: \
+                     give one with `--mount FOLDER`, or as the folder of `agentctl run DEFINITION FOLDER`",
+                    target.as_str()
+                )));
+            }
+        };
         if *optional {
-            source.clone_from(&unresolved);
+            *source = Some(unresolved.clone());
             let present = tokio::fs::try_exists(&unresolved).await.map_err(|error| {
                 Error::Invalid(format!("{field} {} cannot be checked: {error}", unresolved.display()))
             })?;
@@ -752,25 +817,73 @@ async fn resolve_mount_sources(
         }
         if *optional {
             optional_sources.insert(target.clone(), resolved);
-        } else {
-            *source = resolved;
+            continue;
         }
+        *source = Some(resolved);
     }
-    Ok(optional_sources)
+    Ok((optional_sources, bindings))
 }
 
-fn validate_request_paths(request: &ApplyRequest) -> Result<(), Error> {
-    if !request.source_directory.is_absolute() {
+/// Which bind mount, by its index, each of the `given` sources is for: the one with its target, or
+/// the one without a source.
+fn given_sources(mounts: &[MountSpec], given: &[super::BindSource]) -> Result<BTreeMap<usize, PathBuf>, Error> {
+    let mut chosen = BTreeMap::new();
+    for bind in given {
+        let index = if let Some(target) = &bind.target {
+            mounts
+                .iter()
+                .position(|mount| matches!(mount, MountSpec::Bind { target: bound, .. } if bound == target))
+                .ok_or_else(|| Error::Invalid(format!("the manifest has no bind mount at {}", target.as_str())))?
+        } else {
+            let unsourced = mounts
+                .iter()
+                .enumerate()
+                .filter(|(_, mount)| matches!(mount, MountSpec::Bind { source: None, .. }))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            match unsourced.as_slice() {
+                [index] => *index,
+                [] => {
+                    return Err(Error::Invalid(format!(
+                        "the manifest has no bind mount without a source for {} to fill; name the target \
+                         of the one it replaces, as `--mount SOURCE:TARGET`",
+                        bind.source.display()
+                    )));
+                }
+                _ => {
+                    return Err(Error::Invalid(format!(
+                        "the manifest has {} bind mounts without a source; name each one's target, as \
+                         `--mount SOURCE:TARGET`",
+                        unsourced.len()
+                    )));
+                }
+            }
+        };
+        if chosen.insert(index, bind.source.clone()).is_some() {
+            return Err(Error::Invalid(format!(
+                "two folders are given for spec.sandbox.mounts[{index}]"
+            )));
+        }
+    }
+    Ok(chosen)
+}
+
+pub(super) fn validate_request_paths(
+    source_directory: &std::path::Path,
+    manifest_path: Option<&std::path::Path>,
+    env_file: Option<&std::path::Path>,
+) -> Result<(), Error> {
+    if !source_directory.is_absolute() {
         return Err(Error::Invalid("sourceDirectory must be absolute".into()));
     }
-    if let Some(manifest) = &request.manifest_path
-        && manifest.parent() != Some(request.source_directory.as_path())
+    if let Some(manifest) = manifest_path
+        && manifest.parent() != Some(source_directory)
     {
         return Err(Error::Invalid(
             "manifestPath must name a file in sourceDirectory".into(),
         ));
     }
-    if let Some(env_file) = &request.env_file
+    if let Some(env_file) = env_file
         && !env_file.is_absolute()
     {
         return Err(Error::Invalid("envFile must be absolute".into()));
