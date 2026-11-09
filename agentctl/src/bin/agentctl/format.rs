@@ -246,7 +246,7 @@ fn measurement(measurement: Option<sandbox::progress::Measurement>) -> String {
 
 pub(crate) const fn failure_kind(kind: agent::FailureKind) -> &'static str {
     match kind {
-        agent::FailureKind::Invalid => "Invalid (change the agent to continue)",
+        agent::FailureKind::Invalid => "Invalid (waits for the change Ready names)",
         agent::FailureKind::Transient => "Transient (retrying in the background)",
     }
 }
@@ -564,6 +564,12 @@ mod tests {
 
         let lines = describe_agent_lines(&agent);
         assert!(lines.contains(&"Failure:    Transient (retrying in the background)".to_owned()));
+        // What Ready names may be outside the agent, such as a secret to store, so the line does not
+        // send the reader to change the agent.
+        agent.status.failure = Some(agent::FailureKind::Invalid);
+        assert!(
+            describe_agent_lines(&agent).contains(&"Failure:    Invalid (waits for the change Ready names)".to_owned())
+        );
         for expected in [
             "Provisioning:",
             "  Failed: registry unavailable",
