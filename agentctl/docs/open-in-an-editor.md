@@ -40,30 +40,49 @@ Find the alias and the project:
 agentctl ssh-info agent/NAME
 ```
 
-For an agent named `myapp` that clones `OWNER/myapp`, the output includes:
+For the agent `altinn-profile` from [the tutorial](first-agent.md), the output includes:
 
 ```text
-Alias:       agentctl-myapp
+Alias:       agentctl-altinn-profile
 User:        agent
 Directory:   /home/agent/code
-Project:     /home/agent/code/myapp
+Project:     /home/agent/code/altinn-profile
 ```
 
 Then open `Project` with `Alias`:
 
 ```sh
-code --remote ssh-remote+agentctl-myapp /home/agent/code/myapp
+code --remote ssh-remote+agentctl-altinn-profile /home/agent/code/altinn-profile
 ```
 
 ```sh
-zed ssh://agentctl-myapp/home/agent/code/myapp
+zed ssh://agentctl-altinn-profile/home/agent/code/altinn-profile
 ```
+
+## The first connection
+
+Each editor installs a server of its own in the agent the first time it opens it:
+
+- **VS Code** first asks for the platform of the remote host. Choose Linux. It asks once for each agent and keeps the
+  answer in its `remote.SSH.remotePlatform` setting. Until you answer, the window waits at "Install and start server
+  if needed". The server then takes a few seconds to install, and about 700 MB of the agent's disk. Opening a folder
+  that a VS Code window already shows brings that window forward instead of opening another.
+- **Zed** puts its remote server, about 110 MB, in the agent, and opens the project in about half a minute.
+
+Later connections reuse the server, which stays in the agent's home until you delete the agent.
 
 ## Open it in another editor
 
 Any editor that connects to SSH hosts from `~/.ssh/config` works the same way: connect to the host `agentctl-NAME`
 and open the folder `ssh-info` names as `Project`. A terminal reaches the agent with `ssh agentctl-NAME`, or with
 `agentctl ssh agent/NAME` without the setup.
+
+## When the editor loses the agent
+
+The editor's connection ends when the agent's computer stops, such as with `agentctl stop`, `agentctl restart`, or an
+`apply` that changes its resources. Reconnect from the editor once `agentctl get agents` shows the agent as `Ready`.
+When the agent is deleted, its alias leaves the included file, and the editor reports `Could not resolve hostname`.
+Close that window.
 
 ## When the folder isn't there
 

@@ -5,8 +5,9 @@ repository, and that you open in your editor as if it were a remote machine. You
 with the repository open in VS Code, running inside the agent. It takes about half an hour, most of it waiting for the
 first image build.
 
-The example is a .NET repository called `myapp` on GitHub, owned by `OWNER`. Use one of your own and put its owner and
-name wherever `OWNER` and `myapp` appear. The commands work the same in a POSIX shell and in PowerShell.
+The example is [Altinn/altinn-profile](https://github.com/Altinn/altinn-profile), a .NET repository with no agent
+definition of its own. Use one of yours and put its owner and name wherever `Altinn` and `altinn-profile` appear. The
+commands work the same in a POSIX shell and in PowerShell.
 
 ## Before you start
 
@@ -29,8 +30,8 @@ Start in an empty folder and clone your repository:
 ```sh
 mkdir ~/code
 cd ~/code
-git clone https://github.com/OWNER/myapp
-cd myapp
+git clone https://github.com/Altinn/altinn-profile
+cd altinn-profile
 ```
 
 This checkout is where the agent's definition will live. The agent itself never sees it: it clones the repository
@@ -49,13 +50,13 @@ cd agents/dev
 ```
 
 Open `agent.yaml`. Every line has a comment that says what it does. Change the agent's name, `dotnet-dev`, to your
-repository's. A name takes lowercase letters, digits and `-`, so write `MyApp` as `myapp`:
+repository's. A name takes lowercase letters, digits and `-`, so a repository called `MyApp` gives the name `myapp`:
 
 ```yaml
 metadata:
   # The agent's name in agentctl's commands and the TUI. `agentctl apply --name` overrides it, so one manifest can
   # create several agents.
-  name: myapp
+  name: altinn-profile
 ```
 
 Open `workspace.list`, which lists the repositories the agent clones when it starts, and add yours at the end, on a
@@ -66,10 +67,10 @@ line of its own:
 # name. A repository that is already there is left alone. Cloning needs GITHUB_TOKEN, even for a public repository.
 #
 # Altinn/dialogporten
-OWNER/myapp
+Altinn/altinn-profile
 ```
 
-The agent clones it to `/home/agent/code/myapp`, spelled as the line spells it.
+The agent clones it to `/home/agent/code/altinn-profile`, spelled as the line spells it.
 
 ## Give the agent its settings
 
@@ -102,11 +103,11 @@ agentctl get agents
 ```
 
 ```text
-NAME   READY  STATUS  HARNESSES                        PROVIDER
-myapp  True   Ready   claudeCode (default), codex, pi  microsandbox
+NAME            READY  STATUS  HARNESSES                        PROVIDER
+altinn-profile  True   Ready   claudeCode (default), codex, pi  microsandbox
 ```
 
-The agent clones `myapp` while it starts, so give it a minute if a step below can't find the repository.
+The agent clones `altinn-profile` while it starts, which takes a few seconds after it is ready.
 
 ## Work with Claude Code in the agent
 
@@ -116,9 +117,9 @@ From the definition's folder, start a session called `s1`:
 agentctl attach session/s1
 ```
 
-Claude Code starts in `~/code`, which is `/home/agent/code` inside the agent. Ask it to look at `myapp` and run its
-tests. It can use the .NET SDK, Git and `gh`, and push to GitHub with your token. If your tests target an older .NET
-than the image's SDK, Claude Code finds its runtime missing. Add that runtime to the `Dockerfile` and apply again.
+Claude Code starts in `~/code`, which is `/home/agent/code` inside the agent. Ask it to look at `altinn-profile` and
+run its tests. It can use the .NET SDK, Git and `gh`, and push to GitHub with your token. If your tests target an older
+.NET than the image's SDK, Claude Code finds its runtime missing. Add that runtime to the `Dockerfile` and apply again.
 
 Press `Ctrl-b` and then `d` to leave the session, as the bar at the bottom says. The session keeps running, and
 `agentctl attach session/s1` takes you back to it.
@@ -134,26 +135,28 @@ agentctl ssh-config install
 It adds an `Include` line at the top of `~/.ssh/config` and says so. Ask the agent where its project is:
 
 ```sh
-agentctl ssh-info agent/myapp
+agentctl ssh-info agent/altinn-profile
 ```
 
 Among the lines it prints, which also name the key and configuration files `agentctl` keeps for the agent, are:
 
 ```text
-Alias:       agentctl-myapp
+Alias:       agentctl-altinn-profile
 User:        agent
 Directory:   /home/agent/code
-Project:     /home/agent/code/myapp
+Project:     /home/agent/code/altinn-profile
 ```
 
-`ssh agentctl-myapp` now opens a shell in the agent. Open the project in VS Code over SSH:
+`ssh agentctl-altinn-profile` now opens a shell in the agent. Open the project in VS Code over SSH:
 
 ```sh
-code --remote ssh-remote+agentctl-myapp /home/agent/code/myapp
+code --remote ssh-remote+agentctl-altinn-profile /home/agent/code/altinn-profile
 ```
 
-The first time, VS Code installs its server in the agent, which takes a minute. Then it shows your repository. Its
-terminal is a shell in the agent, and what you change there is what Claude Code sees.
+The first time, VS Code asks for the platform of the remote host. Choose Linux. VS Code remembers the answer for this
+agent, and then installs its server in the agent, which takes a few seconds and about 700 MB of the agent's disk.
+Then it shows your repository. Its terminal is a shell in the agent, and what you change there is what Claude Code
+sees.
 
 ## Keep the definition
 
@@ -167,11 +170,12 @@ git commit -m "Add an agent definition"
 ## Stop the agent
 
 ```sh
-agentctl stop agent/myapp
+agentctl stop agent/altinn-profile
 ```
 
-The agent keeps its disk, and `agentctl get agents` shows it as `Stopped`. `agentctl start agent/myapp` starts it
-again in a few seconds, and `agentctl attach session/s1` resumes the session with its conversation.
+The agent keeps its disk, and `agentctl get agents` shows it as `Stopped`. VS Code loses the connection and offers to
+reconnect. `agentctl start agent/altinn-profile` starts the agent again in a few seconds, and
+`agentctl attach session/s1` resumes the session with its conversation.
 
 ## What you did
 
@@ -182,5 +186,6 @@ Next:
 
 - [Open an agent in an editor](open-in-an-editor.md), such as Zed, or from the TUI.
 - [Open an agent in a JetBrains IDE](open-in-jetbrains.md), such as Rider.
+- [Start an agent from a repository's definition](start-from-a-definition.md), when the repository already has one.
 - `agentctl tui` shows every agent and session, and opens them with a key.
 - [Label agents](label-agents.md), and [change inherited lists in a variant](variant-lists.md) of your own.

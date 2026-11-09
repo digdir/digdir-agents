@@ -9,21 +9,22 @@ guide connects by hand. The steps were tried on Windows 11 with Gateway 2026.2.2
 Linux hosts, and Gateway through the JetBrains Toolbox App, are untested.
 
 You need an agent with `access` of `type: ssh`, as the [.NET example](../../agents/examples/dotnet-dev/) has, and
-Gateway installed on your machine.
+Gateway installed on your machine. The example here is `altinn-minimal`, from Altinn Studio's `agents/minimal`, as
+[Start an agent from a repository's definition](start-from-a-definition.md) starts it.
 
 ## Give the agent room for the IDE
 
 The backend needs about 4 GiB of memory beyond what the agent uses without it, and the agent has no swap, so an agent
 short of memory loses the backend or its harness rather than slowing down. Choosing an IDE is your choice, not the
 repository's, so add the memory in a variant of your own beside the repository's `agent.yaml`, such as
-`agent.mine.yaml`:
+`agents/minimal/agent.mine.yaml`:
 
 ```yaml
 apiVersion: agents.platform/v1alpha1
 kind: AgentVariant
 extends: agent.yaml
 metadata:
-  name: myapp
+  name: altinn-minimal
   labels:
     client: jetbrains
 spec:
@@ -37,7 +38,8 @@ spec:
 Keep `metadata.name` the same as the base's, so the variant changes that agent rather than creating another. The
 `client: jetbrains` label marks the agent as one you open in Gateway, for tools that list agents by client, as
 [Label agents](label-agents.md) describes. The `ssh` entry adds SSH access if the base lacks it and changes nothing if
-it has it. Git ignores `agent.*.yaml` in the example's definition, so the variant stays yours.
+it has it. The definition's `.gitignore` lists `agent.*.yaml`, as the .NET example's and Altinn Studio's do, so
+the variant stays yours.
 
 Apply it:
 
@@ -45,15 +47,16 @@ Apply it:
 agentctl apply --variant mine --wait
 ```
 
-The agent now has the label:
+`agentd` restarts the agent with the new memory, so an editor connected to it loses the connection until the agent
+is ready again. The agent now has the label:
 
 ```sh
 agentctl get agents -L client
 ```
 
 ```text
-NAME   READY  STATUS  HARNESSES                        PROVIDER      CLIENT
-myapp  True   Ready   claudeCode (default), codex, pi  microsandbox  jetbrains
+NAME            READY  STATUS  HARNESSES                        PROVIDER      CLIENT
+altinn-minimal  True   Ready   claudeCode (default), codex, pi  microsandbox  jetbrains
 ```
 
 Apply with `--variant mine` from now on. A plain `agentctl apply` applies `agent.yaml` again, which takes the memory
@@ -71,16 +74,16 @@ there.
 ## Find the alias and the project
 
 ```sh
-agentctl ssh-info agent/myapp
+agentctl ssh-info agent/altinn-minimal
 ```
 
 Note `Alias` and `Project`. Among the lines it prints are:
 
 ```text
-Alias:       agentctl-myapp
+Alias:       agentctl-altinn-minimal
 User:        agent
 Directory:   /home/agent/code
-Project:     /home/agent/code/myapp
+Project:     /home/agent/code/altinn-studio
 ```
 
 ## Connect from Gateway
@@ -105,7 +108,8 @@ connect again from Gateway.
 ## Connect again
 
 Gateway keeps the connection, so next time you choose it from Gateway's list. The agent keeps the backend in its
-home, so connecting again takes about 15 seconds. Start a stopped agent first with `agentctl start agent/myapp`.
+home, so connecting again takes about 15 seconds. Start a stopped agent first, with
+`agentctl start agent/altinn-minimal`.
 
 ## Known limits
 
@@ -116,4 +120,8 @@ home, so connecting again takes about 15 seconds. Start a stopped agent first wi
   that fixes this.
 - **Memory after you close the IDE.** The backend keeps running, and keeps its memory, after Gateway exits, and after
   JetBrains Client closes if you choose to keep it running.
+- **Gateway 2026.3 on Windows.** On a Windows 11 machine where 2026.2.2 worked, Gateway 2026.3 stopped at start with
+  `Internal error` and `Unable to establish loopback connection`, for its `.port` file in
+  `%LOCALAPPDATA%\JetBrains\JetBrainsGateway2026.3`. Endpoint protection that filters the `AppData` tree can block the
+  local sockets Gateway uses there.
 - **Disk.** The backend takes about 3 GB in the agent's home, and JetBrains Client about 1.8 GB on your machine.
