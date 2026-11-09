@@ -7,6 +7,10 @@ its files, terminal and tools are the agent's. For a JetBrains IDE, see
 The agent needs `access` with `type: ssh` in its manifest, as the [.NET example](../../agents/examples/dotnet-dev/)
 has, and must be `Ready`.
 
+These steps are what one command, `agentctl connect NAME --client vscode`, is meant to do for you: set up SSH, start
+the agent, choose the project and open the editor. That command doesn't exist yet.
+[#386](https://github.com/digdir/digdir-agents/issues/386) proposes it.
+
 ## Set up SSH once
 
 ```sh

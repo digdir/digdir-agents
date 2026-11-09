@@ -5,8 +5,9 @@ Open an agent's project in Rider, IntelliJ IDEA, WebStorm or another JetBrains I
 agent and shows it in JetBrains Client on your machine, so the IDE indexes, builds and runs tests where the code is.
 
 `agentctl` doesn't open Gateway for you yet ([#370](https://github.com/digdir/digdir-agents/issues/370)), so this
-guide connects by hand. The steps were tried on Windows 11 with Gateway 2026.2.2 and WebStorm 2026.2.3. macOS and
-Linux hosts, and Gateway through the JetBrains Toolbox App, are untested.
+guide connects by hand. [#386](https://github.com/digdir/digdir-agents/issues/386) proposes `agentctl connect`, one
+command that opens an agent in any client, Gateway among them. The steps were tried on Windows 11 with Gateway
+2026.2.2 and WebStorm 2026.2.3. macOS and Linux hosts, and Gateway through the JetBrains Toolbox App, are untested.
 
 You need an agent with `access` of `type: ssh`, as the [.NET example](../../agents/examples/dotnet-dev/) has, and
 Gateway installed on your machine. The example here is `altinn-minimal`, from Altinn Studio's `agents/minimal`, as
