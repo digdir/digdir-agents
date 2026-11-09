@@ -18,6 +18,7 @@ pub mod manifest;
 pub mod persistence;
 pub mod platform_api;
 pub mod progress;
+pub mod reference;
 pub mod resources;
 pub mod sandbox;
 pub mod sessions;
@@ -36,6 +37,7 @@ pub use manifest::{
     ResourcesManifestSpec, RunState, SandboxManifestSpec, SecretSpec, SkillSpec, Spec, Status, VARIANT_KIND,
     WorkspaceSpec,
 };
+pub use reference::DefinitionReference;
 
 /// Version embedded in a matched `agentctl`/`agentd` build.
 #[must_use]

@@ -66,7 +66,7 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
         .map_or_else(|| "-".into(), ToString::to_string);
 
     let source = match (&agent.status.origin, &agent.status.provenance) {
-        (Some(agent::Origin::Bundled { definition, .. }), _) => format!("agentd's definition {definition}"),
+        (Some(agent::Origin::Reference { reference, .. }), _) => format!("definition {reference}"),
         (_, provenance) => provenance.as_ref().map_or_else(
             || "-".into(),
             |provenance| {

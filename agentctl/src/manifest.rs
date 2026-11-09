@@ -1331,11 +1331,11 @@ pub enum Origin {
     /// A manifest on this machine. [`Status::provenance`] says where it is.
     #[default]
     Local,
-    /// A definition carried by agentd's build, which the agent reads from agentd's copy of it, as
-    /// `status.provenance` says.
-    Bundled {
-        /// The definition's name in the build.
-        definition: String,
+    /// A definition agentd resolved from a reference, as an image is named, which the agent reads
+    /// from agentd's copy of it, as `status.provenance` says. See [`crate::DefinitionReference`].
+    Reference {
+        /// The reference the agent was run from, in its full form, such as `bundled/agent-builder`.
+        reference: String,
         /// The SHA-256 digest of the definition's files, which names agentd's copy of them.
         digest: String,
     },

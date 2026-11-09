@@ -115,12 +115,12 @@ impl Client {
         Ok((ran, lease))
     }
 
-    /// Lists the definitions agentd carries, each in the folder agentd keeps it in.
+    /// Lists the definitions agentd runs by reference, each in the folder agentd keeps it in.
     ///
     /// # Errors
     ///
     /// Returns an error when transport, protocol validation, or the control-plane operation fails.
-    pub async fn bundled_definitions(&self) -> Result<Vec<control_plane::BundledDefinition>, Error> {
+    pub async fn definitions(&self) -> Result<Vec<control_plane::DefinitionSummary>, Error> {
         self.call(METHOD_DEFINITIONS, serde_json::json!({})).await
     }
 

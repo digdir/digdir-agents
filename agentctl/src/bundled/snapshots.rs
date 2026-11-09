@@ -112,7 +112,7 @@ impl Snapshots {
             .await?
             .into_iter()
             .filter_map(|record| match record.origin {
-                Origin::Bundled { digest, .. } => Some(digest),
+                Origin::Reference { digest, .. } => Some(digest),
                 Origin::Local => None,
             })
             .chain(self.carried.iter().cloned())

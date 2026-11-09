@@ -87,8 +87,8 @@ pub trait AgentApi {
         request: control_plane::RunRequest,
     ) -> LocalFuture<'_, Result<(control_plane::Ran, crate::AgentId), Error>>;
 
-    /// Lists the definitions agentd carries; see [`control_plane::ControlPlane::bundled_definitions`].
-    fn bundled_definitions(&self) -> LocalFuture<'_, Result<Vec<control_plane::BundledDefinition>, Error>>;
+    /// Lists the definitions agentd runs by reference; see [`control_plane::ControlPlane::definitions`].
+    fn definitions(&self) -> LocalFuture<'_, Result<Vec<control_plane::DefinitionSummary>, Error>>;
 
     /// Deletes an ephemeral agent whose client is gone; see [`control_plane::ControlPlane::release`].
     fn release(&self, id: crate::AgentId) -> LocalFuture<'_, Result<(), Error>>;
@@ -140,8 +140,8 @@ impl AgentApi for control_plane::ControlPlane {
         Box::pin(async move { Self::run(self, request).await })
     }
 
-    fn bundled_definitions(&self) -> LocalFuture<'_, Result<Vec<control_plane::BundledDefinition>, Error>> {
-        Box::pin(async move { Self::bundled_definitions(self).await })
+    fn definitions(&self) -> LocalFuture<'_, Result<Vec<control_plane::DefinitionSummary>, Error>> {
+        Box::pin(async move { Self::definitions(self).await })
     }
 
     fn release(&self, id: crate::AgentId) -> LocalFuture<'_, Result<(), Error>> {
@@ -723,7 +723,7 @@ impl Server {
         match request.method.as_str() {
             METHOD_APPLY => self.handle_apply(request.id, request.params).await,
             METHOD_RUN => self.handle_run(request.id, request.params, owned).await,
-            METHOD_DEFINITIONS => result_response(request.id, self.agents.bundled_definitions().await),
+            METHOD_DEFINITIONS => result_response(request.id, self.agents.definitions().await),
             METHOD_HEALTH => result_response(
                 request.id,
                 Ok(serde_json::json!({

@@ -769,7 +769,7 @@ pub(super) fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) 
 /// Another definition's agent has the name: nothing about this agent changed, so it is not an immutable field.
 fn name_clash(name: &str, other: &AgentRecord) -> Error {
     let from = match &other.origin {
-        crate::Origin::Bundled { definition, .. } => format!("from agentd's definition {definition:?}"),
+        crate::Origin::Reference { reference, .. } => format!("from definition {reference:?}"),
         crate::Origin::Local => format!("from {}", other.source_directory.display()),
     };
     Error::Invalid(format!(

@@ -4,8 +4,9 @@ Each folder here is an agent definition that agentd carries in its build, named 
 the files it names. They are for agents the platform runs for itself, such as the one that signs in to a harness,
 whose definitions are tied to the code of the build that runs them, so they cannot come from anywhere else.
 
-Otherwise they are ordinary definitions. agentd writes each to a folder of its own, and `agentctl run NAME` and
-`agentctl apply --bundled NAME` use that folder as they would any other. [`agent::bundled`](../../src/bundled/mod.rs)
+Otherwise they are ordinary definitions. Their reference is `bundled/<folder>`, or the folder's name for short. agentd
+writes each to a folder of its own, and `agentctl run NAME` and `agentctl apply --from NAME` use that folder as they
+would any other. [`agent::bundled`](../../src/bundled/mod.rs)
 checks them when they are built:
 
 - Paths, such as `spec.home.source`, name files in the definition's folder, since nothing else comes with it.

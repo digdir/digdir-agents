@@ -1,4 +1,4 @@
-//! Running an agent from a definition: the bundled ones agentd carries, or one on disk. Running
+//! Running an agent from a definition: one agentd resolves from a reference, or one on disk. Running
 //! finds or makes the agent in one request, mounts the workspace it is named for, and can tie its
 //! life to the client that asked for it.
 
@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use ::sandbox::SandboxPath;
 
 use crate::{
-    Agent, AgentId, Error, Lifetime, MountSpec, Origin, WorkspaceSpec,
+    Agent, AgentId, DefinitionReference, Error, Lifetime, MountSpec, Origin, WorkspaceSpec,
     bundled::{Definitions, Snapshots},
 };
 
@@ -35,10 +35,12 @@ pub struct RunRequest {
 #[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum RunDefinition {
-    /// A definition agentd carries, by name.
-    Bundled {
-        /// The definition's name.
-        name: String,
+    /// A definition agentd resolves from a reference, as an image is named; see
+    /// [`DefinitionReference`]. Today agentd resolves the ones it carries in its build, such as
+    /// `bundled/agent-builder`, or `agent-builder` for short.
+    Reference {
+        /// The reference, which agentd records in its full form as the agent's [`Origin`].
+        reference: String,
     },
     /// A manifest on this machine, as the client read it, as for `apply`.
     Local {
@@ -84,16 +86,20 @@ pub enum RunOutcome {
     },
 }
 
-/// A bundled definition as agentd keeps it on disk, where it is applied from as any other.
+/// A definition agentd can run by reference, as it keeps it on disk, where it is applied from as
+/// any other.
 #[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct BundledDefinition {
-    /// The definition's name.
-    pub name: String,
+pub struct DefinitionSummary {
+    /// The reference that runs it, in its full form, such as `bundled/agent-builder`.
+    pub reference: String,
     /// The SHA-256 digest of its files.
     pub digest: String,
     /// The folder holding agentd's copy of it, which is never changed.
     pub path: PathBuf,
+    /// The workspace it declares, which running it needs one for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceSpec>,
 }
 
 /// The definitions agentd carries, and where it keeps their copies.
@@ -125,10 +131,10 @@ pub(super) struct Prepared {
 
 impl Prepared {
     /// Whether `record` was made from the same definition, which an agent's definition can never
-    /// change to another: the same bundled definition, in any version, or the same folder.
+    /// change to another: the same reference, to any version, or the same folder.
     pub(super) fn same_definition(&self, record: &AgentRecord) -> bool {
         match (&self.origin, &record.origin) {
-            (Origin::Bundled { definition, .. }, Origin::Bundled { definition: other, .. }) => definition == other,
+            (Origin::Reference { reference, .. }, Origin::Reference { reference: other, .. }) => reference == other,
             (Origin::Local, Origin::Local) => self.source_directory == record.source_directory,
             _ => false,
         }
@@ -137,7 +143,7 @@ impl Prepared {
     /// The name of the definition, for an agent named after it.
     fn base_name(&self) -> &str {
         match &self.origin {
-            Origin::Bundled { definition, .. } => definition,
+            Origin::Reference { reference, .. } => reference.rsplit('/').next().unwrap_or(reference),
             Origin::Local => &self.agent.metadata.name,
         }
     }
@@ -171,7 +177,7 @@ impl ControlPlane {
             None => None,
         };
         let mut prepared = match request.definition {
-            RunDefinition::Bundled { name } => self.prepare_bundled(&name).await?,
+            RunDefinition::Reference { reference } => self.prepare_reference(&reference).await?,
             RunDefinition::Local {
                 source_directory,
                 manifest_path,
@@ -196,8 +202,8 @@ impl ControlPlane {
                 record.lifetime == Lifetime::UntilDeleted
                     && record.workspace == workspace
                     && prepared.same_definition(record)
-                    // Variants share a folder but are different definitions. A bundled definition's
-                    // manifest moves with each version of it.
+                    // Variants share a folder but are different definitions. The manifest of a
+                    // definition run by reference moves with each version of it.
                     && (!prepared.origin.is_local() || record.manifest_path == prepared.manifest_path)
             };
             let current = match &request.name {
@@ -259,22 +265,24 @@ impl ControlPlane {
         ))
     }
 
-    /// The bundled definitions, each in the folder agentd keeps its copy in, written if missing.
+    /// The definitions agentd can run by reference, each in the folder agentd keeps its copy in,
+    /// written if missing.
     ///
     /// # Errors
     ///
     /// Returns an error when a copy cannot be written.
-    pub async fn bundled_definitions(&self) -> Result<Vec<BundledDefinition>, Error> {
+    pub async fn definitions(&self) -> Result<Vec<DefinitionSummary>, Error> {
         let Some(bundled) = &self.bundled else {
             return Ok(Vec::new());
         };
         let _guard = bundled.snapshots.lock().await;
         let mut listed = Vec::new();
         for definition in bundled.definitions.iter() {
-            listed.push(BundledDefinition {
-                name: definition.name().to_owned(),
+            listed.push(DefinitionSummary {
+                reference: DefinitionReference::Bundled(definition.name().to_owned()).to_string(),
                 digest: definition.digest().to_owned(),
                 path: bundled.snapshots.write(definition).await?,
+                workspace: definition.agent().spec.workspace,
             });
         }
         Ok(listed)
@@ -314,19 +322,20 @@ impl ControlPlane {
             }
         }
         if let Some(bundled) = &self.bundled {
-            self.bundled_definitions().await?;
+            self.definitions().await?;
             bundled.snapshots.remove_unused(self.store.as_ref()).await?;
         }
         Ok(())
     }
 
-    /// Prepares the agent the bundled definition `name` declares, from agentd's copy of it.
-    async fn prepare_bundled(&self, name: &str) -> Result<Prepared, Error> {
+    /// Prepares the agent the definition `reference` names declares, from agentd's copy of it.
+    async fn prepare_reference(&self, reference: &str) -> Result<Prepared, Error> {
+        let reference = DefinitionReference::parse(reference)?;
         let bundled = self
             .bundled
             .as_ref()
             .ok_or_else(|| Error::Daemon("this agentd carries no agent definitions".into()))?;
-        let definition = bundled.definitions.get(name)?;
+        let definition = bundled.definitions.get(reference.name())?;
         let directory = bundled.snapshots.write(definition).await?;
         let mut agent = definition.agent();
         agent.clear_managed_fields();
@@ -336,15 +345,15 @@ impl ControlPlane {
             source_directory: directory,
             env_file: None,
             optional_mount_sources: std::collections::BTreeMap::new(),
-            origin: Origin::Bundled {
-                definition: definition.name().to_owned(),
+            origin: Origin::Reference {
+                reference: reference.to_string(),
                 digest: definition.digest().to_owned(),
             },
         })
     }
 
     /// Prepares the agent a manifest on this machine declares, as `apply` does. A manifest in
-    /// agentd's copy of a bundled definition is that definition.
+    /// agentd's copy of a definition it runs by reference is that definition.
     pub(super) async fn prepare_local(
         &self,
         source_directory: PathBuf,
@@ -357,11 +366,11 @@ impl ControlPlane {
         let optional_mount_sources = service::resolve_mount_sources(&mut agent, &source_directory).await?;
         agent.validate()?;
         let origin = self.origin_of(&source_directory).await;
-        if let Origin::Bundled { definition, .. } = &origin
+        if let Origin::Reference { reference, .. } = &origin
             && env_file.is_some()
         {
             return Err(Error::Invalid(format!(
-                "agent definition {definition:?} is agentd's and reads no environment file"
+                "agent definition {reference:?} is agentd's and reads no environment file"
             )));
         }
         Ok(Prepared {
@@ -383,8 +392,8 @@ impl ControlPlane {
         let directory = canonical(source_directory).await;
         for definition in bundled.definitions.iter() {
             if canonical(&bundled.snapshots.path(definition.digest())).await == directory {
-                return Origin::Bundled {
-                    definition: definition.name().to_owned(),
+                return Origin::Reference {
+                    reference: DefinitionReference::Bundled(definition.name().to_owned()).to_string(),
                     digest: definition.digest().to_owned(),
                 };
             }

@@ -55,14 +55,15 @@ enum Command {
     /// Create or update an agent, or a volume, from a manifest.
     Apply {
         /// Agent or volume manifest path; defaults to ./agent.yaml.
-        #[arg(short = 'f', long = "filename", conflicts_with_all = ["variant", "bundled"])]
+        #[arg(short = 'f', long = "filename", conflicts_with_all = ["variant", "from"])]
         filename: Option<PathBuf>,
         /// Variant of the agent in the current directory.
-        #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["filename", "bundled"])]
+        #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["filename", "from"])]
         variant: Option<AgentVariantName>,
-        /// A definition agentd carries, such as `agent-builder`, instead of a manifest on disk.
-        #[arg(long, value_name = "DEFINITION")]
-        bundled: Option<String>,
+        /// A definition by reference, such as `bundled/agent-builder`, or `agent-builder` for short,
+        /// instead of a manifest on disk.
+        #[arg(long, value_name = "REFERENCE")]
+        from: Option<String>,
         /// The folder the agent works on, for a definition with `spec.workspace`. An update that
         /// leaves it out keeps the agent's.
         #[arg(long)]
@@ -86,8 +87,9 @@ enum Command {
     /// Running a definition on the same workspace again goes back to the same agent, brought up to
     /// date with the definition when it can be, and starts it if it was stopped.
     Run {
-        /// A definition agentd carries, such as `agent-builder`, or a definition folder or manifest
-        /// on disk, such as `./agents/reviewer`.
+        /// A definition by reference, such as `bundled/agent-builder`, or `agent-builder` for short,
+        /// or a definition folder or manifest on disk, written as a path, such as `./agents/reviewer`
+        /// or `agent.yaml`.
         definition: String,
         /// The folder the agent works on, for a definition with `spec.workspace`.
         workspace: Option<PathBuf>,
@@ -717,7 +719,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         Command::Apply {
             filename,
             variant,
-            bundled,
+            from,
             workspace,
             name,
             env_file,
@@ -725,8 +727,8 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             timeout,
         } => {
             let directory = std::env::current_dir().map_err(Error::from)?;
-            let filename = match bundled {
-                Some(definition) => bundled_manifest(client, &definition).await?,
+            let filename = match from {
+                Some(reference) => referenced_manifest(client, &reference).await?,
                 None => apply_manifest_path(filename, variant, &directory)?,
             };
             if manifest_kind(&filename).as_deref() == Some(agent::volumes::KIND) {
@@ -2343,24 +2345,25 @@ fn read_apply_request_in(
     })
 }
 
-/// The manifest of agentd's copy of the bundled definition `name`.
-async fn bundled_manifest(client: &Client, name: &str) -> Result<PathBuf, Error> {
-    let definitions = client.bundled_definitions().await?;
+/// The manifest of agentd's copy of the definition `reference` names.
+async fn referenced_manifest(client: &Client, reference: &str) -> Result<PathBuf, Error> {
+    let reference = agent::DefinitionReference::parse(reference)?.to_string();
+    let definitions = client.definitions().await?;
     definitions
         .iter()
-        .find(|definition| definition.name == name)
+        .find(|definition| definition.reference == reference)
         .map(|definition| definition.path.join(manifest::MANIFEST_FILE))
         .ok_or_else(|| {
-            let names = definitions
+            let references = definitions
                 .iter()
-                .map(|definition| definition.name.as_str())
+                .map(|definition| definition.reference.as_str())
                 .collect::<Vec<_>>();
-            Error::Invalid(if names.is_empty() {
-                format!("agentd carries no definition named {name:?}, nor any other")
+            Error::Invalid(if references.is_empty() {
+                format!("agentd has no definition {reference:?}, nor any other")
             } else {
                 format!(
-                    "agentd carries no definition named {name:?}; it carries {}",
-                    names.join(", ")
+                    "agentd has no definition {reference:?}; it has {}",
+                    references.join(", ")
                 )
             })
         })
@@ -2376,15 +2379,19 @@ struct Run {
 }
 
 impl Run {
-    /// The request for agentd: a definition named like a path is one on disk, and any other name
-    /// is one agentd carries.
+    /// The request for agentd: a definition written as a path is one on disk, and anything else
+    /// is a reference agentd resolves.
     fn request(self) -> Result<agent::control_plane::RunRequest, Error> {
-        let looks_like_path = self.definition.contains(['/', '\\'])
-            || [".", ".."].contains(&self.definition.as_str())
-            || Path::new(&self.definition)
-                .extension()
-                .is_some_and(|extension| extension == "yaml" || extension == "yml");
-        let definition = if looks_like_path {
+        if !is_written_as_path(&self.definition)
+            && self.definition.contains(['/', '\\'])
+            && Path::new(&self.definition).exists()
+        {
+            return Err(Error::Invalid(format!(
+                "{:?} is read as a definition reference; write ./{} for the folder here",
+                self.definition, self.definition
+            )));
+        }
+        let definition = if is_written_as_path(&self.definition) {
             // Canonical, as running the same definition again finds its agent by its manifest's path.
             let path = std::fs::canonicalize(&self.definition)
                 .map_err(|error| Error::Invalid(format!("definition {}: {error}", self.definition)))?;
@@ -2404,11 +2411,13 @@ impl Run {
             }
         } else if self.env_file.is_some() {
             return Err(Error::Invalid(format!(
-                "--env-file is for a definition on disk, and {:?} is one agentd carries; write ./{} for a folder here",
+                "--env-file is for a definition on disk, and {:?} is a reference; write ./{} for a folder here",
                 self.definition, self.definition
             )));
         } else {
-            agent::control_plane::RunDefinition::Bundled { name: self.definition }
+            agent::control_plane::RunDefinition::Reference {
+                reference: self.definition,
+            }
         };
         Ok(agent::control_plane::RunRequest {
             definition,
@@ -2420,6 +2429,21 @@ impl Run {
             name: self.name,
         })
     }
+}
+
+/// Whether `definition` is written as a path rather than as a reference: absolute, starting at `.`
+/// or `..`, or a manifest file name. Others, such as `agents/reviewer`, are references, as
+/// `npm install` and `docker run` read such names, since a reference can hold a `/` too.
+fn is_written_as_path(definition: &str) -> bool {
+    let path = Path::new(definition);
+    path.is_absolute()
+        || matches!(
+            path.components().next(),
+            Some(std::path::Component::CurDir | std::path::Component::ParentDir)
+        )
+        || path
+            .extension()
+            .is_some_and(|extension| extension == "yaml" || extension == "yml")
 }
 
 /// Runs an agent and, given a session, attaches to it. An ephemeral agent lives until this
@@ -2591,6 +2615,29 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn run_reads_a_definition_written_as_a_path_as_one_on_disk_and_anything_else_as_a_reference() {
+        for path in [
+            ".",
+            "..",
+            "./agents/reviewer",
+            "../reviewer",
+            "/srv/agents/reviewer",
+            "agent.yaml",
+            "x/agent.yml",
+        ] {
+            assert!(super::is_written_as_path(path), "{path}");
+        }
+        for reference in [
+            "agent-builder",
+            "bundled/agent-builder",
+            "agents/reviewer",
+            "kihub.digdir.no/dotnet-dev",
+        ] {
+            assert!(!super::is_written_as_path(reference), "{reference}");
+        }
+    }
 
     #[test]
     fn help_leads_with_the_purpose_and_the_commands_people_use_first() {

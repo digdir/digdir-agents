@@ -134,8 +134,8 @@ fn control_plane(
 
 pub(crate) fn request(definition: &str, workspace: Option<&Path>) -> RunRequest {
     RunRequest {
-        definition: RunDefinition::Bundled {
-            name: definition.into(),
+        definition: RunDefinition::Reference {
+            reference: definition.into(),
         },
         workspace: workspace.map(Path::to_path_buf),
         lifetime: None,
@@ -149,7 +149,7 @@ async fn run(control_plane: &ControlPlane, definition: &str, workspace: Option<&
 
 fn digest(agent: &Agent) -> String {
     match agent.status.origin.as_ref() {
-        Some(Origin::Bundled { digest, .. }) => Some(digest.clone()),
+        Some(Origin::Reference { digest, .. }) => Some(digest.clone()),
         _ => None,
     }
     .expect("a bundled agent")
@@ -179,7 +179,7 @@ async fn run_makes_the_agent_with_its_workspace_from_agentds_copy_of_the_definit
     assert_eq!(agent.metadata.name, "builder-some-repo");
     assert_eq!(agent.spec.run_state(), RunState::Running);
     assert!(
-        matches!(&agent.status.origin, Some(Origin::Bundled { definition, .. }) if definition == "builder"),
+        matches!(&agent.status.origin, Some(Origin::Reference { reference, .. }) if reference == "bundled/builder"),
         "{:?}",
         agent.status.origin
     );
@@ -265,12 +265,35 @@ async fn running_again_resumes_the_agent_and_starts_it() {
     assert_eq!(resumed.outcome, RunOutcome::Resumed);
     assert_eq!(resumed.agent.metadata.name, created.agent.metadata.name);
     assert_eq!(resumed.agent.spec.run_state(), RunState::Running);
-    let again = run(&fixture.control_plane, "builder", Some(&workspace)).await;
-    assert_eq!(again.outcome, RunOutcome::Resumed);
+    let again = run(&fixture.control_plane, "bundled/builder", Some(&workspace)).await;
+    assert_eq!(
+        again.outcome,
+        RunOutcome::Resumed,
+        "the full reference is the same definition"
+    );
     assert_eq!(
         again.agent.metadata.generation, resumed.agent.metadata.generation,
         "a running agent of the same definition is left as it is"
     );
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_reference_agentd_cannot_resolve_is_refused() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("repo");
+
+    for (reference, expected) in [
+        ("missing", "no agent definition named \"missing\""),
+        ("kihub.digdir.no/dotnet-dev", "names a definition on kihub.digdir.no"),
+    ] {
+        let error = fixture
+            .control_plane
+            .run(request(reference, Some(&workspace)))
+            .await
+            .expect_err("an unknown reference");
+        assert!(error.to_string().contains(expected), "{reference}: {error}");
+    }
+    assert_eq!(fixture.store.list().await.expect("agents"), []);
 }
 
 #[tokio::test(flavor = "local")]
@@ -379,11 +402,12 @@ async fn a_definition_that_changes_what_cannot_change_in_place_reports_the_agent
 async fn a_bundled_definition_is_applied_from_agentds_copy_like_any_other() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("repo");
-    let definitions = fixture.control_plane.bundled_definitions().await.expect("definitions");
+    let definitions = fixture.control_plane.definitions().await.expect("definitions");
     let builder = definitions
         .iter()
-        .find(|definition| definition.name == "builder")
+        .find(|definition| definition.reference == "bundled/builder")
         .expect("builder");
+    assert!(builder.workspace.is_some(), "the list says it needs a workspace");
     let copy: Agent = serde_yaml_ng::from_slice(&std::fs::read(builder.path.join("agent.yaml")).expect("manifest"))
         .expect("manifest");
 
@@ -417,7 +441,10 @@ async fn a_bundled_definition_is_applied_from_agentds_copy_like_any_other() {
         .apply(apply(source.path(), agent("builder")))
         .await
         .expect_err("another definition's manifest with the same name");
-    assert!(error.to_string().contains("agentd's definition \"builder\""), "{error}");
+    assert!(
+        error.to_string().contains("from definition \"bundled/builder\""),
+        "{error}"
+    );
 }
 
 #[tokio::test(flavor = "local")]
@@ -560,7 +587,7 @@ async fn agentd_deletes_the_ephemeral_agents_an_earlier_run_left_when_it_starts(
         !fixture.home.path().join("bundled/.unfinished").exists(),
         "what no agent uses is removed"
     );
-    let carried = restarted.bundled_definitions().await.expect("definitions");
+    let carried = restarted.definitions().await.expect("definitions");
     let mut digests = carried
         .into_iter()
         .map(|definition| definition.digest)

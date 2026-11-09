@@ -18,7 +18,7 @@ pub use controller::{Controller, ErrorHandler, Wakeup};
 pub use convergence::{Convergence, WaitPolicy};
 pub use reconciler::{Reconciler, SessionNotifier};
 pub use resource::{AgentId, AgentRecord, ENV_FILE};
-pub use run::{BundledDefinition, Ran, RunDefinition, RunOutcome, RunRequest};
+pub use run::{DefinitionSummary, Ran, RunDefinition, RunOutcome, RunRequest};
 pub(crate) use service::reject_secrets_in_copy;
 pub use service::{ApplyRequest, ControlPlane, ImmediateStops, Notifier};
 
