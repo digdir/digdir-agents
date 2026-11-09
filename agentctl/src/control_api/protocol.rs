@@ -289,7 +289,7 @@ pub(crate) struct AccountLogoutResult {
     pub forgotten: Option<crate::accounts::Account>,
 }
 
-/// A value to keep as the secret `name`, for `allowed_hosts`, or for the hosts it already has when
+/// A value to store as the secret `name`, for `allowed_hosts`, or for the hosts it already has when
 /// they are left out. Deliberately not `Debug`: it holds the value.
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]

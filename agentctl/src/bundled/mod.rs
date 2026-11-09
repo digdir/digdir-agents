@@ -220,7 +220,7 @@ fn check_contained(agent: &Agent, files: &BTreeMap<String, DefinitionFile>) -> R
     if !spec.environment.is_empty() || spec.reads_secret_file() {
         return Err(
             "spec.environment and spec.secrets with a source read an environment file, which a bundled definition \
-             has none of; a secret it needs names one kept on the machine with `secret: NAME`"
+             has none of; a secret it needs names one stored on the machine with `secret: NAME`"
                 .into(),
         );
     }

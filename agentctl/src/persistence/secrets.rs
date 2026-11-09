@@ -159,8 +159,8 @@ pub(super) fn delete_provider_account(
 
 const NAMED_SECRET_COLUMNS: &str = "substr(name, length(?1) + 1), allowed_hosts_json, created_at, updated_at";
 
-/// Keeps a secret under a name, replacing its value and, when given, its hosts. A new secret needs
-/// hosts, so it is not kept without them, and `None` says so.
+/// Stores a secret under a name, replacing its value and, when given, its hosts. A new secret needs
+/// hosts, so it is not stored without them, and `None` says so.
 pub(super) fn put_named_secret(
     connection: &mut Connection,
     secret: &NamedSecretWrite,
@@ -185,12 +185,12 @@ pub(super) fn put_named_secret(
             ],
         )
         .map_err(database_error)?;
-    let kept = named_secret(&transaction, &secret.name)?;
+    let stored = named_secret(&transaction, &secret.name)?;
     transaction.commit().map_err(database_error)?;
-    Ok(kept)
+    Ok(stored)
 }
 
-/// Replaces the hosts of the secret kept under `name`, keeping its value, when there is one.
+/// Replaces the hosts of the secret stored under `name`, keeping its value, when there is one.
 pub(super) fn set_named_secret_hosts(
     connection: &Connection,
     name: &str,
@@ -206,7 +206,7 @@ pub(super) fn set_named_secret_hosts(
         .map_err(database_error)
 }
 
-/// The secret kept under `name`, without its value.
+/// The secret stored under `name`, without its value.
 pub(super) fn named_secret(connection: &Connection, name: &str) -> Result<Option<NamedSecret>, Error> {
     connection
         .query_row(
@@ -218,7 +218,7 @@ pub(super) fn named_secret(connection: &Connection, name: &str) -> Result<Option
         .map_err(database_error)
 }
 
-/// Every secret kept under a name, by name, without their values.
+/// Every secret stored under a name, by name, without their values.
 pub(super) fn named_secrets(connection: &Connection) -> Result<Vec<NamedSecret>, Error> {
     let mut statement = connection
         .prepare(&format!(
@@ -232,7 +232,7 @@ pub(super) fn named_secrets(connection: &Connection) -> Result<Vec<NamedSecret>,
         .map_err(database_error)
 }
 
-/// Removes the secret kept under `name`, returning it, or `None` when there was none.
+/// Removes the secret stored under `name`, returning it, or `None` when there was none.
 pub(super) fn delete_named_secret(connection: &mut Connection, name: &str) -> Result<Option<NamedSecret>, Error> {
     let transaction = connection.transaction().map_err(database_error)?;
     let removed = named_secret(&transaction, name)?;

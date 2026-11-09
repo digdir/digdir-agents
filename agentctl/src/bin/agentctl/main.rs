@@ -188,7 +188,7 @@ enum Command {
         #[command(subcommand)]
         command: GithubCommand,
     },
-    /// Keep secrets, such as API keys, under names that agents' manifests ask for.
+    /// Store secrets, such as API keys, under names that agents' manifests ask for.
     Secret {
         #[command(subcommand)]
         command: secret::SecretCommand,

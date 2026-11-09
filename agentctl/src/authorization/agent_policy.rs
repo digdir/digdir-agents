@@ -15,8 +15,8 @@ use sandbox::SandboxName;
 pub struct AgentPolicyEngine {
     agents: RefCell<BTreeMap<String, AgentPolicy>>,
     platform_endpoint: RefCell<Option<PlatformEndpoint>>,
-    /// Where the secrets kept under a name are, whose hosts are read at every use.
-    kept_secrets: Option<crate::persistence::Database>,
+    /// Where the secrets stored under a name are, whose hosts are read at every use.
+    stored_secrets: Option<crate::persistence::Database>,
 }
 
 struct PlatformEndpoint {
@@ -31,11 +31,11 @@ impl AgentPolicyEngine {
         Self::default()
     }
 
-    /// Reads the hosts of secrets kept under a name from `database`. Without it, a kept secret is
+    /// Reads the hosts of secrets stored under a name from `database`. Without it, a stored secret is
     /// substituted nowhere.
     #[must_use]
-    pub fn with_kept_secrets(mut self, database: crate::persistence::Database) -> Self {
-        self.kept_secrets = Some(database);
+    pub fn with_stored_secrets(mut self, database: crate::persistence::Database) -> Self {
+        self.stored_secrets = Some(database);
         self
     }
 
@@ -73,7 +73,7 @@ impl AgentPolicyEngine {
 }
 
 /// Where a sandbox's secret may be substituted: at a host that each of its host lists matches,
-/// such as both the hosts a manifest sends a kept secret to and those the secret allows.
+/// such as both the hosts a manifest sends a stored secret to and those the secret allows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SecretHosts {
     /// The environment variable holding the secret's placeholder.
@@ -81,10 +81,10 @@ pub struct SecretHosts {
     /// Host patterns, such as `api.example.com` or `*.example.com`. A host must match one pattern
     /// of every list.
     pub hosts: Vec<Vec<String>>,
-    /// The secret kept under this name, whose hosts a host must match as well. They are read
-    /// where it is kept at every use, as its value is, so changing them applies at once and a
+    /// The secret stored under this name, whose hosts a host must match as well. They are read
+    /// where it is stored at every use, as its value is, so changing them applies at once and a
     /// host they no longer allow never receives a value set with them.
-    pub kept: Option<String>,
+    pub stored: Option<String>,
 }
 
 impl SecretHosts {
@@ -94,7 +94,7 @@ impl SecretHosts {
         Self {
             environment: environment.into(),
             hosts: vec![hosts],
-            kept: None,
+            stored: None,
         }
     }
 }
@@ -111,9 +111,9 @@ impl PolicyEngine for AgentPolicyEngine {
     ) -> sandbox_authorization::LocalFuture<'_, Result<AuthorizationDecision, sandbox_authorization::Error>> {
         Box::pin(async move {
             let decided = self.evaluate_request(&request);
-            Ok(match self.kept_secret_to_check(&request) {
+            Ok(match self.stored_secret_to_check(&request) {
                 Some((name, host)) if decided == AuthorizationDecision::Allow => {
-                    decision(self.kept_secret_allows(&name, &host).await)
+                    decision(self.stored_secret_allows(&name, &host).await)
                 }
                 _ => decided,
             })
@@ -164,21 +164,21 @@ impl AgentPolicyEngine {
 }
 
 impl AgentPolicyEngine {
-    /// The kept secret, and the host, that a use of a secret must also be allowed by.
-    fn kept_secret_to_check(&self, request: &AuthorizationRequest) -> Option<(String, String)> {
+    /// The stored secret, and the host, that a use of a secret must also be allowed by.
+    fn stored_secret_to_check(&self, request: &AuthorizationRequest) -> Option<(String, String)> {
         if request.action.as_str() != action::SECRET_USE {
             return None;
         }
         let agent = request.context.get(context::SANDBOX_NAME)?.as_str()?;
         let agents = self.agents.borrow();
-        let kept = agents.get(agent)?.secrets.get(&request.resource.id)?.kept.clone()?;
-        Some((kept, request_host(request)?.to_owned()))
+        let stored = agents.get(agent)?.secrets.get(&request.resource.id)?.stored.clone()?;
+        Some((stored, request_host(request)?.to_owned()))
     }
 
-    /// Whether the secret kept as `name` allows `host` now. One that is gone, or cannot be read,
+    /// Whether the secret stored as `name` allows `host` now. One that is gone, or cannot be read,
     /// allows nothing.
-    async fn kept_secret_allows(&self, name: &str, host: &str) -> bool {
-        let Some(database) = &self.kept_secrets else {
+    async fn stored_secret_allows(&self, name: &str, host: &str) -> bool {
+        let Some(database) = &self.stored_secrets else {
             return false;
         };
         crate::secrets::stored(database, name)

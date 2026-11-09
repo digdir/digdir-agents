@@ -82,7 +82,7 @@ fn sign_in() -> Definition {
 }
 
 #[test]
-fn a_bundled_definition_takes_kept_secrets_but_no_environment_file() {
+fn a_bundled_definition_takes_stored_secrets_but_no_environment_file() {
     let with_secret = |secret: Option<&str>, source: Option<&str>| {
         let mut manifest = manifest("builder", BASE_IMAGE);
         manifest.spec.secrets.push(agent::SecretSpec {
@@ -107,7 +107,7 @@ fn a_bundled_definition_takes_kept_secrets_but_no_environment_file() {
         Definition::new("builder", definition)
     };
 
-    with_secret(Some("models"), None).expect("a kept secret reads no environment file");
+    with_secret(Some("models"), None).expect("a stored secret reads no environment file");
     for refused in [with_secret(None, None), with_secret(None, Some("MODELS"))] {
         assert!(
             matches!(&refused, Err(Error::Invalid(message)) if message.contains("environment file")),

@@ -892,11 +892,11 @@ fn a_build_context_starting_with_a_tilde_resolves_below_the_home_directory() {
 }
 
 #[test]
-fn a_secret_may_take_its_value_from_a_kept_secret_instead_of_a_source() {
+fn a_secret_may_take_its_value_from_a_stored_secret_instead_of_a_source() {
     let agent = manifest::decode(&manifest_with_access(
         "  secrets:\n    - environment: AIVAR_API_KEY\n      secret: Aivar\n      allowedHosts: [api.aivar.no]\n",
     ))
-    .expect("a kept secret");
+    .expect("a stored secret");
     let secret = &agent.spec.secrets[0];
     assert_eq!(secret.secret.as_deref(), Some("Aivar"));
     assert_eq!(secret.source(), None, "the environment file supplies nothing");

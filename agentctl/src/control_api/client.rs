@@ -467,13 +467,13 @@ impl Client {
         self.call(METHOD_ACCOUNT_LIST, serde_json::json!({})).await
     }
 
-    /// Has agentd keep `value` as the secret `name`, for `allowed_hosts`, or for the hosts it
+    /// Has agentd store `value` as the secret `name`, for `allowed_hosts`, or for the hosts it
     /// already has when `None`, then re-converge the agents that use it.
     ///
     /// # Errors
     ///
     /// Returns an error when the name, value or a host is invalid, when a new secret has no hosts,
-    /// or when it cannot be kept. No error contains the value.
+    /// or when it cannot be stored. No error contains the value.
     pub async fn secret_set(
         &self,
         name: &str,
@@ -488,8 +488,8 @@ impl Client {
         self.call(METHOD_SECRET_SET, params).await
     }
 
-    /// The kept secrets with the agents that use them, and the secrets agents ask for that are
-    /// not kept.
+    /// The stored secrets with the agents that use them, and the secrets agents ask for that are
+    /// not stored.
     ///
     /// # Errors
     ///

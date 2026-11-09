@@ -283,9 +283,9 @@ pub trait AccountsApi {
     fn list(&self) -> LocalFuture<'_, Result<Vec<crate::accounts::Account>, Error>>;
 }
 
-/// The secrets kept under a name, exposed through the local control API.
+/// The secrets stored under a name, exposed through the local control API.
 pub trait SecretsApi {
-    /// Keeps `value` as the secret `name`, for `allowed_hosts`, or for the hosts it already has
+    /// Stores `value` as the secret `name`, for `allowed_hosts`, or for the hosts it already has
     /// when `None`.
     fn set<'a>(
         &'a self,
@@ -294,7 +294,7 @@ pub trait SecretsApi {
         allowed_hosts: Option<Vec<String>>,
     ) -> LocalFuture<'a, Result<crate::secrets::Secret, Error>>;
 
-    /// Every kept secret, without its value.
+    /// Every stored secret, without its value.
     fn list(&self) -> LocalFuture<'_, Result<Vec<crate::secrets::Secret>, Error>>;
 
     /// Removes the secret `name`, returning it, or `None` when there was none.
@@ -670,7 +670,7 @@ impl Server {
         self
     }
 
-    /// Serves the secrets kept under a name as well.
+    /// Serves the secrets stored under a name as well.
     #[must_use]
     pub fn with_secrets(mut self, secrets: Rc<dyn SecretsApi>) -> Self {
         self.secrets = Some(secrets);
@@ -1208,8 +1208,8 @@ impl Server {
         let Some(secrets) = &self.secrets else {
             return secrets_unavailable(id);
         };
-        let kept = secrets.set(&params.name, &params.value, params.allowed_hosts).await;
-        match kept {
+        let stored = secrets.set(&params.name, &params.value, params.allowed_hosts).await;
+        match stored {
             Ok(secret) => result_response(id, Ok::<_, Error>(self.wake_secret_users(secret).await)),
             Err(error) => result_response(id, Err::<(), _>(error)),
         }
@@ -1220,8 +1220,8 @@ impl Server {
             return secrets_unavailable(id);
         };
         let report = async {
-            let kept = secrets.list().await?;
-            Ok::<_, Error>(crate::secrets::report(kept, &self.agents.list().await?))
+            let stored = secrets.list().await?;
+            Ok::<_, Error>(crate::secrets::report(stored, &self.agents.list().await?))
         };
         result_response(id, report.await)
     }
@@ -1243,7 +1243,7 @@ impl Server {
     }
 
     /// Reports `secret` with the agents that use it, and re-converges those agents, so a changed
-    /// host list or a secret now kept or gone reaches them at once.
+    /// host list or a secret now stored or gone reaches them at once.
     async fn wake_secret_users(&self, secret: crate::secrets::Secret) -> crate::secrets::SecretReport {
         let agents = self.agents.list().await.unwrap_or_else(|error| {
             self.report(&error);
@@ -1477,7 +1477,7 @@ fn accounts_unavailable(id: u64) -> Response {
 }
 
 fn secrets_unavailable(id: u64) -> Response {
-    error_response(id, CODE_METHOD_NOT_FOUND, "this agentd keeps no secrets")
+    error_response(id, CODE_METHOD_NOT_FOUND, "this agentd stores no secrets")
 }
 
 fn volumes_unavailable(id: u64) -> Response {

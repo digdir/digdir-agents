@@ -1,5 +1,5 @@
-//! `agentctl secret`: secrets kept on this machine under a name, which manifests ask for with
-//! `secrets[].secret`, so a value that several agents use is kept once, outside their folders.
+//! `agentctl secret`: secrets stored on this machine under a name, which manifests ask for with
+//! `secrets[].secret`, so a value that several agents use is stored once, outside their folders.
 
 use std::fmt::Write as _;
 
@@ -14,7 +14,7 @@ use crate::{CommandResult, prompt};
 
 #[derive(Subcommand)]
 pub(crate) enum SecretCommand {
-    /// Keep a secret under a name, or replace its value.
+    /// Store a secret under a name, or replace its value.
     ///
     /// At a terminal it reads the value without showing it. Agents whose manifest has
     /// `secret: NAME` on one of its `secrets` get it at once, but only at the hosts both the
@@ -30,10 +30,10 @@ pub(crate) enum SecretCommand {
         #[arg(long)]
         from_stdin: bool,
     },
-    /// List the kept secrets with the agents that use them, and the secrets agents ask for that
-    /// are not kept.
+    /// List the stored secrets with the agents that use them, and the secrets agents ask for that
+    /// are not stored.
     List,
-    /// Remove a kept secret; the agents using it lose it at once.
+    /// Remove a stored secret; the agents using it lose it at once.
     Remove {
         /// The secret's name, as `agentctl secret list` shows it.
         name: String,
@@ -64,14 +64,14 @@ pub(crate) async fn run(client: &agent::control_api::Client, command: SecretComm
                 .into());
             };
             let report = client.secret_set(&name, &value, hosts).await?;
-            print!("{}", kept(&report));
+            print!("{}", stored(&report));
         }
         SecretCommand::List => print!("{}", list(&client.secrets().await?)),
         SecretCommand::Remove { name } => {
             let name = secret_name(&name)?;
             match client.secret_remove(&name).await? {
                 Some(report) => print!("{}", removed(&report)),
-                None => println!("No secret named {name} is kept; nothing changed."),
+                None => println!("No secret named {name} is stored; nothing changed."),
             }
         }
     }
@@ -104,11 +104,11 @@ fn read_value_from_stdin() -> Result<Zeroizing<String>, Error> {
     Ok(value)
 }
 
-/// What keeping a secret did, for the agents that use it, or how a manifest uses it when none do.
-fn kept(report: &SecretReport) -> String {
+/// What storing a secret did, for the agents that use it, or how a manifest uses it when none do.
+fn stored(report: &SecretReport) -> String {
     let secret = &report.secret;
     let mut text = format!(
-        "Kept the secret {} for {}.\n",
+        "Stored the secret {} for {}.\n",
         secret.name,
         secret.allowed_hosts.join(", ")
     );
@@ -127,25 +127,25 @@ fn kept(report: &SecretReport) -> String {
     text
 }
 
-/// The kept secrets, then the ones agents ask for that are not kept, and the hosts agents send a
+/// The stored secrets, then the ones agents ask for that are not stored, and the hosts agents send a
 /// secret to that it does not allow.
 fn list(report: &SecretsReport) -> String {
     let mut text = String::new();
     if report.secrets.is_empty() {
-        text.push_str("No secrets are kept. Keep one with `agentctl secret set NAME --hosts HOST`.\n");
+        text.push_str("No secrets are stored. Store one with `agentctl secret set NAME --hosts HOST`.\n");
     } else {
         let rows = report
             .secrets
             .iter()
-            .map(|kept| {
+            .map(|stored| {
                 vec![
-                    kept.secret.name.clone(),
-                    kept.secret.allowed_hosts.join(","),
-                    kept.secret.updated_at.date().to_string(),
-                    if kept.used_by.is_empty() {
+                    stored.secret.name.clone(),
+                    stored.secret.allowed_hosts.join(","),
+                    stored.secret.updated_at.date().to_string(),
+                    if stored.used_by.is_empty() {
                         "-".into()
                     } else {
-                        users(&kept.used_by)
+                        users(&stored.used_by)
                     },
                 ]
             })
@@ -165,13 +165,13 @@ fn list(report: &SecretsReport) -> String {
         }
         let _ = writeln!(
             text,
-            "\nNo secret named {} is kept, so {}. Keep it with `agentctl secret set {0} --hosts HOST`.",
+            "\nNo secret named {} is stored, so {}. Store it with `agentctl secret set {0} --hosts HOST`.",
             missing.name,
             effects.join(", and ")
         );
     }
-    for kept in &report.secrets {
-        text.push_str(&hosts_not_allowed(kept));
+    for stored in &report.secrets {
+        text.push_str(&hosts_not_allowed(stored));
     }
     text
 }
@@ -183,7 +183,7 @@ fn removed(report: &SecretReport) -> String {
     if !required.is_empty() {
         let _ = writeln!(
             text,
-            "{} not ready until it is kept again.",
+            "{} not ready until it is stored again.",
             capitalized(&agents(&required, "is", "are"))
         );
     }
@@ -233,7 +233,7 @@ fn hosts_not_allowed(report: &SecretReport) -> String {
         let _ = writeln!(
             text,
             "\n{} {} to {}, which the secret does not allow, so it stays a placeholder there. \
-             If it should go there, keep it again with `agentctl secret set {1} --hosts {}`.",
+             If it should go there, store it again with `agentctl secret set {1} --hosts {}`.",
             capitalized(&agents(&[used], "sends", "send")),
             secret.name,
             used.hosts_not_allowed.join(", "),
@@ -269,14 +269,14 @@ mod tests {
     }
 
     #[test]
-    fn keeping_a_secret_nobody_uses_shows_how_a_manifest_asks_for_it() {
-        let text = super::kept(&SecretReport {
+    fn storing_a_secret_nobody_uses_shows_how_a_manifest_asks_for_it() {
+        let text = super::stored(&SecretReport {
             secret: secret(),
             used_by: Vec::new(),
         });
         assert_eq!(
             text,
-            "Kept the secret aivar for api.aivar.no.\n\
+            "Stored the secret aivar for api.aivar.no.\n\
              Agents use it with `secrets: [{environment: VARIABLE, secret: aivar, allowedHosts: [api.aivar.no]}]` \
              in their manifest.\n"
         );
@@ -301,11 +301,11 @@ mod tests {
             "NAME   HOSTS         UPDATED     USED BY\n\
              aivar  api.aivar.no  2026-11-09  pi (AIVAR_API_KEY)\n\
              \n\
-             No secret named models is kept, so the agent a is not ready, and the agent b runs without it. \
-             Keep it with `agentctl secret set models --hosts HOST`.\n\
+             No secret named models is stored, so the agent a is not ready, and the agent b runs without it. \
+             Store it with `agentctl secret set models --hosts HOST`.\n\
              \n\
              The agent pi sends aivar to example.com, which the secret does not allow, so it stays a placeholder \
-             there. If it should go there, keep it again with `agentctl secret set aivar --hosts \
+             there. If it should go there, store it again with `agentctl secret set aivar --hosts \
              api.aivar.no,example.com`.\n"
         );
     }
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(
             text,
             "Removed the secret aivar.\n\
-             The agents a, b are not ready until it is kept again.\n\
+             The agents a, b are not ready until it is stored again.\n\
              The agent c runs without it from now on.\n"
         );
     }

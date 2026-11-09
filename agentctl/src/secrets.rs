@@ -1,9 +1,9 @@
-//! Secrets kept under a name, such as an API key that several agents use, which a manifest asks
+//! Secrets stored under a name, such as an API key that several agents use, which a manifest asks
 //! for with `secrets[].secret`.
 //!
-//! A kept secret says which hosts its value may ever reach, and the manifest says which hosts the
+//! A stored secret says which hosts its value may ever reach, and the manifest says which hosts the
 //! agent sends it to. The network mediator substitutes it only for a host both allow, so neither a
-//! manifest nor the person keeping the secret can widen where it goes on their own. The mediator
+//! manifest nor the person storing the secret can widen where it goes on their own. The mediator
 //! reads the value on every use, so replacing it reaches every agent at once, without a restart.
 
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use zeroize::Zeroizing;
 
 use crate::{Agent, Error, authorization::host_pattern_covers, manifest::valid_host_pattern, names, persistence};
 
-/// A kept secret, without its value.
+/// A stored secret, without its value.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Secret {
@@ -30,39 +30,39 @@ pub struct Secret {
 impl TryFrom<persistence::NamedSecret> for Secret {
     type Error = Error;
 
-    fn try_from(kept: persistence::NamedSecret) -> Result<Self, Error> {
+    fn try_from(stored: persistence::NamedSecret) -> Result<Self, Error> {
         let time = |seconds| {
             OffsetDateTime::from_unix_timestamp(seconds)
-                .map_err(|error| Error::Database(format!("the secret {} has an invalid time: {error}", kept.name)))
+                .map_err(|error| Error::Database(format!("the secret {} has an invalid time: {error}", stored.name)))
         };
         Ok(Self {
-            allowed_hosts: serde_json::from_str(&kept.allowed_hosts_json)?,
-            created_at: time(kept.created_at)?,
-            updated_at: time(kept.updated_at)?,
-            name: kept.name,
+            allowed_hosts: serde_json::from_str(&stored.allowed_hosts_json)?,
+            created_at: time(stored.created_at)?,
+            updated_at: time(stored.updated_at)?,
+            name: stored.name,
         })
     }
 }
 
-/// Keeps, lists and removes secrets.
+/// Stores, lists and removes secrets.
 pub struct Secrets {
     database: persistence::Database,
 }
 
 impl Secrets {
-    /// Secrets kept in `database`.
+    /// Secrets stored in `database`.
     #[must_use]
     pub const fn new(database: persistence::Database) -> Self {
         Self { database }
     }
 
-    /// Keeps `value` as the secret `name`, for `allowed_hosts`. Without hosts, it replaces the
-    /// value of a secret already kept and keeps its hosts.
+    /// Stores `value` as the secret `name`, for `allowed_hosts`. Without hosts, it replaces the
+    /// value of a secret already stored and keeps its hosts.
     ///
     /// # Errors
     ///
     /// Returns an error when the name, value or a host is invalid, when a new secret has no hosts,
-    /// or when it cannot be kept. No error contains the value.
+    /// or when it cannot be stored. No error contains the value.
     pub async fn set(
         &self,
         name: &str,
@@ -98,13 +98,13 @@ impl Secrets {
             .await?
             .ok_or_else(|| {
                 Error::Invalid(format!(
-                    "no secret named {name} is kept yet, so it needs the hosts its value may reach"
+                    "no secret named {name} is stored yet, so it needs the hosts its value may reach"
                 ))
             })?
             .try_into()
     }
 
-    /// Every kept secret, by name, without its value.
+    /// Every stored secret, by name, without its value.
     ///
     /// # Errors
     ///
@@ -133,7 +133,7 @@ impl Secrets {
     }
 }
 
-/// The secret `name`, as kept in `database`, or `None` when none is.
+/// The secret `name`, as stored in `database`, or `None` when none is.
 pub(crate) async fn stored(database: &persistence::Database, name: &str) -> Result<Option<Secret>, Error> {
     let name = valid_name(name)?;
     database.named_secret(&name).await?.map(Secret::try_from).transpose()
@@ -174,8 +174,8 @@ fn valid_hosts(hosts: Vec<String>) -> Result<Vec<String>, Error> {
     Ok(valid)
 }
 
-/// The kept secrets with the agents that use them, and the secrets agents ask for that are not
-/// kept.
+/// The stored secrets with the agents that use them, and the secrets agents ask for that are not
+/// stored.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretsReport {
@@ -183,7 +183,7 @@ pub struct SecretsReport {
     pub missing: Vec<MissingSecret>,
 }
 
-/// A kept secret and the agents that use it.
+/// A stored secret and the agents that use it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretReport {
@@ -192,7 +192,7 @@ pub struct SecretReport {
     pub used_by: Vec<SecretUse>,
 }
 
-/// A secret that agents ask for and that is not kept.
+/// A secret that agents ask for and that is not stored.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MissingSecret {
@@ -207,10 +207,10 @@ pub struct SecretUse {
     pub agent: String,
     /// The environment variable that holds its placeholder.
     pub environment: String,
-    /// Whether the agent runs without it while it is not kept, rather than failing.
+    /// Whether the agent runs without it while it is not stored, rather than failing.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
-    /// The hosts the manifest sends it to that the kept secret does not allow, where it stays a
+    /// The hosts the manifest sends it to that the stored secret does not allow, where it stays a
     /// placeholder.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts_not_allowed: Vec<String>,
@@ -250,9 +250,9 @@ pub fn report(secrets: Vec<Secret>, agents: &[Agent]) -> SecretsReport {
                     .cloned()
                     .collect(),
             };
-            if let Some(kept) = report.secrets.iter_mut().find(|kept| kept.secret.name == name) {
-                let used = use_of(&kept.secret.allowed_hosts);
-                kept.used_by.push(used);
+            if let Some(stored) = report.secrets.iter_mut().find(|stored| stored.secret.name == name) {
+                let used = use_of(&stored.secret.allowed_hosts);
+                stored.used_by.push(used);
                 continue;
             }
             let mut used = use_of(&[]);
@@ -297,7 +297,7 @@ spec:
     }
 
     #[tokio::test(flavor = "local")]
-    async fn a_secret_is_kept_with_its_hosts_which_a_new_value_keeps() {
+    async fn a_secret_is_stored_with_its_hosts_which_a_new_value_keeps() {
         let directory = tempfile::TempDir::new().expect("temporary directory");
         let database = crate::persistence::Database::open(&directory.path().join("agent.db")).expect("database");
         let secrets = Secrets::new(database);
@@ -325,7 +325,7 @@ spec:
             .await
             .expect_err("an empty value is refused");
         assert!(error.to_string().contains("empty"), "{error}");
-        assert!(secrets.list().await.expect("list").is_empty(), "nothing was kept");
+        assert!(secrets.list().await.expect("list").is_empty(), "nothing was stored");
 
         let first = secrets
             .set(
@@ -334,7 +334,7 @@ spec:
                 Some(vec!["API.aivar.no".into(), "api.aivar.no".into()]),
             )
             .await
-            .expect("kept");
+            .expect("stored");
         assert_eq!(
             (first.name.as_str(), first.allowed_hosts.as_slice()),
             ("aivar", &["api.aivar.no".to_owned()][..])
@@ -350,7 +350,7 @@ spec:
 
     #[test]
     fn the_report_names_users_missing_secrets_and_hosts_a_secret_does_not_allow() {
-        let kept = super::Secret {
+        let stored = super::Secret {
             name: "aivar".into(),
             allowed_hosts: vec!["*.aivar.no".into()],
             created_at: time::OffsetDateTime::UNIX_EPOCH,
@@ -371,10 +371,10 @@ spec:
             deleted,
         ];
 
-        let report = report(vec![kept.clone()], &agents);
+        let report = report(vec![stored.clone()], &agents);
 
         assert_eq!(report.secrets.len(), 1);
-        assert_eq!(report.secrets[0].secret, kept);
+        assert_eq!(report.secrets[0].secret, stored);
         assert_eq!(
             report.secrets[0].used_by,
             [SecretUse {

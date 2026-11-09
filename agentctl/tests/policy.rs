@@ -71,7 +71,7 @@ async fn allows_general_egress_but_scopes_each_secret_to_its_hosts() {
     );
 }
 
-/// A kept secret is substituted only at a host that both the manifest and the secret allow.
+/// A stored secret is substituted only at a host that both the manifest and the secret allow.
 #[tokio::test(flavor = "local")]
 async fn a_secret_with_several_host_lists_is_used_only_where_all_of_them_match() {
     let agent = support::agent("worker");
@@ -86,7 +86,7 @@ async fn a_secret_with_several_host_lists_is_used_only_where_all_of_them_match()
                 vec!["*.example.com".into()],
                 vec!["api.example.com".into(), "other.test".into()],
             ],
-            kept: None,
+            stored: None,
         }],
     );
     for (host, decision) in [

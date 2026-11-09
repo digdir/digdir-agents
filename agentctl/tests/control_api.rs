@@ -200,10 +200,10 @@ impl AccountsApi for FakeAccounts {
     }
 }
 
-/// Keeps secrets in memory, as agentd keeps them in its database.
+/// Stores secrets in memory, as agentd stores them in its database.
 #[derive(Default)]
 struct FakeSecrets {
-    kept: RefCell<Vec<agent::secrets::Secret>>,
+    stored: RefCell<Vec<agent::secrets::Secret>>,
 }
 
 impl SecretsApi for FakeSecrets {
@@ -214,11 +214,11 @@ impl SecretsApi for FakeSecrets {
         allowed_hosts: Option<Vec<String>>,
     ) -> LocalFuture<'a, Result<agent::secrets::Secret, Error>> {
         Box::pin(async move {
-            let mut kept = self.kept.borrow_mut();
-            let earlier = kept
+            let mut stored = self.stored.borrow_mut();
+            let earlier = stored
                 .iter()
                 .position(|secret| secret.name == name)
-                .map(|index| kept.remove(index));
+                .map(|index| stored.remove(index));
             let allowed_hosts = allowed_hosts
                 .or_else(|| earlier.map(|secret| secret.allowed_hosts))
                 .ok_or_else(|| Error::Invalid("a new secret needs the hosts its value may reach".into()))?;
@@ -228,22 +228,22 @@ impl SecretsApi for FakeSecrets {
                 created_at: time::OffsetDateTime::UNIX_EPOCH,
                 updated_at: time::OffsetDateTime::UNIX_EPOCH,
             };
-            kept.push(secret.clone());
+            stored.push(secret.clone());
             Ok(secret)
         })
     }
 
     fn list(&self) -> LocalFuture<'_, Result<Vec<agent::secrets::Secret>, Error>> {
-        Box::pin(async { Ok(self.kept.borrow().clone()) })
+        Box::pin(async { Ok(self.stored.borrow().clone()) })
     }
 
     fn remove<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Option<agent::secrets::Secret>, Error>> {
         Box::pin(async move {
-            let mut kept = self.kept.borrow_mut();
-            Ok(kept
+            let mut stored = self.stored.borrow_mut();
+            Ok(stored
                 .iter()
                 .position(|secret| secret.name == name)
-                .map(|index| kept.remove(index)))
+                .map(|index| stored.remove(index)))
         })
     }
 }
@@ -963,11 +963,11 @@ async fn a_github_login_or_logout_wakes_the_agents_asking_for_that_name_only() {
     assert_eq!(*fixture.woken.borrow(), ["ours", "ours"]);
 }
 
-/// Keeping or removing a secret re-converges the agents that use it, so they get a new host list,
-/// or start or stop for a secret now kept or gone, at once. The list reports the agents from
+/// Storing or removing a secret re-converges the agents that use it, so they get a new host list,
+/// or start or stop for a secret now stored or gone, at once. The list reports the agents from
 /// agentd, so every client shows the same.
 #[tokio::test(flavor = "local")]
-async fn keeping_or_removing_a_secret_wakes_the_agents_that_use_it_only() {
+async fn storing_or_removing_a_secret_wakes_the_agents_that_use_it_only() {
     let fixture = api();
     let client = &fixture.client;
     for (name, secret) in [("ours", Some("aivar")), ("theirs", Some("models")), ("plain", None)] {
@@ -992,18 +992,22 @@ async fn keeping_or_removing_a_secret_wakes_the_agents_that_use_it_only() {
         .expect_err("a new secret needs hosts");
     assert!(fixture.woken.borrow().is_empty(), "a refused secret wakes nothing");
 
-    let kept = client
+    let stored = client
         .secret_set("aivar", "sk-FAKE", Some(vec!["*.example.com".into()]))
         .await
-        .expect("kept");
+        .expect("stored");
     assert_eq!(
-        kept.used_by.iter().map(|used| used.agent.as_str()).collect::<Vec<_>>(),
+        stored
+            .used_by
+            .iter()
+            .map(|used| used.agent.as_str())
+            .collect::<Vec<_>>(),
         ["ours"]
     );
     assert_eq!(*fixture.woken.borrow(), ["ours"]);
 
     let report = client.secrets().await.expect("secrets");
-    assert_eq!(report.secrets, [kept]);
+    assert_eq!(report.secrets, [stored]);
     assert_eq!(
         report
             .missing
@@ -1019,7 +1023,7 @@ async fn keeping_or_removing_a_secret_wakes_the_agents_that_use_it_only() {
         .secret_remove("aivar")
         .await
         .expect("remove")
-        .expect("it was kept");
+        .expect("it was stored");
     assert_eq!(removed.used_by.len(), 1);
     assert_eq!(*fixture.woken.borrow(), ["ours", "ours"]);
 }

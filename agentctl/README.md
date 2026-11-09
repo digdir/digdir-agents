@@ -43,7 +43,7 @@ At a terminal it opens GitHub's form for a fine-grained token, filled in except 
 the account agents should act as, such as in a private window. `--from-stdin` takes a token instead, such as
 `gh auth token`, which lets agents act as you everywhere you can reach.
 
-Keep a secret that agents use, such as an API key, under a name with the hosts its value may reach, and set
+Store a secret that agents use, such as an API key, under a name with the hosts its value may reach, and set
 `secret: NAME` on that entry of `spec.secrets` instead of putting the value in each agent's environment file:
 
 ```sh

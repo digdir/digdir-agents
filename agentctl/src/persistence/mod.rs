@@ -29,7 +29,7 @@ pub(crate) struct ProviderAccountWrite {
     pub(crate) metadata_json: String,
 }
 
-/// A secret to keep under a name. Without hosts, it replaces the value of one already kept.
+/// A secret to store under a name. Without hosts, it replaces the value of one already stored.
 pub(crate) struct NamedSecretWrite {
     pub(crate) name: String,
     pub(crate) value: Zeroizing<Vec<u8>>,
@@ -38,7 +38,7 @@ pub(crate) struct NamedSecretWrite {
     pub(crate) at: i64,
 }
 
-/// A secret kept under a name, without its value.
+/// A secret stored under a name, without its value.
 pub(crate) struct NamedSecret {
     pub(crate) name: String,
     pub(crate) allowed_hosts_json: String,
@@ -134,13 +134,13 @@ impl Database {
         Ok(references)
     }
 
-    /// Keeps a secret under a name; `None` when it is new and has no hosts, so nothing was kept.
+    /// Stores a secret under a name; `None` when it is new and has no hosts, so nothing was stored.
     pub(crate) async fn put_named_secret(&self, secret: NamedSecretWrite) -> Result<Option<NamedSecret>, Error> {
         self.request(|response| Command::PutNamedSecret { secret, response })
             .await
     }
 
-    /// Replaces the hosts of the secret kept under `name`, keeping its value, when there is one.
+    /// Replaces the hosts of the secret stored under `name`, keeping its value, when there is one.
     pub(crate) async fn set_named_secret_hosts(
         &self,
         name: &str,
@@ -156,7 +156,7 @@ impl Database {
         .await
     }
 
-    /// The secret kept under `name`, without its value.
+    /// The secret stored under `name`, without its value.
     pub(crate) async fn named_secret(&self, name: &str) -> Result<Option<NamedSecret>, Error> {
         self.request(|response| Command::NamedSecret {
             name: name.into(),
@@ -165,12 +165,12 @@ impl Database {
         .await
     }
 
-    /// Every secret kept under a name, by name, without their values.
+    /// Every secret stored under a name, by name, without their values.
     pub(crate) async fn named_secrets(&self) -> Result<Vec<NamedSecret>, Error> {
         self.request(|response| Command::NamedSecrets { response }).await
     }
 
-    /// Removes the secret kept under `name`, returning it, or `None` when there was none.
+    /// Removes the secret stored under `name`, returning it, or `None` when there was none.
     pub(crate) async fn delete_named_secret(&self, name: &str) -> Result<Option<NamedSecret>, Error> {
         self.request(|response| Command::DeleteNamedSecret {
             name: name.into(),
@@ -1298,7 +1298,7 @@ pub(crate) fn ssh_host_key_name(id: AgentId) -> String {
     format!("agent-ssh/{id}/host-key")
 }
 
-/// Secret row holding the value of the secret kept under `name`, which manifests ask for by name.
+/// Secret row holding the value of the secret stored under `name`, which manifests ask for by name.
 pub(crate) fn named_secret_name(name: &str) -> String {
     format!("secret/{name}")
 }

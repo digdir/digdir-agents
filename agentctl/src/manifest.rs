@@ -823,7 +823,7 @@ impl Spec {
             if let Some(name) = &secret.secret {
                 if secret.source.is_some() {
                     return Err(Error::Invalid(format!(
-                        "spec.secrets[{index}] takes its value from the kept secret {name:?}, so it has no source"
+                        "spec.secrets[{index}] takes its value from the stored secret {name:?}, so it has no source"
                     )));
                 }
                 if !crate::names::valid(name) {
@@ -1005,7 +1005,7 @@ pub struct SecretSpec {
     /// Optional variable name in the manifest directory's `.env`; defaults to `environment`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    /// The name of a secret kept on this machine, such as with `agentctl secret set`, that holds
+    /// The name of a secret stored on this machine, such as with `agentctl secret set`, that holds
     /// the value instead of the environment file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
@@ -1017,7 +1017,7 @@ const fn is_false(value: &bool) -> bool {
 }
 
 impl SecretSpec {
-    /// Returns the host `.env` variable that supplies the secret material, or `None` when a kept
+    /// Returns the host `.env` variable that supplies the secret material, or `None` when a stored
     /// [`Self::secret`] does.
     #[must_use]
     pub fn source(&self) -> Option<&str> {

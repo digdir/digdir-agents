@@ -107,8 +107,8 @@ impl Preparation {
     }
 
     /// The bindings of the secrets `record`'s manifest declares, with where each may be
-    /// substituted. Those from the environment file are kept as the agent's own; a kept secret is
-    /// bound where it is kept, so replacing it reaches the agent at once.
+    /// substituted. Those from the environment file are saved as the agent's own; a stored secret is
+    /// bound by its name, so replacing it reaches the agent at once.
     async fn prepare_secrets(
         &self,
         record: &control_plane::AgentRecord,
@@ -134,7 +134,7 @@ impl Preparation {
                     }
                     let name = name.to_ascii_lowercase();
                     return Err(Error::Invalid(format!(
-                        "spec.secrets[{index}] uses the secret {name}, which is not kept here; run \
+                        "spec.secrets[{index}] uses the secret {name}, which is not stored here; run \
                          `agentctl secret set {name} --hosts {}`",
                         secret.allowed_hosts.join(",")
                     )));
@@ -147,7 +147,7 @@ impl Preparation {
                 policy.push(SecretHosts {
                     environment: secret.environment.clone(),
                     hosts: vec![secret.allowed_hosts.clone()],
-                    kept: Some(name.to_ascii_lowercase()),
+                    stored: Some(name.to_ascii_lowercase()),
                 });
                 continue;
             }
@@ -456,7 +456,7 @@ spec:
         for name in ["digdir", "altinn"] {
             store_token(&database, name, None).await;
         }
-        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new().with_kept_secrets(database.clone()));
+        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new().with_stored_secrets(database.clone()));
         let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
         (
             super::Preparation::new(
@@ -649,9 +649,9 @@ spec:
         assert_eq!(resolved.expose(), b"github_pat_FAKE_digdir");
     }
 
-    /// An agent without accounts whose `AIVAR_API_KEY` is the kept secret `Aivar`, sent to
+    /// An agent without accounts whose `AIVAR_API_KEY` is the stored secret `Aivar`, sent to
     /// `api.aivar.no` and `models.example`.
-    fn kept_secret_record(directory: &tempfile::TempDir, optional: bool) -> crate::control_plane::AgentRecord {
+    fn stored_secret_record(directory: &tempfile::TempDir, optional: bool) -> crate::control_plane::AgentRecord {
         let mut record = github_record(directory, &GITHUB_MANIFEST.replace(ACCOUNTS, ""));
         record.agent.spec.secrets.push(SecretSpec {
             environment: "AIVAR_API_KEY".into(),
@@ -664,11 +664,11 @@ spec:
         record
     }
 
-    /// A kept secret is read where it is kept, so replacing it reaches the agent without preparing
+    /// A stored secret is read where it is stored, so replacing it reaches the agent without preparing
     /// it again, and it is used only at a host both its manifest and the secret allow. It needs no
     /// environment file.
     #[tokio::test(flavor = "local")]
-    async fn a_kept_secret_is_used_where_the_manifest_and_the_secret_both_allow() {
+    async fn a_stored_secret_is_used_where_the_manifest_and_the_secret_both_allow() {
         let directory = tempfile::TempDir::new().expect("temporary directory");
         let (preparation, policy, database) = with_tokens(&directory).await;
         let secrets = crate::secrets::Secrets::new(database.clone());
@@ -679,8 +679,8 @@ spec:
                 Some(vec!["*.aivar.no".into()]),
             )
             .await
-            .expect("keep the secret");
-        let record = kept_secret_record(&directory, false);
+            .expect("store the secret");
+        let record = stored_secret_record(&directory, false);
 
         let prepared = preparation.prepare(&record).await.expect("prepare");
 
@@ -718,20 +718,20 @@ spec:
             .expect("move the secret");
         assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "api.aivar.no").await);
         assert!(may_use(&policy, &record, "AIVAR_API_KEY", "models.example").await);
-        secrets.remove("aivar").await.expect("remove").expect("it was kept");
+        secrets.remove("aivar").await.expect("remove").expect("it was stored");
         assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "models.example").await);
     }
 
     #[tokio::test(flavor = "local")]
-    async fn a_secret_that_is_not_kept_fails_a_required_binding_and_leaves_out_an_optional_one() {
+    async fn a_secret_that_is_not_stored_fails_a_required_binding_and_leaves_out_an_optional_one() {
         let directory = tempfile::TempDir::new().expect("temporary directory");
         let (preparation, policy, _database) = with_tokens(&directory).await;
 
         let error = preparation
-            .prepare(&kept_secret_record(&directory, false))
+            .prepare(&stored_secret_record(&directory, false))
             .await
             .err()
-            .expect("a required secret that is not kept fails");
+            .expect("a required secret that is not stored fails");
         assert!(
             error
                 .to_string()
@@ -739,7 +739,7 @@ spec:
             "{error}"
         );
 
-        let record = kept_secret_record(&directory, true);
+        let record = stored_secret_record(&directory, true);
         let prepared = preparation.prepare(&record).await.expect("prepare");
         assert!(prepared.environment.is_empty(), "{:?}", prepared.environment);
         assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "api.aivar.no").await);

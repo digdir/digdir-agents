@@ -90,7 +90,7 @@ const AGENT_ORIGINS_COLUMN_SQL: &str = "
     ALTER TABLE agents ADD COLUMN origin_json TEXT NOT NULL DEFAULT '{\"type\":\"local\"}';
 ";
 
-/// What a secret kept under a name says about itself. Only those rows have it: an agent's own
+/// What a secret stored under a name says about itself. Only those rows have it: an agent's own
 /// secrets and a login's credentials take their hosts from elsewhere.
 const SHARED_SECRETS_SQL: &str = "
     ALTER TABLE secrets ADD COLUMN allowed_hosts_json TEXT;
@@ -322,7 +322,7 @@ fn add_agent_origins(transaction: &Transaction<'_>) -> Result<(), Error> {
         .map_err(database_error)
 }
 
-/// Adds the hosts and times of secrets kept under a name. There were none before, so every
+/// Adds the hosts and times of secrets stored under a name. There were none before, so every
 /// existing row has neither.
 fn add_shared_secrets(transaction: &Transaction<'_>) -> Result<(), Error> {
     if schema_difference(transaction, 10)?.is_none() {

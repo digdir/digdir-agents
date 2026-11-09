@@ -52,7 +52,7 @@ pub(crate) fn vnc_access_lines(access: &agent::vnc::AccessInfo, home: &Path) -> 
     ]
 }
 
-/// Where an agent's secrets come from: the environment file, and the secrets kept under a name.
+/// Where an agent's secrets come from: the environment file, and the secrets stored under a name.
 fn secret_sources(agent: &Agent) -> String {
     let mut sources = Vec::new();
     if agent.spec.reads_secret_file()
@@ -67,14 +67,14 @@ fn secret_sources(agent: &Agent) -> String {
                 .to_string(),
         );
     }
-    let kept = agent
+    let stored = agent
         .spec
         .secrets
         .iter()
         .filter_map(|secret| secret.secret.as_deref())
         .collect::<Vec<_>>();
-    if !kept.is_empty() {
-        sources.push(format!("kept {}", kept.join(", ")));
+    if !stored.is_empty() {
+        sources.push(format!("stored {}", stored.join(", ")));
     }
     if sources.is_empty() {
         "-".to_owned()
