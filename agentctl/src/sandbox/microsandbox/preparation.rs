@@ -127,16 +127,20 @@ impl Preparation {
         let mut configured_secrets = Vec::with_capacity(secrets.len());
         let mut secret_writes = Vec::with_capacity(secrets.len());
         for (index, secret) in secrets.iter().enumerate() {
-            if let Some(name) = &secret.secret {
+            if let Some(name) = &secret.name {
                 if crate::secrets::stored(&self.database, name).await?.is_none() {
                     if secret.optional {
                         continue;
                     }
                     let name = name.to_ascii_lowercase();
+                    let hosts = if secret.allowed_hosts.is_empty() {
+                        "HOST".to_owned()
+                    } else {
+                        secret.allowed_hosts.join(",")
+                    };
                     return Err(Error::Invalid(format!(
                         "spec.secrets[{index}] uses the secret {name}, which is not stored here; run \
-                         `agentctl secret set {name} --hosts {}`",
-                        secret.allowed_hosts.join(",")
+                         `agentctl secret set {name} --hosts {hosts}`"
                     )));
                 }
                 bindings.push(SecretBinding::with_placeholder(
@@ -146,7 +150,12 @@ impl Preparation {
                 )?);
                 policy.push(SecretHosts {
                     environment: secret.environment.clone(),
-                    hosts: vec![secret.allowed_hosts.clone()],
+                    // Without hosts of its own, the manifest leaves them to the stored secret.
+                    hosts: if secret.allowed_hosts.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![secret.allowed_hosts.clone()]
+                    },
                     stored: Some(name.to_ascii_lowercase()),
                 });
                 continue;
@@ -659,7 +668,7 @@ spec:
             placeholder: None,
             allowed_hosts: vec!["api.aivar.no".into(), "models.example".into()],
             source: None,
-            secret: Some("Aivar".into()),
+            name: Some("Aivar".into()),
         });
         record
     }
@@ -722,6 +731,46 @@ spec:
         assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "models.example").await);
     }
 
+    /// A manifest that names no hosts for a stored secret leaves them to the secret.
+    #[tokio::test(flavor = "local")]
+    async fn a_stored_secret_without_hosts_in_the_manifest_goes_where_the_secret_allows() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let (preparation, policy, database) = with_tokens(&directory).await;
+        let secrets = crate::secrets::Secrets::new(database);
+        let mut record = stored_secret_record(&directory, false);
+        record.agent.spec.secrets[0].allowed_hosts.clear();
+
+        let Err(error) = preparation.prepare(&record).await else {
+            panic!("a required secret that is not stored fails");
+        };
+        assert!(
+            error.to_string().contains("`agentctl secret set aivar --hosts HOST`"),
+            "{error}"
+        );
+        secrets
+            .set(
+                "aivar",
+                Zeroizing::new("sk-FAKE".into()),
+                Some(vec!["*.aivar.no".into()]),
+            )
+            .await
+            .expect("store the secret");
+        preparation.prepare(&record).await.expect("prepare");
+
+        assert!(may_use(&policy, &record, "AIVAR_API_KEY", "api.aivar.no").await);
+        assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "models.example").await);
+        secrets
+            .set(
+                "aivar",
+                Zeroizing::new("sk-FAKE".into()),
+                Some(vec!["models.example".into()]),
+            )
+            .await
+            .expect("move the secret");
+        assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "api.aivar.no").await);
+        assert!(may_use(&policy, &record, "AIVAR_API_KEY", "models.example").await);
+    }
+
     #[tokio::test(flavor = "local")]
     async fn a_secret_that_is_not_stored_fails_a_required_binding_and_leaves_out_an_optional_one() {
         let directory = tempfile::TempDir::new().expect("temporary directory");
@@ -752,7 +801,7 @@ spec:
             placeholder: None,
             allowed_hosts: vec!["example.com".into()],
             source: None,
-            secret: None,
+            name: None,
         }
     }
 

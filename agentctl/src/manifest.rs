@@ -820,7 +820,7 @@ impl Spec {
                     "spec.environment collides with spec.secrets[{index}]"
                 )));
             }
-            if let Some(name) = &secret.secret {
+            if let Some(name) = &secret.name {
                 if secret.source.is_some() {
                     return Err(Error::Invalid(format!(
                         "spec.secrets[{index}] takes its value from the stored secret {name:?}, so it has no source"
@@ -828,7 +828,7 @@ impl Spec {
                 }
                 if !crate::names::valid(name) {
                     return Err(Error::Invalid(format!(
-                        "spec.secrets[{index}].secret is invalid: {}",
+                        "spec.secrets[{index}].name is invalid: {}",
                         crate::names::RULE
                     )));
                 }
@@ -848,7 +848,7 @@ impl Spec {
                 })
                 || (self.account(crate::accounts::AccountType::Github).is_some()
                     && crate::github::conflicts_with_managed_secret(&secret.environment, &placeholder))
-                || secret.allowed_hosts.is_empty()
+                || (secret.allowed_hosts.is_empty() && secret.name.is_none())
                 || !environments.insert(&secret.environment)
                 || !placeholders.insert(placeholder)
                 || secret.allowed_hosts.iter().any(|host| !valid_host_pattern(host))
@@ -1000,7 +1000,9 @@ pub struct SecretSpec {
     /// Optional inert value; the selected Network Backend generates one when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
-    /// Hosts at which this secret may be substituted.
+    /// Hosts at which this secret may be substituted. A secret stored under [`Self::name`] has
+    /// hosts of its own, which these can only narrow, so it may leave them out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_hosts: Vec<String>,
     /// Optional variable name in the manifest directory's `.env`; defaults to `environment`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1008,7 +1010,7 @@ pub struct SecretSpec {
     /// The name of a secret stored on this machine, such as with `agentctl secret set`, that holds
     /// the value instead of the environment file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret: Option<String>,
+    pub name: Option<String>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -1018,10 +1020,10 @@ const fn is_false(value: &bool) -> bool {
 
 impl SecretSpec {
     /// Returns the host `.env` variable that supplies the secret material, or `None` when a stored
-    /// [`Self::secret`] does.
+    /// secret, [`Self::name`], does.
     #[must_use]
     pub fn source(&self) -> Option<&str> {
-        match self.secret {
+        match self.name {
             Some(_) => None,
             None => Some(self.source.as_deref().unwrap_or(&self.environment)),
         }

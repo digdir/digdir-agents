@@ -71,7 +71,7 @@ fn secret_sources(agent: &Agent) -> String {
         .spec
         .secrets
         .iter()
-        .filter_map(|secret| secret.secret.as_deref())
+        .filter_map(|secret| secret.name.as_deref())
         .collect::<Vec<_>>();
     if !stored.is_empty() {
         sources.push(format!("stored {}", stored.join(", ")));

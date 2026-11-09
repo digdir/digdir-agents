@@ -91,7 +91,7 @@ fn a_bundled_definition_takes_stored_secrets_but_no_environment_file() {
             placeholder: None,
             allowed_hosts: vec!["api.example.com".into()],
             source: source.map(Into::into),
-            secret: secret.map(Into::into),
+            name: secret.map(Into::into),
         });
         let mut definition = files("builder", BASE_IMAGE, "build", "home", true);
         definition.insert(

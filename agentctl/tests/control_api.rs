@@ -979,7 +979,7 @@ async fn storing_or_removing_a_secret_wakes_the_agents_that_use_it_only() {
                 placeholder: None,
                 allowed_hosts: vec!["api.example.com".into()],
                 source: None,
-                secret: Some(secret.into()),
+                name: Some(secret.into()),
             })
             .into_iter()
             .collect();

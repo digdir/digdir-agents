@@ -79,7 +79,7 @@ pub struct SecretHosts {
     /// The environment variable holding the secret's placeholder.
     pub environment: String,
     /// Host patterns, such as `api.example.com` or `*.example.com`. A host must match one pattern
-    /// of every list.
+    /// of every list. Only a stored secret may have none, as its own hosts are checked.
     pub hosts: Vec<Vec<String>>,
     /// The secret stored under this name, whose hosts a host must match as well. They are read
     /// where it is stored at every use, as its value is, so changing them applies at once and a
@@ -150,8 +150,10 @@ impl AgentPolicyEngine {
                 let Some(host) = host else {
                     return AuthorizationDecision::Deny;
                 };
+                // A secret with no host list is allowed nowhere, unless it is stored, whose own
+                // hosts are checked next.
                 decision(policy.secrets.get(&request.resource.id).is_some_and(|secret| {
-                    !secret.hosts.is_empty()
+                    (!secret.hosts.is_empty() || secret.stored.is_some())
                         && secret
                             .hosts
                             .iter()

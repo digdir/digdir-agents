@@ -1,5 +1,5 @@
 //! `agentctl secret`: secrets stored on this machine under a name, which manifests ask for with
-//! `secrets[].secret`, so a value that several agents use is stored once, outside their folders.
+//! `secrets[].name`, so a value that several agents use is stored once, outside their folders.
 
 use std::fmt::Write as _;
 
@@ -17,8 +17,8 @@ pub(crate) enum SecretCommand {
     /// Store a secret under a name, or replace its value.
     ///
     /// At a terminal it reads the value without showing it. Agents whose manifest has
-    /// `secret: NAME` on one of its `secrets` get it at once, but only at the hosts both the
-    /// manifest and the secret allow.
+    /// `name: NAME` on one of its `secrets` get it at once, but only at its hosts, and only
+    /// those of them the manifest lists when it lists any.
     Set {
         /// The name manifests ask for the secret by, such as `aivar`.
         name: String,
@@ -116,10 +116,8 @@ fn stored(report: &SecretReport) -> String {
     if report.used_by.is_empty() {
         let _ = writeln!(
             text,
-            "Agents use it with `secrets: [{{environment: VARIABLE, secret: {}, allowedHosts: [{}]}}]` in their \
-             manifest.",
-            secret.name,
-            secret.allowed_hosts.join(", ")
+            "Agents use it with `secrets: [{{name: {}, environment: VARIABLE}}]` in their manifest.",
+            secret.name
         );
     } else {
         let _ = writeln!(text, "Used at once by {}.", users(&report.used_by));
@@ -278,8 +276,7 @@ mod tests {
         assert_eq!(
             text,
             "Stored the secret aivar for api.aivar.no.\n\
-             Agents use it with `secrets: [{environment: VARIABLE, secret: aivar, allowedHosts: [api.aivar.no]}]` \
-             in their manifest.\n"
+             Agents use it with `secrets: [{name: aivar, environment: VARIABLE}]` in their manifest.\n"
         );
     }
 

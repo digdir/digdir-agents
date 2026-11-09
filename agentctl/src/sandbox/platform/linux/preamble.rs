@@ -158,10 +158,12 @@ fn secrets(spec: &Spec, environment: &BTreeMap<String, String>) -> Option<String
          persist real values.",
     );
     text.push_str(&sub_bullets(spec.secrets.iter().map(|secret| {
-        if environment.contains_key(&secret.environment) {
-            format!("`{}`: {}", secret.environment, secret.allowed_hosts.join(", "))
-        } else {
+        if !environment.contains_key(&secret.environment) {
             format!("`{}`: not configured", secret.environment)
+        } else if let (true, Some(name)) = (secret.allowed_hosts.is_empty(), &secret.name) {
+            format!("`{}`: the hosts its stored secret {name} allows", secret.environment)
+        } else {
+            format!("`{}`: {}", secret.environment, secret.allowed_hosts.join(", "))
         }
     })));
     Some(text)

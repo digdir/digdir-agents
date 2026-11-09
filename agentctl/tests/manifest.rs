@@ -103,7 +103,7 @@ fn optional_secret_round_trips_without_changing_the_required_default() {
         placeholder: None,
         allowed_hosts: vec!["example.com".into()],
         source: None,
-        secret: None,
+        name: None,
     });
 
     let encoded = serde_yaml_ng::to_string(&agent).expect("encoded manifest");
@@ -168,7 +168,7 @@ fn rejects_environment_collisions_with_secrets_and_harness_owned_values() {
         placeholder: None,
         allowed_hosts: vec!["example.com".into()],
         source: Some("SHARED_VALUE".into()),
-        secret: None,
+        name: None,
     });
     assert!(matches!(
         secret_collision.validate(),
@@ -219,7 +219,7 @@ fn rejects_a_custom_placeholder_that_collides_with_a_generated_one() {
             placeholder: None,
             allowed_hosts: vec!["example.com".into()],
             source: None,
-            secret: None,
+            name: None,
         },
         SecretSpec {
             environment: "SECOND_TOKEN".into(),
@@ -227,7 +227,7 @@ fn rejects_a_custom_placeholder_that_collides_with_a_generated_one() {
             placeholder: Some("$AGENT_SECRET_FIRST_TOKEN".into()),
             allowed_hosts: vec!["example.com".into()],
             source: None,
-            secret: None,
+            name: None,
         },
     ];
 
@@ -295,7 +295,7 @@ fn rejects_manifest_secrets_owned_by_a_declared_harness() {
         placeholder: None,
         allowed_hosts: vec!["chatgpt.com".into()],
         source: None,
-        secret: None,
+        name: None,
     });
 
     assert!(matches!(
@@ -894,24 +894,31 @@ fn a_build_context_starting_with_a_tilde_resolves_below_the_home_directory() {
 #[test]
 fn a_secret_may_take_its_value_from_a_stored_secret_instead_of_a_source() {
     let agent = manifest::decode(&manifest_with_access(
-        "  secrets:\n    - environment: AIVAR_API_KEY\n      secret: Aivar\n      allowedHosts: [api.aivar.no]\n",
+        "  secrets:\n    - environment: AIVAR_API_KEY\n      name: Aivar\n      allowedHosts: [api.aivar.no]\n",
     ))
     .expect("a stored secret");
     let secret = &agent.spec.secrets[0];
-    assert_eq!(secret.secret.as_deref(), Some("Aivar"));
+    assert_eq!(secret.name.as_deref(), Some("Aivar"));
     assert_eq!(secret.source(), None, "the environment file supplies nothing");
     let encoded = serde_yaml_ng::to_string(&agent).expect("encode");
-    assert!(encoded.contains("secret: Aivar"), "{encoded}");
+    assert!(encoded.contains("name: Aivar"), "{encoded}");
+
+    let narrowed_nowhere = manifest::decode(&manifest_with_access(
+        "  secrets:\n    - name: aivar\n      environment: AIVAR_API_KEY\n",
+    ))
+    .expect("a stored secret takes its hosts from where it is stored");
+    assert_eq!(narrowed_nowhere.spec.secrets[0].allowed_hosts, Vec::<String>::new());
 
     for (secret, refused) in [
         (
-            "      secret: aivar\n      source: AIVAR\n      allowedHosts: [api.aivar.no]\n",
+            "      name: aivar\n      source: AIVAR\n      allowedHosts: [api.aivar.no]\n",
             "so it has no source",
         ),
         (
-            "      secret: a/b\n      allowedHosts: [api.aivar.no]\n",
+            "      name: a/b\n      allowedHosts: [api.aivar.no]\n",
             agent::names::RULE,
         ),
+        ("      optional: true\n", "spec.secrets[0] is invalid"),
     ] {
         assert!(
             matches!(

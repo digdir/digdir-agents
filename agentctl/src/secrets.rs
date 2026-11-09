@@ -1,5 +1,5 @@
 //! Secrets stored under a name, such as an API key that several agents use, which a manifest asks
-//! for with `secrets[].secret`.
+//! for with `secrets[].name`.
 //!
 //! A stored secret says which hosts its value may ever reach, and the manifest says which hosts the
 //! agent sends it to. The network mediator substitutes it only for a host both allow, so neither a
@@ -244,7 +244,7 @@ pub fn report(secrets: Vec<Secret>, agents: &[Agent]) -> SecretsReport {
         .filter(|agent| agent.metadata.deletion_timestamp.is_none())
     {
         for spec in &agent.spec.secrets {
-            let Some(name) = &spec.secret else {
+            let Some(name) = &spec.name else {
                 continue;
             };
             let name = name.to_ascii_lowercase();
@@ -398,14 +398,14 @@ spec:
         };
         let mut deleted = agent(
             "deleted",
-            "[{environment: KEY, secret: models, allowedHosts: [api.models.example]}]",
+            "[{name: models, environment: KEY, allowedHosts: [api.models.example]}]",
         );
         deleted.metadata.deletion_timestamp = Some(time::OffsetDateTime::UNIX_EPOCH);
         let agents = [
             agent(
                 "pi",
-                "[{environment: AIVAR_API_KEY, secret: Aivar, allowedHosts: [api.aivar.no, models.example]}, \
-                 {environment: MODELS_API_KEY, secret: models, optional: true, allowedHosts: [api.models.example]}, \
+                "[{name: Aivar, environment: AIVAR_API_KEY, allowedHosts: [api.aivar.no, models.example]}, \
+                 {name: models, environment: MODELS_API_KEY, optional: true, allowedHosts: [api.models.example]}, \
                  {environment: OTHER, allowedHosts: [other.example]}]",
             ),
             deleted,
