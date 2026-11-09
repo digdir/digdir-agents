@@ -26,7 +26,8 @@ pub(crate) enum SecretCommand {
         /// `*.example.com`. Needed for a new secret; a replaced one keeps its hosts without it.
         #[arg(long, value_delimiter = ',')]
         hosts: Option<Vec<String>>,
-        /// Read the value from standard input instead, up to its end, without a final newline.
+        /// Read the value from standard input instead, up to its end, without a final newline. It
+        /// must be one line.
         #[arg(long)]
         from_stdin: bool,
     },
@@ -88,8 +89,8 @@ fn secret_name(value: &str) -> Result<String, Error> {
     }
 }
 
-/// Standard input up to its end, without the newline that `echo` or a file ends with, so a value
-/// of several lines, such as a key file, stays whole.
+/// Standard input up to its end, without the newline that `echo` or a file ends with. agentd
+/// refuses a value with a line break inside, which no request can carry.
 fn read_value_from_stdin() -> Result<Zeroizing<String>, Error> {
     use std::io::Read as _;
 

@@ -73,6 +73,15 @@ impl Secrets {
         if value.is_empty() {
             return Err(Error::Invalid("the secret's value is empty".into()));
         }
+        // The Network substitutes a value into a header or a URL, which cannot hold these, and
+        // refuses one that has them. Refusing it here keeps a working value from being replaced.
+        if value.bytes().any(|byte| matches!(byte, 0 | b'\r' | b'\n')) {
+            return Err(Error::Invalid(
+                "the secret's value has a line break or a NUL character, which a request cannot carry; \
+                 it must be one line"
+                    .into(),
+            ));
+        }
         let allowed_hosts_json = allowed_hosts
             .map(valid_hosts)
             .transpose()?
@@ -274,6 +283,7 @@ pub fn report(secrets: Vec<Secret>, agents: &[Agent]) -> SecretsReport {
 mod tests {
     #![allow(clippy::expect_used)]
 
+    use ::sandbox::secret_store::SecretStore as _;
     use zeroize::Zeroizing;
 
     use super::{MissingSecret, SecretUse, Secrets, report};
@@ -343,6 +353,36 @@ spec:
         assert_eq!(second.allowed_hosts, first.allowed_hosts);
         assert_eq!(second.created_at, first.created_at);
         assert_eq!(secrets.list().await.expect("list"), std::slice::from_ref(&second));
+
+        for unusable in ["sk-FAKE\nsecond-line", "sk-FAKE\r", "sk-\0FAKE"] {
+            let error = secrets
+                .set(
+                    "aivar",
+                    Zeroizing::new(unusable.to_owned()),
+                    Some(vec!["evil.example".into()]),
+                )
+                .await
+                .expect_err("a value a request cannot carry is refused");
+            assert!(error.to_string().contains("one line"), "{error}");
+            assert!(
+                !error.to_string().contains("FAKE"),
+                "the error never holds the value: {error}"
+            );
+        }
+        assert_eq!(
+            secrets.list().await.expect("list"),
+            std::slice::from_ref(&second),
+            "a refused value changes neither the value nor the hosts"
+        );
+        assert_eq!(
+            secrets
+                .database
+                .resolve(&super::reference("aivar"))
+                .await
+                .expect("resolve")
+                .expose(),
+            b"sk-FAKE"
+        );
 
         assert_eq!(secrets.remove("Aivar").await.expect("remove"), Some(second));
         assert_eq!(secrets.remove("aivar").await.expect("remove"), None);
