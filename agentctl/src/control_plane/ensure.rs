@@ -357,7 +357,7 @@ async fn workspace_mounts(agent: &Agent, workspace: &Path, access: &Workspace) -
         optional: false,
     }];
     if let Workspace::ReadOnly { writable } = access {
-        for folder in writable {
+        for folder in *writable {
             let source = workspace.join(folder);
             tokio::fs::create_dir_all(&source).await?;
             mounts.push(MountSpec::Bind {

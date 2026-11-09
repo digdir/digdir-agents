@@ -38,7 +38,7 @@ pub enum Workspace {
     /// It may only read it, except the folders listed, relative to it, which it may change.
     ReadOnly {
         /// The folders it may change.
-        writable: Vec<String>,
+        writable: &'static [&'static str],
     },
 }
 
@@ -86,7 +86,7 @@ impl Definition {
         let agent = crate::manifest::decode(&manifest.contents).map_err(|error| invalid(error.to_string()))?;
         check_contained(&agent, &files).map_err(invalid)?;
         if let Some(Workspace::ReadOnly { writable }) = &workspace {
-            for folder in writable {
+            for folder in *writable {
                 relative_path(Path::new(folder)).map_err(|detail| invalid(format!("writable folder {detail}")))?;
             }
         }

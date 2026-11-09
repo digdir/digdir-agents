@@ -49,9 +49,7 @@ fn builder_with(image: &str, instructions: &str, home: &str) -> Definition {
     Definition::new(
         "builder",
         Lifetime::UntilDeleted,
-        Some(Workspace::ReadOnly {
-            writable: vec!["agents".into()],
-        }),
+        Some(Workspace::ReadOnly { writable: &["agents"] }),
         files("builder", image, instructions, home),
     )
     .expect("builder definition")
