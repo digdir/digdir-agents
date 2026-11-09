@@ -10,14 +10,14 @@ use super::protocol::{
     AccountLoginParams, AccountLogoutResult, AccountParams, DaemonInfo, DirectoryParams, ExecutionEnsureParams,
     JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST,
     METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS,
-    METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_ENSURE, METHOD_EXECUTION_ENSURE, METHOD_GET,
+    METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET,
     METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART,
-    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
-    METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, ProgressParams, ReadMessage, Request, ResourcesWatchParams,
-    Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams,
-    SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
+    METHOD_RUN, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET,
+    METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN,
+    METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY,
+    METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, ProgressParams, ReadMessage, Request,
+    ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams, SessionParams,
+    SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -100,8 +100,7 @@ impl Client {
         self.call(METHOD_APPLY, request).await
     }
 
-    /// Finds or makes an agent of a definition agentd carries; see
-    /// [`control_plane::ControlPlane::ensure`].
+    /// Runs an agent from a definition; see [`control_plane::ControlPlane::run`].
     ///
     /// An ephemeral agent lives while the returned lease does: dropping the lease, or this process
     /// ending, closes the connection that asked for it, and agentd deletes it. The lease of an
@@ -110,16 +109,19 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error when transport, protocol validation, or the control-plane operation fails.
-    pub async fn ensure(
-        &self,
-        request: control_plane::EnsureRequest,
-    ) -> Result<(control_plane::Ensured, AgentLease), Error> {
-        let (ensured, connection) = self
-            .exchange::<_, control_plane::Ensured>(METHOD_ENSURE, request)
-            .await?;
-        let lease =
-            AgentLease((ensured.agent.status.lifetime == Some(crate::Lifetime::Ephemeral)).then_some(connection));
-        Ok((ensured, lease))
+    pub async fn run(&self, request: control_plane::RunRequest) -> Result<(control_plane::Ran, AgentLease), Error> {
+        let (ran, connection) = self.exchange::<_, control_plane::Ran>(METHOD_RUN, request).await?;
+        let lease = AgentLease(ran.agent.status.is_ephemeral().then_some(connection));
+        Ok((ran, lease))
+    }
+
+    /// Lists the definitions agentd carries, each in the folder agentd keeps it in.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the control-plane operation fails.
+    pub async fn bundled_definitions(&self) -> Result<Vec<control_plane::BundledDefinition>, Error> {
+        self.call(METHOD_DEFINITIONS, serde_json::json!({})).await
     }
 
     /// Gets an agent resource by name.
@@ -655,7 +657,7 @@ impl Client {
     }
 }
 
-/// Keeps an ephemeral agent from [`Client::ensure`] alive until dropped.
+/// Keeps an ephemeral agent from [`Client::run`] alive until dropped.
 #[must_use = "agentd deletes an ephemeral agent once its lease is dropped"]
 pub struct AgentLease(Option<Box<dyn Connection>>);
 

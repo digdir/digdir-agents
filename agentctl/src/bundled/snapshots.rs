@@ -10,11 +10,11 @@ use crate::{Error, Origin, control_plane::AgentStore};
 
 use super::Definition;
 
-/// agentd's copies of the bundled definitions its agents use, a folder each, named by digest.
+/// agentd's copies of its bundled definitions, a folder each, named by digest.
 ///
-/// Each is written once, before an agent uses it, and never changed, so an agent reads the
-/// definition it was made from for as long as it lives, whichever build of agentd runs it. One no
-/// agent uses any more is removed.
+/// Each is written once and never changed, so an agent reads the definition it was made from for
+/// as long as it lives, whichever build of agentd runs it. A copy goes once no agent uses it and
+/// this build no longer carries it.
 ///
 /// Like volume revisions, writing one and recording the agent that uses it race cleanup, so both
 /// hold [`Self::lock`].
@@ -22,6 +22,8 @@ use super::Definition;
 pub struct Snapshots {
     root: PathBuf,
     lock: Rc<tokio::sync::Mutex<()>>,
+    /// The digests of the definitions this build carries, whose copies stay.
+    carried: Rc<BTreeSet<String>>,
 }
 
 impl Snapshots {
@@ -31,7 +33,20 @@ impl Snapshots {
         Self {
             root,
             lock: Rc::default(),
+            carried: Rc::default(),
         }
+    }
+
+    /// Keeps the copies of `definitions`, which this build carries, even while no agent uses them.
+    #[must_use]
+    pub fn carrying(mut self, definitions: &super::Definitions) -> Self {
+        self.carried = Rc::new(
+            definitions
+                .iter()
+                .map(|definition| definition.digest().to_owned())
+                .collect(),
+        );
+        self
     }
 
     /// The folder holding the copy of the definition with `digest`.
@@ -84,8 +99,8 @@ impl Snapshots {
         .map_err(Error::from)
     }
 
-    /// Removes every copy no agent in `agents` uses, and anything else left in the folder, such as
-    /// a copy a stopped agentd did not finish writing.
+    /// Removes every copy that no agent in `agents` uses and that this build does not carry, and
+    /// anything else left in the folder, such as a copy a stopped agentd did not finish writing.
     ///
     /// # Errors
     ///
@@ -100,6 +115,7 @@ impl Snapshots {
                 Origin::Bundled { digest, .. } => Some(digest),
                 Origin::Local => None,
             })
+            .chain(self.carried.iter().cloned())
             .collect::<BTreeSet<_>>();
         let root = self.root.clone();
         tokio::task::spawn_blocking(move || remove_unused(&root, &used))

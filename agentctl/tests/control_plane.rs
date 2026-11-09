@@ -520,6 +520,7 @@ fn apply_request_in(name: &str, source_directory: PathBuf) -> agent::control_pla
     agent::control_plane::ApplyRequest {
         manifest_path: Some(source_directory.join("agent.yaml")),
         env_file: None,
+        workspace: None,
         source_directory,
         create_only: false,
         agent: agent(name),

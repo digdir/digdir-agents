@@ -1,9 +1,9 @@
-//! The agent definitions agentd carries in its build, for the agents it runs for itself, and the
-//! copies of them that those agents read.
+//! The agent definitions agentd carries in its build, and its copies of them on disk.
 //!
 //! They come with the exact build because they are tied to its code, such as the sign-in recipes
-//! or the schema a definition is written against. Clients start one through
-//! [`crate::control_plane::ControlPlane::ensure`].
+//! or the schema a definition is written against. Otherwise they are ordinary definitions: agentd
+//! writes each to a folder of its own, and an agent is applied or run from that folder as from
+//! any other.
 
 mod snapshots;
 
@@ -16,11 +16,7 @@ use sha2::{Digest as _, Sha256};
 
 pub use snapshots::Snapshots;
 
-use crate::{Agent, Error, Lifetime, MountSpec, manifest::MANIFEST_FILE};
-
-/// How agentd runs each folder of `bundled/definitions/`, by the folder's name. Every folder needs
-/// an entry here, and every entry a folder.
-const DEFINITIONS: &[(&str, Lifetime, Option<Workspace>)] = &[];
+use crate::{Agent, Error, MountSpec, manifest::MANIFEST_FILE};
 
 /// The images an agentd release publishes, by the tag `main` publishes them as. A release runs
 /// its bundled definitions on the image it tagged for itself, `<main tag>-<version>`, so that a
@@ -29,18 +25,6 @@ const RELEASED_IMAGES: &[&str] = &[
     "ghcr.io/digdir/agentctl-base:ubuntu-26.04",
     "ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop",
 ];
-
-/// What a definition's agent may do with the workspace folder a client names.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Workspace {
-    /// It may change anything in it.
-    ReadWrite,
-    /// It may only read it, except the folders listed, relative to it, which it may change.
-    ReadOnly {
-        /// The folders it may change.
-        writable: &'static [&'static str],
-    },
-}
 
 /// One file of a definition.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,8 +39,6 @@ pub struct DefinitionFile {
 #[derive(Clone, Debug)]
 pub struct Definition {
     name: String,
-    lifetime: Lifetime,
-    workspace: Option<Workspace>,
     files: BTreeMap<String, DefinitionFile>,
     digest: String,
     agent: Agent,
@@ -70,12 +52,7 @@ impl Definition {
     ///
     /// Returns [`Error::Invalid`] when it has no `agent.yaml`, its manifest is invalid, or it names
     /// a host path, an environment file or a file it does not hold.
-    pub fn new(
-        name: impl Into<String>,
-        lifetime: Lifetime,
-        workspace: Option<Workspace>,
-        files: BTreeMap<String, DefinitionFile>,
-    ) -> Result<Self, Error> {
+    pub fn new(name: impl Into<String>, files: BTreeMap<String, DefinitionFile>) -> Result<Self, Error> {
         let name = name.into();
         let invalid = |detail: String| Error::Invalid(format!("bundled definition {name:?}: {detail}"));
         // Its agents are named after it.
@@ -85,16 +62,9 @@ impl Definition {
             .ok_or_else(|| invalid(format!("it has no {MANIFEST_FILE}")))?;
         let agent = crate::manifest::decode(&manifest.contents).map_err(|error| invalid(error.to_string()))?;
         check_contained(&agent, &files).map_err(invalid)?;
-        if let Some(Workspace::ReadOnly { writable }) = &workspace {
-            for folder in *writable {
-                relative_path(Path::new(folder)).map_err(|detail| invalid(format!("writable folder {detail}")))?;
-            }
-        }
         Ok(Self {
             digest: digest(&files),
             name,
-            lifetime,
-            workspace,
             files,
             agent,
         })
@@ -110,18 +80,6 @@ impl Definition {
     #[must_use]
     pub fn digest(&self) -> &str {
         &self.digest
-    }
-
-    /// How long agentd keeps its agents when the client does not say.
-    #[must_use]
-    pub const fn lifetime(&self) -> Lifetime {
-        self.lifetime
-    }
-
-    /// What its agents may do with a workspace, or `None` when they take none.
-    #[must_use]
-    pub const fn workspace(&self) -> Option<&Workspace> {
-        self.workspace.as_ref()
     }
 
     /// Its files, by their `/`-separated paths in its folder.
@@ -150,41 +108,28 @@ impl Definitions {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Invalid`] when one of them is invalid or not listed, which the tests catch
-    /// before a build is released.
+    /// Returns [`Error::Invalid`] when one of them is invalid, which the tests catch before a build
+    /// is released.
     pub fn bundled() -> Result<Self, Error> {
-        let mut listed = DEFINITIONS
+        let definitions = EMBEDDED
             .iter()
-            .map(|(name, lifetime, workspace)| (*name, (*lifetime, workspace.clone())))
-            .collect::<BTreeMap<_, _>>();
-        let mut definitions = Vec::new();
-        for embedded in EMBEDDED {
-            let (lifetime, workspace) = listed.remove(embedded.name).ok_or_else(|| {
-                Error::Invalid(format!(
-                    "bundled definition {:?} is not listed in agent::bundled",
-                    embedded.name
-                ))
-            })?;
-            let files = embedded
-                .files
-                .iter()
-                .map(|file| {
-                    (
-                        file.path.to_owned(),
-                        DefinitionFile {
-                            contents: std::borrow::Cow::Borrowed(file.contents),
-                            executable: file.executable,
-                        },
-                    )
-                })
-                .collect();
-            definitions.push(Definition::new(embedded.name, lifetime, workspace, files)?);
-        }
-        if let Some(name) = listed.keys().next() {
-            return Err(Error::Invalid(format!(
-                "bundled definition {name:?} is listed but has no folder in agentctl/bundled/definitions"
-            )));
-        }
+            .map(|embedded| {
+                let files = embedded
+                    .files
+                    .iter()
+                    .map(|file| {
+                        (
+                            file.path.to_owned(),
+                            DefinitionFile {
+                                contents: std::borrow::Cow::Borrowed(file.contents),
+                                executable: file.executable,
+                            },
+                        )
+                    })
+                    .collect();
+                Definition::new(embedded.name, files)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self::new(definitions))
     }
 
@@ -197,6 +142,11 @@ impl Definitions {
                 .map(|definition| (definition.name.clone(), definition))
                 .collect(),
         )
+    }
+
+    /// Every definition, by name.
+    pub fn iter(&self) -> impl Iterator<Item = &Definition> {
+        self.0.values()
     }
 
     /// The definition named `name`.
@@ -377,7 +327,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_bundled_definition_is_listed_and_valid() {
+    fn every_bundled_definition_is_valid() {
         Definitions::bundled().expect("the bundled definitions");
     }
 

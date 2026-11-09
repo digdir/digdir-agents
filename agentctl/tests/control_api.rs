@@ -1077,6 +1077,7 @@ fn request(name: &str) -> ApplyRequest {
         source_directory: std::env::temp_dir().join("agent-platform-source"),
         manifest_path: None,
         env_file: None,
+        workspace: None,
         create_only: false,
         agent: agent(name),
     }
@@ -1435,27 +1436,25 @@ async fn unix_socket_transport_is_private_and_usable() {
 
 #[tokio::test(flavor = "local")]
 async fn an_ephemeral_agent_lives_as_long_as_the_connection_that_asked_for_it() {
+    let ephemeral = |definition: &str| agent::control_plane::RunRequest {
+        lifetime: Some(agent::Lifetime::Ephemeral),
+        ..bundled::request(definition, None)
+    };
     let fixture = bundled::Fixture::new();
     let client = api_with(fixture.control_plane.clone()).client;
     let workspace = fixture.workspace("repo");
 
-    let (first, first_lease) = client
-        .ensure(bundled::request("sign-in", None))
-        .await
-        .expect("first sign-in");
-    let (second, second_lease) = client
-        .ensure(bundled::request("sign-in", None))
-        .await
-        .expect("second sign-in");
+    let (first, first_lease) = client.run(ephemeral("sign-in")).await.expect("first sign-in");
+    let (second, second_lease) = client.run(ephemeral("sign-in")).await.expect("second sign-in");
     let (kept, kept_lease) = client
-        .ensure(bundled::request("builder", Some(&workspace)))
+        .run(bundled::request("builder", Some(&workspace)))
         .await
         .expect("builder");
 
-    assert_eq!(first.outcome, agent::control_plane::EnsureOutcome::Created);
+    assert_eq!(first.outcome, agent::control_plane::RunOutcome::Created);
     assert_eq!(
         second.outcome,
-        agent::control_plane::EnsureOutcome::Created,
+        agent::control_plane::RunOutcome::Created,
         "an ephemeral agent belongs to one request"
     );
     assert_eq!(first.agent.metadata.name, "sign-in");
@@ -1486,7 +1485,7 @@ async fn an_ephemeral_agent_lives_as_long_as_the_connection_that_asked_for_it() 
     assert!(bundled::deleting(&fixture.store, "sign-in-2").await);
 
     let (ephemeral_builder, lease) = client
-        .ensure(agent::control_plane::EnsureRequest {
+        .run(agent::control_plane::RunRequest {
             lifetime: Some(agent::Lifetime::Ephemeral),
             ..bundled::request("builder", Some(&workspace))
         })
@@ -1494,7 +1493,7 @@ async fn an_ephemeral_agent_lives_as_long_as_the_connection_that_asked_for_it() 
         .expect("a request may make an agent ephemeral");
     assert_eq!(
         ephemeral_builder.outcome,
-        agent::control_plane::EnsureOutcome::Created,
+        agent::control_plane::RunOutcome::Created,
         "an ephemeral agent never resumes one"
     );
     drop(lease);

@@ -16,15 +16,15 @@ use super::protocol::{
     CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND, CODE_PARSE_ERROR, CODE_UPDATING, DirectoryParams,
     ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_REQUEST_BYTES,
     MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY,
-    METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DELETE, METHOD_ENSURE,
+    METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE,
     METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
-    METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE,
-    METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE,
-    METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS,
-    METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams, PROTOCOL_VERSION,
-    ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams,
-    SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response,
-    read_message,
+    METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
+    METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
+    METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
+    METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, NameParams,
+    PROTOCOL_VERSION, ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams,
+    SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams,
+    error_response, read_message,
 };
 
 /// Quiet period after a change before a progress reply, so a burst of byte
@@ -81,11 +81,14 @@ pub trait AgentApi {
     /// Creates or updates desired agent state.
     fn apply(&self, request: control_plane::ApplyRequest) -> LocalFuture<'_, Result<Agent, Error>>;
 
-    /// Finds or makes an agent of a bundled definition; see [`control_plane::ControlPlane::ensure`].
-    fn ensure(
+    /// Runs an agent from a definition; see [`control_plane::ControlPlane::run`].
+    fn run(
         &self,
-        request: control_plane::EnsureRequest,
-    ) -> LocalFuture<'_, Result<(control_plane::Ensured, crate::AgentId), Error>>;
+        request: control_plane::RunRequest,
+    ) -> LocalFuture<'_, Result<(control_plane::Ran, crate::AgentId), Error>>;
+
+    /// Lists the definitions agentd carries; see [`control_plane::ControlPlane::bundled_definitions`].
+    fn bundled_definitions(&self) -> LocalFuture<'_, Result<Vec<control_plane::BundledDefinition>, Error>>;
 
     /// Deletes an ephemeral agent whose client is gone; see [`control_plane::ControlPlane::release`].
     fn release(&self, id: crate::AgentId) -> LocalFuture<'_, Result<(), Error>>;
@@ -130,11 +133,15 @@ impl AgentApi for control_plane::ControlPlane {
         Box::pin(async move { Self::apply(self, request).await })
     }
 
-    fn ensure(
+    fn run(
         &self,
-        request: control_plane::EnsureRequest,
-    ) -> LocalFuture<'_, Result<(control_plane::Ensured, crate::AgentId), Error>> {
-        Box::pin(async move { Self::ensure(self, request).await })
+        request: control_plane::RunRequest,
+    ) -> LocalFuture<'_, Result<(control_plane::Ran, crate::AgentId), Error>> {
+        Box::pin(async move { Self::run(self, request).await })
+    }
+
+    fn bundled_definitions(&self) -> LocalFuture<'_, Result<Vec<control_plane::BundledDefinition>, Error>> {
+        Box::pin(async move { Self::bundled_definitions(self).await })
     }
 
     fn release(&self, id: crate::AgentId) -> LocalFuture<'_, Result<(), Error>> {
@@ -715,7 +722,8 @@ impl Server {
         };
         match request.method.as_str() {
             METHOD_APPLY => self.handle_apply(request.id, request.params).await,
-            METHOD_ENSURE => self.handle_ensure(request.id, request.params, owned).await,
+            METHOD_RUN => self.handle_run(request.id, request.params, owned).await,
+            METHOD_DEFINITIONS => result_response(request.id, self.agents.bundled_definitions().await),
             METHOD_HEALTH => result_response(
                 request.id,
                 Ok(serde_json::json!({
@@ -818,15 +826,15 @@ impl Server {
         result_response(id, self.agents.apply(params).await)
     }
 
-    async fn handle_ensure(&self, id: u64, value: Value, owned: &std::cell::RefCell<Vec<crate::AgentId>>) -> Response {
-        let Ok(params) = serde_json::from_value::<control_plane::EnsureRequest>(value) else {
-            return error_response(id, CODE_INVALID_PARAMS, "invalid ensure parameters");
+    async fn handle_run(&self, id: u64, value: Value, owned: &std::cell::RefCell<Vec<crate::AgentId>>) -> Response {
+        let Ok(params) = serde_json::from_value::<control_plane::RunRequest>(value) else {
+            return error_response(id, CODE_INVALID_PARAMS, "invalid run parameters");
         };
-        let result = self.agents.ensure(params).await.map(|(ensured, agent)| {
-            if ensured.agent.status.lifetime == Some(crate::Lifetime::Ephemeral) {
+        let result = self.agents.run(params).await.map(|(ran, agent)| {
+            if ran.agent.status.is_ephemeral() {
                 owned.borrow_mut().push(agent);
             }
-            ensured
+            ran
         });
         result_response(id, result)
     }
@@ -1234,7 +1242,7 @@ fn is_mutating(method: &str) -> bool {
     matches!(
         method,
         METHOD_APPLY
-            | METHOD_ENSURE
+            | METHOD_RUN
             | METHOD_DELETE
             | METHOD_STOP
             | METHOD_STOP_NOW

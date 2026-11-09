@@ -55,11 +55,18 @@ enum Command {
     /// Create or update an agent, or a volume, from a manifest.
     Apply {
         /// Agent or volume manifest path; defaults to ./agent.yaml.
-        #[arg(short = 'f', long = "filename", conflicts_with = "variant")]
+        #[arg(short = 'f', long = "filename", conflicts_with_all = ["variant", "bundled"])]
         filename: Option<PathBuf>,
         /// Variant of the agent in the current directory.
-        #[arg(long, value_parser = parse_variant_name, conflicts_with = "filename")]
+        #[arg(long, value_parser = parse_variant_name, conflicts_with_all = ["filename", "bundled"])]
         variant: Option<AgentVariantName>,
+        /// A definition agentd carries, such as `agent-builder`, instead of a manifest on disk.
+        #[arg(long, value_name = "DEFINITION")]
+        bundled: Option<String>,
+        /// The folder the agent works on, for a definition with `spec.workspace`. An update that
+        /// leaves it out keeps the agent's.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
         /// Override metadata.name so one manifest can create multiple agents.
         #[arg(long)]
         name: Option<String>,
@@ -73,6 +80,35 @@ enum Command {
         /// Maximum wait with `--wait`, written as seconds, minutes, or hours (for example `10m`).
         #[arg(long, default_value = "10m", value_parser = parse_duration, requires = "wait")]
         timeout: Duration,
+    },
+    /// Run an agent from a definition and attach to a session in it.
+    ///
+    /// Running a definition on the same workspace again goes back to the same agent, brought up to
+    /// date with the definition when it can be, and starts it if it was stopped.
+    Run {
+        /// A definition agentd carries, such as `agent-builder`, or a definition folder or manifest
+        /// on disk, such as `./agents/reviewer`.
+        definition: String,
+        /// The folder the agent works on, for a definition with `spec.workspace`.
+        workspace: Option<PathBuf>,
+        /// Delete the agent when this command ends.
+        #[arg(long, conflicts_with = "detach")]
+        rm: bool,
+        /// Start the agent without attaching to a session.
+        #[arg(short = 'd', long)]
+        detach: bool,
+        /// Name the agent instead of having it named after the definition and workspace.
+        #[arg(long)]
+        name: Option<String>,
+        /// Session to attach to, made if it does not exist.
+        #[arg(long, default_value = "main")]
+        session: String,
+        /// File supplying declared manifest environment and secret values, for a definition on
+        /// disk; defaults to `.env` beside its manifest.
+        #[arg(long)]
+        env_file: Option<PathBuf>,
+        #[command(flatten)]
+        selection: SessionSelection,
     },
     /// Create or attach to a named session in an agent sandbox.
     Attach {
@@ -681,13 +717,18 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         Command::Apply {
             filename,
             variant,
+            bundled,
+            workspace,
             name,
             env_file,
             wait,
             timeout,
         } => {
             let directory = std::env::current_dir().map_err(Error::from)?;
-            let filename = apply_manifest_path(filename, variant, &directory)?;
+            let filename = match bundled {
+                Some(definition) => bundled_manifest(client, &definition).await?,
+                None => apply_manifest_path(filename, variant, &directory)?,
+            };
             if manifest_kind(&filename).as_deref() == Some(agent::volumes::KIND) {
                 apply_volume(client, filename, name, env_file, wait.then_some(timeout)).await?;
                 return Ok(ExitCode::SUCCESS);
@@ -696,6 +737,9 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             if let Some(name) = name {
                 request.agent.metadata.name = name;
             }
+            request.workspace = workspace
+                .map(|path| absolute(std::env::current_dir, path))
+                .transpose()?;
             let applied = client.apply(request).await?;
             let name = applied.metadata.name;
             println!("agent/{name} applied");
@@ -783,6 +827,26 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             variant,
             selection,
         } => attach(home, client, &resource, name, agent, variant, selection).await?,
+        Command::Run {
+            definition,
+            workspace,
+            rm,
+            detach,
+            name,
+            session,
+            env_file,
+            selection,
+        } => {
+            let run = Run {
+                definition,
+                workspace,
+                lifetime: rm.then_some(agent::Lifetime::Ephemeral),
+                name,
+                env_file,
+            };
+            let session = (!detach).then(|| SessionName::new(session)).transpose()?;
+            run_agent(home, client, run, session, selection).await?;
+        }
         Command::Exec {
             stdin,
             tty,
@@ -2273,9 +2337,123 @@ fn read_apply_request_in(
         source_directory,
         manifest_path: Some(filename),
         env_file,
+        workspace: None,
         create_only: false,
         agent,
     })
+}
+
+/// The manifest of agentd's copy of the bundled definition `name`.
+async fn bundled_manifest(client: &Client, name: &str) -> Result<PathBuf, Error> {
+    let definitions = client.bundled_definitions().await?;
+    definitions
+        .iter()
+        .find(|definition| definition.name == name)
+        .map(|definition| definition.path.join(manifest::MANIFEST_FILE))
+        .ok_or_else(|| {
+            let names = definitions
+                .iter()
+                .map(|definition| definition.name.as_str())
+                .collect::<Vec<_>>();
+            Error::Invalid(if names.is_empty() {
+                format!("agentd carries no definition named {name:?}, nor any other")
+            } else {
+                format!(
+                    "agentd carries no definition named {name:?}; it carries {}",
+                    names.join(", ")
+                )
+            })
+        })
+}
+
+/// What `agentctl run` runs, as given on its command line.
+struct Run {
+    definition: String,
+    workspace: Option<PathBuf>,
+    lifetime: Option<agent::Lifetime>,
+    name: Option<String>,
+    env_file: Option<PathBuf>,
+}
+
+impl Run {
+    /// The request for agentd: a definition named like a path is one on disk, and any other name
+    /// is one agentd carries.
+    fn request(self) -> Result<agent::control_plane::RunRequest, Error> {
+        let looks_like_path = self.definition.contains(['/', '\\'])
+            || [".", ".."].contains(&self.definition.as_str())
+            || Path::new(&self.definition)
+                .extension()
+                .is_some_and(|extension| extension == "yaml" || extension == "yml");
+        let definition = if looks_like_path {
+            // Canonical, as running the same definition again finds its agent by its manifest's path.
+            let path = std::fs::canonicalize(&self.definition)
+                .map_err(|error| Error::Invalid(format!("definition {}: {error}", self.definition)))?;
+            let manifest = if path.is_dir() {
+                path.join(manifest::MANIFEST_FILE)
+            } else {
+                path
+            };
+            let read = read_apply_request(manifest, self.env_file)?;
+            agent::control_plane::RunDefinition::Local {
+                source_directory: read.source_directory,
+                manifest_path: read
+                    .manifest_path
+                    .ok_or_else(|| Error::Invalid("the manifest has no path".into()))?,
+                env_file: read.env_file,
+                agent: Box::new(read.agent),
+            }
+        } else if self.env_file.is_some() {
+            return Err(Error::Invalid(format!(
+                "--env-file is for a definition on disk, and {:?} is one agentd carries; write ./{} for a folder here",
+                self.definition, self.definition
+            )));
+        } else {
+            agent::control_plane::RunDefinition::Bundled { name: self.definition }
+        };
+        Ok(agent::control_plane::RunRequest {
+            definition,
+            workspace: self
+                .workspace
+                .map(|path| absolute(std::env::current_dir, path))
+                .transpose()?,
+            lifetime: self.lifetime,
+            name: self.name,
+        })
+    }
+}
+
+/// Runs an agent and, given a session, attaches to it. An ephemeral agent lives until this
+/// returns, however it ends.
+async fn run_agent(
+    home: &ControlPlaneHome,
+    client: &Client,
+    run: Run,
+    session: Option<SessionName>,
+    selection: SessionSelection,
+) -> CommandResult<()> {
+    let (ran, _lease) = client.run(run.request()?).await?;
+    let name = ran.agent.metadata.name;
+    match ran.outcome {
+        agent::control_plane::RunOutcome::Created => println!("agent/{name} created"),
+        agent::control_plane::RunOutcome::Resumed => println!("agent/{name} resumed"),
+        agent::control_plane::RunOutcome::Updated => println!("agent/{name} updated"),
+        agent::control_plane::RunOutcome::Outdated { reason } => println!(
+            "agent/{name} resumed as it was: {reason}. To make it from the definition as it is now, \
+             delete it with `agentctl delete agent {name}` and run it again"
+        ),
+    }
+    let Some(session) = session else {
+        return Ok(());
+    };
+    let target = progress::Wait::start()
+        .until(
+            client,
+            &name,
+            client.ensure_session(&name, session, selection.request(None), WaitPolicy::UntilConverged),
+        )
+        .await?;
+    agent::sessions::attach(home.path(), &target).await?;
+    Ok(())
 }
 
 /// Stores a harness login: the credential on standard input when given, else, inside an agent with
@@ -2428,7 +2606,7 @@ mod tests {
             .take_while(|line| !line.trim().is_empty())
             .filter_map(|line| line.split_whitespace().next())
             .collect::<Vec<_>>();
-        assert_eq!(commands[..5], ["tui", "apply", "attach", "stop", "start"], "{help}");
+        assert_eq!(commands[..5], ["tui", "apply", "run", "attach", "stop"], "{help}");
         for hidden in ["ssh-proxy", "vnc-proxy"] {
             assert!(!commands.contains(&hidden), "{help}");
         }

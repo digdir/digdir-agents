@@ -219,6 +219,10 @@ pub struct Spec {
     /// Host directory synchronized into the sandbox user's home at bootstrap, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home: Option<HomeSpec>,
+    /// The folder the agent works on, which whoever runs it names, such as with
+    /// `agentctl run DEFINITION WORKSPACE`, so that one definition serves any checkout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceSpec>,
     /// Agent-wide guidance installed through every declared Harness Adapter, concatenated in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instructions: Vec<InstructionsSpec>,
@@ -656,6 +660,9 @@ impl Spec {
 
     fn validate(&self) -> Result<(), Error> {
         validate_mounts(&self.sandbox.mounts, self.sandbox.resources.root_filesystem.mode())?;
+        if let Some(workspace) = &self.workspace {
+            workspace.validate()?;
+        }
         if self
             .home
             .as_ref()
@@ -899,6 +906,44 @@ pub struct HomeSpec {
     pub source: std::path::PathBuf,
 }
 
+/// The folder an agent works on, which is named when the agent is made rather than in its
+/// definition. agentd mounts it in the sandbox's working directory, under the folder's name.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WorkspaceSpec {
+    /// Whether the agent may only read the workspace, except the `writable` folders.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only: bool,
+    /// Folders in a read-only workspace, relative to it, that the agent may change. One the
+    /// workspace lacks is made when the agent is, as the sandbox cannot make it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writable: Vec<std::path::PathBuf>,
+}
+
+impl WorkspaceSpec {
+    fn validate(&self) -> Result<(), Error> {
+        if !self.read_only && !self.writable.is_empty() {
+            return Err(Error::Invalid(
+                "spec.workspace.writable needs readOnly: true, since the agent may change the whole workspace otherwise"
+                    .into(),
+            ));
+        }
+        for (index, folder) in self.writable.iter().enumerate() {
+            let inside = folder.components().count() > 0
+                && folder
+                    .components()
+                    .all(|component| matches!(component, Component::Normal(_)));
+            if !inside {
+                return Err(Error::Invalid(format!(
+                    "spec.workspace.writable[{index}] {} must be a folder inside the workspace",
+                    folder.display()
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One harness-neutral instruction file; several are concatenated in manifest order.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -1060,9 +1105,8 @@ pub struct Status {
     /// scrub it, so it is never persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<crate::progress::Provisioning>,
-    /// Where the manifest of a local agent is, absent for an agent agentd runs from its own
-    /// definitions. Projected onto API responses from the stored agent record; stores scrub it, so
-    /// it is never persisted.
+    /// Where the agent's manifest is. Projected onto API responses from the stored agent record;
+    /// stores scrub it, so it is never persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Provenance>,
     /// Where the agent's definition comes from. Projected onto API responses from the stored agent
@@ -1276,18 +1320,19 @@ impl Condition {
 /// Conventional agent manifest filename, used when a record predates path recording.
 pub const MANIFEST_FILE: &str = "agent.yaml";
 
-/// Where an agent's definition comes from, which agentd sets and the agent keeps for life.
+/// Where an agent's definition comes from, which agentd sets when it stores the agent.
 ///
-/// `apply` changes only local agents, and `ensure` only the agents agentd runs from its own
-/// definitions. Clients decide how to show an agent from it, never from its name.
+/// An agent's definition can be updated but never replaced by another, so `apply` refuses a
+/// manifest of another origin under the agent's name. Clients decide how to show an agent from
+/// it, never from its name.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Origin {
-    /// A manifest on this machine, applied with `agentctl apply`. [`Status::provenance`] says where
-    /// it is.
+    /// A manifest on this machine. [`Status::provenance`] says where it is.
     #[default]
     Local,
-    /// A definition carried by agentd's build, which the agent reads from agentd's copy of it.
+    /// A definition carried by agentd's build, which the agent reads from agentd's copy of it, as
+    /// `status.provenance` says.
     Bundled {
         /// The definition's name in the build.
         definition: String,

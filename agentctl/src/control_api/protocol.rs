@@ -6,7 +6,8 @@ pub const PROTOCOL_VERSION: &str = "v5";
 pub(crate) const JSON_RPC_VERSION: &str = "2.0";
 
 pub(crate) const METHOD_APPLY: &str = "agents.v1.apply";
-pub(crate) const METHOD_ENSURE: &str = "agents.v1.ensure";
+pub(crate) const METHOD_RUN: &str = "agents.v1.run";
+pub(crate) const METHOD_DEFINITIONS: &str = "definitions.v1.list";
 pub(crate) const METHOD_HEALTH: &str = "control.v1.health";
 pub(crate) const METHOD_SHUTDOWN: &str = "control.v1.shutdown";
 pub(crate) const METHOD_GET: &str = "agents.v1.get";
