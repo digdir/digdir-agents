@@ -73,11 +73,24 @@ impl Secrets {
         if value.is_empty() {
             return Err(Error::Invalid("the secret's value is empty".into()));
         }
-        let allowed_hosts = allowed_hosts.map(valid_hosts).transpose()?;
+        let allowed_hosts_json = allowed_hosts
+            .map(valid_hosts)
+            .transpose()?
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let at = OffsetDateTime::now_utc().unix_timestamp();
+        // The network policy reads the hosts at every use, and the value is read after it. New
+        // hosts go first, so a host they leave out never gets the value set with them.
+        if let Some(allowed_hosts_json) = &allowed_hosts_json {
+            self.database
+                .set_named_secret_hosts(&name, allowed_hosts_json.clone(), at)
+                .await?;
+        }
         let write = persistence::NamedSecretWrite {
             value: Zeroizing::new(value.as_bytes().to_vec()),
-            allowed_hosts_json: allowed_hosts.as_ref().map(serde_json::to_string).transpose()?,
-            at: OffsetDateTime::now_utc().unix_timestamp(),
+            allowed_hosts_json,
+            at,
             name: name.clone(),
         };
         self.database

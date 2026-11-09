@@ -190,6 +190,22 @@ pub(super) fn put_named_secret(
     Ok(kept)
 }
 
+/// Replaces the hosts of the secret kept under `name`, keeping its value, when there is one.
+pub(super) fn set_named_secret_hosts(
+    connection: &Connection,
+    name: &str,
+    allowed_hosts_json: &str,
+    at: i64,
+) -> Result<(), Error> {
+    connection
+        .execute(
+            "UPDATE secrets SET allowed_hosts_json = ?2, updated_at = ?3 WHERE name = ?1",
+            params![named_secret_name(name), allowed_hosts_json, at],
+        )
+        .map(|_| ())
+        .map_err(database_error)
+}
+
 /// The secret kept under `name`, without its value.
 pub(super) fn named_secret(connection: &Connection, name: &str) -> Result<Option<NamedSecret>, Error> {
     connection

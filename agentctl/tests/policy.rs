@@ -86,6 +86,7 @@ async fn a_secret_with_several_host_lists_is_used_only_where_all_of_them_match()
                 vec!["*.example.com".into()],
                 vec!["api.example.com".into(), "other.test".into()],
             ],
+            kept: None,
         }],
     );
     for (host, decision) in [

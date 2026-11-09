@@ -82,7 +82,7 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
 
     // Where the values come from: the environment file, and the secrets kept under a name.
     let mut sources = Vec::new();
-    if agent.spec.secrets.iter().any(|secret| secret.source().is_some())
+    if agent.spec.reads_secret_file()
         && let Some(provenance) = &agent.status.provenance
     {
         sources.push(

@@ -140,6 +140,22 @@ impl Database {
             .await
     }
 
+    /// Replaces the hosts of the secret kept under `name`, keeping its value, when there is one.
+    pub(crate) async fn set_named_secret_hosts(
+        &self,
+        name: &str,
+        allowed_hosts_json: String,
+        at: i64,
+    ) -> Result<(), Error> {
+        self.request(|response| Command::SetNamedSecretHosts {
+            name: name.into(),
+            allowed_hosts_json,
+            at,
+            response,
+        })
+        .await
+    }
+
     /// The secret kept under `name`, without its value.
     pub(crate) async fn named_secret(&self, name: &str) -> Result<Option<NamedSecret>, Error> {
         self.request(|response| Command::NamedSecret {
@@ -711,6 +727,12 @@ enum Command {
         secret: NamedSecretWrite,
         response: oneshot::Sender<Result<Option<NamedSecret>, Error>>,
     },
+    SetNamedSecretHosts {
+        name: String,
+        allowed_hosts_json: String,
+        at: i64,
+        response: oneshot::Sender<Result<(), Error>>,
+    },
     NamedSecret {
         name: String,
         response: oneshot::Sender<Result<Option<NamedSecret>, Error>>,
@@ -865,6 +887,7 @@ impl Command {
             | Self::ReplaceAgentSecrets { .. }
             | Self::ResolveSecret { .. }
             | Self::PutNamedSecret { .. }
+            | Self::SetNamedSecretHosts { .. }
             | Self::NamedSecret { .. }
             | Self::NamedSecrets { .. }
             | Self::DeleteNamedSecret { .. }
@@ -1049,6 +1072,7 @@ fn execute(connection: &mut Connection, command: Command) {
         | Command::ReplaceAgentSecrets { .. }
         | Command::ResolveSecret { .. }
         | Command::PutNamedSecret { .. }
+        | Command::SetNamedSecretHosts { .. }
         | Command::NamedSecret { .. }
         | Command::NamedSecrets { .. }
         | Command::DeleteNamedSecret { .. }
@@ -1077,6 +1101,19 @@ fn execute_secret(connection: &mut Connection, command: Command) {
         }
         Command::PutNamedSecret { secret, response } => {
             let _ = response.send(secrets::put_named_secret(connection, &secret));
+        }
+        Command::SetNamedSecretHosts {
+            name,
+            allowed_hosts_json,
+            at,
+            response,
+        } => {
+            let _ = response.send(secrets::set_named_secret_hosts(
+                connection,
+                &name,
+                &allowed_hosts_json,
+                at,
+            ));
         }
         Command::NamedSecret { name, response } => {
             let _ = response.send(secrets::named_secret(connection, &name));

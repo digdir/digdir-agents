@@ -15,6 +15,8 @@ use sandbox::SandboxName;
 pub struct AgentPolicyEngine {
     agents: RefCell<BTreeMap<String, AgentPolicy>>,
     platform_endpoint: RefCell<Option<PlatformEndpoint>>,
+    /// Where the secrets kept under a name are, whose hosts are read at every use.
+    kept_secrets: Option<crate::persistence::Database>,
 }
 
 struct PlatformEndpoint {
@@ -27,6 +29,14 @@ impl AgentPolicyEngine {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Reads the hosts of secrets kept under a name from `database`. Without it, a kept secret is
+    /// substituted nowhere.
+    #[must_use]
+    pub fn with_kept_secrets(mut self, database: crate::persistence::Database) -> Self {
+        self.kept_secrets = Some(database);
+        self
     }
 
     /// Registers the one sandbox-reachable host endpoint exposed by the platform.
@@ -45,7 +55,7 @@ impl AgentPolicyEngine {
     pub fn set_agent(&self, sandbox: &SandboxName, agent: &Agent, secrets: impl IntoIterator<Item = SecretHosts>) {
         let secrets = secrets
             .into_iter()
-            .map(|secret| (secret.environment, secret.hosts))
+            .map(|secret| (secret.environment.clone(), secret))
             .collect();
         self.agents.borrow_mut().insert(
             sandbox.as_str().into(),
@@ -71,6 +81,10 @@ pub struct SecretHosts {
     /// Host patterns, such as `api.example.com` or `*.example.com`. A host must match one pattern
     /// of every list.
     pub hosts: Vec<Vec<String>>,
+    /// The secret kept under this name, whose hosts a host must match as well. They are read
+    /// where it is kept at every use, as its value is, so changing them applies at once and a
+    /// host they no longer allow never receives a value set with them.
+    pub kept: Option<String>,
 }
 
 impl SecretHosts {
@@ -80,13 +94,14 @@ impl SecretHosts {
         Self {
             environment: environment.into(),
             hosts: vec![hosts],
+            kept: None,
         }
     }
 }
 
 struct AgentPolicy {
     denied_hosts: Vec<String>,
-    secrets: BTreeMap<String, Vec<Vec<String>>>,
+    secrets: BTreeMap<String, SecretHosts>,
 }
 
 impl PolicyEngine for AgentPolicyEngine {
@@ -94,7 +109,15 @@ impl PolicyEngine for AgentPolicyEngine {
         &self,
         request: AuthorizationRequest,
     ) -> sandbox_authorization::LocalFuture<'_, Result<AuthorizationDecision, sandbox_authorization::Error>> {
-        Box::pin(async move { Ok(self.evaluate_request(&request)) })
+        Box::pin(async move {
+            let decided = self.evaluate_request(&request);
+            Ok(match self.kept_secret_to_check(&request) {
+                Some((name, host)) if decided == AuthorizationDecision::Allow => {
+                    decision(self.kept_secret_allows(&name, &host).await)
+                }
+                _ => decided,
+            })
+        })
     }
 }
 
@@ -127,9 +150,10 @@ impl AgentPolicyEngine {
                 let Some(host) = host else {
                     return AuthorizationDecision::Deny;
                 };
-                decision(policy.secrets.get(&request.resource.id).is_some_and(|lists| {
-                    !lists.is_empty()
-                        && lists
+                decision(policy.secrets.get(&request.resource.id).is_some_and(|secret| {
+                    !secret.hosts.is_empty()
+                        && secret
+                            .hosts
                             .iter()
                             .all(|patterns| patterns.iter().any(|pattern| host_matches(pattern, host)))
                 }))
@@ -140,6 +164,30 @@ impl AgentPolicyEngine {
 }
 
 impl AgentPolicyEngine {
+    /// The kept secret, and the host, that a use of a secret must also be allowed by.
+    fn kept_secret_to_check(&self, request: &AuthorizationRequest) -> Option<(String, String)> {
+        if request.action.as_str() != action::SECRET_USE {
+            return None;
+        }
+        let agent = request.context.get(context::SANDBOX_NAME)?.as_str()?;
+        let agents = self.agents.borrow();
+        let kept = agents.get(agent)?.secrets.get(&request.resource.id)?.kept.clone()?;
+        Some((kept, request_host(request)?.to_owned()))
+    }
+
+    /// Whether the secret kept as `name` allows `host` now. One that is gone, or cannot be read,
+    /// allows nothing.
+    async fn kept_secret_allows(&self, name: &str, host: &str) -> bool {
+        let Some(database) = &self.kept_secrets else {
+            return false;
+        };
+        crate::secrets::stored(database, name)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|secret| secret.allowed_hosts.iter().any(|pattern| host_matches(pattern, host)))
+    }
+
     /// Decides host-destined traffic: the Network Backend rewrites its host
     /// alias (and only its gateway addresses) to host loopback, so anything
     /// aimed at the host must match the registered Platform API endpoint exactly.

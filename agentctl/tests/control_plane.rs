@@ -1195,6 +1195,23 @@ async fn an_optional_mount_is_checked_for_secrets_where_the_sandbox_has_it() {
         .expect_err("a .env in the directory the sandbox has");
     std::fs::remove_file(mounted.join(".env")).expect("remove environment file");
 
+    // A kept secret reads no file, so the one the agent names is only a file in the directory.
+    let mut kept_only = request.clone();
+    kept_only.agent.spec.secrets.push(SecretSpec {
+        environment: "AIVAR_API_KEY".into(),
+        optional: false,
+        placeholder: None,
+        allowed_hosts: vec!["api.aivar.no".into()],
+        source: None,
+        secret: Some("aivar".into()),
+    });
+    kept_only.env_file = Some(mounted.join("worker.env"));
+    fixture
+        .control_plane
+        .apply(kept_only)
+        .await
+        .expect("a kept secret reads no file in the directory the sandbox has");
+
     request.agent.spec.secrets.push(SecretSpec {
         environment: "GITHUB_TOKEN".into(),
         optional: false,

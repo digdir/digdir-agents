@@ -128,7 +128,7 @@ impl Preparation {
         let mut secret_writes = Vec::with_capacity(secrets.len());
         for (index, secret) in secrets.iter().enumerate() {
             if let Some(name) = &secret.secret {
-                let Some(kept) = crate::secrets::stored(&self.database, name).await? else {
+                if crate::secrets::stored(&self.database, name).await?.is_none() {
                     if secret.optional {
                         continue;
                     }
@@ -138,7 +138,7 @@ impl Preparation {
                          `agentctl secret set {name} --hosts {}`",
                         secret.allowed_hosts.join(",")
                     )));
-                };
+                }
                 bindings.push(SecretBinding::with_placeholder(
                     &secret.environment,
                     secret.inert_value(),
@@ -146,7 +146,8 @@ impl Preparation {
                 )?);
                 policy.push(SecretHosts {
                     environment: secret.environment.clone(),
-                    hosts: vec![secret.allowed_hosts.clone(), kept.allowed_hosts],
+                    hosts: vec![secret.allowed_hosts.clone()],
+                    kept: Some(name.to_ascii_lowercase()),
                 });
                 continue;
             }
@@ -455,7 +456,7 @@ spec:
         for name in ["digdir", "altinn"] {
             store_token(&database, name, None).await;
         }
-        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
+        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new().with_kept_secrets(database.clone()));
         let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
         (
             super::Preparation::new(
@@ -704,6 +705,21 @@ spec:
             database.resolve(&reference).await.expect("resolve").expose(),
             b"sk-FAKE-second"
         );
+
+        // A host the secret stops allowing gets no value from then on, before the agent is prepared
+        // again, so a value set together with the change never reaches it.
+        secrets
+            .set(
+                "aivar",
+                Zeroizing::new("sk-FAKE-third".into()),
+                Some(vec!["models.example".into()]),
+            )
+            .await
+            .expect("move the secret");
+        assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "api.aivar.no").await);
+        assert!(may_use(&policy, &record, "AIVAR_API_KEY", "models.example").await);
+        secrets.remove("aivar").await.expect("remove").expect("it was kept");
+        assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "models.example").await);
     }
 
     #[tokio::test(flavor = "local")]

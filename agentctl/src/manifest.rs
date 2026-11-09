@@ -664,6 +664,13 @@ impl Spec {
         self.access.contains(&AccessSpec::Vnc {})
     }
 
+    /// Whether a secret takes its value from the agent's environment file, which then holds real
+    /// values that must not reach a sandbox.
+    #[must_use]
+    pub fn reads_secret_file(&self) -> bool {
+        self.secrets.iter().any(|secret| secret.source().is_some())
+    }
+
     /// The login the agent uses for its account of `account_type`, when it has one.
     #[must_use]
     pub fn account(&self, account_type: crate::accounts::AccountType) -> Option<&str> {
