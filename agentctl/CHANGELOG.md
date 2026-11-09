@@ -45,7 +45,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 
 - Applying a manifest that adds, removes or renames instruction files or skills updates the agent in place, keeping its disk and sessions, instead of being refused. A skill the agent no longer declares is removed from its harnesses, while the skills its image ships stay.
 - The Agent sandbox section at the top of an agent's instructions now tells the agent that what it sends through the host, such as pushes, pull requests, comments and API calls, reaches real services and people. ([#372](https://github.com/digdir/digdir-agents/pull/372))
-- Newly created agents using the shared images ship Claude Code 2.1.316, Codex CLI 0.166.0 and Pi 1.5.0. ([#392](https://github.com/digdir/digdir-agents/pull/392))
+- Newly created agents using the shared images ship Claude Code 2.1.321, Codex CLI 0.167.0 and Pi 1.5.0. ([#392](https://github.com/digdir/digdir-agents/pull/392))
 - `attach`, `exec`, `ssh` and the other commands that use the current directory's agent now find it from anywhere in its Git repository. Outside a repository, they find it from the directory that holds its `agents/` directory. ([#309](https://github.com/digdir/digdir-agents/pull/309))
 - `agentctl apply` without `-f`, in a directory with no `agent.yaml`, lists the manifests it finds, so you can pass one with `-f`. ([#309](https://github.com/digdir/digdir-agents/pull/309))
 - `agentctl --help` starts with what agentctl is for and the commands you use most. ([#309](https://github.com/digdir/digdir-agents/pull/309))
