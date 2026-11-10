@@ -74,8 +74,7 @@ agentctl skills install --bundled agentctl --user
 Update with `agentctl self update`. Agents and sessions carry over. Run the `skills install` command above again to
 update the skill as well.
 
-Then bring the agent definitions in a checkout up to date with the new version, once they no longer read an
-environment file:
+Then bring the agent definitions in a checkout up to date with the new version:
 
 ```sh
 agentctl update ~/repos/my-service
@@ -83,11 +82,13 @@ agentctl update ~/repos/my-service
 
 It runs the [agent builder](bundled/definitions/agent-builder/) on the checkout, as `agentctl new` does. The builder
 reads the release notes since the version each definition was written for, proposes each change with its reason, and
-writes the ones you agree to for you to review and commit. Running it again goes back to the same conversation.
+writes the ones you agree to for you to review and commit. That includes moving off the environment file, for which it
+gives you the `agentctl github login` and `agentctl secret set` commands to run. Running it again goes back to the same
+conversation.
 
-An agent can bring its own definition up to date in the same way, for example when the checkout lives inside it. Ask
-it to, or to run `agentctl update` there, which gives it the definitions to update. It proposes each change, tries
-the result and opens a pull request, and it tells you which logins and secrets to store on your machine.
+An agent can bring its own definition up to date in the same way, such as when the checkout lives inside it. Ask it
+to, or to run `agentctl update --print-task` there, which gives it the same task as the builder. It proposes each
+change, tries the result and opens a pull request.
 
 ## Your first agent
 

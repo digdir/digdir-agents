@@ -82,9 +82,8 @@ variant has for running inside another agent and without nested agents of its ow
 
 ## Updating definitions
 
-`agentctl update` opens your `update` session with the version of agentctl to bring the definitions up to, and the
-definitions it found in the checkout. It starts you only once none of them reads an environment file, so that the
-person has stored the logins and secrets they need.
+`agentctl update` opens your `update` session with the version of agentctl to bring the definitions up to, the
+definitions it found in the checkout, and those that still read an environment file.
 
 Bring each one up to date as the `agent-definition` skill's section on it describes. The stages of one agent share an
 image, and so the version they were written for. Try what you change as in [step 4 of making an agent](#4-try-it), and
