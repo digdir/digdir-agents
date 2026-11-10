@@ -37,11 +37,11 @@ pub struct ExposedFile {
     /// Where an agent sees `folder`, when it's a bind mount's source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<SandboxPath>,
-    /// Whether it's an agent's environment file: the file an agent records, or a `.env` beside an
-    /// agent manifest, which agentctl reads values from by default. It holds the agent's own secrets,
-    /// which belong in stored secrets instead, so consent never covers it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub environment_file: bool,
+    /// What is left to do about it when it's an agent's environment file: the file an agent records,
+    /// or a `.env` beside an agent manifest, which agentctl reads values from by default. It holds the
+    /// agent's own secrets, which belong in stored secrets instead, so consent never covers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_file: Option<EnvironmentFile>,
 }
 
 impl ExposedFile {
@@ -50,6 +50,119 @@ impl ExposedFile {
     pub fn relative(&self) -> &Path {
         self.path.strip_prefix(&self.folder).unwrap_or(&self.path)
     }
+
+    /// The file as a person working in the directory `from` names it: by its path from there, or
+    /// else within its folder, since the whole path is mostly what they know already.
+    #[must_use]
+    pub fn shown(&self, from: Option<&Path>) -> String {
+        from.and_then(|from| self.path.strip_prefix(from).ok()).map_or_else(
+            || format!("{} in {}", self.relative().display(), self.folder.display()),
+            |path| path.display().to_string(),
+        )
+    }
+}
+
+/// What stands between an agent's environment file and deleting it, which is what lets an agent be
+/// given the folder it is in.
+#[derive(Clone, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EnvironmentFile {
+    /// What still reads values from it. With none, the file is left from before they were moved, and
+    /// deleting it is all that remains.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub readers: Vec<Reader>,
+    /// What the manifests beside it take from agentctl instead of the file. Deleting the file loses
+    /// the values of those the person has not stored yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stored: Vec<Stored>,
+}
+
+/// Something that still reads values from an environment file.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(
+    deny_unknown_fields,
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type"
+)]
+pub enum Reader {
+    /// A manifest beside the file, by its file name.
+    Manifest { name: String, variables: Vec<Variable> },
+    /// A manifest beside the file that this version cannot read, so it may read any value.
+    Unreadable { name: String },
+    /// An agent applied with the file, as `agent/NAME`.
+    Agent {
+        name: String,
+        variables: Vec<Variable>,
+        /// Whether its manifest has stopped reading the file since, so applying it again is all it
+        /// takes.
+        reapply: bool,
+    },
+}
+
+/// A value an agent reads from an environment file.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Variable {
+    /// The variable the agent gets, which names its entry in the manifest.
+    pub name: String,
+    /// The variable in the file, when its entry names one with `source`. It is the agent's variable
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The hosts its value may reach when it is a secret, which may be none. A plain value, which
+    /// the agent sees as it is, has no such list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_hosts: Option<Vec<String>>,
+}
+
+/// Something a manifest takes from what agentctl stores, in place of an environment file.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(
+    deny_unknown_fields,
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type"
+)]
+pub enum Stored {
+    /// The GitHub login of an entry in `spec.accounts`.
+    GithubLogin { login: String },
+    /// The stored secret an entry in `spec.secrets` names, with the hosts the entry narrows it to.
+    Secret { name: String, allowed_hosts: Vec<String> },
+}
+
+/// An environment file an agent was applied with, and what the agent reads from it.
+#[derive(Clone)]
+pub(crate) struct Applied {
+    /// The file, as a canonical path.
+    pub(crate) file: PathBuf,
+    /// The agent, as `agent/NAME`.
+    pub(crate) agent: String,
+    pub(crate) variables: Vec<Variable>,
+    /// The manifest it was applied from, when agentd knows it.
+    pub(crate) manifest: Option<PathBuf>,
+}
+
+/// The values `spec` reads from an environment file: those of `spec.environment` without a `value`
+/// and of `spec.secrets` without a `name`.
+pub(crate) fn variables(spec: &crate::Spec) -> Vec<Variable> {
+    let plain = spec.environment.iter().filter_map(|entry| {
+        entry.source()?;
+        Some(Variable {
+            name: entry.name.clone(),
+            source: entry.source.clone(),
+            allowed_hosts: None,
+        })
+    });
+    let secret = spec.secrets.iter().filter_map(|entry| {
+        entry.source()?;
+        Some(Variable {
+            name: entry.environment.clone(),
+            source: entry.source.clone(),
+            allowed_hosts: Some(entry.allowed_hosts.clone()),
+        })
+    });
+    plain.chain(secret).collect()
 }
 
 /// `items` as a sentence lists them: `a`, `a and b`, or `a, b and c`.
@@ -68,8 +181,8 @@ pub(crate) fn is_exposed_name(name: &std::ffi::OsStr) -> bool {
 }
 
 /// The files that may hold real keys in each of `folders`, a canonical host folder and where an
-/// agent sees it, if it does. `environment_files` are the canonical environment files agents
-/// record, which are found under any name.
+/// agent sees it, if it does. `environment_files` are the environment files agents were applied
+/// with, which are found under any name.
 ///
 /// Every file in a folder counts, also one Git ignores, since that's where such files usually are.
 /// Symbolic links are not followed, but a link with the name counts. A folder that no longer
@@ -80,7 +193,7 @@ pub(crate) fn is_exposed_name(name: &std::ffi::OsStr) -> bool {
 /// Returns an error when a folder cannot be read.
 pub(crate) async fn find(
     folders: Vec<(PathBuf, Option<SandboxPath>)>,
-    environment_files: Vec<PathBuf>,
+    environment_files: Vec<Applied>,
 ) -> Result<Vec<ExposedFile>, Error> {
     blocking::run("looking for .env files", move || {
         let mut found = BTreeSet::new();
@@ -115,24 +228,28 @@ pub(crate) async fn find(
 }
 
 /// The files `named` in the canonical `folder`, which an agent sees at `target`, if it does, together
-/// with the `environment_files` of agents inside it, telling which are environment files.
+/// with the `environment_files` of agents inside it, telling which are environment files and what
+/// is left to do about those.
 ///
 /// Reads the filesystem, so it blocks.
 pub(crate) fn classify(
     folder: &Path,
     target: Option<&SandboxPath>,
     named: Vec<PathBuf>,
-    environment_files: &[PathBuf],
+    environment_files: &[Applied],
 ) -> BTreeSet<ExposedFile> {
     let recorded = environment_files
         .iter()
+        .map(|applied| &applied.file)
         .filter(|file| file.starts_with(folder))
         .cloned();
     named
         .into_iter()
         .chain(recorded)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .map(|path| ExposedFile {
-            environment_file: environment_files.contains(&path) || beside_manifest(&path),
+            environment_file: environment_file(&path, environment_files),
             folder: folder.to_path_buf(),
             target: target.cloned(),
             path,
@@ -140,14 +257,76 @@ pub(crate) fn classify(
         .collect()
 }
 
-/// Whether `path` is in a folder with an agent manifest, whose values agentctl reads from it by default.
-fn beside_manifest(path: &Path) -> bool {
-    path.parent()
+/// What is left to do about `path` when it is an environment file: one of the `environment_files`
+/// agents were applied with, or a file beside an agent manifest.
+fn environment_file(path: &Path, environment_files: &[Applied]) -> Option<EnvironmentFile> {
+    let reads = |manifest: &Path| crate::manifest::resolve(manifest).map(|resolved| resolved.agent.spec);
+    // An agent records the file a link leads to, so its readers are those of that file.
+    let resolved = std::fs::canonicalize(path).ok();
+    let mut readers = environment_files
+        .iter()
+        .filter(|applied| applied.file == path || Some(&applied.file) == resolved.as_ref())
+        .map(|applied| Reader::Agent {
+            name: applied.agent.clone(),
+            variables: applied.variables.clone(),
+            reapply: applied
+                .manifest
+                .as_deref()
+                .and_then(|manifest| reads(manifest).ok())
+                .is_some_and(|spec| variables(&spec).is_empty()),
+        })
+        .collect::<Vec<_>>();
+    let manifests = manifests_beside(path);
+    if readers.is_empty() && manifests.is_empty() {
+        return None;
+    }
+    let mut stored = BTreeSet::new();
+    // Only the `.env` beside a manifest is read without being named.
+    if path.file_name().is_some_and(is_exposed_name) {
+        for manifest in &manifests {
+            let name = manifest
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            match reads(manifest) {
+                Ok(spec) => {
+                    let variables = variables(&spec);
+                    if !variables.is_empty() {
+                        readers.push(Reader::Manifest { name, variables });
+                    }
+                    stored.extend(spec.accounts.iter().map(|account| Stored::GithubLogin {
+                        login: account.login().to_owned(),
+                    }));
+                    stored.extend(spec.secrets.iter().filter_map(|secret| {
+                        Some(Stored::Secret {
+                            name: secret.name.clone()?,
+                            allowed_hosts: secret.allowed_hosts.clone(),
+                        })
+                    }));
+                }
+                Err(_) => readers.push(Reader::Unreadable { name }),
+            }
+        }
+    }
+    Some(EnvironmentFile {
+        readers,
+        stored: stored.into_iter().collect(),
+    })
+}
+
+/// The agent manifests in the folder of `path`, by name.
+fn manifests_beside(path: &Path) -> Vec<PathBuf> {
+    let mut manifests = path
+        .parent()
         .and_then(|parent| std::fs::read_dir(parent).ok())
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
-        .any(|entry| crate::manifest::is_manifest_filename(&entry.path()))
+        .map(|entry| entry.path())
+        .filter(|path| crate::manifest::is_manifest_filename(path))
+        .collect::<Vec<_>>();
+    manifests.sort();
+    manifests
 }
 
 /// The paths of the `found` files, once the person has agreed to every one of them: each is in
@@ -159,28 +338,38 @@ fn beside_manifest(path: &Path) -> bool {
 pub(crate) fn consented(found: Vec<ExposedFile>, allowed: &BTreeSet<PathBuf>) -> Result<BTreeSet<PathBuf>, Error> {
     if found
         .iter()
-        .any(|file| file.environment_file || !allowed.contains(&file.path))
+        .any(|file| file.environment_file.is_some() || !allowed.contains(&file.path))
     {
         return Err(Error::ExposedFiles(found));
     }
     Ok(found.into_iter().map(|file| file.path).collect())
 }
 
-/// Why agentd refuses `files`: an agent's environment file, which no consent covers, or else files
-/// the request did not name, for a client that doesn't ask about them.
+/// Why agentd refuses `files`: an agent's environment file, which no consent covers, with what to do
+/// about it, or else files the request did not name, for a client that doesn't ask about them.
 #[must_use]
 pub fn refusal(files: &[ExposedFile]) -> String {
+    refusal_from(files, None)
+}
+
+/// [`refusal`] for a person working in the directory `from`, who knows the files by their paths from
+/// there.
+#[must_use]
+pub fn refusal_from(files: &[ExposedFile], from: Option<&Path>) -> String {
+    // A file in several of the folders is one file to the person.
+    let mut seen = BTreeSet::new();
     let environment = files
         .iter()
-        .filter(|file| file.environment_file)
-        .map(|file| file.path.display().to_string())
+        .filter(|file| seen.insert(&file.path))
+        .filter_map(|file| {
+            Some(environment_file_refusal(
+                &file.shown(from),
+                file.environment_file.as_ref()?,
+            ))
+        })
         .collect::<Vec<_>>();
     if !environment.is_empty() {
-        return format!(
-            "{} holds an agent's own secrets, so no agent may read it. Move its values as \
-             {ENVIRONMENT_FILE_GUIDE} says, then delete it",
-            sentence_list(&environment)
-        );
+        return environment.join("\n\n");
     }
     let paths = files
         .iter()
@@ -192,11 +381,266 @@ pub fn refusal(files: &[ExposedFile]) -> String {
     )
 }
 
+/// What agentctl knows of an environment file that nothing it can see reads any more. A manifest
+/// elsewhere may still name the file, which is why deleting it is the person's to agree to.
+pub const UNREAD: &str = "No manifest beside this environment file and no agent on this machine reads it any more, \
+                          but it still holds their values, so no agent may be given a folder it is in";
+
+/// Why no agent may be given a folder with the environment file `path`, and every step that gets
+/// rid of the file: what reads it, where each value goes instead, and what to run again.
+fn environment_file_refusal(path: &str, file: &EnvironmentFile) -> String {
+    let mut lines = Vec::new();
+    if file.readers.is_empty() {
+        lines.extend([format!("{}:", UNREAD.to_ascii_lowercase()), format!("  {path}")]);
+        let stored = file.stored_lines();
+        if !stored.is_empty() {
+            lines.push(String::new());
+            lines.extend(stored);
+        }
+        lines.extend([String::new(), "Delete the file, then run this again.".into()]);
+        return lines.join("\n");
+    }
+    lines.extend([
+        "an environment file still gives agents their values, so no agent may be given a folder it is in:".into(),
+        format!("  {path}"),
+        String::new(),
+        "It is read by:".into(),
+    ]);
+    // The manifests of a folder mostly read the same, a variant what its base does.
+    let mut manifests = Vec::<(&[Variable], Vec<String>)>::new();
+    let mut others = Vec::new();
+    let mut agents = Vec::new();
+    let mut moving = Vec::<Variable>::new();
+    for reader in &file.readers {
+        let variables = match reader {
+            Reader::Manifest { name, variables } => {
+                match manifests.iter_mut().find(|(read, _)| read == variables) {
+                    Some((_, names)) => names.push(name.clone()),
+                    None => manifests.push((variables, vec![name.clone()])),
+                }
+                variables.as_slice()
+            }
+            Reader::Unreadable { name } => {
+                others.push(format!(
+                    "  {name}: this version cannot read it, so it may read any value"
+                ));
+                &[]
+            }
+            Reader::Agent {
+                name,
+                variables,
+                reapply,
+            } => {
+                agents.push(name.clone());
+                let read = names(variables);
+                if *reapply {
+                    others.push(format!("  {name}: {read}. Its manifest no longer reads the file"));
+                    &[]
+                } else {
+                    others.push(format!("  {name}: {read}"));
+                    variables.as_slice()
+                }
+            }
+        };
+        for variable in variables {
+            if !moving.contains(variable) {
+                moving.push(variable.clone());
+            }
+        }
+    }
+    lines.extend(
+        manifests
+            .into_iter()
+            .map(|(variables, files)| format!("  {}: {}", sentence_list(&files), names(variables))),
+    );
+    lines.extend(others);
+    lines.extend([String::new(), moving_out(&moving, &agents)]);
+    lines.join("\n")
+}
+
+/// The steps that take `variables` out of an environment file, so that it can be deleted: where each
+/// goes instead, then applying the `agents` that read it again.
+pub(crate) fn moving_out(variables: &[Variable], agents: &[String]) -> String {
+    let mut lines = Vec::new();
+    if !variables.is_empty() {
+        lines.push("Move each value out of the file:".into());
+        lines.extend(moves(variables));
+        lines.push(String::new());
+    }
+    let apply = if agents.is_empty() {
+        String::new()
+    } else {
+        format!("apply {} again, ", sentence_list(agents))
+    };
+    lines.push(format!("Then {apply}delete the file and run this again."));
+    lines.join("\n")
+}
+
+impl EnvironmentFile {
+    /// What the manifests beside the file take from agentctl instead, with the command that stores
+    /// each, for a person about to delete the file. Nothing when they take nothing.
+    #[must_use]
+    pub fn stored_lines(&self) -> Vec<String> {
+        if self.stored.is_empty() {
+            return Vec::new();
+        }
+        // Storing a secret sets its hosts, so one command names those of every entry that takes it.
+        let mut hosts = std::collections::BTreeMap::<&str, Vec<String>>::new();
+        for stored in &self.stored {
+            if let Stored::Secret { name, allowed_hosts } = stored {
+                let hosts = hosts.entry(name).or_default();
+                for host in allowed_hosts {
+                    if !hosts.contains(host) {
+                        hosts.push(host.clone());
+                    }
+                }
+            }
+        }
+        let logins = self.stored.iter().filter_map(|stored| match stored {
+            Stored::GithubLogin { login } => Some((
+                format!("the GitHub login {login}"),
+                format!("agentctl github login {login}"),
+            )),
+            Stored::Secret { .. } => None,
+        });
+        let secrets = hosts
+            .iter()
+            .map(|(name, hosts)| (format!("the secret {name}"), secret_set(name, hosts)));
+        let stored = logins.chain(secrets).collect::<Vec<_>>();
+        let width = stored.iter().map(|(what, _)| what.len()).max().unwrap_or_default();
+        let mut lines = vec!["The manifests beside it now take these from agentctl. Store those you have not:".into()];
+        lines.extend(
+            stored
+                .iter()
+                .map(|(what, command)| format!("  {what:width$}  {command}")),
+        );
+        lines
+    }
+}
+
+/// The `variables` as a person reads them in a list: each by the name the agent gets, with the
+/// name the file has for it when that differs.
+fn names(variables: &[Variable]) -> String {
+    variables
+        .iter()
+        .map(|variable| match &variable.source {
+            Some(source) if *source != variable.name => format!("{} ({source} in the file)", variable.name),
+            _ => variable.name.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The command that stores the secret `name` for `allowed_hosts`, which the person fills in when the
+/// manifest names none.
+fn secret_set(name: &str, allowed_hosts: &[String]) -> String {
+    let hosts = if allowed_hosts.is_empty() {
+        "HOST".to_owned()
+    } else {
+        allowed_hosts.join(",")
+    };
+    format!("agentctl secret set {name} --hosts {hosts}")
+}
+
+/// Where each of `variables` goes instead of the environment file: the command that stores it, and
+/// the change to its entry in the manifest.
+///
+/// A GitHub token becomes a GitHub login, whose account is also Git's name and email. Another
+/// secret is stored under a name made from its variable's. A plain value goes in the manifest.
+fn moves(variables: &[Variable]) -> Vec<String> {
+    const GIT_IDENTITY: [&str; 2] = ["GIT_USER_NAME", "GIT_USER_EMAIL"];
+    let is_token =
+        |variable: &Variable| variable.allowed_hosts.is_some() && variable.name == crate::github::ACCESS_ENVIRONMENT;
+    let (github, others): (Vec<_>, Vec<_>) = if variables.iter().any(is_token) {
+        variables.iter().partition(|variable| {
+            is_token(variable) || (variable.allowed_hosts.is_none() && GIT_IDENTITY.contains(&variable.name.as_str()))
+        })
+    } else {
+        (Vec::new(), variables.iter().collect())
+    };
+    let mut lines = Vec::new();
+    if !github.is_empty() {
+        let entries = if github.len() == 1 {
+            "its entry"
+        } else {
+            "their entries"
+        };
+        lines.extend([
+            format!("  {}", names(&github.iter().copied().cloned().collect::<Vec<_>>())),
+            "    Sign in:   agentctl github login default".into(),
+            format!("    Manifest:  replace {entries} with this, under spec:"),
+            "                 accounts:".into(),
+            "                   - type: github".into(),
+            "                     login: default".into(),
+        ]);
+    }
+    // The file's variable is the credential, whichever variables agents get it as. Storing it sets
+    // its hosts, so the command names those of every entry that reads it.
+    let credential = |variable: &Variable| variable.source.clone().unwrap_or_else(|| variable.name.clone());
+    let hosts = |source: &str| {
+        let mut hosts = Vec::<String>::new();
+        for variable in others.iter().filter(|variable| credential(variable) == source) {
+            for host in variable.allowed_hosts.iter().flatten() {
+                if !hosts.contains(host) {
+                    hosts.push(host.clone());
+                }
+            }
+        }
+        hosts
+    };
+    let mut named = Vec::<(String, String)>::new();
+    let mut shown = Vec::<(&str, &Option<String>)>::new();
+    for variable in &others {
+        // Entries that differ only in their hosts are one entry to change.
+        if shown.contains(&(variable.name.as_str(), &variable.source)) {
+            continue;
+        }
+        shown.push((variable.name.as_str(), &variable.source));
+        lines.push(format!("  {}", names(std::slice::from_ref(variable))));
+        // An entry takes its value from the file's variable or from elsewhere, never both.
+        let change = |field: &str| {
+            variable.source.as_ref().map_or_else(
+                || format!("add {field} to"),
+                |source| format!("replace `source: {source}` with {field} in"),
+            )
+        };
+        if variable.allowed_hosts.is_some() {
+            // Named after the file's variable, which is what tells one credential from another.
+            let source = credential(variable);
+            let name = source.to_ascii_lowercase().replace('_', "-");
+            // Two of the file's variables may differ only in what a name leaves out, such as case.
+            let taken = |name: &str| named.iter().any(|(other, taken)| taken == name && *other != source);
+            let name = std::iter::once(name.clone())
+                .chain((2..named.len() + 2).map(|number| format!("{name}-{number}")))
+                .find(|name| !taken(name))
+                .filter(|name| crate::names::valid(name))
+                .unwrap_or_else(|| "NAME".into());
+            named.push((source.clone(), name.clone()));
+            lines.extend([
+                format!("    Store it:  {}", secret_set(&name, &hosts(&source))),
+                format!(
+                    "    Manifest:  {} its entry in spec.secrets",
+                    change(&format!("`name: {name}`"))
+                ),
+            ]);
+        } else {
+            lines.extend([
+                format!(
+                    "    Manifest:  {} its entry in spec.environment.",
+                    change("`value:` with its value")
+                ),
+                "               A value of your own goes in a variant Git ignores, such as agent.mine.yaml".into(),
+            ]);
+        }
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    async fn found(folder: &Path, environment_files: Vec<PathBuf>) -> Vec<ExposedFile> {
+    async fn found(folder: &Path, environment_files: Vec<Applied>) -> Vec<ExposedFile> {
         let folder = std::fs::canonicalize(folder).expect("folder");
         find(vec![(folder, None)], environment_files).await.expect("found")
     }
@@ -204,8 +648,26 @@ mod tests {
     fn relative(files: &[ExposedFile]) -> Vec<(&Path, bool)> {
         files
             .iter()
-            .map(|file| (file.relative(), file.environment_file))
+            .map(|file| (file.relative(), file.environment_file.is_some()))
             .collect()
+    }
+
+    fn variable(name: &str, allowed_hosts: Option<&[&str]>) -> Variable {
+        Variable {
+            name: name.into(),
+            source: None,
+            allowed_hosts: allowed_hosts.map(|hosts| hosts.iter().map(|&host| host.to_owned()).collect()),
+        }
+    }
+
+    /// A manifest for an agent named `dev`, with `spec` as further lines of its `spec`.
+    fn manifest(spec: &str) -> String {
+        format!(
+            "apiVersion: agents.platform/v1alpha1\nkind: Agent\nmetadata:\n  name: dev\nspec:\n  sandbox:\n    \
+             image:\n      type: reference\n      reference: example.com/dev:1\n    platform:\n      os: linux\n    \
+             resources:\n      cpu: \"1\"\n      memory: 1Gi\n      rootFilesystem:\n        capacity: 8Gi\n        \
+             mode: layered\n{spec}"
+        )
     }
 
     #[tokio::test]
@@ -224,7 +686,13 @@ mod tests {
         std::fs::write(root.join("tools/beta.env"), "KEY=1").expect("file");
         let canonical = std::fs::canonicalize(root).expect("root");
 
-        let files = found(root, vec![canonical.join("tools").join("beta.env")]).await;
+        let reviewer = Applied {
+            file: canonical.join("tools").join("beta.env"),
+            agent: "agent/reviewer".into(),
+            variables: vec![variable("KEY", None)],
+            manifest: None,
+        };
+        let files = found(root, vec![reviewer]).await;
 
         assert_eq!(
             relative(&files),
@@ -236,6 +704,254 @@ mod tests {
                 (Path::new("tools/beta.env"), true),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn an_environment_file_names_what_still_reads_it_until_its_values_are_moved() {
+        let directory = tempfile::tempdir().expect("directory");
+        let root = std::fs::canonicalize(directory.path()).expect("root");
+        let moved = "  environment:\n    - name: EDITOR\n      value: vim\n  accounts:\n    - type: github\n      \
+                     login: work\n  secrets:\n    - name: aivar\n      environment: AIVAR_API_KEY\n      \
+                     allowedHosts: [api.aivar.no]\n";
+        let definitions = [
+            ("reads", manifest("  environment:\n    - name: EDITOR\n")),
+            ("moved", manifest(moved)),
+            ("applied", manifest("")),
+            ("unreadable", "kind: Agent\nspec:\n  mounts: []\n".to_owned()),
+        ];
+        for (folder, manifest) in definitions {
+            std::fs::create_dir_all(root.join(folder)).expect("folder");
+            std::fs::write(root.join(folder).join("agent.yaml"), manifest).expect("manifest");
+            std::fs::write(root.join(folder).join(".env"), "EDITOR=vim").expect("file");
+        }
+        std::fs::write(
+            root.join("reads/agent.nested.yaml"),
+            "apiVersion: agents.platform/v1alpha1\nkind: AgentVariant\nextends: agent.yaml\nmetadata:\n  name: nested\n",
+        )
+        .expect("variant");
+        let editor = vec![variable("EDITOR", None)];
+        let token = vec![variable("GITHUB_TOKEN", Some(&["api.github.com"]))];
+        // Applied before its manifest stopped reading the file, and not again since.
+        let applied = Applied {
+            file: root.join("applied/.env"),
+            agent: "agent/dev".into(),
+            variables: token.clone(),
+            manifest: Some(root.join("applied/agent.yaml")),
+        };
+
+        let files = found(&root, vec![applied]).await;
+
+        let left = files
+            .iter()
+            .map(|file| {
+                (
+                    file.relative(),
+                    file.environment_file.clone().expect("beside a manifest"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let manifest = |name: &str| Reader::Manifest {
+            name: name.into(),
+            variables: editor.clone(),
+        };
+        assert_eq!(
+            left,
+            [
+                (
+                    Path::new("applied/.env"),
+                    EnvironmentFile {
+                        readers: vec![Reader::Agent {
+                            name: "agent/dev".into(),
+                            variables: token,
+                            reapply: true
+                        }],
+                        stored: Vec::new(),
+                    }
+                ),
+                (
+                    Path::new("moved/.env"),
+                    EnvironmentFile {
+                        readers: Vec::new(),
+                        stored: vec![
+                            Stored::GithubLogin { login: "work".into() },
+                            Stored::Secret {
+                                name: "aivar".into(),
+                                allowed_hosts: vec!["api.aivar.no".into()]
+                            },
+                        ],
+                    }
+                ),
+                (
+                    Path::new("reads/.env"),
+                    EnvironmentFile {
+                        readers: vec![manifest("agent.nested.yaml"), manifest("agent.yaml")],
+                        stored: Vec::new(),
+                    }
+                ),
+                (
+                    Path::new("unreadable/.env"),
+                    EnvironmentFile {
+                        readers: vec![Reader::Unreadable {
+                            name: "agent.yaml".into()
+                        }],
+                        stored: Vec::new(),
+                    }
+                ),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_agent_reads_the_environment_file_a_link_leads_to() {
+        let directory = tempfile::tempdir().expect("directory");
+        let root = std::fs::canonicalize(directory.path()).expect("root");
+        std::fs::create_dir_all(root.join("checkout")).expect("folder");
+        std::fs::write(root.join("checkout/agent.yaml"), manifest("")).expect("manifest");
+        std::fs::write(root.join("secrets.env"), "KEY=1").expect("file");
+        std::os::unix::fs::symlink(root.join("secrets.env"), root.join("checkout/.env")).expect("link");
+        let applied = Applied {
+            file: root.join("secrets.env"),
+            agent: "agent/dev".into(),
+            variables: vec![variable("KEY", None)],
+            manifest: None,
+        };
+
+        let files = found(&root.join("checkout"), vec![applied]).await;
+
+        let readers = &files[0].environment_file.as_ref().expect("beside a manifest").readers;
+        assert!(
+            matches!(readers.as_slice(), [Reader::Agent { name, .. }] if name == "agent/dev"),
+            "{readers:?}"
+        );
+    }
+
+    /// An environment file in a checkout, with what agentd found about it.
+    fn environment_file_of(readers: Vec<Reader>, stored: Vec<Stored>) -> ExposedFile {
+        ExposedFile {
+            path: PathBuf::from("/src/app/agents/dev/.env"),
+            folder: PathBuf::from("/src/app"),
+            target: None,
+            environment_file: Some(EnvironmentFile { readers, stored }),
+        }
+    }
+
+    #[test]
+    fn the_refusal_of_an_environment_file_says_where_each_value_goes_instead() {
+        let file = environment_file_of;
+        let variables = vec![
+            variable("GIT_USER_NAME", None),
+            variable("GIT_USER_EMAIL", None),
+            variable("EDITOR", None),
+            variable("GITHUB_TOKEN", Some(&["api.github.com"])),
+            variable("AIVAR_API_KEY", Some(&["api.aivar.no"])),
+        ];
+        let manifest = |name: &str| Reader::Manifest {
+            name: name.into(),
+            variables: variables.clone(),
+        };
+        let agent = Reader::Agent {
+            name: "agent/dev".into(),
+            variables: variables[3..4].to_vec(),
+            reapply: true,
+        };
+        let read = file(
+            vec![manifest("agent.nested.yaml"), manifest("agent.yaml"), agent],
+            Vec::new(),
+        );
+
+        let refused = refusal_from(std::slice::from_ref(&read), Some(Path::new("/src/app")));
+        let lines = refused.lines().map(str::trim).collect::<Vec<_>>();
+
+        assert_eq!(
+            lines[1], "agents/dev/.env",
+            "named from the directory, on a line of its own"
+        );
+        for expected in [
+            "agent.nested.yaml and agent.yaml: GIT_USER_NAME, GIT_USER_EMAIL, EDITOR, GITHUB_TOKEN, AIVAR_API_KEY",
+            // Git's name and email come with the GitHub login, so they go with the token.
+            "GIT_USER_NAME, GIT_USER_EMAIL, GITHUB_TOKEN",
+            "Sign in:   agentctl github login default",
+            "Store it:  agentctl secret set aivar-api-key --hosts api.aivar.no",
+            "Manifest:  add `name: aivar-api-key` to its entry in spec.secrets",
+            "Then apply agent/dev again, delete the file and run this again.",
+        ] {
+            assert!(lines.contains(&expected), "{expected:?} is missing from:\n{refused}");
+        }
+        assert!(!refused.contains("https://"), "it says what to do itself: {refused}");
+        assert_eq!(
+            refusal_from(&[read], None).lines().nth(1).map(str::trim),
+            Some("agents/dev/.env in /src/app"),
+            "within its folder for a reader elsewhere"
+        );
+
+        let left = file(Vec::new(), vec![Stored::GithubLogin { login: "work".into() }]);
+        let refused = refusal(&[left]);
+        assert!(refused.contains("agentctl github login work"), "{refused}");
+        assert!(!refused.contains("Move each value"), "{refused}");
+    }
+
+    #[test]
+    fn a_credential_of_the_file_is_stored_once_under_a_name_of_its_own() {
+        let file = environment_file_of;
+        // The same variable from several of the file's, as manifests may have it, is as many
+        // credentials, and an entry that names the file's variable stops naming it.
+        let renamed = |manifest: &str, source: &str| Reader::Manifest {
+            name: manifest.into(),
+            variables: vec![Variable {
+                source: Some(source.into()),
+                ..variable("API_KEY", Some(&["api.example.com"]))
+            }],
+        };
+        let read = file(
+            vec![
+                renamed("agent.dev.yaml", "DEV_KEY"),
+                renamed("agent.other.yaml", "Dev_KEY"),
+                renamed("agent.yaml", "API_KEY"),
+            ],
+            Vec::new(),
+        );
+        let refused = refusal(&[read]);
+        for expected in [
+            "Store it:  agentctl secret set dev-key --hosts api.example.com",
+            "Store it:  agentctl secret set dev-key-2 --hosts api.example.com",
+            "Manifest:  replace `source: Dev_KEY` with `name: dev-key-2` in its entry in spec.secrets",
+            "Manifest:  replace `source: API_KEY` with `name: api-key` in its entry in spec.secrets",
+        ] {
+            assert!(
+                refused.lines().any(|line| line.trim() == expected),
+                "{expected:?} is missing from:\n{refused}"
+            );
+        }
+
+        // One credential that manifests use at different hosts is stored once, for all of them, as
+        // storing it again would replace its hosts.
+        let at = |manifest: &str, host: &str| Reader::Manifest {
+            name: manifest.into(),
+            variables: vec![variable("API_KEY", Some(&[host]))],
+        };
+        let read = file(
+            vec![at("agent.a.yaml", "a.example.com"), at("agent.b.yaml", "b.example.com")],
+            Vec::new(),
+        );
+        let refused = refusal(&[read]);
+        let stores = refused
+            .lines()
+            .filter(|line| line.contains("secret set"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            stores,
+            ["    Store it:  agentctl secret set api-key --hosts a.example.com,b.example.com"],
+            "{refused}"
+        );
+        let secret = |host: &str| Stored::Secret {
+            name: "api-key".into(),
+            allowed_hosts: vec![host.into()],
+        };
+        let left = file(Vec::new(), vec![secret("a.example.com"), secret("b.example.com")]);
+        let stores = refusal(&[left]);
+        assert_eq!(stores.matches("secret set").count(), 1, "{stores}");
+        assert!(stores.contains("--hosts a.example.com,b.example.com"), "{stores}");
     }
 
     #[tokio::test]
@@ -255,7 +971,7 @@ mod tests {
         let environment = files
             .into_iter()
             .map(|file| ExposedFile {
-                environment_file: true,
+                environment_file: Some(EnvironmentFile::default()),
                 ..file
             })
             .collect::<Vec<_>>();

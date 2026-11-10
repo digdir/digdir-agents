@@ -309,9 +309,10 @@ impl ControlPlane {
         record.exposed_files = crate::exposed::consented(found, allowed)?;
 
         // This agent's environment file, in what other agents see.
-        let Some(secret_file) = own else {
+        let Some(own) = own else {
             return Ok(());
         };
+        let secret_file = &own.file;
         let mut mounts = Vec::new();
         for volume in self.volumes.list().await? {
             let crate::volumes::VolumeSpec::Copy { source } = volume.volume.spec;
@@ -340,11 +341,11 @@ impl ControlPlane {
             if secret_file.starts_with(source) {
                 return Err(Error::Invalid(format!(
                     "{mount} {verb} {} which contains {}, the environment file of agent {:?}, so its sandbox would \
-                     see the real values. Move them as {} says",
+                     see the real values.\n\n{}",
                     source.display(),
                     secret_file.display(),
                     record.agent.metadata.name,
-                    crate::exposed::ENVIRONMENT_FILE_GUIDE,
+                    crate::exposed::moving_out(&own.variables, std::slice::from_ref(&own.agent)),
                 )));
             }
         }
@@ -899,26 +900,27 @@ pub(crate) async fn reject_secrets_in_copy(
     field: &str,
     source: &std::path::Path,
 ) -> Result<(), Error> {
-    for secret_file in environment_files(agents).await? {
-        if secret_file.starts_with(source) {
+    for applied in environment_files(agents).await? {
+        if applied.file.starts_with(source) {
             return Err(Error::Invalid(format!(
-                "{field} copies {} which contains the environment file {}; the sandboxes would see its real values. \
-                 Move them out as {} says",
+                "{field} copies {} which contains {}, the environment file of {}, so the sandboxes would see its \
+                 real values.\n\n{}",
                 source.display(),
-                secret_file.display(),
-                crate::exposed::ENVIRONMENT_FILE_GUIDE,
+                applied.file.display(),
+                applied.agent,
+                crate::exposed::moving_out(&applied.variables, std::slice::from_ref(&applied.agent)),
             )));
         }
     }
     Ok(())
 }
 
-/// The canonical environment files the active agents read values from.
+/// The environment files the active agents read values from, each with the agent that reads it.
 ///
 /// # Errors
 ///
 /// Returns an error when the agents cannot be read.
-pub(crate) async fn environment_files(agents: &dyn super::AgentStore) -> Result<Vec<PathBuf>, Error> {
+pub(crate) async fn environment_files(agents: &dyn super::AgentStore) -> Result<Vec<crate::exposed::Applied>, Error> {
     let mut files = Vec::new();
     for agent in agents.list().await? {
         if agent.agent.metadata.deletion_timestamp.is_none() {
@@ -928,18 +930,23 @@ pub(crate) async fn environment_files(agents: &dyn super::AgentStore) -> Result<
     Ok(files)
 }
 
-/// The canonical environment file `record`'s agent reads values from, secret or not, if it reads
-/// any: the file it records, or its `.env` when that exists. The file may hold more keys than the
-/// agent reads.
-async fn environment_file(record: &AgentRecord) -> Result<Option<PathBuf>, Error> {
-    if record.agent.spec.environment_file_variables().is_empty() {
+/// The environment file `record`'s agent reads values from, secret or not, if it reads any: the file
+/// it records, or its `.env` when that exists. The file may hold more keys than the agent reads.
+async fn environment_file(record: &AgentRecord) -> Result<Option<crate::exposed::Applied>, Error> {
+    let variables = crate::exposed::variables(&record.agent.spec);
+    if variables.is_empty() {
         return Ok(None);
     }
     let path = record.env_file_path();
     if record.env_file.is_none() && !tokio::fs::try_exists(&path).await? {
         return Ok(None);
     }
-    Ok(Some(canonical_secret_file(&path).await))
+    Ok(Some(crate::exposed::Applied {
+        file: canonical_secret_file(&path).await,
+        agent: format!("agent/{}", record.agent.metadata.name),
+        variables,
+        manifest: record.manifest_path.clone(),
+    }))
 }
 
 /// Canonical form of a secret file for comparison against canonical bind mount sources.

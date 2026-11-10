@@ -1398,25 +1398,25 @@ fn render_port_forward(frame: &mut Frame, area: Rect, form: &super::app::Forward
     }
 }
 
-/// A modal drawn at a fixed size whatever is typed: one line per row, a line
-/// for an error, then the form's key hints. Row `n` is drawn on line
-/// `n`, which is where callers put its mouse targets.
+/// A modal that keeps its size whatever is typed: one line per row, the lines
+/// of an error or an empty one, then the form's key hints. Row `n` is drawn on
+/// line `n`, which is where callers put its mouse targets.
 struct Form<'a> {
     title: &'a str,
     border: Color,
     hints: &'a [Hint],
     rows: Vec<Line<'static>>,
-    error: Line<'static>,
+    error: Option<String>,
 }
 
 impl<'a> Form<'a> {
-    fn new(title: &'a str, border: Color, hints: &'a [Hint]) -> Self {
+    const fn new(title: &'a str, border: Color, hints: &'a [Hint]) -> Self {
         Self {
             title,
             border,
             hints,
             rows: Vec::new(),
-            error: Line::default(),
+            error: None,
         }
     }
 
@@ -1425,21 +1425,39 @@ impl<'a> Form<'a> {
         self
     }
 
-    /// Shows a validation or submission error above the hints.
+    /// Shows a validation or submission error above the hints, on as many lines as it takes and the
+    /// terminal has, since one that says what to do about it runs to several.
     fn error(mut self, error: Option<&str>) -> Self {
-        self.error = error.map_or_else(Line::default, |error| {
-            Line::from(Span::styled(error.to_owned(), Style::new().fg(Color::Red)))
-        });
+        self.error = error.map(str::to_owned);
         self
     }
 
     fn render(self, frame: &mut Frame, area: Rect, width: u16, hit_map: &mut HitMap) -> Rect {
-        let hint_row = self.rows.len() + 1;
+        let width = width.min(area.width);
+        // Within the border and its padding.
+        let mut error = self.error.map_or_else(
+            || vec![String::new()],
+            |error| wrapped(&[error], width.saturating_sub(4)),
+        );
+        // What the terminal has room for between the rows and the hints, which stay in view. An
+        // error that says what to do can be longer than that, so the form says how much is left.
+        let room = usize::from(area.height).saturating_sub(self.rows.len() + 3).max(1);
+        if error.len() > room {
+            let hidden = error.len() - (room - 1);
+            error.truncate(room - 1);
+            error.push(format!("… and {hidden} more lines, which a taller terminal shows"));
+        }
+        let hint_row = self.rows.len() + error.len();
         let mut lines = self.rows;
+        lines.extend(
+            error
+                .into_iter()
+                .map(|row| Line::from(Span::styled(row, Style::new().fg(Color::Red)))),
+        );
         // The hints are drawn into their line after the block, as the footer's are.
-        lines.extend([self.error, Line::default()]);
+        lines.push(Line::default());
         let height = u16::try_from(lines.len()).unwrap_or(u16::MAX).saturating_add(2);
-        let target = centered_rect(area, width.min(area.width), height.min(area.height));
+        let target = centered_rect(area, width, height.min(area.height));
         frame.render_widget(Clear, target);
         let block = Block::bordered()
             .title(self.title.to_owned())
@@ -2569,6 +2587,64 @@ mod tests {
         assert!(
             agent_line.trim_end().ends_with('│'),
             "path remains inside the modal: {agent_line}"
+        );
+    }
+
+    #[test]
+    fn a_form_shows_every_line_of_an_error_and_keeps_its_hints_below() {
+        use super::super::app::{CreateForm, ManifestCandidate};
+
+        let mut form = CreateForm::new(
+            vec![ManifestCandidate::new(
+                std::path::PathBuf::from("/src/app/agents/dev/agent.yaml"),
+                Ok("dev".into()),
+            )],
+            None,
+        );
+        form.error = Some(format!(
+            "an environment file stops it:\n  agents/dev/.env\n\n{}",
+            "#".repeat(150)
+        ));
+        let mut app = App::new();
+        app.modal = Some(Modal::CreateAgent(form));
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).expect("test terminal");
+        draw(&mut terminal, &app);
+
+        let text = buffer_text(&terminal);
+        let row = |needle: &str| text.lines().position(|line| line.contains(needle));
+        assert!(row("agents/dev/.env").is_some(), "a later line of the error: {text}");
+        assert_eq!(
+            text.matches('#').count(),
+            150,
+            "a long line is wrapped, not cut: {text}"
+        );
+        assert!(row("esc cancel") > row("###"), "the hints stay below the error: {text}");
+    }
+
+    #[test]
+    fn a_form_keeps_its_hints_when_an_error_is_longer_than_the_terminal() {
+        use super::super::app::{CreateForm, ManifestCandidate};
+
+        let mut form = CreateForm::new(
+            vec![ManifestCandidate::new(
+                std::path::PathBuf::from("/src/app/agents/dev/agent.yaml"),
+                Ok("dev".into()),
+            )],
+            None,
+        );
+        let steps = (1..=30).map(|step| format!("step {step}")).collect::<Vec<_>>();
+        form.error = Some(steps.join("\n"));
+        let mut app = App::new();
+        app.modal = Some(Modal::CreateAgent(form));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        draw(&mut terminal, &app);
+
+        let text = buffer_text(&terminal);
+        assert!(text.contains("esc cancel"), "the hints stay in view: {text}");
+        let shown = steps.iter().filter(|step| text.contains(&format!(" {step} "))).count();
+        assert!(
+            (1..30).contains(&shown) && text.contains(&format!("{} more lines", 30 - shown)),
+            "it says how many of the 30 lines it left out, after {shown}: {text}"
         );
     }
 

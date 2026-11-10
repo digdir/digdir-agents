@@ -1183,11 +1183,11 @@ mod tests {
 
     #[test]
     fn the_tui_asks_about_new_dot_env_files_and_never_about_an_environment_file() {
-        let file = |relative: &str, environment_file| agent::exposed::ExposedFile {
+        let file = |relative: &str, environment_file: bool| agent::exposed::ExposedFile {
             path: Path::new("/src/app").join(relative),
             folder: PathBuf::from("/src/app"),
             target: None,
-            environment_file,
+            environment_file: environment_file.then(agent::exposed::EnvironmentFile::default),
         };
         let none = std::collections::BTreeSet::new();
         let agreed = ask_about(&[file("src/web/.env", false)], &none).expect("asks");
@@ -1198,7 +1198,7 @@ mod tests {
         let named = Path::new("/src/app").join("src/web/.env").display().to_string();
         assert!(refused.contains(&named), "{refused}");
         let refused = ask_about(&[file("agents/a/.env", true)], &none).expect_err("an environment file");
-        assert!(refused.contains(agent::exposed::ENVIRONMENT_FILE_GUIDE), "{refused}");
+        assert!(refused.contains("agents/a/.env"), "{refused}");
 
         let many = (0..20)
             .map(|index| file(&format!("app{index}/.env"), false))
