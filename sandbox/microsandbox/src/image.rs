@@ -13,7 +13,7 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use sandbox::progress::{MeasuredStep, ProgressStep, SandboxProgress};
 use sandbox::{
     Error, LocalFuture, OutputStream, PendingOperation, ProgressUnit, RootFilesystemMode,
-    blocking::{self, Cancel, Work},
+    blocking::{self, Stoppable, Work},
     image,
 };
 use sha2::{Digest as _, Sha256};
@@ -949,13 +949,13 @@ async fn create_context_archive(
     context: PathBuf,
     dockerfile: PathBuf,
 ) -> Result<tempfile::TempPath, Error> {
-    blocking::run(Work::Copy, "archiving the Docker build context", move |cancel| {
+    blocking::run(Work::Copy, "archiving the Docker build context", move || {
         let archive = tempfile::NamedTempFile::new_in(scratch)?;
         let path = archive.into_temp_path();
         let file = File::create(&path)?;
         let ignore = dockerignore(&context)?;
-        let mut builder = tar::Builder::new(file);
-        append_directory(&mut builder, &context, &context, &dockerfile, &ignore, cancel)?;
+        let mut builder = tar::Builder::new(Stoppable::new(file));
+        append_directory(&mut builder, &context, &context, &dockerfile, &ignore)?;
         builder.finish()?;
         Ok::<_, std::io::Error>(path)
     })
@@ -975,18 +975,17 @@ fn dockerignore(context: &Path) -> Result<Gitignore, std::io::Error> {
 }
 
 fn append_directory(
-    archive: &mut tar::Builder<File>,
+    archive: &mut tar::Builder<Stoppable<File>>,
     context: &Path,
     directory: &Path,
     dockerfile: &Path,
     ignore: &Gitignore,
-    cancel: &Cancel,
 ) -> Result<(), std::io::Error> {
     let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
 
     for entry in entries {
-        cancel.check().map_err(std::io::Error::other)?;
+        blocking::check().map_err(std::io::Error::other)?;
         let path = entry.path();
         let relative = path.strip_prefix(context).map_err(std::io::Error::other)?;
         let metadata = std::fs::symlink_metadata(&path)?;
@@ -998,7 +997,7 @@ fn append_directory(
             if !excluded {
                 archive.append_dir(relative, &path)?;
             }
-            append_directory(archive, context, &path, dockerfile, ignore, cancel)?;
+            append_directory(archive, context, &path, dockerfile, ignore)?;
         } else if forced || !excluded {
             archive.append_path_with_name(&path, relative)?;
         }

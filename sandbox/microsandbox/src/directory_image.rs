@@ -16,7 +16,7 @@ use microsandbox_image::{
 };
 use sandbox::{
     Error, ProgressUnit, SandboxProgress,
-    blocking::{self, Cancel, Work},
+    blocking::{self, Work},
     volume::Owner,
 };
 use tokio::sync::mpsc;
@@ -52,8 +52,8 @@ pub(crate) async fn build(
     progress: &SandboxProgress,
 ) -> Result<(), Error> {
     let (stages, mut received) = mpsc::unbounded_channel();
-    let build = blocking::run(Work::Copy, "copying the directory into an image", move |cancel| {
-        build_blocking(&source, owner, &output, &stages, cancel)
+    let build = blocking::run(Work::Copy, "copying the directory into an image", move || {
+        build_blocking(&source, owner, &output, &stages)
     });
     let report = async {
         let mut copying = None;
@@ -95,7 +95,6 @@ fn build_blocking(
     owner: Owner,
     output: &Path,
     stages: &mpsc::UnboundedSender<Stage>,
-    cancel: &Cancel,
 ) -> Result<(), Error> {
     let partial = output.with_extension("partial");
     let spool_path = output.with_extension("spool");
@@ -108,12 +107,11 @@ fn build_blocking(
         );
         // The tree is read before any file, so the bytes to copy are known when copying starts.
         let mut files = Vec::new();
-        add_directory(&mut tree, &mut files, source, owner, &[], cancel)?;
+        add_directory(&mut tree, &mut files, source, owner, &[])?;
         let _ = stages.send(Stage::Scanned(files.iter().map(|file| file.metadata.len()).sum()));
         let mut spool = DataSpool::new(&spool_path).map_err(|source| error::io("create image spool", source))?;
         let mut copied = Copied {
             stages,
-            cancel,
             bytes: 0,
             reported: Instant::now(),
         };
@@ -152,7 +150,6 @@ struct File {
 /// The bytes copied so far, and when they were last reported.
 struct Copied<'a> {
     stages: &'a mpsc::UnboundedSender<Stage>,
-    cancel: &'a Cancel,
     bytes: u64,
     reported: Instant,
 }
@@ -161,7 +158,7 @@ impl Copied<'_> {
     /// Counts `bytes` as copied, and stops the copy once its caller is gone, such as when agentd
     /// stops, since nothing would use the image.
     fn add(&mut self, bytes: usize) -> Result<(), Error> {
-        self.cancel.check()?;
+        blocking::check()?;
         self.bytes += bytes as u64;
         if self.reported.elapsed() >= REPORT_INTERVAL {
             self.reported = Instant::now();
@@ -179,7 +176,6 @@ fn add_directory(
     directory: &Path,
     owner: Owner,
     path: &[u8],
-    cancel: &Cancel,
 ) -> Result<(), Error> {
     let mut entries = std::fs::read_dir(directory)
         .map_err(|error| read_error(directory, &error))?
@@ -187,7 +183,7 @@ fn add_directory(
         .map_err(|error| read_error(directory, &error))?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
-        cancel.check()?;
+        blocking::check()?;
         let host_path = entry.path();
         let mut entry_path = path.to_vec();
         if !entry_path.is_empty() {
@@ -220,7 +216,7 @@ fn add_directory(
         tree.insert(&entry_path, node)
             .map_err(|error| Error::Backend(format!("cannot copy {}: {error}", host_path.display())))?;
         if file_type.is_dir() {
-            add_directory(tree, files, &host_path, owner, &entry_path, cancel)?;
+            add_directory(tree, files, &host_path, owner, &entry_path)?;
         }
     }
     Ok(())
@@ -306,8 +302,18 @@ fn read_error(path: &Path, error: &std::io::Error) -> Error {
 mod tests {
     use super::*;
 
+    /// The names in `directory`, sorted.
+    fn names(directory: &Path) -> Vec<std::ffi::OsString> {
+        let mut names: Vec<_> = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    }
+
     #[test]
-    fn a_stopped_copy_leaves_nothing() {
+    fn a_stopped_copy_writes_no_image() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("source");
         std::fs::create_dir_all(&source).unwrap();
@@ -330,11 +336,23 @@ mod tests {
             matches!(error, Error::Blocking(blocking::Error::Stopped { .. })),
             "{error}"
         );
-        let left: Vec<_> = std::fs::read_dir(directory.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(left, ["source"]);
+        assert_eq!(names(directory.path()), ["source"]);
+    }
+
+    #[test]
+    fn a_copy_that_fails_after_copying_the_files_removes_its_spool() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("data.bin"), vec![7_u8; COPY_BUFFER]).unwrap();
+        let output = directory.path().join("image.erofs");
+        // Writing the image fails once every file is in the spool, as a directory is in its way.
+        std::fs::create_dir(output.with_extension("partial")).unwrap();
+        let (stages, _received) = mpsc::unbounded_channel();
+
+        build_blocking(&source, Owner::default(), &output, &stages).unwrap_err();
+
+        assert_eq!(names(directory.path()), ["image.partial", "source"]);
     }
 
     #[tokio::test]

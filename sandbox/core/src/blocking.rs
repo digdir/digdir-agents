@@ -6,10 +6,15 @@
 //! agents applied together do not copy every tree at the same time, and lets the work stop once
 //! nothing waits for it.
 //!
+//! Work stops where it calls [`check`], or writes through [`Stoppable`]. Code that takes time in
+//! proportion to its input does so between steps, such as between the files it reads. It needs
+//! no handle for it, so code that also runs outside [`run`], such as in the CLI, checks the same
+//! way, and there the check never fails.
+//!
 //! The limits and [`stop_all`] belong to the thread that starts the work, which for a daemon is
 //! its runtime's thread.
 
-use std::sync::Arc;
+use std::{cell::RefCell, io, sync::Arc};
 
 use tokio::{sync::Semaphore, task::JoinError};
 use tokio_util::sync::CancellationToken;
@@ -34,7 +39,7 @@ const COPY_LIMIT: usize = 2;
 /// Blocking work that did not finish.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The work stopped at a [`Cancel::check`], as nothing waited for it any more.
+    /// The work stopped at a [`check`], as nothing waited for it any more.
     #[error("{what} stopped, as nothing waits for it any more")]
     Stopped {
         /// The work, as its caller described it.
@@ -49,30 +54,6 @@ pub enum Error {
         #[source]
         source: JoinError,
     },
-}
-
-/// Tells blocking work whether it should stop.
-pub struct Cancel {
-    token: CancellationToken,
-    what: &'static str,
-}
-
-impl Cancel {
-    /// Fails once the caller of [`run`] no longer waits for the work, or [`stop_all`] was called.
-    ///
-    /// Work that takes time in proportion to its input checks this between steps, such as
-    /// between the files it reads, so that it stops soon after nothing needs its result.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Stopped`] when the work should stop.
-    pub fn check(&self) -> Result<(), Error> {
-        if self.token.is_cancelled() {
-            Err(Error::Stopped { what: self.what })
-        } else {
-            Ok(())
-        }
-    }
 }
 
 /// The blocking work one thread starts. A permit moves to the blocking thread with its work, so
@@ -93,20 +74,43 @@ impl Pool {
     }
 }
 
+/// The work a blocking thread runs for [`run`], which [`check`] reads.
+struct Running {
+    token: CancellationToken,
+    what: &'static str,
+}
+
 thread_local! {
     static POOL: Pool = Pool {
         stop: CancellationToken::new(),
         tree: Arc::new(Semaphore::new(TREE_LIMIT)),
         copy: Arc::new(Semaphore::new(COPY_LIMIT)),
     };
+    static RUNNING: RefCell<Option<Running>> = const { RefCell::new(None) };
+}
+
+/// Clears [`RUNNING`] when the work ends, also when it panics, as the thread runs other work next.
+struct Entered;
+
+impl Entered {
+    fn new(running: Running) -> Self {
+        RUNNING.set(Some(running));
+        Self
+    }
+}
+
+impl Drop for Entered {
+    fn drop(&mut self) {
+        RUNNING.set(None);
+    }
 }
 
 /// Runs `task` on a blocking thread once its kind of `work` is below its limit, and returns
 /// what it returns. `what` describes the work in errors, such as "reading the skill".
 ///
-/// Dropping the returned future before it completes makes `task`'s [`Cancel::check`] fail. The
-/// thread itself cannot be interrupted, so `task` runs until it next checks or returns, and its
-/// place under the limit stays taken until then.
+/// Dropping the returned future before it completes makes [`check`] fail in `task`. The thread
+/// itself cannot be interrupted, so `task` runs until it next checks or returns, and its place
+/// under the limit stays taken until then.
 ///
 /// # Errors
 ///
@@ -114,7 +118,7 @@ thread_local! {
 pub async fn run<T, F>(work: Work, what: &'static str, task: F) -> Result<T, Error>
 where
     T: Send + 'static,
-    F: FnOnce(&Cancel) -> T + Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
 {
     let (token, limit) = POOL.with(|pool| (pool.stop.child_token(), pool.limit(work)));
     // The semaphores are never closed, so acquiring one cannot fail.
@@ -123,20 +127,60 @@ where
         None => None,
     };
     let _stop_when_dropped = token.clone().drop_guard();
-    let cancel = Cancel { token, what };
     #[allow(
         clippy::disallowed_methods,
         reason = "this is the one place that starts blocking work"
     )]
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        task(&cancel)
+        let _entered = Entered::new(Running { token, what });
+        task()
     })
     .await
     .map_err(|source| Error::Failed { what, source })
 }
 
-/// Stops the work this thread started, and any it starts later, at its next [`Cancel::check`].
+/// Fails once the blocking work this thread runs for [`run`] should stop: its caller no longer
+/// waits for it, or [`stop_all`] was called. Outside [`run`] it never fails.
+///
+/// # Errors
+///
+/// Returns [`Error::Stopped`] when the work should stop.
+pub fn check() -> Result<(), Error> {
+    RUNNING.with_borrow(|running| match running {
+        Some(running) if running.token.is_cancelled() => Err(Error::Stopped { what: running.what }),
+        _ => Ok(()),
+    })
+}
+
+/// Writes to the writer it holds after each [`check`], so that a copy into it, such as of a large
+/// file into an archive, stops within one write.
+pub struct Stoppable<W>(W);
+
+impl<W> Stoppable<W> {
+    /// Writes to `inner`.
+    pub const fn new(inner: W) -> Self {
+        Self(inner)
+    }
+
+    /// Returns the writer it writes to.
+    pub fn into_inner(self) -> W {
+        self.0
+    }
+}
+
+impl<W: io::Write> io::Write for Stoppable<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        check().map_err(io::Error::other)?;
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+/// Stops the work this thread started, and any it starts later, at its next [`check`].
 ///
 /// A daemon calls this as it shuts down, before it waits for its blocking threads, so that work it
 /// no longer needs ends early and cleans up after itself.
@@ -147,19 +191,20 @@ pub fn stop_all() {
 #[cfg(test)]
 mod tests {
     use std::{
+        io::Write as _,
         sync::atomic::{AtomicUsize, Ordering},
         time::Duration,
     };
 
     use tokio::{runtime::LocalRuntime, sync::oneshot};
 
-    use super::{COPY_LIMIT, Cancel, Error, Work, run, stop_all};
+    use super::{COPY_LIMIT, Error, Stoppable, Work, check, run, stop_all};
 
     /// Reports that it started, then waits until it is told to stop and reports that.
-    fn until_stopped(started: oneshot::Sender<()>, stopped: oneshot::Sender<()>) -> impl FnOnce(&Cancel) + Send {
-        move |cancel| {
+    fn until_stopped(started: oneshot::Sender<()>, stopped: oneshot::Sender<()>) -> impl FnOnce() + Send {
+        move || {
             let _ = started.send(());
-            while cancel.check().is_ok() {
+            while check().is_ok() {
                 std::thread::sleep(Duration::from_millis(1));
             }
             let _ = stopped.send(());
@@ -184,7 +229,7 @@ mod tests {
         static RUNNING: AtomicUsize = AtomicUsize::new(0);
         static MOST: AtomicUsize = AtomicUsize::new(0);
         let copy = || {
-            run(Work::Copy, "copying", |_: &Cancel| {
+            run(Work::Copy, "copying", || {
                 let running = RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
                 MOST.fetch_max(running, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(100));
@@ -211,8 +256,10 @@ mod tests {
                 stop_all();
                 has_stopped.await.expect("running work should stop");
                 running.await.expect("task").expect("running work should return");
-                let later = run(Work::Brief, "checking", |cancel: &Cancel| cancel.check()).await;
+                let later = run(Work::Brief, "checking", check).await;
                 assert!(matches!(later, Ok(Err(Error::Stopped { what: "checking" }))));
+                let written = run(Work::Brief, "writing", || Stoppable::new(Vec::new()).write_all(b"data")).await;
+                assert!(written.expect("the work should return").is_err());
             });
         });
         thread.join().expect("the test thread should finish");

@@ -976,7 +976,7 @@ async fn definition_sources(
         .map(|record| record.source_directory.clone())
         .collect::<Vec<_>>();
     let directory = directory.to_path_buf();
-    blocking::run(Work::Brief, "finding the agents' definition sources", move |_| {
+    blocking::run(Work::Brief, "finding the agents' definition sources", move || {
         sources
             .iter()
             .map(|source| match crate::definitions::source(source)? {

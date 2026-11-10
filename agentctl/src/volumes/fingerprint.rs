@@ -30,9 +30,8 @@ pub(crate) struct Fingerprint {
 /// Fingerprints `directory`. Reading only metadata keeps it quick, even for a large tree, and
 /// finding the files that may hold real keys in the same walk keeps applying a volume to one walk.
 pub(crate) async fn take(directory: PathBuf) -> Result<Fingerprint, Error> {
-    blocking::run(Work::Tree, "fingerprinting the directory", move |cancel| {
+    blocking::run(Work::Tree, "fingerprinting the directory", move || {
         let mut fingerprint = Walk {
-            cancel,
             hasher: Sha256::new(),
             files: 0,
             bytes: 0,
@@ -65,8 +64,7 @@ pub(crate) async fn take(directory: PathBuf) -> Result<Fingerprint, Error> {
     .await?
 }
 
-struct Walk<'a> {
-    cancel: &'a blocking::Cancel,
+struct Walk {
     hasher: Sha256,
     files: u64,
     bytes: u64,
@@ -74,12 +72,12 @@ struct Walk<'a> {
     exposed: Vec<PathBuf>,
 }
 
-impl Walk<'_> {
+impl Walk {
     fn directory(&mut self, directory: &Path, relative: &Path) -> io::Result<()> {
         let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
         entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
-            self.cancel.check().map_err(io::Error::other)?;
+            blocking::check().map_err(io::Error::other)?;
             let path = entry.path();
             let relative = relative.join(entry.file_name());
             let metadata = std::fs::symlink_metadata(&path)?;

@@ -345,7 +345,7 @@ impl Access {
         let home = self.home.clone();
         let client_key = blocking::run(Work::Brief, "writing the SSH client key", {
             let name = name.to_owned();
-            move |_| ensure_client_key(&home, id, &name)
+            move || ensure_client_key(&home, id, &name)
         })
         .await??;
         // `HostKeyAlias` keys the entry by the incarnation for OpenSSH; a second entry under the

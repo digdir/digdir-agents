@@ -84,7 +84,7 @@ pub(crate) async fn find(
     folders: Vec<(PathBuf, Option<SandboxPath>)>,
     environment_files: Vec<PathBuf>,
 ) -> Result<Vec<ExposedFile>, Error> {
-    blocking::run(Work::Tree, "looking for .env files", move |cancel| {
+    blocking::run(Work::Tree, "looking for .env files", move || {
         let mut found = BTreeSet::new();
         for (folder, target) in folders {
             if matches!(folder.try_exists(), Ok(false)) {
@@ -101,7 +101,7 @@ pub(crate) async fn find(
                 .follow_links(false)
                 .build()
             {
-                cancel.check()?;
+                blocking::check()?;
                 let entry = entry.map_err(|error| {
                     Error::Invalid(format!("cannot look for .env files in {}: {error}", folder.display()))
                 })?;

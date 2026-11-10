@@ -23,16 +23,15 @@ pub(super) async fn archive_home(
 
 /// Archives a resolved host directory on a blocking thread; `field` names the manifest field in errors.
 async fn archive_directory(source: std::path::PathBuf, field: String) -> Result<Vec<u8>, Error> {
-    blocking::run(Work::Copy, "archiving the agent's home", move |cancel| {
-        archive_directory_blocking(&source, &field, cancel)
+    blocking::run(Work::Copy, "archiving the agent's home", move || {
+        archive_directory_blocking(&source, &field)
     })
     .await?
 }
 
-fn archive_directory_blocking(source: &Path, field: &str, cancel: &blocking::Cancel) -> Result<Vec<u8>, Error> {
-    let mut archive = tar::Builder::new(Vec::new());
+fn archive_directory_blocking(source: &Path, field: &str) -> Result<Vec<u8>, Error> {
+    let mut archive = tar::Builder::new(blocking::Stoppable::new(Vec::new()));
     walk_source(source, field, |relative, path, is_dir| {
-        cancel.check()?;
         if is_dir {
             archive.append_dir(relative, path)?;
         } else {
@@ -40,7 +39,7 @@ fn archive_directory_blocking(source: &Path, field: &str, cancel: &blocking::Can
         }
         Ok(())
     })?;
-    archive.into_inner().map_err(Error::from)
+    Ok(archive.into_inner()?.into_inner())
 }
 
 pub(super) async fn sync_home(sandbox: &SandboxHandle, archive: Vec<u8>) -> Result<(), Error> {

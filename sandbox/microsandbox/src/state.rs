@@ -247,7 +247,7 @@ where
     T: Serialize + Send + Sync + 'static,
 {
     let serialized = serde_json::to_vec_pretty(value).map_err(error::backend)?;
-    blocking::run(Work::Brief, "writing Microsandbox state", move |_| {
+    blocking::run(Work::Brief, "writing Microsandbox state", move || {
         let parent = path
             .parent()
             .ok_or_else(|| std::io::Error::other("state record has no parent directory"))?;
