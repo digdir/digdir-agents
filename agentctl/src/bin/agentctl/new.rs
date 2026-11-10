@@ -17,7 +17,7 @@ use agent::{
 use clap::Args;
 use sandbox::SandboxPath;
 
-use crate::{CommandError, CommandResult, progress};
+use crate::{CommandError, CommandResult, consent, progress};
 
 /// The builder's definition, by its name among those agentd carries.
 const DEFINITION: &str = "agent-builder";
@@ -147,25 +147,37 @@ async fn start(home: &ControlPlaneHome, client: &Client, targets: &Targets, chec
         .join(PERSONAL_AGENTS);
     std::fs::create_dir_all(&personal_agents).map_err(Error::from)?;
     eprintln!("Starting the agent builder on {}.", checkout.display());
-    let (ran, _lease) = client
-        .run(RunRequest {
-            definition: RunDefinition::Reference {
-                reference: DEFINITION.into(),
+    let request = RunRequest {
+        definition: RunDefinition::Reference {
+            reference: DEFINITION.into(),
+        },
+        binds: vec![
+            BindSource {
+                source: checkout.to_path_buf(),
+                target: Some(targets.checkout.clone()),
             },
-            binds: vec![
-                BindSource {
-                    source: checkout.to_path_buf(),
-                    target: Some(targets.checkout.clone()),
-                },
-                BindSource {
-                    source: personal_agents,
-                    target: Some(targets.personal_agents.clone()),
-                },
-            ],
-            lifetime: None,
-            name: None,
-        })
-        .await?;
+            BindSource {
+                source: personal_agents,
+                target: Some(targets.personal_agents.clone()),
+            },
+        ],
+        lifetime: None,
+        name: None,
+        allow_exposed_files: std::collections::BTreeSet::new(),
+    };
+    // `new` runs only at a terminal, so the person is there to answer.
+    let ask = consent::Ask {
+        reader: "The agent builder",
+        action: "Mount",
+        allowed: false,
+    };
+    let (ran, _lease) = consent::send(
+        request,
+        &ask,
+        |request| &mut request.allow_exposed_files,
+        |request| client.run(request),
+    )
+    .await?;
     let name = ran.agent.metadata.name;
     let target = match open_session(client, &name).await {
         Ok(target) => target,
