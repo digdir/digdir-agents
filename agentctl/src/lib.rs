@@ -28,6 +28,7 @@ pub mod resources;
 pub mod sandbox;
 pub mod secrets;
 pub mod sessions;
+pub mod sign_in;
 pub mod ssh;
 pub mod upgrade;
 pub mod vnc;

@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 pub use inspect::SCOPES;
-pub(crate) use sign_in::is_sign_in_link;
 pub use sign_in::{REVOKE_PAGE as SIGN_IN_REVOKE_PAGE, sandbox_sign_in};
 
 use crate::{

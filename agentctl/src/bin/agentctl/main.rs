@@ -2702,18 +2702,61 @@ async fn login(
                 false,
                 "",
             ),
-            None => {
-                let stored =
-                    sandbox_sign_in::store_login(client, home, harness, name, sandbox_sign_in::START_TIMEOUT).await?;
-                println!("{} login {} stored", stored.provider, stored.login);
-                return Ok(());
-            }
+            None => return sandbox_login(client, home, harness, name).await,
         },
     };
     let stored = client
         .auth_login(harness, name, credential.to_string(), imported)
         .await?;
     println!("{} login {} stored{source}", stored.provider, stored.login);
+    Ok(())
+}
+
+/// Signs in to `harness` in a short-lived agent and stores the login as `name`, for a machine
+/// without the harness's own command.
+async fn sandbox_login(
+    client: &Client,
+    home: &ControlPlaneHome,
+    harness: agent::Harness,
+    name: agent::harness::LoginName,
+) -> CommandResult<()> {
+    let display = harness.display_name();
+    let Some(recipe) = agent::harness::sandbox_sign_in(harness) else {
+        return Err(Error::Invalid(format!("{display} has no login to sign in to")).into());
+    };
+    if !prompt::interactive() {
+        return Err(CommandError::Message(format!(
+            "{display} is not installed here, and signing in without it needs a terminal and a browser"
+        )));
+    }
+    let credential = sandbox_sign_in::sign_in(client, home, display, &recipe).await?;
+    // A credential read off the sign-in's screen can be missed or come out garbled while the person
+    // still sees it whole, so they can paste it instead.
+    let read_off_screen = recipe.artifact.is_none();
+    let paste = |what: String| {
+        CommandError::Message(format!(
+            "{what}; paste the one it printed into {} with --from-stdin",
+            agent::harness::login_command(harness, &name)
+        ))
+    };
+    let credential = match credential {
+        Ok(credential) => credential,
+        Err(Error::Invalid(reason)) if read_off_screen => return Err(paste(reason)),
+        Err(error) => return Err(error.into()),
+    };
+    let stored = match client
+        .auth_login(harness, name.clone(), credential.to_string(), false)
+        .await
+    {
+        Ok(stored) => stored,
+        Err(error) if read_off_screen => {
+            return Err(paste(format!(
+                "the {display} credential read from the screen was refused: {error}"
+            )));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    println!("{} login {} stored", stored.provider, stored.login);
     Ok(())
 }
 

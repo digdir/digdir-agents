@@ -6,10 +6,9 @@ use sandbox::secret_store::SecretReference;
 
 use crate::{
     Error,
-    harness::{
-        LaunchRequest, LoginName, MediatedSecret, ProcessLaunch, SandboxSignIn, login::LoginStore, shell_single_quoted,
-    },
+    harness::{LaunchRequest, LoginName, MediatedSecret, ProcessLaunch, login::LoginStore, shell_single_quoted},
     persistence,
+    sign_in::{SandboxSignIn, artifact_text},
 };
 
 pub(super) mod authentication;
@@ -185,16 +184,17 @@ pub(super) fn sandbox_sign_in() -> SandboxSignIn {
         .chain(LOGIN_CONFIGURATION)
         .chain(["login", "--device-auth"])
         .map(str::to_owned);
-    SandboxSignIn {
-        execution: sandbox::execution::ExecutionSpec::command(sandbox::SandboxPath::new("/bin/sh"), arguments)
+    SandboxSignIn::new(
+        sandbox::execution::ExecutionSpec::command(sandbox::SandboxPath::new("/bin/sh"), arguments)
             .with_environment([("CODEX_HOME".into(), SIGN_IN_HOME.into())]),
-        artifact: Some(sandbox::SandboxPath::new(format!("{SIGN_IN_HOME}/auth.json"))),
-        credential: |_output, artifact| super::artifact_text("Codex", artifact),
-    }
+        Some(sandbox::SandboxPath::new(format!("{SIGN_IN_HOME}/auth.json"))),
+        |url, _hyperlinked| is_sign_in_link(url),
+        |_output, artifact| artifact_text("Codex", artifact),
+    )
 }
 
 /// Whether `url` is the page where a Codex device sign-in takes its one-time code.
-pub(super) fn is_sign_in_link(url: &reqwest::Url) -> bool {
+fn is_sign_in_link(url: &reqwest::Url) -> bool {
     url.host_str() == Some("auth.openai.com") && url.path().starts_with("/codex/device")
 }
 
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn a_sandbox_sign_in_links_to_the_device_page_and_leaves_its_grant_in_a_file() {
-        let links = crate::harness::sign_in_links(SIGN_IN_OUTPUT.as_bytes());
+        let links = super::sandbox_sign_in().links(SIGN_IN_OUTPUT.as_bytes());
         assert_eq!(
             links.iter().map(reqwest::Url::as_str).collect::<Vec<_>>(),
             ["https://auth.openai.com/codex/device"]

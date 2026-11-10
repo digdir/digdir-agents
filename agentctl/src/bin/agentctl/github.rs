@@ -148,10 +148,7 @@ async fn sign_in(client: &Client, home: &ControlPlaneHome, user: Option<&str>) -
          so if that is you, sign out first or open the link in a private window.\n"
     );
     let recipe = agent::github::sandbox_sign_in();
-    Ok(
-        crate::sandbox_sign_in::sign_in(client, home, "GitHub", &recipe, crate::sandbox_sign_in::START_TIMEOUT)
-            .await??,
-    )
+    Ok(crate::sandbox_sign_in::sign_in(client, home, "GitHub", &recipe).await??)
 }
 
 /// What becomes of a token had the `way` given that is not kept, acting as `acts_as`. A browser

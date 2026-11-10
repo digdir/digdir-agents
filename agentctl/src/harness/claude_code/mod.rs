@@ -5,10 +5,10 @@ use std::fmt::Write as _;
 use crate::{
     Error,
     harness::{
-        LaunchRequest, LoginName, MediatedSecret, ProcessLaunch, SandboxSignIn, SignIn, login::LoginStore,
-        shell_single_quoted,
+        LaunchRequest, LoginName, MediatedSecret, ProcessLaunch, SignIn, login::LoginStore, shell_single_quoted,
     },
     persistence,
+    sign_in::SandboxSignIn,
 };
 
 pub(super) mod authentication;
@@ -275,8 +275,8 @@ fn find_setup_token(output: &[u8]) -> Option<zeroize::Zeroizing<String>> {
 /// nothing, and it shows its sign-in link instead. The person pastes the code
 /// that the sign-in page shows back into its terminal, and it prints the token.
 pub(super) fn sandbox_sign_in() -> SandboxSignIn {
-    SandboxSignIn {
-        execution: sandbox::execution::ExecutionSpec::command(
+    SandboxSignIn::new(
+        sandbox::execution::ExecutionSpec::command(
             sandbox::SandboxPath::new("/usr/bin/env"),
             ["claude".into(), "setup-token".into()],
         )
@@ -288,18 +288,19 @@ pub(super) fn sandbox_sign_in() -> SandboxSignIn {
             // live, so a cached one could be refused.
             ("BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS".into(), "0".into()),
         ]),
-        artifact: None,
-        credential: |output, _artifact| {
+        None,
+        is_sign_in_link,
+        |output, _artifact| {
             find_setup_token(output).ok_or_else(|| Error::Invalid("`claude setup-token` printed no token".into()))
         },
-    }
+    )
 }
 
 /// Whether `url` is the page where `claude setup-token` signs in, whole. It wraps
 /// the link over rows, which cuts its text short, possibly in the middle of a
 /// value of its query, and prints it as a `hyperlinked` one that holds all of
 /// it, so only the hyperlink counts.
-pub(super) fn is_sign_in_link(url: &reqwest::Url, hyperlinked: bool) -> bool {
+fn is_sign_in_link(url: &reqwest::Url, hyperlinked: bool) -> bool {
     hyperlinked
         && matches!(
             url.host_str(),
@@ -567,11 +568,11 @@ mod tests {
         let output = sign_in_output();
         let whole = reqwest::Url::parse(SIGN_IN_LINK).expect("link");
         assert_eq!(
-            crate::harness::sign_in_links(output.as_bytes()),
+            super::sandbox_sign_in().links(output.as_bytes()),
             std::slice::from_ref(&whole)
         );
         for end in 0..output.len() {
-            for link in crate::harness::sign_in_links(&output.as_bytes()[..end]) {
+            for link in super::sandbox_sign_in().links(&output.as_bytes()[..end]) {
                 assert_eq!(link, whole, "after {end} bytes");
             }
         }
@@ -587,7 +588,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(b"\r\r\n".as_slice());
         output.extend_from_slice(b"\r\r\n");
-        assert_eq!(crate::harness::sign_in_links(&output), []);
+        assert_eq!(super::sandbox_sign_in().links(&output), []);
     }
 
     #[test]

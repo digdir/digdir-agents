@@ -1,7 +1,7 @@
 //! Signing in to GitHub through the browser, with the GitHub CLI in a sandbox, so the host needs
 //! no `gh` and neither reads nor changes a `gh` login of its own.
 
-use crate::harness::{SandboxSignIn, artifact_text};
+use crate::sign_in::{SandboxSignIn, artifact_text};
 
 /// Where `gh` keeps its configuration, and the token, in the sign-in agent, which is deleted
 /// with the agent.
@@ -40,6 +40,7 @@ pub fn sandbox_sign_in() -> SandboxSignIn {
             ("GLAMOUR_STYLE".into(), "dark".into()),
         ]),
         Some(sandbox::SandboxPath::new(format!("{CONFIGURATION}/token"))),
+        |url, _hyperlinked| is_sign_in_link(url),
         |_output, artifact| artifact_text("GitHub", artifact),
     )
 }
@@ -55,7 +56,7 @@ fn additional_scopes() -> String {
 }
 
 /// Whether `url` is the page where a GitHub device sign-in takes its one-time code.
-pub(crate) fn is_sign_in_link(url: &reqwest::Url) -> bool {
+fn is_sign_in_link(url: &reqwest::Url) -> bool {
     url.host_str() == Some("github.com") && url.path() == "/login/device"
 }
 
@@ -100,7 +101,7 @@ mod tests {
     fn the_device_page_is_found_in_what_gh_prints() {
         let output = b"\x1b[0;33m!\x1b[0m First copy your one-time code: \x1b[0;1;39mABCD-1234\x1b[0m\r\n\
             \x1b[0;1;39mOpen this URL\x1b[0m to continue in your web browser: https://github.com/login/device\r\n";
-        let links = crate::harness::sign_in_links(output);
+        let links = sandbox_sign_in().links(output);
         assert_eq!(
             links.iter().map(reqwest::Url::as_str).collect::<Vec<_>>(),
             ["https://github.com/login/device"]
