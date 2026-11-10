@@ -130,16 +130,22 @@ impl Builder {
     /// once the person agrees to let it read them, or why it may not. Asking before a command
     /// changes anything lets it stop with nothing deleted or started.
     pub(crate) async fn agree(&self, client: &Client, checkout: &Path) -> CommandResult<BTreeSet<PathBuf>> {
-        let files = client.exposed_files(self.binds(checkout)?).await?;
-        if files.is_empty() {
-            return Ok(BTreeSet::new());
-        }
-        let agreed = consent::agree(&files, &ASK)?;
-        if !agreed.delete.is_empty() {
+        let mut files = client.exposed_files(self.binds(checkout)?).await?;
+        loop {
+            if files.is_empty() {
+                return Ok(BTreeSet::new());
+            }
+            let agreed = consent::agree(&files, &ASK)?;
+            if agreed.delete.is_empty() {
+                return Ok(agreed.read);
+            }
             let now = client.exposed_files(self.binds(checkout)?).await?;
-            consent::delete(&agreed.delete, &now)?;
+            if consent::asked_about_all(&files, &now) {
+                consent::delete(&agreed.delete, &now)?;
+                return Ok(agreed.read);
+            }
+            files = now;
         }
-        Ok(agreed.read)
     }
 
     /// Starts a builder on `checkout` and talks with it about `task`, returning its name, with the

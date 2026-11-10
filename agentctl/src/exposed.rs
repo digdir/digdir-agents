@@ -486,19 +486,29 @@ impl EnvironmentFile {
         if self.stored.is_empty() {
             return Vec::new();
         }
-        let stored = self
-            .stored
-            .iter()
-            .map(|stored| match stored {
-                Stored::GithubLogin { login } => (
-                    format!("the GitHub login {login}"),
-                    format!("agentctl github login {login}"),
-                ),
-                Stored::Secret { name, allowed_hosts } => {
-                    (format!("the secret {name}"), secret_set(name, allowed_hosts))
+        // Storing a secret sets its hosts, so one command names those of every entry that takes it.
+        let mut hosts = std::collections::BTreeMap::<&str, Vec<String>>::new();
+        for stored in &self.stored {
+            if let Stored::Secret { name, allowed_hosts } = stored {
+                let hosts = hosts.entry(name).or_default();
+                for host in allowed_hosts {
+                    if !hosts.contains(host) {
+                        hosts.push(host.clone());
+                    }
                 }
-            })
-            .collect::<Vec<_>>();
+            }
+        }
+        let logins = self.stored.iter().filter_map(|stored| match stored {
+            Stored::GithubLogin { login } => Some((
+                format!("the GitHub login {login}"),
+                format!("agentctl github login {login}"),
+            )),
+            Stored::Secret { .. } => None,
+        });
+        let secrets = hosts
+            .iter()
+            .map(|(name, hosts)| (format!("the secret {name}"), secret_set(name, hosts)));
+        let stored = logins.chain(secrets).collect::<Vec<_>>();
         let width = stored.iter().map(|(what, _)| what.len()).max().unwrap_or_default();
         let mut lines = vec!["The manifests beside it now take these from agentctl. Store those you have not:".into()];
         lines.extend(
@@ -566,8 +576,28 @@ fn moves(variables: &[Variable]) -> Vec<String> {
             "                     login: default".into(),
         ]);
     }
+    // The file's variable is the credential, whichever variables agents get it as. Storing it sets
+    // its hosts, so the command names those of every entry that reads it.
+    let credential = |variable: &Variable| variable.source.clone().unwrap_or_else(|| variable.name.clone());
+    let hosts = |source: &str| {
+        let mut hosts = Vec::<String>::new();
+        for variable in others.iter().filter(|variable| credential(variable) == source) {
+            for host in variable.allowed_hosts.iter().flatten() {
+                if !hosts.contains(host) {
+                    hosts.push(host.clone());
+                }
+            }
+        }
+        hosts
+    };
     let mut named = Vec::<(String, String)>::new();
-    for variable in others {
+    let mut shown = Vec::<(&str, &Option<String>)>::new();
+    for variable in &others {
+        // Entries that differ only in their hosts are one entry to change.
+        if shown.contains(&(variable.name.as_str(), &variable.source)) {
+            continue;
+        }
+        shown.push((variable.name.as_str(), &variable.source));
         lines.push(format!("  {}", names(std::slice::from_ref(variable))));
         // An entry takes its value from the file's variable or from elsewhere, never both.
         let change = |field: &str| {
@@ -576,24 +606,20 @@ fn moves(variables: &[Variable]) -> Vec<String> {
                 |source| format!("replace `source: {source}` with {field} in"),
             )
         };
-        if let Some(allowed_hosts) = &variable.allowed_hosts {
+        if variable.allowed_hosts.is_some() {
             // Named after the file's variable, which is what tells one credential from another.
-            let source = variable.source.as_ref().unwrap_or(&variable.name);
+            let source = credential(variable);
             let name = source.to_ascii_lowercase().replace('_', "-");
-            let name = if crate::names::valid(&name) {
-                name
-            } else {
-                "NAME".into()
-            };
             // Two of the file's variables may differ only in what a name leaves out, such as case.
-            let taken = |name: &str| named.iter().any(|(other, taken)| taken == name && other != source);
+            let taken = |name: &str| named.iter().any(|(other, taken)| taken == name && *other != source);
             let name = std::iter::once(name.clone())
                 .chain((2..named.len() + 2).map(|number| format!("{name}-{number}")))
                 .find(|name| !taken(name))
-                .unwrap_or(name);
+                .filter(|name| crate::names::valid(name))
+                .unwrap_or_else(|| "NAME".into());
             named.push((source.clone(), name.clone()));
             lines.extend([
-                format!("    Store it:  {}", secret_set(&name, allowed_hosts)),
+                format!("    Store it:  {}", secret_set(&name, &hosts(&source))),
                 format!(
                     "    Manifest:  {} its entry in spec.secrets",
                     change(&format!("`name: {name}`"))
@@ -802,14 +828,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_refusal_of_an_environment_file_says_where_each_value_goes_instead() {
-        let file = |readers, stored| ExposedFile {
+    /// An environment file in a checkout, with what agentd found about it.
+    fn environment_file_of(readers: Vec<Reader>, stored: Vec<Stored>) -> ExposedFile {
+        ExposedFile {
             path: PathBuf::from("/src/app/agents/dev/.env"),
             folder: PathBuf::from("/src/app"),
             target: None,
             environment_file: Some(EnvironmentFile { readers, stored }),
-        };
+        }
+    }
+
+    #[test]
+    fn the_refusal_of_an_environment_file_says_where_each_value_goes_instead() {
+        let file = environment_file_of;
         let variables = vec![
             variable("GIT_USER_NAME", None),
             variable("GIT_USER_EMAIL", None),
@@ -856,6 +887,15 @@ mod tests {
             "within its folder for a reader elsewhere"
         );
 
+        let left = file(Vec::new(), vec![Stored::GithubLogin { login: "work".into() }]);
+        let refused = refusal(&[left]);
+        assert!(refused.contains("agentctl github login work"), "{refused}");
+        assert!(!refused.contains("Move each value"), "{refused}");
+    }
+
+    #[test]
+    fn a_credential_of_the_file_is_stored_once_under_a_name_of_its_own() {
+        let file = environment_file_of;
         // The same variable from several of the file's, as manifests may have it, is as many
         // credentials, and an entry that names the file's variable stops naming it.
         let renamed = |manifest: &str, source: &str| Reader::Manifest {
@@ -886,10 +926,34 @@ mod tests {
             );
         }
 
-        let left = file(Vec::new(), vec![Stored::GithubLogin { login: "work".into() }]);
-        let refused = refusal(&[left]);
-        assert!(refused.contains("agentctl github login work"), "{refused}");
-        assert!(!refused.contains("Move each value"), "{refused}");
+        // One credential that manifests use at different hosts is stored once, for all of them, as
+        // storing it again would replace its hosts.
+        let at = |manifest: &str, host: &str| Reader::Manifest {
+            name: manifest.into(),
+            variables: vec![variable("API_KEY", Some(&[host]))],
+        };
+        let read = file(
+            vec![at("agent.a.yaml", "a.example.com"), at("agent.b.yaml", "b.example.com")],
+            Vec::new(),
+        );
+        let refused = refusal(&[read]);
+        let stores = refused
+            .lines()
+            .filter(|line| line.contains("secret set"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            stores,
+            ["    Store it:  agentctl secret set api-key --hosts a.example.com,b.example.com"],
+            "{refused}"
+        );
+        let secret = |host: &str| Stored::Secret {
+            name: "api-key".into(),
+            allowed_hosts: vec![host.into()],
+        };
+        let left = file(Vec::new(), vec![secret("a.example.com"), secret("b.example.com")]);
+        let stores = refusal(&[left]);
+        assert_eq!(stores.matches("secret set").count(), 1, "{stores}");
+        assert!(stores.contains("--hosts a.example.com,b.example.com"), "{stores}");
     }
 
     #[tokio::test]

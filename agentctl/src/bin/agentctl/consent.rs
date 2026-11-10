@@ -35,26 +35,40 @@ where
     R: Clone,
     F: Future<Output = Result<T, Error>>,
 {
+    let mut found = None;
     loop {
-        match send(request.clone()).await {
-            Err(Error::ExposedFiles(files)) => {
-                let agreed = agree(&files, ask)?;
-                if agreed.delete.is_empty() {
-                    if agreed.read.is_subset(allowed(&mut request)) {
-                        // agentd refuses what was agreed to, which asking again would not change.
-                        return Err(Error::ExposedFiles(files));
-                    }
-                } else {
-                    match send(request.clone()).await {
-                        Err(Error::ExposedFiles(now)) => delete(&agreed.delete, &now)?,
-                        result => return result,
-                    }
-                }
-                *allowed(&mut request) = agreed.read;
+        let files = match found.take() {
+            Some(files) => files,
+            None => match send(request.clone()).await {
+                Err(Error::ExposedFiles(files)) => files,
+                result => return result,
+            },
+        };
+        let agreed = agree(&files, ask)?;
+        if agreed.delete.is_empty() {
+            if agreed.read.is_subset(allowed(&mut request)) {
+                // agentd refuses what was agreed to, which asking again would not change.
+                return Err(Error::ExposedFiles(files));
             }
-            result => return result,
+        } else {
+            match send(request.clone()).await {
+                Err(Error::ExposedFiles(now)) if asked_about_all(&files, &now) => delete(&agreed.delete, &now)?,
+                Err(Error::ExposedFiles(now)) => {
+                    found = Some(now);
+                    continue;
+                }
+                result => return result,
+            }
         }
+        *allowed(&mut request) = agreed.read;
     }
+}
+
+/// Whether the person was asked about every file agentd finds `now`, as they were about `files`.
+/// One that turned up while they answered is asked about before anything is deleted, so that a no
+/// to it still leaves everything as it was.
+pub(crate) fn asked_about_all(files: &[ExposedFile], now: &[ExposedFile]) -> bool {
+    now.iter().all(|file| files.iter().any(|asked| asked.path == file.path))
 }
 
 /// What the person agreed to about the files an agent would see.
