@@ -2344,16 +2344,19 @@ async fn ensure_daemon(home: &ControlPlaneHome, client: &Client) -> Result<(), E
 }
 
 /// An update stops agentd and keeps it stopped until it starts the new one, so a command that
-/// tries to start agentd meanwhile fails. That is the thing to tell the person, not why agentd
-/// would not start.
+/// tries to start agentd meanwhile fails. The update need not be for this command's home, so the
+/// usual diagnostics stay.
 fn startup_failure(home: &ControlPlaneHome, failure: &str) -> Error {
+    let diagnostics = daemon_startup_diagnostics(home);
     if InstallPaths::resolve()
         .and_then(|paths| paths.update_running())
         .unwrap_or(false)
     {
-        return Error::Daemon("an agentctl update is running; rerun this command once it has finished".into());
+        return Error::Daemon(format!(
+            "{failure}, likely because an agentctl update is running; rerun this command once it has finished, or {diagnostics}"
+        ));
     }
-    Error::Daemon(format!("{failure}; {}", daemon_startup_diagnostics(home)))
+    Error::Daemon(format!("{failure}; {diagnostics}"))
 }
 
 fn daemon_startup_diagnostics(home: &ControlPlaneHome) -> String {

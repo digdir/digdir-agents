@@ -1,7 +1,7 @@
 use std::{
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use agent::{
@@ -17,6 +17,7 @@ const DEFAULT_REPOSITORY: &str = "digdir/digdir-agents";
 const DAEMON_STOP_TIMEOUT: Duration = Duration::from_secs(65);
 const LIFECYCLE_REQUEST_TIMEOUT: Duration = Duration::from_secs(65);
 const TARGET_VERIFY_TIMEOUT: Duration = Duration::from_secs(75);
+const TARGET_RESTART_INTERVAL: Duration = Duration::from_secs(2);
 
 struct Completion {
     paths: InstallPaths,
@@ -290,10 +291,11 @@ async fn complete(completion: Completion, home: &ControlPlaneHome) -> CommandRes
     drop(home_lock);
 
     println!("Start and verify target daemon");
+    let start_target = || start_daemon(&target_release, home);
     if !target_ready(&client, home, &target_version).await {
-        start_daemon(&target_release, home)?;
+        start_target()?;
     }
-    verify_target(&client, home, &target_version).await?;
+    verify_target(&client, home, &target_version, start_target).await?;
     journal.advance(&paths, UpdatePhase::Complete)?;
     upgrade::prune_releases(&paths, previous_release.as_deref())?;
     println!("Agent updated to {target_version}");
@@ -408,11 +410,29 @@ fn start_daemon(release: &Path, home: &ControlPlaneHome) -> Result<(), Error> {
     Ok(())
 }
 
-async fn verify_target(client: &Client, home: &ControlPlaneHome, target_version: &str) -> Result<(), Error> {
-    let deadline = Instant::now() + TARGET_VERIFY_TIMEOUT;
-    while Instant::now() < deadline {
+/// Waits for the target agentd to start and relaunch sessions.
+///
+/// An agentd that a command started from the replaced release can take the home before the
+/// target does, so that the target gives up. That agentd exits once it reads the session relaunch
+/// marker, which names the target, so the target is started again whenever nothing holds the home.
+async fn verify_target(
+    client: &Client,
+    home: &ControlPlaneHome,
+    target_version: &str,
+    start_target: impl Fn() -> Result<(), Error>,
+) -> Result<(), Error> {
+    let deadline = tokio::time::Instant::now() + TARGET_VERIFY_TIMEOUT;
+    let mut next_start = tokio::time::Instant::now() + TARGET_RESTART_INTERVAL;
+    while tokio::time::Instant::now() < deadline {
         if target_ready(client, home, target_version).await {
             return Ok(());
+        }
+        if tokio::time::Instant::now() >= next_start {
+            next_start = tokio::time::Instant::now() + TARGET_RESTART_INTERVAL;
+            let home_free = home.acquire_lock().is_ok();
+            if home_free {
+                start_target()?;
+            }
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -538,6 +558,7 @@ mod tests {
     struct Daemon {
         home_lock: std::rc::Rc<std::cell::RefCell<Option<Lock>>>,
         shutdowns: std::rc::Rc<std::cell::Cell<usize>>,
+        version: &'static str,
     }
 
     impl agent::control_api::Connector for Daemon {
@@ -550,6 +571,7 @@ mod tests {
                 let (client, server) = tokio::io::duplex(4096);
                 let home_lock = std::rc::Rc::clone(&self.home_lock);
                 let shutdowns = std::rc::Rc::clone(&self.shutdowns);
+                let version = self.version;
                 tokio::task::spawn_local(async move {
                     let mut server = tokio::io::BufReader::new(server);
                     let mut request = String::new();
@@ -558,7 +580,7 @@ mod tests {
                     let result = match request["method"].as_str() {
                         Some("control.v1.health") => serde_json::json!({
                             "protocolVersion": PROTOCOL_VERSION,
-                            "buildVersion": "v1.0.0",
+                            "buildVersion": version,
                         }),
                         Some("control.v1.shutdown") => {
                             shutdowns.set(shutdowns.get() + 1);
@@ -585,6 +607,7 @@ mod tests {
         let daemon = Daemon {
             home_lock: std::rc::Rc::new(std::cell::RefCell::new(Some(home.acquire_lock().expect("home lock")))),
             shutdowns: std::rc::Rc::default(),
+            version: "v1.0.0",
         };
         let shutdowns = std::rc::Rc::clone(&daemon.shutdowns);
         let client = Client::new(std::rc::Rc::new(daemon));
@@ -597,6 +620,35 @@ mod tests {
         assert_eq!(shutdowns.get(), 1);
         assert!(home.acquire_lock().is_err(), "the updater holds the home");
         drop(lock);
+    }
+
+    #[tokio::test(flavor = "local", start_paused = true)]
+    async fn the_target_is_started_again_once_an_agentd_that_took_its_home_exits() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let home = ControlPlaneHome::resolve(Some(temporary.path())).expect("home");
+        let replaced = home.acquire_lock().expect("home taken by the replaced release");
+        tokio::task::spawn_local(async move {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            drop(replaced);
+        });
+        let target = Daemon {
+            home_lock: std::rc::Rc::default(),
+            shutdowns: std::rc::Rc::default(),
+            version: "v2.0.0",
+        };
+        let target_home = std::rc::Rc::clone(&target.home_lock);
+        let client = Client::new(std::rc::Rc::new(target));
+        let starts = std::cell::Cell::new(0);
+
+        verify_target(&client, &home, "v2.0.0", || {
+            starts.set(starts.get() + 1);
+            *target_home.borrow_mut() = Some(home.acquire_lock()?);
+            Ok(())
+        })
+        .await
+        .expect("target verified");
+
+        assert_eq!(starts.get(), 1, "started once the home was free, and not before");
     }
 
     #[cfg(unix)]
