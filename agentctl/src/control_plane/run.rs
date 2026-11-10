@@ -94,6 +94,23 @@ impl Prepared {
             Origin::Local => &self.agent.metadata.name,
         }
     }
+
+    /// The folder an agent is named after: the first one given, in the order the definition
+    /// declares its mounts, so a definition decides which of its folders names its agents.
+    fn naming_folder(&self) -> Option<&Path> {
+        first_given_folder(&self.agent, &self.bindings)
+    }
+}
+
+/// The first of `bindings` in the order `agent` declares its bind mounts.
+fn first_given_folder<'a>(
+    agent: &Agent,
+    bindings: &'a std::collections::BTreeMap<SandboxPath, PathBuf>,
+) -> Option<&'a Path> {
+    agent.spec.sandbox.mounts.iter().find_map(|mount| match mount {
+        crate::MountSpec::Bind { target, .. } => bindings.get(target).map(PathBuf::as_path),
+        crate::MountSpec::Volume { .. } | crate::MountSpec::Tmpfs { .. } => None,
+    })
 }
 
 impl ControlPlane {
@@ -141,11 +158,7 @@ impl ControlPlane {
             }
             prepared.agent.metadata.name = match &request.name {
                 Some(name) => name.clone(),
-                None => available_name(
-                    prepared.base_name(),
-                    prepared.bindings.values().next().map(PathBuf::as_path),
-                    &records,
-                )?,
+                None => available_name(prepared.base_name(), prepared.naming_folder(), &records)?,
             };
             prepared.agent.validate()?;
             // Another request that took the name first is found on the next pass: it may be an
@@ -257,6 +270,42 @@ fn name_part(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_agent_is_named_after_the_folder_its_definition_mounts_first() {
+        // The agent builder mounts the checkout first, at a target that sorts after its other one.
+        let mut agent = crate::bundled::Definitions::bundled()
+            .expect("the bundled definitions")
+            .get("agent-builder")
+            .expect("the agent builder")
+            .agent();
+        let targets = agent
+            .spec
+            .sandbox
+            .mounts
+            .iter()
+            .filter_map(|mount| match mount {
+                crate::MountSpec::Bind { target, .. } => Some(target.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let [first, second] = targets.as_slice() else {
+            panic!("the agent builder mounts two folders: {targets:?}");
+        };
+        assert!(second < first, "the targets sort in the other order");
+        let bindings = [
+            (first.clone(), PathBuf::from("/src/service")),
+            (second.clone(), PathBuf::from("/home/person/agents")),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(first_given_folder(&agent, &bindings), Some(Path::new("/src/service")));
+        agent.spec.sandbox.mounts.reverse();
+        assert_eq!(
+            first_given_folder(&agent, &bindings),
+            Some(Path::new("/home/person/agents"))
+        );
+    }
 
     #[test]
     fn a_name_is_the_definitions_and_the_given_folders() {

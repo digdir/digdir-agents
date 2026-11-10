@@ -1,0 +1,65 @@
+# The agent that makes agents, which `agentctl new` runs: it asks what the agent should do, writes its definition into
+# the repository's checkout or into a folder of your own, and tries it as a nested agent. agentd carries this
+# definition, and `agentctl new` runs one on each checkout it is given, named after the checkout's folder. It keeps
+# running until you delete it.
+apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  name: agent-builder
+spec:
+  sandbox:
+    # The published image the sandbox boots, built from images/agentctl-agent-builder, so the host needs no Docker. A
+    # released agentd runs the image its release published instead, which holds the same agentctl.
+    image:
+      type: reference
+      reference: ghcr.io/digdir/agentctl-agent-builder:main
+    platform:
+      os: linux
+    resources:
+      # The agents it tries run inside it, and build their images there: room for one nested agent, sized to fit a
+      # machine with 16 GiB of memory.
+      cpu: "4"
+      memory: "8Gi"
+      rootFilesystem:
+        capacity: "64Gi"
+        mode: direct
+      # Nested agents, to try what it writes. Without them it still writes agents, and says what it could not try.
+      nestedSandboxes: preferred
+    # Boot the image's own init system, systemd in the base images. It runs Podman and the SSH server.
+    initSystem: image
+    # The folders `agentctl new` gives it, named first so that agentd names the builder after the checkout.
+    mounts:
+      # The checkout of the repository the new agent is for, where its sessions start.
+      - type: bind
+        target: /home/agent/code
+        readOnly: false
+      # Where it writes personal agents, `~/agents`, where agentctl finds them.
+      - type: bind
+        target: /home/agent/agents
+        readOnly: false
+
+  # What every harness is told: how to make an agent, step by step. The agent-definition skill, which every agent
+  # gets, holds the conventions.
+  instructions:
+    - source: instructions.md
+
+  harnesses:
+    - type: claudeCode
+      auth: mediated
+      default: true
+    - type: codex
+      auth: mediated
+      optional: true
+
+  # No GitHub token and no Git identity: it works on the checkout it is given, and leaves what it writes for you to
+  # review, commit and push.
+
+  access:
+    - type: ssh
+
+  network:
+    mode: mediated
+    allow: all
+    # Google Cloud's metadata service hands out the credentials of the VM it runs on.
+    deny:
+      - metadata.google.internal

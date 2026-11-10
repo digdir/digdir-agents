@@ -76,10 +76,23 @@ update the skill as well.
 
 ## Your first agent
 
-Start from the [.NET example](../agents/examples/dotnet-dev/), an [agent definition](../GLOSSARY.md) whose manifest
-and image explain each line. Let an agent make it yours: ask Claude Code or Codex to copy it and change it for the
-tools and repositories your work needs. A coding agent working in an agent can apply what it writes as a nested agent
-and try it before you do.
+`agentctl new` makes an agent for a repository with you. Run it in the repository's checkout, or name the checkout:
+
+```sh
+agentctl new ~/repos/my-service
+```
+
+It runs the [agent builder](bundled/definitions/agent-builder/), a definition agentd carries, on the checkout, and you
+talk with it about what the new agent is for. The builder studies the repository, writes the agent's definition into
+the checkout for your team or into `~/agents` for you alone, tries it, and leaves it for you to review. It ends with
+the `agentctl apply` command that runs the agent it made. The builder keeps running until you delete it, so leaving
+before it is done and running `agentctl new` in the same checkout again goes back to the same conversation. It needs
+your Claude Code login (`agentctl claude login`).
+
+To write an agent by hand, start from the [.NET example](../agents/examples/dotnet-dev/), an
+[agent definition](../GLOSSARY.md) whose manifest and image explain each line. Let an agent make it yours: ask
+Claude Code or Codex to copy it and change it for the tools and repositories your work needs. A coding agent working
+in an agent can apply what it writes as a nested agent and try it before you do.
 
 ## Documentation
 

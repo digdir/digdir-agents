@@ -22,6 +22,7 @@ use crate::{Agent, Error, MountSpec, manifest::MANIFEST_FILE};
 const RELEASED_IMAGES: &[&str] = &[
     "ghcr.io/digdir/agentctl-base:ubuntu-26.04",
     "ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop",
+    "ghcr.io/digdir/agentctl-agent-builder:main",
 ];
 
 /// One file of a definition.
@@ -164,12 +165,16 @@ struct EmbeddedFile {
 const EMBEDDED: &[EmbeddedDefinition] = include!(concat!(env!("OUT_DIR"), "/bundled_definitions.rs"));
 
 /// `reference` as the release `version` runs it: an image the release publishes under its own
-/// tag, and anything else unchanged. Builds that are not releases, which have no tag of their own,
-/// run `main`'s.
+/// tag, and anything else unchanged. The release's tag is `main`'s tag followed by the version, or
+/// the version alone for an image `main` tags `main`. Builds that are not releases, which have no
+/// tag of their own, run `main`'s.
 fn released_image(reference: &str, version: Option<&str>) -> String {
     match version {
         Some(version) if RELEASED_IMAGES.contains(&reference) && is_release(version) => {
-            format!("{reference}-{version}")
+            reference.strip_suffix(":main").map_or_else(
+                || format!("{reference}-{version}"),
+                |repository| format!("{repository}:{version}"),
+            )
         }
         _ => reference.to_owned(),
     }
@@ -309,6 +314,11 @@ mod tests {
             format!("{base}-v0.1.0-preview.13")
         );
         assert_eq!(released_image(base, Some("v1.2.3")), format!("{base}-v1.2.3"));
+        assert_eq!(
+            released_image("ghcr.io/digdir/agentctl-agent-builder:main", Some("v1.2.3")),
+            "ghcr.io/digdir/agentctl-agent-builder:v1.2.3",
+            "an image main tags `main` is tagged by the version alone"
+        );
         for build in [
             None,
             Some("v0.1.0-preview.13.main.gabc1234"),

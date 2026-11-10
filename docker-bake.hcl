@@ -1,6 +1,6 @@
 # The images that are part of agentctl, published under ghcr.io/digdir, for `docker buildx bake`: the base images agents
-# build on and the image of agentctl and agentd. This repository's own agent has its own bake file,
-# agents/self-dev/docker-bake.hcl. CI builds each architecture on its own runner and publishes from main;
+# build on, the image of agentctl and agentd, and the agent builder's. This repository's own agent has its own bake
+# file, agents/self-dev/docker-bake.hcl. CI builds each architecture on its own runner and publishes from main;
 # `docker buildx bake -f docker-bake.hcl --load base-headless` builds one locally under its published name. Always pass
 # `-f docker-bake.hcl`: without it, bake also reads the root docker-compose.yml.
 
@@ -51,6 +51,35 @@ target "base-desktop" {
   tags     = ["${BASE_REPOSITORY}:${BASE_DISTRIBUTION}-desktop"]
   labels = {
     "org.opencontainers.image.description" = "Desktop base image for agentctl agents: the headless image plus Chromium and a VNC desktop"
+  }
+}
+
+# A build context to use in place of the published base image for the agent builder, such as `target:base-headless` to
+# build it on the base from the same checkout, as CI does for pull requests, or a release's base image by digest.
+variable "BASE_CONTEXT" {
+  default = ""
+}
+
+# A build context to use in place of `ghcr.io/digdir/agentctl:main` for the agent builder, such as a release's agentctl
+# image by digest, so that the builder a release publishes holds that release's agentctl.
+variable "AGENTCTL_CONTEXT" {
+  default = ""
+}
+
+# The agent builder's image, which `agentctl new` runs to make a new agent. It builds on the published base image and
+# copies agentctl and agentd from the published agentctl image.
+target "agent-builder" {
+  inherits = ["_source"]
+  context  = "images/agentctl-agent-builder"
+  contexts = merge(
+    BASE_CONTEXT == "" ? {} : { ("${BASE_REPOSITORY}:${BASE_DISTRIBUTION}") = BASE_CONTEXT },
+    AGENTCTL_CONTEXT == "" ? {} : { "ghcr.io/digdir/agentctl:main" = AGENTCTL_CONTEXT },
+  )
+  tags     = ["ghcr.io/digdir/agentctl-agent-builder:main"]
+  labels = {
+    "org.opencontainers.image.title"       = "agentctl-agent-builder"
+    "org.opencontainers.image.description" = "The agent builder's image, which agentctl new runs to make a new agent"
+    "org.opencontainers.image.version"     = AGENT_VERSION
   }
 }
 

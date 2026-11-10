@@ -54,6 +54,13 @@ jobs:
     outputs:
       build: ${{ steps.plan.outputs.build }}
     steps:
+      - name: Checkout code
+        if: github.event_name == 'push'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
       - name: Leave the build to the base images if this push changes them
         id: plan
         env:
@@ -62,18 +69,10 @@ jobs:
         run: |
           set -euo pipefail
           build=true
-          if [ "${GITHUB_EVENT_NAME}" = push ]; then
-            # The files agentctl-base-images.yml publishes on, as its push paths list them. Kept in step by hand: a
-            # path missing here costs only a build on the old base, which the base images' run then replaces.
-            base='^(images/agentctl-base/|\.github/workflows/agentctl-base-images\.yml$)'
-            base_docs='^images/agentctl-base/[^/]*\.md$'
-            changed="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BEFORE}...${GITHUB_SHA}" \
-              --jq '.files[] | .filename, (.previous_filename // empty)')"
-            relevant="$(grep -E "${base}" <<< "${changed}" | grep -v -E "${base_docs}" || true)"
-            if [ -n "${relevant}" ]; then
-              echo "This push changes the base images; their run builds these images once it has published them"
-              build=false
-            fi
+          if [ "${GITHUB_EVENT_NAME}" = push ] \
+            && .github/scripts/changes-base-images.sh "${BEFORE}" "${GITHUB_SHA}"; then
+            echo "This push changes the base images; their run builds these images once it has published them"
+            build=false
           fi
           echo "build=${build}" >> "${GITHUB_OUTPUT}"
 

@@ -20,6 +20,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 mod format;
 mod github;
 mod launch;
+mod new;
 mod progress;
 mod prompt;
 mod secret;
@@ -168,6 +169,9 @@ enum Command {
         #[command(flatten)]
         target: KillTarget,
     },
+    /// Make a new agent for a repository with the agent builder, which asks what it is for and writes
+    /// its definition.
+    New(new::NewArguments),
     /// Sign agents in to Claude Code.
     Claude {
         #[command(subcommand)]
@@ -734,6 +738,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             GithubCommand::Logout { name } => github::logout(client, &name).await?,
         },
         Command::Secret { command } => secret::run(client, command).await?,
+        Command::New(arguments) => new::new(arguments, home, client).await?,
         Command::Apply {
             filename,
             variant,
