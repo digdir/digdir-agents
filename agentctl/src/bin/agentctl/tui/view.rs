@@ -1425,8 +1425,8 @@ impl<'a> Form<'a> {
         self
     }
 
-    /// Shows a validation or submission error above the hints, on as many lines as it takes, since
-    /// one that says what to do about it runs to several.
+    /// Shows a validation or submission error above the hints, on as many lines as it takes and the
+    /// terminal has, since one that says what to do about it runs to several.
     fn error(mut self, error: Option<&str>) -> Self {
         self.error = error.map(str::to_owned);
         self
@@ -1435,10 +1435,18 @@ impl<'a> Form<'a> {
     fn render(self, frame: &mut Frame, area: Rect, width: u16, hit_map: &mut HitMap) -> Rect {
         let width = width.min(area.width);
         // Within the border and its padding.
-        let error = self.error.map_or_else(
+        let mut error = self.error.map_or_else(
             || vec![String::new()],
             |error| wrapped(&[error], width.saturating_sub(4)),
         );
+        // What the terminal has room for between the rows and the hints, which stay in view. An
+        // error that says what to do can be longer than that, so the form says how much is left.
+        let room = usize::from(area.height).saturating_sub(self.rows.len() + 3).max(1);
+        if error.len() > room {
+            let hidden = error.len() - (room - 1);
+            error.truncate(room - 1);
+            error.push(format!("… and {hidden} more lines, which a taller terminal shows"));
+        }
         let hint_row = self.rows.len() + error.len();
         let mut lines = self.rows;
         lines.extend(
@@ -2611,6 +2619,33 @@ mod tests {
             "a long line is wrapped, not cut: {text}"
         );
         assert!(row("esc cancel") > row("###"), "the hints stay below the error: {text}");
+    }
+
+    #[test]
+    fn a_form_keeps_its_hints_when_an_error_is_longer_than_the_terminal() {
+        use super::super::app::{CreateForm, ManifestCandidate};
+
+        let mut form = CreateForm::new(
+            vec![ManifestCandidate::new(
+                std::path::PathBuf::from("/src/app/agents/dev/agent.yaml"),
+                Ok("dev".into()),
+            )],
+            None,
+        );
+        let steps = (1..=30).map(|step| format!("step {step}")).collect::<Vec<_>>();
+        form.error = Some(steps.join("\n"));
+        let mut app = App::new();
+        app.modal = Some(Modal::CreateAgent(form));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        draw(&mut terminal, &app);
+
+        let text = buffer_text(&terminal);
+        assert!(text.contains("esc cancel"), "the hints stay in view: {text}");
+        let shown = steps.iter().filter(|step| text.contains(&format!(" {step} "))).count();
+        assert!(
+            (1..30).contains(&shown) && text.contains(&format!("{} more lines", 30 - shown)),
+            "it says how many of the 30 lines it left out, after {shown}: {text}"
+        );
     }
 
     #[test]
