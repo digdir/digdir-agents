@@ -45,11 +45,14 @@ spec:
     - source: instructions.md
 
   harnesses:
+    # Whichever login you stored, whatever its name.
     - type: claudeCode
       auth: mediated
       default: true
+      login: any
     - type: codex
       auth: mediated
+      login: any
       optional: true
 
   # No GitHub token and no Git identity: it works on the checkout it is given, and leaves what it writes for you to
