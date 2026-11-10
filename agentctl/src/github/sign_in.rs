@@ -7,18 +7,19 @@
 
 use crate::sign_in::{SandboxSignIn, artifact_text};
 
-/// Where `gh` keeps its configuration, and the token, in the sign-in agent, which is deleted
-/// with the agent.
-const CONFIGURATION: &str = "/tmp/gh-sign-in";
 /// The scopes `gh auth login` asks for without being told; [`super::SCOPES`] adds to them.
 const GH_DEFAULT_SCOPES: [&str; 3] = ["repo", "read:org", "gist"];
+/// Where the sign-in leaves the token for the host to read back: in `gh`'s usual configuration,
+/// since the sign-in agent is deleted with everything in it.
+const TOKEN_FILE: &str = ".config/gh/token";
 /// Runs the device sign-in, then writes the token where the host reads it back. With its input
 /// away from the terminal, `gh` shows the code and the link and waits for the browser at once,
-/// rather than for Enter to open a browser the sandbox doesn't have.
-const SCRIPT: &str = r#"umask 077 && mkdir -p "$GH_CONFIG_DIR" \
+/// rather than for Enter to open a browser the sandbox doesn't have. The sign-in agent has no
+/// keyring, so `gh` keeps the token in its configuration.
+const SCRIPT: &str = r#"umask 077 \
 && gh auth login --hostname github.com --web --git-protocol https --clipboard=false --expiring=false \
    --insecure-storage --scopes "$1" </dev/null \
-&& gh auth token --hostname github.com >"$GH_CONFIG_DIR/token""#;
+&& gh auth token --hostname github.com >"$HOME/$2""#;
 
 /// Where the account a browser sign-in acted as revokes its token, which also revokes that
 /// account's other GitHub CLI logins.
@@ -34,16 +35,18 @@ pub fn sandbox_sign_in() -> SandboxSignIn {
     SandboxSignIn::new(
         sandbox::execution::ExecutionSpec::command(
             sandbox::SandboxPath::new("/bin/sh"),
-            ["-c", SCRIPT, "sh", &scopes].map(str::to_owned),
+            ["-c", SCRIPT, "sh", &scopes, TOKEN_FILE].map(str::to_owned),
         )
         .with_environment([
-            ("GH_CONFIG_DIR".into(), CONFIGURATION.into()),
             ("GH_NO_UPDATE_NOTIFIER".into(), "1".into()),
             // Otherwise `gh` asks the terminal for its background colour, and the relay doesn't
             // pass the answer back, so it waits five seconds before showing the code.
             ("GLAMOUR_STYLE".into(), "dark".into()),
         ]),
-        Some(sandbox::SandboxPath::new(format!("{CONFIGURATION}/token"))),
+        Some(sandbox::SandboxPath::new(format!(
+            "{}/{TOKEN_FILE}",
+            crate::sandbox::platform::HOME
+        ))),
         |url, _hyperlinked| is_sign_in_link(url),
         |_output, artifact| artifact_text("GitHub", artifact),
     )

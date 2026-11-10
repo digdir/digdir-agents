@@ -44,8 +44,6 @@ const LOGIN_CONFIGURATION: [&str; 4] = [
     "-c",
     "forced_login_method=\"chatgpt\"",
 ];
-/// The Codex home of a sign-in in a sandbox, which exists only for that sign-in.
-const SIGN_IN_HOME: &str = "/tmp/agentctl-codex-sign-in";
 
 /// The login whose access token `reference` names. That token is refreshed before it is resolved.
 pub(super) fn access_login(reference: &SecretReference) -> Option<LoginName> {
@@ -177,17 +175,19 @@ pub(super) fn acquire_host_credential(
 ///
 /// The device sign-in shows a link and a one-time code to enter there, so the
 /// person signs in with a browser anywhere. Codex leaves the grant in the
-/// `auth.json` of its home, which must exist before it starts.
+/// `auth.json` of its usual home: the sign-in agent is deleted with everything
+/// in it, so the sign-in needs no home of its own.
 pub(super) fn sandbox_sign_in() -> SandboxSignIn {
-    let arguments = ["-c", r#"mkdir -p "$CODEX_HOME" && exec "$@""#, "sh", "codex"]
-        .into_iter()
+    let arguments = std::iter::once("codex")
         .chain(LOGIN_CONFIGURATION)
         .chain(["login", "--device-auth"])
         .map(str::to_owned);
     SandboxSignIn::new(
-        sandbox::execution::ExecutionSpec::command(sandbox::SandboxPath::new("/bin/sh"), arguments)
-            .with_environment([("CODEX_HOME".into(), SIGN_IN_HOME.into())]),
-        Some(sandbox::SandboxPath::new(format!("{SIGN_IN_HOME}/auth.json"))),
+        sandbox::execution::ExecutionSpec::command(sandbox::SandboxPath::new("/usr/bin/env"), arguments),
+        Some(sandbox::SandboxPath::new(format!(
+            "{}/.codex/auth.json",
+            crate::sandbox::platform::HOME
+        ))),
         |url, _hyperlinked| is_sign_in_link(url),
         |_output, artifact| artifact_text("Codex", artifact),
     )
