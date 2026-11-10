@@ -19,20 +19,45 @@ pub(super) struct Preparation {
     admitted: RefCell<AdmittedNetworks>,
 }
 
-/// The network policy each running sandbox's open connections were admitted under. It changes
-/// only once they are revoked, so a pass that fails before revoking them leaves the next one
-/// to do it.
+/// The network policy each running sandbox's open connections were admitted under, and whether
+/// another has been installed since, which may have admitted connections the current one would
+/// not. That stays so until the connections are revoked, so a pass that fails before revoking
+/// them, or a policy changed back, leaves the next pass to do it.
 #[derive(Default)]
-struct AdmittedNetworks(BTreeMap<SandboxName, crate::NetworkSpec>);
+struct AdmittedNetworks(BTreeMap<SandboxName, AdmittedNetwork>);
+
+struct AdmittedNetwork {
+    policy: crate::NetworkSpec,
+    other_installed: bool,
+}
 
 impl AdmittedNetworks {
-    /// Whether `sandbox` has connections admitted under a policy other than `network`.
-    fn differ(&self, sandbox: &SandboxName, network: &crate::NetworkSpec) -> bool {
-        self.0.get(sandbox).is_some_and(|admitted| admitted != network)
+    /// Records that `network` now decides `sandbox`'s connections. A sandbox seen for the first
+    /// time has none admitted under another.
+    fn install(&mut self, sandbox: &SandboxName, network: &crate::NetworkSpec) {
+        let admitted = self.0.entry(sandbox.clone()).or_insert_with(|| AdmittedNetwork {
+            policy: network.clone(),
+            other_installed: false,
+        });
+        admitted.other_installed |= admitted.policy != *network;
     }
 
+    /// Whether `sandbox` may have connections open that a policy other than `network` admitted.
+    fn differ(&self, sandbox: &SandboxName, network: &crate::NetworkSpec) -> bool {
+        self.0
+            .get(sandbox)
+            .is_some_and(|admitted| admitted.other_installed || admitted.policy != *network)
+    }
+
+    /// Records that `sandbox`'s open connections were all admitted under `network`.
     fn admit(&mut self, sandbox: &SandboxName, network: &crate::NetworkSpec) {
-        self.0.insert(sandbox.clone(), network.clone());
+        self.0.insert(
+            sandbox.clone(),
+            AdmittedNetwork {
+                policy: network.clone(),
+                other_installed: false,
+            },
+        );
     }
 
     fn forget(&mut self, sandbox: &SandboxName) {
@@ -146,6 +171,9 @@ impl Preparation {
                     .map(|secret| SecretHosts::new(secret.environment, secret.allowed_hosts.clone())),
             );
             self.policy.set_agent(&sandbox_name, &record.agent, policy);
+            self.admitted
+                .borrow_mut()
+                .install(&sandbox_name, &record.agent.spec.network);
             for secret in managed_secrets {
                 bindings.push(SecretBinding::with_placeholder(
                     secret.environment,
@@ -911,28 +939,35 @@ spec:
     #[test]
     fn a_policy_change_stays_pending_until_its_connections_are_admitted_under_it() {
         let sandbox = ::sandbox::SandboxName::new("agent-test-id").expect("Sandbox name");
-        let earlier = crate::NetworkSpec::default();
-        let tightened = crate::NetworkSpec {
-            deny: vec!["example.com".into()],
+        let earlier = crate::NetworkSpec {
+            deny: vec!["exfil.example".into()],
             ..crate::NetworkSpec::default()
         };
+        let broader = crate::NetworkSpec::default();
         let mut admitted = super::AdmittedNetworks::default();
         assert!(
-            !admitted.differ(&sandbox, &tightened),
+            !admitted.differ(&sandbox, &earlier),
             "a network not seen yet has nothing open"
         );
 
+        admitted.install(&sandbox, &earlier);
+        assert!(
+            !admitted.differ(&sandbox, &earlier),
+            "the first policy admitted what is open"
+        );
+        admitted.admit(&sandbox, &earlier);
+
+        admitted.install(&sandbox, &broader);
+        assert!(admitted.differ(&sandbox, &broader));
+        // The pass fails before revoking, and the broader policy admits a connection. Changing back
+        // must still close it.
+        admitted.install(&sandbox, &earlier);
+        assert!(admitted.differ(&sandbox, &earlier));
+
         admitted.admit(&sandbox, &earlier);
         assert!(!admitted.differ(&sandbox, &earlier));
-        assert!(admitted.differ(&sandbox, &tightened));
-        assert!(
-            admitted.differ(&sandbox, &tightened),
-            "a pass that fails before revoking leaves the change to the next"
-        );
-        admitted.admit(&sandbox, &tightened);
-        assert!(!admitted.differ(&sandbox, &tightened));
 
         admitted.forget(&sandbox);
-        assert!(!admitted.differ(&sandbox, &earlier));
+        assert!(!admitted.differ(&sandbox, &broader));
     }
 }

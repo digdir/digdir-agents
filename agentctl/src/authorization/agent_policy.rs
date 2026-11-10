@@ -255,9 +255,17 @@ impl AgentPolicyEngine {
         let port = destination
             .map(|address| address.port())
             .or_else(|| authority_port(request));
-        // The sandbox names the alias itself, so it counts only towards the host's own address.
-        let allowed =
-            alias && (flagged || reserved) && endpoint.as_ref().is_some_and(|endpoint| port == Some(endpoint.port));
+        // The sandbox names the alias itself, so it counts only towards the host's own address,
+        // which only the Network Backend's flag identifies: host-reserved ranges also hold other
+        // machines, such as VPN peers. An HTTP request carries no flag, but goes over a connection
+        // this already decided, and no connection to a reserved address other than the host's is
+        // admitted.
+        let at_host = if action == action::NETWORK_CONNECT {
+            flagged
+        } else {
+            flagged || reserved
+        };
+        let allowed = alias && at_host && endpoint.as_ref().is_some_and(|endpoint| port == Some(endpoint.port));
         Some(decision(allowed))
     }
 }

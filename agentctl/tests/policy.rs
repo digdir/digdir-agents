@@ -231,11 +231,12 @@ async fn host_destined_traffic_reaches_only_the_platform_api() {
     policy.set_platform_endpoint("host.microsandbox.internal", 4_100);
 
     assert_eq!(
-        connect(
+        connect_flagged(
             &policy,
             sandbox.as_str(),
             Some("host.microsandbox.internal"),
-            "100.64.0.2:4100"
+            "100.64.0.2:4100",
+            true
         )
         .await,
         AuthorizationDecision::Allow
@@ -301,25 +302,36 @@ async fn naming_the_platform_api_reaches_only_the_host() {
     policy.set_platform_endpoint("host.microsandbox.internal", 4_100);
 
     assert_eq!(
-        connect(
+        connect_flagged(
             &policy,
             sandbox.as_str(),
             Some("host.microsandbox.internal"),
-            "100.64.0.2:4100"
+            "100.64.0.2:4100",
+            true
         )
         .await,
         AuthorizationDecision::Allow
     );
-    assert_eq!(
-        connect(
-            &policy,
-            sandbox.as_str(),
-            Some("host.microsandbox.internal"),
-            "203.0.113.7:4100"
-        )
-        .await,
-        AuthorizationDecision::Deny
-    );
+    // Host-reserved ranges also hold other machines, such as VPN peers, which only the Network
+    // Backend's flag tells apart from the host.
+    for destination in [
+        "100.100.100.100:4100",
+        "[fd7a:115c:a1e0::1]:4100",
+        "169.254.10.1:4100",
+        "203.0.113.7:4100",
+    ] {
+        assert_eq!(
+            connect(
+                &policy,
+                sandbox.as_str(),
+                Some("host.microsandbox.internal"),
+                destination
+            )
+            .await,
+            AuthorizationDecision::Deny,
+            "{destination}"
+        );
+    }
     let http = |destination: &'static str| {
         policy.evaluate(AuthorizationRequest {
             principal: Principal::new(principal_kind::SANDBOX, "sandbox-id"),
