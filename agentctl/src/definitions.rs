@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use ::sandbox::blocking;
+use common::blocking;
 use ignore::WalkBuilder;
 
 use crate::{

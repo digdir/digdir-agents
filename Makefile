@@ -8,11 +8,13 @@ USER_INSTALL_BIN_DIR := $(abspath $(or $(CARGO_TARGET_DIR),target)/user-install)
 
 PACKAGES := \
 	-p agent \
+	-p common \
 	-p sandbox-authorization \
 	-p sandbox \
 	-p sandbox-worktree \
 	-p sandbox-microsandbox
 PORTABLE_PACKAGES := \
+	-p common \
 	-p sandbox \
 	-p sandbox-authorization \
 	-p agent \

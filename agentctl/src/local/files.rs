@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use ::sandbox::blocking;
+use common::blocking;
 use ignore::WalkBuilder;
 
 use crate::Error;

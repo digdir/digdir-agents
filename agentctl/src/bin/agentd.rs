@@ -57,7 +57,7 @@ fn run() -> Result<(), Error> {
     // `agentctl update` waits for agentd to exit, which waits for its blocking threads. Stopping
     // their work lets a long copy end at its next step, and work that still runs after the timeout
     // ends with the process.
-    sandbox::blocking::stop_all();
+    common::blocking::stop_all();
     runtime.shutdown_timeout(BLOCKING_WORK_SHUTDOWN_TIMEOUT);
     result
 }

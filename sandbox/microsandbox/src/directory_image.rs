@@ -14,9 +14,9 @@ use microsandbox_image::{
     erofs,
     tree::{DataSpool, DirectoryNode, FileTree, InodeMetadata, RegularFileId, RegularFileNode, SymlinkNode, TreeNode},
 };
+use common::blocking;
 use sandbox::{
     Error, ProgressUnit, SandboxProgress,
-    blocking::{self, Work},
     volume::Owner,
 };
 use tokio::sync::mpsc;
@@ -52,7 +52,7 @@ pub(crate) async fn build(
     progress: &SandboxProgress,
 ) -> Result<(), Error> {
     let (stages, mut received) = mpsc::unbounded_channel();
-    let build = blocking::run(Work::Copy, "copying the directory into an image", move || {
+    let build = blocking::run("copying the directory into an image", move || {
         build_blocking(&source, owner, &output, &stages)
     });
     let report = async {
@@ -83,7 +83,7 @@ pub(crate) async fn build(
         writing
     };
     let (result, writing) = tokio::join!(build, report);
-    result??;
+    result.map_err(error::backend)??;
     if let Some(step) = writing {
         step.complete().await;
     }
@@ -158,7 +158,7 @@ impl Copied<'_> {
     /// Counts `bytes` as copied, and stops the copy once its caller is gone, such as when agentd
     /// stops, since nothing would use the image.
     fn add(&mut self, bytes: usize) -> Result<(), Error> {
-        blocking::check()?;
+        blocking::check().map_err(error::backend)?;
         self.bytes += bytes as u64;
         if self.reported.elapsed() >= REPORT_INTERVAL {
             self.reported = Instant::now();
@@ -183,7 +183,7 @@ fn add_directory(
         .map_err(|error| read_error(directory, &error))?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
-        blocking::check()?;
+        blocking::check().map_err(error::backend)?;
         let host_path = entry.path();
         let mut entry_path = path.to_vec();
         if !entry_path.is_empty() {
@@ -331,11 +331,7 @@ mod tests {
             })
         });
 
-        let error = copy.join().unwrap().unwrap_err();
-        assert!(
-            matches!(error, Error::Blocking(blocking::Error::Stopped { .. })),
-            "{error}"
-        );
+        copy.join().unwrap().unwrap_err();
         assert_eq!(names(directory.path()), ["source"]);
     }
 

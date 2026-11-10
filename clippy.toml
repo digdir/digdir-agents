@@ -4,8 +4,8 @@ allow-panic-in-tests = true
 allow-unwrap-in-consts = true
 allow-unwrap-in-tests = true
 disallowed-methods = [
-  { path = "tokio::task::spawn_blocking", reason = "run it with `sandbox::blocking::run`, which limits it and lets it stop" },
-  { path = "tokio::runtime::Handle::spawn_blocking", reason = "run it with `sandbox::blocking::run`, which limits it and lets it stop" },
-  { path = "std::thread::spawn", reason = "run blocking work with `sandbox::blocking::run`, which limits it and lets it stop" },
-  { path = "std::thread::Builder::spawn", reason = "run blocking work with `sandbox::blocking::run`, which limits it and lets it stop" },
+  { path = "tokio::task::spawn_blocking", reason = "run it with `common::blocking::run`, which lets it stop once nothing waits for it" },
+  { path = "tokio::runtime::Handle::spawn_blocking", reason = "run it with `common::blocking::run`, which lets it stop once nothing waits for it" },
+  { path = "std::thread::spawn", reason = "run blocking work with `common::blocking::run`, which lets it stop once nothing waits for it" },
+  { path = "std::thread::Builder::spawn", reason = "run blocking work with `common::blocking::run`, which lets it stop once nothing waits for it" },
 ]

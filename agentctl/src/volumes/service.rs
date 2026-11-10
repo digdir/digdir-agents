@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, path::PathBuf, rc::Rc};
 
-use ::sandbox::blocking::{self, Work};
+use common::blocking;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -196,7 +196,7 @@ impl VolumeService {
         let environment_files = crate::control_plane::environment_files(self.agents.as_ref()).await?;
         let fingerprint = fingerprint::take(source.clone()).await?;
         let named = fingerprint.exposed.clone();
-        let exposed = blocking::run(Work::Brief, "looking for .env files", move || {
+        let exposed = blocking::run("looking for .env files", move || {
             crate::exposed::classify(&source, None, named, &environment_files)
                 .into_iter()
                 .collect()
@@ -256,7 +256,7 @@ impl VolumeService {
             .into_iter()
             .filter_map(|record| record.volume.status.manifest_path().map(std::path::Path::to_path_buf))
             .collect();
-        blocking::run(Work::Tree, "listing the volume manifests on disk", move || {
+        blocking::run("listing the volume manifests on disk", move || {
             crate::definitions::volume_manifests_on_disk(directory.as_deref(), recorded)
         })
         .await

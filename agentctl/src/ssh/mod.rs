@@ -23,10 +23,8 @@ use std::{
     rc::Rc,
 };
 
-use ::sandbox::{
-    LocalFuture, SandboxHandle,
-    blocking::{self, Work},
-};
+use ::sandbox::{LocalFuture, SandboxHandle};
+use common::blocking;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -343,7 +341,7 @@ impl Access {
             generated
         };
         let home = self.home.clone();
-        let client_key = blocking::run(Work::Brief, "writing the SSH client key", {
+        let client_key = blocking::run("writing the SSH client key", {
             let name = name.to_owned();
             move || ensure_client_key(&home, id, &name)
         })

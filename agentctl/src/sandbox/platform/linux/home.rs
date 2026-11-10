@@ -2,10 +2,8 @@
 
 use std::{io::Cursor, path::Path};
 
-use ::sandbox::{
-    SandboxHandle, SandboxPath,
-    blocking::{self, Work},
-};
+use ::sandbox::{SandboxHandle, SandboxPath};
+use common::blocking;
 
 use crate::{Error, local::files::walk_source};
 
@@ -23,7 +21,7 @@ pub(super) async fn archive_home(
 
 /// Archives a resolved host directory on a blocking thread; `field` names the manifest field in errors.
 async fn archive_directory(source: std::path::PathBuf, field: String) -> Result<Vec<u8>, Error> {
-    blocking::run(Work::Copy, "archiving the agent's home", move || {
+    blocking::run("archiving the agent's home", move || {
         archive_directory_blocking(&source, &field)
     })
     .await?

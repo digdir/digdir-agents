@@ -176,6 +176,7 @@ jobs:
       - name: Check native host
         run: >-
           cargo clippy
+          -p common
           -p sandbox
           -p sandbox-authorization
           -p agent
@@ -185,6 +186,7 @@ jobs:
       - name: Test native host
         run: >-
           cargo test
+          -p common
           -p sandbox
           -p sandbox-authorization
           -p agent

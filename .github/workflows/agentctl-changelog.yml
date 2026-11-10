@@ -12,9 +12,11 @@ on:
     types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
     paths:
       - 'agentctl/**'
+      - 'common/**'
       - 'sandbox/**'
       - '.github/workflows/agentctl-changelog.yml'
       - '!agentctl/**/*.md'
+      - '!common/**/*.md'
       - '!sandbox/**/*.md'
       - 'agentctl/CHANGELOG.md'
 

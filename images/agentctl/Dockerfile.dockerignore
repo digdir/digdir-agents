@@ -8,6 +8,8 @@
 !agentctl/Cargo.toml
 !agentctl/src/
 !agentctl/bundled/
+!common/Cargo.toml
+!common/src/
 !sandbox/authorization/Cargo.toml
 !sandbox/authorization/src/
 !sandbox/core/Cargo.toml

@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use ::sandbox::blocking::{self, Work};
+use common::blocking;
 
 use crate::{Error, control_plane, harness};
 
@@ -56,10 +56,7 @@ pub(super) async fn read_skills(
             continue;
         };
         let source = resolve_source(&record.source_directory, &source, &field)?;
-        let skill = blocking::run(Work::Tree, "reading the skill", move || {
-            harness::Skill::read(name, &source, &field)
-        })
-        .await??;
+        let skill = blocking::run("reading the skill", move || harness::Skill::read(name, &source, &field)).await??;
         skills.push(skill);
     }
     Ok(skills)

@@ -5,11 +5,8 @@ use std::{
     rc::Rc,
 };
 
-use ::sandbox::{
-    SandboxPath,
-    blocking::{self, Work},
-    mount::Mount,
-};
+use ::sandbox::{SandboxPath, mount::Mount};
+use common::blocking;
 
 use crate::{Agent, AgentId, Error, MountSpec, definitions::DefinitionSource, progress::ProvisioningState};
 
@@ -976,7 +973,7 @@ async fn definition_sources(
         .map(|record| record.source_directory.clone())
         .collect::<Vec<_>>();
     let directory = directory.to_path_buf();
-    blocking::run(Work::Brief, "finding the agents' definition sources", move || {
+    blocking::run("finding the agents' definition sources", move || {
         sources
             .iter()
             .map(|source| match crate::definitions::source(source)? {

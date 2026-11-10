@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use ::sandbox::blocking::{self, Work};
+use common::blocking;
 
 use crate::{
     DefinitionReference, Error, Lifetime,
@@ -76,7 +76,7 @@ impl ControlPlane {
                     .unwrap_or_else(|| record.source_directory.join(crate::manifest::MANIFEST_FILE))
             })
             .collect();
-        let mut listed = blocking::run(Work::Tree, "listing the definitions on disk", move || {
+        let mut listed = blocking::run("listing the definitions on disk", move || {
             crate::definitions::on_disk(directory.as_deref(), recorded, detail)
         })
         .await?;

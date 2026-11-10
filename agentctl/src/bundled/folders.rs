@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ::sandbox::blocking::{self, Work};
+use common::blocking;
 
 use crate::{Error, control_plane::AgentStore};
 
@@ -50,7 +50,7 @@ impl Folders {
     pub async fn write(&self, definition: &Definition) -> Result<PathBuf, Error> {
         let (root, target, partial) = self.write_beside(definition).await?;
         let name = definition.name().to_owned();
-        blocking::run(Work::Brief, "writing a bundled definition", move || {
+        blocking::run("writing a bundled definition", move || {
             let replaced = root.join(format!(".{name}.replaced"));
             let _ = std::fs::remove_dir_all(&replaced);
             match std::fs::rename(&target, &replaced) {
@@ -81,7 +81,7 @@ impl Folders {
             return Ok(target);
         }
         let (_, target, partial) = self.write_beside(definition).await?;
-        blocking::run(Work::Brief, "writing a bundled definition", move || {
+        blocking::run("writing a bundled definition", move || {
             if let Err(error) = std::fs::rename(&partial, &target) {
                 let _ = std::fs::remove_dir_all(&partial);
                 if !target.is_dir() {
@@ -101,7 +101,7 @@ impl Folders {
         let target = self.path(definition.name());
         let files = definition.files().clone();
         let name = definition.name().to_owned();
-        blocking::run(Work::Brief, "writing a bundled definition", move || {
+        blocking::run("writing a bundled definition", move || {
             std::fs::create_dir_all(&root)?;
             let partial = tempfile::Builder::new()
                 .prefix(&format!(".{name}."))
@@ -140,7 +140,7 @@ impl Folders {
             .chain(carried.iter().map(|definition| OsString::from(definition.name())))
             .collect::<BTreeSet<_>>();
         let root = self.root.clone();
-        blocking::run(Work::Brief, "removing unused bundled definitions", move || {
+        blocking::run("removing unused bundled definitions", move || {
             remove_unused(&root, &kept)
         })
         .await?

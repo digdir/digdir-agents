@@ -1,9 +1,9 @@
 use std::{collections::BTreeMap, io::Write as _, path::PathBuf};
 
+use common::blocking;
 use sandbox::{
     Hostname, SandboxId, SandboxName, SandboxResources,
     backend::CreateSandboxRequest,
-    blocking::{self, Work},
     image::ResolvedImage,
     init::InitSystem,
     mount::Mount,
@@ -247,7 +247,7 @@ where
     T: Serialize + Send + Sync + 'static,
 {
     let serialized = serde_json::to_vec_pretty(value).map_err(error::backend)?;
-    blocking::run(Work::Brief, "writing Microsandbox state", move || {
+    blocking::run("writing Microsandbox state", move || {
         let parent = path
             .parent()
             .ok_or_else(|| std::io::Error::other("state record has no parent directory"))?;
@@ -261,7 +261,8 @@ where
         }
         Ok::<(), std::io::Error>(())
     })
-    .await?
+    .await
+    .map_err(error::backend)?
     .map_err(|source| error::io("persist Microsandbox state", source))
 }
 

@@ -11,10 +11,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ::sandbox::{
-    SandboxPath,
-    blocking::{self, Work},
-};
+use ::sandbox::SandboxPath;
+use common::blocking;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 
@@ -84,7 +82,7 @@ pub(crate) async fn find(
     folders: Vec<(PathBuf, Option<SandboxPath>)>,
     environment_files: Vec<PathBuf>,
 ) -> Result<Vec<ExposedFile>, Error> {
-    blocking::run(Work::Tree, "looking for .env files", move || {
+    blocking::run("looking for .env files", move || {
         let mut found = BTreeSet::new();
         for (folder, target) in folders {
             if matches!(folder.try_exists(), Ok(false)) {

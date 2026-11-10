@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ::sandbox::blocking::{self, Work};
+use common::blocking;
 use sha2::{Digest as _, Sha256};
 
 use crate::Error;
@@ -30,7 +30,7 @@ pub(crate) struct Fingerprint {
 /// Fingerprints `directory`. Reading only metadata keeps it quick, even for a large tree, and
 /// finding the files that may hold real keys in the same walk keeps applying a volume to one walk.
 pub(crate) async fn take(directory: PathBuf) -> Result<Fingerprint, Error> {
-    blocking::run(Work::Tree, "fingerprinting the directory", move || {
+    blocking::run("fingerprinting the directory", move || {
         let mut fingerprint = Walk {
             hasher: Sha256::new(),
             files: 0,

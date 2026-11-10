@@ -105,7 +105,7 @@ pub enum Error {
     Session(String),
     /// Blocking work stopped or panicked.
     #[error(transparent)]
-    Blocking(#[from] ::sandbox::blocking::Error),
+    Blocking(#[from] common::blocking::Error),
     /// Local persistence or transport failed.
     #[error("I/O operation failed: {0}")]
     Io(#[from] std::io::Error),

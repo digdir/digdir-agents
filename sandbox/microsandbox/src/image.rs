@@ -10,10 +10,10 @@ use bollard::{
 };
 use futures_util::StreamExt as _;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use common::blocking;
 use sandbox::progress::{MeasuredStep, ProgressStep, SandboxProgress};
 use sandbox::{
     Error, LocalFuture, OutputStream, PendingOperation, ProgressUnit, RootFilesystemMode,
-    blocking::{self, Stoppable, Work},
     image,
 };
 use sha2::{Digest as _, Sha256};
@@ -949,17 +949,18 @@ async fn create_context_archive(
     context: PathBuf,
     dockerfile: PathBuf,
 ) -> Result<tempfile::TempPath, Error> {
-    blocking::run(Work::Copy, "archiving the Docker build context", move || {
+    blocking::run("archiving the Docker build context", move || {
         let archive = tempfile::NamedTempFile::new_in(scratch)?;
         let path = archive.into_temp_path();
         let file = File::create(&path)?;
         let ignore = dockerignore(&context)?;
-        let mut builder = tar::Builder::new(Stoppable::new(file));
+        let mut builder = tar::Builder::new(blocking::Stoppable::new(file));
         append_directory(&mut builder, &context, &context, &dockerfile, &ignore)?;
         builder.finish()?;
         Ok::<_, std::io::Error>(path)
     })
-    .await?
+    .await
+    .map_err(error::backend)?
     .map_err(|source| error::io("create Docker build context archive", source))
 }
 
@@ -975,7 +976,7 @@ fn dockerignore(context: &Path) -> Result<Gitignore, std::io::Error> {
 }
 
 fn append_directory(
-    archive: &mut tar::Builder<Stoppable<File>>,
+    archive: &mut tar::Builder<blocking::Stoppable<File>>,
     context: &Path,
     directory: &Path,
     dockerfile: &Path,

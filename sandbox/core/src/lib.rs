@@ -4,7 +4,6 @@
 //! compose these primitives without making CI users depend on agent code.
 
 pub mod backend;
-pub mod blocking;
 pub mod execution;
 mod feature;
 pub mod file_transfer;
