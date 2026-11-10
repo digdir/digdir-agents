@@ -314,20 +314,8 @@ fn environment_file(path: &Path, environment_files: &[Applied]) -> Option<Enviro
     })
 }
 
-/// The agent manifests in the folder of `path`, by name: the files named as manifests are, and the
-/// YAML files under another name that say they are one, which `agentctl apply -f` takes too.
+/// The agent manifests in the folder of `path`, by name.
 fn manifests_beside(path: &Path) -> Vec<PathBuf> {
-    /// More than a manifest holds, so that other YAML in the folder costs little to rule out.
-    const LARGEST: u64 = 1024 * 1024;
-    let declares_agent = |path: &Path| {
-        // A regular file only, as reading another kind, such as a pipe, may never end.
-        std::fs::metadata(path).is_ok_and(|file| file.is_file() && file.len() <= LARGEST)
-            && std::fs::read(path)
-                .ok()
-                .and_then(|bytes| serde_yaml_ng::from_slice::<serde_yaml_ng::Value>(&bytes).ok())
-                .and_then(|manifest| Some(manifest.get("kind")?.as_str()?.to_owned()))
-                .is_some_and(|kind| kind == crate::KIND || kind == crate::VARIANT_KIND)
-    };
     let mut manifests = path
         .parent()
         .and_then(|parent| std::fs::read_dir(parent).ok())
@@ -335,13 +323,7 @@ fn manifests_beside(path: &Path) -> Vec<PathBuf> {
         .flatten()
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| {
-            crate::manifest::is_manifest_filename(path)
-                || (path
-                    .extension()
-                    .is_some_and(|extension| extension == "yaml" || extension == "yml")
-                    && declares_agent(path))
-        })
+        .filter(|path| crate::manifest::is_manifest_filename(path))
         .collect::<Vec<_>>();
     manifests.sort();
     manifests
@@ -791,73 +773,6 @@ mod tests {
                         stored: Vec::new(),
                     }
                 ),
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn a_manifest_under_another_name_reads_the_environment_file_beside_it_too() {
-        let directory = tempfile::tempdir().expect("directory");
-        let root = std::fs::canonicalize(directory.path()).expect("root");
-        let reads = manifest("  environment:\n    - name: EDITOR\n");
-        // What marks a manifest is its kind, however the YAML writes it.
-        let unreadable = [
-            "kind: Agent # worker\nspec:\n  mounts: []\n",
-            "{'kind': 'Agent', spec: {mounts: []}}\n",
-        ];
-        for (folder, files) in [
-            (
-                "beside",
-                vec![("agent.yaml", manifest("")), ("worker.yaml", reads.clone())],
-            ),
-            ("alone", vec![("worker.yaml", reads)]),
-            (
-                "old",
-                vec![
-                    ("a.yml", unreadable[0].to_owned()),
-                    ("b.yaml", unreadable[1].to_owned()),
-                ],
-            ),
-            ("other", vec![("compose.yaml", "services: {}\n".to_owned())]),
-        ] {
-            std::fs::create_dir_all(root.join(folder)).expect("folder");
-            std::fs::write(root.join(folder).join(".env"), "EDITOR=vim").expect("file");
-            for (name, content) in files {
-                std::fs::write(root.join(folder).join(name), content).expect("YAML");
-            }
-        }
-
-        let files = found(&root, Vec::new()).await;
-
-        let readers = files
-            .iter()
-            .map(|file| {
-                let readers = file.environment_file.as_ref().map(|file| {
-                    file.readers
-                        .iter()
-                        .map(|reader| match reader {
-                            Reader::Manifest { name, .. } => format!("{name} reads"),
-                            Reader::Unreadable { name } => format!("{name} is unreadable"),
-                            Reader::Agent { name, .. } => name.clone(),
-                        })
-                        .collect::<Vec<_>>()
-                });
-                (file.relative(), readers)
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            readers,
-            [
-                (Path::new("alone/.env"), Some(vec!["worker.yaml reads".to_owned()])),
-                (Path::new("beside/.env"), Some(vec!["worker.yaml reads".to_owned()])),
-                (
-                    Path::new("old/.env"),
-                    Some(vec![
-                        "a.yml is unreadable".to_owned(),
-                        "b.yaml is unreadable".to_owned()
-                    ])
-                ),
-                (Path::new("other/.env"), None),
             ]
         );
     }
