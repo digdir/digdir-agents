@@ -1,11 +1,14 @@
 //! What a Dockerfile builds on and copies from, read from its instructions without building it.
 
+use std::collections::HashMap;
+
 /// The images that the stage `target` builds on and copies from, together with those of the stages it
 /// does so from, in the order the Dockerfile names them. Without a target it is the last stage, which
 /// a build without one builds.
 ///
-/// An image named through a build argument, such as `${BASE}`, is left out, since only a build
-/// knows its value.
+/// A stage that builds on an image named through a build argument, such as `FROM ${BASE}`, builds
+/// on its default, as an `ARG` before the first `FROM` gives it, since agentctl passes no build
+/// arguments. An image named through an argument without one is left out.
 #[must_use]
 pub(crate) fn images(dockerfile: &str, target: Option<&str>) -> Vec<String> {
     let stages = stages(dockerfile);
@@ -61,23 +64,38 @@ fn visit(stages: &[Stage], index: usize, visited: &mut [bool], images: &mut Vec<
 /// The stages of `dockerfile`, from its FROM and COPY --from instructions.
 fn stages(dockerfile: &str) -> Vec<Stage> {
     let mut stages: Vec<Stage> = Vec::new();
-    for instruction in instructions(dockerfile) {
+    // The build arguments declared before the first stage, which only FROM can use, with their
+    // defaults.
+    let mut arguments = HashMap::<&str, Option<String>>::new();
+    let instructions = instructions(dockerfile);
+    for instruction in &instructions {
         let mut words = instruction.split_whitespace();
         let Some(keyword) = words.next() else {
             continue;
         };
-        if keyword.eq_ignore_ascii_case("FROM") {
-            let mut arguments = words.filter(|word| !word.starts_with("--"));
-            let Some(from) = arguments.next() else {
+        if keyword.eq_ignore_ascii_case("ARG") && stages.is_empty() {
+            for declaration in words {
+                let (name, default) = declaration
+                    .split_once('=')
+                    .map_or((declaration, None), |(name, default)| {
+                        // A default can name the arguments declared before it.
+                        (name, Some(expand(unquoted(default), &arguments)))
+                    });
+                arguments.insert(name, default);
+            }
+        } else if keyword.eq_ignore_ascii_case("FROM") {
+            let mut operands = words.filter(|word| !word.starts_with("--"));
+            let Some(from) = operands.next() else {
                 continue;
             };
-            let name = arguments
+            let from = expand(from, &arguments);
+            let name = operands
                 .next()
                 .filter(|word| word.eq_ignore_ascii_case("AS"))
-                .and_then(|_| arguments.next())
+                .and_then(|_| operands.next())
                 .map(str::to_owned);
             stages.push(Stage {
-                from: from.to_owned(),
+                from,
                 name,
                 copies: Vec::new(),
             });
@@ -93,6 +111,54 @@ fn stages(dockerfile: &str) -> Vec<Stage> {
         }
     }
     stages
+}
+
+/// `reference` with the build `arguments` it names, as `$NAME`, `${NAME}` or `${NAME:-fallback}`,
+/// replaced by their defaults. One that names an argument without a default, or a form this does not
+/// read, is left as it is, so that it still holds a `$`.
+fn expand(reference: &str, arguments: &HashMap<&str, Option<String>>) -> String {
+    let mut expanded = String::new();
+    let mut rest = reference;
+    while let Some(start) = rest.find('$') {
+        expanded.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let (name, fallback, length) = if let Some(braced) = after.strip_prefix('{') {
+            let Some(end) = braced.find('}') else {
+                return reference.to_owned();
+            };
+            let inner = &braced[..end];
+            let (name, fallback) = inner
+                .split_once(":-")
+                .map_or((inner, None), |(name, fallback)| (name, Some(fallback)));
+            (name, fallback, end + 2)
+        } else {
+            let end = after
+                .find(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+                .unwrap_or(after.len());
+            (&after[..end], None, end)
+        };
+        let value = arguments
+            .get(name)
+            .cloned()
+            .flatten()
+            .filter(|value| !value.is_empty())
+            .or_else(|| fallback.map(str::to_owned));
+        match value {
+            Some(value) if !name.is_empty() => expanded.push_str(&value),
+            _ => return reference.to_owned(),
+        }
+        rest = &after[length..];
+    }
+    expanded.push_str(rest);
+    expanded
+}
+
+/// `text` without the quotes around it, if any.
+fn unquoted(text: &str) -> &str {
+    ['"', '\'']
+        .iter()
+        .find_map(|quote| text.strip_prefix(*quote)?.strip_suffix(*quote))
+        .unwrap_or(text)
 }
 
 /// The instructions of `dockerfile`, each on one line: lines a backslash continues joined, and
@@ -167,8 +233,37 @@ COPY --from=0 /etc/hosts /etc/hosts
     }
 
     #[test]
+    fn a_stage_builds_on_the_default_of_the_argument_it_names() {
+        let dockerfile = "\
+ARG REGISTRY=ghcr.io/digdir RELEASE=\"v0.1.0-preview.14\"
+ARG BASE=${REGISTRY}/agentctl-base:ubuntu-26.04-${RELEASE}
+ARG UNSET
+FROM $BASE AS base
+FROM ${UNSET:-ghcr.io/example/fallback:1} AS fallback
+FROM ${UNSET} AS unset
+ARG LATE=ghcr.io/example/late:1
+FROM ${LATE}
+";
+        assert_eq!(
+            images(dockerfile, Some("base")),
+            ["ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.14"]
+        );
+        assert_eq!(images(dockerfile, Some("fallback")), ["ghcr.io/example/fallback:1"]);
+        assert_eq!(images(dockerfile, Some("unset")), Vec::<String>::new());
+        assert_eq!(
+            images(dockerfile, None),
+            Vec::<String>::new(),
+            "an argument declared in a stage is not the FROM's"
+        );
+    }
+
+    #[test]
     fn what_only_a_build_knows_is_left_out() {
-        assert_eq!(images(DOCKERFILE, Some("unused")), ["ghcr.io/example/never:1"]);
+        assert_eq!(
+            images(DOCKERFILE, Some("unused")),
+            ["ghcr.io/example/base:1", "ghcr.io/example/never:1"],
+            "BASE's default"
+        );
         assert_eq!(images("FROM scratch\n", None), Vec::<String>::new());
         assert_eq!(images(DOCKERFILE, Some("missing")), Vec::<String>::new());
         assert_eq!(images("", None), Vec::<String>::new());
