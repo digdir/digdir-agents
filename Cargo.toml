@@ -24,11 +24,11 @@ futures-core = "0.3.34"
 futures-util = "0.3.34"
 flate2 = "1.1.9"
 ignore = "0.4.33"
-# Microsandbox fork commit tagged `v0.7.14-digdir.3`.
+# Microsandbox fork commit tagged `v0.7.14-digdir.4`.
 # Update all three revisions together with the runtime bundle digests, and check rusqlite below.
-microsandbox = { git = "https://github.com/digdir/microsandbox.git", rev = "d43e82b6b59706e56965d215a2fd3272885ebbd5", default-features = false, features = ["local", "net"] }
-microsandbox-image = { git = "https://github.com/digdir/microsandbox.git", rev = "d43e82b6b59706e56965d215a2fd3272885ebbd5", package = "microsandbox-image" }
-microsandbox-network = { git = "https://github.com/digdir/microsandbox.git", rev = "d43e82b6b59706e56965d215a2fd3272885ebbd5", package = "microsandbox-network" }
+microsandbox = { git = "https://github.com/digdir/microsandbox.git", rev = "3c08f414403b6991f2374eefb439470a3fff61de", default-features = false, features = ["local", "net"] }
+microsandbox-image = { git = "https://github.com/digdir/microsandbox.git", rev = "3c08f414403b6991f2374eefb439470a3fff61de", package = "microsandbox-image" }
+microsandbox-network = { git = "https://github.com/digdir/microsandbox.git", rev = "3c08f414403b6991f2374eefb439470a3fff61de", package = "microsandbox-network" }
 mimalloc = "0.1.52"
 ratatui = "0.30.2"
 reqwest = { version = "0.13.4", features = ["json"] }
