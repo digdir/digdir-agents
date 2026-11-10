@@ -7,7 +7,7 @@
 //! from an environment file, since moving off it is the person's to do.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -112,14 +112,43 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
 /// moving its values is the person's to do, as the guide describes, and the builder may not mount
 /// one beside a manifest.
 fn environment_file_refusal(checkout: &Path, definitions: &[DefinitionSummary]) -> Option<String> {
-    let mut lines = definitions
+    // A variant reads what the manifest it extends does, so the manifests of a folder that read the
+    // same variables share a line.
+    let mut reading = BTreeMap::<(&Path, &[String]), Vec<String>>::new();
+    for definition in definitions
         .iter()
         .filter(|definition| !definition.environment_file_variables.is_empty())
-        .map(|definition| {
+    {
+        let folder = definition.path.parent().unwrap_or(checkout);
+        let file = definition
+            .path
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        reading
+            .entry((folder, &definition.environment_file_variables))
+            .or_default()
+            .push(file);
+    }
+    let mut lines = reading
+        .into_iter()
+        .map(|((folder, variables), files)| {
+            let folder = relative(checkout, folder);
+            let files = files
+                .iter()
+                .enumerate()
+                .map(|(index, file)| {
+                    if index == 0 && !folder.is_empty() {
+                        format!("{folder}/{file}")
+                    } else {
+                        file.clone()
+                    }
+                })
+                .collect::<Vec<_>>();
             format!(
-                "  {} reads {} from its environment file",
-                relative(checkout, &definition.path),
-                definition.environment_file_variables.join(", ")
+                "  {} {} {} from the environment file",
+                agent::exposed::sentence_list(&files),
+                if files.len() == 1 { "reads" } else { "read" },
+                variables.join(", ")
             )
         })
         .collect::<Vec<_>>();
@@ -187,22 +216,33 @@ mod tests {
     fn every_definition_that_reads_an_environment_file_is_named_once() {
         let checkout = Path::new("/src/app");
         let file = PathBuf::from("/src/app/agents/dev/.env");
-        let reads = DefinitionSummary {
-            environment_file_variables: vec!["GITHUB_TOKEN".into()],
+        let reading = |path: &str, variables: &[&str]| DefinitionSummary {
+            environment_file_variables: variables.iter().map(|&variable| variable.to_owned()).collect(),
             environment_file: Some(file.clone()),
-            ..definition("/src/app/agents/dev/agent.yaml")
-        };
-        let variant = DefinitionSummary {
-            environment_file: Some(file),
-            ..definition("/src/app/agents/dev/agent.mine.yaml")
+            ..definition(path)
         };
         let refusal = environment_file_refusal(
             checkout,
-            &[reads, variant, definition("/src/app/agents/other/agent.yaml")],
+            &[
+                reading("/src/app/agents/dev/agent.yaml", &["GITHUB_TOKEN"]),
+                reading("/src/app/agents/dev/agent.nested.yaml", &["GITHUB_TOKEN"]),
+                reading("/src/app/agents/dev/agent.mine.yaml", &["GITHUB_TOKEN", "EDITOR"]),
+                reading("/src/app/agents/dev/agent.off.yaml", &[]),
+                definition("/src/app/agents/other/agent.yaml"),
+            ],
         )
         .expect("a refusal");
-        assert!(refusal.contains("agents/dev/agent.yaml reads GITHUB_TOKEN"));
-        assert_eq!(refusal.matches("agents/dev/.env").count(), 1);
-        assert!(!refusal.contains("agent.mine.yaml") && !refusal.contains("agents/other"));
+        let lines = refusal.lines().skip(1).map(str::trim).collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3, "{refusal}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("agents/dev/agent.mine.yaml reads GITHUB_TOKEN, EDITOR"))
+        );
+        assert!(
+            lines.contains(&"agents/dev/agent.yaml and agent.nested.yaml read GITHUB_TOKEN from the environment file")
+        );
+        assert!(lines.iter().any(|line| line.starts_with("agents/dev/.env ")));
+        assert!(!refusal.contains("agent.off.yaml") && !refusal.contains("agents/other"));
     }
 }
