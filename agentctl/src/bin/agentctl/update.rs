@@ -59,7 +59,13 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
         )));
     }
     if arguments.print_task {
-        print!("{}", task(&checkout.display().to_string(), &checkout, &definitions));
+        // Inside an agent, the version its agents run with is that of the agentd that runs it, which
+        // an agentctl its image holds may predate.
+        let version = agent::sandbox::platform::host_version().unwrap_or_else(|| agent::build_version().to_owned());
+        print!(
+            "{}",
+            task(&checkout.display().to_string(), &checkout, &definitions, &version)
+        );
         return Ok(());
     }
     if agent::local::home::user_home_directory().is_some_and(|home| home == checkout) {
@@ -72,7 +78,7 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
     let builder = Builder::bundled()?;
     let task = Task {
         session: "update",
-        prompt: task("this checkout", &checkout, &definitions),
+        prompt: task("this checkout", &checkout, &definitions, agent::build_version()),
     };
     let existing = builder.find(client, &checkout).await?;
     let name = match existing {
@@ -113,19 +119,15 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
     Ok(())
 }
 
-/// The update of the `definitions` in `checkout`, which the task calls `location`, for the agent
-/// builder or another agent to do as the skill every agent has describes. Moving off an environment
-/// file is part of it.
-///
-/// The version is the one the agents run with, which inside an agent is its host's, not that of an
-/// agentctl its image may hold.
-fn task(location: &str, checkout: &Path, definitions: &[DefinitionSummary]) -> String {
+/// The update of the `definitions` in `checkout`, which the task calls `location`, to `version`, for
+/// the agent builder or another agent to do as the skill every agent has describes. Moving off an
+/// environment file is part of it.
+fn task(location: &str, checkout: &Path, definitions: &[DefinitionSummary], version: &str) -> String {
     let mut task = format!(
-        "Bring the agent definitions in {location} up to date with agentctl {} or, inside an agent, the agentd its \
-         agent sandbox section names. Follow \"Bringing a definition up to date\" in the `agent-definition` skill: \
-         work out the version each was written for, read the release notes since then, and propose each change, \
-         with its reason, before you write it. The definitions:\n",
-        agent::build_version()
+        "Bring the agent definitions in {location} up to date with agentctl {version}. Follow \"Bringing a \
+         definition up to date\" in the `agent-definition` skill: work out the version each was written for, read \
+         the release notes since then, and propose each change, with its reason, before you write it. The \
+         definitions:\n"
     );
     for definition in definitions {
         let _ = writeln!(task, "  {}", relative(checkout, &definition.path));
@@ -240,13 +242,14 @@ mod tests {
             "this checkout",
             checkout,
             &[definition("/src/app/agents/dev/agent.yaml"), unreadable],
+            "v0.1.0-preview.14",
         );
 
         assert!(
             task.starts_with("Bring the agent definitions in this checkout"),
             "{task}"
         );
-        assert!(task.contains(agent::build_version()) && task.contains("agent sandbox section"));
+        assert!(task.contains("agentctl v0.1.0-preview.14."), "{task}");
         assert!(
             task.ends_with("\n  agents/dev/agent.yaml\n  agents/old/agent.yaml\n"),
             "{task}"
@@ -274,6 +277,7 @@ mod tests {
                 reading("/src/app/agents/dev/agent.off.yaml", &[]),
                 definition("/src/app/agents/other/agent.yaml"),
             ],
+            "v0.1.0-preview.14",
         );
 
         let (_, readers) = task.split_once("environment file").expect("the environment file part");

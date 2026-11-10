@@ -1348,6 +1348,14 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
         PLATFORM_API_URL.as_bytes()
     );
 
+    assert_eq!(
+        read_file(&sandbox, "/etc/agent-platform-version")
+            .await
+            .trim_ascii_end(),
+        agent::build_version().as_bytes(),
+        "the agent can tell which agentd runs it"
+    );
+
     Linux::new(RESTARTED_URL)
         .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
@@ -1469,8 +1477,11 @@ async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injectio
     assert!(error.to_string().contains("does not match installed version"));
     assert_eq!(
         backend.file_writes(),
-        [SandboxPath::new("/etc/agent-platform-api-url")],
-        "verification must happen before injection; only the Platform API URL precedes it"
+        [
+            SandboxPath::new("/etc/agent-platform-api-url"),
+            SandboxPath::new("/etc/agent-platform-version")
+        ],
+        "verification must happen before injection; only the platform files precede it"
     );
     assert_eq!(
         read_file(&sandbox, "/etc/agent-platform-api-url")

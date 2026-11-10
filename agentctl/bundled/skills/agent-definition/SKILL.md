@@ -157,8 +157,8 @@ alone.
   The second gives the digest to pin a tag by. An image on a base older than the one that brings `skopeo` lacks it, and
   `podman pull` with `podman image inspect` shows the same. An image without the label was built on a base from before
   `0.1.0-preview.14`. Its creation date, against the dates of the releases, tells which.
-- **The version to bring it to** is the one you were asked for or, without one, the agentd that runs you, which the
-  agent sandbox section of your instructions names. That is the version on its owner's machine, which runs the agent.
+- **The version to bring it to** is the one you were asked for or, without one, the agentd that runs you, which
+  `/etc/agent-platform-version` names. That is the version on its owner's machine, which runs the agent.
 - **What changed** is in the release notes, `agentctl/CHANGELOG.md` in digdir-agents, at the revision of the version
   to bring it to: the sections after the version it was written for. A release's revision is its tag
   `agentctl/<version>`, as in

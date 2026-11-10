@@ -9,8 +9,19 @@ use crate::Error;
 
 pub use linux::Linux;
 pub(crate) use linux::{
-    HOME, PLATFORM_API_URL_FILE, PORTABLE_TERMINAL, USER, UTF8_LOCALE, WORKING_DIRECTORY, run_checked,
+    HOME, PLATFORM_API_URL_FILE, PLATFORM_VERSION_FILE, PORTABLE_TERMINAL, USER, UTF8_LOCALE, WORKING_DIRECTORY,
+    run_checked,
 };
+
+/// The version of the `agentd` that runs the agent this process runs in, or `None` outside an
+/// agent, or in one set up by an `agentd` from before it said.
+#[must_use]
+pub fn host_version() -> Option<String> {
+    std::fs::read_to_string(PLATFORM_VERSION_FILE)
+        .ok()
+        .map(|version| version.trim().to_owned())
+        .filter(|version| !version.is_empty())
+}
 
 /// Where `agent`'s sessions start, and so where a bind mount of the person's checkout belongs.
 ///

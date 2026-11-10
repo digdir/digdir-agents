@@ -47,6 +47,11 @@ pub(crate) const WORKING_DIRECTORY: &str = "/home/agent/code";
 /// or writing it anywhere but in an agent's sandbox changes what harness logins with `agentctl`
 /// do there.
 pub(crate) const PLATFORM_API_URL_FILE: &str = "/etc/agent-platform-api-url";
+/// Names the version of the `agentd` that runs the agent, written with [`PLATFORM_API_URL_FILE`],
+/// so that after the host's `agentd` is upgraded it names the new version once the agent is set up
+/// again. An agent brings its definition up to date with that version, which an `agentctl` its
+/// image holds may predate; see [`super::host_version`].
+pub(crate) const PLATFORM_VERSION_FILE: &str = "/etc/agent-platform-version";
 /// Locale every sandbox process runs with; the image ships it, so UTF-8 output
 /// renders regardless of the host's locale.
 pub(crate) const UTF8_LOCALE: &str = "C.UTF-8";
@@ -81,11 +86,17 @@ impl Linux {
 }
 
 /// Points harness hooks in the sandbox at `platform_api_url`.
-async fn install_platform_api_url(sandbox: &SandboxHandle, platform_api_url: &str) -> Result<(), Error> {
+async fn install_platform_files(sandbox: &SandboxHandle, platform_api_url: &str) -> Result<(), Error> {
     write_if_changed(
         sandbox,
         PLATFORM_API_URL_FILE,
         format!("{platform_api_url}\n").as_bytes(),
+    )
+    .await?;
+    write_if_changed(
+        sandbox,
+        PLATFORM_VERSION_FILE,
+        format!("{}\n", crate::build_version()).as_bytes(),
     )
     .await?;
     Ok(())
@@ -145,7 +156,7 @@ impl Linux {
         // Before anything that can fail, so a pass that fails later still moves running harnesses.
         // Harnesses still running an earlier release's hook script follow only once a pass reaches
         // harness bootstrap, which replaces that script.
-        install_platform_api_url(sandbox, &self.platform_api_url).await?;
+        install_platform_files(sandbox, &self.platform_api_url).await?;
         for installation in &installations {
             let step = steps.start_step(format!("Verify {}", installation.kind.as_str())).await;
             harness::verify_linux(installation.kind, sandbox, installation.version.as_deref()).await?;
