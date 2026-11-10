@@ -28,7 +28,8 @@ guessing: the manifest refuses unknown fields.
 
 Either way, its owner makes the agent theirs with a variant beside the manifest, such as `agent.mine.yaml`, which
 holds their own choices, and applies it with `agentctl apply --variant mine`. Give the folder a `.gitignore` that
-keeps such variants out of Git, and leave them alone.
+keeps such variants out of Git, and leave them alone, except to bring them up to date with the rest of the definition,
+as [below](#bringing-a-definition-up-to-date) describes.
 
 ## Shape
 
@@ -182,6 +183,11 @@ Then bring each part of the definition to that version:
   [moving off the environment file](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/moving-off-the-environment-file.md)
   describes. Logins and secrets are stored on the machine that applies the agent, so change the manifest, and give
   its owner the `agentctl github login` and `agentctl secret set` commands to run there.
+- **Personal variants**, such as `agent.mine.yaml`, are their owner's choices, but they break with the rest of the
+  definition, such as when a release changes how variants merge or stops reading the environment file. So propose their
+  changes too. Git ignores them, so `git diff` won't show what you change in them. They are in the checkout their owner
+  applies the agent from, which is in an agent only when a `worktree` variant mounts it there. Without them, give their
+  owner the changes to make, or tell them to run `agentctl update` in that checkout.
 
 Its owner decides what changes, so work through it with them:
 
@@ -193,8 +199,8 @@ Its owner decides what changes, so work through it with them:
    install that version, as in
    `curl -fsSL https://raw.githubusercontent.com/digdir/digdir-agents/main/agentctl/install.sh | AGENT_VERSION=v0.1.0-preview.14 sh`,
    and check that `agentctl --version` names it before you go on.
-3. **Hand it over** as [proposing a change](#proposing-a-change) describes, and say which of its owner's agents must be
-   created again to get it, as below describes.
+3. **Hand it over** as [proposing a change](#proposing-a-change) describes. Name each file you changed that Git ignores,
+   and say which of its owner's agents must be created again to get it, as below describes.
 
 ## What an update can change in place
 

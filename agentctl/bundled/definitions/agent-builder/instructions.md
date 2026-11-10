@@ -88,8 +88,8 @@ definitions it found in the checkout, and those that still read an environment f
 Bring each one up to date as the `agent-definition` skill's section on it describes. The stages of one agent share an
 image, and so the version they were written for. Try what you change as in [step 4 of making an agent](#4-try-it), and
 leave it as edits in the checkout, its branch and the person's own changes as they are, for the person to review with
-`git diff` and commit. A team's agent changes through a pull request, and its agents get a new image once CI publishes
-it.
+`git diff` and commit. Name the files Git ignores that you changed, such as personal variants, since `git diff` doesn't
+show them. A team's agent changes through a pull request, and its agents get a new image once CI publishes it.
 
 When you notice that the `agent-definition` skill or these instructions are wrong or missing something, tell the
 person, so it can be fixed in digdir-agents, where this agent's definition is

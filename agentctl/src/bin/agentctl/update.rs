@@ -126,22 +126,31 @@ fn task(location: &str, checkout: &Path, definitions: &[DefinitionSummary], vers
     let mut task = format!(
         "Bring the agent definitions in {location} up to date with agentctl {version}. Follow \"Bringing a \
          definition up to date\" in the `agent-definition` skill: work out the version each was written for, read \
-         the release notes since then, and propose each change, with its reason, before you write it. The \
-         definitions:\n"
+         the release notes since then, and propose each change, with its reason, before you write it.\n"
     );
-    for definition in definitions {
-        let _ = writeln!(task, "  {}", relative(checkout, &definition.path));
-    }
-    let images = platform_images(checkout, definitions, version);
-    if !images.is_empty() {
-        let _ = writeln!(
-            task,
-            "The platform's images they use, where those are not of {version}:"
-        );
-        for line in images {
-            let _ = writeln!(task, "{line}");
-        }
-    }
+    let listed = definitions
+        .iter()
+        .map(|definition| {
+            let path = relative(checkout, &definition.path);
+            // Changes to a file Git ignores, such as a personal variant, don't show in `git diff`.
+            if definition.ignored {
+                format!("  {path}, which Git ignores")
+            } else {
+                format!("  {path}")
+            }
+        })
+        .collect();
+    let unreadable = definitions
+        .iter()
+        .filter_map(|definition| {
+            let error = definition.error.as_deref()?;
+            Some(format!(
+                "  {}: {}",
+                relative(checkout, &definition.path),
+                error.lines().next().unwrap_or_default()
+            ))
+        })
+        .collect();
     let mut reading = environment_file_variables(checkout, definitions);
     reading.extend(environment_files(definitions).into_iter().map(|file| {
         format!(
@@ -149,12 +158,26 @@ fn task(location: &str, checkout: &Path, definitions: &[DefinitionSummary], vers
             relative(checkout, file)
         )
     }));
-    if !reading.is_empty() {
-        task.push_str(
+    let sections: [(String, Vec<String>); 4] = [
+        ("The definitions:".into(), listed),
+        (
+            "Some cannot be read by this version, which updating them fixes:".into(),
+            unreadable,
+        ),
+        (
+            format!("The platform's images they use, where those are not of {version}:"),
+            platform_images(checkout, definitions, version),
+        ),
+        (
             "Some still read an environment file, which a later release stops reading. Moving them off it is one of \
-             the changes, as that section says:\n",
-        );
-        for line in reading {
+             the changes, as that section says:"
+                .into(),
+            reading,
+        ),
+    ];
+    for (heading, lines) in sections.into_iter().filter(|(_, lines)| !lines.is_empty()) {
+        let _ = writeln!(task, "{heading}");
+        for line in lines {
             let _ = writeln!(task, "{line}");
         }
     }
@@ -282,32 +305,45 @@ mod tests {
             environment_file_variables: Vec::new(),
             environment_file: None,
             platform_images: Vec::new(),
+            ignored: false,
         }
     }
 
     #[test]
     fn the_task_names_every_definition_and_the_version_to_bring_them_to() {
         let checkout = Path::new("/src/app");
+        let personal = DefinitionSummary {
+            ignored: true,
+            ..definition("/src/app/agents/dev/agent.mine.yaml")
+        };
         let unreadable = DefinitionSummary {
             name: None,
-            error: Some("unknown field".into()),
+            error: Some("agent.yaml: unknown field `mounts`\nat line 3".into()),
             ..definition("/src/app/agents/old/agent.yaml")
         };
 
         let task = task(
             "this checkout",
             checkout,
-            &[definition("/src/app/agents/dev/agent.yaml"), unreadable],
+            &[definition("/src/app/agents/dev/agent.yaml"), personal, unreadable],
             "v0.1.0-preview.14",
         );
 
         assert!(
-            task.starts_with("Bring the agent definitions in this checkout"),
+            task.starts_with(
+                "Bring the agent definitions in this checkout up to date with agentctl v0.1.0-preview.14."
+            ),
             "{task}"
         );
-        assert!(task.contains("agentctl v0.1.0-preview.14."), "{task}");
         assert!(
-            task.ends_with("\n  agents/dev/agent.yaml\n  agents/old/agent.yaml\n"),
+            task.contains(
+                "The definitions:\n  agents/dev/agent.yaml\n  agents/dev/agent.mine.yaml, which Git ignores\n  \
+                 agents/old/agent.yaml\n"
+            ),
+            "{task}"
+        );
+        assert!(
+            task.ends_with("fixes:\n  agents/old/agent.yaml: agent.yaml: unknown field `mounts`\n"),
             "{task}"
         );
         assert!(!task.contains("environment file"));

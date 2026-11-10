@@ -154,6 +154,10 @@ pub struct DefinitionSummary {
     /// client can tell the release it was written for from the one it runs with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub platform_images: Vec<PlatformImage>,
+    /// Whether its repository's ignore files leave it out, as they do personal variants such as
+    /// `agent.mine.yaml`, so changes to it do not show in Git.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ignored: bool,
 }
 
 /// An image a release of the platform publishes, as a definition names it.
@@ -196,6 +200,7 @@ pub fn on_disk(directory: Option<&Path>, recorded: Vec<PathBuf>) -> Vec<Definiti
         };
         DefinitionSummary {
             environment_file: environment_file_beside(&listed.path),
+            ignored: ignored(&listed.path),
             path: listed.path,
             aliases: listed.aliases,
             reference: None,
@@ -207,6 +212,24 @@ pub fn on_disk(directory: Option<&Path>, recorded: Vec<PathBuf>) -> Vec<Definiti
         }
     })
     .collect()
+}
+
+/// Whether the ignore files of the repository holding `manifest` leave it out, by the rules
+/// [`manifests`] walks a repository with.
+///
+/// Reads the filesystem, so it blocks.
+fn ignored(manifest: &Path) -> bool {
+    let Some(folder) = manifest.parent() else {
+        return false;
+    };
+    manifest.is_file()
+        && !WalkBuilder::new(folder)
+            .max_depth(Some(1))
+            .require_git(false)
+            .follow_links(false)
+            .build()
+            .filter_map(Result::ok)
+            .any(|entry| entry.path() == manifest)
 }
 
 /// The images of the platform's that `agent`, from `manifest`, runs: the one it references, or those
@@ -536,6 +559,33 @@ mod tests {
 
         assert_eq!(listed.len(), 1, "{listed:?}");
         assert_eq!(listed[0].slots, [::sandbox::SandboxPath::new("/work/checkout")]);
+    }
+
+    #[test]
+    fn a_variant_its_repository_ignores_is_listed_as_ignored() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let folder = manifest_directory(root.path(), "agents/dev", &manifest_yaml("dev"));
+        std::fs::write(root.path().join(".gitignore"), "agents/*/agent.*.yaml\n").expect("ignore file");
+        let variant =
+            "apiVersion: agents.platform/v1alpha1\nkind: AgentVariant\nextends: agent.yaml\nmetadata:\n  name: mine\n";
+        std::fs::write(folder.join("agent.mine.yaml"), variant).expect("personal variant");
+
+        let listed = on_disk(Some(root.path()), Vec::new());
+
+        let ignored = listed
+            .iter()
+            .map(|definition| {
+                (
+                    definition.path.file_name().expect("file name").to_owned(),
+                    definition.ignored,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ignored,
+            [("agent.yaml".into(), false), ("agent.mine.yaml".into(), true)],
+            "{listed:?}"
+        );
     }
 
     #[test]

@@ -98,6 +98,7 @@ impl ControlPlane {
                 environment_file_variables: Vec::new(),
                 environment_file: None,
                 platform_images: Vec::new(),
+                ignored: false,
             });
         }
         Ok(listed)
