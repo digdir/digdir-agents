@@ -32,12 +32,16 @@ spec:
     - type: claudeCode
       auth: mediated
       default: true
+      # Whichever login you stored, whatever its name. Name one in your variant, such as `login: work`, to keep the
+      # agent on it.
+      login: any
       defaults:
         model: opus
     # Optional: the agent is created without Codex when the host has no Codex login, so nobody who only uses
     # Claude Code is blocked. Run `agentctl codex login` and the next convergence installs it.
     - type: codex
       auth: mediated
+      login: any
       optional: true
     # Pi has no platform login: its providers and models come from ~/.pi/agent/models.json in `home`, and the
     # gateway key from the optional AIVAR_API_KEY secret below. Without the key Pi starts, but a prompt's wait times out.

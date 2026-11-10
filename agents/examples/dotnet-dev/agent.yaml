@@ -57,11 +57,13 @@ spec:
       # `agentctl create` override them.
       # defaults:
       #   model: opus
-      # The host login this agent's requests carry, stored with `agentctl claude login NAME`, such as one for work
-      # and one for a private subscription. A list, or `any` for every stored login, gives the agent whichever the
-      # fewest other running agents use. Without it, the agent uses the login stored without a name.
-      # login: work
+      # The host logins this agent's requests may carry, stored with `agentctl claude login NAME`, such as one for
+      # work and one for a private subscription. `any` allows every stored login, so the agent runs however you named
+      # yours, and gets whichever the fewest other running agents use. A name, such as `work`, or a list keeps it to
+      # those. Without it, the agent uses only the login stored without a name.
+      login: any
     - type: codex
+      login: any
       # Without a Codex login on the host, the agent starts without Codex instead of failing. Log in later, and
       # the next reconcile adds it.
       optional: true

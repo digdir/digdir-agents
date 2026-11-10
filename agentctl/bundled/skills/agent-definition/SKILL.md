@@ -106,6 +106,10 @@ the tests start with Compose, `browser` for browser tests, `desktop` for the des
 - **Harnesses:** Claude Code as the default and Codex as optional, unless the role needs others. `optional` lets the
   agent start without a login the host lacks. An agent that only runs commands, with `agentctl exec` or over SSH,
   declares none, and runs no sessions.
+- **Logins:** `login: any` on each harness that uses a login stored on the host, so the agent runs on whichever login
+  its owner stored, whatever they named it, and agents spread over the logins there are. Without it, the agent takes
+  only the login stored without a name. An owner who keeps a login the agent must not use, such as a private
+  subscription beside work's, names the one it may use in their variant, as in `login: work`.
 - **Volumes:** when agents need a large host directory they only read, a `kind: Volume` manifest copies it once for
   all of them, and each mounts it with `type: volume`. Keep a team's volume manifests in `agents/_volumes/`, where
   `agentctl tui` applies them.
@@ -216,8 +220,9 @@ Its owner decides what changes, so work through it with them:
 agentd fixes, when it creates an agent, the fields `validate_immutable_fields` in
 [service.rs](https://github.com/digdir/digdir-agents/blob/main/agentctl/src/control_plane/service.rs) checks, such as
 the image, the mounts, the home overlay and its harnesses. Changing one takes creating the agent again, which deletes
-its disk, so `agentctl apply` refuses it until the agent is deleted. Instructions and skills, the size, the harness
-defaults, secrets and network change in place. A new published image reaches an agent only when it is created again.
+its disk, so `agentctl apply` refuses it until the agent is deleted. Instructions and skills, the size, the harnesses'
+defaults and logins, secrets and network change in place. A new published image reaches an agent only when it is
+created again.
 
 ## Proposing a change
 
