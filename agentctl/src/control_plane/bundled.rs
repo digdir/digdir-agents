@@ -94,6 +94,9 @@ impl ControlPlane {
                 name: Some(agent.metadata.name.clone()),
                 error: None,
                 slots: crate::definitions::unsourced_binds(&agent),
+                // agentd checks that the definitions it carries read nothing from one.
+                environment_file_variables: Vec::new(),
+                environment_file: None,
             });
         }
         Ok(listed)

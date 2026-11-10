@@ -1254,6 +1254,8 @@ mod tests {
             name: Some("worker".into()),
             error: None,
             slots: Vec::new(),
+            environment_file_variables: Vec::new(),
+            environment_file: None,
         }
     }
 

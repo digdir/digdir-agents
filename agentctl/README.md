@@ -74,6 +74,17 @@ agentctl skills install --bundled agentctl --user
 Update with `agentctl self update`. Agents and sessions carry over. Run the `skills install` command above again to
 update the skill as well.
 
+Then bring the agent definitions in a checkout up to date with the new version, once they no longer read an
+environment file:
+
+```sh
+agentctl update ~/repos/my-service
+```
+
+It runs the [agent builder](bundled/definitions/agent-builder/) on the checkout, as `agentctl new` does. The builder
+reads the release notes since the version each definition was written for, proposes each change with its reason, and
+writes the ones you agree to for you to review and commit. Running it again goes back to the same conversation.
+
 ## Your first agent
 
 `agentctl new` makes an agent for a repository with you. Run it in the repository's checkout, or name the checkout:

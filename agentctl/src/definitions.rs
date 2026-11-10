@@ -142,6 +142,14 @@ pub struct DefinitionSummary {
     /// The targets of its bind mounts without a source, which running it needs a folder for each of.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slots: Vec<::sandbox::SandboxPath>,
+    /// The variables its agent takes from its environment file, which a later release stops
+    /// reading, as [`crate::Spec::environment_file_variables`] names them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environment_file_variables: Vec<String>,
+    /// The `.env` beside it, which agentctl reads its values from by default, so no agent may mount
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_file: Option<PathBuf>,
 }
 
 /// Lists the definitions on disk for `directory`, as [`manifests`] finds them, then the `recorded` manifests agents
@@ -159,20 +167,39 @@ pub fn on_disk(directory: Option<&Path>, recorded: Vec<PathBuf>) -> Vec<Definiti
     })
     .into_iter()
     .map(|listed| {
-        let (name, error, slots) = match listed.read {
-            Ok(agent) => (Some(agent.metadata.name.clone()), None, unsourced_binds(&agent)),
-            Err(error) => (None, Some(error), Vec::new()),
+        let (name, error, slots, environment_file_variables) = match listed.read {
+            Ok(agent) => (
+                Some(agent.metadata.name.clone()),
+                None,
+                unsourced_binds(&agent),
+                agent.spec.environment_file_variables(),
+            ),
+            Err(error) => (None, Some(error), Vec::new(), Vec::new()),
         };
         DefinitionSummary {
+            environment_file: environment_file_beside(&listed.path),
             path: listed.path,
             aliases: listed.aliases,
             reference: None,
             name,
             error,
             slots,
+            environment_file_variables,
         }
     })
     .collect()
+}
+
+/// The `.env` in the folder of `manifest`, under any case, which agentctl reads its agent's values
+/// from by default.
+///
+/// Reads the filesystem, so it blocks.
+fn environment_file_beside(manifest: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(manifest.parent()?)
+        .ok()?
+        .filter_map(Result::ok)
+        .find(|entry| crate::exposed::is_exposed_name(&entry.file_name()) && !entry.path().is_dir())
+        .map(|entry| entry.path())
 }
 
 /// A volume manifest a client can apply, as agentd lists it.
@@ -461,6 +488,43 @@ mod tests {
 
         assert_eq!(listed.len(), 1, "{listed:?}");
         assert_eq!(listed[0].slots, [::sandbox::SandboxPath::new("/work/checkout")]);
+    }
+
+    #[test]
+    fn a_definition_names_what_it_reads_from_an_environment_file() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let environment = "\x20 environment:\n\
+                           \x20   - name: EDITOR\n\
+                           \x20   - name: TZ\n\
+                           \x20     value: UTC\n\
+                           \x20 secrets: []\n";
+        let reads = manifest_directory(
+            root.path(),
+            "agents/reads",
+            &manifest_yaml("reads").replace("\x20 secrets: []\n", environment),
+        );
+        std::fs::write(reads.join(".ENV"), "EDITOR=vim").expect("environment file");
+        manifest_directory(root.path(), "agents/off", &manifest_yaml("off"));
+
+        let listed = on_disk(Some(root.path()), Vec::new());
+
+        let read = listed
+            .iter()
+            .map(|definition| {
+                (
+                    definition.name.as_deref(),
+                    definition.environment_file_variables.clone(),
+                    definition.environment_file.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            read,
+            [
+                (Some("off"), Vec::new(), None),
+                (Some("reads"), vec!["EDITOR".to_owned()], Some(reads.join(".ENV"))),
+            ]
+        );
     }
 
     #[cfg(unix)]

@@ -17,6 +17,7 @@ use agent::{
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
+mod builder;
 mod consent;
 mod format;
 mod github;
@@ -29,6 +30,7 @@ mod secret;
 mod self_update;
 mod skills;
 mod tui;
+mod update;
 mod watch;
 
 use format::{condition_status, format_age, format_harnesses, session_state};
@@ -182,6 +184,13 @@ enum Command {
     /// Make a new agent for a repository with the agent builder, which asks what it is for and writes
     /// its definition.
     New(new::NewArguments),
+    /// Update the agent definitions in a checkout to this version of agentctl, with the agent
+    /// builder.
+    ///
+    /// The builder finds what changed since each definition's version, proposes each change and
+    /// writes it once you agree, for you to review and commit. To update agentctl itself, run
+    /// `agentctl self update`.
+    Update(update::UpdateArguments),
     /// Sign agents in to Claude Code.
     Claude {
         #[command(subcommand)]
@@ -414,7 +423,9 @@ enum Command {
         #[arg(short = 'o', long, default_value = "table", value_enum)]
         output: OutputFormat,
     },
-    /// Update agentctl and agentd.
+    /// Update agentctl and agentd themselves.
+    ///
+    /// To update the agent definitions in a checkout to this version, run `agentctl update`.
     Self_ {
         #[command(subcommand)]
         command: self_update::SelfCommand,
@@ -751,6 +762,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         },
         Command::Secret { command } => secret::run(client, command).await?,
         Command::New(arguments) => new::new(arguments, home, client).await?,
+        Command::Update(arguments) => update::update(arguments, home, client).await?,
         Command::Apply {
             filename,
             variant,

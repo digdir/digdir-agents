@@ -1,6 +1,6 @@
 ---
 name: agent-definition
-description: Write or change an agent definition, the files an agentctl agent is made from (agent.yaml and its variants, the image's Dockerfile, instructions, skills and home), and try the change in a nested agent. Use when making an agent for a repository or a role, or when improving the definition of the agent you run in.
+description: Write or change an agent definition, the files an agentctl agent is made from (agent.yaml and its variants, the image's Dockerfile, instructions, skills and home), and try the change in a nested agent. Use when making an agent for a repository or a role, when improving the definition of the agent you run in, or when bringing a definition up to date with a later agentctl.
 ---
 
 # Agent definitions
@@ -133,6 +133,41 @@ the tests start with Compose, `browser` for browser tests, `desktop` for the des
    browser tests on a desktop stage. Prompt one session there with the cheapest model, to check that the harness, its
    instructions and its skills work.
 3. Report each capability as verified, or not and why. Delete the nested agent.
+
+## Bringing a definition up to date
+
+A definition is written for the agentctl release its base image comes from. Later releases change the manifest, the
+base images and the harnesses on them, and their release notes say what moved, what was renamed and what to do by
+hand. So work from the notes between the two versions, rather than from comparing the definition with this skill
+alone.
+
+- **The version it was written for** is the `no.digdir.agentctl.base.version` label of its image, which images built
+  on a base inherit. A base tag in its `FROM`, such as `ubuntu-26.04-v0.1.0-preview.14`, names it too. For an image
+  its manifest references, pull it with `podman` and read the label. An image without the label was built on a base
+  from before `0.1.0-preview.14`. The image's creation date, against the dates of the releases, tells which.
+- **The version to bring it to** is the one you were asked for or, without one, the agentd that runs you, which the
+  agent sandbox section of your instructions names.
+- **What changed** is in the release notes, `agentctl/CHANGELOG.md` in digdir-agents, at the revision of the version
+  to bring it to: the sections after the version it was written for. A release's revision is its tag
+  `agentctl/<version>`, as in
+  `https://raw.githubusercontent.com/digdir/digdir-agents/agentctl/v0.1.0-preview.14/agentctl/CHANGELOG.md`. A build
+  of another commit names it after `.g`, as `v0.1.0-preview.13.main.g1a2b3c4` does, and a local build, such as
+  `v0.0.1-dev.20261101211625`, is `main`'s. Read the manifest schema, the base images' README and agentctl's docs at
+  the same revision, since `main` may be ahead of it.
+
+Then bring each part of the definition to that version:
+
+- **The base image** to the tag of that release, `ubuntu-26.04-<version>` or `ubuntu-26.04-desktop-<version>`, with
+  its digest. That brings the harnesses and tools the release ships with it.
+- **What else the platform publishes** that the definition pins, such as the `ghcr.io/digdir/agentctl` image it copies
+  `agentctl` and `agentd` from for nested agents, to the same version.
+- **What the notes ask for**, in their Changed, Deprecated and Removed entries, and what this skill asks for that the
+  definition predates.
+- **Leave the owner's choices** as they are, such as a tool pinned to the repository's version or a harness the
+  definition installs itself. Say what the release changes about them instead.
+
+Try it as [trying a change](#trying-a-change) describes, with the agentctl of the version you brought it to, and say
+which of its owner's agents must be created again to get it, as below describes.
 
 ## What an update can change in place
 

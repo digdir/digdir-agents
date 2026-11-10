@@ -1,8 +1,9 @@
 # Bundled agent definitions
 
-Each folder here is an agent definition that agentd carries in its build, named by the folder: an `agent.yaml` and
-the files it names. They are for agents that are part of the platform, such as the agent builder `agentctl new` runs,
-whose definitions are tied to the code of the build that runs them, so they cannot come from anywhere else.
+Each folder here is an agent definition that agentd carries in its build, named by the folder: an `agent.yaml` and the
+files it names. They are for agents that are part of the platform, such as the agent builder `agentctl new` and
+`agentctl update` run, whose definitions are tied to the code of the build that runs them, so they cannot come from
+anywhere else.
 
 Otherwise they are ordinary definitions. Their reference is `bundled/<folder>`, or the folder's name for short. agentd
 writes each to a folder of its own when it starts, so it holds the version that build carries, and `agentctl run NAME`
