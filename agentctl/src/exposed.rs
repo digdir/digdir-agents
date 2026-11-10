@@ -224,7 +224,7 @@ mod tests {
         std::fs::write(root.join("tools/beta.env"), "KEY=1").expect("file");
         let canonical = std::fs::canonicalize(root).expect("root");
 
-        let files = found(root, vec![canonical.join("tools/beta.env")]).await;
+        let files = found(root, vec![canonical.join("tools").join("beta.env")]).await;
 
         assert_eq!(
             relative(&files),

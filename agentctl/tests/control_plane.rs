@@ -534,13 +534,13 @@ fn sandbox_name(record: &AgentRecord) -> SandboxName {
 
 /// The files an error says the agent would read, each within its folder and whether it is an
 /// environment file. Another error is its message, so an assertion shows it.
-fn exposed(error: &Error) -> Vec<(String, bool)> {
+fn exposed(error: &Error) -> Vec<(PathBuf, bool)> {
     match error {
         Error::ExposedFiles(files) => files
             .iter()
-            .map(|file| (file.relative().display().to_string(), file.environment_file))
+            .map(|file| (file.relative().to_path_buf(), file.environment_file))
             .collect(),
-        other => vec![(other.to_string(), false)],
+        other => vec![(PathBuf::from(other.to_string()), false)],
     }
 }
 
@@ -1179,7 +1179,7 @@ async fn an_optional_mount_is_checked_for_dot_env_files_when_its_source_exists()
         .apply(request)
         .await
         .expect_err("an optional mount exposes .env as a required one does");
-    assert_eq!(exposed(&error), [(".env".to_owned(), false)]);
+    assert_eq!(exposed(&error), [(PathBuf::from(".env"), false)]);
 }
 
 /// An optional source that moves after the agent is created, here by retargeting a symbolic link, leaves its sandbox
@@ -1799,7 +1799,7 @@ async fn selected_secret_file_inside_a_bind_mount_is_rejected() {
         .apply(request.clone())
         .await
         .expect_err("a .env anywhere in the mount is rejected despite the external override");
-    assert_eq!(exposed(&error), [(".env".to_owned(), false)]);
+    assert_eq!(exposed(&error), [(PathBuf::from(".env"), false)]);
     std::fs::remove_file(root.path().join(".env")).expect("remove environment file");
 
     let mut unchanged = request.clone();
@@ -1818,7 +1818,7 @@ async fn selected_secret_file_inside_a_bind_mount_is_rejected() {
         .apply(inside)
         .await
         .expect_err("an explicit secret file inside the mount is still rejected");
-    assert_eq!(exposed(&error), [("secrets.env".to_owned(), true)]);
+    assert_eq!(exposed(&error), [(PathBuf::from("secrets.env"), true)]);
 }
 
 #[tokio::test(flavor = "local")]
@@ -1846,7 +1846,7 @@ async fn git_ignored_nested_dot_env_is_rejected_case_insensitively_without_decla
         .apply(request)
         .await
         .expect_err("ignored directories are still inspected case-insensitively for .env files");
-    assert_eq!(exposed(&error), [(relative_env.display().to_string(), false)]);
+    assert_eq!(exposed(&error), [(relative_env, false)]);
 }
 
 /// The person agrees to the files a mount holds, and only to those: another one asks again.
@@ -1887,7 +1887,13 @@ async fn a_mount_holding_dot_env_files_takes_consent_to_exactly_those_files() {
         .into_iter()
         .find(|condition| condition.kind == Condition::EXPOSED_FILES)
         .expect("the agreed files are recorded");
-    assert!(condition.message.contains("src/web/.env"), "{}", condition.message);
+    for file in agreed(&refused) {
+        assert!(
+            condition.message.contains(&file.display().to_string()),
+            "{}",
+            condition.message
+        );
+    }
 
     fixture
         .control_plane
@@ -1903,7 +1909,7 @@ async fn a_mount_holding_dot_env_files_takes_consent_to_exactly_those_files() {
         .expect_err("another file asks again");
     assert_eq!(
         exposed(&again),
-        [(".env".to_owned(), false), ("src/web/.env".to_owned(), false)]
+        [(PathBuf::from(".env"), false), (PathBuf::from("src/web/.env"), false)]
     );
     request.allow_exposed_files = agreed(&again);
     fixture.control_plane.apply(request).await.expect("agreed to both");
@@ -1934,7 +1940,7 @@ async fn an_environment_file_beside_a_manifest_is_never_mounted() {
         .apply(request.clone())
         .await
         .expect_err("an environment file");
-    assert_eq!(exposed(&refused), [("agents/reviewer/.env".to_owned(), true)]);
+    assert_eq!(exposed(&refused), [(PathBuf::from("agents/reviewer/.env"), true)]);
     request.allow_exposed_files = agreed(&refused);
     fixture
         .control_plane
@@ -2053,7 +2059,7 @@ async fn secret_file_reached_through_a_symlinked_ancestor_is_still_rejected() {
         .apply(request)
         .await
         .expect_err("the secret file would land inside the mounted checkout");
-    assert_eq!(exposed(&error), [("secrets/not-yet/worker.env".to_owned(), true)]);
+    assert_eq!(exposed(&error), [(PathBuf::from("secrets/not-yet/worker.env"), true)]);
 }
 
 #[tokio::test(flavor = "local")]
@@ -2091,7 +2097,7 @@ async fn bind_mount_exposing_another_agents_secret_file_is_rejected() {
         .apply(worktree)
         .await
         .expect_err("the mount would expose the other agent's selected environment file");
-    assert_eq!(exposed(&error), [("credentials.txt".to_owned(), true)]);
+    assert_eq!(exposed(&error), [(PathBuf::from("credentials.txt"), true)]);
 }
 
 #[tokio::test(flavor = "local")]

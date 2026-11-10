@@ -1184,7 +1184,8 @@ mod tests {
 
         let refused =
             ask_about(&[file("src/web/.env", false)], &agreed).expect_err("agentd refused what was agreed to");
-        assert!(refused.contains("/src/app/src/web/.env"), "{refused}");
+        let named = Path::new("/src/app").join("src/web/.env").display().to_string();
+        assert!(refused.contains(&named), "{refused}");
         let refused = ask_about(&[file("agents/a/.env", true)], &none).expect_err("an environment file");
         assert!(refused.contains(agent::exposed::ENVIRONMENT_FILE_GUIDE), "{refused}");
     }

@@ -162,7 +162,11 @@ mod tests {
         assert_eq!(&lines[1..3], ["  src/web/.env", "  tools/.env"]);
 
         let files = [file("/src/app", ".env", false), file("/src/tools", ".env", false)];
-        assert_eq!(listed(&files), ["/src/app/.env", "/src/tools/.env"]);
+        assert_eq!(
+            listed(&files),
+            files.map(|file| file.path.display().to_string()),
+            "in full"
+        );
     }
 
     #[test]
