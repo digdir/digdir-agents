@@ -143,34 +143,47 @@ pub fn stop_all() {
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Write as _, time::Duration};
+    use std::{
+        io::Write as _,
+        time::{Duration, Instant},
+    };
 
     use tokio::{runtime::LocalRuntime, sync::oneshot};
 
     use super::{Error, Stoppable, check, run, stop_all};
 
-    /// Reports that it started, then waits until it is told to stop and reports that.
-    fn until_stopped(started: oneshot::Sender<()>, stopped: oneshot::Sender<()>) -> impl FnOnce() + Send {
+    /// How long the work waits to be stopped, so that a test of a stop that does not work fails
+    /// rather than waits for the work forever.
+    const PATIENCE: Duration = Duration::from_secs(5);
+
+    /// Reports that it started, then waits up to [`PATIENCE`] to be stopped and reports whether it was.
+    fn until_stopped(started: oneshot::Sender<()>, stopped: oneshot::Sender<bool>) -> impl FnOnce() + Send {
         move || {
             let _ = started.send(());
-            while check().is_ok() {
+            let deadline = Instant::now() + PATIENCE;
+            while check().is_ok() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(1));
             }
-            let _ = stopped.send(());
+            let _ = stopped.send(check().is_err());
         }
+    }
+
+    /// What `receiver` gets, failing if it gets nothing in twice [`PATIENCE`].
+    async fn within<T>(receiver: oneshot::Receiver<T>) -> T {
+        tokio::time::timeout(PATIENCE * 2, receiver)
+            .await
+            .expect("the work should report in time")
+            .expect("the work should report")
     }
 
     #[tokio::test(flavor = "local")]
     async fn work_stops_once_nothing_waits_for_it() {
         let (started, has_started) = oneshot::channel();
-        let (stopped, has_stopped) = oneshot::channel();
+        let (stopped, was_stopped) = oneshot::channel();
         let work = tokio::task::spawn_local(run("waiting", until_stopped(started, stopped)));
-        has_started.await.expect("the work should start");
+        within(has_started).await;
         work.abort();
-        tokio::time::timeout(Duration::from_secs(5), has_stopped)
-            .await
-            .expect("the work should stop")
-            .expect("the work should report stopping");
+        assert!(within(was_stopped).await, "the work should stop");
     }
 
     #[test]
@@ -180,11 +193,11 @@ mod tests {
         let thread = std::thread::spawn(|| {
             LocalRuntime::new().expect("runtime").block_on(async {
                 let (started, has_started) = oneshot::channel();
-                let (stopped, has_stopped) = oneshot::channel();
+                let (stopped, was_stopped) = oneshot::channel();
                 let running = tokio::task::spawn_local(run("waiting", until_stopped(started, stopped)));
-                has_started.await.expect("the work should start");
+                within(has_started).await;
                 stop_all();
-                has_stopped.await.expect("running work should stop");
+                assert!(within(was_stopped).await, "running work should stop");
                 running.await.expect("task").expect("running work should return");
                 let later = run("checking", check).await;
                 assert!(matches!(later, Ok(Err(Error::Stopped { what: "checking" }))));
