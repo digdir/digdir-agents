@@ -56,7 +56,8 @@ where
 /// that, and is then not among the paths. Every question is asked before a file is deleted, so a no
 /// to any of them leaves everything as it was.
 pub(crate) fn agree(files: &[ExposedFile], ask: &Ask<'_>) -> Result<BTreeSet<PathBuf>, Error> {
-    let from = working_directory();
+    // The person knows the files by their paths from the folder they work in.
+    let from = crate::builder::folder(None).ok();
     let (environment, files): (Vec<_>, Vec<_>) =
         files.iter().cloned().partition(|file| file.environment_file.is_some());
     let unread = unread(&environment, from.as_deref())?;
@@ -132,13 +133,7 @@ pub(crate) fn environment_file_refusal(files: &[ExposedFile]) -> Option<String> 
     files
         .iter()
         .any(|file| file.environment_file.is_some())
-        .then(|| agent::exposed::refusal_from(files, working_directory().as_deref()))
-}
-
-/// The directory the person works in, which they know the files by their paths from, as the folder
-/// it really is, as agentd names the files.
-fn working_directory() -> Option<PathBuf> {
-    std::fs::canonicalize(std::env::current_dir().ok()?).ok()
+        .then(|| agent::exposed::refusal_from(files, crate::builder::folder(None).ok().as_deref()))
 }
 
 /// The `environment` files to offer to delete, each once though several of an agent's folders hold
