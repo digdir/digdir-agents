@@ -52,19 +52,32 @@ impl<'a> SignInAgent<'a> {
 
     /// Runs `sign_in` with this terminal relayed to it, and returns the credential it leaves. With
     /// `open_links`, each sign-in page it shows opens in this machine's browser.
-    async fn run(&self, sign_in: &SandboxSignIn, open_links: bool) -> Result<Zeroizing<String>, Error> {
-        let base =
-            agent::sandbox::platform::execution_spec(&self.target.operating_system, &["/bin/true".into()], true)?;
+    async fn run(&self, sign_in: &SandboxSignIn, open_links: bool) -> Result<Zeroizing<String>, SignInFailure> {
+        let before = |error: Error| SignInFailure {
+            error: Box::new(error),
+            signed_in: false,
+        };
+        let base = agent::sandbox::platform::execution_spec(&self.target.operating_system, &["/bin/true".into()], true)
+            .map_err(before)?;
         let mut spec = sign_in.execution.clone().with_environment(base.environment().clone());
         if let Some(directory) = base.working_directory() {
             spec = spec.with_working_directory(directory.clone());
         }
-        let output = relay(self.home.path(), &self.target, spec, open_links.then_some(sign_in)).await?;
+        let output = relay(self.home.path(), &self.target, spec, open_links.then_some(sign_in))
+            .await
+            .map_err(before)?;
+        // The program signed in, so whatever fails now leaves a credential the host never gets.
+        let after = |error: Error| SignInFailure {
+            error: Box::new(error),
+            signed_in: true,
+        };
         let artifact = match &sign_in.artifact {
-            Some(path) => Some(self.read(path.as_str()).await?),
+            Some(path) => Some(self.read(path.as_str()).await.map_err(after)?),
             None => None,
         };
-        sign_in.credential(&output, artifact.as_ref().map(|artifact| artifact.as_slice()))
+        sign_in
+            .credential(&output, artifact.as_ref().map(|artifact| artifact.as_slice()))
+            .map_err(after)
     }
 
     /// The contents of a file in the sign-in agent.
@@ -227,6 +240,14 @@ fn key_bytes(key: KeyEvent) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// Why a sign-in gave no credential.
+pub(crate) struct SignInFailure {
+    pub(crate) error: Box<Error>,
+    /// Whether the program had signed in, so that the service may have issued a credential this
+    /// machine never got.
+    pub(crate) signed_in: bool,
+}
+
 /// Runs `sign_in` in a short-lived agent to sign in to `service`, with the person at this terminal
 /// and its sign-in page opening in this machine's browser. The outer result says whether the agent
 /// started, the inner one what the sign-in gave. The agent is deleted, with everything signed in
@@ -236,7 +257,7 @@ pub(crate) async fn sign_in(
     home: &ControlPlaneHome,
     service: &str,
     sign_in: &SandboxSignIn,
-) -> CommandResult<Result<Zeroizing<String>, Error>> {
+) -> CommandResult<Result<Zeroizing<String>, SignInFailure>> {
     let agent = SignInAgent::start(client, home).await?;
     // Where a browser here would not reach the person, such as over SSH, they open the link. Saying
     // so now keeps it out of what the program draws.

@@ -2741,8 +2741,12 @@ async fn sandbox_login(
     };
     let credential = match credential {
         Ok(credential) => credential,
-        Err(Error::Invalid(reason)) if read_off_screen => return Err(paste(reason)),
-        Err(error) => return Err(error.into()),
+        Err(failure) => {
+            return Err(match *failure.error {
+                Error::Invalid(reason) if read_off_screen => paste(reason),
+                error => error.into(),
+            });
+        }
     };
     let stored = match client
         .auth_login(harness, name.clone(), credential.to_string(), false)

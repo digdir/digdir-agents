@@ -94,7 +94,11 @@ pub(crate) async fn login(
 /// terminal, once the person confirms whom it acts as.
 async fn keep(client: &Client, name: &str, token: &str, way: Way, user: Option<&str>) -> CommandResult<()> {
     eprintln!("Checking the token with GitHub...");
-    let checked = agent::github::check(token, name).await?;
+    // Ctrl-C would otherwise end agentctl before it says what becomes of the token.
+    let checked = tokio::select! {
+        checked = agent::github::check(token, name) => checked?,
+        _ = tokio::signal::ctrl_c() => return Err(Error::Invalid("cancelled".into()).into()),
+    };
     let acts_as = &checked.account.identity.login;
     let now = OffsetDateTime::now_utc();
     if let Some(user) = user
@@ -121,14 +125,25 @@ async fn keep(client: &Client, name: &str, token: &str, way: Way, user: Option<&
 /// happened: it is stored nowhere, but works on GitHub until it is revoked.
 fn with_unkept_sign_in(way: Way, kept: CommandResult<()>) -> CommandResult<()> {
     match kept {
-        Err(error) if way == Way::Web => Err(CommandError::Message(format!(
-            "{error}. The token from the browser sign-in is stored nowhere, but works on GitHub until the account \
-             that approved it revokes the GitHub CLI at {page}, which also signs out that account's other `gh` \
-             logins",
-            page = agent::github::SIGN_IN_REVOKE_PAGE
-        ))),
+        Err(error) if way == Way::Web => Err(CommandError::Message(format!("{error}. {}", unkept_sign_in(true)))),
         kept => kept,
     }
+}
+
+/// What becomes of a browser sign-in's token that was not kept: it is stored nowhere, but works
+/// on GitHub until it is revoked. When the sign-in failed after GitHub `issued` it, without
+/// agentctl getting it, it says the token may exist.
+fn unkept_sign_in(issued: bool) -> String {
+    let page = agent::github::SIGN_IN_REVOKE_PAGE;
+    let what = if issued {
+        "The token from the browser sign-in is stored nowhere, but works on GitHub"
+    } else {
+        "GitHub may have issued a token for the browser sign-in. It is stored nowhere, but would work on GitHub"
+    };
+    format!(
+        "{what} until the account that approved it revokes the GitHub CLI at {page}, which also signs out that \
+         account's other `gh` logins"
+    )
 }
 
 /// The way the person picks at the terminal to get the token for `name`.
@@ -165,7 +180,16 @@ async fn sign_in(client: &Client, home: &ControlPlaneHome, user: Option<&str>) -
          so if that is you, sign out first or open the link in a private window.\n"
     );
     let recipe = agent::github::sandbox_sign_in();
-    Ok(crate::sandbox_sign_in::sign_in(client, home, "GitHub", &recipe).await??)
+    match crate::sandbox_sign_in::sign_in(client, home, "GitHub", &recipe).await? {
+        Ok(token) => Ok(token),
+        // gh signed in, so GitHub issued a token, which this machine didn't get.
+        Err(failure) if failure.signed_in => Err(CommandError::Message(format!(
+            "{}. {}",
+            failure.error,
+            unkept_sign_in(false)
+        ))),
+        Err(failure) => Err((*failure.error).into()),
+    }
 }
 
 fn stored_line(login: &Login) -> String {
@@ -490,6 +514,8 @@ mod tests {
             assert_eq!(message, "the token was not kept");
         }
         assert!(with_unkept_sign_in(Way::Web, Ok(())).is_ok());
+        assert!(unkept_sign_in(false).starts_with("GitHub may have issued a token"));
+        assert!(unkept_sign_in(false).contains("https://github.com/settings/applications"));
     }
 
     #[test]
