@@ -345,7 +345,11 @@ impl ControlPlane {
                     source.display(),
                     secret_file.display(),
                     record.agent.metadata.name,
-                    crate::exposed::moving_out(&own.variables, std::slice::from_ref(&own.agent)),
+                    crate::exposed::moving_out(
+                        &own.variables,
+                        std::slice::from_ref(&own.agent),
+                        crate::exposed::Manifests::ByHand,
+                    ),
                 )));
             }
         }
@@ -908,7 +912,11 @@ pub(crate) async fn reject_secrets_in_copy(
                 source.display(),
                 applied.file.display(),
                 applied.agent,
-                crate::exposed::moving_out(&applied.variables, std::slice::from_ref(&applied.agent)),
+                crate::exposed::moving_out(
+                    &applied.variables,
+                    std::slice::from_ref(&applied.agent),
+                    crate::exposed::Manifests::ByHand,
+                ),
             )));
         }
     }

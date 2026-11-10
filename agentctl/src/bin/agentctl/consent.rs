@@ -15,6 +15,9 @@ pub(crate) struct Ask<'a> {
     pub(crate) action: &'a str,
     /// Whether `--allow-env-files` agreed to them already.
     pub(crate) allowed: bool,
+    /// Who changes the manifests that read an environment file, which decides the steps the person
+    /// is given when one stops the command.
+    pub(crate) manifests: agent::exposed::Manifests,
 }
 
 /// Sends `request` with `send` and, when agentd names files that may hold real keys, asks about them
@@ -52,7 +55,7 @@ where
             }
         } else {
             match send(request.clone()).await {
-                Err(Error::ExposedFiles(now)) if asked_about_all(&files, &now) => delete(&agreed.delete, &now)?,
+                Err(Error::ExposedFiles(now)) if asked_about_all(&files, &now) => delete(&agreed.delete, &now, ask)?,
                 Err(Error::ExposedFiles(now)) => {
                     found = Some(now);
                     continue;
@@ -87,12 +90,13 @@ pub(crate) fn agree(files: &[ExposedFile], ask: &Ask<'_>) -> Result<Agreed, Erro
     let from = crate::builder::folder(None).ok();
     let (environment, files): (Vec<_>, Vec<_>) =
         files.iter().cloned().partition(|file| file.environment_file.is_some());
-    let delete = unread(&environment, from.as_deref())?;
+    let delete = unread(&environment, from.as_deref(), ask.manifests)?;
     for file in &delete {
         if !prompt::interactive() {
             return Err(Error::Invalid(agent::exposed::refusal_from(
                 &environment,
                 from.as_deref(),
+                ask.manifests,
             )));
         }
         let lines = deletion_question(file, from.as_deref());
@@ -118,10 +122,11 @@ pub(crate) fn agree(files: &[ExposedFile], ask: &Ask<'_>) -> Result<Agreed, Erro
 ///
 /// Returns what to do about the files that are read now, with nothing deleted, or the file that
 /// could not be deleted.
-pub(crate) fn delete(agreed: &[ExposedFile], now: &[ExposedFile]) -> Result<(), Error> {
+pub(crate) fn delete(agreed: &[ExposedFile], now: &[ExposedFile], ask: &Ask<'_>) -> Result<(), Error> {
     let from = crate::builder::folder(None).ok();
     let still = |file: &&ExposedFile| agreed.iter().any(|agreed| agreed.path == file.path);
-    let unread = unread(&now.iter().filter(still).cloned().collect::<Vec<_>>(), from.as_deref())?
+    let now = now.iter().filter(still).cloned().collect::<Vec<_>>();
+    let unread = unread(&now, from.as_deref(), ask.manifests)?
         .into_iter()
         .filter(|file| file.environment_file.is_some())
         .map(|file| (file.path.clone(), file.shown(from.as_deref())))
@@ -177,10 +182,13 @@ fn agree_to_read(files: &[ExposedFile], ask: &Ask<'_>) -> Result<BTreeSet<PathBu
 /// Why agentctl never lets an agent read some of `files`, when they are agents' environment files,
 /// whose values belong in stored secrets instead, and what to do about each.
 pub(crate) fn environment_file_refusal(files: &[ExposedFile]) -> Option<String> {
-    files
-        .iter()
-        .any(|file| file.environment_file.is_some())
-        .then(|| agent::exposed::refusal_from(files, crate::builder::folder(None).ok().as_deref()))
+    files.iter().any(|file| file.environment_file.is_some()).then(|| {
+        agent::exposed::refusal_from(
+            files,
+            crate::builder::folder(None).ok().as_deref(),
+            agent::exposed::Manifests::ByHand,
+        )
+    })
 }
 
 /// The `environment` files to offer to delete, each once though several of an agent's folders hold
@@ -190,14 +198,22 @@ pub(crate) fn environment_file_refusal(files: &[ExposedFile]) -> Option<String> 
 ///
 /// Returns what to do about them instead when something still reads one, as deleting it would lose
 /// the values.
-fn unread<'a>(environment: &'a [ExposedFile], from: Option<&std::path::Path>) -> Result<Vec<&'a ExposedFile>, Error> {
+fn unread<'a>(
+    environment: &'a [ExposedFile],
+    from: Option<&std::path::Path>,
+    manifests: agent::exposed::Manifests,
+) -> Result<Vec<&'a ExposedFile>, Error> {
     let read = |file: &ExposedFile| {
         file.environment_file
             .as_ref()
             .is_some_and(|file| !file.readers.is_empty())
     };
     if environment.iter().any(read) {
-        return Err(Error::Invalid(agent::exposed::refusal_from(environment, from)));
+        return Err(Error::Invalid(agent::exposed::refusal_from(
+            environment,
+            from,
+            manifests,
+        )));
     }
     let mut seen = BTreeSet::new();
     Ok(environment.iter().filter(|file| seen.insert(&file.path)).collect())
@@ -274,6 +290,7 @@ mod tests {
         reader: "agent/builder",
         action: "Mount",
         allowed: false,
+        manifests: agent::exposed::Manifests::ByHand,
     };
 
     #[test]
@@ -349,7 +366,7 @@ mod tests {
             file("/home/me/agents/dev", ".env", true),
             file("/home/me/agents", "dev/.env", true),
         ];
-        let offered = unread(&twice, None).expect("nothing reads it");
+        let offered = unread(&twice, None, ASK.manifests).expect("nothing reads it");
         assert_eq!(offered.len(), 1, "one file, in two folders");
 
         let mut read = file("/src/app", "agents/dev/.env", true);
@@ -360,7 +377,9 @@ mod tests {
             stored: Vec::new(),
         });
         let files = [file("/src/app", "agents/old/.env", true), read];
-        let refused = unread(&files, None).expect_err("one is still read").to_string();
+        let refused = unread(&files, None, ASK.manifests)
+            .expect_err("one is still read")
+            .to_string();
         assert!(
             refused.contains("agents/dev/.env") && refused.contains("agent.yaml"),
             "{refused}"
@@ -386,7 +405,7 @@ mod tests {
             }],
             stored: Vec::new(),
         });
-        let refused = delete(&agreed, &[agreed[0].clone(), read])
+        let refused = delete(&agreed, &[agreed[0].clone(), read], &ASK)
             .expect_err("read now")
             .to_string();
         assert!(refused.contains("agent.yaml"), "{refused}");
@@ -394,7 +413,7 @@ mod tests {
 
         // Another file agentd finds now was never asked about, so it stays.
         std::fs::write(directory.path().join(".env"), "KEY=1").expect("file");
-        delete(&agreed[..1], &[agreed[0].clone(), file(&folder, ".env", true)]).expect("deleted");
+        delete(&agreed[..1], &[agreed[0].clone(), file(&folder, ".env", true)], &ASK).expect("deleted");
         assert!(!exists("a") && exists("b") && directory.path().join(".env").exists());
     }
 

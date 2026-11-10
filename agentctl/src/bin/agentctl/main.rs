@@ -827,6 +827,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 reader: &reader,
                 action: "Mount",
                 allowed: allow_env_files,
+                manifests: agent::exposed::Manifests::ByHand,
             };
             let applied = consent::send(
                 request,
@@ -2444,6 +2445,7 @@ async fn apply_volume(
         reader: &reader,
         action: "Copy",
         allowed: allow_env_files,
+        manifests: agent::exposed::Manifests::ByHand,
     };
     let applied = consent::send(
         request,
@@ -2662,6 +2664,7 @@ async fn run_agent(
         reader: "The agent",
         action: "Mount",
         allowed: run.allow_env_files,
+        manifests: agent::exposed::Manifests::ByHand,
     };
     let (ran, _lease) = consent::send(
         run.request()?,
