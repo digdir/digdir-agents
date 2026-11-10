@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 
 use ::sandbox::SandboxPath;
 
-use crate::{Agent, AgentId, DefinitionReference, Error, Lifetime, Origin};
+use crate::{
+    Agent, AgentId, DefinitionReference, Error, Lifetime, Origin,
+    bundled::{Definition, Definitions},
+};
 
 use super::{AgentRecord, BindSource, ControlPlane, service};
 
@@ -81,11 +84,21 @@ impl ControlPlane {
     /// Prepares the agent the definition `reference` names declares, from agentd's copy of it.
     pub(super) async fn prepare_reference(&self, reference: &str) -> Result<Prepared, Error> {
         let reference = DefinitionReference::parse(reference)?;
+        self.prepare_bundled(|definitions| definitions.get(reference.name()))
+            .await
+    }
+
+    /// Prepares the agent that the definition agentd carries, which `find` picks, declares, from
+    /// agentd's copy of it.
+    pub(super) async fn prepare_bundled(
+        &self,
+        find: impl FnOnce(&Definitions) -> Result<&Definition, Error>,
+    ) -> Result<Prepared, Error> {
         let bundled = self
             .bundled
             .as_ref()
             .ok_or_else(|| Error::Daemon("this agentd carries no agent definitions".into()))?;
-        let definition = bundled.definitions.get(reference.name())?;
+        let definition = find(&bundled.definitions)?;
         let directory = bundled.folder(definition).await?;
         let mut agent = definition.agent();
         agent.clear_managed_fields();
@@ -97,7 +110,7 @@ impl ControlPlane {
             optional_mount_sources: std::collections::BTreeMap::new(),
             bindings: std::collections::BTreeMap::new(),
             origin: Origin::Reference {
-                reference: reference.to_string(),
+                reference: DefinitionReference::Bundled(definition.name().to_owned()).to_string(),
             },
         })
     }

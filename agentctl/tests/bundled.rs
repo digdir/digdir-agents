@@ -137,9 +137,18 @@ pub(crate) struct Fixture {
 
 impl Fixture {
     pub(crate) fn new() -> Self {
+        Self::carrying([builder("one"), sign_in()])
+    }
+
+    /// A fixture whose sign-in definition is an internal one, as agentd's own is.
+    pub(crate) fn with_internal_sign_in() -> Self {
+        Self::carrying([builder("one"), sign_in().into_internal()])
+    }
+
+    fn carrying(definitions: impl IntoIterator<Item = Definition>) -> Self {
         let store = Rc::new(memory::InMemoryAgentStore::new());
         let home = TempDirectory::new("bundled-home");
-        let control_plane = Rc::new(control_plane(&store, home.path(), [builder("one"), sign_in()]));
+        let control_plane = Rc::new(control_plane(&store, home.path(), definitions));
         Self {
             store,
             home,
@@ -434,6 +443,48 @@ async fn a_reference_agentd_cannot_resolve_is_refused() {
         assert!(error.to_string().contains(expected), "{reference}: {error}");
     }
     assert_eq!(fixture.store.list().await.expect("agents"), []);
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_internal_definition_runs_only_through_its_own_request() {
+    let fixture = Fixture::with_internal_sign_in();
+
+    let listed = fixture.control_plane.definitions(None).await.expect("definitions");
+    assert_eq!(
+        listed
+            .iter()
+            .filter_map(|definition| definition.reference.as_deref())
+            .collect::<Vec<_>>(),
+        ["bundled/builder"]
+    );
+    for reference in ["sign-in", "bundled/sign-in"] {
+        let error = fixture
+            .control_plane
+            .run(RunRequest {
+                lifetime: Some(Lifetime::Ephemeral),
+                ..request(reference, None)
+            })
+            .await
+            .expect_err("an internal definition by reference");
+        assert!(
+            error.to_string().contains("no agent definition named \"sign-in\""),
+            "{reference}: {error}"
+        );
+    }
+
+    let (first, _) = fixture.control_plane.run_sign_in().await.expect("sign-in");
+    let (second, _) = fixture.control_plane.run_sign_in().await.expect("another sign-in");
+    assert_eq!(
+        [first.agent.metadata.name.as_str(), second.agent.metadata.name.as_str()],
+        ["sign-in", "sign-in-2"],
+        "each request makes its own"
+    );
+    assert_eq!(first.agent.status.lifetime, Some(Lifetime::Ephemeral));
+    assert!(
+        matches!(&first.agent.status.origin, Some(Origin::Reference { reference, .. }) if reference == "bundled/sign-in"),
+        "{:?}",
+        first.agent.status.origin
+    );
 }
 
 #[tokio::test(flavor = "local")]

@@ -3,7 +3,7 @@
 //! They come with the exact build because they are tied to its code, such as the sign-in recipes
 //! or the schema a definition is written against. Otherwise they are ordinary definitions: agentd
 //! writes each to a folder of its own, and an agent is applied or run from that folder as from
-//! any other.
+//! any other. The [`INTERNAL`] ones are the exception: only agentctl's own commands run them.
 
 mod folders;
 
@@ -25,6 +25,15 @@ const RELEASED_IMAGES: &[&str] = &[
     "ghcr.io/digdir/agentctl-agent-builder:main",
 ];
 
+/// The agent a harness login signs in in when this machine does not have the harness, which agentd
+/// runs for that login alone.
+pub const SIGN_IN: &str = "sign-in";
+
+/// The definitions only agentctl's own commands run, each through a request of its own. They are
+/// part of a command, and no use on their own, so agentd neither lists them nor runs them by
+/// reference.
+const INTERNAL: &[&str] = &[SIGN_IN];
+
 /// One file of a definition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DefinitionFile {
@@ -40,6 +49,7 @@ pub struct Definition {
     name: String,
     files: BTreeMap<String, DefinitionFile>,
     agent: Agent,
+    internal: bool,
 }
 
 impl Definition {
@@ -60,7 +70,20 @@ impl Definition {
             .ok_or_else(|| invalid(format!("it has no {MANIFEST_FILE}")))?;
         let agent = crate::manifest::decode(&manifest.contents).map_err(|error| invalid(error.to_string()))?;
         check_contained(&agent, &files).map_err(invalid)?;
-        Ok(Self { name, files, agent })
+        Ok(Self {
+            name,
+            files,
+            agent,
+            internal: false,
+        })
+    }
+
+    /// This definition as one only agentctl's own commands run, as [`Definitions::bundled`] makes
+    /// those [`INTERNAL`] names.
+    #[must_use]
+    pub const fn into_internal(mut self) -> Self {
+        self.internal = true;
+        self
     }
 
     /// The definition's name.
@@ -114,7 +137,12 @@ impl Definitions {
                         )
                     })
                     .collect();
-                Definition::new(embedded.name, files)
+                let definition = Definition::new(embedded.name, files)?;
+                Ok::<_, Error>(if INTERNAL.contains(&embedded.name) {
+                    definition.into_internal()
+                } else {
+                    definition
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self::new(definitions))
@@ -131,22 +159,46 @@ impl Definitions {
         )
     }
 
-    /// Every definition, by name.
+    /// Every definition, by name, the internal ones too.
     pub fn iter(&self) -> impl Iterator<Item = &Definition> {
         self.0.values()
     }
 
-    /// The definition named `name`.
+    /// The definitions a client can list, apply and run by reference: all but the internal ones.
+    pub fn listed(&self) -> impl Iterator<Item = &Definition> {
+        self.iter().filter(|definition| !definition.internal)
+    }
+
+    /// The definition named `name` that a client runs by reference, which an internal one is not.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Invalid`] when there is none.
     pub fn get(&self, name: &str) -> Result<&Definition, Error> {
-        self.0.get(name).ok_or_else(|| {
-            Error::Invalid(format!(
-                "agentd carries no agent definition named {name:?}; is agentctl the same build as agentd?"
-            ))
-        })
+        self.0
+            .get(name)
+            .filter(|definition| !definition.internal)
+            .ok_or_else(|| {
+                Error::Invalid(format!(
+                    "agentd carries no agent definition named {name:?}; is agentctl the same build as agentd?"
+                ))
+            })
+    }
+
+    /// The internal definition named `name`, for the request of agentctl's own that runs it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Invalid`] when there is none.
+    pub fn internal(&self, name: &str) -> Result<&Definition, Error> {
+        self.0
+            .get(name)
+            .filter(|definition| definition.internal)
+            .ok_or_else(|| {
+                Error::Invalid(format!(
+                    "agentd carries no internal agent definition named {name:?}; is agentctl the same build as agentd?"
+                ))
+            })
     }
 }
 
@@ -304,6 +356,22 @@ mod tests {
     #[test]
     fn every_bundled_definition_is_valid() {
         Definitions::bundled().expect("the bundled definitions");
+    }
+
+    /// A name in [`INTERNAL`] that no folder has, as after a rename, would leave the definition
+    /// listed and run by reference.
+    #[test]
+    fn every_internal_definition_is_carried_and_runs_only_through_its_own_request() {
+        let definitions = Definitions::bundled().expect("the bundled definitions");
+        for name in INTERNAL {
+            definitions
+                .internal(name)
+                .expect("an internal definition this build carries");
+            definitions
+                .get(name)
+                .expect_err("an internal definition does not run by reference");
+            assert!(definitions.listed().all(|definition| definition.name() != *name));
+        }
     }
 
     #[test]

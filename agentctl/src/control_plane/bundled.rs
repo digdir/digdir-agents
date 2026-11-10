@@ -78,14 +78,14 @@ impl ControlPlane {
         Ok(listed)
     }
 
-    /// The definitions agentd carries, each in the folder agentd keeps its copy in, written if
-    /// missing.
+    /// The definitions agentd carries that a client can run, each in the folder agentd keeps its
+    /// copy in, written if missing.
     async fn bundled_definitions(&self) -> Result<Vec<DefinitionSummary>, Error> {
         let Some(bundled) = &self.bundled else {
             return Ok(Vec::new());
         };
         let mut listed = Vec::new();
-        for definition in bundled.definitions.iter() {
+        for definition in bundled.definitions.listed() {
             let agent = definition.agent();
             listed.push(DefinitionSummary {
                 path: bundled.folder(definition).await?.join(crate::manifest::MANIFEST_FILE),

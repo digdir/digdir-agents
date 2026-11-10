@@ -133,9 +133,8 @@ impl ControlPlane {
     /// belongs to another agent, an agent of the definition already works on the folders, or the
     /// agent cannot be stored.
     pub async fn run(&self, request: RunRequest) -> Result<(Ran, AgentId), Error> {
-        let lifetime = request.lifetime.unwrap_or_default();
         let binds = self.validate_bind_sources(&request.binds).await?;
-        let mut prepared = match request.definition {
+        let prepared = match request.definition {
             RunDefinition::Reference { reference } => self.prepare_reference(&reference).await?,
             RunDefinition::Local {
                 source_directory,
@@ -147,13 +146,55 @@ impl ControlPlane {
                     .await?
             }
         };
-        Box::pin(prepared.bind(&binds)).await?;
+        let lifetime = request.lifetime.unwrap_or_default();
+        Box::pin(self.run_prepared(
+            prepared,
+            &binds,
+            lifetime,
+            request.name.as_deref(),
+            &request.allow_exposed_files,
+        ))
+        .await
+    }
+
+    /// Makes the agent a harness login signs in in when this machine does not have the harness,
+    /// from the internal definition [`crate::bundled::SIGN_IN`], and starts it. It is ephemeral, so
+    /// each request makes its own, which agentd deletes once the client that asked for it is gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this agentd does not carry the definition or the agent cannot be
+    /// stored.
+    pub async fn run_sign_in(&self) -> Result<(Ran, AgentId), Error> {
+        let prepared = self
+            .prepare_bundled(|definitions| definitions.internal(crate::bundled::SIGN_IN))
+            .await?;
+        Box::pin(self.run_prepared(
+            prepared,
+            &[],
+            Lifetime::Ephemeral,
+            None,
+            &std::collections::BTreeSet::new(),
+        ))
+        .await
+    }
+
+    /// Gives `prepared` its folders and a name, stores it and starts it, as [`Self::run`] says.
+    async fn run_prepared(
+        &self,
+        mut prepared: Prepared,
+        binds: &[BindSource],
+        lifetime: Lifetime,
+        name: Option<&str>,
+        allow_exposed_files: &std::collections::BTreeSet<PathBuf>,
+    ) -> Result<(Ran, AgentId), Error> {
+        Box::pin(prepared.bind(binds)).await?;
         prepared.agent.spec.set_run_state(crate::RunState::Running);
 
         let record = loop {
             let records = self.store.list().await?;
-            if let Some(name) = &request.name {
-                if records.iter().any(|record| record.agent.metadata.name == *name) {
+            if let Some(name) = name {
+                if records.iter().any(|record| record.agent.metadata.name == name) {
                     return Err(Error::Invalid(format!("an agent named {name:?} already exists")));
                 }
             } else if lifetime == Lifetime::UntilDeleted
@@ -161,14 +202,14 @@ impl ControlPlane {
             {
                 return Err(already_running(running));
             }
-            prepared.agent.metadata.name = match &request.name {
-                Some(name) => name.clone(),
+            prepared.agent.metadata.name = match name {
+                Some(name) => name.to_owned(),
                 None => available_name(prepared.base_name(), prepared.naming_folder(), &records)?,
             };
             prepared.agent.validate()?;
             // Another request that took the name first is found on the next pass: it may be an
             // agent of this definition on these folders, which this one is then refused for.
-            match Box::pin(self.create(&prepared, lifetime, &request.allow_exposed_files)).await {
+            match Box::pin(self.create(&prepared, lifetime, allow_exposed_files)).await {
                 Ok(record) => break record,
                 Err(Error::Conflict) => {}
                 Err(error) => return Err(error),

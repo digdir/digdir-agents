@@ -24,6 +24,7 @@ mod launch;
 mod new;
 mod progress;
 mod prompt;
+mod sandbox_sign_in;
 mod secret;
 mod self_update;
 mod skills;
@@ -591,7 +592,8 @@ type CommandResult<T> = Result<T, CommandError>;
 
 #[derive(Subcommand)]
 enum ClaudeCommand {
-    /// Mint a long-lived Claude token on the host and store it for agents under a name.
+    /// Mint a long-lived Claude token and store it for agents under a name: with Claude Code on
+    /// this host, or else in a short-lived agent, signing in with this host's browser.
     ///
     /// Agents whose manifest has `login: NAME` on their Claude Code harness use it, so each
     /// subscription you sign in to can serve its own agents. Inside an agent with Claude Code,
@@ -624,7 +626,8 @@ enum SshConfigCommand {
 
 #[derive(Subcommand)]
 enum CodexCommand {
-    /// Sign in with `ChatGPT` and store an agent-only grant under a name.
+    /// Sign in with `ChatGPT` and store an agent-only grant under a name: with Codex on this host,
+    /// or else in a short-lived agent, signing in with this host's browser.
     ///
     /// Agents whose manifest has `login: NAME` on their Codex harness use it, so each
     /// subscription you sign in to can serve its own agents. Inside an agent with Codex, store the
@@ -2639,7 +2642,8 @@ async fn run_agent(
 }
 
 /// Stores a harness login: the credential on standard input when given, else, inside an agent with
-/// the harness, that agent's mediated credential, else a sign-in on this host.
+/// the harness, that agent's mediated credential, else a sign-in on this host, in a short-lived
+/// agent when this host does not have the harness.
 async fn login(
     client: &Client,
     home: &ControlPlaneHome,
@@ -2653,11 +2657,17 @@ async fn login(
             std::env::var_os(name)
         })? {
             Some(credential) => (credential, true, " from this agent's mediated login"),
-            None => (
+            None if agent::harness::host_can_sign_in(harness) => (
                 agent::harness::acquire_host_credential(harness, home.path(), sign_in)?,
                 false,
                 "",
             ),
+            None => {
+                let stored =
+                    sandbox_sign_in::store_login(client, home, harness, name, sandbox_sign_in::START_TIMEOUT).await?;
+                println!("{} login {} stored", stored.provider, stored.login);
+                return Ok(());
+            }
         },
     };
     let stored = client

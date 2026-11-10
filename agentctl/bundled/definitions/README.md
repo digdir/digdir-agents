@@ -18,3 +18,8 @@ them after the definitions on disk. [`agent::bundled`](../../src/bundled/mod.rs)
   or the agent builder's `ghcr.io/digdir/agentctl-agent-builder:main`. A released agentd runs that image as its own
   release tagged it, so a definition always runs on the image built with it. A new image needs adding to
   `RELEASED_IMAGES` in [`agent::bundled`](../../src/bundled/mod.rs) and to the release workflow.
+
+An internal definition is part of one of agentctl's own commands, such as the sign-in agent of `agentctl claude login`,
+and is no use on its own. agentd neither lists it nor runs it by reference, and the command runs it through a Control
+API request of its own. A new one needs adding to `INTERNAL` in [`agent::bundled`](../../src/bundled/mod.rs), with a
+request that runs it.
