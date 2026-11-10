@@ -735,7 +735,7 @@ async fn the_files_a_run_would_ask_about_are_found_before_anything_runs() {
         .map(|file| {
             (
                 file.relative().to_path_buf(),
-                file.environment_file,
+                file.environment_file.is_some(),
                 file.folder == canonical,
             )
         })

@@ -538,7 +538,7 @@ fn exposed(error: &Error) -> Vec<(PathBuf, bool)> {
     match error {
         Error::ExposedFiles(files) => files
             .iter()
-            .map(|file| (file.relative().to_path_buf(), file.environment_file))
+            .map(|file| (file.relative().to_path_buf(), file.environment_file.is_some()))
             .collect(),
         other => vec![(PathBuf::from(other.to_string()), false)],
     }
@@ -1990,6 +1990,11 @@ async fn an_environment_file_for_plain_values_is_never_mounted() {
         .await
         .expect_err("an environment file");
     assert_eq!(exposed(&refused), [(PathBuf::from("credentials.env"), true)]);
+    let refused = refused.to_string();
+    assert!(
+        refused.contains("agent/worker") && refused.contains("EDITOR"),
+        "names what still reads it: {refused}"
+    );
 }
 
 #[tokio::test(flavor = "local")]
