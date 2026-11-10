@@ -99,7 +99,8 @@ the tests start with Compose, `browser` for browser tests, `desktop` for the des
 - **Network:** `mediated`, allowing all, and denying `metadata.google.internal`, which hands out the credentials of
   the machine the host may run on.
 - **Harnesses:** Claude Code as the default and Codex as optional, unless the role needs others. `optional` lets the
-  agent start without a login the host lacks.
+  agent start without a login the host lacks. An agent that only runs commands, with `agentctl exec` or over SSH,
+  declares none, and runs no sessions.
 - **Volumes:** when agents need a large host directory they only read, a `kind: Volume` manifest copies it once for
   all of them, and each mounts it with `type: volume`. Keep a team's volume manifests in `agents/_volumes/`, where
   `agentctl tui` applies them.

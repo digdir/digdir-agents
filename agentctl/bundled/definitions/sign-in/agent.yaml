@@ -1,6 +1,7 @@
 # The short-lived agent `agentctl claude login` and `agentctl codex login` run the harness's sign-in in when this
 # machine does not have the harness. It is internal, as the README here describes, and agentd runs it for those
-# commands as an ephemeral agent, which it deletes when the command ends, however it ends.
+# commands as an ephemeral agent, which it deletes when the command ends, however it ends. It runs the sign-in as a
+# command, so it declares no harness.
 apiVersion: agents.platform/v1alpha1
 kind: Agent
 metadata:
@@ -13,16 +14,15 @@ spec:
       reference: ghcr.io/digdir/agentctl-base:ubuntu-26.04
     platform:
       os: linux
-    initSystem: image
     resources:
       cpu: "2"
       memory: 2Gi
       rootFilesystem:
         capacity: 16Gi
         mode: layered
-  # A manifest names a harness, and Pi is the one that needs no login, so the agent starts before any login exists.
-  harnesses:
-    - type: pi
   network:
     mode: mediated
     allow: all
+    # Google Cloud's metadata service hands out the credentials of the VM it runs on.
+    deny:
+      - metadata.google.internal

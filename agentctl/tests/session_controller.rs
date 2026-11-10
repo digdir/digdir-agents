@@ -2110,6 +2110,38 @@ async fn session_ensure_resolves_explicit_and_implicit_harnesses() {
     session_task.abort();
 }
 
+#[tokio::test(flavor = "local")]
+async fn a_session_on_an_agent_without_a_harness_is_refused_without_persisting() {
+    let directory = TempDir::new().expect("temporary directory");
+    let SelectionFixture {
+        database,
+        service,
+        agent_task,
+        session_task,
+        ..
+    } = selection_fixture(&directory).await;
+    let mut runner = ready_record(
+        "runner",
+        "0b5f1a2e-0a46-4d0c-9f43-3f1c2d8e6a71".parse().expect("Agent ID"),
+    );
+    runner.agent.spec.harnesses.clear();
+    database.put(runner, 0).await.expect("Agent");
+
+    let name = SessionName::new("s1").expect("name");
+    let error = service
+        .ensure("runner", &name, SessionRequest::default(), WaitPolicy::FirstPass)
+        .await
+        .expect_err("an agent without a harness runs no sessions");
+    assert!(error.to_string().contains("declares no harness"), "{error}");
+    assert!(matches!(
+        database.get_agent_session("runner", &name).await,
+        Err(Error::NotFound)
+    ));
+
+    agent_task.abort();
+    session_task.abort();
+}
+
 impl SelectionFixture {
     async fn ensure(&self, name: &str, request: SessionRequest) -> Result<agent::sessions::Session, Error> {
         let name = SessionName::new(name).expect("name");

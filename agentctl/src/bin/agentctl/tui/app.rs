@@ -2716,6 +2716,13 @@ impl App {
         let Some(agent) = self.group_agent(group) else {
             return;
         };
+        if agent.spec.harnesses.is_empty() {
+            self.error = Some(format!(
+                "{} declares no harness, so it runs no sessions",
+                agent.metadata.name
+            ));
+            return;
+        }
         let harness = agent
             .spec
             .harnesses
@@ -4426,6 +4433,18 @@ pub(crate) mod tests {
                 harness: Harness::ClaudeCode,
                 model_selection: ModelSelection::default(),
             }
+        );
+    }
+
+    #[test]
+    fn new_session_on_an_agent_without_a_harness_says_why() {
+        let mut app = App::new();
+        app.apply_snapshot(vec![agent_named("runner", "\x20   []\n")], Vec::new());
+        app.on_key(key(KeyCode::Char('n')));
+        assert!(app.modal.is_none());
+        assert_eq!(
+            app.error.as_deref(),
+            Some("runner declares no harness, so it runs no sessions")
         );
     }
 

@@ -232,7 +232,9 @@ pub struct Spec {
     /// Skill directories installed through every declared Harness Adapter.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillSpec>,
-    /// Harness installations available to sessions in this agent.
+    /// Harness installations available to sessions in this agent. An agent without one runs no
+    /// sessions, only the commands run in it.
+    #[serde(default)]
     pub harnesses: Vec<HarnessSpec>,
     /// Deliberately selected non-secret values exposed in plaintext inside the sandbox.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -730,9 +732,6 @@ impl Spec {
             )));
         }
         self.validate_skills()?;
-        if self.harnesses.is_empty() {
-            return Err(Error::Invalid("spec.harnesses must not be empty".into()));
-        }
         let mut harness_kinds = std::collections::BTreeSet::new();
         let mut duplicate_harness = None;
         let mut default_count = 0;
