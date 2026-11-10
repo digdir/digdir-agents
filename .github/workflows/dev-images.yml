@@ -1,31 +1,31 @@
-# Builds the self-development agent's images from agents/self-dev. They develop this repository and are not part of
+# Builds the dev agent's images from agents/dev. They develop this repository and are not part of
 # agentctl, so they are published under its name, to ghcr.io/digdir/digdir-agents as `latest` and `sha-<commit>`.
 #
 # On main, they build on the base images as published, like any agent's image, and are published again whenever those
 # are. Pull requests only build them, on the base images from the same commit, so that a change to both is tested as one.
-name: self-dev images
+name: dev images
 
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, closed]
     paths:
-      - agents/self-dev/**
+      - agents/dev/**
       - images/agentctl-base/**
       - docker-bake.hcl
-      - .github/workflows/self-dev-images.yml
+      - .github/workflows/dev-images.yml
       - .github/workflows/images.yml
-      # Neither this image's .dockerignore nor the base's admits this Markdown. agentctl applies the self-dev agent's from its manifest.
-      - '!agents/self-dev/**/*.md'
+      # Neither this image's .dockerignore nor the base's admits this Markdown. agentctl applies the dev agent's from its manifest.
+      - '!agents/dev/**/*.md'
       - '!images/agentctl-base/*.md'
   push:
     branches:
       - main
     paths:
-      - agents/self-dev/**
-      - .github/workflows/self-dev-images.yml
+      - agents/dev/**
+      - .github/workflows/dev-images.yml
       - .github/workflows/images.yml
-      # This image's .dockerignore does not admit this Markdown. agentctl applies the self-dev agent's from its manifest.
-      - '!agents/self-dev/**/*.md'
+      # This image's .dockerignore does not admit this Markdown. agentctl applies the dev agent's from its manifest.
+      - '!agents/dev/**/*.md'
   # A publish of the base images on main. The run builds main as it is now, which may have moved past the commit that
   # published them.
   workflow_run:
@@ -76,44 +76,44 @@ jobs:
           fi
           echo "build=${build}" >> "${GITHUB_OUTPUT}"
 
-  # Both images are built in one bake: full is minimal plus the desktop, so it publishes the minimal layers with the
-  # same digests, and a host that has minimal only pulls the full layers.
+  # Both images are built in one bake: desktop is minimal plus the desktop, so it publishes the minimal layers with
+  # the same digests, and a host that has minimal only pulls the desktop layers.
   images:
     needs: plan
     if: needs.plan.outputs.build == 'true'
-    name: Self-dev images
+    name: Dev images
     # On this job rather than the workflow, so that a run that builds nothing never takes the place of a pending one
     # that would. A cancelled publish could leave the two images' tags pointing at different commits.
     concurrency:
-      group: self-dev-images-${{ github.event.pull_request.number || github.ref }}
+      group: dev-images-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     uses: ./.github/workflows/images.yml
     with:
       # A pull request reads the base images' bake file too, to build the base from the same commit, and its cache.
       files: >-
-        ${{ github.event_name == 'pull_request' && 'docker-bake.hcl agents/self-dev/docker-bake.hcl'
-        || 'agents/self-dev/docker-bake.hcl' }}
-      group: self-dev
+        ${{ github.event_name == 'pull_request' && 'docker-bake.hcl agents/dev/docker-bake.hcl'
+        || 'agents/dev/docker-bake.hcl' }}
+      group: dev
       variables: ${{ github.event_name == 'pull_request' && 'BASE_CONTEXT=target:base-headless' || '' }}
       set: |
-        self-dev-full.cache-from=type=registry,ref=ghcr.io/digdir/digdir-agents/agentctl-self-dev-minimal:buildcache-{arch}
+        dev-desktop.cache-from=type=registry,ref=ghcr.io/digdir/digdir-agents/agentctl-dev-minimal:buildcache-{arch}
         ${{ github.event_name == 'pull_request' && 'base-headless.cache-from=type=registry,ref=ghcr.io/digdir/agentctl-base:buildcache-headless-{arch}' || '' }}
       sparse-checkout: |
-        agents/self-dev
+        agents/dev
         images/agentctl-base
       mode: ${{ github.ref == 'refs/heads/main' && 'main' || 'build' }}
       images: |
         [
           {
-            "target": "self-dev-minimal",
-            "repository": "ghcr.io/digdir/digdir-agents/agentctl-self-dev-minimal",
-            "cache": "ghcr.io/digdir/digdir-agents/agentctl-self-dev-minimal:buildcache",
+            "target": "dev-minimal",
+            "repository": "ghcr.io/digdir/digdir-agents/agentctl-dev-minimal",
+            "cache": "ghcr.io/digdir/digdir-agents/agentctl-dev-minimal:buildcache",
             "tags": ["latest", "sha-{sha}"]
           },
           {
-            "target": "self-dev-full",
-            "repository": "ghcr.io/digdir/digdir-agents/agentctl-self-dev-full",
-            "cache": "ghcr.io/digdir/digdir-agents/agentctl-self-dev-full:buildcache",
+            "target": "dev-desktop",
+            "repository": "ghcr.io/digdir/digdir-agents/agentctl-dev-desktop",
+            "cache": "ghcr.io/digdir/digdir-agents/agentctl-dev-desktop:buildcache",
             "tags": ["latest", "sha-{sha}"]
           }
         ]

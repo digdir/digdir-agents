@@ -1,7 +1,7 @@
 # Builds the agentctl base images from images/agentctl-base, with the sign-in images that share their layers. Pull
 # requests only build them; main, including a manual run on main, also publishes them to ghcr.io/digdir/agentctl-base
 # as `ubuntu-26.04`, `ubuntu-26.04-desktop` and `ubuntu-26.04-sign-in-<service>`, each also tagged with `-sha-<commit>`.
-# Publishing them rebuilds the images built on them, the self-dev images (self-dev-images.yml) and the agent builder's
+# Publishing them rebuilds the images built on them, the dev agent's (dev-images.yml) and the agent builder's
 # (agentctl-agent-builder-image.yml). The release workflow calls this one on a release pull request to push the
 # release's images by digest, and tags each as `<tag>-<version>`, such as `ubuntu-26.04-<version>`, when the pull
 # request lands, just before it publishes the release.
@@ -19,7 +19,7 @@ on:
       # The top-level Markdown is not in the build context, which .dockerignore limits.
       - '!images/agentctl-base/*.md'
   # Not on changes to docker-bake.hcl, images.yml or main-version.sh alone: every build of the base has a new digest,
-  # which images built on it then follow. self-dev-images.yml publishes on changes to images.yml, and agentctl-image.yml
+  # which images built on it then follow. dev-images.yml publishes on changes to images.yml, and agentctl-image.yml
   # on changes to the other two, which tries them on main.
   push:
     branches:

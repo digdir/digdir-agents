@@ -1,6 +1,6 @@
 ---
 name: pr-evidence
-description: Show pull request reviewers a change to the agentctl and agentd developer experience with recordings and screenshots, of a terminal and, on the full agent, of a page in a browser or the desktop. Use when a change can be seen, such as in CLI output, the TUI, a page in a browser or the desktop.
+description: Show pull request reviewers a change to the agentctl and agentd developer experience with recordings and screenshots, of a terminal and, on the desktop agent, of a page in a browser or the desktop. Use when a change can be seen, such as in CLI output, the TUI, a page in a browser or the desktop.
 ---
 
 # Show the change to reviewers
@@ -11,7 +11,7 @@ can follow and checking it, for a terminal and for what this agent can show besi
 record both, as it describes for a comparison.
 
 A still picture is enough when the change does not move, and quicker to review: the text of CLI output in a code block,
-or on the `full` agent a page with `playwright-cli screenshot --filename=page.png`.
+or on the `desktop` agent a page with `playwright-cli screenshot --filename=page.png`.
 
 - Keep artifacts under `/home/agent/code/.artifacts/<task>/<run>/`, outside the checkout.
 - Record the tested revision, with test data and no secrets.

@@ -6,7 +6,7 @@ spec:
   sandbox:
     image:
       type: reference
-      reference: ghcr.io/digdir/digdir-agents/agentctl-self-dev-minimal:latest
+      reference: ghcr.io/digdir/digdir-agents/agentctl-dev-minimal:latest
     platform:
       os: linux
     resources:
@@ -23,6 +23,8 @@ spec:
     source: ../home
   instructions:
     - source: ../instructions.md
+    - source: environment.md
+    - source: ../improving.md
   skills:
     - source: ../skills/pr-evidence
     - source: ../skills/changelog

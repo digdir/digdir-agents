@@ -86,9 +86,9 @@ A script cannot set an image's environment, so add the `ENV` lines `agent-featur
 | `containers` | Podman, with bridge networks and container name resolution. `agentd` sets up Podman's socket for the agent user, and Docker API clients reach it at the default `/run/docker.sock`. The `docker` command runs Podman, so do not install Docker's own CLI beside it. `docker compose` and `podman compose` run Docker Compose. |
 | `desktop` | `browser`, plus an X11 desktop on display `:1` with VNC access and a Secret Service, the `desktop`, `desktop-terminal` and `chromium` commands, and the `computer-use` skill. Provides `/etc/agent-access.d/vnc.conf`, so an agent on it can declare `access: [{type: vnc}]`. |
 
-`agent-feature list` shows what an image has. The [self-dev images](../../agents/self-dev/Dockerfile) are built this
-way. What to tell the harness about the browser and the desktop belongs in the agent's instructions, as in the self-dev
-agent's [desktop.md](../../agents/self-dev/full/desktop.md).
+`agent-feature list` shows what an image has. The [dev agent's images](../../agents/dev/Dockerfile) are built this
+way. What to tell the harness about the browser and the desktop belongs in the agent's instructions, as in the dev
+agent's [environment.md](../../agents/dev/desktop/environment.md).
 
 ## Sign-in images
 

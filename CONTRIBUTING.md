@@ -28,9 +28,9 @@ prompting them.
   breaking changes with `!`.
 - A change users of `agentctl` or its agents will notice gets an entry under `## [Unreleased]` in
   [agentctl/CHANGELOG.md](agentctl/CHANGELOG.md), written as the
-  [changelog skill](agents/self-dev/skills/changelog/SKILL.md) describes.
+  [changelog skill](agents/dev/skills/changelog/SKILL.md) describes.
 - Write the description for the reviewer, following the [pull request template](.github/pull_request_template.md).
-  Agents record demonstrations as the [pr-evidence skill](agents/self-dev/skills/pr-evidence/SKILL.md) describes.
+  Agents record demonstrations as the [pr-evidence skill](agents/dev/skills/pr-evidence/SKILL.md) describes.
 - [CODEOWNERS](.github/CODEOWNERS) decides which paths need a human approval.
 - Comment `/agentctl-experimental` on a pull request to build an unlisted version of it that others can install.
 - CI skips draft pull requests. Add the `ci` label to a draft to run CI on it from its next push.
