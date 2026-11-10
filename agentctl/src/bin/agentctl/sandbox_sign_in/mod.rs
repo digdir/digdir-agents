@@ -1,17 +1,17 @@
-//! Sign-ins without the harnesses on this machine. A short-lived agent of the base image, which
-//! has them all, runs the sign-in program with its terminal relayed here, and its sign-in
-//! page opens in this machine's browser. The credential comes back to the host, where agentd keeps
-//! it as it keeps any login; agents only ever see placeholders.
+//! Sign-ins without their programs on this machine. A short-lived agent of the base image, which
+//! has them all, runs the sign-in program with its terminal relayed here, and its sign-in page
+//! opens in this machine's browser. The credential comes back to the caller, which has agentd keep
+//! it; agents only ever see placeholders.
 
 use std::{collections::BTreeSet, io::Write as _, path::Path, time::Duration};
 
 use agent::{
-    Error, Harness,
+    Error,
     control_api::{AgentLease, Client},
     control_plane::WaitPolicy,
-    harness::{LoginName, SandboxSignIn},
     local::home::ControlPlaneHome,
     sandbox::ExecutionTarget,
+    sign_in::SandboxSignIn,
 };
 use bytes::Bytes;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -22,14 +22,14 @@ use sandbox::{
 };
 use zeroize::Zeroizing;
 
-use crate::{CommandError, CommandResult};
+use crate::CommandResult;
 
 /// How long a sign-in agent may take to start, which includes pulling its image the first time.
-pub(crate) const START_TIMEOUT: Duration = Duration::from_mins(20);
+const START_TIMEOUT: Duration = Duration::from_mins(20);
 
 /// A running sign-in agent. It is ephemeral, so agentd deletes it once this is dropped or the
 /// process ends, however it ends.
-pub(crate) struct SignInAgent<'a> {
+struct SignInAgent<'a> {
     home: &'a ControlPlaneHome,
     target: ExecutionTarget,
     _lease: AgentLease,
@@ -37,15 +37,11 @@ pub(crate) struct SignInAgent<'a> {
 
 impl<'a> SignInAgent<'a> {
     /// Runs the sign-in agent and waits until commands run in it.
-    pub(crate) async fn start(
-        client: &Client,
-        home: &'a ControlPlaneHome,
-        timeout: Duration,
-    ) -> crate::CommandResult<Self> {
+    async fn start(client: &Client, home: &'a ControlPlaneHome) -> crate::CommandResult<Self> {
         eprintln!("Starting a short-lived agent to sign in from. It is deleted afterwards.");
         let (ran, lease) = client.run_sign_in().await?;
         let name = ran.agent.metadata.name;
-        crate::wait_until_converged(client, &name, timeout).await?;
+        crate::wait_until_converged(client, &name, START_TIMEOUT).await?;
         let target = client.ensure_execution(&name, WaitPolicy::UntilConverged).await?;
         Ok(Self {
             home,
@@ -56,19 +52,32 @@ impl<'a> SignInAgent<'a> {
 
     /// Runs `sign_in` with this terminal relayed to it, and returns the credential it leaves. With
     /// `open_links`, each sign-in page it shows opens in this machine's browser.
-    pub(crate) async fn run(&self, sign_in: &SandboxSignIn, open_links: bool) -> Result<Zeroizing<String>, Error> {
-        let base =
-            agent::sandbox::platform::execution_spec(&self.target.operating_system, &["/bin/true".into()], true)?;
+    async fn run(&self, sign_in: &SandboxSignIn, open_links: bool) -> Result<Zeroizing<String>, SignInFailure> {
+        let before = |error: Error| SignInFailure {
+            error: Box::new(error),
+            signed_in: false,
+        };
+        let base = agent::sandbox::platform::execution_spec(&self.target.operating_system, &["/bin/true".into()], true)
+            .map_err(before)?;
         let mut spec = sign_in.execution.clone().with_environment(base.environment().clone());
         if let Some(directory) = base.working_directory() {
             spec = spec.with_working_directory(directory.clone());
         }
-        let output = relay(self.home.path(), &self.target, spec, open_links).await?;
+        let output = relay(self.home.path(), &self.target, spec, open_links.then_some(sign_in))
+            .await
+            .map_err(before)?;
+        // The program signed in, so whatever fails now leaves a credential the host never gets.
+        let after = |error: Error| SignInFailure {
+            error: Box::new(error),
+            signed_in: true,
+        };
         let artifact = match &sign_in.artifact {
-            Some(path) => Some(self.read(path.as_str()).await?),
+            Some(path) => Some(self.read(path.as_str()).await.map_err(after)?),
             None => None,
         };
-        sign_in.credential(&output, artifact.as_ref().map(|artifact| artifact.as_slice()))
+        sign_in
+            .credential(&output, artifact.as_ref().map(|artifact| artifact.as_slice()))
+            .map_err(after)
     }
 
     /// The contents of a file in the sign-in agent.
@@ -95,13 +104,13 @@ impl<'a> SignInAgent<'a> {
     }
 }
 
-/// Runs `spec` in a terminal relayed to this one until it exits, with `open_links` opening each
-/// sign-in page it shows in this machine's browser, and returns everything it printed.
+/// Runs `spec` in a terminal relayed to this one until it exits, opening each of the sign-in pages
+/// of `opens` it shows in this machine's browser, and returns everything it printed.
 async fn relay(
     home: &Path,
     target: &ExecutionTarget,
     spec: sandbox::execution::ExecutionSpec,
-    open_links: bool,
+    opens: Option<&SandboxSignIn>,
 ) -> Result<Zeroizing<Vec<u8>>, Error> {
     let size = crossterm::terminal::size()
         .ok()
@@ -111,7 +120,7 @@ async fn relay(
         agent::sandbox::start_terminal_execution(home, &target.sandbox, StartTerminalExecutionRequest::new(spec, size))
             .await?;
     let raw = RawMode::enable()?;
-    let result = pump(started, open_links).await;
+    let result = pump(started, opens).await;
     drop(raw);
     let (output, status) = result?;
     if !status.success() {
@@ -145,7 +154,7 @@ impl Drop for RawMode {
 
 async fn pump(
     mut started: sandbox::terminal::StartedTerminalExecution,
-    open_links: bool,
+    opens: Option<&SandboxSignIn>,
 ) -> Result<(Zeroizing<Vec<u8>>, sandbox::execution::ExitStatus), Error> {
     let mut output = Zeroizing::new(Vec::new());
     let mut opened = BTreeSet::new();
@@ -158,7 +167,7 @@ async fn pump(
                     stdout.write_all(&bytes)?;
                     stdout.flush()?;
                     output.extend_from_slice(&bytes);
-                    let links = if open_links { agent::harness::sign_in_links(&output) } else { Vec::new() };
+                    let links = opens.map(|sign_in| sign_in.links(&output)).unwrap_or_default();
                     for link in links {
                         if !opened.insert(link.to_string()) {
                             continue;
@@ -231,65 +240,35 @@ fn key_bytes(key: KeyEvent) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// Signs in to `harness` in a short-lived agent and stores the login as `login`, for a machine
-/// without the harness's own command.
-pub(crate) async fn store_login(
+/// Why a sign-in gave no credential.
+pub(crate) struct SignInFailure {
+    pub(crate) error: Box<Error>,
+    /// Whether the program had signed in, so that the service may have issued a credential this
+    /// machine never got.
+    pub(crate) signed_in: bool,
+}
+
+/// Runs `sign_in` in a short-lived agent to sign in to `service`, with the person at this terminal
+/// and its sign-in page opening in this machine's browser. The outer result says whether the agent
+/// started, the inner one what the sign-in gave. The agent is deleted, with everything signed in
+/// inside it, before this returns.
+pub(crate) async fn sign_in(
     client: &Client,
     home: &ControlPlaneHome,
-    harness: Harness,
-    login: LoginName,
-    timeout: Duration,
-) -> CommandResult<agent::harness::ImportedAuthentication> {
-    let Some(recipe) = agent::harness::sandbox_sign_in(harness) else {
-        return Err(Error::Invalid(format!("{} has no login to sign in to", harness.display_name())).into());
-    };
-    if !crate::prompt::interactive() {
-        return Err(CommandError::Message(format!(
-            "{} is not installed here, and signing in without it needs a terminal and a browser",
-            harness.display_name()
-        )));
-    }
-    let agent = SignInAgent::start(client, home, timeout).await?;
+    service: &str,
+    sign_in: &SandboxSignIn,
+) -> CommandResult<Result<Zeroizing<String>, SignInFailure>> {
+    let agent = SignInAgent::start(client, home).await?;
     // Where a browser here would not reach the person, such as over SSH, they open the link. Saying
     // so now keeps it out of what the program draws.
     let blocked = crate::launch::launch_blocked(|name| std::env::var_os(name));
     match &blocked {
-        None => println!(
-            "\nSign in to {}. Its sign-in page opens in your browser.",
-            harness.display_name()
-        ),
+        None => println!("\nSign in to {service}. Its sign-in page opens in your browser."),
         Some(reason) => println!(
-            "\nSign in to {}. No browser here would reach you: {reason}. Open the link it shows in a browser.",
-            harness.display_name()
+            "\nSign in to {service}. No browser here would reach you: {reason}. Open the link it shows in a browser."
         ),
     }
-    let credential = agent.run(&recipe, blocked.is_none()).await;
-    // The agent goes now, with everything signed in inside it.
-    drop(agent);
-    // A credential read off the sign-in's screen can be missed or come out garbled while the person
-    // still sees it whole, so they can paste it instead.
-    let paste = |what: String| {
-        CommandError::Message(format!(
-            "{what}; paste the one it printed into {} with --from-stdin",
-            agent::harness::login_command(harness, &login)
-        ))
-    };
-    let credential = match credential {
-        Ok(credential) => credential,
-        Err(Error::Invalid(reason)) if recipe.artifact.is_none() => return Err(paste(reason)),
-        Err(error) => return Err(error.into()),
-    };
-    match client
-        .auth_login(harness, login.clone(), credential.to_string(), false)
-        .await
-    {
-        Ok(stored) => Ok(stored),
-        Err(error) if recipe.artifact.is_none() => Err(paste(format!(
-            "the {} credential read from the screen was refused: {error}",
-            harness.display_name()
-        ))),
-        Err(error) => Err(error.into()),
-    }
+    Ok(agent.run(sign_in, blocked.is_none()).await)
 }
 
 #[cfg(test)]

@@ -6,11 +6,13 @@
 //! returned about it never contains it.
 
 mod inspect;
+mod sign_in;
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 pub use inspect::SCOPES;
+pub use sign_in::{REVOKE_PAGE as SIGN_IN_REVOKE_PAGE, sandbox_sign_in};
 
 use crate::{
     Error,
@@ -331,6 +333,16 @@ fn instructions(name: &str, account: Option<&Account>) -> String {
 /// needs placeholders that never contain one another, so overlapping ones are refused.
 pub(crate) fn conflicts_with_managed_secret(name: &str, placeholder: &str) -> bool {
     name == ACCESS_ENVIRONMENT || placeholder.contains(ACCESS_PLACEHOLDER) || ACCESS_PLACEHOLDER.contains(placeholder)
+}
+
+/// Asks GitHub about `token`, as agentd does before keeping it as `name`, without keeping it.
+///
+/// # Errors
+///
+/// Returns an error when the token or name is invalid, the token is of a kind agents cannot use
+/// or has expired, or GitHub rejects it or cannot be reached. No error contains the token.
+pub async fn check(token: &str, name: &str) -> Result<Login, Error> {
+    check_at(inspect::API, token, name).await
 }
 
 async fn check_at(api: &str, token: &str, name: &str) -> Result<Login, Error> {

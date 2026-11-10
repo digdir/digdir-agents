@@ -66,6 +66,8 @@ RUN usermod --login agent --home /home/agent --move-home ubuntu \
 ARG TARGETARCH
 # agentd runs the harnesses' activity hooks and Claude Code's status line with `node`.
 ARG NODE_VERSION=24.22.1
+# `agentctl github login` signs in through the browser with this `gh`, so a bump is tried as
+# agentctl/docs/harness-upgrades.md describes.
 ARG GH_VERSION=2.103.0
 ARG GH_STACK_VERSION=0.2.1
 # Terminal evidence for pull requests: asciinema records a command, agg renders the cast to a GIF.
