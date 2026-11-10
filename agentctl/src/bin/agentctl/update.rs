@@ -69,51 +69,41 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
                 .into(),
         ));
     }
-    // agentd lets no agent read such a file, so the builder cannot be given the checkout until it goes.
-    let files = environment_files(&definitions);
-    if !files.is_empty() {
-        return Err(CommandError::Message(format!(
-            "{} {} the values of the agents beside {}, which no agent may read. Move them as {} describes and \
-             delete the {}, then run `agentctl update` again",
-            agent::exposed::sentence_list(&files.iter().map(|file| relative(&checkout, file)).collect::<Vec<_>>()),
-            if files.len() == 1 { "holds" } else { "hold" },
-            if files.len() == 1 { "it" } else { "them" },
-            agent::exposed::ENVIRONMENT_FILE_GUIDE,
-            if files.len() == 1 { "file" } else { "files" },
-        )));
-    }
-
     let builder = Builder::bundled()?;
     let task = Task {
         session: "update",
         prompt: task("this checkout", &checkout, &definitions),
     };
-    let name = match builder.find(client, &checkout).await? {
+    let existing = builder.find(client, &checkout).await?;
+    let name = match existing {
         Some(existing) if builder.current(&existing) => {
             eprintln!("Back to the agent builder on {}.", checkout.display());
             builder.resume(home, client, &existing, &task).await?;
             existing.metadata.name
         }
-        Some(existing) => {
-            let name = existing.metadata.name;
-            let started_by = format!(
-                "agent/{name}, the agent builder on {}, was started by another version of agentctl. It keeps \
-                 the image it was made with, so it would try the definitions with that version's agentctl.",
-                checkout.display()
-            );
-            if !prompt::confirm_lines(&[
-                &started_by,
-                "Delete it and start one with this version's? Its conversations end, and what it wrote stays \
-                 where it is.",
-            ])? {
-                return Err(CommandError::Message(format!(
-                    "kept agent/{name}. Updating takes an agent builder of this version"
-                )));
+        existing => {
+            // Asked first, so that a refusal leaves a builder of another version where it is.
+            let agreed = builder.agree(client, &checkout).await?;
+            if let Some(existing) = existing {
+                let name = existing.metadata.name;
+                let started_by = format!(
+                    "agent/{name}, the agent builder on {}, was started by another version of agentctl. It keeps \
+                     the image it was made with, so it would try the definitions with that version's agentctl.",
+                    checkout.display()
+                );
+                if !prompt::confirm_lines(&[
+                    &started_by,
+                    "Delete it and start one with this version's? Its conversations end, and what it wrote stays \
+                     where it is.",
+                ])? {
+                    return Err(CommandError::Message(format!(
+                        "kept agent/{name}. Updating takes an agent builder of this version"
+                    )));
+                }
+                client.delete(&name).await?;
             }
-            client.delete(&name).await?;
-            builder.start(home, client, &checkout, &task).await?
+            builder.start(home, client, &checkout, &task, agreed).await?
         }
-        None => builder.start(home, client, &checkout, &task).await?,
     };
     println!(
         "The agent builder keeps running, and `agentctl update` in {} goes back to it.\nReview what it changed with \

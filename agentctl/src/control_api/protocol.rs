@@ -7,6 +7,7 @@ pub(crate) const JSON_RPC_VERSION: &str = "2.0";
 
 pub(crate) const METHOD_APPLY: &str = "agents.v1.apply";
 pub(crate) const METHOD_RUN: &str = "agents.v1.run";
+pub(crate) const METHOD_EXPOSED_FILES: &str = "agents.v1.exposedFiles";
 pub(crate) const METHOD_DEFINITIONS: &str = "definitions.v1.list";
 pub(crate) const METHOD_HEALTH: &str = "control.v1.health";
 pub(crate) const METHOD_SHUTDOWN: &str = "control.v1.shutdown";
@@ -225,6 +226,14 @@ pub(crate) struct SessionListParams {
     /// Whether a listing of every agent's sessions also holds those of ephemeral agents.
     #[serde(default, rename = "includeEphemeral", skip_serializing_if = "is_false")]
     pub include_ephemeral: bool,
+}
+
+/// Parameters of `agents.v1.exposedFiles`.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExposedFilesParams {
+    /// The folders an agent would be given, as a run gives them.
+    pub binds: Vec<crate::control_plane::BindSource>,
 }
 
 /// Parameters of `definitions.v1.list` and `volumes.v1.manifests`.

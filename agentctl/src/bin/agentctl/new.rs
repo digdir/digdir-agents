@@ -47,7 +47,11 @@ pub(crate) async fn new(arguments: NewArguments, home: &ControlPlaneHome, client
             }
             name
         }
-        None => builder.start(home, client, &checkout, &task).await?,
+        None => {
+            builder
+                .start(home, client, &checkout, &task, std::collections::BTreeSet::new())
+                .await?
+        }
     };
     println!(
         "The agent builder keeps running, and `agentctl new` in {} goes back to it.\nApply the agent it made with \

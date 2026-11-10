@@ -8,18 +8,19 @@ use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, ses
 
 use super::protocol::{
     AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, CODE_EXPOSED_FILES, DaemonInfo,
-    DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
-    MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY,
+    DirectoryParams, ExecutionEnsureParams, ExposedFilesParams, JSON_RPC_VERSION, LoginParams, LogoutParams,
+    LogoutResult, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY,
     METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_AUTH_SIGN_IN_AGENT, METHOD_CONVERGE,
-    METHOD_DEFINITIONS, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST,
-    METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SECRET_LIST,
-    METHOD_SECRET_REMOVE, METHOD_SECRET_SET, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE,
-    METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE,
-    METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS,
-    METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS,
-    ManifestListParams, NameParams, ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response,
-    RestartParams, SecretRemoveResult, SecretSetParams, SessionEnsureParams, SessionListParams, SessionParams,
-    SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
+    METHOD_DEFINITIONS, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_EXPOSED_FILES, METHOD_GET, METHOD_HEALTH,
+    METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN,
+    METHOD_SECRET_LIST, METHOD_SECRET_REMOVE, METHOD_SECRET_SET, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE,
+    METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS,
+    METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW,
+    METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST,
+    METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, ProgressParams, ReadMessage, Request,
+    ResourcesWatchParams, Response, RestartParams, SecretRemoveResult, SecretSetParams, SessionEnsureParams,
+    SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult,
+    read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -128,6 +129,19 @@ impl Client {
             .exchange::<_, control_plane::Ran>(METHOD_AUTH_SIGN_IN_AGENT, serde_json::json!({}))
             .await?;
         Ok((ran, AgentLease(Some(connection))))
+    }
+
+    /// The files that may hold real keys in the folders `binds` give, as running an agent on them
+    /// finds them, so the person can be asked about them before anything else changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the control-plane operation fails.
+    pub async fn exposed_files(
+        &self,
+        binds: Vec<control_plane::BindSource>,
+    ) -> Result<Vec<crate::exposed::ExposedFile>, Error> {
+        self.call(METHOD_EXPOSED_FILES, ExposedFilesParams { binds }).await
     }
 
     /// Lists the definitions a client can apply or run: those on disk for the absolute folder

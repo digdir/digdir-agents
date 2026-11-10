@@ -688,6 +688,51 @@ async fn a_folder_that_is_not_one_projects_is_refused() {
     assert_eq!(ran.agent.metadata.name, "builder-repo");
 }
 
+#[tokio::test(flavor = "local")]
+async fn the_files_a_run_would_ask_about_are_found_before_anything_runs() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("repo");
+    for folder in ["app", "agents/dev"] {
+        std::fs::create_dir_all(workspace.join(folder)).expect("folder");
+    }
+    std::fs::write(workspace.join("app/.env"), "TOKEN=secret").expect("an app's .env");
+    std::fs::write(workspace.join("agents/dev/agent.yaml"), "kind: Agent").expect("a manifest");
+    std::fs::write(workspace.join("agents/dev/.env"), "TOKEN=secret").expect("its environment file");
+
+    let files = fixture
+        .control_plane
+        .exposed_files(&[given(&workspace)])
+        .await
+        .expect("exposed files");
+
+    let canonical = workspace.canonicalize().expect("canonical workspace");
+    let found = files
+        .iter()
+        .map(|file| {
+            (
+                file.relative().to_path_buf(),
+                file.environment_file,
+                file.folder == canonical,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            (Path::new("agents/dev/.env").to_path_buf(), true, true),
+            (Path::new("app/.env").to_path_buf(), false, true),
+        ]
+    );
+    assert_eq!(fixture.store.list().await.expect("agents").len(), 0, "nothing is made");
+
+    let error = fixture
+        .control_plane
+        .exposed_files(&[given(fixture.home.path())])
+        .await
+        .expect_err("a folder running refuses");
+    assert!(error.to_string().contains("agentd's home"), "{error}");
+}
+
 #[test]
 fn an_optional_bind_mount_needs_a_source() {
     let mut agent = agent("worker");

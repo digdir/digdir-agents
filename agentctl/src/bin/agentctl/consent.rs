@@ -51,7 +51,7 @@ where
 }
 
 /// The paths of `files` once the person agrees to them, or why not.
-fn agree(files: &[ExposedFile], ask: &Ask<'_>) -> Result<BTreeSet<PathBuf>, Error> {
+pub(crate) fn agree(files: &[ExposedFile], ask: &Ask<'_>) -> Result<BTreeSet<PathBuf>, Error> {
     if let Some(refusal) = environment_file_refusal(files) {
         return Err(Error::Invalid(refusal));
     }

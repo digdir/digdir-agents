@@ -6,7 +6,10 @@
 //! command talks with it in a session of its own, so running the command again goes back to the
 //! same conversation.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use agent::{
     Agent, Error, ModelSelection, RunState,
@@ -25,6 +28,14 @@ const DEFINITION: &str = "agent-builder";
 /// The folder in the person's home where the builder writes personal agents: `agents/<name>/` of
 /// the home directory, where agentctl finds them from there.
 const PERSONAL_AGENTS: &str = "agents";
+
+/// How the person is asked about files in the builder's folders that may hold real keys. The
+/// builder is talked with at a terminal, so the person is there to answer.
+const ASK: consent::Ask<'static> = consent::Ask {
+    reader: "The agent builder",
+    action: "Mount",
+    allowed: false,
+};
 
 /// What a command asks the builder to do: the session it talks in, and how it opens.
 pub(crate) struct Task {
@@ -79,50 +90,63 @@ impl Builder {
         Ok(())
     }
 
-    /// Starts a builder on `checkout` and talks with it about `task`, returning its name. agentd
-    /// names it after the checkout's folder. A builder whose session never opens is deleted, so
-    /// that the command starts afresh rather than going back to it. Once the person has talked
-    /// with it, it is kept however the attachment ends, since going back to it is what the
-    /// commands offer.
+    /// The folders the builder is given on `checkout`: the checkout, and the person's folder of
+    /// personal agents, made if it is missing.
+    fn binds(&self, checkout: &Path) -> Result<Vec<BindSource>, Error> {
+        let personal_agents = agent::local::home::user_home_directory()
+            .ok_or_else(|| Error::Invalid("cannot find your home folder, where personal agents go".into()))?
+            .join(PERSONAL_AGENTS);
+        std::fs::create_dir_all(&personal_agents).map_err(Error::from)?;
+        Ok(vec![
+            BindSource {
+                source: checkout.to_path_buf(),
+                target: Some(self.targets.checkout.clone()),
+            },
+            BindSource {
+                source: personal_agents,
+                target: Some(self.targets.personal_agents.clone()),
+            },
+        ])
+    }
+
+    /// The files that may hold real keys in the folders the builder would be given on `checkout`,
+    /// once the person agrees to let it read them, or why it may not. Asking before a command
+    /// changes anything lets it stop with nothing deleted or started.
+    pub(crate) async fn agree(&self, client: &Client, checkout: &Path) -> CommandResult<BTreeSet<PathBuf>> {
+        let files = client.exposed_files(self.binds(checkout)?).await?;
+        if files.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        Ok(consent::agree(&files, &ASK)?)
+    }
+
+    /// Starts a builder on `checkout` and talks with it about `task`, returning its name, with the
+    /// files that may hold real keys the person `agreed` to, as [`Self::agree`] gives them. Files
+    /// that turned up since are asked about too. agentd names it after the checkout's folder. A
+    /// builder whose session never opens is deleted, so that the command starts afresh rather than
+    /// going back to it. Once the person has talked with it, it is kept however the attachment
+    /// ends, since going back to it is what the commands offer.
     pub(crate) async fn start(
         &self,
         home: &ControlPlaneHome,
         client: &Client,
         checkout: &Path,
         task: &Task,
+        agreed: BTreeSet<PathBuf>,
     ) -> CommandResult<String> {
-        let personal_agents = agent::local::home::user_home_directory()
-            .ok_or_else(|| Error::Invalid("cannot find your home folder, where personal agents go".into()))?
-            .join(PERSONAL_AGENTS);
-        std::fs::create_dir_all(&personal_agents).map_err(Error::from)?;
         eprintln!("Starting the agent builder on {}.", checkout.display());
         let request = RunRequest {
             definition: RunDefinition::Reference {
                 reference: DEFINITION.into(),
             },
-            binds: vec![
-                BindSource {
-                    source: checkout.to_path_buf(),
-                    target: Some(self.targets.checkout.clone()),
-                },
-                BindSource {
-                    source: personal_agents,
-                    target: Some(self.targets.personal_agents.clone()),
-                },
-            ],
+            binds: self.binds(checkout)?,
             lifetime: None,
             name: None,
-            allow_exposed_files: std::collections::BTreeSet::new(),
-        };
-        // The builder is talked with at a terminal, so the person is there to answer.
-        let ask = consent::Ask {
-            reader: "The agent builder",
-            action: "Mount",
-            allowed: false,
+            allow_exposed_files: agreed,
         };
         let (ran, _lease) = consent::send(
             request,
-            &ask,
+            &ASK,
             |request| &mut request.allow_exposed_files,
             |request| client.run(request),
         )
