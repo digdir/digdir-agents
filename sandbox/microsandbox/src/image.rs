@@ -113,10 +113,10 @@ impl MicrosandboxImageBackend {
         progress: &SandboxProgress,
     ) -> Result<PreparedBuild, Error> {
         let step = progress.start_step(PREPARE_CONTEXT).await;
-        let context = tokio::fs::canonicalize(source_context)
+        let context = common::fs::canonicalize_async(source_context)
             .await
             .map_err(|source| error::io("resolve Docker build context", source))?;
-        let dockerfile = tokio::fs::canonicalize(context.join(source_dockerfile))
+        let dockerfile = common::fs::canonicalize_async(context.join(source_dockerfile))
             .await
             .map_err(|source| error::io("resolve Dockerfile", source))?;
         let relative_dockerfile = dockerfile

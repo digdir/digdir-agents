@@ -33,7 +33,7 @@ pub(crate) async fn new(arguments: NewArguments, home: &ControlPlaneHome, client
     let task = Task {
         session: "new-agent",
         prompt: "I want to make a new agent for the repository you have checked out.".into(),
-        manifests: agent::exposed::Manifests::ByHand,
+        moves_off: false,
     };
     let name = match builder.find(client, &checkout).await? {
         Some(existing) if arguments.rm => return Err(builder::kept_already("new", &checkout, &existing)),

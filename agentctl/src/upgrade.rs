@@ -471,7 +471,7 @@ impl UpdateJournal {
                     "Agent update journal names a release outside the install root".into(),
                 ));
             }
-            let resolved = fs::canonicalize(path).map_err(|error| {
+            let resolved = common::fs::canonicalize(path).map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     Error::Invalid(format!(
                         "Agent update journal {} names a release that no longer exists: {}",
@@ -541,7 +541,7 @@ fn read_current(paths: &InstallPaths) -> Result<Option<PathBuf>, Error> {
 /// Returns an error for an unsafe target or a failed filesystem operation.
 pub fn activate_release(paths: &InstallPaths, target: &Path) -> Result<(), Error> {
     let releases = canonical_or_absolute(&paths.releases())?;
-    let target = fs::canonicalize(target)?;
+    let target = common::fs::canonicalize(target)?;
     if !target.is_absolute() || target.parent() != Some(releases.as_path()) {
         return Err(Error::Invalid(
             "target release is outside the managed releases directory".into(),
@@ -615,12 +615,12 @@ pub fn prune_releases(paths: &InstallPaths, previous: Option<&Path>) -> Result<(
     }
     let keep = keep
         .into_iter()
-        .map(fs::canonicalize)
+        .map(common::fs::canonicalize)
         .collect::<Result<BTreeSet<_>, _>>()?;
     for entry in fs::read_dir(paths.releases())? {
         let entry = entry?;
         let path = entry.path();
-        if entry.file_type()?.is_dir() && !keep.contains(&fs::canonicalize(&path)?) {
+        if entry.file_type()?.is_dir() && !keep.contains(&common::fs::canonicalize(&path)?) {
             fs::remove_dir_all(path)?;
         }
     }
@@ -915,7 +915,7 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), Error> {
 
 fn canonical_or_absolute(path: &Path) -> Result<PathBuf, Error> {
     if path.exists() {
-        Ok(fs::canonicalize(path)?)
+        Ok(common::fs::canonicalize(path)?)
     } else if path.is_absolute() {
         Ok(path.to_path_buf())
     } else {
@@ -932,7 +932,7 @@ fn absolute(path: &Path) -> Result<PathBuf, Error> {
 }
 
 fn inferred_install_root() -> Result<Option<PathBuf>, Error> {
-    let executable = fs::canonicalize(env::current_exe()?)?;
+    let executable = common::fs::canonicalize(env::current_exe()?)?;
     Ok(install_root_for_executable(&executable)
         .filter(|root| root.join("install.json").is_file() || root.join("update.json").is_file()))
 }
@@ -1394,7 +1394,7 @@ mod tests {
 
         assert_eq!(
             current_release(&paths).expect("current"),
-            Some(fs::canonicalize(&release).expect("canonical release"))
+            Some(common::fs::canonicalize(&release).expect("canonical release"))
         );
         for binary in binary_names() {
             assert_eq!(

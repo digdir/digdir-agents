@@ -4,4 +4,5 @@
 //! standard library or Tokio, if it matched how the workspace runs, such as on one thread.
 
 pub mod blocking;
+pub mod fs;
 pub mod hex;

@@ -59,7 +59,7 @@ pub(crate) fn execute(command: SkillsCommand) -> CommandResult<()> {
     };
     let root = match &install.repo {
         Some(directory) => {
-            let directory = std::fs::canonicalize(directory)
+            let directory = common::fs::canonicalize(directory)
                 .map_err(|error| CommandError::Message(format!("{}: {error}", directory.display())))?;
             repository_root(&directory).map(Path::to_path_buf).ok_or_else(|| {
                 CommandError::Message(format!(
@@ -117,7 +117,8 @@ fn bundled(name: &str) -> CommandResult<Skill> {
 
 fn read(source: &Path) -> CommandResult<Skill> {
     let shown = source.display().to_string();
-    let source = std::fs::canonicalize(source).map_err(|error| CommandError::Message(format!("{shown}: {error}")))?;
+    let source =
+        common::fs::canonicalize(source).map_err(|error| CommandError::Message(format!("{shown}: {error}")))?;
     // The Agent Skills spec names a skill's directory after the name in its frontmatter, so that
     // name wins over the one of the folder it comes from, such as a checkout's.
     let declared = std::fs::read_to_string(source.join("SKILL.md"))

@@ -345,11 +345,7 @@ impl ControlPlane {
                     source.display(),
                     secret_file.display(),
                     record.agent.metadata.name,
-                    crate::exposed::moving_out(
-                        &own.variables,
-                        std::slice::from_ref(&own.agent),
-                        crate::exposed::Manifests::ByHand,
-                    ),
+                    crate::exposed::MOVING_OFF,
                 )));
             }
         }
@@ -789,7 +785,7 @@ pub(super) async fn resolve_mount_sources(
                 continue;
             }
         }
-        let resolved = tokio::fs::canonicalize(&unresolved)
+        let resolved = common::fs::canonicalize_async(&unresolved)
             .await
             .map_err(|error| Error::Invalid(format!("{field} {} cannot be resolved: {error}", unresolved.display())))?;
         if !tokio::fs::metadata(&resolved).await?.is_dir() {
@@ -886,7 +882,7 @@ fn bind_mount_sources(record: &AgentRecord) -> Vec<(String, PathBuf)> {
 }
 
 async fn canonical_or_original(path: &std::path::Path) -> PathBuf {
-    tokio::fs::canonicalize(path)
+    common::fs::canonicalize_async(path)
         .await
         .unwrap_or_else(|_| path.to_path_buf())
 }
@@ -912,11 +908,7 @@ pub(crate) async fn reject_secrets_in_copy(
                 source.display(),
                 applied.file.display(),
                 applied.agent,
-                crate::exposed::moving_out(
-                    &applied.variables,
-                    std::slice::from_ref(&applied.agent),
-                    crate::exposed::Manifests::ByHand,
-                ),
+                crate::exposed::MOVING_OFF,
             )));
         }
     }
@@ -966,7 +958,7 @@ async fn canonical_secret_file(path: &std::path::Path) -> PathBuf {
     let mut missing = Vec::new();
     let mut ancestor = path;
     loop {
-        if let Ok(canonical) = tokio::fs::canonicalize(ancestor).await {
+        if let Ok(canonical) = common::fs::canonicalize_async(ancestor).await {
             return missing
                 .iter()
                 .rev()
@@ -1002,7 +994,7 @@ async fn definition_sources(
             .map(|source| match crate::definitions::source(source)? {
                 DefinitionSource::Repository(root) => Some(root.to_path_buf()),
                 DefinitionSource::Folder(folder) => {
-                    let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+                    let folder = common::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
                     (directory == folder).then_some(folder)
                 }
             })

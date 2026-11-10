@@ -86,11 +86,10 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
         ));
     }
     let builder = Builder::bundled()?;
-    let task = Task {
+    let mut task = Task {
         session: "update",
         prompt: task("this checkout", &checkout, &definitions, agent::build_version()),
-        // The task has the builder move the definitions off an environment file.
-        manifests: agent::exposed::Manifests::ByBuilder,
+        moves_off: true,
     };
     let existing = builder.find(client, &checkout).await?;
     let name = match existing {
@@ -101,7 +100,7 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
         }
         existing => {
             // Asked first, so that a refusal leaves a builder of another version where it is.
-            let agreed = builder.agree(client, &checkout, &task).await?;
+            let agreed = builder.agree(client, &checkout, &mut task).await?;
             if let Some(existing) = existing {
                 let name = existing.metadata.name;
                 let started_by = format!(

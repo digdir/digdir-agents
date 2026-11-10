@@ -22,7 +22,7 @@ pub fn repository_root(directory: &Path) -> Option<&Path> {
 
 fn repository_root_with(directory: &Path, home: impl FnOnce() -> Option<PathBuf>) -> Option<&Path> {
     let root = directory.ancestors().find(|ancestor| ancestor.join(".git").exists())?;
-    let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let canonical = |path: &Path| common::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let holds_home = home().is_some_and(|home| canonical(&home).starts_with(canonical(root)));
     (!holds_home).then_some(root)
 }

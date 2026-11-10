@@ -326,8 +326,8 @@ fn canonical_target(paths: &InstallPaths, target: &Path) -> Result<PathBuf, Erro
     if !target.is_absolute() {
         return Err(Error::Invalid("target updater paths are inconsistent".into()));
     }
-    let releases = std::fs::canonicalize(paths.releases())?;
-    let target = std::fs::canonicalize(target)?;
+    let releases = common::fs::canonicalize(paths.releases())?;
+    let target = common::fs::canonicalize(target)?;
     if target.parent() != Some(releases.as_path()) {
         return Err(Error::Invalid("target updater paths are inconsistent".into()));
     }
@@ -339,8 +339,8 @@ fn validate_source_process(source: &Path) -> Result<(), Error> {
 }
 
 fn validate_release_process(release: &Path, mismatch: &str) -> Result<(), Error> {
-    let executable = std::fs::canonicalize(std::env::current_exe()?)?;
-    let expected = std::fs::canonicalize(release.join(format!("agentctl{}", std::env::consts::EXE_SUFFIX)))?;
+    let executable = common::fs::canonicalize(std::env::current_exe()?)?;
+    let expected = common::fs::canonicalize(release.join(format!("agentctl{}", std::env::consts::EXE_SUFFIX)))?;
     if executable != expected {
         return Err(Error::Invalid(mismatch.into()));
     }
@@ -666,7 +666,7 @@ mod tests {
 
         assert_eq!(
             canonical_target(&paths, &alias.join("releases/v0.2.0-linux-x86_64")).expect("target"),
-            std::fs::canonicalize(release).expect("canonical release")
+            common::fs::canonicalize(release).expect("canonical release")
         );
     }
 }

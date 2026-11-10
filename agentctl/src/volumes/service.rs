@@ -183,7 +183,9 @@ impl VolumeService {
         source: PathBuf,
     ) -> Result<(fingerprint::Fingerprint, Vec<crate::exposed::ExposedFile>), Error> {
         if let Some(home) = &self.home {
-            let home = tokio::fs::canonicalize(home).await.unwrap_or_else(|_| home.clone());
+            let home = common::fs::canonicalize_async(home)
+                .await
+                .unwrap_or_else(|_| home.clone());
             if home.starts_with(&source) || source.starts_with(&home) {
                 return Err(Error::Invalid(format!(
                     "spec.source {} overlaps agentd's home {}, which holds its database and the copies; copy another \
@@ -359,7 +361,7 @@ fn validate(volume: &Volume) -> Result<(), Error> {
 
 async fn resolve_source(source_directory: &std::path::Path, source: &std::path::Path) -> Result<PathBuf, Error> {
     let unresolved = crate::manifest::resolve_host_path(source_directory, source, "spec.source")?;
-    let resolved = tokio::fs::canonicalize(&unresolved).await.map_err(|error| {
+    let resolved = common::fs::canonicalize_async(&unresolved).await.map_err(|error| {
         Error::Invalid(format!(
             "spec.source {} cannot be resolved: {error}",
             unresolved.display()

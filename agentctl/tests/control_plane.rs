@@ -867,7 +867,7 @@ async fn bind_mounts_resolve_from_the_manifest_and_drive_directory_inference_and
     };
     assert_eq!(
         source.as_deref(),
-        Some(std::fs::canonicalize(&root).expect("canonical workspace").as_path())
+        Some(common::fs::canonicalize(&root).expect("canonical workspace").as_path())
     );
     assert_eq!(
         fixture
@@ -911,7 +911,7 @@ async fn a_bind_mount_source_starting_with_a_tilde_resolves_below_the_home_direc
     assert_eq!(
         source.as_deref(),
         Some(
-            std::fs::canonicalize(&workspace)
+            common::fs::canonicalize(&workspace)
                 .expect("canonical workspace")
                 .as_path()
         )
@@ -1121,7 +1121,7 @@ async fn an_optional_mount_is_decided_when_the_agent_is_created() {
     };
     let created = (
         vec![sandbox::mount::Mount::Bind {
-            source: std::fs::canonicalize(&present).expect("canonical source"),
+            source: common::fs::canonicalize(&present).expect("canonical source"),
             target: SandboxPath::new("/home/agent/code/present"),
             read_only: true,
         }],
@@ -1992,7 +1992,7 @@ async fn an_environment_file_for_plain_values_is_never_mounted() {
     assert_eq!(exposed(&refused), [(PathBuf::from("credentials.env"), true)]);
     let refused = refused.to_string();
     assert!(
-        refused.contains("agent/worker") && refused.contains("EDITOR"),
+        refused.contains("credentials.env") && refused.contains("read by agent/worker"),
         "names what still reads it: {refused}"
     );
 }

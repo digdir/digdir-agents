@@ -25,7 +25,12 @@ pub(crate) async fn resolve(record: &AgentRecord) -> Result<BTreeMap<String, Str
         .collect()
 }
 
-pub(crate) async fn read(path: &std::path::Path) -> Result<BTreeMap<String, Zeroizing<String>>, Error> {
+/// The values in the environment file `path`, by variable.
+///
+/// # Errors
+///
+/// Returns an error when the file does not exist, cannot be read, or is not a valid environment file.
+pub async fn read(path: &std::path::Path) -> Result<BTreeMap<String, Zeroizing<String>>, Error> {
     let Some(bytes) = read_if_exists(path).await? else {
         return Err(Error::Invalid(format!(
             "manifest values require the environment file {} (default: .env beside the manifest; override with `agentctl apply --env-file`)",

@@ -138,7 +138,7 @@ impl Client {
                 .map_err(|source| error::io("create Microsandbox volume directory", source))?;
             // Resolve storage aliases such as macOS /var -> /private/var
             // before appending any volume name, retaining volume-root checks.
-            let volumes = tokio::fs::canonicalize(&volumes)
+            let volumes = common::fs::canonicalize_async(&volumes)
                 .await
                 .map_err(|source| error::io("resolve Microsandbox volume directory", source))?;
             builder.volumes_dir(volumes)
@@ -424,7 +424,7 @@ mod tests {
     #[tokio::test(flavor = "local")]
     async fn volume_storage_resolves_aliases_without_changing_runtime_identity() {
         let root = tempfile::tempdir().expect("temporary root");
-        let physical = root.path().canonicalize().expect("physical temporary root");
+        let physical = common::fs::canonicalize(root.path()).expect("physical temporary root");
         let home = physical.join("home");
         std::fs::create_dir(&home).expect("physical home");
         let alias = physical.join("alias");
@@ -458,7 +458,7 @@ mod tests {
     #[tokio::test(flavor = "local")]
     async fn configured_volume_storage_keeps_existing_data_when_reopened_through_an_alias() {
         let root = tempfile::tempdir().expect("temporary root");
-        let physical = root.path().canonicalize().expect("physical temporary root");
+        let physical = common::fs::canonicalize(root.path()).expect("physical temporary root");
         let home = physical.join("runtime");
         std::fs::create_dir(&home).expect("runtime home");
         let storage = physical.join("external-volumes");

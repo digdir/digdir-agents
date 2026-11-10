@@ -176,7 +176,7 @@ async fn applying_a_copy_volume_takes_a_new_revision_only_when_its_source_change
         .await
         .expect("apply");
     let VolumeSpec::Copy { source: resolved } = &applied.spec;
-    assert_eq!(resolved, &std::fs::canonicalize(&source).expect("canonical source"));
+    assert_eq!(resolved, &common::fs::canonicalize(&source).expect("canonical source"));
     assert_eq!(copies(&applied), (vec![], Some((1, false))));
     reconcile_volume(&fixture, "apps").await;
     let ready = fixture.service.get("apps").await.expect("get");
@@ -358,7 +358,7 @@ async fn a_volume_named_like_one_applied_from_another_folder_is_refused() {
     let VolumeSpec::Copy { source } = fixture.service.get("docs").await.expect("get").spec;
     assert_eq!(
         source,
-        std::fs::canonicalize(first.join("docs")).expect("canonical source")
+        common::fs::canonicalize(first.join("docs")).expect("canonical source")
     );
 }
 

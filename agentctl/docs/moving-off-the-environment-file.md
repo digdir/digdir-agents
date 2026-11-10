@@ -8,11 +8,12 @@ agent, and every agent kept its own copy of the same keys. Each kind of value no
 variables to move. Once you have moved them, apply the agent again, and delete the file when no agent reads it. Until
 then, agentctl mounts no folder that holds the file into an agent, such as the checkout it is in.
 
-A command that would mount such a folder says instead what still reads the file, and for each value the command that
-stores it and the change to its entry in the manifest. `agentctl update` leaves the manifests to the agent builder,
-which cannot be given a checkout that holds the file. So there the file goes first: store the secrets, note the plain
-values, delete the file and run it again. The builder proposes the changes to the manifests, and you apply your agents
-again once it has made them.
+`agentctl update` moves a checkout, or a folder of personal agents, off the file in one go. At a terminal it offers to
+store the file's GitHub token as the login `default` and each secret under a name made from its variable, deletes the
+file, and has the agent builder change the manifests to take the values from there. You apply your agents again once it
+has. When it cannot store a value for you, such as one that differs between two files, it says how to store it
+yourself. Any other command that would mount a folder holding the file refuses and points you to `agentctl update`.
+The sections below say where each kind of value goes, for moving a manifest by hand.
 
 When no manifest beside the file and no agent on this machine reads it any more, the command names what those
 manifests now take from agentctl. At a terminal it then offers to delete the file, and goes on. `agentctl tui` leaves

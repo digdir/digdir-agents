@@ -20,6 +20,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 mod builder;
 mod consent;
+mod environment_file;
 mod format;
 mod github;
 mod launch;
@@ -828,7 +829,6 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 reader: &reader,
                 action: "Mount",
                 allowed: allow_env_files,
-                manifests: agent::exposed::Manifests::ByHand,
             };
             let applied = consent::send(
                 request,
@@ -2462,7 +2462,6 @@ async fn apply_volume(
         reader: &reader,
         action: "Copy",
         allowed: allow_env_files,
-        manifests: agent::exposed::Manifests::ByHand,
     };
     let applied = consent::send(
         request,
@@ -2616,7 +2615,7 @@ impl Run {
         }
         let definition = if is_written_as_path(&self.definition) {
             // Canonical, as running the same definition again finds its agent by its manifest's path.
-            let path = std::fs::canonicalize(&self.definition)
+            let path = common::fs::canonicalize(&self.definition)
                 .map_err(|error| Error::Invalid(format!("definition {}: {error}", self.definition)))?;
             let manifest = if path.is_dir() {
                 path.join(manifest::MANIFEST_FILE)
@@ -2681,7 +2680,6 @@ async fn run_agent(
         reader: "The agent",
         action: "Mount",
         allowed: run.allow_env_files,
-        manifests: agent::exposed::Manifests::ByHand,
     };
     let (ran, _lease) = consent::send(
         run.request()?,
@@ -3593,8 +3591,8 @@ mod tests {
 
         let request = read_apply_request_in(|| Ok(directory.path().to_path_buf()), PathBuf::from("agent.yaml"), None)
             .expect("read apply request");
-        let actual_directory = std::fs::canonicalize(&request.source_directory).expect("canonical source directory");
-        let expected_directory = std::fs::canonicalize(directory.path()).expect("canonical temporary directory");
+        let actual_directory = common::fs::canonicalize(&request.source_directory).expect("canonical source directory");
+        let expected_directory = common::fs::canonicalize(directory.path()).expect("canonical temporary directory");
         assert_eq!(actual_directory, expected_directory);
     }
 }
