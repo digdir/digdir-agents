@@ -145,9 +145,10 @@ hand. So work from the notes between the two versions, rather than from comparin
 alone.
 
 - **The version it was written for** is the `no.digdir.agentctl.base.version` label of its image, which images built on
-  a base inherit. A base tag in its `FROM`, such as `ubuntu-26.04-v0.1.0-preview.14`, names it too. For an image its
-  manifest references or its `FROM` pins by digest, read the label from the registry with `skopeo`, which fetches only
-  the image's metadata rather than pulling it:
+  a base inherit. A base tag in its `FROM`, such as `ubuntu-26.04-v0.1.0-preview.14`, names it too.
+  `agentctl update --print-task` lists the platform's images each definition uses whose tag names another release, or
+  none. For one whose tag names none, read the label from the registry with `skopeo`, which fetches only the image's
+  metadata rather than pulling it:
 
   ```sh
   skopeo inspect docker://IMAGE | jq '{version: .Labels["no.digdir.agentctl.base.version"], created: .Created}'

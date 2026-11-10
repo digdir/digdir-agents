@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use agent::{control_api::Client, control_plane::DefinitionSummary, local::home::ControlPlaneHome};
+use agent::{control_api::Client, control_plane::DefinitionSummary, local::home::ControlPlaneHome, release::Release};
 use clap::Args;
 
 use crate::{
@@ -132,6 +132,16 @@ fn task(location: &str, checkout: &Path, definitions: &[DefinitionSummary], vers
     for definition in definitions {
         let _ = writeln!(task, "  {}", relative(checkout, &definition.path));
     }
+    let images = platform_images(checkout, definitions, version);
+    if !images.is_empty() {
+        let _ = writeln!(
+            task,
+            "The platform's images they use, where those are not of {version}:"
+        );
+        for line in images {
+            let _ = writeln!(task, "{line}");
+        }
+    }
     let mut reading = environment_file_variables(checkout, definitions);
     reading.extend(environment_files(definitions).into_iter().map(|file| {
         format!(
@@ -149,6 +159,51 @@ fn task(location: &str, checkout: &Path, definitions: &[DefinitionSummary], vers
         }
     }
     task
+}
+
+/// The lines naming the `definitions` in `checkout` that use images of the platform's from another
+/// release than `version`, or that name none, grouped by those images.
+fn platform_images(checkout: &Path, definitions: &[DefinitionSummary], version: &str) -> Vec<String> {
+    let target = Release::of_build(version);
+    let mut using = BTreeMap::<Vec<String>, Vec<String>>::new();
+    for definition in definitions {
+        let images = definition
+            .platform_images
+            .iter()
+            .filter_map(|image| {
+                let shown = image.reference.split_once("@sha256:").map_or_else(
+                    || image.reference.clone(),
+                    |(named, digest)| format!("{named}@sha256:{}…", digest.get(..12).unwrap_or(digest)),
+                );
+                let release = image.release.as_deref().and_then(Release::parse);
+                match (release, target) {
+                    (None, _) => Some(format!("{shown} names no release")),
+                    (Some(release), Some(target)) if release == target => None,
+                    (Some(release), Some(target)) if release < target => {
+                        Some(format!("{shown} is {release}, older than {target}"))
+                    }
+                    (Some(release), Some(target)) => Some(format!("{shown} is {release}, later than {target}")),
+                    (Some(release), None) => Some(format!("{shown} is {release}")),
+                }
+            })
+            .collect::<Vec<_>>();
+        if !images.is_empty() {
+            using
+                .entry(images)
+                .or_default()
+                .push(relative(checkout, &definition.path));
+        }
+    }
+    using
+        .into_iter()
+        .map(|(images, definitions)| {
+            format!(
+                "  {}: {}",
+                agent::exposed::sentence_list(&definitions),
+                images.join("; ")
+            )
+        })
+        .collect()
 }
 
 /// The lines naming the `definitions` in `checkout` that take variables from an environment file.
@@ -226,6 +281,7 @@ mod tests {
             slots: Vec::new(),
             environment_file_variables: Vec::new(),
             environment_file: None,
+            platform_images: Vec::new(),
         }
     }
 
@@ -255,6 +311,55 @@ mod tests {
             "{task}"
         );
         assert!(!task.contains("environment file"));
+    }
+
+    #[test]
+    fn the_task_names_the_platforms_images_that_are_not_of_the_version() {
+        let checkout = Path::new("/src/app");
+        let image = |reference: &str, release: Option<&str>| agent::definitions::PlatformImage {
+            reference: reference.into(),
+            release: release.map(str::to_owned),
+        };
+        let using = |path: &str, images: Vec<agent::definitions::PlatformImage>| DefinitionSummary {
+            platform_images: images,
+            ..definition(path)
+        };
+        let old = || {
+            vec![
+                image(
+                    "ghcr.io/digdir/agentctl-base:ubuntu-26.04@sha256:2ee51d4619a9e13b1d1e",
+                    None,
+                ),
+                image("ghcr.io/digdir/agentctl:v0.1.0-preview.13", Some("v0.1.0-preview.13")),
+            ]
+        };
+
+        let task = task(
+            "this checkout",
+            checkout,
+            &[
+                using("/src/app/agents/minimal/agent.nested-build.yaml", old()),
+                using("/src/app/agents/desktop/agent.nested-build.yaml", old()),
+                using(
+                    "/src/app/agents/current/agent.yaml",
+                    vec![image(
+                        "ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.14",
+                        Some("v0.1.0-preview.14"),
+                    )],
+                ),
+            ],
+            "v0.1.0-preview.14",
+        );
+
+        let (_, images) = task.split_once("not of v0.1.0-preview.14:\n").expect("the images part");
+        assert_eq!(
+            images.lines().collect::<Vec<_>>(),
+            [
+                "  agents/minimal/agent.nested-build.yaml and agents/desktop/agent.nested-build.yaml: \
+                 ghcr.io/digdir/agentctl-base:ubuntu-26.04@sha256:2ee51d4619a9… names no release; \
+                 ghcr.io/digdir/agentctl:v0.1.0-preview.13 is v0.1.0-preview.13, older than v0.1.0-preview.14"
+            ]
+        );
     }
 
     #[test]

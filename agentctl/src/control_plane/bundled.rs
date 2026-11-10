@@ -97,6 +97,7 @@ impl ControlPlane {
                 // agentd checks that the definitions it carries read nothing from one.
                 environment_file_variables: Vec::new(),
                 environment_file: None,
+                platform_images: Vec::new(),
             });
         }
         Ok(listed)

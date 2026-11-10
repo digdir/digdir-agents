@@ -150,6 +150,23 @@ pub struct DefinitionSummary {
     /// it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_file: Option<PathBuf>,
+    /// The images of the platform's it runs, builds on or copies from, such as the base image, so a
+    /// client can tell the release it was written for from the one it runs with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platform_images: Vec<PlatformImage>,
+}
+
+/// An image a release of the platform publishes, as a definition names it.
+#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PlatformImage {
+    /// The reference as the definition names it, such as
+    /// `ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.14@sha256:…`.
+    pub reference: String,
+    /// The release its tag names, or none for a tag `main` moves, such as `ubuntu-26.04`, or a
+    /// digest alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
 }
 
 /// Lists the definitions on disk for `directory`, as [`manifests`] finds them, then the `recorded` manifests agents
@@ -167,14 +184,15 @@ pub fn on_disk(directory: Option<&Path>, recorded: Vec<PathBuf>) -> Vec<Definiti
     })
     .into_iter()
     .map(|listed| {
-        let (name, error, slots, environment_file_variables) = match listed.read {
+        let (name, error, slots, environment_file_variables, platform_images) = match listed.read {
             Ok(agent) => (
                 Some(agent.metadata.name.clone()),
                 None,
                 unsourced_binds(&agent),
                 agent.spec.environment_file_variables(),
+                platform_images(&listed.path, &agent),
             ),
-            Err(error) => (None, Some(error), Vec::new(), Vec::new()),
+            Err(error) => (None, Some(error), Vec::new(), Vec::new(), Vec::new()),
         };
         DefinitionSummary {
             environment_file: environment_file_beside(&listed.path),
@@ -185,9 +203,39 @@ pub fn on_disk(directory: Option<&Path>, recorded: Vec<PathBuf>) -> Vec<Definiti
             error,
             slots,
             environment_file_variables,
+            platform_images,
         }
     })
     .collect()
+}
+
+/// The images of the platform's that `agent`, from `manifest`, runs: the one it references, or those
+/// its Dockerfile builds the stage it targets on and copies from.
+///
+/// Reads the filesystem, so it blocks.
+fn platform_images(manifest: &Path, agent: &crate::Agent) -> Vec<PlatformImage> {
+    let images = match &agent.spec.sandbox.image {
+        ::sandbox::image::ImageSource::Reference { reference } => vec![reference.clone()],
+        ::sandbox::image::ImageSource::Build {
+            context,
+            dockerfile,
+            target,
+        } => manifest
+            .parent()
+            .and_then(|folder| std::fs::read_to_string(folder.join(context).join(dockerfile)).ok())
+            .map(|text| crate::dockerfile::images(&text, target.as_deref()))
+            .unwrap_or_default(),
+    };
+    images
+        .into_iter()
+        .filter_map(|reference| {
+            let release = crate::release::Release::of_tag(crate::release::published_tag(&reference)?);
+            Some(PlatformImage {
+                release: release.map(|release| release.to_string()),
+                reference,
+            })
+        })
+        .collect()
 }
 
 /// The `.env` in the folder of `manifest`, under any case, which agentctl reads its agent's values
@@ -488,6 +536,35 @@ mod tests {
 
         assert_eq!(listed.len(), 1, "{listed:?}");
         assert_eq!(listed[0].slots, [::sandbox::SandboxPath::new("/work/checkout")]);
+    }
+
+    #[test]
+    fn a_definition_names_the_platforms_images_its_dockerfile_uses() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let folder = manifest_directory(root.path(), "agents/dev", &manifest_yaml("dev"));
+        std::fs::write(
+            folder.join("Dockerfile"),
+            "FROM ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.13@sha256:3a5c\n\
+             COPY --from=ghcr.io/digdir/agentctl:main /agentctl /usr/local/bin/\n\
+             COPY --from=ghcr.io/example/tools:1 /tool /usr/local/bin/\n",
+        )
+        .expect("Dockerfile");
+
+        let listed = on_disk(Some(root.path()), Vec::new());
+
+        assert_eq!(
+            listed[0].platform_images,
+            [
+                super::PlatformImage {
+                    reference: "ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.13@sha256:3a5c".into(),
+                    release: Some("v0.1.0-preview.13".into()),
+                },
+                super::PlatformImage {
+                    reference: "ghcr.io/digdir/agentctl:main".into(),
+                    release: None,
+                },
+            ]
+        );
     }
 
     #[test]

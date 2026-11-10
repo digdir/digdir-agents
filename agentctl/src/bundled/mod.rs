@@ -222,7 +222,7 @@ const EMBEDDED: &[EmbeddedDefinition] = include!(concat!(env!("OUT_DIR"), "/bund
 /// tag of their own, run `main`'s.
 fn released_image(reference: &str, version: Option<&str>) -> String {
     match version {
-        Some(version) if RELEASED_IMAGES.contains(&reference) && is_release(version) => {
+        Some(version) if RELEASED_IMAGES.contains(&reference) && crate::release::Release::parse(version).is_some() => {
             reference.strip_suffix(":main").map_or_else(
                 || format!("{reference}-{version}"),
                 |repository| format!("{repository}:{version}"),
@@ -230,30 +230,6 @@ fn released_image(reference: &str, version: Option<&str>) -> String {
         }
         _ => reference.to_owned(),
     }
-}
-
-/// Whether `version` names a release, such as `v0.1.0` or `v0.1.0-preview.13`, rather than a
-/// build of `main`, a pull request or a local one, whose versions extend a release's.
-fn is_release(version: &str) -> bool {
-    let Some(version) = version.strip_prefix('v') else {
-        return false;
-    };
-    let (core, preview) = version
-        .split_once('-')
-        .map_or((version, None), |(core, prerelease)| (core, Some(prerelease)));
-    let numbers = |text: &str, count: usize| {
-        let parts = text.split('.').collect::<Vec<_>>();
-        parts.len() == count
-            && parts
-                .iter()
-                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-    };
-    numbers(core, 3)
-        && preview.is_none_or(|preview| {
-            preview
-                .strip_prefix("preview.")
-                .is_some_and(|number| numbers(number, 1))
-        })
 }
 
 /// Checks that `agent` reads only the files the definition holds: an agent of a bundled definition
@@ -371,6 +347,13 @@ mod tests {
                 .get(name)
                 .expect_err("an internal definition does not run by reference");
             assert!(definitions.listed().all(|definition| definition.name() != *name));
+        }
+    }
+
+    #[test]
+    fn the_images_a_release_runs_its_definitions_on_are_its_published_ones() {
+        for image in super::RELEASED_IMAGES {
+            assert!(crate::release::published_tag(image).is_some(), "{image}");
         }
     }
 
