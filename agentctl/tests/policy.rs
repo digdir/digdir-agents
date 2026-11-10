@@ -146,23 +146,6 @@ async fn an_allow_list_reaches_only_its_hosts() {
     );
 }
 
-/// Replacing an agent's policy says when the hosts it may reach changed, so that agentd closes the
-/// connections the earlier one admitted.
-#[tokio::test(flavor = "local")]
-async fn replacing_a_policy_says_whether_its_hosts_changed() {
-    let policy = AgentPolicyEngine::new();
-    let sandbox = SandboxName::new("agent-test-id").expect("Sandbox name");
-    let mut agent = support::agent("worker");
-    assert!(!policy.set_agent(&sandbox, &agent, []), "nothing was admitted before");
-    assert!(!policy.set_agent(&sandbox, &agent, [SecretHosts::new("TOKEN", vec!["github.com".into()])]));
-
-    agent.spec.network.deny.push("example.com".into());
-    assert!(policy.set_agent(&sandbox, &agent, []));
-    agent.spec.network.allow = agent::NetworkAllow::Hosts(vec!["github.com".into()]);
-    assert!(policy.set_agent(&sandbox, &agent, []));
-    assert!(!policy.set_agent(&sandbox, &agent, []));
-}
-
 async fn connect_resolved(
     policy: &AgentPolicyEngine,
     agent: &str,
@@ -302,6 +285,79 @@ async fn host_destined_traffic_reaches_only_the_platform_api() {
         )
         .await,
         AuthorizationDecision::Allow
+    );
+}
+
+/// The sandbox names the alias itself, so naming it reaches nothing but the host: not an address
+/// elsewhere on the Platform API's port, and not a resolver of the sandbox's own, which would
+/// receive the query.
+#[tokio::test(flavor = "local")]
+async fn naming_the_platform_api_reaches_only_the_host() {
+    let mut agent = support::agent("worker");
+    agent.spec.network.allow = agent::NetworkAllow::Hosts(Vec::new());
+    let policy = AgentPolicyEngine::new();
+    let sandbox = SandboxName::new("agent-test-id").expect("Sandbox name");
+    policy.set_agent(&sandbox, &agent, []);
+    policy.set_platform_endpoint("host.microsandbox.internal", 4_100);
+
+    assert_eq!(
+        connect(
+            &policy,
+            sandbox.as_str(),
+            Some("host.microsandbox.internal"),
+            "100.64.0.2:4100"
+        )
+        .await,
+        AuthorizationDecision::Allow
+    );
+    assert_eq!(
+        connect(
+            &policy,
+            sandbox.as_str(),
+            Some("host.microsandbox.internal"),
+            "203.0.113.7:4100"
+        )
+        .await,
+        AuthorizationDecision::Deny
+    );
+    let http = |destination: &'static str| {
+        policy.evaluate(AuthorizationRequest {
+            principal: Principal::new(principal_kind::SANDBOX, "sandbox-id"),
+            action: Action::new(action::HTTP_REQUEST),
+            resource: Resource::new(resource_kind::EXTERNAL_SERVICE, "host.microsandbox.internal"),
+            context: AuthorizationContext::new()
+                .with_attribute(context::SANDBOX_NAME, sandbox.as_str())
+                .with_attribute(context::NETWORK_DESTINATION_ADDRESS, destination)
+                .with_attribute(context::HTTP_AUTHORITY, "host.microsandbox.internal:4100"),
+        })
+    };
+    assert_eq!(
+        http("100.64.0.2:4100").await.expect("decision"),
+        AuthorizationDecision::Allow
+    );
+    assert_eq!(
+        http("203.0.113.7:4100").await.expect("decision"),
+        AuthorizationDecision::Deny
+    );
+
+    let query = |resolver: Option<&'static str>| {
+        let mut authorization_context = AuthorizationContext::new()
+            .with_attribute(context::SANDBOX_NAME, sandbox.as_str())
+            .with_attribute(context::DNS_RECORD_TYPE, "TXT");
+        if let Some(resolver) = resolver {
+            authorization_context.insert(context::DNS_RESOLVER, resolver);
+        }
+        policy.evaluate(AuthorizationRequest {
+            principal: Principal::new(principal_kind::SANDBOX, "sandbox-id"),
+            action: Action::new(action::DNS_QUERY),
+            resource: Resource::new(resource_kind::DOMAIN, "host.microsandbox.internal"),
+            context: authorization_context,
+        })
+    };
+    assert_eq!(query(None).await.expect("decision"), AuthorizationDecision::Allow);
+    assert_eq!(
+        query(Some("198.51.100.53:53")).await.expect("decision"),
+        AuthorizationDecision::Deny
     );
 }
 

@@ -51,20 +51,14 @@ impl AgentPolicyEngine {
         });
     }
 
-    /// Replaces the policy for one desired agent generation, whose sandbox gets `secrets`, and
-    /// returns whether it changes the hosts an earlier one let the sandbox reach. Connections that
-    /// policy admitted stay open until they are revoked.
-    pub fn set_agent(
-        &self,
-        sandbox: &SandboxName,
-        agent: &Agent,
-        secrets: impl IntoIterator<Item = SecretHosts>,
-    ) -> bool {
+    /// Replaces the policy for one desired agent generation, whose sandbox gets `secrets`.
+    /// Connections an earlier policy admitted stay open until they are revoked.
+    pub fn set_agent(&self, sandbox: &SandboxName, agent: &Agent, secrets: impl IntoIterator<Item = SecretHosts>) {
         let secrets = secrets
             .into_iter()
             .map(|secret| (secret.environment.clone(), secret))
             .collect();
-        let replaced = self.agents.borrow_mut().insert(
+        self.agents.borrow_mut().insert(
             sandbox.as_str().into(),
             AgentPolicy {
                 allowed_hosts: agent.spec.network.allow.clone(),
@@ -72,9 +66,6 @@ impl AgentPolicyEngine {
                 secrets,
             },
         );
-        replaced.is_some_and(|earlier| {
-            earlier.allowed_hosts != agent.spec.network.allow || earlier.denied_hosts != agent.spec.network.deny
-        })
     }
 
     /// Removes policy for a released agent.
@@ -245,13 +236,20 @@ impl AgentPolicyEngine {
             return None;
         }
         if action == action::DNS_QUERY {
-            // Resolving the alias only reveals the gateway address.
-            return Some(AuthorizationDecision::Allow);
+            // Resolving the alias through the platform's DNS only reveals the gateway address. A
+            // resolver the sandbox picks gets the query itself, so it is decided as any other.
+            return request
+                .context
+                .get(context::DNS_RESOLVER)
+                .is_none()
+                .then_some(AuthorizationDecision::Allow);
         }
         let port = destination
             .map(|address| address.port())
             .or_else(|| authority_port(request));
-        let allowed = alias && endpoint.as_ref().is_some_and(|endpoint| port == Some(endpoint.port));
+        // The sandbox names the alias itself, so it counts only towards the host's own address.
+        let allowed =
+            alias && (flagged || reserved) && endpoint.as_ref().is_some_and(|endpoint| port == Some(endpoint.port));
         Some(decision(allowed))
     }
 }

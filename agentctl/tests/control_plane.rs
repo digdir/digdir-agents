@@ -1682,6 +1682,15 @@ async fn repeated_apply_is_idempotent_and_immutable_fields_are_rejected() {
         .expect_err("Sandbox init system should be immutable");
     assert!(matches!(error, Error::Immutable("spec.sandbox.initSystem")));
 
+    let mut allow_change = updated_request.clone();
+    allow_change.agent.spec.network.allow = agent::NetworkAllow::Hosts(vec!["github.com".into()]);
+    let error = fixture
+        .control_plane
+        .apply(allow_change)
+        .await
+        .expect_err("an agent that allowed all hosts may hold DNS answers a list must not trust");
+    assert!(matches!(error, Error::Immutable("spec.network.allow")));
+
     let mut root_mode_change = updated_request;
     let resources = &mut root_mode_change.agent.spec.sandbox.resources;
     resources.root_filesystem = RootFilesystem::direct(resources.root_filesystem.capacity());

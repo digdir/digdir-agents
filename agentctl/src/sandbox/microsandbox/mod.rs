@@ -164,7 +164,6 @@ impl Provider for Adapter {
             let harnesses = prepared.harnesses;
             let logins = prepared.logins;
             let accounts = prepared.accounts;
-            let network_policy_changed = prepared.network_policy_changed;
             for (name, value) in prepared.environment {
                 if environment.insert(name.clone(), value).is_some() {
                     return Err(Error::Invalid(format!(
@@ -193,12 +192,16 @@ impl Provider for Adapter {
                 .with_mounts(record.sandbox_mounts())
                 .with_environment(environment);
             let mut sandbox = self.service.ensure(&request).forward(&progress).await?;
+            let network = &record.agent.spec.network;
             if self.preparation.network_is_stale(sandbox.id()) {
                 self.preparation.restart_network(&sandbox).await?;
                 // Re-ensure starts the stopped Network with the replacement handshake bindings.
                 sandbox = self.service.ensure(&request).forward(&progress).await?;
-            } else if network_policy_changed {
-                self.preparation.revoke_connections(&sandbox).await?;
+                self.preparation.network_admitted(request.name(), network);
+            } else {
+                self.preparation
+                    .admit_connections(request.name(), &sandbox, network)
+                    .await?;
             }
             Ok(ProviderEnsureOutcome {
                 sandbox,
@@ -257,7 +260,7 @@ impl Provider for Adapter {
             self.service
                 .release(&name, record.agent.spec.sandbox.resolved_retention_policy())
                 .await?;
-            self.preparation.remove(&name);
+            self.preparation.release(&name);
             Ok(())
         })
     }

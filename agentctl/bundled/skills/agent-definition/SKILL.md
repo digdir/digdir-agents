@@ -99,7 +99,8 @@ the tests start with Compose, `browser` for browser tests, `desktop` for the des
     are, so never a secret.
 - **Network:** `mediated`, allowing all, and denying `metadata.google.internal`, which hands out the credentials of
   the machine the host may run on. An agent that needs only a few hosts lists them in `allow` instead, such as
-  `[github.com, "*.github.com"]`, and reaches no other. Its harnesses' hosts must be among them.
+  `[github.com, "*.github.com"]`, and reaches no other. Its harnesses' hosts must be among them. An existing agent
+  that allows all takes a list only once deleted and applied again.
 - **Harnesses:** Claude Code as the default and Codex as optional, unless the role needs others. `optional` lets the
   agent start without a login the host lacks. An agent that only runs commands, with `agentctl exec` or over SSH,
   declares none, and runs no sessions.
