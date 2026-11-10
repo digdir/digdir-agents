@@ -163,7 +163,9 @@ impl Linux {
             step.complete().await;
         }
         let step = steps.start_step("Prepare workspace and Podman").await;
-        run_checked(sandbox, "/usr/bin/install", ["-d", "-m", "0755", WORKING_DIRECTORY]).await?;
+        // `mkdir` leaves a folder that is there alone, such as a bind mount from Windows, where
+        // changing its mode is refused.
+        run_checked(sandbox, "/bin/mkdir", ["-p", "-m", "0755", WORKING_DIRECTORY]).await?;
         let podman = configure_podman(sandbox).await?;
         let kvm = prepare_nested_sandboxes(sandbox, self.nested_huge_pages).await?;
         step.complete().await;
