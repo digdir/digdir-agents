@@ -5,17 +5,14 @@ extends: agent.yaml
 metadata:
   name: agentctl-dev-nested
 
-# Reduced to fit inside another agent, with the image built from this checkout so that changes to it can be tried.
+# The published image, reduced to fit inside another agent.
 spec:
   sandbox:
-    image:
-      type: build
-      context: ..
-      dockerfile: Dockerfile
-      target: minimal
     resources:
       cpu: "2"
       memory: "3Gi"
       rootFilesystem:
         capacity: "16Gi"
         mode: direct
+      # A nested agent runs no agents of its own.
+      nestedSandboxes: null

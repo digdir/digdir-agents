@@ -106,8 +106,8 @@ test("repoets CODEOWNERS: alt annet krever review", () => {
     // agent-instrukser og -definisjoner, uansett filnavn
     "agents/ny-agent/agent.yaml",
     "agents/ny-agent/instructions.md",
-    "agents/self-dev/README.md",
-    "agents/self-dev/Dockerfile",
+    "agents/dev/README.md",
+    "agents/dev/Dockerfile",
     // tjenester og avhengighetene deres
     "integrations/src/config.ts",
     "integrations/package.json",

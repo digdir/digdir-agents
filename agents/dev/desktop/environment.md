@@ -6,4 +6,4 @@ requests as the `pr-evidence` skill describes.
 Chromium trusts the mediated CA a few seconds after boot, once `$XDG_RUNTIME_DIR/chromium-ca-ready` exists. If a
 browser reports a certificate error early in a session, wait for that file and reopen the browser.
 
-To test the platform's VNC access end to end, use a nested `full` agent. Only its image offers VNC.
+To test the platform's VNC access end to end, use a nested `desktop` agent. Only its image offers VNC.

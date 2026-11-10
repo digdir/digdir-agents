@@ -13,14 +13,14 @@ Agents get their own computer, with mediated network access and no real secrets 
 | [`agentctl/`](agentctl/) | The `agentctl` CLI and the `agentd` session API backend, independent of model and harness. Start here to install and run an agent. |
 | [`sandbox/`](sandbox/) | The Sandbox SDK, with an implementation on Digdir's forks of [microsandbox](https://github.com/digdir/microsandbox) and [libkrunfw](https://github.com/digdir/libkrunfw). |
 | [`images/`](images/) | Container images for building agent images. |
-| [`agents/self-dev/`](agents/self-dev/) | The agent that develops this platform. It is also the example to start from when you make a new agent. |
+| [`agents/`](agents/) | The agent that develops this platform, and an example to start your own agent from. |
 | [`integrations/`](integrations/) | Slack and GitHub listener from the earlier orchestrator pipeline. It is kept as a possible entry point to agentctl agents, but nothing consumes its events right now. |
 | [`docs/presentations/`](docs/presentations/) | Slide decks on agentctl and the Sandbox SDK, including a security view, and on harness engineering in Altinn Studio. |
 
 ## Getting started
 
 Install `agentctl` and run an agent as described in [`agentctl/README.md`](agentctl/README.md). To work on the
-platform itself, use the self-dev agent: see [`agents/self-dev/README.md`](agents/self-dev/README.md).
+platform itself, use the dev agent: see [`agents/dev/README.md`](agents/dev/README.md).
 
 ## History
 

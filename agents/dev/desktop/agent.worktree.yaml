@@ -1,0 +1,22 @@
+apiVersion: agents.platform/v1alpha1
+kind: AgentVariant
+extends: agent.yaml
+
+metadata:
+  name: agentctl-dev-worktree
+
+# Your own checkout of digdir-agents, the one this file is in, in place of a fresh clone. The agent works on it as it
+# is, on its branch.
+spec:
+  sandbox:
+    mounts:
+      - type: bind
+        source: ../../..
+        target: /home/agent/code/digdir-agents
+        readOnly: false
+  # A variant's instructions replace the list it extends.
+  instructions:
+    - source: ../instructions.md
+    - source: environment.md
+    - source: ../improving.md
+    - source: ../worktree.md

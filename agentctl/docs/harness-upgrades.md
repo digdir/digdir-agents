@@ -13,8 +13,8 @@ version to find them.
 
 ## Upgrade test plan
 
-Test with `agentctl` and the self-dev image both built from the branch: run `make user-install`, then apply the
-self-dev `nested` variant on base images built from the branch, as
+Test with `agentctl` and the dev agent's image both built from the branch: run `make user-install`, then apply the
+dev agent's `nested-build` variant on base images built from the branch, as
 [their README](../../images/agentctl-base/README.md#changing-them) describes. `make user-install` restarts `agentd` and
 refuses while a session is `Working`, so archive or delete earlier test sessions first. Use fresh sessions and check
 `claude --version`, `codex --version` and `pi --version` in the sandbox. An existing sandbox does not prove the
@@ -86,7 +86,7 @@ there.
 
 ## Pi
 
-Test Pi on an agent that configures it, such as [self-dev](../../agents/self-dev/README.md#pi). The checks above apply,
+Test Pi on an agent that configures it, such as [dev](../../agents/dev/README.md#pi). The checks above apply,
 with these differences:
 
 - Pi asks for no permissions; only an extension dialog reports `WaitingForInput`.

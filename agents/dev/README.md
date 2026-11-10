@@ -1,25 +1,30 @@
-# Agent platform self-development agent
+# Agent platform development agent
 
 This agent develops the agent platform itself: `agentctl/`, `sandbox/` and the Rust workspace in digdir-agents. Each
 agent clones `digdir/digdir-agents`, `digdir/microsandbox` and `digdir/libkrunfw` at boot.
 
 | Agent | Image |
 | --- | --- |
-| `minimal` | `agentctl-self-dev-minimal`, published |
-| `full` | `agentctl-self-dev-full`, published: `minimal` plus Chromium and a graphical desktop |
+| `minimal` | `agentctl-dev-minimal`, published |
+| `desktop` | `agentctl-dev-desktop`, published: `minimal` plus Chromium and a graphical desktop |
 
-Each has a `nested` variant that builds the same image from this checkout and is sized to fit inside another agent.
-Both agents are named `agentctl-dev`, and their nested variants `agentctl-dev-nested`, since you typically use one or
-the other. Pass `--name` to run both at once.
+Both agents are named `agentctl-dev`, since you typically use one or the other. Pass `--name` to run both at once. Each
+has these variants:
+
+| Variant | What it changes |
+| --- | --- |
+| `nested` | Sized to fit inside another agent, as `agentctl-dev-nested` |
+| `nested-build` | `nested`, with the image built from this checkout, to try a change to it before CI publishes it |
+| `worktree` | Mounts this checkout in place of a fresh clone, as `agentctl-dev-worktree`, and has the agent work on it as it is |
 
 Nested agents and the end-to-end tests need nested sandboxes, which a Linux x86_64 host with nested KVM or an Apple M3
 or newer on macOS 15 or newer can provide. The manifests ask for them (`nestedSandboxes: preferred`), and on other
 hosts the agent starts without them.
 
 The images are built from this directory's `Dockerfile` on the
-[agentctl base images](../../images/agentctl-base/README.md) and published to `ghcr.io/digdir/digdir-agents` whenever
-they or the base images change on `main`. See [Changing them](../../images/agentctl-base/README.md#changing-them) for
-changes to the base images.
+[agentctl base images](../../images/agentctl-base/README.md) and published to `ghcr.io/digdir/digdir-agents` by
+[dev-images.yml](../../.github/workflows/dev-images.yml) whenever they or the base images change on `main`. See
+[Changing them](../../images/agentctl-base/README.md#changing-them) for changes to the base images.
 
 ## Getting started
 
@@ -28,20 +33,20 @@ make user-install
 agentctl claude login
 agentctl github login default
 agentctl secret set aivar --hosts api.aivar.no   # optional, for Pi
-cd agents/self-dev/minimal
+cd agents/dev/minimal
 agentctl apply --wait
 agentctl attach session/s1
 ```
 
-Use `agents/self-dev/full` instead for a browser and a desktop. `agentctl vnc --web` prints an address for viewing
+Use `agents/dev/desktop` instead for a browser and a desktop. `agentctl vnc --web` prints an address for viewing
 that desktop in your browser. `agentctl tui`, run from anywhere in this checkout, offers both agents and their variants
 when it creates an agent.
 
-To try a change to the image, apply the `nested` variant, which builds it from this checkout:
+To try a change to the image, apply the `nested-build` variant, which builds it from this checkout:
 
 ```sh
-agentctl apply --variant nested --wait
-agentctl create session/s1 --variant nested --harness codex
+agentctl apply --variant nested-build --wait
+agentctl create session/s1 --variant nested-build --harness codex
 ```
 
 A variant of your own, such as `agent.mine.yaml`, which Git ignores, can extend any manifest beside it. Keep
@@ -78,7 +83,7 @@ levels it rejects onto ones it accepts with `thinkingLevelMap`, and leave out a 
 
 ## Inside the agent
 
-[`instructions.md`](instructions.md), plus [`full/desktop.md`](full/desktop.md) on `full`, are the agent's own
-instructions. Its skills are [`pr-evidence`](skills/pr-evidence/SKILL.md), for showing a change to reviewers, and
+[`instructions.md`](instructions.md), its stage's `environment.md` and [`improving.md`](improving.md) are the agent's
+own instructions, with [`worktree.md`](worktree.md) on the `worktree` variant. Its skills are [`pr-evidence`](skills/pr-evidence/SKILL.md), for showing a change to reviewers, and
 [`changelog`](skills/changelog/SKILL.md), for changelog entries. The images add the base image's `recording` skill,
-and on `full` its `computer-use` skill for the desktop.
+and on `desktop` its `computer-use` skill for the desktop.

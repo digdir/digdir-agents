@@ -1,6 +1,6 @@
 # The images that are part of agentctl, published under ghcr.io/digdir, for `docker buildx bake`: the base images agents
 # build on, the image of agentctl and agentd, and the agent builder's. This repository's own agent has its own bake
-# file, agents/self-dev/docker-bake.hcl. CI builds each architecture on its own runner and publishes from main;
+# file, agents/dev/docker-bake.hcl. CI builds each architecture on its own runner and publishes from main;
 # `docker buildx bake -f docker-bake.hcl --load base-headless` builds one locally under its published name. Always pass
 # `-f docker-bake.hcl`: without it, bake also reads the root docker-compose.yml.
 

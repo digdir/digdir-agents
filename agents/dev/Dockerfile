@@ -1,4 +1,4 @@
-# The self-development agent's images, built on the agentctl base images in images/agentctl-base. FROM names the base
+# The dev agent's images, built on the agentctl base images in images/agentctl-base. FROM names the base
 # tag without a digest, so that these images follow the platform they develop: CI publishes them again whenever it
 # publishes the base, and builds pull requests on the base from the same commit (docker-bake.hcl here). A nested
 # agent's build pulls the published base, so to try a local base, build it under a localhost/ tag and point FROM at it
@@ -56,7 +56,7 @@ RUN apt-get update \
 RUN agent-feature install containers
 
 # The workspace list names the repositories the base image's workspace unit clones at boot.
-COPY common/workspace.list /etc/agent-workspace.d/self-dev.list
+COPY common/workspace.list /etc/agent-workspace.d/dev.list
 
 ARG TARGETARCH
 ARG ACTIONLINT_VERSION=1.7.12
@@ -133,14 +133,14 @@ USER agent
 
 # The minimal image plus a browser and a graphical desktop, for work that needs a real screen: browser captures for
 # pull request evidence, and the agent platform's own VNC access, which only an image like this one offers.
-FROM minimal AS full
+FROM minimal AS desktop
 
 USER root
 
 RUN agent-feature install desktop
 
 # Keep the Norwegian keyboard layout.
-COPY common/agent-desktop.conf /etc/agent-desktop.conf.d/self-dev.conf
+COPY common/agent-desktop.conf /etc/agent-desktop.conf.d/dev.conf
 
 # What `agent-feature env desktop` prints.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright

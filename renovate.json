@@ -5,9 +5,9 @@
   ],
   "packageRules": [
     {
-      "description": "The self-dev and agent builder images follow the agentctl images as published, so they name the tags alone.",
+      "description": "The dev agent's and the agent builder's images follow the agentctl images as published, so they name the tags alone.",
       "matchFileNames": [
-        "agents/self-dev/Dockerfile",
+        "agents/dev/Dockerfile",
         "images/agentctl-agent-builder/Dockerfile"
       ],
       "matchPackageNames": [
