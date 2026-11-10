@@ -3424,8 +3424,8 @@ mod tests {
             }))
         };
         assert_eq!(
-            rpc(-32602, "spec.harnesses must not be empty").to_string(),
-            "spec.harnesses must not be empty"
+            rpc(-32602, "spec.network.deny contains an invalid host pattern").to_string(),
+            "spec.network.deny contains an invalid host pattern"
         );
         assert_eq!(
             rpc(-32603, "Agent sandbox setup failed: no space left").to_string(),

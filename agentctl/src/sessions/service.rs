@@ -352,10 +352,13 @@ impl Service {
             (Some(session), _) => session.harness,
             (None, Some(harness)) => harness,
             (None, None) => {
-                owner
-                    .agent
-                    .spec
-                    .default_harness()
+                let spec = &owner.agent.spec;
+                if spec.harnesses.is_empty() {
+                    return Err(Error::Invalid(format!(
+                        "Agent {agent:?} declares no harness, so it runs no sessions"
+                    )));
+                }
+                spec.default_harness()
                     .ok_or_else(|| Error::Invalid(format!("Agent {agent:?} has no default harness")))?
                     .kind
             }

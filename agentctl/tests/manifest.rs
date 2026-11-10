@@ -250,10 +250,9 @@ fn rejects_a_custom_placeholder_that_collides_with_a_generated_one() {
 fn validates_harness_installation_cardinality_and_defaults() {
     let mut empty = support::agent("worker");
     empty.spec.harnesses.clear();
-    assert!(matches!(
-        empty.validate(),
-        Err(agent::Error::Invalid(message)) if message.contains("spec.harnesses must not be empty")
-    ));
+    empty
+        .validate()
+        .expect("an agent that only runs commands declares no harness");
 
     let installation = support::agent("worker").spec.harnesses.remove(0);
     let mut duplicate = support::agent("worker");

@@ -260,6 +260,9 @@ pub(crate) const fn condition_status(status: ConditionStatus) -> &'static str {
 }
 
 pub(crate) fn format_harnesses(spec: &agent::Spec) -> String {
+    if spec.harnesses.is_empty() {
+        return "-".into();
+    }
     spec.harnesses
         .iter()
         .map(|harness| {

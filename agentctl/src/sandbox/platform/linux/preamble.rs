@@ -87,7 +87,7 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
             )),
         ),
         ("Resources", Some(resources(spec))),
-        ("Harnesses", Some(harnesses(spec, observed.harnesses))),
+        ("Harnesses", harnesses(spec, observed.harnesses)),
         ("Secrets", secrets(spec, observed.environment)),
         (
             "Plain environment",
@@ -135,8 +135,11 @@ fn resources(spec: &Spec) -> String {
 }
 
 /// One sub-bullet per declared harness, naming the default and those not installed.
-fn harnesses(spec: &Spec, installed: &[Harness]) -> String {
-    sub_bullets(spec.harnesses.iter().map(|installation| {
+fn harnesses(spec: &Spec, installed: &[Harness]) -> Option<String> {
+    if spec.harnesses.is_empty() {
+        return None;
+    }
+    Some(sub_bullets(spec.harnesses.iter().map(|installation| {
         let label = installation.kind.display_name();
         if !installed.contains(&installation.kind) {
             format!("{label}: not installed until the host logs in to it")
@@ -145,7 +148,7 @@ fn harnesses(spec: &Spec, installed: &[Harness]) -> String {
         } else {
             label.to_owned()
         }
-    }))
+    })))
 }
 
 /// One sub-bullet per secret, with the hosts it is sent to or that it was left unconfigured.
