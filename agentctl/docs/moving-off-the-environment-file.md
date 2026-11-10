@@ -56,7 +56,8 @@ spec:
 ```
 
 A value of your own goes in a variant of your own beside the manifest, such as `agent.mine.yaml`, which you keep out of
-Git. A variant replaces a list rather than adding to it, so it repeats the entries it keeps:
+Git. A variant adds its entries to the base's list, and an entry with the `name` of one there changes that one, so it
+names only what it adds or changes:
 
 ```yaml
 apiVersion: agents.platform/v1alpha1

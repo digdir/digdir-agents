@@ -65,6 +65,9 @@ const TEAM_SPEC: &str = "spec:
   access:
     - type: ssh
     - type: vnc
+  accounts:
+    - type: github
+      login: team
   harnesses:
     - type: codex
       auth: mediated
@@ -102,6 +105,9 @@ fn keyed_lists_merge_by_key_while_other_lists_replace() {
             "spec:
   instructions:
     - source: mine.md
+  accounts:
+    - type: github
+      login: mine
   harnesses:
     - type: claudeCode
       optional: true
@@ -155,6 +161,10 @@ fn keyed_lists_merge_by_key_while_other_lists_replace() {
     assert_eq!(spec["sandbox"]["mounts"][0]["capacity"], "2Gi");
     assert_eq!(spec["sandbox"]["mounts"][1]["target"], "/work");
     assert_eq!(spec["access"], serde_json::json!([{"type": "ssh"}, {"type": "vnc"}]));
+    assert_eq!(
+        spec["accounts"],
+        serde_json::json!([{"type": "github", "login": "mine"}])
+    );
     assert_eq!(spec["instructions"], serde_json::json!([{"source": "mine.md"}]));
 }
 

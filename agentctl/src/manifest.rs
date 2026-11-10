@@ -1682,6 +1682,7 @@ const PATCH_FIELD: &str = "$patch";
 /// Other lists replace the inherited one whole: a list of strings has no key, and `instructions` may repeat a source.
 const KEYED_LISTS: &[(&[&str], ListKey)] = &[
     (&["spec", "access"], ListKey::Field("type")),
+    (&["spec", "accounts"], ListKey::Field("type")),
     (&["spec", "harnesses"], ListKey::Field("type")),
     (&["spec", "environment"], ListKey::Field("name")),
     (&["spec", "secrets"], ListKey::Field("environment")),
