@@ -1,6 +1,6 @@
-//! Sign-ins without their programs on this machine. A short-lived agent of the base image, which
-//! has them all, runs the sign-in program with its terminal relayed here, and its sign-in page
-//! opens in this machine's browser. The credential comes back to the caller, which has agentd keep
+//! Sign-ins without their programs on this machine. A short-lived agent, on an image with the
+//! sign-in's program, runs it with its terminal relayed here, and its sign-in page opens in this
+//! machine's browser. The credential comes back to the caller, which has agentd keep
 //! it; agents only ever see placeholders.
 
 use std::{collections::BTreeSet, io::Write as _, path::Path, time::Duration};
@@ -36,14 +36,20 @@ struct SignInAgent<'a> {
 }
 
 impl<'a> SignInAgent<'a> {
-    /// Runs the sign-in agent for `service` and waits until commands run in it, as one line about
-    /// getting the sign-in ready: the agent is how the sign-in runs, not what the person asked for.
-    async fn start(client: &Client, home: &'a ControlPlaneHome, service: &str) -> crate::CommandResult<Self> {
+    /// Runs the agent `sign_in` runs in, to sign in to `service`, and waits until commands run in
+    /// it, as one line about getting the sign-in ready: the agent is how the sign-in runs, not what
+    /// the person asked for.
+    async fn start(
+        client: &Client,
+        home: &'a ControlPlaneHome,
+        service: &str,
+        sign_in: &SandboxSignIn,
+    ) -> crate::CommandResult<Self> {
         let wait = crate::progress::Wait::summarized(
             format!("Getting ready to sign in to {service}"),
             format!("Ready to sign in to {service}"),
         );
-        let (ran, lease) = client.run_sign_in().await?;
+        let (ran, lease) = client.run_sign_in(sign_in.definition).await?;
         let name = ran.agent.metadata.name;
         crate::converge_shown(&wait, client, &name, START_TIMEOUT).await?;
         let target = client.ensure_execution(&name, WaitPolicy::UntilConverged).await?;
@@ -263,7 +269,7 @@ pub(crate) async fn sign_in(
     service: &str,
     sign_in: &SandboxSignIn,
 ) -> CommandResult<Result<Zeroizing<String>, SignInFailure>> {
-    let agent = SignInAgent::start(client, home, service).await?;
+    let agent = SignInAgent::start(client, home, service, sign_in).await?;
     // Where a browser here would not reach the person, such as over SSH, they open the link. Saying
     // so now keeps it out of what the program draws.
     let blocked = crate::launch::launch_blocked(|name| std::env::var_os(name));

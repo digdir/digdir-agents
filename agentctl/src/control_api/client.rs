@@ -20,7 +20,7 @@ use super::protocol::{
     METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, ProgressParams, ReadMessage, Request,
     ResourcesWatchParams, Response, RestartParams, SecretRemoveResult, SecretSetParams, SessionEnsureParams,
     SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult,
-    read_message,
+    SignInAgentParams, read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -118,15 +118,21 @@ impl Client {
         Ok((ran, lease))
     }
 
-    /// Runs the agent a harness sign-in runs in when this machine does not have the harness; see
-    /// [`control_plane::ControlPlane::run_sign_in`]. It lives while the returned lease does.
+    /// Runs the agent a sign-in runs in when this machine does not have its program, from the
+    /// internal definition named `definition`; see [`control_plane::ControlPlane::run_sign_in`].
+    /// It lives while the returned lease does.
     ///
     /// # Errors
     ///
     /// Returns an error when transport, protocol validation, or the control-plane operation fails.
-    pub async fn run_sign_in(&self) -> Result<(control_plane::Ran, AgentLease), Error> {
+    pub async fn run_sign_in(&self, definition: &str) -> Result<(control_plane::Ran, AgentLease), Error> {
         let (ran, connection) = self
-            .exchange::<_, control_plane::Ran>(METHOD_AUTH_SIGN_IN_AGENT, serde_json::json!({}))
+            .exchange::<_, control_plane::Ran>(
+                METHOD_AUTH_SIGN_IN_AGENT,
+                SignInAgentParams {
+                    definition: definition.to_owned(),
+                },
+            )
             .await?;
         Ok((ran, AgentLease(Some(connection))))
     }

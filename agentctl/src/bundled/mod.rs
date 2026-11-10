@@ -3,7 +3,8 @@
 //! They come with the exact build because they are tied to its code, such as the sign-in recipes
 //! or the schema a definition is written against. Otherwise they are ordinary definitions: agentd
 //! writes each to a folder of its own, and an agent is applied or run from that folder as from
-//! any other. The [`INTERNAL`] ones are the exception: only agentctl's own commands run them.
+//! any other. The [internal](internal_names) ones are the exception: only agentctl's own commands
+//! run them.
 
 mod folders;
 
@@ -16,23 +17,12 @@ pub use folders::Folders;
 
 use crate::{Agent, Error, MountSpec, manifest::MANIFEST_FILE};
 
-/// The images an agentd release publishes, by the tag `main` publishes them as. A release runs
-/// its bundled definitions on the image it tagged for itself, `<main tag>-<version>`, so that a
-/// definition always runs on the image built with it.
-const RELEASED_IMAGES: &[&str] = &[
-    "ghcr.io/digdir/agentctl-base:ubuntu-26.04",
-    "ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop",
-    "ghcr.io/digdir/agentctl-agent-builder:main",
-];
-
-/// The agent a harness login signs in in when this machine does not have the harness, which agentd
-/// runs for that login alone.
-pub const SIGN_IN: &str = "sign-in";
-
-/// The definitions only agentctl's own commands run, each through a request of its own. They are
-/// part of a command, and no use on their own, so agentd neither lists them nor runs them by
-/// reference.
-const INTERNAL: &[&str] = &[SIGN_IN];
+/// The names of the definitions only agentctl's own commands run, through a request of their own:
+/// the agents sign-ins run in, which each sign-in names. They are part of a command, and no use on
+/// their own, so agentd neither lists them nor runs them by reference.
+fn internal_names() -> impl Iterator<Item = &'static str> {
+    std::iter::once(crate::github::SIGN_IN_DEFINITION).chain(crate::harness::SIGN_IN_DEFINITIONS)
+}
 
 /// One file of a definition.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,7 +69,7 @@ impl Definition {
     }
 
     /// This definition as one only agentctl's own commands run, as [`Definitions::bundled`] makes
-    /// those [`INTERNAL`] names.
+    /// those [internal](internal_names) names.
     #[must_use]
     pub const fn into_internal(mut self) -> Self {
         self.internal = true;
@@ -138,7 +128,7 @@ impl Definitions {
                     })
                     .collect();
                 let definition = Definition::new(embedded.name, files)?;
-                Ok::<_, Error>(if INTERNAL.contains(&embedded.name) {
+                Ok::<_, Error>(if internal_names().any(|name| name == embedded.name) {
                     definition.into_internal()
                 } else {
                     definition
@@ -213,6 +203,12 @@ struct EmbeddedFile {
     executable: bool,
 }
 
+/// Whether `reference` names an image each release publishes by a tag, without a digest, as `main`
+/// publishes it.
+fn main_tagged(reference: &str) -> bool {
+    !reference.contains('@') && crate::release::published_tag(reference).is_some_and(|tag| !tag.is_empty())
+}
+
 /// Every folder of `bundled/definitions/`, as `bundled/build.rs` embeds it.
 const EMBEDDED: &[EmbeddedDefinition] = include!(concat!(env!("OUT_DIR"), "/bundled_definitions.rs"));
 
@@ -222,7 +218,7 @@ const EMBEDDED: &[EmbeddedDefinition] = include!(concat!(env!("OUT_DIR"), "/bund
 /// tag of their own, run `main`'s.
 fn released_image(reference: &str, version: Option<&str>) -> String {
     match version {
-        Some(version) if RELEASED_IMAGES.contains(&reference) && crate::release::Release::parse(version).is_some() => {
+        Some(version) if main_tagged(reference) && crate::release::Release::parse(version).is_some() => {
             reference.strip_suffix(":main").map_or_else(
                 || format!("{reference}-{version}"),
                 |repository| format!("{repository}:{version}"),
@@ -236,8 +232,18 @@ fn released_image(reference: &str, version: Option<&str>) -> String {
 /// reads agentd's copy of them, never the host's files, and binds only the folders it is given.
 fn check_contained(agent: &Agent, files: &BTreeMap<String, DefinitionFile>) -> Result<(), String> {
     let spec = &agent.spec;
-    if let ::sandbox::image::ImageSource::Build { .. } = spec.sandbox.image {
-        return Err("spec.sandbox.image must be a reference, since a build context is a host folder".into());
+    match &spec.sandbox.image {
+        ::sandbox::image::ImageSource::Build { .. } => {
+            return Err("spec.sandbox.image must be a reference, since a build context is a host folder".into());
+        }
+        // A release runs it on the image it tagged for itself, which only an image it publishes has.
+        ::sandbox::image::ImageSource::Reference { reference } if !main_tagged(reference) => {
+            return Err(format!(
+                "spec.sandbox.image {reference:?} must be an image each release publishes, named by the tag `main` \
+                 publishes it as"
+            ));
+        }
+        ::sandbox::image::ImageSource::Reference { .. } => {}
     }
     if let Some(index) = spec
         .sandbox
@@ -334,26 +340,49 @@ mod tests {
         Definitions::bundled().expect("the bundled definitions");
     }
 
-    /// A name in [`INTERNAL`] that no folder has, as after a rename, would leave the definition
-    /// listed and run by reference.
+    /// A sign-in that names a definition no folder has, as after a rename, would leave the
+    /// definition listed and run by reference, and the sign-in without an agent.
     #[test]
     fn every_internal_definition_is_carried_and_runs_only_through_its_own_request() {
         let definitions = Definitions::bundled().expect("the bundled definitions");
-        for name in INTERNAL {
+        for name in internal_names() {
             definitions
                 .internal(name)
                 .expect("an internal definition this build carries");
             definitions
                 .get(name)
                 .expect_err("an internal definition does not run by reference");
-            assert!(definitions.listed().all(|definition| definition.name() != *name));
+            assert!(definitions.listed().all(|definition| definition.name() != name));
         }
     }
 
     #[test]
-    fn the_images_a_release_runs_its_definitions_on_are_its_published_ones() {
-        for image in super::RELEASED_IMAGES {
-            assert!(crate::release::published_tag(image).is_some(), "{image}");
+    fn a_definition_runs_only_on_an_image_each_release_publishes() {
+        let definition = |image: &str| {
+            let manifest = format!(
+                "apiVersion: agents.platform/v1alpha1\nkind: Agent\nmetadata:\n  name: one\nspec:\n  sandbox:\n    \
+                 image:\n      type: reference\n      reference: {image}\n    platform:\n      os: linux\n    resources:\n      cpu: \"1\"\n      \
+                 memory: 1Gi\n      rootFilesystem:\n        capacity: 1Gi\n        mode: layered\n"
+            );
+            let file = DefinitionFile {
+                contents: std::borrow::Cow::Owned(manifest.into_bytes()),
+                executable: false,
+            };
+            Definition::new("one", BTreeMap::from([(MANIFEST_FILE.to_owned(), file)]))
+        };
+        for image in [
+            "ghcr.io/digdir/agentctl-base:ubuntu-26.04",
+            "ghcr.io/digdir/agentctl-agent-builder:main",
+        ] {
+            definition(image).expect(image);
+        }
+        for image in [
+            "ghcr.io/example/other:1",
+            "ghcr.io/digdir/agentctl-base@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "ghcr.io/digdir/agentctl-base:ubuntu-26.04@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        ] {
+            let error = definition(image).expect_err(image);
+            assert!(error.to_string().contains("an image each release publishes"), "{error}");
         }
     }
 

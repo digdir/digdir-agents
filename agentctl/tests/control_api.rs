@@ -1734,7 +1734,7 @@ async fn a_sign_in_agent_lives_as_long_as_the_connection_that_asked_for_it() {
     let fixture = bundled::Fixture::with_internal_sign_in();
     let client = api_with(fixture.control_plane.clone()).client;
 
-    let (ran, lease) = client.run_sign_in().await.expect("sign-in");
+    let (ran, lease) = client.run_sign_in("sign-in").await.expect("sign-in");
     let name = ran.agent.metadata.name;
     tokio::time::sleep(Duration::from_millis(50)).await;
     let record = fixture.store.get_by_name(&name).await.expect("sign-in");

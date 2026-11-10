@@ -1,0 +1,29 @@
+# The short-lived agent `agentctl github login --web` signs in in, with the GitHub CLI's `gh auth login --web`. It is
+# internal, as the README here describes, and agentd runs it for that command as an ephemeral agent, which it deletes
+# when the command ends, however it ends. It runs the sign-in as a command, so it declares no harness.
+apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  name: sign-in-github
+spec:
+  sandbox:
+    # The base images' sign-in image with `gh` alone, in the layer the base images have too, so the sign-in downloads
+    # little that the agents after it do not reuse.
+    image:
+      type: reference
+      reference: ghcr.io/digdir/agentctl-base:ubuntu-26.04-sign-in-github
+    platform:
+      os: linux
+    resources:
+      cpu: "2"
+      memory: 2Gi
+      rootFilesystem:
+        capacity: 16Gi
+        mode: layered
+  network:
+    mode: mediated
+    # Only the hosts the sign-in reaches, so the credential it mints can go nowhere else. A `gh` update that reaches
+    # another host breaks the sign-in until the host is added here, as the harness upgrade guide says.
+    allow:
+      - github.com
+      - api.github.com

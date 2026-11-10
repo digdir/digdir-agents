@@ -476,8 +476,24 @@ async fn an_internal_definition_runs_only_through_its_own_request() {
         );
     }
 
-    let (first, _) = fixture.control_plane.run_sign_in().await.expect("sign-in");
-    let (second, _) = fixture.control_plane.run_sign_in().await.expect("another sign-in");
+    let error = fixture
+        .control_plane
+        .run_sign_in("builder")
+        .await
+        .expect_err("a listed definition through the sign-in request");
+    assert!(
+        error
+            .to_string()
+            .contains("no internal agent definition named \"builder\""),
+        "{error}"
+    );
+
+    let (first, _) = fixture.control_plane.run_sign_in("sign-in").await.expect("sign-in");
+    let (second, _) = fixture
+        .control_plane
+        .run_sign_in("sign-in")
+        .await
+        .expect("another sign-in");
     assert_eq!(
         [first.agent.metadata.name.as_str(), second.agent.metadata.name.as_str()],
         ["sign-in", "sign-in-2"],

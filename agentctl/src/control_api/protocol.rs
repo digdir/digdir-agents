@@ -268,6 +268,13 @@ pub(crate) struct AgentListParams {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct SignInAgentParams {
+    /// The internal definition the sign-in runs in.
+    pub definition: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct LoginParams {
     pub harness: crate::harness::Harness,
     #[serde(default)]

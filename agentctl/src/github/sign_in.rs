@@ -21,6 +21,8 @@ const SCRIPT: &str = r#"umask 077 \
    --insecure-storage --scopes "$1" </dev/null \
 && gh auth token --hostname github.com >"$HOME/$2""#;
 
+/// The internal definition the sign-in runs in, whose image has `gh`.
+pub(crate) const DEFINITION: &str = "sign-in-github";
 /// Where the account a browser sign-in acted as revokes its token, which also revokes that
 /// account's other GitHub CLI logins.
 pub const REVOKE_PAGE: &str = super::TokenKind::Oauth.revoke_page();
@@ -33,6 +35,7 @@ pub const REVOKE_PAGE: &str = super::TokenKind::Oauth.revoke_page();
 pub fn sandbox_sign_in() -> SandboxSignIn {
     let scopes = additional_scopes();
     SandboxSignIn::new(
+        DEFINITION,
         sandbox::execution::ExecutionSpec::command(
             sandbox::SandboxPath::new("/bin/sh"),
             ["-c", SCRIPT, "sh", &scopes, TOKEN_FILE].map(str::to_owned),

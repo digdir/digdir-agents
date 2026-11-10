@@ -90,6 +90,14 @@ A script cannot set an image's environment, so add the `ENV` lines `agent-featur
 way. What to tell the harness about the browser and the desktop belongs in the agent's instructions, as in the self-dev
 agent's [desktop.md](../../agents/self-dev/full/desktop.md).
 
+## Sign-in images
+
+The same Dockerfile builds the images `agentctl claude login`, `agentctl codex login` and `agentctl github login` sign
+in in when the machine does not have the program for it, published as `ubuntu-26.04-sign-in-claude`,
+`ubuntu-26.04-sign-in-codex` and `ubuntu-26.04-sign-in-github` beside the base images. Each holds that one program in
+the same layer as the base images, so a first sign-in downloads little that the agents after it do not reuse. They are
+not for building agents on.
+
 ## Adding agentctl
 
 The base images do not include `agentctl` and `agentd`. An image that runs nested agents copies them from the
@@ -110,4 +118,4 @@ podman build --target desktop --tag localhost/agentctl-base:ubuntu-26.04-desktop
 Do not tag them with the published names: when `agentd` builds an agent's image, Podman pulls the published image over
 a local one with the same name.
 
-CI builds both from [docker-bake.hcl](../../docker-bake.hcl).
+CI builds them, and the sign-in images, from [docker-bake.hcl](../../docker-bake.hcl).

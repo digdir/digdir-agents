@@ -1,9 +1,10 @@
-# Builds the agentctl base images from images/agentctl-base. Pull requests only build them; main, including a manual
-# run on main, also publishes them to ghcr.io/digdir/agentctl-base as `ubuntu-26.04` and `ubuntu-26.04-desktop`, each
-# also tagged with `-sha-<commit>`. Publishing them rebuilds the images built on them, the self-dev images
-# (self-dev-images.yml) and the agent builder's (agentctl-agent-builder-image.yml). The release workflow calls this one
-# on a release pull request to push the release's images by digest, and tags them as `ubuntu-26.04-<version>` and
-# `ubuntu-26.04-desktop-<version>` when the pull request lands, just before it publishes the release.
+# Builds the agentctl base images from images/agentctl-base, with the sign-in images that share their layers. Pull
+# requests only build them; main, including a manual run on main, also publishes them to ghcr.io/digdir/agentctl-base
+# as `ubuntu-26.04`, `ubuntu-26.04-desktop` and `ubuntu-26.04-sign-in-<service>`, each also tagged with `-sha-<commit>`.
+# Publishing them rebuilds the images built on them, the self-dev images (self-dev-images.yml) and the agent builder's
+# (agentctl-agent-builder-image.yml). The release workflow calls this one on a release pull request to push the
+# release's images by digest, and tags each as `<tag>-<version>`, such as `ubuntu-26.04-<version>`, when the pull
+# request lands, just before it publishes the release.
 name: agentctl base images
 
 on:
@@ -103,9 +104,10 @@ jobs:
             echo "mode=${mode}"
           } >> "${GITHUB_OUTPUT}"
 
-  # Both images are built in one bake: desktop is headless plus its own stage, so it publishes the headless layers with
-  # the same digests, and a host that has the headless image only pulls the desktop layers. Desktop also reads the
-  # headless cache, for the stage the two share.
+  # The images are built in one bake: desktop is headless plus its own stage, so it publishes the headless layers with
+  # the same digests, and a host that has the headless image only pulls the desktop layers. The sign-in images copy
+  # their tools from the stages headless copies them from, so they share those layers only when one build makes them
+  # all. Each also reads the headless cache, for the stages it shares.
   images:
     needs: resolve
     name: Base images
@@ -116,7 +118,11 @@ jobs:
       sparse-checkout: images/agentctl-base
       mode: ${{ needs.resolve.outputs.mode }}
       variables: AGENT_VERSION=${{ needs.resolve.outputs.version }}
-      set: base-desktop.cache-from=type=registry,ref=ghcr.io/digdir/agentctl-base:buildcache-headless-{arch}
+      set: |
+        base-desktop.cache-from=type=registry,ref=ghcr.io/digdir/agentctl-base:buildcache-headless-{arch}
+        base-sign-in-claude.cache-from=type=registry,ref=ghcr.io/digdir/agentctl-base:buildcache-headless-{arch}
+        base-sign-in-codex.cache-from=type=registry,ref=ghcr.io/digdir/agentctl-base:buildcache-headless-{arch}
+        base-sign-in-github.cache-from=type=registry,ref=ghcr.io/digdir/agentctl-base:buildcache-headless-{arch}
       images: |
         [
           {
@@ -130,5 +136,23 @@ jobs:
             "repository": "ghcr.io/digdir/agentctl-base",
             "cache": "ghcr.io/digdir/agentctl-base:buildcache-desktop",
             "tags": ["ubuntu-26.04-desktop", "ubuntu-26.04-desktop-sha-{sha}"]
+          },
+          {
+            "target": "base-sign-in-claude",
+            "repository": "ghcr.io/digdir/agentctl-base",
+            "cache": "ghcr.io/digdir/agentctl-base:buildcache-sign-in-claude",
+            "tags": ["ubuntu-26.04-sign-in-claude", "ubuntu-26.04-sign-in-claude-sha-{sha}"]
+          },
+          {
+            "target": "base-sign-in-codex",
+            "repository": "ghcr.io/digdir/agentctl-base",
+            "cache": "ghcr.io/digdir/agentctl-base:buildcache-sign-in-codex",
+            "tags": ["ubuntu-26.04-sign-in-codex", "ubuntu-26.04-sign-in-codex-sha-{sha}"]
+          },
+          {
+            "target": "base-sign-in-github",
+            "repository": "ghcr.io/digdir/agentctl-base",
+            "cache": "ghcr.io/digdir/agentctl-base:buildcache-sign-in-github",
+            "tags": ["ubuntu-26.04-sign-in-github", "ubuntu-26.04-sign-in-github-sha-{sha}"]
           }
         ]

@@ -3,8 +3,9 @@
 # digest, and assembles the release: the archives, the installers, the license and third-party notices, and the
 # version's changelog section as the release notes. When the pull request lands on main, it publishes exactly those
 # files, creating the `agentctl/v<version>` tag on the landed commit as it publishes the release, and tags those images
-# ghcr.io/digdir/agentctl:<version>, ghcr.io/digdir/agentctl-base:ubuntu-26.04-<version>,
-# ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop-<version> and ghcr.io/digdir/agentctl-agent-builder:<version>.
+# ghcr.io/digdir/agentctl:<version>, ghcr.io/digdir/agentctl-base:ubuntu-26.04-<version>, the other base images'
+# ghcr.io/digdir/agentctl-base:ubuntu-26.04-<variant>-<version>, such as ubuntu-26.04-desktop-<version>, and
+# ghcr.io/digdir/agentctl-agent-builder:<version>.
 # Nothing is built after the merge, and a tag can never be moved or deleted, so creating it last means a run that fails
 # spends no version. Other pull requests and pushes stop in the first job.
 name: agentctl release
@@ -396,7 +397,7 @@ jobs:
             "${REPOSITORY}@$(cat "${RUNNER_TEMP}/digests/agentctl-image-digest-amd64/agentctl")" \
             "${REPOSITORY}@$(cat "${RUNNER_TEMP}/digests/agentctl-image-digest-arm64/agentctl")"
           docker buildx imagetools inspect "${REPOSITORY}:${VERSION}"
-          for variant in headless desktop; do
+          for variant in headless desktop sign-in-claude sign-in-codex sign-in-github; do
             tag="${BASE_DISTRIBUTION}"
             if [ "${variant}" != headless ]; then
               tag="${tag}-${variant}"

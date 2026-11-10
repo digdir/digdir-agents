@@ -157,17 +157,18 @@ impl ControlPlane {
         .await
     }
 
-    /// Makes the agent a harness login signs in in when this machine does not have the harness,
-    /// from the internal definition [`crate::bundled::SIGN_IN`], and starts it. It is ephemeral, so
-    /// each request makes its own, which agentd deletes once the client that asked for it is gone.
+    /// Makes the agent a sign-in runs in when this machine does not have its program, from the
+    /// internal definition named `definition`, such as `sign-in-github`, and
+    /// starts it. It is ephemeral, so each request makes its own, which agentd deletes once the
+    /// client that asked for it is gone.
     ///
     /// # Errors
     ///
     /// Returns an error when this agentd does not carry the definition or the agent cannot be
     /// stored.
-    pub async fn run_sign_in(&self) -> Result<(Ran, AgentId), Error> {
+    pub async fn run_sign_in(&self, definition: &str) -> Result<(Ran, AgentId), Error> {
         let prepared = self
-            .prepare_bundled(|definitions| definitions.internal(crate::bundled::SIGN_IN))
+            .prepare_bundled(|definitions| definitions.internal(definition))
             .await?;
         Box::pin(self.run_prepared(
             prepared,
