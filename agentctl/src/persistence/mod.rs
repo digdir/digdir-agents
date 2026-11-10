@@ -66,6 +66,10 @@ impl Database {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(256);
         let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(1);
         let path = path.to_path_buf();
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the connection lives on its own thread for as long as the database is open"
+        )]
         thread::Builder::new()
             .name("agent-database".into())
             .spawn(move || database_thread(&path, &mut receiver, &ready_sender))

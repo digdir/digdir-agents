@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+use common::blocking;
+
 use crate::{Error, control_plane, harness};
 
 /// Concatenates the instruction files in manifest order, each terminated by a newline and
@@ -54,9 +56,7 @@ pub(super) async fn read_skills(
             continue;
         };
         let source = resolve_source(&record.source_directory, &source, &field)?;
-        let skill = tokio::task::spawn_blocking(move || harness::Skill::read(name, &source, &field))
-            .await
-            .map_err(|error| Error::Daemon(format!("Agent skill scan task failed: {error}")))??;
+        let skill = blocking::run("reading the skill", move || harness::Skill::read(name, &source, &field)).await??;
         skills.push(skill);
     }
     Ok(skills)

@@ -6,6 +6,7 @@ use std::{
 };
 
 use ::sandbox::{SandboxPath, mount::Mount};
+use common::blocking;
 
 use crate::{Agent, AgentId, Error, MountSpec, definitions::DefinitionSource, progress::ProvisioningState};
 
@@ -972,7 +973,7 @@ async fn definition_sources(
         .map(|record| record.source_directory.clone())
         .collect::<Vec<_>>();
     let directory = directory.to_path_buf();
-    tokio::task::spawn_blocking(move || {
+    blocking::run("finding the agents' definition sources", move || {
         sources
             .iter()
             .map(|source| match crate::definitions::source(source)? {
@@ -985,7 +986,7 @@ async fn definition_sources(
             .collect()
     })
     .await
-    .map_err(|error| Error::Daemon(format!("finding the agents' definition sources failed: {error}")))
+    .map_err(Error::from)
 }
 
 fn association_directories(record: &AgentRecord) -> impl Iterator<Item = PathBuf> {

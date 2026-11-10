@@ -9,10 +9,7 @@
 //! asked to. The record sits in the skill itself, so it moves and goes with it, and anyone who
 //! clones a repository sees the same.
 
-use std::{
-    fmt::Write as _,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -45,13 +42,7 @@ impl Record {
             }
         }
         Self {
-            digest: digest
-                .finalize()
-                .iter()
-                .fold(String::with_capacity(64), |mut output, byte| {
-                    let _infallible = write!(output, "{byte:02x}");
-                    output
-                }),
+            digest: common::hex::encode(&digest.finalize()),
             executable: files
                 .iter()
                 .filter(|file| file.executable)

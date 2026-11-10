@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, io::Write as _, path::PathBuf};
 
+use common::{blocking, hex};
 use sandbox::{
     Hostname, SandboxId, SandboxName, SandboxResources, backend::CreateSandboxRequest, image::ResolvedImage,
     init::InitSystem, mount::Mount, network::NetworkAttachment, volume::VolumeId,
@@ -7,7 +8,7 @@ use sandbox::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
 
-use crate::{encoding::lower_hex, error};
+use crate::error;
 
 const SANDBOX_SCHEMA_VERSION: u32 = 4;
 const VOLUME_SCHEMA_VERSION: u32 = 1;
@@ -209,7 +210,7 @@ impl StateStore {
 }
 
 fn record_filename(name: impl AsRef<str>) -> String {
-    format!("{}.json", lower_hex(&Sha256::digest(name.as_ref().as_bytes())))
+    format!("{}.json", hex::encode(&Sha256::digest(name.as_ref().as_bytes())))
 }
 
 fn validate_schema(version: u32, expected: u32) -> Result<(), sandbox::Error> {
@@ -241,7 +242,7 @@ where
     T: Serialize + Send + Sync + 'static,
 {
     let serialized = serde_json::to_vec_pretty(value).map_err(error::backend)?;
-    tokio::task::spawn_blocking(move || {
+    blocking::run("writing Microsandbox state", move || {
         let parent = path
             .parent()
             .ok_or_else(|| std::io::Error::other("state record has no parent directory"))?;

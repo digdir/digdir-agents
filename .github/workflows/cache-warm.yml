@@ -138,7 +138,7 @@ jobs:
       - name: Build
         if: steps.cache.outputs.cache-hit != 'true' || github.event_name == 'pull_request'
         run: |
-          packages=(-p sandbox -p sandbox-authorization -p agent -p sandbox-microsandbox)
+          packages=(-p common -p sandbox -p sandbox-authorization -p agent -p sandbox-microsandbox)
           cargo clippy "${packages[@]}" --all-targets --all-features --locked
           cargo test "${packages[@]}" --all-targets --all-features --locked --no-run
 

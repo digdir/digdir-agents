@@ -18,6 +18,9 @@ use tokio::runtime::LocalRuntime;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// How long agentd waits for its blocking work to stop as it exits.
+const BLOCKING_WORK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Parser)]
 #[command(name = "agentd", about = "Run the per-user agent control plane", version = agent::build_version())]
 struct Arguments {
@@ -50,7 +53,13 @@ fn run() -> Result<(), Error> {
     let _lock = acquire_home_lock(&home)?;
     let database = persistence::Database::open(&home.path().join("agent.db"))?;
     let runtime = LocalRuntime::new()?;
-    runtime.block_on(run_control_plane(home, database))
+    let result = runtime.block_on(run_control_plane(home, database));
+    // `agentctl update` waits for agentd to exit, which waits for its blocking threads. Stopping
+    // their work lets a long copy end at its next step, and work that still runs after the timeout
+    // ends with the process.
+    common::blocking::stop_all();
+    runtime.shutdown_timeout(BLOCKING_WORK_SHUTDOWN_TIMEOUT);
+    result
 }
 
 fn acquire_home_lock(home: &ControlPlaneHome) -> Result<agent::local::home::Lock, Error> {

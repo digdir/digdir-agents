@@ -12,6 +12,7 @@ use std::{
 };
 
 use ::sandbox::SandboxPath;
+use common::blocking;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 
@@ -81,8 +82,7 @@ pub(crate) async fn find(
     folders: Vec<(PathBuf, Option<SandboxPath>)>,
     environment_files: Vec<PathBuf>,
 ) -> Result<Vec<ExposedFile>, Error> {
-    // A walk may cover a whole checkout, so it stays off the local async runtime.
-    tokio::task::spawn_blocking(move || {
+    blocking::run("looking for .env files", move || {
         let mut found = BTreeSet::new();
         for (folder, target) in folders {
             if matches!(folder.try_exists(), Ok(false)) {
@@ -99,6 +99,7 @@ pub(crate) async fn find(
                 .follow_links(false)
                 .build()
             {
+                blocking::check()?;
                 let entry = entry.map_err(|error| {
                     Error::Invalid(format!("cannot look for .env files in {}: {error}", folder.display()))
                 })?;
@@ -110,8 +111,7 @@ pub(crate) async fn find(
         }
         Ok(found.into_iter().collect())
     })
-    .await
-    .map_err(|error| Error::Daemon(format!("looking for .env files failed: {error}")))?
+    .await?
 }
 
 /// The files `named` in the canonical `folder`, which an agent sees at `target`, if it does, together

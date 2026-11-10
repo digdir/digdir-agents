@@ -3,7 +3,6 @@
 use std::{
     collections::BTreeSet,
     env,
-    fmt::Write as _,
     fs::{self, File, OpenOptions},
     io::{Read as _, Write as _},
     path::{Component, Path, PathBuf},
@@ -753,13 +752,7 @@ fn verify_checksum(archive: &Path, checksum: &Path) -> Result<(), Error> {
         }
         digest.update(&buffer[..read]);
     }
-    let actual = digest
-        .finalize()
-        .iter()
-        .fold(String::with_capacity(64), |mut output, byte| {
-            let _ = write!(output, "{byte:02x}");
-            output
-        });
+    let actual = common::hex::encode(&digest.finalize());
     if actual != expected {
         return Err(Error::Invalid("Agent archive checksum mismatch".into()));
     }

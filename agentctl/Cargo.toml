@@ -16,6 +16,7 @@ path = "tests/integration.rs"
 [dependencies]
 base64.workspace = true
 bytes.workspace = true
+common = { path = "../common" }
 sandbox = { path = "../sandbox/core" }
 sandbox-authorization = { path = "../sandbox/authorization" }
 sandbox-microsandbox = { path = "../sandbox/microsandbox" }

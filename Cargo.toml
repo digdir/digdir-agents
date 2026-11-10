@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "agentctl",
+  "common",
   "sandbox/authorization",
   "sandbox/core",
   "sandbox/core/examples/worktree",

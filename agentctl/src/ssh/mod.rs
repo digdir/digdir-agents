@@ -24,6 +24,7 @@ use std::{
 };
 
 use ::sandbox::{LocalFuture, SandboxHandle};
+use common::blocking;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -340,12 +341,11 @@ impl Access {
             generated
         };
         let home = self.home.clone();
-        let client_key = tokio::task::spawn_blocking({
+        let client_key = blocking::run("writing the SSH client key", {
             let name = name.to_owned();
             move || ensure_client_key(&home, id, &name)
         })
-        .await
-        .map_err(|error| Error::Daemon(format!("SSH client key task failed: {error}")))??;
+        .await??;
         // `HostKeyAlias` keys the entry by the incarnation for OpenSSH; a second entry under the
         // `Host` alias serves clients that parse the configuration but ignore `HostKeyAlias`,
         // such as JetBrains IDEs, and is replaced when a re-applied name gets a new host key.

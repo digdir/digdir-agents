@@ -3,6 +3,7 @@
 use std::{io::Cursor, path::Path};
 
 use ::sandbox::{SandboxHandle, SandboxPath};
+use common::blocking;
 
 use crate::{Error, local::files::walk_source};
 
@@ -20,14 +21,14 @@ pub(super) async fn archive_home(
 
 /// Archives a resolved host directory on a blocking thread; `field` names the manifest field in errors.
 async fn archive_directory(source: std::path::PathBuf, field: String) -> Result<Vec<u8>, Error> {
-    let task = format!("Agent {field} scan task failed");
-    tokio::task::spawn_blocking(move || archive_directory_blocking(&source, &field))
-        .await
-        .map_err(|error| Error::Daemon(format!("{task}: {error}")))?
+    blocking::run("archiving the agent's home", move || {
+        archive_directory_blocking(&source, &field)
+    })
+    .await?
 }
 
 fn archive_directory_blocking(source: &Path, field: &str) -> Result<Vec<u8>, Error> {
-    let mut archive = tar::Builder::new(Vec::new());
+    let mut archive = tar::Builder::new(blocking::Stoppable::new(Vec::new()));
     walk_source(source, field, |relative, path, is_dir| {
         if is_dir {
             archive.append_dir(relative, path)?;
@@ -36,7 +37,7 @@ fn archive_directory_blocking(source: &Path, field: &str) -> Result<Vec<u8>, Err
         }
         Ok(())
     })?;
-    archive.into_inner().map_err(Error::from)
+    Ok(archive.into_inner()?.into_inner())
 }
 
 pub(super) async fn sync_home(sandbox: &SandboxHandle, archive: Vec<u8>) -> Result<(), Error> {

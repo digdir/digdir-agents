@@ -2,6 +2,7 @@
 
 use std::{collections::BTreeMap, path::PathBuf, rc::Rc};
 
+use common::blocking;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -195,13 +196,12 @@ impl VolumeService {
         let environment_files = crate::control_plane::environment_files(self.agents.as_ref()).await?;
         let fingerprint = fingerprint::take(source.clone()).await?;
         let named = fingerprint.exposed.clone();
-        let exposed = tokio::task::spawn_blocking(move || {
+        let exposed = blocking::run("looking for .env files", move || {
             crate::exposed::classify(&source, None, named, &environment_files)
                 .into_iter()
                 .collect()
         })
-        .await
-        .map_err(|error| Error::Daemon(format!("looking for .env files failed: {error}")))?;
+        .await?;
         Ok((fingerprint, exposed))
     }
 
@@ -256,11 +256,11 @@ impl VolumeService {
             .into_iter()
             .filter_map(|record| record.volume.status.manifest_path().map(std::path::Path::to_path_buf))
             .collect();
-        tokio::task::spawn_blocking(move || {
+        blocking::run("listing the volume manifests on disk", move || {
             crate::definitions::volume_manifests_on_disk(directory.as_deref(), recorded)
         })
         .await
-        .map_err(|error| Error::Daemon(format!("listing the volume manifests on disk failed: {error}")))
+        .map_err(Error::from)
     }
 
     /// Requests a volume's deletion. New agents can no longer mount it, and it goes once no agent

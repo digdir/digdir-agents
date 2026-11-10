@@ -203,6 +203,10 @@ fn capture(command: &mut std::process::Command) -> Result<zeroize::Zeroizing<Vec
     };
     let (sender, receiver) = std::sync::mpsc::channel();
     // Reading ends when the sign-in exits and closes its output.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "agentctl reads the output beside this thread, which gives up on the sign-in after a timeout"
+    )]
     std::thread::spawn(move || {
         let mut output = zeroize::Zeroizing::new(Vec::new());
         sender.send(stdout.read_to_end(&mut output).map(|_| output)).ok();

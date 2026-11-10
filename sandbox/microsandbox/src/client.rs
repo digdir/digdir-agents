@@ -1,6 +1,5 @@
 #[cfg(unix)]
 use std::{
-    fmt::Write as _,
     fs,
     os::unix::ffi::OsStrExt,
     os::unix::fs::{DirBuilderExt, MetadataExt},
@@ -278,10 +277,7 @@ fn run_directory(home: &Path) -> Result<PathBuf, Error> {
         return Ok(default);
     }
     let digest = Sha256::digest(home.as_os_str().as_bytes());
-    let mut id = String::with_capacity(32);
-    for byte in &digest[..16] {
-        let _ = write!(&mut id, "{byte:02x}");
-    }
+    let id = common::hex::encode(&digest[..16]);
     let path = PathBuf::from(format!("/tmp/microsandbox-{id}"));
     if !microsandbox::runtime::run_directory_fits(&path) {
         return Err(error::io(
@@ -369,8 +365,6 @@ pub(crate) fn runtime_sha256(os: &str, architecture: &str) -> Option<&'static st
 mod tests {
     use sandbox::{ByteQuantity, CpuQuantity, RootFilesystem, SandboxResources};
     #[cfg(unix)]
-    use std::fmt::Write as _;
-    #[cfg(unix)]
     use std::os::unix::ffi::OsStrExt;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -409,10 +403,7 @@ mod tests {
         let home = root.path().join("home").join("longusername".repeat(20)).join("runtime");
         std::fs::create_dir_all(&home).expect("runtime home");
         let digest = Sha256::digest(home.as_os_str().as_bytes());
-        let mut id = String::with_capacity(32);
-        for byte in &digest[..16] {
-            write!(&mut id, "{byte:02x}").expect("writing to String cannot fail");
-        }
+        let id = common::hex::encode(&digest[..16]);
         let fallback = PathBuf::from(format!("/tmp/microsandbox-{id}"));
 
         std::os::unix::fs::symlink(root.path(), &fallback).expect("fallback symlink");

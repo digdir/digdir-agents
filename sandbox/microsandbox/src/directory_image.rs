@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use common::blocking;
 use microsandbox_image::{
     erofs,
     tree::{DataSpool, DirectoryNode, FileTree, InodeMetadata, RegularFileId, RegularFileNode, SymlinkNode, TreeNode},
@@ -48,32 +49,38 @@ pub(crate) async fn build(
     progress: &SandboxProgress,
 ) -> Result<(), Error> {
     let (stages, mut received) = mpsc::unbounded_channel();
-    let build = tokio::task::spawn_blocking(move || build_blocking(&source, owner, &output, &stages));
-    let mut copying = None;
-    let mut writing = None;
-    // The channel closes when the build ends. A step still open then ends as failed with it.
-    while let Some(stage) = received.recv().await {
-        match stage {
-            Stage::Scanned(total) => {
-                let step = progress
-                    .start_measured_step("Read files", ProgressUnit::Bytes, Some(total))
-                    .await;
-                copying = Some((step, total));
-            }
-            Stage::Copied(bytes) => {
-                if let Some((step, total)) = &copying {
-                    step.report(bytes.min(*total), Some(*total)).await;
+    let build = blocking::run("copying the directory into an image", move || {
+        build_blocking(&source, owner, &output, &stages)
+    });
+    let report = async {
+        let mut copying = None;
+        let mut writing = None;
+        // The channel closes when the build ends. A step still open then ends as failed with it.
+        while let Some(stage) = received.recv().await {
+            match stage {
+                Stage::Scanned(total) => {
+                    let step = progress
+                        .start_measured_step("Read files", ProgressUnit::Bytes, Some(total))
+                        .await;
+                    copying = Some((step, total));
                 }
-            }
-            Stage::Writing => {
-                if let Some((step, _)) = copying.take() {
-                    step.complete().await;
+                Stage::Copied(bytes) => {
+                    if let Some((step, total)) = &copying {
+                        step.report(bytes.min(*total), Some(*total)).await;
+                    }
                 }
-                writing = Some(progress.start_step("Write image").await);
+                Stage::Writing => {
+                    if let Some((step, _)) = copying.take() {
+                        step.complete().await;
+                    }
+                    writing = Some(progress.start_step("Write image").await);
+                }
             }
         }
-    }
-    build.await.map_err(error::backend)??;
+        writing
+    };
+    let (result, writing) = tokio::join!(build, report);
+    result.map_err(error::backend)??;
     if let Some(step) = writing {
         step.complete().await;
     }
@@ -148,9 +155,7 @@ impl Copied<'_> {
     /// Counts `bytes` as copied, and stops the copy once its caller is gone, such as when agentd
     /// stops, since nothing would use the image.
     fn add(&mut self, bytes: usize) -> Result<(), Error> {
-        if self.stages.is_closed() {
-            return Err(Error::Backend("the copy was abandoned".into()));
-        }
+        blocking::check().map_err(error::backend)?;
         self.bytes += bytes as u64;
         if self.reported.elapsed() >= REPORT_INTERVAL {
             self.reported = Instant::now();
@@ -175,6 +180,7 @@ fn add_directory(
         .map_err(|error| read_error(directory, &error))?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
+        blocking::check().map_err(error::backend)?;
         let host_path = entry.path();
         let mut entry_path = path.to_vec();
         if !entry_path.is_empty() {
@@ -293,24 +299,53 @@ fn read_error(path: &Path, error: &std::io::Error) -> Error {
 mod tests {
     use super::*;
 
+    /// The names in `directory`, sorted.
+    fn names(directory: &Path) -> Vec<std::ffi::OsString> {
+        let mut names: Vec<_> = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    }
+
     #[test]
-    fn a_copy_stops_once_its_caller_is_gone_and_leaves_nothing() {
+    fn a_stopped_copy_writes_no_image() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("source");
         std::fs::create_dir_all(&source).unwrap();
         std::fs::write(source.join("data.bin"), vec![7_u8; COPY_BUFFER]).unwrap();
         let output = directory.path().join("image.erofs");
-        let (stages, received) = mpsc::unbounded_channel();
-        drop(received);
 
-        let error = build_blocking(&source, Owner::default(), &output, &stages).unwrap_err();
+        // On its own thread, so that stopping its blocking work stops no other test's.
+        #[allow(clippy::disallowed_methods, reason = "isolates the blocking work the test stops")]
+        let copy = std::thread::spawn(move || {
+            tokio::runtime::LocalRuntime::new().unwrap().block_on(async {
+                let reporter = sandbox::ProgressReporter::from_callback(|_| {});
+                let _phase = reporter.start_phase(sandbox::Phase::new("copy", "Copy")).await;
+                blocking::stop_all();
+                build(source, Owner::default(), output, &reporter.steps()).await
+            })
+        });
 
-        assert!(error.to_string().contains("abandoned"), "{error}");
-        let left: Vec<_> = std::fs::read_dir(directory.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(left, ["source"]);
+        copy.join().unwrap().unwrap_err();
+        assert_eq!(names(directory.path()), ["source"]);
+    }
+
+    #[test]
+    fn a_copy_that_fails_after_copying_the_files_removes_its_spool() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("data.bin"), vec![7_u8; COPY_BUFFER]).unwrap();
+        let output = directory.path().join("image.erofs");
+        // Writing the image fails once every file is in the spool, as a directory is in its way.
+        std::fs::create_dir(output.with_extension("partial")).unwrap();
+        let (stages, _received) = mpsc::unbounded_channel();
+
+        build_blocking(&source, Owner::default(), &output, &stages).unwrap_err();
+
+        assert_eq!(names(directory.path()), ["image.partial", "source"]);
     }
 
     #[tokio::test]

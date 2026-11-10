@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use common::blocking;
 use ignore::WalkBuilder;
 
 use crate::{
@@ -70,7 +71,8 @@ pub fn manifests(directory: &Path) -> Vec<PathBuf> {
 /// The manifests [`manifests`] lists for `directory`, each with whether the repository's ignore files leave it
 /// out, as they do personal variants such as `agent.mine.yaml`, which only reading its agent's folder finds.
 ///
-/// Reads the filesystem, so it blocks.
+/// Reads the filesystem, so it blocks. Once the blocking work it runs in is stopped, as [`blocking::check`] tells, the
+/// search ends early with what it found, as nothing uses the result then.
 fn found(directory: &Path) -> Vec<(PathBuf, bool)> {
     // The manifests the walk of a repository passes, which ignore files leave the others out of.
     let mut walked = std::collections::HashSet::new();
@@ -93,6 +95,7 @@ fn found(directory: &Path) -> Vec<(PathBuf, bool)> {
                 .require_git(false)
                 .follow_links(false)
                 .build()
+                .take_while(|_| blocking::check().is_ok())
                 .filter_map(Result::ok)
                 .filter(|entry| {
                     entry.file_type().is_some_and(|kind| kind.is_file()) && manifest::is_manifest_filename(entry.path())
@@ -108,6 +111,7 @@ fn found(directory: &Path) -> Vec<(PathBuf, bool)> {
     let ignored = |path: &PathBuf| !walked.is_empty() && !walked.contains(path);
     let mut found: Vec<(PathBuf, bool)> = agents
         .into_iter()
+        .take_while(|_| blocking::check().is_ok())
         .flat_map(|base| {
             let Some(parent) = base.parent() else {
                 return vec![(base, false)];
@@ -396,7 +400,7 @@ pub struct Listed<T> {
 /// A recorded manifest that cannot be read is listed so its error is visible, as is one found that exists. One found
 /// that has gone since it was found is left out.
 ///
-/// Reads the filesystem, so it blocks.
+/// Reads the filesystem, so it blocks. Ends early, as [`found`] does, once the blocking work it runs in is stopped.
 pub fn merge<T>(
     found: Vec<PathBuf>,
     mut recorded: Vec<PathBuf>,
@@ -407,7 +411,8 @@ pub fn merge<T>(
     let paths = found
         .into_iter()
         .map(|path| (path, false))
-        .chain(recorded.into_iter().map(|path| (path, true)));
+        .chain(recorded.into_iter().map(|path| (path, true)))
+        .take_while(|_| blocking::check().is_ok());
     let mut seen = std::collections::HashMap::<PathBuf, usize>::new();
     let mut listed = Vec::<Listed<T>>::new();
     for (path, recorded) in paths {
@@ -465,13 +470,15 @@ pub fn volume_manifests(directory: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// The files below `directory`, at most `depth` levels down, skipping hidden and ignored ones.
+/// The files below `directory`, at most `depth` levels down, skipping hidden and ignored ones. Ends early, as
+/// [`found`] does, once the blocking work it runs in is stopped.
 fn files(directory: &Path, depth: usize) -> impl Iterator<Item = PathBuf> + use<> {
     WalkBuilder::new(directory)
         .max_depth(Some(depth))
         .require_git(false)
         .follow_links(false)
         .build()
+        .take_while(|_| blocking::check().is_ok())
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
         .map(ignore::DirEntry::into_path)

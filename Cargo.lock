@@ -15,6 +15,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "clap",
+ "common",
  "crossterm",
  "flate2",
  "futures-util",
@@ -1051,6 +1052,15 @@ checksum = "4356eba6976435498d05a311ee9fc486da3bc81c200d3f0d7dd9703b41913f92"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "common"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -5349,6 +5359,7 @@ version = "0.1.0"
 dependencies = [
  "bollard",
  "bytes",
+ "common",
  "futures-util",
  "ignore",
  "microsandbox",

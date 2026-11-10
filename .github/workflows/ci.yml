@@ -54,7 +54,7 @@ jobs:
           # Each area's paths, as an extended regular expression over the changed file names.
           areas=(
             'integrations=^(integrations/|\.github/CODEOWNERS$|\.github/workflows/(ci|integrations)\.yml$)'
-            'rust=^(agentctl/|sandbox/|\.cargo/|(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|rustfmt\.toml|clippy\.toml|deny\.toml|Makefile)$|\.github/workflows/(ci|rust)\.yml$)'
+            'rust=^(agentctl/|common/|sandbox/|\.cargo/|(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|rustfmt\.toml|clippy\.toml|deny\.toml|Makefile)$|\.github/workflows/(ci|rust)\.yml$)'
             'cache-warm=^\.github/workflows/cache-warm\.yml$'
           )
           # A renamed file counts under both its old and its new name.

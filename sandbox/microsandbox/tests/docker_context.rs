@@ -1,7 +1,7 @@
 #![cfg(unix)]
 #![allow(clippy::expect_used, clippy::significant_drop_tightening)]
 
-use std::{fmt::Write as _, path::Path, process::Command, time::Duration};
+use std::{path::Path, process::Command, time::Duration};
 
 use sandbox::{
     Platform, RootFilesystemMode,
@@ -116,10 +116,7 @@ async fn exercise_context(directory: &Path) {
 }
 
 async fn select_context(directory: &Path, name: &str, socket: &Path) {
-    let mut id = String::with_capacity(64);
-    for byte in Sha256::digest(name.as_bytes()) {
-        write!(id, "{byte:02x}").expect("format context ID");
-    }
+    let id = common::hex::encode(&Sha256::digest(name.as_bytes()));
     let metadata = directory.join("contexts/meta").join(id);
     tokio::fs::create_dir_all(&metadata)
         .await

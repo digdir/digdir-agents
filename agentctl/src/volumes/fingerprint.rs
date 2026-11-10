@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use common::blocking;
 use sha2::{Digest as _, Sha256};
 
 use crate::Error;
@@ -29,7 +30,7 @@ pub(crate) struct Fingerprint {
 /// Fingerprints `directory`. Reading only metadata keeps it quick, even for a large tree, and
 /// finding the files that may hold real keys in the same walk keeps applying a volume to one walk.
 pub(crate) async fn take(directory: PathBuf) -> Result<Fingerprint, Error> {
-    tokio::task::spawn_blocking(move || {
+    blocking::run("fingerprinting the directory", move || {
         let mut fingerprint = Walk {
             hasher: Sha256::new(),
             files: 0,
@@ -43,14 +44,7 @@ pub(crate) async fn take(directory: PathBuf) -> Result<Fingerprint, Error> {
             .and_then(|()| fingerprint.directory(&directory, Path::new("")))
             .map_err(|error| Error::Invalid(format!("cannot read {} to copy it: {error}", directory.display())))?;
         Ok(Fingerprint {
-            digest: fingerprint
-                .hasher
-                .finalize()
-                .iter()
-                .fold(String::with_capacity(64), |mut output, byte| {
-                    let _infallible = std::fmt::Write::write_fmt(&mut output, format_args!("{byte:02x}"));
-                    output
-                }),
+            digest: common::hex::encode(&fingerprint.hasher.finalize()),
             files: fingerprint.files,
             bytes: fingerprint.bytes,
             exposed: fingerprint
@@ -60,8 +54,7 @@ pub(crate) async fn take(directory: PathBuf) -> Result<Fingerprint, Error> {
                 .collect(),
         })
     })
-    .await
-    .map_err(|error| Error::Daemon(format!("directory fingerprint failed: {error}")))?
+    .await?
 }
 
 struct Walk {
@@ -77,6 +70,7 @@ impl Walk {
         let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
         entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
+            blocking::check().map_err(io::Error::other)?;
             let path = entry.path();
             let relative = relative.join(entry.file_name());
             let metadata = std::fs::symlink_metadata(&path)?;

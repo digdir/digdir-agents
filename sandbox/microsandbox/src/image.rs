@@ -8,6 +8,7 @@ use bollard::{
     Docker,
     query_parameters::{BuildImageOptionsBuilder, BuilderVersion, TagImageOptionsBuilder},
 };
+use common::{blocking, hex};
 use futures_util::StreamExt as _;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use sandbox::progress::{MeasuredStep, ProgressStep, SandboxProgress};
@@ -19,7 +20,6 @@ use uuid::Uuid;
 
 use crate::{
     client::Client,
-    encoding::lower_hex,
     error,
     image_cache::{self, ImageCache},
     platform,
@@ -551,7 +551,7 @@ async fn import_cache_reference(docker: &Docker, image: &str) -> Result<String, 
         .ok_or_else(|| Error::Backend("Docker did not report the built image ID".to_string()))?;
     Ok(format!(
         "{IMPORT_CACHE_REPOSITORY}:docker-{}",
-        lower_hex(&Sha256::digest(image_id.as_bytes()))
+        hex::encode(&Sha256::digest(image_id.as_bytes()))
     ))
 }
 
@@ -634,7 +634,7 @@ fn cache_tag(context: &Path, dockerfile: &str, target: Option<&str>, platform: &
         digest.update(component);
         digest.update([0]);
     }
-    format!("{CACHE_REPOSITORY}:{}", lower_hex(&digest.finalize()))
+    format!("{CACHE_REPOSITORY}:{}", hex::encode(&digest.finalize()))
 }
 
 fn resolve_image_handle(
@@ -945,12 +945,12 @@ async fn create_context_archive(
     context: PathBuf,
     dockerfile: PathBuf,
 ) -> Result<tempfile::TempPath, Error> {
-    tokio::task::spawn_blocking(move || {
+    blocking::run("archiving the Docker build context", move || {
         let archive = tempfile::NamedTempFile::new_in(scratch)?;
         let path = archive.into_temp_path();
         let file = File::create(&path)?;
         let ignore = dockerignore(&context)?;
-        let mut builder = tar::Builder::new(file);
+        let mut builder = tar::Builder::new(blocking::Stoppable::new(file));
         append_directory(&mut builder, &context, &context, &dockerfile, &ignore)?;
         builder.finish()?;
         Ok::<_, std::io::Error>(path)
@@ -972,7 +972,7 @@ fn dockerignore(context: &Path) -> Result<Gitignore, std::io::Error> {
 }
 
 fn append_directory(
-    archive: &mut tar::Builder<File>,
+    archive: &mut tar::Builder<blocking::Stoppable<File>>,
     context: &Path,
     directory: &Path,
     dockerfile: &Path,
@@ -982,6 +982,7 @@ fn append_directory(
     entries.sort_by_key(std::fs::DirEntry::file_name);
 
     for entry in entries {
+        blocking::check().map_err(std::io::Error::other)?;
         let path = entry.path();
         let relative = path.strip_prefix(context).map_err(std::io::Error::other)?;
         let metadata = std::fs::symlink_metadata(&path)?;

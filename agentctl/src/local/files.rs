@@ -2,11 +2,14 @@
 
 use std::path::Path;
 
+use common::blocking;
 use ignore::WalkBuilder;
 
 use crate::Error;
 
 /// Visits every entry below `source` with its relative path, rejecting symbolic links.
+///
+/// Stops with an error once the blocking work it runs in is stopped, as [`blocking::check`] tells.
 pub(crate) fn walk_source(
     source: &Path,
     field: &str,
@@ -21,6 +24,7 @@ pub(crate) fn walk_source(
         .follow_links(false)
         .build()
     {
+        blocking::check()?;
         let entry = result.map_err(|error| Error::Invalid(format!("cannot traverse {field}: {error}")))?;
         let relative = entry
             .path()
