@@ -1,6 +1,6 @@
 ---
 name: agent-definition
-description: Write or change an agent definition, the files an agentctl agent is made from (agent.yaml and its variants, the image's Dockerfile, instructions, skills and home), and try the change in a nested agent. Use when making an agent for a repository or a role, or when improving the definition of the agent you run in.
+description: Write or change an agent definition, the files an agentctl agent is made from (agent.yaml and its variants, the image's Dockerfile, instructions, skills and home), and try the change in a nested agent. Use when making an agent for a repository or a role, when improving the definition of the agent you run in, or when bringing a definition up to date with a later agentctl.
 ---
 
 # Agent definitions
@@ -28,7 +28,8 @@ guessing: the manifest refuses unknown fields.
 
 Either way, its owner makes the agent theirs with a variant beside the manifest, such as `agent.mine.yaml`, which
 holds their own choices, and applies it with `agentctl apply --variant mine`. Give the folder a `.gitignore` that
-keeps such variants out of Git, and leave them alone.
+keeps such variants out of Git, and leave them alone, except to bring them up to date with the rest of the definition,
+as [below](#bringing-a-definition-up-to-date) describes.
 
 ## Shape
 
@@ -128,11 +129,83 @@ the tests start with Compose, `browser` for browser tests, `desktop` for the des
 
 ## Trying a change
 
-1. Apply the `nested-build` variant from the checkout that holds the change, as the `agentctl` skill describes.
+1. Apply a variant from the checkout that holds the change, as the `agentctl` skill describes. `nested-build` builds the
+   image from the checkout, which a change to the Dockerfile, or to what it copies, needs. Building takes a long time,
+   so when the image is the one CI publishes from the default branch, apply `nested`, which runs that image. A branch
+   with image changes that are not merged yet needs `nested-build` for every change on it.
 2. In the nested agent, run what its instructions promise: the build, the unit, integration and end-to-end tests,
    browser tests on a desktop stage. Prompt one session there with the cheapest model, to check that the harness, its
    instructions and its skills work.
 3. Report each capability as verified, or not and why. Delete the nested agent.
+
+## Bringing a definition up to date
+
+A definition is written for the agentctl release its base image comes from. Later releases change the manifest, the
+base images and the harnesses on them, and their release notes say what moved, what was renamed and what to do by
+hand. So work from the notes between the two versions, rather than from comparing the definition with this skill
+alone.
+
+- **The version it was written for** is the `no.digdir.agentctl.base.version` label of its image, which images built on
+  a base inherit. A base tag in its `FROM`, such as `ubuntu-26.04-v0.1.0-preview.14`, names it too.
+  `agentctl update --print-task` lists the platform's images each definition uses whose tag names another release, or
+  none. For one whose tag names none, read the label from the registry with `skopeo`, which fetches only the image's
+  metadata rather than pulling it:
+
+  ```sh
+  skopeo inspect docker://IMAGE | jq '{version: .Labels["no.digdir.agentctl.base.version"], created: .Created}'
+  skopeo inspect --format '{{.Digest}}' docker://ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.14
+  ```
+
+  The second gives the digest to pin a tag by. An image on a base older than the one that brings `skopeo` lacks it, and
+  `podman pull` with `podman image inspect` shows the same. An image without the label was built on a base from before
+  `0.1.0-preview.14`. Its creation date, against the dates of the releases, tells which.
+- **The version to bring it to** is the one you were asked for or, without one, the agentd that runs you, which
+  `/etc/agent-platform-version` names. That is the version on its owner's machine, which runs the agent. Only a
+  release publishes images and an `install.sh` download that name it. A build of `main`, such as
+  `v0.1.0-preview.13.main.g1a2b3c4`, and a local one, such as `v0.0.1-dev.20261101211625`, have none, since `main`'s
+  images move with `main`. For one of those, bring the definition to the release the build extends, before `.main.`,
+  or for a local build to the latest release, and say so. Its owner may want to follow `main` instead: then pin
+  `main`'s tags, such as `ubuntu-26.04`, by their current digests, and try it with the agentctl they run.
+- **What changed** is in the release notes, `agentctl/CHANGELOG.md` in digdir-agents, at the revision of the version
+  to bring it to: the sections after the version it was written for. A release's revision is its tag
+  `agentctl/<version>`, as in
+  `https://raw.githubusercontent.com/digdir/digdir-agents/agentctl/v0.1.0-preview.14/agentctl/CHANGELOG.md`. A build
+  of another commit names it after `.g`, as `v0.1.0-preview.13.main.g1a2b3c4` does, and a local build, such as
+  `v0.0.1-dev.20261101211625`, is `main`'s. Read the manifest schema, the base images' README and agentctl's docs at
+  the same revision, since `main` may be ahead of it.
+
+Then bring each part of the definition to that version:
+
+- **The base image** to the tag of that release, `ubuntu-26.04-<version>` or `ubuntu-26.04-desktop-<version>`, with
+  its digest, which `skopeo inspect` checks exists. That brings the harnesses and tools the release ships with it.
+- **What else the platform publishes** that the definition pins, such as the `ghcr.io/digdir/agentctl` image it copies
+  `agentctl` and `agentd` from for nested agents, to the same version.
+- **What the notes ask for**, in their Changed, Deprecated and Removed entries, and what this skill asks for that the
+  definition predates.
+- **Leave the owner's choices** as they are, such as a tool pinned to the repository's version or a harness the
+  definition installs itself. Say what the release changes about them instead.
+- **Values from an environment file**, which a later release stops reading, move as
+  [moving off the environment file](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/moving-off-the-environment-file.md)
+  describes. Logins and secrets are stored on the machine that applies the agent, so change the manifest, and give
+  its owner the `agentctl github login` and `agentctl secret set` commands to run there.
+- **Personal variants**, such as `agent.mine.yaml`, are their owner's choices, but they break with the rest of the
+  definition, such as when a release changes how variants merge or stops reading the environment file. So propose their
+  changes too. Git ignores them, so `git diff` won't show what you change in them. They are in the checkout their owner
+  applies the agent from, which is in an agent only when a `worktree` variant mounts it there. Without them, give their
+  owner the changes to make, or tell them to run `agentctl update` in that checkout.
+
+Its owner decides what changes, so work through it with them:
+
+1. **Propose before you write.** Show each change, grouped by definition: what it changes and why, with the release
+   note it comes from. Say what you would leave as it is. Write only what they agree to, and say so when a definition
+   is up to date already.
+2. **Try it** as [trying a change](#trying-a-change) describes, with an agentctl of the version you brought it to,
+   since an older one refuses what a later release added to the manifest. When `agentctl --version` names another,
+   install that version, as in
+   `curl -fsSL https://raw.githubusercontent.com/digdir/digdir-agents/main/agentctl/install.sh | AGENT_VERSION=v0.1.0-preview.14 sh`,
+   and check that `agentctl --version` names it before you go on.
+3. **Hand it over** as [proposing a change](#proposing-a-change) describes. Name each file you changed that Git ignores,
+   and say which of its owner's agents must be created again to get it, as below describes.
 
 ## What an update can change in place
 

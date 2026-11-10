@@ -226,6 +226,25 @@ impl ControlPlane {
         ))
     }
 
+    /// The files that may hold real keys in the folders `binds` give, as running an agent on them
+    /// finds them, so that a client can ask the person about them, or say why they are refused,
+    /// before it changes anything else.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a folder is refused, as running would refuse it, or the agents or the
+    /// folders cannot be read.
+    pub async fn exposed_files(&self, binds: &[BindSource]) -> Result<Vec<crate::exposed::ExposedFile>, Error> {
+        let folders = self
+            .validate_bind_sources(binds)
+            .await?
+            .into_iter()
+            .map(|bind| (bind.source, bind.target))
+            .collect();
+        let environment_files = super::service::environment_files(self.store.as_ref()).await?;
+        crate::exposed::find(folders, environment_files).await
+    }
+
     /// Deletes the ephemeral agent `id` once the client it belongs to is gone. Repeated deletion,
     /// and deleting one someone has deleted already, are safe.
     ///

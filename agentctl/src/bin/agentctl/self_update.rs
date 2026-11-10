@@ -69,7 +69,10 @@ impl Completion {
 
 #[derive(clap::Subcommand)]
 pub(super) enum SelfCommand {
-    /// Check for or install a released agentctl update.
+    /// Check for or install a released version of agentctl and agentd.
+    ///
+    /// The agent definitions in your checkouts stay as they are. `agentctl update` brings them up
+    /// to date with the version installed.
     Update {
         /// Install this exact release version.
         #[arg(long)]

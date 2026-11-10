@@ -369,7 +369,7 @@ async fn definitions_lists_a_folders_then_the_applied_ones_then_agentds() {
 
     let listed = fixture
         .control_plane
-        .definitions(Some(folder.path().to_path_buf()))
+        .definitions(Some(folder.path().to_path_buf()), agent::definitions::Detail::Choosing)
         .await
         .expect("definitions");
 
@@ -397,7 +397,7 @@ async fn definitions_lists_a_folders_then_the_applied_ones_then_agentds() {
     assert_eq!(listed[1].path, applied.path().join("agent.yaml"));
     let error = fixture
         .control_plane
-        .definitions(Some("relative".into()))
+        .definitions(Some("relative".into()), agent::definitions::Detail::Choosing)
         .await
         .expect_err("a relative folder");
     assert!(error.to_string().contains("must be an absolute path"), "{error}");
@@ -449,7 +449,11 @@ async fn a_reference_agentd_cannot_resolve_is_refused() {
 async fn an_internal_definition_runs_only_through_its_own_request() {
     let fixture = Fixture::with_internal_sign_in();
 
-    let listed = fixture.control_plane.definitions(None).await.expect("definitions");
+    let listed = fixture
+        .control_plane
+        .definitions(None, agent::definitions::Detail::Choosing)
+        .await
+        .expect("definitions");
     assert_eq!(
         listed
             .iter()
@@ -565,7 +569,11 @@ async fn a_newer_build_replaces_agentds_copy_which_its_agents_then_read() {
 async fn a_bundled_definition_is_applied_from_agentds_copy_like_any_other() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("repo");
-    let definitions = fixture.control_plane.definitions(None).await.expect("definitions");
+    let definitions = fixture
+        .control_plane
+        .definitions(None, agent::definitions::Detail::Choosing)
+        .await
+        .expect("definitions");
     let builder = definitions
         .iter()
         .find(|definition| definition.reference.as_deref() == Some("bundled/builder"))
@@ -686,6 +694,51 @@ async fn a_folder_that_is_not_one_projects_is_refused() {
     agreed.allow_exposed_files = files.iter().map(|file| file.path.clone()).collect();
     let (ran, _) = fixture.control_plane.run(agreed).await.expect("agreed to");
     assert_eq!(ran.agent.metadata.name, "builder-repo");
+}
+
+#[tokio::test(flavor = "local")]
+async fn the_files_a_run_would_ask_about_are_found_before_anything_runs() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("repo");
+    for folder in ["app", "agents/dev"] {
+        std::fs::create_dir_all(workspace.join(folder)).expect("folder");
+    }
+    std::fs::write(workspace.join("app/.env"), "TOKEN=secret").expect("an app's .env");
+    std::fs::write(workspace.join("agents/dev/agent.yaml"), "kind: Agent").expect("a manifest");
+    std::fs::write(workspace.join("agents/dev/.env"), "TOKEN=secret").expect("its environment file");
+
+    let files = fixture
+        .control_plane
+        .exposed_files(&[given(&workspace)])
+        .await
+        .expect("exposed files");
+
+    let canonical = workspace.canonicalize().expect("canonical workspace");
+    let found = files
+        .iter()
+        .map(|file| {
+            (
+                file.relative().to_path_buf(),
+                file.environment_file,
+                file.folder == canonical,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            (Path::new("agents/dev/.env").to_path_buf(), true, true),
+            (Path::new("app/.env").to_path_buf(), false, true),
+        ]
+    );
+    assert_eq!(fixture.store.list().await.expect("agents").len(), 0, "nothing is made");
+
+    let error = fixture
+        .control_plane
+        .exposed_files(&[given(fixture.home.path())])
+        .await
+        .expect_err("a folder running refuses");
+    assert!(error.to_string().contains("agentd's home"), "{error}");
 }
 
 #[test]

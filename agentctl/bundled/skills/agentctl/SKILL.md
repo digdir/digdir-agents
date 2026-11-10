@@ -76,6 +76,10 @@ agentctl apply --variant nested --wait
 
 When `--wait` fails or stalls, `agentctl describe agent/NAME` shows its conditions.
 
+An agent outlives the command that applied it: agentd keeps working on it after `--wait` or your session ends. When you
+come back to work you left running, such as after your own sandbox restarted, check `agentctl get agents` and
+`agentctl describe agent/NAME` first, and go on from what they show rather than wait on a command that may be gone.
+
 ## Use it
 
 ```sh

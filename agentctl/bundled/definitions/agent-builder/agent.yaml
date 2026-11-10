@@ -1,7 +1,7 @@
 # The agent that makes agents, which `agentctl new` runs: it asks what the agent should do, writes its definition into
-# the repository's checkout or into a folder of your own, and tries it as a nested agent. agentd carries this
-# definition, and `agentctl new` runs one on each checkout it is given, named after the checkout's folder. It keeps
-# running until you delete it.
+# the repository's checkout or into a folder of your own, and tries it as a nested agent. `agentctl update` runs it to
+# bring the definitions in a checkout up to date. agentd carries this definition, and both commands run one on each
+# checkout they are given, named after the checkout's folder. It keeps running until you delete it.
 apiVersion: agents.platform/v1alpha1
 kind: Agent
 metadata:
@@ -27,9 +27,10 @@ spec:
       nestedSandboxes: preferred
     # Boot the image's own init system, systemd in the base images. It runs Podman and the SSH server.
     initSystem: image
-    # The folders `agentctl new` gives it, named first so that agentd names the builder after the checkout.
+    # The folders `agentctl new` and `agentctl update` give it, named first so that agentd names the builder after the
+    # checkout.
     mounts:
-      # The checkout of the repository the new agent is for, where its sessions start.
+      # The checkout of the repository it makes or updates agents for, where its sessions start.
       - type: bind
         target: /home/agent/code
         readOnly: false

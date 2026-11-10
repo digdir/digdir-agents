@@ -14,18 +14,18 @@ use crate::{
 use super::protocol::{
     AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, CODE_EXPOSED_FILES, CODE_IMMUTABLE,
     CODE_INTERNAL, CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND, CODE_PARSE_ERROR,
-    CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
-    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT,
-    METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_AUTH_SIGN_IN_AGENT,
-    METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH,
-    METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN,
-    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
-    METHOD_VOLUME_GET, METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, PROTOCOL_VERSION,
-    ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams,
-    SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response,
-    read_message,
+    CODE_UPDATING, DefinitionListParams, DirectoryParams, ExecutionEnsureParams, ExposedFilesParams, JSON_RPC_VERSION,
+    LoginParams, LogoutParams, LogoutResult, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST,
+    METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS,
+    METHOD_AUTH_LOGOUT, METHOD_AUTH_SIGN_IN_AGENT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE,
+    METHOD_EXECUTION_ENSURE, METHOD_EXPOSED_FILES, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS,
+    METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SESSION_ARCHIVE,
+    METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT,
+    METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP,
+    METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET,
+    METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, PROTOCOL_VERSION, ProgressParams,
+    ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams,
+    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
 };
 use super::protocol::{
     METHOD_SECRET_LIST, METHOD_SECRET_REMOVE, METHOD_SECRET_SET, SecretRemoveResult, SecretSetParams,
@@ -111,7 +111,15 @@ pub trait AgentApi {
     fn definitions(
         &self,
         directory: Option<std::path::PathBuf>,
+        detail: crate::definitions::Detail,
     ) -> LocalFuture<'_, Result<Vec<control_plane::DefinitionSummary>, Error>>;
+
+    /// The files that may hold real keys in folders an agent would be given; see
+    /// [`control_plane::ControlPlane::exposed_files`].
+    fn exposed_files<'a>(
+        &'a self,
+        binds: &'a [control_plane::BindSource],
+    ) -> LocalFuture<'a, Result<Vec<crate::exposed::ExposedFile>, Error>>;
 
     /// Deletes an ephemeral agent whose client is gone; see [`control_plane::ControlPlane::release`].
     fn release(&self, id: crate::AgentId) -> LocalFuture<'_, Result<(), Error>>;
@@ -170,8 +178,16 @@ impl AgentApi for control_plane::ControlPlane {
     fn definitions(
         &self,
         directory: Option<std::path::PathBuf>,
+        detail: crate::definitions::Detail,
     ) -> LocalFuture<'_, Result<Vec<control_plane::DefinitionSummary>, Error>> {
-        Box::pin(async move { Self::definitions(self, directory).await })
+        Box::pin(async move { Self::definitions(self, directory, detail).await })
+    }
+
+    fn exposed_files<'a>(
+        &'a self,
+        binds: &'a [control_plane::BindSource],
+    ) -> LocalFuture<'a, Result<Vec<crate::exposed::ExposedFile>, Error>> {
+        Box::pin(async move { Self::exposed_files(self, binds).await })
     }
 
     fn release(&self, id: crate::AgentId) -> LocalFuture<'_, Result<(), Error>> {
@@ -800,6 +816,7 @@ impl Server {
             METHOD_APPLY => self.handle_apply(request.id, request.params).await,
             METHOD_RUN => self.handle_run(request.id, request.params, owned).await,
             METHOD_DEFINITIONS => self.handle_definitions(request.id, request.params).await,
+            METHOD_EXPOSED_FILES => self.handle_exposed_files(request.id, request.params).await,
             METHOD_HEALTH => result_response(
                 request.id,
                 Ok(serde_json::json!({
@@ -1360,9 +1377,16 @@ impl Server {
     }
 
     async fn handle_definitions(&self, id: u64, value: Value) -> Response {
-        match manifest_list_params(value) {
-            Ok(params) => result_response(id, self.agents.definitions(params.directory).await),
+        match list_params::<DefinitionListParams>(value) {
+            Ok(params) => result_response(id, self.agents.definitions(params.directory, params.detail).await),
             Err(message) => error_response(id, CODE_INVALID_PARAMS, &message),
+        }
+    }
+
+    async fn handle_exposed_files(&self, id: u64, value: Value) -> Response {
+        match serde_json::from_value::<ExposedFilesParams>(value) {
+            Ok(params) => result_response(id, self.agents.exposed_files(&params.binds).await),
+            Err(error) => error_response(id, CODE_INVALID_PARAMS, error.to_string()),
         }
     }
 
@@ -1370,7 +1394,7 @@ impl Server {
         let Some(volumes) = &self.volumes else {
             return volumes_unavailable(id);
         };
-        match manifest_list_params(value) {
+        match list_params::<ManifestListParams>(value) {
             Ok(params) => result_response(id, volumes.manifests(params.directory).await),
             Err(message) => error_response(id, CODE_INVALID_PARAMS, &message),
         }
@@ -1558,9 +1582,9 @@ async fn write_response<W: AsyncWrite + Unpin>(
 
 /// The parameters of a request listing the manifests for a folder: none, or an object. `Err` says
 /// what is wrong with them.
-fn manifest_list_params(value: Value) -> Result<ManifestListParams, String> {
+fn list_params<T: serde::de::DeserializeOwned + Default>(value: Value) -> Result<T, String> {
     match value {
-        Value::Null => Ok(ManifestListParams::default()),
+        Value::Null => Ok(T::default()),
         Value::Object(_) => serde_json::from_value(value).map_err(|error| error.to_string()),
         _ => Err("params must be an object".to_owned()),
     }

@@ -64,6 +64,16 @@ const DISCOVERY_DEPTH: usize = 8;
 /// Reads the filesystem, so it blocks.
 #[must_use]
 pub fn manifests(directory: &Path) -> Vec<PathBuf> {
+    found(directory).into_iter().map(|(path, _)| path).collect()
+}
+
+/// The manifests [`manifests`] lists for `directory`, each with whether the repository's ignore files leave it
+/// out, as they do personal variants such as `agent.mine.yaml`, which only reading its agent's folder finds.
+///
+/// Reads the filesystem, so it blocks.
+fn found(directory: &Path) -> Vec<(PathBuf, bool)> {
+    // The manifests the walk of a repository passes, which ignore files leave the others out of.
+    let mut walked = std::collections::HashSet::new();
     let agents: Vec<PathBuf> = repository_root(directory).map_or_else(
         || {
             std::iter::once(directory.join(MANIFEST_FILE))
@@ -85,17 +95,22 @@ pub fn manifests(directory: &Path) -> Vec<PathBuf> {
                 .build()
                 .filter_map(Result::ok)
                 .filter(|entry| {
-                    entry.file_type().is_some_and(|kind| kind.is_file()) && entry.file_name() == MANIFEST_FILE
+                    entry.file_type().is_some_and(|kind| kind.is_file()) && manifest::is_manifest_filename(entry.path())
                 })
                 .map(ignore::DirEntry::into_path)
+                .inspect(|path| {
+                    walked.insert(path.clone());
+                })
+                .filter(|path| path.file_name().is_some_and(|name| name == MANIFEST_FILE))
                 .collect()
         },
     );
-    let mut found: Vec<PathBuf> = agents
+    let ignored = |path: &PathBuf| !walked.is_empty() && !walked.contains(path);
+    let mut found: Vec<(PathBuf, bool)> = agents
         .into_iter()
         .flat_map(|base| {
             let Some(parent) = base.parent() else {
-                return vec![base];
+                return vec![(base, false)];
             };
             let mut manifests = std::fs::read_dir(parent)
                 .into_iter()
@@ -106,9 +121,15 @@ pub fn manifests(directory: &Path) -> Vec<PathBuf> {
                 .collect::<Vec<_>>();
             manifests.sort_by_key(|path| (path.file_name().is_none_or(|name| name != MANIFEST_FILE), path.clone()));
             manifests
+                .into_iter()
+                .map(|path| {
+                    let ignored = ignored(&path);
+                    (path, ignored)
+                })
+                .collect()
         })
         .collect();
-    found.sort_by_key(|path| {
+    found.sort_by_key(|(path, _)| {
         (
             path.components().count(),
             path.parent().map(Path::to_path_buf),
@@ -142,6 +163,57 @@ pub struct DefinitionSummary {
     /// The targets of its bind mounts without a source, which running it needs a folder for each of.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slots: Vec<::sandbox::SandboxPath>,
+    /// The variables its agent takes from its environment file, which a later release stops
+    /// reading, as [`crate::Spec::environment_file_variables`] names them. Listed for
+    /// [`Detail::Update`] only, as are the environment file and the platform's images.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environment_file_variables: Vec<String>,
+    /// The `.env` beside it, which agentctl reads its values from by default, so no agent may mount
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_file: Option<PathBuf>,
+    /// The images of the platform's it runs, builds on or copies from, such as the base image, so a
+    /// client can tell the release it was written for from the one it runs with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platform_images: Vec<PlatformImage>,
+    /// Whether its repository's ignore files leave it out, as they do personal variants such as
+    /// `agent.mine.yaml`, so changes to it do not show in Git.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ignored: bool,
+}
+
+/// An image a release of the platform publishes, as a definition names it.
+#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PlatformImage {
+    /// The reference as the definition names it, such as
+    /// `ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.14@sha256:…`.
+    pub reference: String,
+    /// The release its tag names, or none for a tag `main` moves, such as `ubuntu-26.04`, or a
+    /// digest alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
+}
+
+/// How much listing the definitions on disk tells about each.
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Detail {
+    /// What choosing one to apply or run needs.
+    #[default]
+    Choosing,
+    /// Also what bringing one up to date involves, which takes reading more files: the variables it reads from an
+    /// environment file, the `.env` beside it, and the platform's images it runs, read from its Dockerfile when it
+    /// builds one.
+    Update,
+}
+
+impl Detail {
+    /// Whether this is the detail a listing has unless asked for more.
+    #[must_use]
+    pub fn is_choosing(&self) -> bool {
+        *self == Self::Choosing
+    }
 }
 
 /// Lists the definitions on disk for `directory`, as [`manifests`] finds them, then the `recorded` manifests agents
@@ -152,27 +224,95 @@ pub struct DefinitionSummary {
 ///
 /// Reads the filesystem, so it blocks.
 #[must_use]
-pub fn on_disk(directory: Option<&Path>, recorded: Vec<PathBuf>) -> Vec<DefinitionSummary> {
-    let found = directory.map_or_else(Vec::new, manifests);
+pub fn on_disk(directory: Option<&Path>, recorded: Vec<PathBuf>, detail: Detail) -> Vec<DefinitionSummary> {
+    let found = directory.map_or_else(Vec::new, found);
+    let ignored = found
+        .iter()
+        .filter(|(_, ignored)| *ignored)
+        .map(|(path, _)| path.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let found = found.into_iter().map(|(path, _)| path).collect();
+    let update = detail == Detail::Update;
     merge(found, recorded, |path| {
         manifest::resolve(path).map(|resolved| resolved.agent)
     })
     .into_iter()
     .map(|listed| {
-        let (name, error, slots) = match listed.read {
-            Ok(agent) => (Some(agent.metadata.name.clone()), None, unsourced_binds(&agent)),
-            Err(error) => (None, Some(error), Vec::new()),
+        let (name, error, slots, environment_file_variables, platform_images) = match listed.read {
+            Ok(agent) => {
+                let (variables, images) = if update {
+                    (
+                        agent.spec.environment_file_variables(),
+                        platform_images(&listed.path, &agent),
+                    )
+                } else {
+                    Default::default()
+                };
+                (
+                    Some(agent.metadata.name.clone()),
+                    None,
+                    unsourced_binds(&agent),
+                    variables,
+                    images,
+                )
+            }
+            Err(error) => (None, Some(error), Vec::new(), Vec::new(), Vec::new()),
         };
         DefinitionSummary {
+            environment_file: update.then(|| environment_file_beside(&listed.path)).flatten(),
+            ignored: ignored.contains(&listed.path),
             path: listed.path,
             aliases: listed.aliases,
             reference: None,
             name,
             error,
             slots,
+            environment_file_variables,
+            platform_images,
         }
     })
     .collect()
+}
+
+/// The images of the platform's that `agent`, from `manifest`, runs: the one it references, or those
+/// its Dockerfile builds the stage it targets on and copies from.
+///
+/// Reads the filesystem, so it blocks.
+fn platform_images(manifest: &Path, agent: &crate::Agent) -> Vec<PlatformImage> {
+    let images = match &agent.spec.sandbox.image {
+        ::sandbox::image::ImageSource::Reference { reference } => vec![reference.clone()],
+        ::sandbox::image::ImageSource::Build {
+            context,
+            dockerfile,
+            target,
+        } => manifest
+            .parent()
+            .and_then(|folder| std::fs::read_to_string(folder.join(context).join(dockerfile)).ok())
+            .map(|text| crate::dockerfile::images(&text, target.as_deref()))
+            .unwrap_or_default(),
+    };
+    images
+        .into_iter()
+        .filter_map(|reference| {
+            let release = crate::release::Release::of_tag(crate::release::published_tag(&reference)?);
+            Some(PlatformImage {
+                release: release.map(|release| release.to_string()),
+                reference,
+            })
+        })
+        .collect()
+}
+
+/// The `.env` in the folder of `manifest`, under any case, which agentctl reads its agent's values
+/// from by default.
+///
+/// Reads the filesystem, so it blocks.
+fn environment_file_beside(manifest: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(manifest.parent()?)
+        .ok()?
+        .filter_map(Result::ok)
+        .find(|entry| crate::exposed::is_exposed_name(&entry.file_name()) && !entry.path().is_dir())
+        .map(|entry| entry.path())
 }
 
 /// A volume manifest a client can apply, as agentd lists it.
@@ -356,7 +496,7 @@ fn declares_volume(path: &Path) -> bool {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{DefinitionSource, DefinitionSummary, on_disk, source, volume_manifests_on_disk};
+    use super::{DefinitionSource, DefinitionSummary, Detail, on_disk, source, volume_manifests_on_disk};
     use crate::manifest::MANIFEST_FILE;
 
     fn manifest_yaml(name: &str) -> String {
@@ -424,6 +564,7 @@ mod tests {
             [&recorded, &cwd, &missing, &broken]
                 .map(|directory| directory.join(MANIFEST_FILE))
                 .to_vec(),
+            Detail::Choosing,
         );
 
         assert_eq!(
@@ -457,10 +598,116 @@ mod tests {
                       \x20       readOnly: true\n";
         let cwd = manifest_directory(root.path(), "cwd", &manifest_with("builder", mounts));
 
-        let listed = on_disk(Some(&cwd), Vec::new());
+        let listed = on_disk(Some(&cwd), Vec::new(), Detail::Choosing);
 
         assert_eq!(listed.len(), 1, "{listed:?}");
         assert_eq!(listed[0].slots, [::sandbox::SandboxPath::new("/work/checkout")]);
+    }
+
+    #[test]
+    fn a_variant_its_repository_ignores_is_listed_as_ignored() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let folder = manifest_directory(root.path(), "agents/dev", &manifest_yaml("dev"));
+        std::fs::write(root.path().join(".gitignore"), "agents/*/agent.*.yaml\n").expect("ignore file");
+        let variant =
+            "apiVersion: agents.platform/v1alpha1\nkind: AgentVariant\nextends: agent.yaml\nmetadata:\n  name: mine\n";
+        std::fs::write(folder.join("agent.mine.yaml"), variant).expect("personal variant");
+        let ignored = || {
+            on_disk(Some(root.path()), Vec::new(), Detail::Choosing)
+                .iter()
+                .map(|definition| {
+                    (
+                        definition.path.file_name().expect("file name").to_owned(),
+                        definition.ignored,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            ignored(),
+            [("agent.yaml".into(), false), ("agent.mine.yaml".into(), false)],
+            "outside a repository, whose ignore files the listing does not follow"
+        );
+        std::fs::create_dir(root.path().join(".git")).expect("repository");
+        assert_eq!(
+            ignored(),
+            [("agent.yaml".into(), false), ("agent.mine.yaml".into(), true)]
+        );
+    }
+
+    #[test]
+    fn a_definition_names_the_platforms_images_its_dockerfile_uses() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let folder = manifest_directory(root.path(), "agents/dev", &manifest_yaml("dev"));
+        std::fs::write(
+            folder.join("Dockerfile"),
+            "FROM ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.13@sha256:3a5c\n\
+             COPY --from=ghcr.io/digdir/agentctl:main /agentctl /usr/local/bin/\n\
+             COPY --from=ghcr.io/example/tools:1 /tool /usr/local/bin/\n",
+        )
+        .expect("Dockerfile");
+
+        let listed = on_disk(Some(root.path()), Vec::new(), Detail::Update);
+
+        assert_eq!(
+            listed[0].platform_images,
+            [
+                super::PlatformImage {
+                    reference: "ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.13@sha256:3a5c".into(),
+                    release: Some("v0.1.0-preview.13".into()),
+                },
+                super::PlatformImage {
+                    reference: "ghcr.io/digdir/agentctl:main".into(),
+                    release: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_definition_names_what_it_reads_from_an_environment_file() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let environment = "\x20 environment:\n\
+                           \x20   - name: EDITOR\n\
+                           \x20   - name: TZ\n\
+                           \x20     value: UTC\n\
+                           \x20 secrets: []\n";
+        let reads = manifest_directory(
+            root.path(),
+            "agents/reads",
+            &manifest_yaml("reads").replace("\x20 secrets: []\n", environment),
+        );
+        std::fs::write(reads.join(".ENV"), "EDITOR=vim").expect("environment file");
+        manifest_directory(root.path(), "agents/off", &manifest_yaml("off"));
+
+        let listed = on_disk(Some(root.path()), Vec::new(), Detail::Update);
+        let choosing = on_disk(Some(root.path()), Vec::new(), Detail::Choosing);
+
+        assert!(
+            choosing
+                .iter()
+                .all(|definition| definition.environment_file_variables.is_empty()
+                    && definition.environment_file.is_none()),
+            "only an update reads what it involves: {choosing:?}"
+        );
+        let read = listed
+            .iter()
+            .map(|definition| {
+                (
+                    definition.name.as_deref(),
+                    definition.environment_file_variables.clone(),
+                    definition.environment_file.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            read,
+            [
+                (Some("off"), Vec::new(), None),
+                (Some("reads"), vec!["EDITOR".to_owned()], Some(reads.join(".ENV"))),
+            ]
+        );
     }
 
     #[cfg(unix)]
@@ -471,7 +718,7 @@ mod tests {
         let alias = root.path().join("alias");
         std::os::unix::fs::symlink(&source, &alias).expect("manifest directory symlink");
 
-        let listed = on_disk(Some(&source), vec![alias.join(MANIFEST_FILE)]);
+        let listed = on_disk(Some(&source), vec![alias.join(MANIFEST_FILE)], Detail::Choosing);
 
         assert_eq!(paths(&listed), [source.join(MANIFEST_FILE)]);
         assert_eq!(listed[0].aliases, [alias.join(MANIFEST_FILE)]);
@@ -488,7 +735,7 @@ mod tests {
         manifest_directory(&cwd, "target/ignored", &manifest_yaml("ignored"));
         std::fs::write(cwd.join(".gitignore"), "target/\n").expect("ignore file should be written");
 
-        let listed = on_disk(Some(&cwd), vec![nested.join(MANIFEST_FILE)]);
+        let listed = on_disk(Some(&cwd), vec![nested.join(MANIFEST_FILE)], Detail::Choosing);
 
         assert_eq!(
             paths(&listed),
@@ -515,7 +762,7 @@ mod tests {
         manifest_directory(&cwd, "projects/checkout", &manifest_yaml("unrelated"));
         manifest_directory(&cwd, "agents/dev/nested", &manifest_yaml("nested"));
 
-        let listed = on_disk(Some(&cwd), Vec::new());
+        let listed = on_disk(Some(&cwd), Vec::new(), Detail::Choosing);
 
         assert_eq!(
             paths(&listed),
@@ -544,7 +791,7 @@ mod tests {
         )
         .expect("broken local variant");
 
-        let listed = on_disk(Some(&agent), Vec::new());
+        let listed = on_disk(Some(&agent), Vec::new(), Detail::Choosing);
 
         assert_eq!(
             paths(&listed),
@@ -573,7 +820,7 @@ mod tests {
         let sibling = manifest_directory(&repository, "agents/full", &manifest_yaml("full"));
         manifest_directory(root.path(), "outside", &manifest_yaml("outside"));
 
-        let listed = on_disk(Some(&cwd), Vec::new());
+        let listed = on_disk(Some(&cwd), Vec::new(), Detail::Choosing);
 
         assert_eq!(
             paths(&listed),
@@ -588,7 +835,7 @@ mod tests {
         let manifest = source.join("worker.yml");
         std::fs::write(&manifest, manifest_yaml("custom")).expect("manifest should be written");
 
-        let listed = on_disk(None, vec![manifest.clone()]);
+        let listed = on_disk(None, vec![manifest.clone()], Detail::Choosing);
 
         assert_eq!(paths(&listed), [manifest.as_path()]);
         assert_eq!(listed[0].name.as_deref(), Some("custom"));
@@ -650,9 +897,9 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary directory");
         let cwd = empty_directory(root.path(), "cwd");
 
-        assert_eq!(on_disk(Some(&cwd), Vec::new()), []);
-        assert_eq!(on_disk(None, Vec::new()), []);
-        let listed = on_disk(Some(&cwd), vec![cwd.join(MANIFEST_FILE)]);
+        assert_eq!(on_disk(Some(&cwd), Vec::new(), Detail::Choosing), []);
+        assert_eq!(on_disk(None, Vec::new(), Detail::Choosing), []);
+        let listed = on_disk(Some(&cwd), vec![cwd.join(MANIFEST_FILE)], Detail::Choosing);
         assert_eq!(paths(&listed), [cwd.join(MANIFEST_FILE)]);
         assert!(listed[0].error.is_some());
     }

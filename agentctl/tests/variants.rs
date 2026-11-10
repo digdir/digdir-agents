@@ -345,6 +345,7 @@ fn rejects_unknown_variant_fields_even_when_null() {
         write(directory.path(), &filename, &variant("agent.yaml", name, spec));
         let error = manifest::resolve(&directory.path().join(filename)).expect_err("unknown field");
         assert!(error.to_string().contains("unknown field"), "{error}");
+        assert!(error.to_string().contains("agentctl self update"), "{error}");
     }
 }
 

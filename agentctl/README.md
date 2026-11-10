@@ -74,6 +74,22 @@ agentctl skills install --bundled agentctl --user
 Update with `agentctl self update`. Agents and sessions carry over. Run the `skills install` command above again to
 update the skill as well.
 
+Then bring the agent definitions in a checkout up to date with the new version:
+
+```sh
+agentctl update ~/repos/my-service
+```
+
+It runs the [agent builder](bundled/definitions/agent-builder/) on the checkout, as `agentctl new` does. The builder
+reads the release notes since the version each definition was written for, proposes each change with its reason, and
+writes the ones you agree to for you to review and commit. That includes moving off the environment file, for which it
+gives you the `agentctl github login` and `agentctl secret set` commands to run. Running it again goes back to the same
+conversation, and `agentctl update --rm` deletes the builder when the command ends instead.
+
+An agent can bring its own definition up to date in the same way, such as when the checkout lives inside it. Ask it
+to, or to run `agentctl update --print-task` there, which gives it the same task as the builder. It proposes each
+change, tries the result and opens a pull request.
+
 ## Your first agent
 
 `agentctl new` makes an agent for a repository with you. Run it in the repository's checkout, or name the checkout:
@@ -86,8 +102,9 @@ It runs the [agent builder](bundled/definitions/agent-builder/), a definition ag
 talk with it about what the new agent is for. The builder studies the repository, writes the agent's definition into
 the checkout for your team or into `~/agents` for you alone, tries it, and leaves it for you to review. It ends with
 the `agentctl apply` command that runs the agent it made. The builder keeps running until you delete it, so leaving
-before it is done and running `agentctl new` in the same checkout again goes back to the same conversation. It needs
-your Claude Code login (`agentctl claude login`).
+before it is done and running `agentctl new` in the same checkout again goes back to the same conversation. With
+`--rm`, agentd deletes it when the command ends, such as when you leave its session. It needs your Claude Code login
+(`agentctl claude login`).
 
 To write an agent by hand, start from the [.NET example](../agents/examples/dotnet-dev/), an
 [agent definition](../GLOSSARY.md) whose manifest and image explain each line. Let an agent make it yours: ask

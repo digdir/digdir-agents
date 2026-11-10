@@ -1491,7 +1491,10 @@ const fn is_zero(value: &u64) -> bool {
 ///
 /// Returns an error when syntax, structure, or required values are invalid.
 pub fn decode(bytes: &[u8]) -> Result<Agent, Error> {
-    let agent: Agent = serde_yaml_ng::from_slice(bytes)?;
+    let agent: Agent = serde_yaml_ng::from_slice(bytes).map_err(|error| match other_version(&error) {
+        Some(hint) => Error::Invalid(format!("{error}. {hint}")),
+        None => Error::Yaml(error),
+    })?;
     agent.validate()?;
     Ok(agent)
 }
@@ -1587,8 +1590,12 @@ fn resolve_value(
                     display_leaf(path)
                 )));
             }
-            let variant: AgentVariant = serde_yaml_ng::from_slice(&bytes)
-                .map_err(|error| Error::Invalid(format!("{}: {error}", display_leaf(path))))?;
+            let variant: AgentVariant = serde_yaml_ng::from_slice(&bytes).map_err(|error| {
+                let hint = other_version(&error)
+                    .map(|hint| format!(". {hint}"))
+                    .unwrap_or_default();
+                Error::Invalid(format!("{}: {error}{hint}", display_leaf(path)))
+            })?;
             validate_variant(&variant, path)?;
             let base = sibling_base(path, &variant.extends)?;
             let mut inherited = resolve_value(&base, chain, versions)?;
@@ -1916,6 +1923,20 @@ fn display_leaf(path: &Path) -> String {
         || path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
     )
+}
+
+/// What to do about a manifest `error` that names a field or a value this version does not know,
+/// which the manifest's own version of agentctl would: update agentctl for a manifest written for
+/// a later version, or the manifest for one written for an earlier version.
+fn other_version(error: &serde_yaml_ng::Error) -> Option<String> {
+    let message = error.to_string();
+    (message.contains("unknown field") || message.contains("unknown variant")).then(|| {
+        format!(
+            "This is agentctl {}. A manifest written for a later version needs `agentctl self update`, and \
+             `agentctl update` brings one written for an earlier version up to date",
+            crate::build_version()
+        )
+    })
 }
 
 /// An error in the manifest at `path`, named by its file. A validation message is shown as it is;

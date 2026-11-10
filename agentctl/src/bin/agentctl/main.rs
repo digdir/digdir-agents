@@ -17,6 +17,7 @@ use agent::{
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
+mod builder;
 mod consent;
 mod format;
 mod github;
@@ -29,6 +30,7 @@ mod secret;
 mod self_update;
 mod skills;
 mod tui;
+mod update;
 mod watch;
 
 use format::{condition_status, format_age, format_harnesses, session_state};
@@ -182,6 +184,14 @@ enum Command {
     /// Make a new agent for a repository with the agent builder, which asks what it is for and writes
     /// its definition.
     New(new::NewArguments),
+    /// Update the agent definitions in a checkout to this version of agentctl, with the agent
+    /// builder.
+    ///
+    /// The builder finds what changed since each definition's version, proposes each change and
+    /// writes it once you agree, for you to review and commit. With `--print-task`, an agent working
+    /// in the checkout gets the same update to do itself. To update agentctl itself, run `agentctl
+    /// self update`.
+    Update(update::UpdateArguments),
     /// Sign agents in to Claude Code.
     Claude {
         #[command(subcommand)]
@@ -414,7 +424,9 @@ enum Command {
         #[arg(short = 'o', long, default_value = "table", value_enum)]
         output: OutputFormat,
     },
-    /// Update agentctl and agentd.
+    /// Update agentctl and agentd themselves.
+    ///
+    /// To update the agent definitions in a checkout to this version, run `agentctl update`.
     Self_ {
         #[command(subcommand)]
         command: self_update::SelfCommand,
@@ -751,6 +763,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         },
         Command::Secret { command } => secret::run(client, command).await?,
         Command::New(arguments) => new::new(arguments, home, client).await?,
+        Command::Update(arguments) => update::update(arguments, home, client).await?,
         Command::Apply {
             filename,
             variant,
@@ -1085,7 +1098,9 @@ async fn get_resources(
                 .into());
             }
             let directory = std::env::current_dir().map_err(Error::from)?;
-            let definitions = client.definitions(Some(directory.clone())).await?;
+            let definitions = client
+                .definitions(Some(directory.clone()), agent::definitions::Detail::Choosing)
+                .await?;
             match output {
                 OutputFormat::Json => print_json(&definitions)?,
                 OutputFormat::Table => print_table(&format::definitions_table(&definitions, &directory)),
@@ -2508,7 +2523,7 @@ fn read_apply_request_in(
 /// The manifest of agentd's copy of the definition `reference` names.
 async fn referenced_manifest(client: &Client, reference: &str) -> Result<PathBuf, Error> {
     let reference = agent::DefinitionReference::parse(reference)?.to_string();
-    let definitions = client.definitions(None).await?;
+    let definitions = client.definitions(None, agent::definitions::Detail::Choosing).await?;
     let references = definitions
         .iter()
         .filter_map(|definition| Some((definition.reference.as_deref()?, &definition.path)));
