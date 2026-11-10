@@ -372,12 +372,12 @@ impl<W: Write> Renderer<W> {
     /// The updating line of a summarized wait while `current` runs, saying how far the image's
     /// download is; `None` when the wait shows steps.
     fn summary_line(&mut self, current: &sandbox::progress::ActivePhase) -> Option<String> {
-        let doing = &self.summary.as_ref()?.doing;
+        let doing = format!("→ {}", self.summary.as_ref()?.doing);
         let image = [SandboxPhase::ImageResolve, SandboxPhase::ImagePrepare]
             .iter()
             .any(|image| image.phase().id == current.phase.id);
         if !image {
-            return Some(format!("→ {doing}"));
+            return Some(doing);
         }
         // The first step that counts bytes is the download, since nothing can be unpacked before
         // it arrives. Others run beside it and count what they have seen so far, so only the
@@ -402,10 +402,18 @@ impl<W: Write> Renderer<W> {
             .iter()
             .find(|step| Some(&step.id) == self.download.as_ref())
             .and_then(|step| step.measurement);
-        Some(measurement.map_or_else(
-            || format!("→ {doing}: preparing the image"),
-            |measurement| format!("→ {doing}: downloading the image, {}", format_measurement(measurement)),
-        ))
+        let detail = measurement.map_or_else(
+            || ": preparing the image".to_owned(),
+            |measurement| format!(": downloading the image, {}", format_measurement(measurement)),
+        );
+        // What is being got ready names a folder, which can be long, so it is cut short rather than
+        // the count that shows the download moving.
+        let width = match self.mode {
+            Mode::Terminal { width } => width.saturating_sub(1),
+            Mode::Plain => usize::MAX,
+        };
+        let room = width.saturating_sub(detail.chars().count());
+        Some(format!("{}{detail}", truncate(&doing, room)))
     }
 
     /// Reports a transient failure recorded outside a sandbox pass, including
@@ -963,6 +971,29 @@ mod tests {
             ]
         );
         assert!(done.starts_with("✓ Ready to sign in to GitHub ("), "{done}");
+    }
+
+    #[test]
+    fn a_summary_cuts_what_it_gets_ready_short_rather_than_the_download() {
+        let mut renderer = renderer(true);
+        renderer.summarize(Summary {
+            doing: "Starting the agent builder on /home/alice/src/digdir-agents".into(),
+            done: "Agent builder started on /home/alice/src/digdir-agents".into(),
+            started: Instant::now(),
+        });
+        let mut daemon = Daemon::new();
+        renderer.render(
+            &daemon
+                .phase(SandboxPhase::ImageResolve)
+                .count("Download image layers", 179 << 20, 590 << 20)
+                .snapshot(),
+        );
+        let lines = lines(renderer);
+        let line = lines.last().expect("a line");
+        assert_eq!(
+            line,
+            "→ Starting the agent builder on …: downloading the image, 179.0 MiB / 590.0 MiB"
+        );
     }
 
     #[test]
