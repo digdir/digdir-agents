@@ -347,9 +347,11 @@ async fn naming_the_platform_api_reaches_only_the_host() {
         http("100.64.0.2:4100").await.expect("decision"),
         AuthorizationDecision::Allow
     );
+    // The gateway need not be in a host-reserved range, as Microsandbox's own 172.16.0.0/12 isn't.
+    // An HTTP request goes over a connection already decided, which carried the flag.
     assert_eq!(
-        http("203.0.113.7:4100").await.expect("decision"),
-        AuthorizationDecision::Deny
+        http("172.16.0.5:4100").await.expect("decision"),
+        AuthorizationDecision::Allow
     );
 
     let query = |resolver: Option<&'static str>| {
