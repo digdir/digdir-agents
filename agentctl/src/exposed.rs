@@ -559,6 +559,26 @@ pub enum Move {
     Plain { variable: Variable },
 }
 
+impl Move {
+    /// The file's variable that holds the value.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        match self {
+            Self::GithubLogin { source, .. } | Self::Secret { source, .. } => source,
+            Self::Plain { variable } => variable.source.as_deref().unwrap_or(&variable.name),
+        }
+    }
+
+    /// The variables agents get the value as.
+    #[must_use]
+    pub fn variables(&self) -> &[Variable] {
+        match self {
+            Self::GithubLogin { variables, .. } => variables,
+            Self::Secret { variable, .. } | Self::Plain { variable } => std::slice::from_ref(variable),
+        }
+    }
+}
+
 /// Where each of `variables` goes instead of the environment file.
 ///
 /// A secret is named after the file's variable, which is what tells one credential from another,
@@ -569,17 +589,19 @@ pub fn moves(variables: &[Variable]) -> Vec<Move> {
     let credential = |variable: &Variable| variable.source.clone().unwrap_or_else(|| variable.name.clone());
     let is_token =
         |variable: &Variable| variable.allowed_hosts.is_some() && variable.name == crate::github::ACCESS_ENVIRONMENT;
-    let (github, others): (Vec<_>, Vec<_>) = if variables.iter().any(is_token) {
-        variables.iter().partition(|variable| {
-            is_token(variable) || (variable.allowed_hosts.is_none() && GIT_IDENTITY.contains(&variable.name.as_str()))
+    // One token becomes the login. A token from another of the file's variables is another
+    // credential, so it is stored as a secret of its own rather than lost with the file.
+    let login = variables.iter().find(|variable| is_token(variable)).map(credential);
+    let (github, others): (Vec<_>, Vec<_>) = variables.iter().partition(|variable| {
+        login.as_ref().is_some_and(|login| {
+            (is_token(variable) && credential(variable) == *login)
+                || (variable.allowed_hosts.is_none() && GIT_IDENTITY.contains(&variable.name.as_str()))
         })
-    } else {
-        (Vec::new(), variables.iter().collect())
-    };
+    });
     let mut moves = Vec::new();
-    if let Some(token) = github.iter().find(|variable| is_token(variable)) {
+    if let Some(source) = login {
         moves.push(Move::GithubLogin {
-            source: credential(token),
+            source,
             variables: github.iter().copied().cloned().collect(),
         });
     }
@@ -596,13 +618,19 @@ pub fn moves(variables: &[Variable]) -> Vec<Move> {
         hosts
     };
     let mut named = Vec::<(String, String)>::new();
-    let mut seen = Vec::<(&str, &Option<String>)>::new();
+    let mut seen = Vec::<(&str, &Option<String>, bool)>::new();
     for variable in &others {
-        // Entries that differ only in their hosts are one entry to change.
-        if seen.contains(&(variable.name.as_str(), &variable.source)) {
+        // Entries that differ only in their hosts are one entry to change, but a secret and a plain
+        // value are two, even of the same variable.
+        let entry = (
+            variable.name.as_str(),
+            &variable.source,
+            variable.allowed_hosts.is_some(),
+        );
+        if seen.contains(&entry) {
             continue;
         }
-        seen.push((variable.name.as_str(), &variable.source));
+        seen.push(entry);
         if variable.allowed_hosts.is_none() {
             moves.push(Move::Plain {
                 variable: (*variable).clone(),

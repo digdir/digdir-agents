@@ -95,6 +95,6 @@ pub(super) fn remove(connection: &Connection, id: VolumeId, expected_version: u6
 
 fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<VolumeRecord> {
     let json = row.get::<_, String>(0)?;
-    serde_json::from_str(&json)
+    super::decode_json(&json)
         .map_err(|error| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error)))
 }

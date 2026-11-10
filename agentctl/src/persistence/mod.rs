@@ -1279,6 +1279,35 @@ fn execute_session_report(connection: &mut Connection, command: Command) {
     }
 }
 
+/// `text`, a JSON column of a record, decoded.
+///
+/// On Windows, agentd recorded host paths in the verbatim form, such as `\\?\D:\work`, before it
+/// kept them as [`common::fs::canonicalize`] gives them. Such a path is read as that gives it, so that
+/// it compares equal to the same path resolved now, as an agent's mounts must when it is applied
+/// again. The record keeps that form from its next write.
+pub(super) fn decode_json<T: serde::de::DeserializeOwned>(text: &str) -> serde_json::Result<T> {
+    // The verbatim prefix as JSON escapes it.
+    if !(cfg!(windows) && text.contains(r"\\\\?\\")) {
+        return serde_json::from_str(text);
+    }
+    let mut value = serde_json::from_str(text)?;
+    simplify_paths(&mut value);
+    serde_json::from_value(value)
+}
+
+fn simplify_paths(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            if let Some(simple) = common::fs::simplified(text.as_str().into()).to_str() {
+                simple.clone_into(text);
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(simplify_paths),
+        serde_json::Value::Object(fields) => fields.values_mut().for_each(simplify_paths),
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
 pub(super) fn database_error(error: rusqlite::Error) -> Error {
     let message = error.to_string();
     drop(error);
@@ -1319,6 +1348,15 @@ mod tests {
     use zeroize::Zeroizing;
 
     use super::{Database, ProviderAccountWrite, StoredSecret, open};
+
+    #[cfg(windows)]
+    #[test]
+    fn a_path_recorded_in_the_verbatim_form_reads_as_it_resolves_now() {
+        let recorded = r#"{"mounts":[{"source":"\\\\?\\D:\\work"}],"name":"\\\\?\\nul"}"#;
+        let read = super::decode_json::<serde_json::Value>(recorded).expect("decoded");
+        assert_eq!(read["mounts"][0]["source"], r"D:\work");
+        assert_eq!(read["name"], r"\\?\nul", "not a drive or share, so kept");
+    }
 
     #[test]
     fn database_owner_enables_secure_deletion() {

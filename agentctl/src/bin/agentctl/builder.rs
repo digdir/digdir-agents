@@ -282,12 +282,7 @@ fn builds_on(agent: &Agent, targets: &Targets, checkout: &Path) -> bool {
     );
     builder
         && agent.metadata.deletion_timestamp.is_none()
-        // A builder started by an earlier version may have recorded the checkout in another form.
-        && agent
-            .status
-            .bindings
-            .get(&targets.checkout)
-            .is_some_and(|bound| common::fs::simplified(bound.clone()) == checkout)
+        && agent.status.bindings.get(&targets.checkout).map(PathBuf::as_path) == Some(checkout)
 }
 
 /// The builder's session for `task`, which opens with the task's prompt once the builder has

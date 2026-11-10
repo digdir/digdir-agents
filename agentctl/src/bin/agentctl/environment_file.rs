@@ -231,18 +231,18 @@ async fn stored(client: &Client) -> Result<Stored, Error> {
 /// `stored` already, or what agentctl cannot store, each with what the person does instead. A value
 /// no file holds is left out, as nothing that reads it could have started.
 fn entries(moves: &[Move], values: &Values, stored: &Stored) -> Result<Vec<Entry>, Vec<String>> {
+    // A plain value is shown and given to the builder, so one that a manifest reads as a secret is not.
+    let secret = moves
+        .iter()
+        .filter(|change| !matches!(change, Move::Plain { .. }))
+        .map(Move::source)
+        .collect::<BTreeSet<_>>();
     let mut entries = Vec::new();
     let mut unkept = Vec::new();
     for change in moves {
-        let (source, variables) = match change {
-            Move::GithubLogin { source, variables } => (source.as_str(), variables.as_slice()),
-            Move::Secret { variable, source, .. } => (source.as_str(), std::slice::from_ref(variable)),
-            Move::Plain { variable } => (
-                variable.source.as_deref().unwrap_or(&variable.name),
-                std::slice::from_ref(variable),
-            ),
-        };
-        let what = variables
+        let source = change.source();
+        let what = change
+            .variables()
             .iter()
             .map(|variable| variable.name.as_str())
             .collect::<Vec<_>>()
@@ -275,6 +275,13 @@ fn entries(moves: &[Move], values: &Values, stored: &Stored) -> Result<Vec<Entry
                     stored.secrets.contains(name),
                     format!("Store the one agents should get with {command}"),
                 )
+            }
+            Move::Plain { .. } if secret.contains(source) => {
+                unkept.push(format!(
+                    "{source}: one manifest reads it as a plain value and another as a secret. Make it a secret in \
+                     both, then run this again"
+                ));
+                continue;
             }
             Move::Plain { .. } => (String::new(), false, "Make them agree".to_owned()),
         };
@@ -411,6 +418,41 @@ mod tests {
             secrets: BTreeSet::from(["azure-devops-pat".to_owned()]),
         };
         assert!(entries(&moves, &values, &stored).is_ok());
+    }
+
+    #[test]
+    fn a_second_github_token_is_stored_as_a_secret_of_its_own() {
+        let token = |source: &str| Variable {
+            source: Some(source.into()),
+            ..variable("GITHUB_TOKEN", Some(&["api.github.com"]))
+        };
+        let moves = agent::exposed::moves(&[token("DEV_GH"), token("PROD_GH")]);
+        let values = [file(&[("DEV_GH", "dev"), ("PROD_GH", "prod")])];
+
+        let entries = entries(&moves, &values, &NOTHING).expect("kept");
+
+        assert_eq!(
+            places(&entries),
+            [
+                "GITHUB_TOKEN: the GitHub login default",
+                "GITHUB_TOKEN: the secret prod-gh, for api.github.com",
+            ]
+        );
+        assert!(entries.iter().all(|entry| entry.store.is_some()), "both are stored");
+    }
+
+    #[test]
+    fn a_value_one_manifest_reads_as_a_secret_is_never_shown_as_a_plain_one() {
+        let plain = variable("API_KEY", None);
+        let secret = variable("API_KEY", Some(&["example.com"]));
+        let values = [file(&[("API_KEY", "key-value")])];
+        for variables in [[plain.clone(), secret.clone()], [secret, plain]] {
+            let unkept = entries(&agent::exposed::moves(&variables), &values, &NOTHING)
+                .err()
+                .expect("left to the person");
+            assert!(unkept.iter().all(|line| !line.contains("key-value")), "{unkept:?}");
+            assert!(unkept.iter().any(|line| line.contains("as a secret")), "{unkept:?}");
+        }
     }
 
     #[test]
