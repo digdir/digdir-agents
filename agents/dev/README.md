@@ -17,6 +17,9 @@ has these variants:
 | `nested-build` | `nested`, with the image built from this checkout, to try a change to it before CI publishes it |
 | `worktree` | Mounts this checkout in place of a fresh clone, as `agentctl-dev-worktree`, and has the agent work on it as it is |
 
+Apply `worktree` from a clone, not from a linked Git worktree. A linked worktree keeps its Git metadata in the clone it
+was made from, outside the folder the variant mounts, so Git fails in the agent.
+
 Nested agents and the end-to-end tests need nested sandboxes, which a Linux x86_64 host with nested KVM or an Apple M3
 or newer on macOS 15 or newer can provide. The manifests ask for them (`nestedSandboxes: preferred`), and on other
 hosts the agent starts without them.
