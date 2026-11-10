@@ -1321,6 +1321,9 @@ impl Condition {
     /// Condition type for an agent that still reads values from an environment file, which a later
     /// release stops reading. Its message names them and where to move them.
     pub const ENVIRONMENT_FILE: &'static str = "EnvironmentFile";
+    /// Condition type for an agent the person agreed could read files that may hold real keys, such
+    /// as a checkout's `.env`. Its message names them.
+    pub const EXPOSED_FILES: &'static str = "ExposedFiles";
     /// Condition type for declared SSH access underneath `Ready`.
     pub const SSH_READY: &'static str = "SshReady";
     /// VNC access is reconciled and the bridge to the desktop is listening.

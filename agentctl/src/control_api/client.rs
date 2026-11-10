@@ -7,10 +7,10 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, sessions};
 
 use super::protocol::{
-    AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, DaemonInfo, DirectoryParams,
-    ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult, MAX_RESPONSE_BYTES,
-    METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY, METHOD_AUTH_LOGIN,
-    METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE,
+    AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, CODE_EXPOSED_FILES, DaemonInfo,
+    DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
+    MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY,
+    METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE,
     METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
     METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SECRET_LIST, METHOD_SECRET_REMOVE, METHOD_SECRET_SET,
     METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
@@ -723,6 +723,12 @@ impl Client {
             return Err(Error::Invalid("invalid Control API response".into()));
         }
         if let Some(error) = response.error {
+            // A client asks about the files, so it gets them as they are.
+            if error.code == CODE_EXPOSED_FILES
+                && let Some(files) = error.data.clone().and_then(|data| serde_json::from_value(*data).ok())
+            {
+                return Err(Error::ExposedFiles(files));
+            }
             return Err(Error::Rpc(error));
         }
         let result = serde_json::from_value(

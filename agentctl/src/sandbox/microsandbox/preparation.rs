@@ -307,6 +307,7 @@ spec:
             origin: crate::Origin::Local,
             lifetime: crate::Lifetime::UntilDeleted,
             bindings: std::collections::BTreeMap::new(),
+            exposed_files: std::collections::BTreeSet::new(),
         }
     }
 
@@ -552,6 +553,7 @@ spec:
             origin: crate::Origin::Local,
             lifetime: crate::Lifetime::UntilDeleted,
             bindings: std::collections::BTreeMap::new(),
+            exposed_files: std::collections::BTreeSet::new(),
         }
     }
 

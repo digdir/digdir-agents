@@ -50,6 +50,10 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Changed
 
+- `agentctl apply`, `agentctl run` and `agentctl tui` ask before mounting a folder that holds `.env` files, or copying one into a `kind: Volume`, instead of refusing: ([#436](https://github.com/digdir/digdir-agents/pull/436))
+  - `y` agrees only to the files named, which `agentctl describe` lists under `ExposedFiles`
+  - without a terminal, they refuse unless given `--allow-env-files`
+  - a running agent sees a `.env` added later to a folder it mounts
 - Breaking: the self-dev and dotnet-dev agents take GitHub from `agentctl github login default` and Pi's key from `agentctl secret set aivar --hosts api.aivar.no`, instead of `.env`. Run both before applying them again, or they run without GitHub and Pi. ([moving off the environment file](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/moving-off-the-environment-file.md))
 - Applying a manifest that adds, removes or renames instruction files or skills updates the agent in place, keeping its disk and sessions, instead of being refused. A skill the agent no longer declares is removed from its harnesses, while the skills its image ships stay.
 - The Agent sandbox section at the top of an agent's instructions now tells the agent that what it sends through the host, such as pushes, pull requests, comments and API calls, reaches real services and people. ([#372](https://github.com/digdir/digdir-agents/pull/372))

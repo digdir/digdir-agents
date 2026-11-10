@@ -11,6 +11,7 @@ pub mod control_plane;
 mod controller;
 pub mod definitions;
 mod environment;
+pub mod exposed;
 pub mod github;
 pub mod harness;
 pub mod local;
@@ -112,6 +113,10 @@ pub enum Error {
     /// A YAML manifest was invalid.
     #[error("invalid YAML: {0}")]
     Yaml(#[from] serde_yaml_ng::Error),
+    /// The agent would be able to read files that may hold real keys, which the request did not
+    /// name as agreed to. A client asks the person about them and names them in the request again.
+    #[error("{}", exposed::refusal(.0))]
+    ExposedFiles(Vec<exposed::ExposedFile>),
     /// The Control API returned an error. agentd's message is shown as it is.
     #[error("{0}")]
     Rpc(#[from] control_api::ResponseError),

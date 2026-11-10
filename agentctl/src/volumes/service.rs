@@ -23,6 +23,11 @@ pub struct ApplyVolumeRequest {
     pub manifest_path: Option<PathBuf>,
     /// The volume as its manifest declares it.
     pub volume: Volume,
+    /// The files that may hold real keys, such as a `.env`, that the person agreed to let every
+    /// agent that mounts the copy read, as absolute host paths. agentd refuses the request when the
+    /// source holds any other, unless the volume's latest copy held it already.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub allow_exposed_files: std::collections::BTreeSet<PathBuf>,
 }
 
 /// Stores the volumes clients declare and reports their revisions.
@@ -77,7 +82,7 @@ impl VolumeService {
         }
         let VolumeSpec::Copy { source } = &mut desired.spec;
         *source = resolve_source(&request.source_directory, source).await?;
-        let fingerprint = self.fingerprint_source(source.clone()).await?;
+        let (fingerprint, exposed) = self.fingerprint_source(source.clone()).await?;
         let provenance = crate::Provenance {
             source_directory: request.source_directory,
             manifest_path: request.manifest_path,
@@ -116,6 +121,7 @@ impl VolumeService {
                     let expected_version = current.version;
                     let spec_changed = current.volume.spec != desired.spec;
                     let status = &mut current.volume.status;
+                    let exposed = agreed(&exposed, status, &request.allow_exposed_files)?;
                     // A copy is taken of a source that differs from the one the copy being taken, or
                     // else the latest revision, holds. A failed copy no longer matters then.
                     let needs_copy = status.copying().map_or_else(
@@ -132,7 +138,7 @@ impl VolumeService {
                     }
                     if needs_copy {
                         let number = status.latest().map_or(1, |revision| revision.number + 1);
-                        status.copy = Some(requested_copy(number, &fingerprint));
+                        status.copy = Some(requested_copy(number, &fingerprint, exposed));
                     } else if failed {
                         status.copy = None;
                     }
@@ -144,8 +150,9 @@ impl VolumeService {
                     (current, expected_version)
                 }
                 Err(Error::VolumeNotFound(_)) => {
+                    let exposed = agreed(&exposed, &desired.status, &request.allow_exposed_files)?;
                     let mut volume = desired.clone();
-                    volume.status.copy = Some(requested_copy(1, &fingerprint));
+                    volume.status.copy = Some(requested_copy(1, &fingerprint, exposed));
                     let record = VolumeRecord {
                         id: VolumeId::generate(),
                         version: 0,
@@ -168,9 +175,12 @@ impl VolumeService {
         }
     }
 
-    /// Fingerprints a resolved source, refusing one the copy must not hold: agentd's home, or a
-    /// secret file.
-    async fn fingerprint_source(&self, source: PathBuf) -> Result<fingerprint::Fingerprint, Error> {
+    /// Fingerprints a resolved source, refusing one the copy must not hold, agentd's home, and
+    /// finds the files in it that may hold real keys, including agents' environment files.
+    async fn fingerprint_source(
+        &self,
+        source: PathBuf,
+    ) -> Result<(fingerprint::Fingerprint, Vec<crate::exposed::ExposedFile>), Error> {
         if let Some(home) = &self.home {
             let home = tokio::fs::canonicalize(home).await.unwrap_or_else(|_| home.clone());
             if home.starts_with(&source) || source.starts_with(&home) {
@@ -182,8 +192,17 @@ impl VolumeService {
                 )));
             }
         }
-        crate::control_plane::reject_secrets_in_copy(self.agents.as_ref(), "spec.source", &source).await?;
-        fingerprint::take(source).await
+        let environment_files = crate::control_plane::environment_files(self.agents.as_ref()).await?;
+        let fingerprint = fingerprint::take(source.clone()).await?;
+        let named = fingerprint.exposed.clone();
+        let exposed = tokio::task::spawn_blocking(move || {
+            crate::exposed::classify(&source, None, named, &environment_files)
+                .into_iter()
+                .collect()
+        })
+        .await
+        .map_err(|error| Error::Daemon(format!("looking for .env files failed: {error}")))?;
+        Ok((fingerprint, exposed))
     }
 
     /// Gets a volume with its revisions and the agents that use them.
@@ -289,13 +308,34 @@ fn report(record: VolumeRecord, users: &BTreeMap<(VolumeId, u64), Vec<String>>, 
     volume
 }
 
-fn requested_copy(number: u64, fingerprint: &fingerprint::Fingerprint) -> CopyStatus {
+/// The paths of the files that may hold real keys `exposed` in a volume's source, once the person
+/// agreed to each: in `allowed`, or held by the latest copy or the one being taken, which they agreed
+/// to before. Only another file asks again.
+fn agreed(
+    exposed: &[crate::exposed::ExposedFile],
+    status: &VolumeStatus,
+    allowed: &std::collections::BTreeSet<PathBuf>,
+) -> Result<std::collections::BTreeSet<PathBuf>, Error> {
+    let copies = status.latest().map(|latest| &latest.exposed_files);
+    let copies = copies
+        .into_iter()
+        .chain(status.copying().map(|copy| &copy.exposed_files));
+    let allowed = copies.flatten().chain(allowed).cloned().collect();
+    crate::exposed::consented(exposed.to_vec(), &allowed)
+}
+
+fn requested_copy(
+    number: u64,
+    fingerprint: &fingerprint::Fingerprint,
+    exposed_files: std::collections::BTreeSet<PathBuf>,
+) -> CopyStatus {
     CopyStatus {
         number,
         created: OffsetDateTime::now_utc(),
         fingerprint: fingerprint.digest.clone(),
         files: fingerprint.files,
         bytes: fingerprint.bytes,
+        exposed_files,
         failure: None,
         progress: None,
     }

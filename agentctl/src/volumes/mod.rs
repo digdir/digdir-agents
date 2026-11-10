@@ -141,6 +141,10 @@ pub struct Revision {
     pub files: u64,
     /// Bytes in those files.
     pub bytes: u64,
+    /// The files in the copy that may hold real keys, such as a `.env`, which the person agreed to
+    /// let every agent that mounts it read.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub exposed_files: std::collections::BTreeSet<PathBuf>,
     /// Where the copy is stored.
     pub storage: RevisionStorage,
     /// Agents whose sandboxes mount the revision, as agentd reports it.
@@ -167,6 +171,10 @@ pub struct CopyStatus {
     pub files: u64,
     /// Bytes in those files.
     pub bytes: u64,
+    /// The files in the source then that may hold real keys, which the person agreed to let every
+    /// agent that mounts the copy read.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub exposed_files: std::collections::BTreeSet<PathBuf>,
     /// Why the copy failed, once it has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
@@ -272,6 +280,10 @@ pub struct PinnedRevision {
     pub revision: u64,
     /// Where its copy is stored.
     pub storage: RevisionStorage,
+    /// The files in its copy that may hold real keys, which the person agreed to when they applied the
+    /// volume, so the agent's `ExposedFiles` condition names them too.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub exposed_files: std::collections::BTreeSet<PathBuf>,
 }
 
 /// Stores volume records, each replaced only if it has not changed since it was read.

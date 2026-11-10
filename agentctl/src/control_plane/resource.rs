@@ -71,6 +71,11 @@ pub struct AgentRecord {
     /// finds.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub bindings: std::collections::BTreeMap<::sandbox::SandboxPath, std::path::PathBuf>,
+    /// The files that may hold real keys in its bind mounts, such as a `.env`, which the person
+    /// agreed to let the agent read when it was last applied or run. Applying it again asks again
+    /// once its mounts hold any other.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub exposed_files: std::collections::BTreeSet<std::path::PathBuf>,
 }
 
 /// Default environment file name, resolved in the source directory.

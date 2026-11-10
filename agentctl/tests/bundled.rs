@@ -194,6 +194,7 @@ pub(crate) fn request(definition: &str, workspace: Option<&Path>) -> RunRequest 
         binds: workspace.map(given).into_iter().collect(),
         lifetime: None,
         name: None,
+        allow_exposed_files: std::collections::BTreeSet::new(),
     }
 }
 
@@ -217,6 +218,7 @@ fn apply(directory: &Path, agent: Agent) -> ApplyRequest {
         env_file: None,
         binds: Vec::new(),
         create_only: false,
+        allow_exposed_files: std::collections::BTreeSet::new(),
         agent,
     }
 }
@@ -449,6 +451,7 @@ async fn a_definition_on_disk_runs_like_a_bundled_one() {
         binds: vec![given(&workspace)],
         lifetime: None,
         name: name.map(str::to_owned),
+        allow_exposed_files: std::collections::BTreeSet::new(),
     };
 
     let (created, _) = fixture.control_plane.run(local(None)).await.expect("run");
@@ -624,8 +627,14 @@ async fn a_folder_that_is_not_one_projects_is_refused() {
         .run(request("builder", Some(&workspace)))
         .await
         .expect_err("a workspace with a secret file");
-    assert!(error.to_string().contains(".env"), "{error}");
+    let Error::ExposedFiles(files) = &error else {
+        panic!("{error}");
+    };
     assert_eq!(fixture.store.list().await.expect("agents").len(), 0);
+    let mut agreed = request("builder", Some(&workspace));
+    agreed.allow_exposed_files = files.iter().map(|file| file.path.clone()).collect();
+    let (ran, _) = fixture.control_plane.run(agreed).await.expect("agreed to");
+    assert_eq!(ran.agent.metadata.name, "builder-repo");
 }
 
 #[test]
@@ -672,6 +681,7 @@ async fn applying_a_manifest_that_now_names_the_given_folder_forgets_it_was_give
         binds,
         lifetime: None,
         name: None,
+        allow_exposed_files: std::collections::BTreeSet::new(),
     };
     let (given, _) = fixture
         .control_plane
@@ -755,6 +765,7 @@ async fn a_folder_given_for_a_bind_mount_replaces_the_manifests_and_makes_anothe
         binds,
         lifetime: None,
         name: None,
+        allow_exposed_files: std::collections::BTreeSet::new(),
     };
     let at = |folder: &Path| BindSource {
         source: folder.to_path_buf(),

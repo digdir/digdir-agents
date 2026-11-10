@@ -278,6 +278,7 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
         origin: agent::Origin::Local,
         lifetime: agent::Lifetime::UntilDeleted,
         bindings: std::collections::BTreeMap::new(),
+        exposed_files: std::collections::BTreeSet::new(),
     }
 }
 
@@ -2403,6 +2404,7 @@ async fn session_ensure_persists_intent_before_waiting_for_agent_convergence() {
                 origin: agent::Origin::Local,
                 lifetime: agent::Lifetime::UntilDeleted,
                 bindings: std::collections::BTreeMap::new(),
+                exposed_files: std::collections::BTreeSet::new(),
             },
             0,
         )

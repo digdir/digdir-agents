@@ -33,6 +33,7 @@ fn record_with_id(name: &str, generation: u64, id: AgentId) -> AgentRecord {
         origin: agent::Origin::Local,
         lifetime: agent::Lifetime::UntilDeleted,
         bindings: std::collections::BTreeMap::new(),
+        exposed_files: std::collections::BTreeSet::new(),
     }
 }
 
@@ -314,6 +315,7 @@ fn volume_revisions_are_stored_with_a_new_agent_and_kept_by_updates() {
                             .parse()
                             .expect("Provider Volume ID"),
                     },
+                    exposed_files: std::collections::BTreeSet::new(),
                 }),
             ),
             (sandbox::SandboxPath::new("/home/agent/code/docs"), None),

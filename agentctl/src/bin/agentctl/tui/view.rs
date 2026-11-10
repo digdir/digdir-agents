@@ -908,6 +908,9 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal, hit_map
                 .row(note_line(&after))
                 .render(frame, area, FORM_WIDTH, hit_map);
         }
+        Modal::ConfirmExposedFiles {
+            reader, action, files, ..
+        } => render_confirm_exposed_files(frame, area, reader, action, files, hit_map),
         Modal::NewSession(form) => render_new_session(frame, area, form, hit_map),
         Modal::CreateAgent(form) => render_create_agent(frame, area, form, &app.agents, hit_map),
         Modal::ApplyVolume(form) => render_apply_volume(frame, area, form, &app.volumes, hit_map),
@@ -1009,6 +1012,55 @@ fn render_confirm_quit(frame: &mut Frame, area: Rect, app: &App, hit_map: &mut H
         form = form.row(note_line(&format!("  …and {more} more")));
     }
     form.render(frame, area, FORM_WIDTH, hit_map);
+}
+
+/// The rows that name `files` in their dialog, each in full. Consent covers every file, so none
+/// may be cut short or left out.
+fn exposed_file_rows(files: &[agent::exposed::ExposedFile]) -> Vec<String> {
+    let width = usize::from(FORM_WIDTH.saturating_sub(4));
+    crate::consent::listed(files)
+        .iter()
+        .flat_map(|file| wrap(&format!("  {file}"), width))
+        .collect()
+}
+
+/// Whether the dialog can name every one of `files` on an 80x24 terminal. When it cannot, the TUI
+/// does not ask, as agreeing would cover files it never showed.
+pub(super) fn exposed_files_fit(files: &[agent::exposed::ExposedFile]) -> bool {
+    const ROWS: usize = 10;
+    exposed_file_rows(files).len() <= ROWS
+}
+
+/// Names the files that may hold real keys an agent would read, as `agentctl apply` does.
+fn render_confirm_exposed_files(
+    frame: &mut Frame,
+    area: Rect,
+    reader: &str,
+    action: &str,
+    files: &[agent::exposed::ExposedFile],
+    hit_map: &mut HitMap,
+) {
+    let width = usize::from(FORM_WIDTH.saturating_sub(4));
+    let folder = files
+        .first()
+        .filter(|first| files.iter().all(|file| file.folder == first.folder))
+        .map(|first| abbreviate_home(&first.folder.display().to_string()));
+    let these = folder.map_or_else(
+        || "these files:".to_owned(),
+        |folder| format!("these files in {folder}:"),
+    );
+    let mut form = Form::new(" .env files ", Color::Yellow, &CONFIRM_HINTS)
+        .row(Line::from(format!("{reader} will be able to read")));
+    for row in wrap(&these, width) {
+        form = form.row(Line::from(row));
+    }
+    for row in exposed_file_rows(files) {
+        form = form.row(Line::styled(row, Style::new().fg(Color::Yellow)));
+    }
+    form.row(note_line("They may hold real keys, and the agent can reach"))
+        .row(note_line("the internet."))
+        .row(Line::from(format!("{action} anyway?")))
+        .render(frame, area, FORM_WIDTH, hit_map);
 }
 
 /// Shows the exact line SSH setup adds, and where, before anything is written.

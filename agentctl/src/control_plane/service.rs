@@ -1,12 +1,11 @@
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
     rc::Rc,
 };
 
 use ::sandbox::{SandboxPath, mount::Mount};
-use ignore::WalkBuilder;
 
 use crate::{Agent, AgentId, Error, MountSpec, definitions::DefinitionSource, progress::ProvisioningState};
 
@@ -32,6 +31,11 @@ pub struct ApplyRequest {
     /// Fail instead of updating when the name already identifies an agent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub create_only: bool,
+    /// The files that may hold real keys, such as a checkout's `.env`, that the person agreed to let
+    /// the agent read, as absolute host paths. agentd refuses the request when its mounts hold any
+    /// other, also on an update, unless the agent was allowed to read it before.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub allow_exposed_files: BTreeSet<PathBuf>,
     /// Agent manifest to store.
     pub agent: Agent,
 }
@@ -213,14 +217,22 @@ impl ControlPlane {
                         origin: prepared.origin.clone(),
                         lifetime: current.lifetime,
                         bindings: bound.bindings,
+                        exposed_files: BTreeSet::new(),
                     };
-                    self.reject_exposed_secrets(&record).await?;
+                    // What the agent could read before was agreed to, so only another file asks again.
+                    let allowed = request
+                        .allow_exposed_files
+                        .union(&current.exposed_files)
+                        .cloned()
+                        .collect();
+                    self.check_exposed_files(&mut record, &allowed).await?;
                     // The folders it was given count too: `run` finds an agent by them.
                     if current.agent.spec == record.agent.spec
                         && current.source_directory == record.source_directory
                         && current.manifest_path == record.manifest_path
                         && current.env_file == record.env_file
                         && current.bindings == record.bindings
+                        && current.exposed_files == record.exposed_files
                     {
                         self.notifier.notify(current.id);
                         return Ok(self.resource(current));
@@ -239,7 +251,7 @@ impl ControlPlane {
                     let mut new = prepared.clone();
                     Box::pin(new.bind(&given)).await?;
                     new.agent.spec.set_run_state(applied_run_state(run_state, None));
-                    Box::pin(self.create(&new, crate::Lifetime::UntilDeleted)).await
+                    Box::pin(self.create(&new, crate::Lifetime::UntilDeleted, &request.allow_exposed_files)).await
                 }
                 Err(error) => return Err(error),
             };
@@ -255,78 +267,84 @@ impl ControlPlane {
         }
     }
 
-    /// Rejects desired state that would expose a `.env` file or a selected secret file inside a sandbox.
+    /// Records in `record` the files that may hold real keys in its bind mounts, once the person has
+    /// agreed to each of them in `allowed`, and refuses one that would expose an agent's environment
+    /// file in a sandbox.
     ///
-    /// Secret files hold the real values that mediation exists to keep out of sandboxes. A bind
-    /// mount whose source contains a `.env` file, this agent's selected non-default secret file or
-    /// another active agent's selected secret file would hand those values to the guest, so the
-    /// combination is refused at apply time. The mounts checked are those the agent's sandbox
-    /// gets, with canonical sources: an optional source that has since moved, such as through a
-    /// symbolic link, keeps the directory the agent was created with. A volume's copy of a
-    /// directory holding the agent's selected secret file is refused too, since any agent may
-    /// mount it.
-    pub(super) async fn reject_exposed_secrets(&self, record: &AgentRecord) -> Result<(), Error> {
-        let desired = &record.agent;
-        reject_dot_env_in_bind_mounts(bind_mount_sources(record), "bind-mounts").await?;
-        let mut secret_files = Vec::new();
-        if desired.spec.reads_secret_file() {
-            let path = record.env_file_path();
-            if record.env_file.is_some() || tokio::fs::try_exists(&path).await? {
-                secret_files.push((desired.metadata.name.clone(), canonical_secret_file(&path).await));
-            }
-        }
-        let mut mounts = bind_mount_sources(record)
-            .into_iter()
-            .map(|(field, source)| (field, "bind-mounts", source))
-            .collect::<Vec<_>>();
-        if desired.spec.reads_secret_file() {
-            // A copy any agent may mount must not hold the file, whichever agent selects it.
-            for volume in self.volumes.list().await? {
-                let crate::volumes::VolumeSpec::Copy { source } = volume.volume.spec;
-                let name = format!("Volume {:?}", volume.volume.metadata.name);
-                // Agents may still mount revisions of an earlier source.
-                let sources = std::iter::once(source)
-                    .chain(
-                        volume
-                            .volume
-                            .status
-                            .revisions
-                            .into_iter()
-                            .map(|revision| revision.source),
-                    )
-                    .collect::<std::collections::BTreeSet<_>>();
-                mounts.extend(sources.into_iter().map(|source| (name.clone(), "copies", source)));
-            }
-        }
+    /// The agent can reach the internet, so it may read such a file only when the person agreed to
+    /// that file. An environment file holds the real values that mediation exists to keep out of
+    /// sandboxes, so no agent may see one: neither in this agent's bind mounts, nor this agent's in
+    /// another agent's or in a volume's copy, which any agent may mount. The mounts checked are those
+    /// the agent's sandbox gets, with canonical sources: an optional source that has since moved,
+    /// such as through a symbolic link, keeps the directory the agent was created with.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ExposedFiles`] naming every such file in its bind mounts when the person has
+    /// not agreed to them all.
+    pub(super) async fn check_exposed_files(
+        &self,
+        record: &mut AgentRecord,
+        allowed: &BTreeSet<PathBuf>,
+    ) -> Result<(), Error> {
+        let own = environment_file(record).await?;
+        let mut environment_files = own.iter().cloned().collect::<Vec<_>>();
+        let mut others = Vec::new();
         for other in self.store.list().await? {
             if other.id == record.id || other.agent.metadata.deletion_timestamp.is_some() {
                 continue;
             }
-            if other.agent.spec.reads_secret_file() {
-                let path = other.env_file_path();
-                if other.env_file.is_some() || tokio::fs::try_exists(&path).await? {
-                    secret_files.push((other.agent.metadata.name.clone(), canonical_secret_file(&path).await));
-                }
-            }
-            if desired.spec.reads_secret_file() {
-                mounts.extend(
-                    bind_mount_sources(&other)
-                        .into_iter()
-                        .map(|(_, source)| (format!("Agent {:?}", other.agent.metadata.name), "bind-mounts", source)),
-                );
-            }
+            environment_files.extend(environment_file(&other).await?);
+            others.push(other);
         }
-        for (owner, secret_file) in &secret_files {
-            for (mount, verb, source) in &mounts {
-                if secret_file.starts_with(source) {
-                    return Err(Error::Invalid(format!(
-                        "{mount} {verb} {} which contains the secret file {} of agent {owner:?}; \
-                         the sandbox would see its real values. Keep secret files outside mounted directories, \
-                         for example with `agentctl apply --env-file`",
-                        source.display(),
-                        secret_file.display(),
-                    )));
-                }
+        let folders = record
+            .indexed_sandbox_mounts()
+            .filter_map(|(_, mount)| match mount {
+                Mount::Bind { source, target, .. } => Some((source, Some(target))),
+                _ => None,
+            })
+            .collect();
+        let found = crate::exposed::find(folders, environment_files).await?;
+        record.exposed_files = crate::exposed::consented(found, allowed)?;
+
+        // This agent's environment file, in what other agents see.
+        let Some(secret_file) = own else {
+            return Ok(());
+        };
+        let mut mounts = Vec::new();
+        for volume in self.volumes.list().await? {
+            let crate::volumes::VolumeSpec::Copy { source } = volume.volume.spec;
+            let name = format!("Volume {:?}", volume.volume.metadata.name);
+            // Agents may still mount revisions of an earlier source.
+            let sources = std::iter::once(source)
+                .chain(
+                    volume
+                        .volume
+                        .status
+                        .revisions
+                        .into_iter()
+                        .map(|revision| revision.source),
+                )
+                .collect::<BTreeSet<_>>();
+            mounts.extend(sources.into_iter().map(|source| (name.clone(), "copies", source)));
+        }
+        for other in &others {
+            mounts.extend(
+                bind_mount_sources(other)
+                    .into_iter()
+                    .map(|(_, source)| (format!("Agent {:?}", other.agent.metadata.name), "bind-mounts", source)),
+            );
+        }
+        for (mount, verb, source) in &mounts {
+            if secret_file.starts_with(source) {
+                return Err(Error::Invalid(format!(
+                    "{mount} {verb} {} which contains {}, the environment file of agent {:?}, so its sandbox would \
+                     see the real values. Move them as {} says",
+                    source.display(),
+                    secret_file.display(),
+                    record.agent.metadata.name,
+                    crate::exposed::ENVIRONMENT_FILE_GUIDE,
+                )));
             }
         }
         Ok(())
@@ -580,55 +598,6 @@ impl ControlPlane {
             Err(error) => Err(error),
         }
     }
-}
-
-/// Rejects any bind source containing a `.env` file, case-insensitively and regardless of ignores.
-///
-/// Filesystem traversal is blocking and may cover a whole checkout, so it stays off the local
-/// async runtime. Directories named `.env` are allowed. Symbolic links are not followed, but a
-/// link itself named `.env` is rejected. A source that no longer exists, as an optional one may
-/// not, exposes nothing.
-async fn reject_dot_env_in_bind_mounts(mounts: Vec<(String, PathBuf)>, verb: &'static str) -> Result<(), Error> {
-    tokio::task::spawn_blocking(move || {
-        for (field, source) in mounts {
-            if matches!(source.try_exists(), Ok(false)) {
-                continue;
-            }
-            for result in WalkBuilder::new(&source)
-                .hidden(false)
-                .ignore(false)
-                .git_ignore(false)
-                .git_global(false)
-                .git_exclude(false)
-                .parents(false)
-                .follow_links(false)
-                .build()
-            {
-                let entry = result.map_err(|error| {
-                    Error::Invalid(format!(
-                        "cannot inspect {field}.source {} for .env files: {error}",
-                        source.display()
-                    ))
-                })?;
-                let is_directory = entry.file_type().is_some_and(|kind| kind.is_dir());
-                let is_env_file = entry
-                    .file_name()
-                    .as_encoded_bytes()
-                    .eq_ignore_ascii_case(super::resource::ENV_FILE.as_bytes());
-                if !is_directory && is_env_file {
-                    return Err(Error::Invalid(format!(
-                        "{field} {verb} {} which contains .env at {}; the sandbox would see its real values. \
-                         Remove the file or keep it outside mounted directories",
-                        source.display(),
-                        entry.path().display(),
-                    )));
-                }
-            }
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|error| Error::Daemon(format!("bind-mount .env inspection failed: {error}")))?
 }
 
 impl ControlPlane {
@@ -909,8 +878,9 @@ async fn canonical_or_original(path: &std::path::Path) -> PathBuf {
 }
 
 /// Rejects copying the host directory `source`, named by `field`, into sandboxes when it holds an
-/// active agent's selected secret file, whose real values the sandboxes would see. `source` is
-/// canonical. A `.env` file in it is found while the directory is fingerprinted.
+/// active agent's environment file, whose real values the sandboxes would see. `source` is
+/// canonical. Applying a volume refuses such a file already, so this catches an agent applied
+/// since that reads one.
 ///
 /// # Errors
 ///
@@ -920,26 +890,47 @@ pub(crate) async fn reject_secrets_in_copy(
     field: &str,
     source: &std::path::Path,
 ) -> Result<(), Error> {
-    for agent in agents.list().await? {
-        if agent.agent.metadata.deletion_timestamp.is_some() || !agent.agent.spec.reads_secret_file() {
-            continue;
-        }
-        let path = agent.env_file_path();
-        if agent.env_file.is_none() && !tokio::fs::try_exists(&path).await? {
-            continue;
-        }
-        let secret_file = canonical_secret_file(&path).await;
+    for secret_file in environment_files(agents).await? {
         if secret_file.starts_with(source) {
             return Err(Error::Invalid(format!(
-                "{field} copies {} which contains the secret file {} of agent {:?}; the sandboxes would see its \
-                 real values. Keep secret files outside copied directories, for example with `agentctl apply --env-file`",
+                "{field} copies {} which contains the environment file {}; the sandboxes would see its real values. \
+                 Move them out as {} says",
                 source.display(),
                 secret_file.display(),
-                agent.agent.metadata.name,
+                crate::exposed::ENVIRONMENT_FILE_GUIDE,
             )));
         }
     }
     Ok(())
+}
+
+/// The canonical environment files the active agents read values from.
+///
+/// # Errors
+///
+/// Returns an error when the agents cannot be read.
+pub(crate) async fn environment_files(agents: &dyn super::AgentStore) -> Result<Vec<PathBuf>, Error> {
+    let mut files = Vec::new();
+    for agent in agents.list().await? {
+        if agent.agent.metadata.deletion_timestamp.is_none() {
+            files.extend(environment_file(&agent).await?);
+        }
+    }
+    Ok(files)
+}
+
+/// The canonical environment file `record`'s agent reads values from, secret or not, if it reads
+/// any: the file it records, or its `.env` when that exists. The file may hold more keys than the
+/// agent reads.
+async fn environment_file(record: &AgentRecord) -> Result<Option<PathBuf>, Error> {
+    if record.agent.spec.environment_file_variables().is_empty() {
+        return Ok(None);
+    }
+    let path = record.env_file_path();
+    if record.env_file.is_none() && !tokio::fs::try_exists(&path).await? {
+        return Ok(None);
+    }
+    Ok(Some(canonical_secret_file(&path).await))
 }
 
 /// Canonical form of a secret file for comparison against canonical bind mount sources.

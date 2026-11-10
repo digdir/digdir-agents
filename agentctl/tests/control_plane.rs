@@ -523,12 +523,34 @@ fn apply_request_in(name: &str, source_directory: PathBuf) -> agent::control_pla
         binds: Vec::new(),
         source_directory,
         create_only: false,
+        allow_exposed_files: std::collections::BTreeSet::new(),
         agent: agent(name),
     }
 }
 
 fn sandbox_name(record: &AgentRecord) -> SandboxName {
     SandboxName::new(format!("agent-{}", record.id)).expect("Agent ID should form a valid sandbox name")
+}
+
+/// The files an error says the agent would read, each within its folder and whether it is an
+/// environment file. Another error is its message, so an assertion shows it.
+fn exposed(error: &Error) -> Vec<(PathBuf, bool)> {
+    match error {
+        Error::ExposedFiles(files) => files
+            .iter()
+            .map(|file| (file.relative().to_path_buf(), file.environment_file))
+            .collect(),
+        other => vec![(PathBuf::from(other.to_string()), false)],
+    }
+}
+
+/// The paths of the files an error says the agent would read, which a client names once the person
+/// agrees; none for another error.
+fn agreed(error: &Error) -> std::collections::BTreeSet<PathBuf> {
+    match error {
+        Error::ExposedFiles(files) => files.iter().map(|file| file.path.clone()).collect(),
+        _ => std::collections::BTreeSet::new(),
+    }
 }
 
 async fn stored(fixture: &Fixture, name: &str) -> AgentRecord {
@@ -1157,10 +1179,7 @@ async fn an_optional_mount_is_checked_for_dot_env_files_when_its_source_exists()
         .apply(request)
         .await
         .expect_err("an optional mount exposes .env as a required one does");
-    assert!(
-        matches!(&error, Error::Invalid(message) if message.contains("spec.sandbox.mounts[0]")),
-        "{error}"
-    );
+    assert_eq!(exposed(&error), [(PathBuf::from(".env"), false)]);
 }
 
 /// An optional source that moves after the agent is created, here by retargeting a symbolic link, leaves its sandbox
@@ -1780,10 +1799,7 @@ async fn selected_secret_file_inside_a_bind_mount_is_rejected() {
         .apply(request.clone())
         .await
         .expect_err("a .env anywhere in the mount is rejected despite the external override");
-    assert!(
-        matches!(&error, Error::Invalid(message) if message.contains("contains .env")),
-        "{error}"
-    );
+    assert_eq!(exposed(&error), [(PathBuf::from(".env"), false)]);
     std::fs::remove_file(root.path().join(".env")).expect("remove environment file");
 
     let mut unchanged = request.clone();
@@ -1802,7 +1818,7 @@ async fn selected_secret_file_inside_a_bind_mount_is_rejected() {
         .apply(inside)
         .await
         .expect_err("an explicit secret file inside the mount is still rejected");
-    assert!(matches!(error, Error::Invalid(_)));
+    assert_eq!(exposed(&error), [(PathBuf::from("secrets.env"), true)]);
 }
 
 #[tokio::test(flavor = "local")]
@@ -1830,12 +1846,141 @@ async fn git_ignored_nested_dot_env_is_rejected_case_insensitively_without_decla
         .apply(request)
         .await
         .expect_err("ignored directories are still inspected case-insensitively for .env files");
-    let expected_path = relative_env.display().to_string();
-    assert!(
-        matches!(&error, Error::Invalid(message)
-            if message.contains("spec.sandbox.mounts[0]") && message.contains(&expected_path)),
-        "{error}"
+    assert_eq!(exposed(&error), [(relative_env, false)]);
+}
+
+/// The person agrees to the files a mount holds, and only to those: another one asks again.
+#[tokio::test(flavor = "local")]
+async fn a_mount_holding_dot_env_files_takes_consent_to_exactly_those_files() {
+    let fixture = fixture();
+    let checkout = tempfile::tempdir().expect("checkout");
+    std::fs::create_dir_all(checkout.path().join("src/web")).expect("web");
+    std::fs::write(checkout.path().join("src/web/.env"), "KEY=value\n").expect("web .env");
+    let source = tempfile::tempdir().expect("manifest directory");
+    let mut request = apply_request_in("worker", source.path().to_path_buf());
+    request.agent.spec.sandbox.mounts.push(MountSpec::Bind {
+        source: Some(checkout.path().to_path_buf()),
+        target: SandboxPath::new("/home/agent/code/checkout"),
+        read_only: false,
+        optional: false,
+    });
+
+    let refused = fixture
+        .control_plane
+        .apply(request.clone())
+        .await
+        .expect_err("not agreed to");
+    let Error::ExposedFiles(files) = &refused else {
+        panic!("{refused}");
+    };
+    assert_eq!(files[0].target, Some(SandboxPath::new("/home/agent/code/checkout")));
+    let mut agreed_to = request.clone();
+    agreed_to.allow_exposed_files = agreed(&refused);
+    fixture.control_plane.apply(agreed_to).await.expect("agreed to");
+    assert_eq!(stored(&fixture, "worker").await.exposed_files, agreed(&refused));
+    reconcile(&fixture, "worker").await;
+    let condition = stored(&fixture, "worker")
+        .await
+        .agent
+        .status
+        .conditions
+        .into_iter()
+        .find(|condition| condition.kind == Condition::EXPOSED_FILES)
+        .expect("the agreed files are recorded");
+    for file in agreed(&refused) {
+        assert!(
+            condition.message.contains(&file.display().to_string()),
+            "{}",
+            condition.message
+        );
+    }
+
+    fixture
+        .control_plane
+        .apply(request.clone())
+        .await
+        .expect("applying again agrees to the same files");
+
+    std::fs::write(checkout.path().join(".env"), "KEY=value\n").expect("another .env");
+    let again = fixture
+        .control_plane
+        .apply(request.clone())
+        .await
+        .expect_err("another file asks again");
+    assert_eq!(
+        exposed(&again),
+        [(PathBuf::from(".env"), false), (PathBuf::from("src/web/.env"), false)]
     );
+    request.allow_exposed_files = agreed(&again);
+    fixture.control_plane.apply(request).await.expect("agreed to both");
+    assert_eq!(stored(&fixture, "worker").await.exposed_files, agreed(&again));
+}
+
+/// An agent's environment file holds its own secrets, which move to stored secrets instead, so
+/// naming it agrees to nothing.
+#[tokio::test(flavor = "local")]
+async fn an_environment_file_beside_a_manifest_is_never_mounted() {
+    let fixture = fixture();
+    let checkout = tempfile::tempdir().expect("checkout");
+    let reviewer = checkout.path().join("agents/reviewer");
+    std::fs::create_dir_all(&reviewer).expect("agent folder");
+    std::fs::write(reviewer.join("agent.yaml"), "").expect("manifest");
+    std::fs::write(reviewer.join(".env"), "GITHUB_TOKEN=value\n").expect("environment file");
+    let source = tempfile::tempdir().expect("manifest directory");
+    let mut request = apply_request_in("builder", source.path().to_path_buf());
+    request.agent.spec.sandbox.mounts.push(MountSpec::Bind {
+        source: Some(checkout.path().to_path_buf()),
+        target: SandboxPath::new("/home/agent/code/checkout"),
+        read_only: true,
+        optional: false,
+    });
+
+    let refused = fixture
+        .control_plane
+        .apply(request.clone())
+        .await
+        .expect_err("an environment file");
+    assert_eq!(exposed(&refused), [(PathBuf::from("agents/reviewer/.env"), true)]);
+    request.allow_exposed_files = agreed(&refused);
+    fixture
+        .control_plane
+        .apply(request)
+        .await
+        .expect_err("naming an environment file agrees to nothing");
+}
+
+/// The file `--env-file` names holds every value an agent reads from it, also plain ones, and may hold
+/// more, so it counts as the agent's environment file whatever its name.
+#[tokio::test(flavor = "local")]
+async fn an_environment_file_for_plain_values_is_never_mounted() {
+    let fixture = fixture();
+    let checkout = tempfile::tempdir().expect("checkout");
+    std::fs::write(
+        checkout.path().join("credentials.env"),
+        "EDITOR=vim\nGITHUB_TOKEN=value\n",
+    )
+    .expect("environment file");
+    let source = tempfile::tempdir().expect("manifest directory");
+    let mut request = apply_request_in("worker", source.path().to_path_buf());
+    request.env_file = Some(checkout.path().join("credentials.env"));
+    request.agent.spec.environment.push(EnvironmentSpec {
+        name: "EDITOR".into(),
+        source: None,
+        value: None,
+    });
+    request.agent.spec.sandbox.mounts.push(MountSpec::Bind {
+        source: Some(checkout.path().to_path_buf()),
+        target: SandboxPath::new("/home/agent/code/checkout"),
+        read_only: true,
+        optional: false,
+    });
+
+    let refused = fixture
+        .control_plane
+        .apply(request)
+        .await
+        .expect_err("an environment file");
+    assert_eq!(exposed(&refused), [(PathBuf::from("credentials.env"), true)]);
 }
 
 #[tokio::test(flavor = "local")]
@@ -1948,7 +2093,7 @@ async fn secret_file_reached_through_a_symlinked_ancestor_is_still_rejected() {
         .apply(request)
         .await
         .expect_err("the secret file would land inside the mounted checkout");
-    assert!(matches!(error, Error::Invalid(_)), "{error}");
+    assert_eq!(exposed(&error), [(PathBuf::from("secrets/not-yet/worker.env"), true)]);
 }
 
 #[tokio::test(flavor = "local")]
@@ -1986,10 +2131,7 @@ async fn bind_mount_exposing_another_agents_secret_file_is_rejected() {
         .apply(worktree)
         .await
         .expect_err("the mount would expose the other agent's selected environment file");
-    assert!(
-        matches!(&error, Error::Invalid(message) if message.contains("agent \"full\"")),
-        "{error}"
-    );
+    assert_eq!(exposed(&error), [(PathBuf::from("credentials.txt"), true)]);
 }
 
 #[tokio::test(flavor = "local")]

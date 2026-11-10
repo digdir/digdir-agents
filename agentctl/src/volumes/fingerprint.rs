@@ -21,19 +21,20 @@ pub(crate) struct Fingerprint {
     pub(crate) files: u64,
     /// Bytes in those files.
     pub(crate) bytes: u64,
+    /// The files in it that may hold real keys, as [`crate::exposed`] names them, which any agent
+    /// that mounts the copy can read.
+    pub(crate) exposed: Vec<PathBuf>,
 }
 
-/// Fingerprints `directory`. Reading only metadata keeps it quick, even for a large tree.
-///
-/// It refuses a directory holding a `.env` file, as a bind mount's source is refused, since any
-/// agent may mount the copy. Finding it in the same walk keeps applying a volume to one walk.
+/// Fingerprints `directory`. Reading only metadata keeps it quick, even for a large tree, and
+/// finding the files that may hold real keys in the same walk keeps applying a volume to one walk.
 pub(crate) async fn take(directory: PathBuf) -> Result<Fingerprint, Error> {
     tokio::task::spawn_blocking(move || {
         let mut fingerprint = Walk {
             hasher: Sha256::new(),
             files: 0,
             bytes: 0,
-            dot_env: None,
+            exposed: Vec::new(),
         };
         // The directory's own metadata changes when an entry is added and removed again, which
         // its entries alone would not show.
@@ -41,14 +42,6 @@ pub(crate) async fn take(directory: PathBuf) -> Result<Fingerprint, Error> {
             .map(|metadata| fingerprint.metadata(&metadata))
             .and_then(|()| fingerprint.directory(&directory, Path::new("")))
             .map_err(|error| Error::Invalid(format!("cannot read {} to copy it: {error}", directory.display())))?;
-        if let Some(path) = fingerprint.dot_env {
-            return Err(Error::Invalid(format!(
-                "spec.source copies {} which contains .env at {}; the sandbox would see its real values. Remove the \
-                 file or keep it outside mounted directories",
-                directory.display(),
-                directory.join(path).display(),
-            )));
-        }
         Ok(Fingerprint {
             digest: fingerprint
                 .hasher
@@ -60,6 +53,11 @@ pub(crate) async fn take(directory: PathBuf) -> Result<Fingerprint, Error> {
                 }),
             files: fingerprint.files,
             bytes: fingerprint.bytes,
+            exposed: fingerprint
+                .exposed
+                .into_iter()
+                .map(|relative| directory.join(relative))
+                .collect(),
         })
     })
     .await
@@ -70,8 +68,8 @@ struct Walk {
     hasher: Sha256,
     files: u64,
     bytes: u64,
-    /// The first `.env` file found, relative to the directory, which ends the walk.
-    dot_env: Option<PathBuf>,
+    /// The files that may hold real keys, relative to the directory.
+    exposed: Vec<PathBuf>,
 }
 
 impl Walk {
@@ -83,14 +81,8 @@ impl Walk {
             let relative = relative.join(entry.file_name());
             let metadata = std::fs::symlink_metadata(&path)?;
             let kind = metadata.file_type();
-            if !kind.is_dir()
-                && entry
-                    .file_name()
-                    .as_encoded_bytes()
-                    .eq_ignore_ascii_case(crate::control_plane::ENV_FILE.as_bytes())
-            {
-                self.dot_env = Some(relative);
-                return Ok(());
+            if !kind.is_dir() && crate::exposed::is_exposed_name(&entry.file_name()) {
+                self.exposed.push(relative.clone());
             }
             let tag: &[u8] = if kind.is_dir() {
                 b"d"
@@ -111,9 +103,6 @@ impl Walk {
             }
             if kind.is_dir() {
                 self.directory(&path, &relative)?;
-                if self.dot_env.is_some() {
-                    return Ok(());
-                }
             }
         }
         Ok(())

@@ -116,6 +116,7 @@ fn record(name: &str, id: &str, vnc: bool) -> AgentRecord {
         origin: agent::Origin::Local,
         lifetime: agent::Lifetime::UntilDeleted,
         bindings: std::collections::BTreeMap::new(),
+        exposed_files: std::collections::BTreeSet::new(),
     }
 }
 

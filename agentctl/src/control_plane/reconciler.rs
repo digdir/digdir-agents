@@ -276,6 +276,7 @@ impl Reconciler {
         conditions.extend(nested_sandboxes_condition(ensured.nested_sandboxes.as_ref()));
         conditions.extend(optional_sources_condition(record, &ensured.missing_sources));
         conditions.extend(environment_file_condition(record));
+        conditions.extend(exposed_files_condition(record));
         conditions.push(condition(Condition::READY, ConditionStatus::True, "SandboxReady", ""));
         let status = Status::observed(record.agent.metadata.generation, Some(assignment), conditions);
         // As on failure, readiness is stored before followers see the pass end.
@@ -723,10 +724,6 @@ fn optional_sources_condition(record: &AgentRecord, missing_files: &[String]) ->
     })
 }
 
-/// Where to read how to move values out of an environment file.
-const ENVIRONMENT_FILE_GUIDE: &str =
-    "https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/moving-off-the-environment-file.md";
-
 /// Names the values an agent still reads from its environment file, so every client shows what to
 /// move before a later release stops reading it.
 fn environment_file_condition(record: &AgentRecord) -> Option<Condition> {
@@ -739,9 +736,41 @@ fn environment_file_condition(record: &AgentRecord) -> Option<Condition> {
         ConditionStatus::True,
         "Deprecated",
         &format!(
-            "reads {} from {}, which a later release stops reading; see {ENVIRONMENT_FILE_GUIDE}",
+            "reads {} from {}, which a later release stops reading; see {}",
             variables.join(", "),
-            record.env_file_path().display()
+            record.env_file_path().display(),
+            crate::exposed::ENVIRONMENT_FILE_GUIDE,
+        ),
+    ))
+}
+
+/// Names the files that may hold real keys which the person agreed to let the agent read: in its bind
+/// mounts when it was applied or run, and in the copies of the volumes it mounts when they were applied.
+/// A file made since in a folder it mounts is visible to it too, but not named.
+fn exposed_files_condition(record: &AgentRecord) -> Option<Condition> {
+    let copied = record
+        .volume_revisions
+        .values()
+        .flatten()
+        .flat_map(|pin| &pin.exposed_files);
+    let files = record
+        .exposed_files
+        .iter()
+        .chain(copied)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|file| file.display().to_string())
+        .collect::<Vec<_>>();
+    if files.is_empty() {
+        return None;
+    }
+    Some(condition(
+        Condition::EXPOSED_FILES,
+        ConditionStatus::True,
+        "Agreed",
+        &format!(
+            "you agreed to let the agent read {}, which may hold real keys",
+            crate::exposed::sentence_list(&files)
         ),
     ))
 }

@@ -27,8 +27,7 @@ use crate::progress::Wait;
 use crate::watch::RECONNECT_INTERVAL;
 use agent::manifest::MANIFEST_FILE;
 use app::{
-    Action, App, CreateForm, ForwardEntry, ForwardForm, ManifestCandidate, Modal, MouseAction, PromptForm, RowTarget,
-    VolumeForm,
+    Action, App, ForwardEntry, ForwardForm, ManifestCandidate, Modal, MouseAction, PromptForm, RowTarget, VolumeForm,
 };
 use open::{DesktopViewer, OpenTarget, SshSetup};
 use terminal::Tui;
@@ -299,7 +298,12 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                     spawn_volume_discovery(home.socket_path(), inputs.clone());
                 }
             }
-            Action::ApplyVolume { manifest, name, form } => apply_volume(&mut app, client, manifest, name, form).await,
+            Action::ApplyVolume {
+                manifest,
+                name,
+                allow_exposed_files,
+                form,
+            } => apply_volume(&mut app, client, manifest, name, allow_exposed_files, form).await,
             Action::StopAll { agents } => {
                 let failed: Vec<String> =
                     futures_util::future::join_all(agents.iter().map(|agent| client.stop_now(agent)))
@@ -332,13 +336,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                     spawn_discovery(home.socket_path(), inputs.clone());
                 }
             }
-            Action::CreateAgent {
-                manifest,
-                name,
-                env_file,
-                folder,
-                form,
-            } => create(&mut app, client, manifest, name, env_file, folder, form).await,
+            action @ Action::CreateAgent { .. } => create(&mut app, client, action).await,
             Action::CreateForward { agent, spec, replace } => {
                 if let Some(id) = replace {
                     forwards.remove(id);
@@ -891,18 +889,60 @@ fn manifest_candidates(
         .collect()
 }
 
-/// Applies the manifest under the chosen name; a rejection reopens the form with the error.
-async fn create(
-    app: &mut App,
-    client: &Client,
-    manifest: PathBuf,
-    name: String,
-    env_file: Option<PathBuf>,
-    folder: Option<PathBuf>,
-    mut form: CreateForm,
-) {
-    match create_agent(client, manifest, name, env_file, folder).await {
+/// Applies the manifest of `action`, an [`Action::CreateAgent`], under the chosen name. Files that
+/// may hold real keys ask first, and a rejection reopens the form with the error.
+async fn create(app: &mut App, client: &Client, action: Action) {
+    let Action::CreateAgent {
+        manifest,
+        name,
+        env_file,
+        folder,
+        allow_exposed_files,
+        mut form,
+    } = action
+    else {
+        return;
+    };
+    let applied = async {
+        let mut request = crate::read_apply_request(manifest.clone(), env_file.clone())?;
+        request.agent.metadata.name.clone_from(&name);
+        request.binds = folder
+            .iter()
+            .map(|source| agent::control_plane::BindSource {
+                source: source.clone(),
+                target: None,
+            })
+            .collect();
+        request.create_only = true;
+        request.allow_exposed_files = allow_exposed_files.clone();
+        client.apply(request).await
+    }
+    .await;
+    match applied {
         Ok(applied) => app.agent_applied(applied),
+        Err(Error::ExposedFiles(files)) => match ask_about(&files, &allow_exposed_files) {
+            Ok(allow_exposed_files) => {
+                let reader = format!("agent/{name}");
+                let then = Action::CreateAgent {
+                    manifest,
+                    name,
+                    env_file,
+                    folder,
+                    allow_exposed_files,
+                    form,
+                };
+                app.modal = Some(Modal::ConfirmExposedFiles {
+                    reader,
+                    action: "Mount",
+                    files,
+                    then: Box::new(then),
+                });
+            }
+            Err(refusal) => {
+                form.error = Some(refusal);
+                app.modal = Some(Modal::CreateAgent(form));
+            }
+        },
         Err(error) => {
             form.error = Some(error.to_string());
             app.modal = Some(Modal::CreateAgent(form));
@@ -910,48 +950,83 @@ async fn create(
     }
 }
 
-/// Applies a volume manifest, as `name` when given; a rejection reopens the form it came from with the
-/// error, or reports it.
+/// The paths of the `files` agentd found, to name once the person agrees to them, or why agentctl
+/// does not ask: one is an agent's environment file, `allowed` named them all already, or the dialog
+/// cannot show them all.
+fn ask_about(
+    files: &[agent::exposed::ExposedFile],
+    allowed: &std::collections::BTreeSet<PathBuf>,
+) -> Result<std::collections::BTreeSet<PathBuf>, String> {
+    if let Some(refusal) = crate::consent::environment_file_refusal(files) {
+        return Err(refusal);
+    }
+    let paths = files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    if paths.is_subset(allowed) {
+        return Err(Error::ExposedFiles(files.to_vec()).to_string());
+    }
+    if !view::exposed_files_fit(files) {
+        return Err(format!(
+            "{} files that may hold real keys are more than this dialog can show. agentctl apply or agentctl run \
+             at a terminal names them all and asks",
+            files.len()
+        ));
+    }
+    Ok(paths)
+}
+
+/// Applies a volume manifest, as `name` when given; files that may hold real keys ask first, and a
+/// rejection reopens the form it came from with the error, or reports it.
 async fn apply_volume(
     app: &mut App,
     client: &Client,
     manifest: PathBuf,
     name: Option<String>,
+    allow_exposed_files: std::collections::BTreeSet<PathBuf>,
     form: Option<VolumeForm>,
 ) {
+    let mut volume = name.clone().unwrap_or_default();
     let applied = async {
-        let mut request = crate::read_volume_request(manifest)?;
-        if let Some(name) = name {
-            request.volume.metadata.name = name;
+        let mut request = crate::read_volume_request(manifest.clone())?;
+        if let Some(name) = &name {
+            request.volume.metadata.name.clone_from(name);
         }
+        volume.clone_from(&request.volume.metadata.name);
+        request.allow_exposed_files = allow_exposed_files.clone();
         client.apply_volume(request).await
     }
     .await;
-    match (applied, form) {
-        (Ok(volume), _) => app.volume_applied(volume, Instant::now()),
-        (Err(error), Some(mut form)) => {
-            form.error = Some(error.to_string());
+    let error = match applied {
+        Ok(volume) => return app.volume_applied(volume, Instant::now()),
+        Err(Error::ExposedFiles(files)) => match ask_about(&files, &allow_exposed_files) {
+            Ok(allow_exposed_files) => {
+                let then = Action::ApplyVolume {
+                    manifest,
+                    name,
+                    allow_exposed_files,
+                    form,
+                };
+                app.modal = Some(Modal::ConfirmExposedFiles {
+                    reader: format!("Every agent that mounts volume/{volume}"),
+                    action: "Copy",
+                    files,
+                    then: Box::new(then),
+                });
+                return;
+            }
+            Err(refusal) => refusal,
+        },
+        Err(error) => error.to_string(),
+    };
+    match form {
+        Some(mut form) => {
+            form.error = Some(error);
             app.modal = Some(Modal::ApplyVolume(form));
         }
-        (Err(error), None) => app.error = Some(error.to_string()),
+        None => app.error = Some(error),
     }
-}
-
-async fn create_agent(
-    client: &Client,
-    manifest: PathBuf,
-    name: String,
-    env_file: Option<PathBuf>,
-    folder: Option<PathBuf>,
-) -> Result<Agent, Error> {
-    let mut request = crate::read_apply_request(manifest, env_file)?;
-    request.agent.metadata.name = name;
-    request.binds = folder
-        .map(|source| agent::control_plane::BindSource { source, target: None })
-        .into_iter()
-        .collect();
-    request.create_only = true;
-    client.apply(request).await
 }
 
 /// Applies one completed background forward creation to the UI state.
@@ -1101,6 +1176,32 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+    use app::CreateForm;
+
+    #[test]
+    fn the_tui_asks_about_new_dot_env_files_and_never_about_an_environment_file() {
+        let file = |relative: &str, environment_file| agent::exposed::ExposedFile {
+            path: Path::new("/src/app").join(relative),
+            folder: PathBuf::from("/src/app"),
+            target: None,
+            environment_file,
+        };
+        let none = std::collections::BTreeSet::new();
+        let agreed = ask_about(&[file("src/web/.env", false)], &none).expect("asks");
+        assert_eq!(agreed, [PathBuf::from("/src/app/src/web/.env")].into());
+
+        let refused =
+            ask_about(&[file("src/web/.env", false)], &agreed).expect_err("agentd refused what was agreed to");
+        let named = Path::new("/src/app").join("src/web/.env").display().to_string();
+        assert!(refused.contains(&named), "{refused}");
+        let refused = ask_about(&[file("agents/a/.env", true)], &none).expect_err("an environment file");
+        assert!(refused.contains(agent::exposed::ENVIRONMENT_FILE_GUIDE), "{refused}");
+
+        let many = (0..20)
+            .map(|index| file(&format!("app{index}/.env"), false))
+            .collect::<Vec<_>>();
+        ask_about(&many, &none).expect_err("more files than the dialog shows are not asked about");
+    }
 
     fn manifest_yaml(name: &str) -> String {
         format!(

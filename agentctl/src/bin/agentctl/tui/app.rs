@@ -1,6 +1,6 @@
 use std::{
     cell::Cell,
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -508,6 +508,16 @@ pub(crate) enum Modal {
         include: agent::ssh::UserInclude,
         then: Option<OpenTarget>,
     },
+    /// Asks before letting agents read files that may hold real keys, then does `then` again,
+    /// naming them.
+    ConfirmExposedFiles {
+        /// Who would read them, such as `agent/reviewer`.
+        reader: String,
+        /// What agentd does with them once the person agrees, such as `Mount`.
+        action: &'static str,
+        files: Vec<agent::exposed::ExposedFile>,
+        then: Box<Action>,
+    },
 }
 
 impl Modal {
@@ -524,6 +534,7 @@ impl Modal {
             Self::ConfirmDeleteSession { agent, session } => Action::DeleteSession { agent, session },
             Self::ConfirmDeleteVolume { volume, .. } => Action::DeleteVolume { volume },
             Self::ConfirmQuit => Action::Quit,
+            Self::ConfirmExposedFiles { then, .. } => *then,
             _ => Action::None,
         }
     }
@@ -1014,6 +1025,7 @@ impl CreateForm {
             name,
             env_file: (!self.env_file.is_empty()).then(|| PathBuf::from(&self.env_file)),
             folder: candidate.folder.clone().filter(|_| candidate.slots == 1),
+            allow_exposed_files: BTreeSet::new(),
             form: self.clone(),
         })
     }
@@ -1098,6 +1110,7 @@ impl VolumeForm {
         Ok(Action::ApplyVolume {
             manifest: candidate.path.clone(),
             name: None,
+            allow_exposed_files: BTreeSet::new(),
             form: Some(self.clone()),
         })
     }
@@ -1283,6 +1296,8 @@ pub(crate) enum Action {
         env_file: Option<PathBuf>,
         /// The folder for the definition's one bind mount without a source.
         folder: Option<PathBuf>,
+        /// The files that may hold real keys the person agreed to let the agent read.
+        allow_exposed_files: BTreeSet<PathBuf>,
         form: CreateForm,
     },
     Exec {
@@ -1309,6 +1324,8 @@ pub(crate) enum Action {
     ApplyVolume {
         manifest: PathBuf,
         name: Option<String>,
+        /// The files that may hold real keys the person agreed to let the volume's agents read.
+        allow_exposed_files: BTreeSet<PathBuf>,
         form: Option<VolumeForm>,
     },
     DeleteSession {
@@ -1940,6 +1957,7 @@ impl App {
                             return Action::ApplyVolume {
                                 manifest: manifest.to_path_buf(),
                                 name: Some(name.clone()),
+                                allow_exposed_files: BTreeSet::new(),
                                 form: None,
                             };
                         }
@@ -2185,6 +2203,7 @@ impl App {
                 | Modal::ConfirmStopAll { .. }
                 | Modal::ConfirmDeleteSession { .. }
                 | Modal::ConfirmDeleteVolume { .. }
+                | Modal::ConfirmExposedFiles { .. }
                 | Modal::ConfirmQuit),
             ) => self.confirm(key, modal),
             Some(Modal::NewSession(mut form)) => {
@@ -2881,6 +2900,7 @@ impl App {
                 | Modal::ConfirmStopAll { .. }
                 | Modal::ConfirmDeleteSession { .. }
                 | Modal::ConfirmDeleteVolume { .. }
+                | Modal::ConfirmExposedFiles { .. }
                 | Modal::ConfirmQuit => &CONFIRM_HINTS,
                 Modal::NewSession(_) => &NEW_SESSION_HINTS,
                 Modal::CreateAgent { .. } => &CREATE_AGENT_HINTS,
@@ -3172,6 +3192,7 @@ pub(crate) mod tests {
                     },
                     agents: agents.iter().map(|agent| (*agent).to_owned()).collect(),
                     progress: None,
+                    exposed_files: std::collections::BTreeSet::new(),
                 }],
                 copy: None,
             },
@@ -3188,6 +3209,7 @@ pub(crate) mod tests {
             bytes: 712_000_000,
             failure: None,
             progress: None,
+            exposed_files: std::collections::BTreeSet::new(),
         }
     }
 
@@ -3318,6 +3340,7 @@ pub(crate) mod tests {
                 manifest: PathBuf::from("/work/agents/_volumes/docs/volume.yaml"),
                 name: None,
                 form: Some(form),
+                allow_exposed_files: BTreeSet::new(),
             }
         );
     }
@@ -3363,6 +3386,7 @@ pub(crate) mod tests {
                 manifest: PathBuf::from("/work/agents/_volumes/apps.yaml"),
                 name: Some("apps".to_owned()),
                 form: None,
+                allow_exposed_files: BTreeSet::new(),
             }
         );
         app.on_key(key(KeyCode::Char('s')));
