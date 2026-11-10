@@ -30,18 +30,25 @@ const DEFINITION: &str = "agent-builder";
 /// the home directory, where agentctl finds them from there.
 const PERSONAL_AGENTS: &str = "agents";
 
-/// How the person is asked about files in the builder's folders that may hold real keys. The
-/// builder is talked with at a terminal, so the person is there to answer.
-const ASK: consent::Ask<'static> = consent::Ask {
-    reader: "The agent builder",
-    action: "Mount",
-    allowed: false,
-};
-
 /// What a command asks the builder to do: the session it talks in, and how it opens.
 pub(crate) struct Task {
     pub(crate) session: &'static str,
     pub(crate) prompt: String,
+    /// Whether the task has the builder change the manifests that read an environment file.
+    pub(crate) manifests: agent::exposed::Manifests,
+}
+
+impl Task {
+    /// How the person is asked about files in the builder's folders that may hold real keys. The
+    /// builder is talked with at a terminal, so the person is there to answer.
+    const fn ask(&self) -> consent::Ask<'static> {
+        consent::Ask {
+            reader: "The agent builder",
+            action: "Mount",
+            allowed: false,
+            manifests: self.manifests,
+        }
+    }
 }
 
 /// The builder as this build of agentctl runs it.
@@ -129,19 +136,25 @@ impl Builder {
     /// The files that may hold real keys in the folders the builder would be given on `checkout`,
     /// once the person agrees to let it read them, or why it may not. Asking before a command
     /// changes anything lets it stop with nothing deleted or started.
-    pub(crate) async fn agree(&self, client: &Client, checkout: &Path) -> CommandResult<BTreeSet<PathBuf>> {
+    pub(crate) async fn agree(
+        &self,
+        client: &Client,
+        checkout: &Path,
+        task: &Task,
+    ) -> CommandResult<BTreeSet<PathBuf>> {
+        let ask = task.ask();
         let mut files = client.exposed_files(self.binds(checkout)?).await?;
         loop {
             if files.is_empty() {
                 return Ok(BTreeSet::new());
             }
-            let agreed = consent::agree(&files, &ASK)?;
+            let agreed = consent::agree(&files, &ask)?;
             if agreed.delete.is_empty() {
                 return Ok(agreed.read);
             }
             let now = client.exposed_files(self.binds(checkout)?).await?;
             if consent::asked_about_all(&files, &now) {
-                consent::delete(&agreed.delete, &now)?;
+                consent::delete(&agreed.delete, &now, &ask)?;
                 return Ok(agreed.read);
             }
             files = now;
@@ -176,7 +189,7 @@ impl Builder {
         // Held while the person talks with it: agentd deletes an ephemeral builder when it goes.
         let (ran, _lease) = consent::send(
             request,
-            &ASK,
+            &task.ask(),
             |request| &mut request.allow_exposed_files,
             |request| client.run(request),
         )
