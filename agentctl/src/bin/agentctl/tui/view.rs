@@ -1014,8 +1014,24 @@ fn render_confirm_quit(frame: &mut Frame, area: Rect, app: &App, hit_map: &mut H
     form.render(frame, area, FORM_WIDTH, hit_map);
 }
 
-/// Names the files that may hold real keys an agent would read, as `agentctl apply` does, as many
-/// as fit an 80x24 terminal.
+/// The rows that name `files` in their dialog, each in full. Consent covers every file, so none
+/// may be cut short or left out.
+fn exposed_file_rows(files: &[agent::exposed::ExposedFile]) -> Vec<String> {
+    let width = usize::from(FORM_WIDTH.saturating_sub(4));
+    crate::consent::listed(files)
+        .iter()
+        .flat_map(|file| wrap(&format!("  {file}"), width))
+        .collect()
+}
+
+/// Whether the dialog can name every one of `files` on an 80x24 terminal. When it cannot, the TUI
+/// does not ask, as agreeing would cover files it never showed.
+pub(super) fn exposed_files_fit(files: &[agent::exposed::ExposedFile]) -> bool {
+    const ROWS: usize = 10;
+    exposed_file_rows(files).len() <= ROWS
+}
+
+/// Names the files that may hold real keys an agent would read, as `agentctl apply` does.
 fn render_confirm_exposed_files(
     frame: &mut Frame,
     area: Rect,
@@ -1024,9 +1040,7 @@ fn render_confirm_exposed_files(
     files: &[agent::exposed::ExposedFile],
     hit_map: &mut HitMap,
 ) {
-    const LISTED: usize = 8;
     let width = usize::from(FORM_WIDTH.saturating_sub(4));
-    let listed = crate::consent::listed(files);
     let folder = files
         .first()
         .filter(|first| files.iter().all(|file| file.folder == first.folder))
@@ -1040,15 +1054,8 @@ fn render_confirm_exposed_files(
     for row in wrap(&these, width) {
         form = form.row(Line::from(row));
     }
-    let shown = if listed.len() > LISTED { LISTED - 1 } else { LISTED };
-    for file in listed.iter().take(shown) {
-        form = form.row(Line::styled(
-            fixed_width(&format!("  {file}"), width).trim_end().to_owned(),
-            Style::new().fg(Color::Yellow),
-        ));
-    }
-    if listed.len() > shown {
-        form = form.row(note_line(&format!("  …and {} more", listed.len() - shown)));
+    for row in exposed_file_rows(files) {
+        form = form.row(Line::styled(row, Style::new().fg(Color::Yellow)));
     }
     form.row(note_line("They may hold real keys, and the agent can reach"))
         .row(note_line("the internet."))

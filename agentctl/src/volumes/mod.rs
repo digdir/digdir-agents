@@ -280,6 +280,10 @@ pub struct PinnedRevision {
     pub revision: u64,
     /// Where its copy is stored.
     pub storage: RevisionStorage,
+    /// The files in its copy that may hold real keys, which the person agreed to when they applied the
+    /// volume, so the agent's `ExposedFiles` condition names them too.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub exposed_files: std::collections::BTreeSet<PathBuf>,
 }
 
 /// Stores volume records, each replaced only if it has not changed since it was read.

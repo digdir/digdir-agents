@@ -76,6 +76,7 @@ impl VolumeRevisions {
                         volume,
                         revision: revision.number,
                         storage: revision.storage.clone(),
+                        exposed_files: revision.exposed_files.clone(),
                     }),
                 );
                 continue;

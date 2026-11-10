@@ -951,7 +951,8 @@ async fn create(app: &mut App, client: &Client, action: Action) {
 }
 
 /// The paths of the `files` agentd found, to name once the person agrees to them, or why agentctl
-/// does not ask: one is an agent's environment file, or `allowed` named them all already.
+/// does not ask: one is an agent's environment file, `allowed` named them all already, or the dialog
+/// cannot show them all.
 fn ask_about(
     files: &[agent::exposed::ExposedFile],
     allowed: &std::collections::BTreeSet<PathBuf>,
@@ -965,6 +966,13 @@ fn ask_about(
         .collect::<std::collections::BTreeSet<_>>();
     if paths.is_subset(allowed) {
         return Err(Error::ExposedFiles(files.to_vec()).to_string());
+    }
+    if !view::exposed_files_fit(files) {
+        return Err(format!(
+            "{} files that may hold real keys are more than this dialog can show. agentctl apply or agentctl run \
+             at a terminal names them all and asks",
+            files.len()
+        ));
     }
     Ok(paths)
 }
@@ -1188,6 +1196,11 @@ mod tests {
         assert!(refused.contains(&named), "{refused}");
         let refused = ask_about(&[file("agents/a/.env", true)], &none).expect_err("an environment file");
         assert!(refused.contains(agent::exposed::ENVIRONMENT_FILE_GUIDE), "{refused}");
+
+        let many = (0..20)
+            .map(|index| file(&format!("app{index}/.env"), false))
+            .collect::<Vec<_>>();
+        ask_about(&many, &none).expect_err("more files than the dialog shows are not asked about");
     }
 
     fn manifest_yaml(name: &str) -> String {

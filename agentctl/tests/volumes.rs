@@ -463,6 +463,29 @@ async fn a_copy_volume_holds_dot_env_files_once_the_person_agrees_to_them() {
     let copy = applied.status.copy.expect("a copy is taken");
     assert_eq!(copy.exposed_files, agreed);
 
+    // An agent that mounts the copy names the files, as one that bind-mounts them does.
+    reconcile_volume(&fixture, "apps").await;
+    fixture
+        .control_plane
+        .apply(mounting_agent("reader", "apps"))
+        .await
+        .expect("apply agent");
+    let reader = reconcile_agent(&fixture, "reader").await;
+    let condition = reader
+        .agent
+        .status
+        .conditions
+        .iter()
+        .find(|condition| condition.kind == Condition::EXPOSED_FILES)
+        .expect("the agreed files are named");
+    for file in &agreed {
+        assert!(
+            condition.message.contains(&file.display().to_string()),
+            "{}",
+            condition.message
+        );
+    }
+
     std::fs::write(source.join(".env"), b"PRIVATE=value\n").expect("another .env");
     fixture
         .service

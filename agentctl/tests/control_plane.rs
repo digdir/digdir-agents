@@ -1949,6 +1949,40 @@ async fn an_environment_file_beside_a_manifest_is_never_mounted() {
         .expect_err("naming an environment file agrees to nothing");
 }
 
+/// The file `--env-file` names holds every value an agent reads from it, also plain ones, and may hold
+/// more, so it counts as the agent's environment file whatever its name.
+#[tokio::test(flavor = "local")]
+async fn an_environment_file_for_plain_values_is_never_mounted() {
+    let fixture = fixture();
+    let checkout = tempfile::tempdir().expect("checkout");
+    std::fs::write(
+        checkout.path().join("credentials.env"),
+        "EDITOR=vim\nGITHUB_TOKEN=value\n",
+    )
+    .expect("environment file");
+    let source = tempfile::tempdir().expect("manifest directory");
+    let mut request = apply_request_in("worker", source.path().to_path_buf());
+    request.env_file = Some(checkout.path().join("credentials.env"));
+    request.agent.spec.environment.push(EnvironmentSpec {
+        name: "EDITOR".into(),
+        source: None,
+        value: None,
+    });
+    request.agent.spec.sandbox.mounts.push(MountSpec::Bind {
+        source: Some(checkout.path().to_path_buf()),
+        target: SandboxPath::new("/home/agent/code/checkout"),
+        read_only: true,
+        optional: false,
+    });
+
+    let refused = fixture
+        .control_plane
+        .apply(request)
+        .await
+        .expect_err("an environment file");
+    assert_eq!(exposed(&refused), [(PathBuf::from("credentials.env"), true)]);
+}
+
 #[tokio::test(flavor = "local")]
 async fn a_directory_named_dot_env_is_allowed() {
     let fixture = fixture();

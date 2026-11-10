@@ -744,17 +744,26 @@ fn environment_file_condition(record: &AgentRecord) -> Option<Condition> {
     ))
 }
 
-/// Names the files that may hold real keys which the person agreed to let the agent read, when it
-/// was applied or run. A file made since in a folder it mounts is visible to it too, but not named.
+/// Names the files that may hold real keys which the person agreed to let the agent read: in its bind
+/// mounts when it was applied or run, and in the copies of the volumes it mounts when they were applied.
+/// A file made since in a folder it mounts is visible to it too, but not named.
 fn exposed_files_condition(record: &AgentRecord) -> Option<Condition> {
-    if record.exposed_files.is_empty() {
-        return None;
-    }
+    let copied = record
+        .volume_revisions
+        .values()
+        .flatten()
+        .flat_map(|pin| &pin.exposed_files);
     let files = record
         .exposed_files
         .iter()
+        .chain(copied)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .map(|file| file.display().to_string())
         .collect::<Vec<_>>();
+    if files.is_empty() {
+        return None;
+    }
     Some(condition(
         Condition::EXPOSED_FILES,
         ConditionStatus::True,

@@ -919,10 +919,11 @@ pub(crate) async fn environment_files(agents: &dyn super::AgentStore) -> Result<
     Ok(files)
 }
 
-/// The canonical environment file `record`'s agent reads values from, if it reads one: the file it
-/// records, or its `.env` when that exists.
+/// The canonical environment file `record`'s agent reads values from, secret or not, if it reads
+/// any: the file it records, or its `.env` when that exists. The file may hold more keys than the
+/// agent reads.
 async fn environment_file(record: &AgentRecord) -> Result<Option<PathBuf>, Error> {
-    if !record.agent.spec.reads_secret_file() {
+    if record.agent.spec.environment_file_variables().is_empty() {
         return Ok(None);
     }
     let path = record.env_file_path();
