@@ -76,7 +76,7 @@ attributing a failure to the bump, repeat the check on an agent built with the p
 | New `agentd` with the previous pin                                   | Both        | When the change touches adapter code, an agent on the previous image still creates, prompts, reads turns and resumes.                                                                                                   |
 
 Without the harness on the machine, `agentctl claude login` and `agentctl codex login` sign in inside an agent of the
-base image, and read the sign-in off its terminal. `agentctl github login --web` does the same with the base image's
+base image, and read the sign-in off its terminal. `agentctl github login NAME --web` does the same with the base image's
 `gh`, so bumping `gh` needs the same check. Builds other than releases run `main`'s base image there, so try each
 sign-in once the bump's base image is published from `main`: with an `agentctl` built from `main` and a `PATH` that
 leaves out `claude` and `codex`, the sign-in page opens in the browser, and the login is stored. That agent reaches only

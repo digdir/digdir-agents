@@ -86,16 +86,22 @@ pub(crate) async fn login(
         }
         Way::Paste => prompt::secret(&format!("Paste the GitHub token for {name} (it is not shown)"))?,
     };
+    let kept = keep(client, &name, &token, way, user.as_deref()).await;
+    with_unkept_sign_in(way, kept)
+}
+
+/// Checks `token` with GitHub and has agentd keep it as `name`, once it acts as `user`, or, at a
+/// terminal, once the person confirms whom it acts as.
+async fn keep(client: &Client, name: &str, token: &str, way: Way, user: Option<&str>) -> CommandResult<()> {
     eprintln!("Checking the token with GitHub...");
-    let checked = agent::github::check(&token, &name).await?;
+    let checked = agent::github::check(token, name).await?;
     let acts_as = &checked.account.identity.login;
     let now = OffsetDateTime::now_utc();
-    if let Some(user) = &user
+    if let Some(user) = user
         && !acts_as.eq_ignore_ascii_case(user)
     {
         return Err(CommandError::Message(format!(
-            "the token acts as {acts_as}, not {user}, so it was not kept{}",
-            unused(way, acts_as)
+            "the token acts as {acts_as}, not {user}, so it was not kept"
         )));
     }
     eprint!("{}", summary(&checked, &warnings(&checked, now), now));
@@ -103,15 +109,26 @@ pub(crate) async fn login(
         && way != Way::Stdin
         && !prompt::confirm_lines(&[&format!("Keep it as the login {name}, for agents to act as {acts_as}?")])?
     {
-        return Err(CommandError::Message(format!(
-            "the token was not kept{}",
-            unused(way, acts_as)
-        )));
+        return Err(CommandError::Message("the token was not kept".into()));
     }
-    let accounts::Login::Github(login) = client.account_login(AccountType::Github, &name, &token).await?;
+    let accounts::Login::Github(login) = client.account_login(AccountType::Github, name, token).await?;
     println!("{}", stored_line(&login));
     println!("{}", manifest_line(&login.account.name));
     Ok(())
+}
+
+/// `kept`, saying what becomes of a browser sign-in's token when it was not kept, however that
+/// happened: it is stored nowhere, but works on GitHub until it is revoked.
+fn with_unkept_sign_in(way: Way, kept: CommandResult<()>) -> CommandResult<()> {
+    match kept {
+        Err(error) if way == Way::Web => Err(CommandError::Message(format!(
+            "{error}. The token from the browser sign-in is stored nowhere, but works on GitHub until the account \
+             that approved it revokes the GitHub CLI at {page}, which also signs out that account's other `gh` \
+             logins",
+            page = agent::github::SIGN_IN_REVOKE_PAGE
+        ))),
+        kept => kept,
+    }
 }
 
 /// The way the person picks at the terminal to get the token for `name`.
@@ -149,20 +166,6 @@ async fn sign_in(client: &Client, home: &ControlPlaneHome, user: Option<&str>) -
     );
     let recipe = agent::github::sandbox_sign_in();
     Ok(crate::sandbox_sign_in::sign_in(client, home, "GitHub", &recipe).await??)
-}
-
-/// What becomes of a token had the `way` given that is not kept, acting as `acts_as`. A browser
-/// sign-in's token is kept nowhere else, but stays valid on GitHub.
-fn unused(way: Way, acts_as: &str) -> String {
-    if way == Way::Web {
-        format!(
-            ". It is stored nowhere, but stays valid on GitHub until {acts_as} revokes the GitHub CLI at \
-             {page}, which also signs out {acts_as}'s other `gh` logins",
-            page = agent::github::SIGN_IN_REVOKE_PAGE
-        )
-    } else {
-        String::new()
-    }
 }
 
 fn stored_line(login: &Login) -> String {
@@ -462,14 +465,31 @@ mod tests {
     }
 
     #[test]
-    fn the_browser_sign_in_is_the_default_and_its_unkept_token_is_explained() {
+    fn the_browser_sign_in_is_the_default_and_an_unkept_token_from_it_is_explained() {
         assert_eq!(PICKED[0].0, Way::Web);
-        assert_eq!(
-            unused(Way::Web, "someone"),
-            ". It is stored nowhere, but stays valid on GitHub until someone revokes the GitHub CLI at \
-             https://github.com/settings/applications, which also signs out someone's other `gh` logins"
-        );
-        assert_eq!(unused(Way::Paste, "someone"), "");
+        let failures = [
+            CommandError::Message("the token was not kept".into()),
+            CommandError::Agent(Error::Invalid("cancelled".into())),
+            CommandError::Agent(Error::Invalid("could not reach GitHub to check the token".into())),
+        ];
+        for failure in failures {
+            let first = failure.to_string();
+            let message = with_unkept_sign_in(Way::Web, Err(failure))
+                .expect_err("still failed")
+                .to_string();
+            assert!(message.starts_with(&first), "{message}");
+            assert!(
+                message.contains("https://github.com/settings/applications"),
+                "{message}"
+            );
+        }
+        for way in [Way::FineGrained, Way::Paste, Way::Stdin] {
+            let message = with_unkept_sign_in(way, Err(CommandError::Message("the token was not kept".into())))
+                .expect_err("still failed")
+                .to_string();
+            assert_eq!(message, "the token was not kept");
+        }
+        assert!(with_unkept_sign_in(Way::Web, Ok(())).is_ok());
     }
 
     #[test]
