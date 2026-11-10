@@ -52,6 +52,7 @@ impl AgentPolicyEngine {
     }
 
     /// Replaces the policy for one desired agent generation, whose sandbox gets `secrets`.
+    /// Connections an earlier policy admitted stay open until they are revoked.
     pub fn set_agent(&self, sandbox: &SandboxName, agent: &Agent, secrets: impl IntoIterator<Item = SecretHosts>) {
         let secrets = secrets
             .into_iter()
@@ -60,6 +61,7 @@ impl AgentPolicyEngine {
         self.agents.borrow_mut().insert(
             sandbox.as_str().into(),
             AgentPolicy {
+                allowed_hosts: agent.spec.network.allow.clone(),
                 denied_hosts: agent.spec.network.deny.clone(),
                 secrets,
             },
@@ -100,6 +102,7 @@ impl SecretHosts {
 }
 
 struct AgentPolicy {
+    allowed_hosts: crate::NetworkAllow,
     denied_hosts: Vec<String>,
     secrets: BTreeMap<String, SecretHosts>,
 }
@@ -142,10 +145,17 @@ impl AgentPolicyEngine {
             return host_destined;
         }
         match request.action.as_str() {
-            action::NETWORK_CONNECT | action::DNS_QUERY | action::HTTP_REQUEST => host
-                .map_or(AuthorizationDecision::Deny, |host| {
-                    decision(!policy.denied_hosts.iter().any(|pattern| host_matches(pattern, host)))
-                }),
+            action::NETWORK_CONNECT | action::DNS_QUERY | action::HTTP_REQUEST => {
+                host.map_or(AuthorizationDecision::Deny, |host| {
+                    decision(
+                        policy.allowed_hosts.admits(host, uses_platform_dns(request))
+                            && !policy
+                                .denied_hosts
+                                .iter()
+                                .any(|pattern| crate::host_pattern::matches(pattern, host)),
+                    )
+                })
+            }
             action::SECRET_USE => {
                 let Some(host) = host else {
                     return AuthorizationDecision::Deny;
@@ -154,10 +164,11 @@ impl AgentPolicyEngine {
                 // hosts are checked next.
                 decision(policy.secrets.get(&request.resource.id).is_some_and(|secret| {
                     (!secret.hosts.is_empty() || secret.stored.is_some())
-                        && secret
-                            .hosts
-                            .iter()
-                            .all(|patterns| patterns.iter().any(|pattern| host_matches(pattern, host)))
+                        && secret.hosts.iter().all(|patterns| {
+                            patterns
+                                .iter()
+                                .any(|pattern| crate::host_pattern::matches(pattern, host))
+                        })
                 }))
             }
             _ => AuthorizationDecision::Deny,
@@ -187,7 +198,12 @@ impl AgentPolicyEngine {
             .await
             .ok()
             .flatten()
-            .is_some_and(|secret| secret.allowed_hosts.iter().any(|pattern| host_matches(pattern, host)))
+            .is_some_and(|secret| {
+                secret
+                    .allowed_hosts
+                    .iter()
+                    .any(|pattern| crate::host_pattern::matches(pattern, host))
+            })
     }
 
     /// Decides host-destined traffic: the Network Backend rewrites its host
@@ -228,13 +244,26 @@ impl AgentPolicyEngine {
             return None;
         }
         if action == action::DNS_QUERY {
-            // Resolving the alias only reveals the gateway address.
-            return Some(AuthorizationDecision::Allow);
+            // Resolving the alias through the platform's DNS only reveals the gateway address. A
+            // resolver the sandbox picks gets the query itself, so it is decided as any other.
+            return request
+                .context
+                .get(context::DNS_RESOLVER)
+                .is_none()
+                .then_some(AuthorizationDecision::Allow);
         }
-        let port = destination
-            .map(|address| address.port())
-            .or_else(|| authority_port(request));
-        let allowed = alias && endpoint.as_ref().is_some_and(|endpoint| port == Some(endpoint.port));
+        // Every port the request names must be the API's: an HTTP CONNECT through a proxy names
+        // the proxy as its destination and the tunnel's own port in its authority.
+        let ports = [destination.map(|address| address.port()), authority_port(request)];
+        let at_api_port =
+            |api: u16| ports.iter().any(Option::is_some) && ports.iter().flatten().all(|&port| port == api);
+        // The sandbox names the alias itself, so a connection counts only towards the host's own
+        // address, which only the Network Backend's flag identifies: host-reserved ranges also hold
+        // other machines, such as VPN peers, and the gateway need not be in them. An HTTP request
+        // carries no flag, and goes over a connection already decided, so naming the alias there
+        // reaches only what that connection could.
+        let at_host = action != action::NETWORK_CONNECT || flagged;
+        let allowed = alias && at_host && endpoint.as_ref().is_some_and(|endpoint| at_api_port(endpoint.port));
         Some(decision(allowed))
     }
 }
@@ -280,6 +309,23 @@ const fn is_host_reserved(address: std::net::IpAddr) -> bool {
     }
 }
 
+/// Whether `request` keeps to the names the platform's DNS gave the sandbox, as an agent that
+/// reaches only some hosts must. The sandbox names the host it connects to itself, such as in its
+/// TLS SNI or HTTP `Host`, so a connection counts only where that DNS resolved the name to the
+/// address it dials. Answers from a resolver the sandbox picks would count as well, so a DNS query
+/// to one is refused. An HTTP request goes over a connection already decided.
+fn uses_platform_dns(request: &AuthorizationRequest) -> bool {
+    match request.action.as_str() {
+        action::NETWORK_CONNECT => request
+            .context
+            .get(context::NETWORK_HOSTNAME_RESOLVED)
+            .and_then(sandbox_authorization::AuthorizationValue::as_bool)
+            .unwrap_or(false),
+        action::DNS_QUERY => request.context.get(context::DNS_RESOLVER).is_none(),
+        _ => true,
+    }
+}
+
 fn request_host(request: &AuthorizationRequest) -> Option<&str> {
     request
         .context
@@ -307,59 +353,10 @@ fn without_port(authority: &str) -> &str {
         .map_or(authority, |(host, _)| host)
 }
 
-fn host_matches(pattern: &str, host: &str) -> bool {
-    let pattern = pattern.to_ascii_lowercase();
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    pattern.strip_prefix("*.").map_or_else(
-        || host == pattern,
-        |suffix| {
-            host.len() > suffix.len()
-                && host.ends_with(suffix)
-                && host.as_bytes()[host.len() - suffix.len() - 1] == b'.'
-        },
-    )
-}
-
-/// Whether every host that `inner` matches is one that `outer` matches too.
-pub(crate) fn host_pattern_covers(outer: &str, inner: &str) -> bool {
-    // `*.suffix` is every host below the domain `suffix`: covered by the same pattern, or by one
-    // matching the domain itself as a host below its own.
-    inner.strip_prefix("*.").map_or_else(
-        || host_matches(outer, inner),
-        |suffix| outer.eq_ignore_ascii_case(inner) || (outer.starts_with("*.") && host_matches(outer, suffix)),
-    )
-}
-
 const fn decision(allowed: bool) -> AuthorizationDecision {
     if allowed {
         AuthorizationDecision::Allow
     } else {
         AuthorizationDecision::Deny
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::host_pattern_covers;
-
-    #[test]
-    fn a_pattern_covers_the_hosts_it_matches_and_the_patterns_below_it() {
-        for (outer, inner) in [
-            ("api.example.com", "api.example.com"),
-            ("*.example.com", "api.example.com"),
-            ("*.example.com", "*.example.com"),
-            ("*.example.com", "*.api.example.com"),
-            ("*.EXAMPLE.com", "API.example.com"),
-        ] {
-            assert!(host_pattern_covers(outer, inner), "{outer} covers {inner}");
-        }
-        for (outer, inner) in [
-            ("api.example.com", "*.example.com"),
-            ("api.example.com", "www.example.com"),
-            ("*.example.com", "example.com"),
-            ("*.api.example.com", "*.example.com"),
-        ] {
-            assert!(!host_pattern_covers(outer, inner), "{outer} does not cover {inner}");
-        }
     }
 }

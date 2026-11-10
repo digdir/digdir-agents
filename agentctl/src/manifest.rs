@@ -789,10 +789,25 @@ impl Spec {
                 "spec.access[{index}] duplicates an access capability"
             )));
         }
-        if self.network.deny.iter().any(|host| !valid_host_pattern(host)) {
+        if self.network.deny.iter().any(|host| !crate::host_pattern::valid(host)) {
             return Err(Error::Invalid(
                 "spec.network.deny contains an invalid host pattern".into(),
             ));
+        }
+        if let NetworkAllow::Hosts(hosts) = &self.network.allow {
+            if hosts.iter().any(|host| !crate::host_pattern::valid(host)) {
+                return Err(Error::Invalid(
+                    "spec.network.allow contains an invalid host pattern".into(),
+                ));
+            }
+            // A list admits a host by the name the platform's DNS resolved, so an address never
+            // matches anything.
+            if let Some(address) = hosts.iter().find(|host| crate::host_pattern::is_address(host)) {
+                return Err(Error::Invalid(format!(
+                    "spec.network.allow names hosts, not addresses such as {address:?}: an agent reaches a listed \
+                     host by its name, through its DNS"
+                )));
+            }
         }
         Ok(())
     }
@@ -874,7 +889,10 @@ impl Spec {
                 || (secret.allowed_hosts.is_empty() && secret.name.is_none())
                 || !environments.insert(&secret.environment)
                 || !placeholders.insert(placeholder)
-                || secret.allowed_hosts.iter().any(|host| !valid_host_pattern(host))
+                || secret
+                    .allowed_hosts
+                    .iter()
+                    .any(|host| !crate::host_pattern::valid(host))
             {
                 return Err(Error::Invalid(format!(
                     "spec.secrets[{index}] is invalid or duplicated"
@@ -1080,13 +1098,72 @@ pub enum NetworkMode {
     Mediated,
 }
 
-/// Baseline egress policy.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// Baseline egress policy, written `all` or as a list of host patterns.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum NetworkAllow {
     /// Permit network operations except explicitly denied hosts.
     #[default]
     All,
+    /// Permit only the hosts one of these patterns matches, such as `api.example.com` or
+    /// `*.example.com`, except denied hosts. An empty list reaches no host.
+    Hosts(Vec<String>),
+}
+
+impl NetworkAllow {
+    /// Whether this admits traffic for `host`, the name the sandbox gives it. A list admits a name
+    /// only `through_platform_dns`: where the platform's DNS gave the sandbox the address it dials,
+    /// since otherwise the sandbox could name an allowed host for any address.
+    #[must_use]
+    pub fn admits(&self, host: &str, through_platform_dns: bool) -> bool {
+        match self {
+            Self::All => true,
+            Self::Hosts(patterns) => {
+                through_platform_dns
+                    && patterns
+                        .iter()
+                        .any(|pattern| crate::host_pattern::matches(pattern, host))
+            }
+        }
+    }
+}
+
+const NETWORK_ALLOW_ALL: &str = "all";
+
+impl Serialize for NetworkAllow {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::All => serializer.serialize_str(NETWORK_ALLOW_ALL),
+            Self::Hosts(patterns) => patterns.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NetworkAllow {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = NetworkAllow;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("`all` or a list of host patterns")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<NetworkAllow, E> {
+                if value == NETWORK_ALLOW_ALL {
+                    Ok(NetworkAllow::All)
+                } else {
+                    Err(E::invalid_value(serde::de::Unexpected::Str(value), &self))
+                }
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, sequence: A) -> Result<NetworkAllow, A::Error> {
+                Vec::deserialize(serde::de::value::SeqAccessDeserializer::new(sequence)).map(NetworkAllow::Hosts)
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 /// Agent-layer network policy interpreted by the host Policy Engine.
@@ -1100,16 +1177,6 @@ pub struct NetworkSpec {
     /// Host patterns denied before the baseline decision.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deny: Vec<String>,
-}
-
-pub(crate) fn valid_host_pattern(pattern: &str) -> bool {
-    !pattern.is_empty()
-        && !pattern.contains(['/', ':', '\\'])
-        && pattern
-            .strip_prefix("*.")
-            .unwrap_or(pattern)
-            .split('.')
-            .all(|label| !label.is_empty() && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'))
 }
 
 fn valid_environment_variable(value: &str) -> bool {

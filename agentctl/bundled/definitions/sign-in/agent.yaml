@@ -22,7 +22,11 @@ spec:
         mode: layered
   network:
     mode: mediated
-    allow: all
-    # Google Cloud's metadata service hands out the credentials of the VM it runs on.
-    deny:
-      - metadata.google.internal
+    # Only the hosts the sign-ins reach, so the credential one mints can go nowhere else. A harness update that reaches
+    # another host breaks its sign-in until the host is added here, as the harness upgrade guide says.
+    allow:
+      # `claude setup-token`
+      - api.anthropic.com
+      - platform.claude.com
+      # `codex login --device-auth`
+      - auth.openai.com

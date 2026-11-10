@@ -1,6 +1,6 @@
 //! Host mediation setup for the Microsandbox Network Backend.
 
-use std::{collections::BTreeMap, rc::Rc};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 use crate::{
     Error,
@@ -16,6 +16,53 @@ pub(super) struct Preparation {
     credentials: Rc<harness::AuthenticationManager>,
     policy: Rc<AgentPolicyEngine>,
     network: Rc<MicrosandboxNetworkBackend>,
+    admitted: RefCell<AdmittedNetworks>,
+}
+
+/// The network policy each running sandbox's open connections were admitted under, and whether
+/// another has been installed since, which may have admitted connections the current one would
+/// not. That stays so until the connections are revoked, so a pass that fails before revoking
+/// them, or a policy changed back, leaves the next pass to do it.
+#[derive(Default)]
+struct AdmittedNetworks(BTreeMap<SandboxName, AdmittedNetwork>);
+
+struct AdmittedNetwork {
+    policy: crate::NetworkSpec,
+    other_installed: bool,
+}
+
+impl AdmittedNetworks {
+    /// Records that `network` now decides `sandbox`'s connections. A sandbox seen for the first
+    /// time has none admitted under another.
+    fn install(&mut self, sandbox: &SandboxName, network: &crate::NetworkSpec) {
+        let admitted = self.0.entry(sandbox.clone()).or_insert_with(|| AdmittedNetwork {
+            policy: network.clone(),
+            other_installed: false,
+        });
+        admitted.other_installed |= admitted.policy != *network;
+    }
+
+    /// Whether `sandbox` may have connections open that a policy other than `network` admitted.
+    fn differ(&self, sandbox: &SandboxName, network: &crate::NetworkSpec) -> bool {
+        self.0
+            .get(sandbox)
+            .is_some_and(|admitted| admitted.other_installed || admitted.policy != *network)
+    }
+
+    /// Records that `sandbox`'s open connections were all admitted under `network`.
+    fn admit(&mut self, sandbox: &SandboxName, network: &crate::NetworkSpec) {
+        self.0.insert(
+            sandbox.clone(),
+            AdmittedNetwork {
+                policy: network.clone(),
+                other_installed: false,
+            },
+        );
+    }
+
+    fn forget(&mut self, sandbox: &SandboxName) {
+        self.0.remove(sandbox);
+    }
 }
 
 pub(super) struct PreparedNetwork {
@@ -46,18 +93,65 @@ impl Preparation {
             credentials,
             policy,
             network,
+            admitted: RefCell::new(AdmittedNetworks(BTreeMap::new())),
+        }
+    }
+}
+
+/// What a sandbox's running network needs before it serves the agent's current policy.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum NetworkStep {
+    /// Restart it, to apply the secret bindings prepared for it. That ends its connections too.
+    Restart,
+    /// Close the connections an earlier policy admitted.
+    Revoke,
+    /// Nothing: it serves the current bindings and policy.
+    Nothing,
+}
+
+impl NetworkStep {
+    const fn of(stale_bindings: bool, earlier_policy: bool) -> Self {
+        if stale_bindings {
+            Self::Restart
+        } else if earlier_policy {
+            Self::Revoke
+        } else {
+            Self::Nothing
         }
     }
 }
 
 impl Preparation {
-    /// Whether the sandbox's running Network must restart to apply the bindings prepared for it.
-    pub(super) fn network_is_stale(&self, sandbox: &SandboxId) -> bool {
-        self.network.has_stale_secret_bindings(sandbox)
+    /// What `sandbox`'s running network needs to serve `network`, its agent's current policy.
+    pub(super) fn network_step(
+        &self,
+        name: &SandboxName,
+        sandbox: &SandboxId,
+        network: &crate::NetworkSpec,
+    ) -> NetworkStep {
+        NetworkStep::of(
+            self.network.has_stale_secret_bindings(sandbox),
+            self.admitted.borrow().differ(name, network),
+        )
     }
 
     pub(super) async fn restart_network(&self, sandbox: &SandboxHandle) -> Result<(), Error> {
         self.network.stop(sandbox.id()).await.map_err(Error::from)
+    }
+
+    /// Closes the connections `sandbox`'s network admitted, so that each one opened again is
+    /// decided by the current policy. A network that is not running has none.
+    pub(super) async fn revoke_connections(&self, sandbox: &SandboxHandle) -> Result<(), Error> {
+        match self.network.revoke_all(sandbox.id()).await {
+            Err(error) if error.is_not_found() => Ok(()),
+            result => result.map_err(Error::from),
+        }
+    }
+
+    /// Records that `sandbox`'s network has no connection open under a policy other than
+    /// `network`, once it restarted or revoked them.
+    pub(super) fn network_admitted(&self, sandbox: &SandboxName, network: &crate::NetworkSpec) {
+        self.admitted.borrow_mut().admit(sandbox, network);
     }
 
     pub(super) async fn prepare(&self, record: &control_plane::AgentRecord) -> Result<PreparedNetwork, Error> {
@@ -77,6 +171,9 @@ impl Preparation {
                     .map(|secret| SecretHosts::new(secret.environment, secret.allowed_hosts.clone())),
             );
             self.policy.set_agent(&sandbox_name, &record.agent, policy);
+            self.admitted
+                .borrow_mut()
+                .install(&sandbox_name, &record.agent.spec.network);
             for secret in managed_secrets {
                 bindings.push(SecretBinding::with_placeholder(
                     secret.environment,
@@ -238,6 +335,12 @@ impl Preparation {
     pub(super) fn remove(&self, sandbox: &SandboxName) {
         self.policy.remove_agent(sandbox);
         self.network.remove_secret_bindings(sandbox);
+    }
+
+    /// Forgets `sandbox` once it is released, with the connections its network had open.
+    pub(super) fn release(&self, sandbox: &SandboxName) {
+        self.remove(sandbox);
+        self.admitted.borrow_mut().forget(sandbox);
     }
 }
 
@@ -822,5 +925,49 @@ spec:
         assert_eq!(secret_value(&environment, &secret(true))?, Some("token"));
         assert_eq!(secret_value(&environment, &secret(false))?, Some("token"));
         Ok(())
+    }
+
+    #[test]
+    fn restarting_the_network_comes_before_revoking_its_connections() {
+        use super::NetworkStep;
+        assert_eq!(NetworkStep::of(true, true), NetworkStep::Restart);
+        assert_eq!(NetworkStep::of(true, false), NetworkStep::Restart);
+        assert_eq!(NetworkStep::of(false, true), NetworkStep::Revoke);
+        assert_eq!(NetworkStep::of(false, false), NetworkStep::Nothing);
+    }
+
+    #[test]
+    fn a_policy_change_stays_pending_until_its_connections_are_admitted_under_it() {
+        let sandbox = ::sandbox::SandboxName::new("agent-test-id").expect("Sandbox name");
+        let earlier = crate::NetworkSpec {
+            deny: vec!["exfil.example".into()],
+            ..crate::NetworkSpec::default()
+        };
+        let broader = crate::NetworkSpec::default();
+        let mut admitted = super::AdmittedNetworks::default();
+        assert!(
+            !admitted.differ(&sandbox, &earlier),
+            "a network not seen yet has nothing open"
+        );
+
+        admitted.install(&sandbox, &earlier);
+        assert!(
+            !admitted.differ(&sandbox, &earlier),
+            "the first policy admitted what is open"
+        );
+        admitted.admit(&sandbox, &earlier);
+
+        admitted.install(&sandbox, &broader);
+        assert!(admitted.differ(&sandbox, &broader));
+        // The pass fails before revoking, and the broader policy admits a connection. Changing back
+        // must still close it.
+        admitted.install(&sandbox, &earlier);
+        assert!(admitted.differ(&sandbox, &earlier));
+
+        admitted.admit(&sandbox, &earlier);
+        assert!(!admitted.differ(&sandbox, &earlier));
+
+        admitted.forget(&sandbox);
+        assert!(!admitted.differ(&sandbox, &broader));
     }
 }

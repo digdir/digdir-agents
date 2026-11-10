@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
-use crate::{Agent, Error, authorization::host_pattern_covers, manifest::valid_host_pattern, names, persistence};
+use crate::{Agent, Error, host_pattern, names, persistence};
 
 /// A stored secret, without its value.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -171,7 +171,7 @@ fn valid_hosts(hosts: Vec<String>) -> Result<Vec<String>, Error> {
     let mut valid = Vec::with_capacity(hosts.len());
     for host in hosts {
         let host = host.trim().to_ascii_lowercase();
-        if !valid_host_pattern(&host) {
+        if !host_pattern::valid(&host) {
             return Err(Error::Invalid(format!(
                 "{host:?} is not a host pattern such as api.example.com or *.example.com"
             )));
@@ -255,7 +255,7 @@ pub fn report(secrets: Vec<Secret>, agents: &[Agent]) -> SecretsReport {
                 hosts_not_allowed: spec
                     .allowed_hosts
                     .iter()
-                    .filter(|host| !allowed.iter().any(|pattern| host_pattern_covers(pattern, host)))
+                    .filter(|host| !allowed.iter().any(|pattern| host_pattern::covers(pattern, host)))
                     .cloned()
                     .collect(),
             };

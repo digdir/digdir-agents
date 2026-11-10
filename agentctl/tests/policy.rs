@@ -71,6 +71,104 @@ async fn allows_general_egress_but_scopes_each_secret_to_its_hosts() {
     );
 }
 
+/// With a list of allowed hosts, only those are reached, and a denied host is refused even when the list matches it.
+#[tokio::test(flavor = "local")]
+async fn an_allow_list_reaches_only_its_hosts() {
+    let mut agent = support::agent("worker");
+    agent.spec.network.allow = agent::NetworkAllow::Hosts(vec!["*.github.com".into(), "auth.openai.com".into()]);
+    agent.spec.network.deny.push("uploads.github.com".into());
+    let policy = AgentPolicyEngine::new();
+    let sandbox = SandboxName::new("agent-test-id").expect("Sandbox name");
+    policy.set_agent(&sandbox, &agent, []);
+
+    for operation in [action::HTTP_REQUEST, action::DNS_QUERY] {
+        for (host, expected) in [
+            ("api.github.com", AuthorizationDecision::Allow),
+            ("auth.openai.com", AuthorizationDecision::Allow),
+            ("github.com", AuthorizationDecision::Deny),
+            ("uploads.github.com", AuthorizationDecision::Deny),
+            ("example.com", AuthorizationDecision::Deny),
+        ] {
+            assert_eq!(
+                evaluate(&policy, sandbox.as_str(), operation, "externalService", host, host).await,
+                expected,
+                "{operation} {host}"
+            );
+        }
+    }
+    assert_eq!(
+        connect_resolved(&policy, sandbox.as_str(), "auth.openai.com", "203.0.113.7:443", true).await,
+        AuthorizationDecision::Allow
+    );
+    assert_eq!(
+        connect_resolved(&policy, sandbox.as_str(), "example.com", "203.0.113.8:443", true).await,
+        AuthorizationDecision::Deny
+    );
+    // An allowed name the sandbox's DNS never gave for the address it dials, as a program sends
+    // to reach any address.
+    assert_eq!(
+        connect_resolved(&policy, sandbox.as_str(), "auth.openai.com", "203.0.113.9:8443", false).await,
+        AuthorizationDecision::Deny
+    );
+    assert_eq!(
+        connect(&policy, sandbox.as_str(), Some("auth.openai.com"), "203.0.113.9:80").await,
+        AuthorizationDecision::Deny,
+        "a runtime that does not report it fails closed"
+    );
+
+    // A resolver the sandbox picks could answer an allowed name with any address.
+    let to_resolver = |resolver: Option<&'static str>| {
+        let mut authorization_context = AuthorizationContext::new()
+            .with_attribute(context::SANDBOX_NAME, sandbox.as_str())
+            .with_attribute(context::DNS_RECORD_TYPE, "A");
+        if let Some(resolver) = resolver {
+            authorization_context.insert(context::DNS_RESOLVER, resolver);
+        }
+        policy.evaluate(AuthorizationRequest {
+            principal: Principal::new(principal_kind::SANDBOX, "sandbox-id"),
+            action: Action::new(action::DNS_QUERY),
+            resource: Resource::new(resource_kind::DOMAIN, "auth.openai.com"),
+            context: authorization_context,
+        })
+    };
+    assert_eq!(to_resolver(None).await.expect("decision"), AuthorizationDecision::Allow);
+    assert_eq!(
+        to_resolver(Some("198.51.100.53:53")).await.expect("decision"),
+        AuthorizationDecision::Deny
+    );
+
+    // Allowing every host leaves the name where it was dialed unchecked.
+    let open = SandboxName::new("agent-open-id").expect("Sandbox name");
+    policy.set_agent(&open, &support::agent("open"), []);
+    assert_eq!(
+        connect_resolved(&policy, open.as_str(), "example.com", "203.0.113.9:8443", false).await,
+        AuthorizationDecision::Allow
+    );
+}
+
+async fn connect_resolved(
+    policy: &AgentPolicyEngine,
+    agent: &str,
+    hostname: &str,
+    destination: &str,
+    resolved: bool,
+) -> AuthorizationDecision {
+    policy
+        .evaluate(AuthorizationRequest {
+            principal: Principal::new(principal_kind::SANDBOX, "sandbox-id"),
+            action: Action::new(action::NETWORK_CONNECT),
+            resource: Resource::new(resource_kind::EXTERNAL_SERVICE, hostname),
+            context: AuthorizationContext::new()
+                .with_attribute(context::SANDBOX_NAME, agent)
+                .with_attribute(context::NETWORK_DESTINATION_ADDRESS, destination)
+                .with_attribute(context::NETWORK_DESTINATION_IS_HOST, false)
+                .with_attribute(context::NETWORK_HOSTNAME, hostname)
+                .with_attribute(context::NETWORK_HOSTNAME_RESOLVED, resolved),
+        })
+        .await
+        .expect("policy decision")
+}
+
 /// A stored secret is substituted only at a host that both the manifest and the secret allow.
 #[tokio::test(flavor = "local")]
 async fn a_secret_with_several_host_lists_is_used_only_where_all_of_them_match() {
@@ -133,11 +231,12 @@ async fn host_destined_traffic_reaches_only_the_platform_api() {
     policy.set_platform_endpoint("host.microsandbox.internal", 4_100);
 
     assert_eq!(
-        connect(
+        connect_flagged(
             &policy,
             sandbox.as_str(),
             Some("host.microsandbox.internal"),
-            "100.64.0.2:4100"
+            "100.64.0.2:4100",
+            true
         )
         .await,
         AuthorizationDecision::Allow
@@ -187,6 +286,107 @@ async fn host_destined_traffic_reaches_only_the_platform_api() {
         )
         .await,
         AuthorizationDecision::Allow
+    );
+}
+
+/// The sandbox names the alias itself, so naming it reaches nothing but the host: not an address
+/// elsewhere on the Platform API's port, and not a resolver of the sandbox's own, which would
+/// receive the query.
+#[tokio::test(flavor = "local")]
+async fn naming_the_platform_api_reaches_only_the_host() {
+    let mut agent = support::agent("worker");
+    agent.spec.network.allow = agent::NetworkAllow::Hosts(Vec::new());
+    let policy = AgentPolicyEngine::new();
+    let sandbox = SandboxName::new("agent-test-id").expect("Sandbox name");
+    policy.set_agent(&sandbox, &agent, []);
+    policy.set_platform_endpoint("host.microsandbox.internal", 4_100);
+
+    assert_eq!(
+        connect_flagged(
+            &policy,
+            sandbox.as_str(),
+            Some("host.microsandbox.internal"),
+            "100.64.0.2:4100",
+            true
+        )
+        .await,
+        AuthorizationDecision::Allow
+    );
+    // Host-reserved ranges also hold other machines, such as VPN peers, which only the Network
+    // Backend's flag tells apart from the host.
+    for destination in [
+        "100.100.100.100:4100",
+        "[fd7a:115c:a1e0::1]:4100",
+        "169.254.10.1:4100",
+        "203.0.113.7:4100",
+    ] {
+        assert_eq!(
+            connect(
+                &policy,
+                sandbox.as_str(),
+                Some("host.microsandbox.internal"),
+                destination
+            )
+            .await,
+            AuthorizationDecision::Deny,
+            "{destination}"
+        );
+    }
+    let http_to = |destination: &'static str, authority: &'static str| {
+        policy.evaluate(AuthorizationRequest {
+            principal: Principal::new(principal_kind::SANDBOX, "sandbox-id"),
+            action: Action::new(action::HTTP_REQUEST),
+            resource: Resource::new(resource_kind::EXTERNAL_SERVICE, "host.microsandbox.internal"),
+            context: AuthorizationContext::new()
+                .with_attribute(context::SANDBOX_NAME, sandbox.as_str())
+                .with_attribute(context::NETWORK_DESTINATION_ADDRESS, destination)
+                .with_attribute(context::HTTP_AUTHORITY, authority),
+        })
+    };
+    let http = |destination: &'static str| http_to(destination, "host.microsandbox.internal:4100");
+    assert_eq!(
+        http("100.64.0.2:4100").await.expect("decision"),
+        AuthorizationDecision::Allow
+    );
+    // The gateway need not be in a host-reserved range, as Microsandbox's own 172.16.0.0/12 isn't.
+    // An HTTP request goes over a connection already decided, which carried the flag.
+    assert_eq!(
+        http("172.16.0.5:4100").await.expect("decision"),
+        AuthorizationDecision::Allow
+    );
+    assert_eq!(
+        http_to("172.16.0.5:4100", "host.microsandbox.internal")
+            .await
+            .expect("decision"),
+        AuthorizationDecision::Allow
+    );
+    // An HTTP CONNECT through a proxy that listens on the API's port names the proxy as its
+    // destination, and the tunnel's own port in its authority.
+    assert_eq!(
+        http_to("203.0.113.7:4100", "host.microsandbox.internal:22")
+            .await
+            .expect("decision"),
+        AuthorizationDecision::Deny
+    );
+
+    let query = |resolver: Option<&'static str>| {
+        let mut authorization_context = AuthorizationContext::new()
+            .with_attribute(context::SANDBOX_NAME, sandbox.as_str())
+            .with_attribute(context::DNS_RECORD_TYPE, "TXT");
+        if let Some(resolver) = resolver {
+            authorization_context.insert(context::DNS_RESOLVER, resolver);
+        }
+        policy.evaluate(AuthorizationRequest {
+            principal: Principal::new(principal_kind::SANDBOX, "sandbox-id"),
+            action: Action::new(action::DNS_QUERY),
+            resource: Resource::new(resource_kind::DOMAIN, "host.microsandbox.internal"),
+            context: authorization_context,
+        })
+    };
+    assert_eq!(query(None).await.expect("decision"), AuthorizationDecision::Allow);
+    assert_eq!(
+        query(Some("198.51.100.53:53")).await.expect("decision"),
+        AuthorizationDecision::Deny
     );
 }
 

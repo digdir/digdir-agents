@@ -78,7 +78,9 @@ attributing a failure to the bump, repeat the check on an agent built with the p
 Without the harness on the machine, `agentctl claude login` and `agentctl codex login` sign in inside an agent of the
 base image, and read the sign-in off its terminal. Builds other than releases run `main`'s base image there, so try
 both once the bump's base image is published from `main`: with an `agentctl` built from `main` and a `PATH` that leaves
-out `claude` and `codex`, the sign-in page opens in the browser, and the login is stored.
+out `claude` and `codex`, the sign-in page opens in the browser, and the login is stored. That agent reaches only the
+hosts its [definition](../bundled/definitions/sign-in/agent.yaml) allows, so a sign-in that fails to reach a host
+needs the host added there.
 
 ## Pi
 

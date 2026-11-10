@@ -283,6 +283,10 @@ pub(super) fn sandbox_sign_in() -> SandboxSignIn {
         .with_environment([
             ("BROWSER".into(), "true".into()),
             (DISABLE_ALTERNATE_SCREEN_ENVIRONMENT.into(), "1".into()),
+            // Bun, which Claude Code runs on, keeps an address for 30 seconds whatever its DNS
+            // answer's TTL. The sign-in agent admits a connection only while that answer is
+            // live, so a cached one could be refused.
+            ("BUN_CONFIG_DNS_TIME_TO_LIVE_SECONDS".into(), "0".into()),
         ]),
         artifact: None,
         credential: |output, _artifact| {
