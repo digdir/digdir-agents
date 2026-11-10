@@ -10,6 +10,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # everyday tools an agent expects to find. dbus provides the system bus `systemctl` needs when not run as root. fd-find provides `fdfind`, which Pi searches files with; tzdata lets an
 # image select another time zone than UTC with one symlink. agg renders terminal recordings with fonts-jetbrains-mono.
 # file, make, patch, shellcheck, unzip, wget and zip are the build and inspection tools agents reach for in any repository.
+# skopeo reads an image's labels and digests from its registry without pulling it, such as the agentctl version a
+# definition's base image belongs to.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         btop \
@@ -32,6 +34,7 @@ RUN apt-get update \
         python3 \
         ripgrep \
         shellcheck \
+        skopeo \
         sudo \
         systemd \
         tmux \

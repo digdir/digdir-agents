@@ -128,7 +128,10 @@ the tests start with Compose, `browser` for browser tests, `desktop` for the des
 
 ## Trying a change
 
-1. Apply the `nested-build` variant from the checkout that holds the change, as the `agentctl` skill describes.
+1. Apply a variant from the checkout that holds the change, as the `agentctl` skill describes. `nested-build` builds the
+   image from the checkout, which a change to the Dockerfile, or to what it copies, needs. Building takes a long time,
+   so when the image is the one CI publishes from the default branch, apply `nested`, which runs that image. A branch
+   with image changes that are not merged yet needs `nested-build` for every change on it.
 2. In the nested agent, run what its instructions promise: the build, the unit, integration and end-to-end tests,
    browser tests on a desktop stage. Prompt one session there with the cheapest model, to check that the harness, its
    instructions and its skills work.
@@ -141,10 +144,19 @@ base images and the harnesses on them, and their release notes say what moved, w
 hand. So work from the notes between the two versions, rather than from comparing the definition with this skill
 alone.
 
-- **The version it was written for** is the `no.digdir.agentctl.base.version` label of its image, which images built
-  on a base inherit. A base tag in its `FROM`, such as `ubuntu-26.04-v0.1.0-preview.14`, names it too. For an image
-  its manifest references, pull it with `podman` and read the label. An image without the label was built on a base
-  from before `0.1.0-preview.14`. The image's creation date, against the dates of the releases, tells which.
+- **The version it was written for** is the `no.digdir.agentctl.base.version` label of its image, which images built on
+  a base inherit. A base tag in its `FROM`, such as `ubuntu-26.04-v0.1.0-preview.14`, names it too. For an image its
+  manifest references or its `FROM` pins by digest, read the label from the registry with `skopeo`, which fetches only
+  the image's metadata rather than pulling it:
+
+  ```sh
+  skopeo inspect docker://IMAGE | jq '{version: .Labels["no.digdir.agentctl.base.version"], created: .Created}'
+  skopeo inspect --format '{{.Digest}}' docker://ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.14
+  ```
+
+  The second gives the digest to pin a tag by. An image on a base older than the one that brings `skopeo` lacks it, and
+  `podman pull` with `podman image inspect` shows the same. An image without the label was built on a base from before
+  `0.1.0-preview.14`. Its creation date, against the dates of the releases, tells which.
 - **The version to bring it to** is the one you were asked for or, without one, the agentd that runs you, which the
   agent sandbox section of your instructions names. That is the version on its owner's machine, which runs the agent.
 - **What changed** is in the release notes, `agentctl/CHANGELOG.md` in digdir-agents, at the revision of the version
