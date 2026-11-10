@@ -9,8 +9,9 @@ variables to move. Once you have moved them, apply the agent again, and delete t
 then, agentctl mounts no folder that holds the file into an agent, such as the checkout it is in.
 
 A command that would mount such a folder, such as `agentctl update`, says instead what still reads the file, and for
-each value the command that stores it and the change to its entry in the manifest. When nothing reads the file any
-more, the command names what the manifests beside it now take from agentctl, offers to delete the file, and goes on.
+each value the command that stores it and the change to its entry in the manifest. When no manifest beside the file
+and no agent on this machine reads it any more, the command names what those manifests now take from agentctl. At a
+terminal it then offers to delete the file, and goes on. `agentctl tui` leaves deleting it to you.
 
 ## A GitHub token, and Git's name and email
 

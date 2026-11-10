@@ -53,17 +53,49 @@ where
 
 /// The paths of `files` once the person agrees to them, or why not. An agent's environment file is
 /// never agreed to. One that nothing reads any more is deleted instead, once the person agrees to
-/// that, and is then not among the paths.
+/// that, and is then not among the paths. Every question is asked before a file is deleted, so a no
+/// to any of them leaves everything as it was.
 pub(crate) fn agree(files: &[ExposedFile], ask: &Ask<'_>) -> Result<BTreeSet<PathBuf>, Error> {
+    let from = working_directory();
     let (environment, files): (Vec<_>, Vec<_>) =
         files.iter().cloned().partition(|file| file.environment_file.is_some());
-    if !environment.is_empty() {
-        delete_unread(&environment)?;
+    let unread = unread(&environment, from.as_deref())?;
+    for file in &unread {
+        if !prompt::interactive() {
+            return Err(Error::Invalid(agent::exposed::refusal_from(
+                &environment,
+                from.as_deref(),
+            )));
+        }
+        let lines = deletion_question(file, from.as_deref());
+        if !prompt::confirm_lines(&lines.iter().map(String::as_str).collect::<Vec<_>>())? {
+            return Err(Error::Invalid("nothing was changed".into()));
+        }
     }
-    if files.is_empty() {
-        return Ok(BTreeSet::new());
+    let agreed = if files.is_empty() {
+        BTreeSet::new()
+    } else {
+        agree_to_read(&files, ask)?
+    };
+    let mut deleted = Vec::new();
+    for file in unread {
+        let shown = file.shown(from.as_deref());
+        if let Err(error) = std::fs::remove_file(&file.path) {
+            let before = if deleted.is_empty() {
+                String::new()
+            } else {
+                format!("deleted {}, but ", agent::exposed::sentence_list(&deleted))
+            };
+            return Err(Error::Invalid(format!("{before}could not delete {shown}: {error}")));
+        }
+        deleted.push(shown);
     }
-    let files = files.as_slice();
+    Ok(agreed)
+}
+
+/// The paths of `files`, which may hold real keys and are no agent's environment file, once the
+/// person agrees to let the agent read them, or why not.
+fn agree_to_read(files: &[ExposedFile], ask: &Ask<'_>) -> Result<BTreeSet<PathBuf>, Error> {
     let paths = files.iter().map(|file| file.path.clone()).collect();
     let listed = listed(files);
     if ask.allowed {
@@ -109,42 +141,31 @@ fn working_directory() -> Option<PathBuf> {
     std::fs::canonicalize(std::env::current_dir().ok()?).ok()
 }
 
-/// Deletes the `environment` files, which no agent may read, once the person agrees to each.
+/// The `environment` files to offer to delete, each once though several of an agent's folders hold
+/// it.
 ///
 /// # Errors
 ///
-/// Returns why they stay: something still reads one, so its values would be lost, nobody is at the
-/// terminal to ask, or the person said no.
-fn delete_unread(environment: &[ExposedFile]) -> Result<(), Error> {
-    let from = working_directory();
+/// Returns what to do about them instead when something still reads one, as deleting it would lose
+/// the values.
+fn unread<'a>(environment: &'a [ExposedFile], from: Option<&std::path::Path>) -> Result<Vec<&'a ExposedFile>, Error> {
     let read = |file: &ExposedFile| {
         file.environment_file
             .as_ref()
             .is_some_and(|file| !file.readers.is_empty())
     };
-    if !prompt::interactive() || environment.iter().any(read) {
-        return Err(Error::Invalid(agent::exposed::refusal_from(
-            environment,
-            from.as_deref(),
-        )));
+    if environment.iter().any(read) {
+        return Err(Error::Invalid(agent::exposed::refusal_from(environment, from)));
     }
-    for file in environment {
-        let lines = deletion_question(file, from.as_deref());
-        if !prompt::confirm_lines(&lines.iter().map(String::as_str).collect::<Vec<_>>())? {
-            return Err(Error::Invalid("nothing was changed".into()));
-        }
-        std::fs::remove_file(&file.path)?;
-    }
-    Ok(())
+    let mut seen = BTreeSet::new();
+    Ok(environment.iter().filter(|file| seen.insert(&file.path)).collect())
 }
 
 /// The question about deleting the environment file `file`, which nothing reads any more: what the
 /// person must have stored first, as deleting it loses the values, then the question.
 fn deletion_question(file: &ExposedFile, from: Option<&std::path::Path>) -> Vec<String> {
     let mut lines = vec![
-        "An environment file gives no agent its values any more, but still holds them, so no agent may be given a \
-         folder it is in:"
-            .into(),
+        format!("{}:", agent::exposed::UNREAD),
         format!("  {}", file.shown(from)),
     ];
     lines.extend(
@@ -272,6 +293,31 @@ mod tests {
         );
         agree(&[left], &Ask { allowed: true, ..ASK }).expect_err("nobody to ask");
         assert!(directory.path().join(".env").exists());
+    }
+
+    #[test]
+    fn an_environment_file_is_offered_for_deletion_once_and_never_while_something_reads_it() {
+        // The builder is given a checkout and the folder of personal agents, which may hold it.
+        let twice = [
+            file("/home/me/agents/dev", ".env", true),
+            file("/home/me/agents", "dev/.env", true),
+        ];
+        let offered = unread(&twice, None).expect("nothing reads it");
+        assert_eq!(offered.len(), 1, "one file, in two folders");
+
+        let mut read = file("/src/app", "agents/dev/.env", true);
+        read.environment_file = Some(agent::exposed::EnvironmentFile {
+            readers: vec![agent::exposed::Reader::Unreadable {
+                name: "agent.yaml".into(),
+            }],
+            stored: Vec::new(),
+        });
+        let files = [file("/src/app", "agents/old/.env", true), read];
+        let refused = unread(&files, None).expect_err("one is still read").to_string();
+        assert!(
+            refused.contains("agents/dev/.env") && refused.contains("agent.yaml"),
+            "{refused}"
+        );
     }
 
     #[test]
