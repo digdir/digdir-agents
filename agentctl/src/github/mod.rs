@@ -253,7 +253,8 @@ fn read(name: &str, metadata: &str) -> Result<Account, Error> {
 /// The mediated `GITHUB_TOKEN` an agent asking for `name` receives, bound to that token only.
 ///
 /// The binding does not depend on a token being kept: the mediator looks the token up on every
-/// request, so a login or logout takes effect at once, and GitHub itself rejects an expired one.
+/// request, in a copy that follows every login and logout, so either takes effect without the
+/// agent being prepared again, and GitHub itself rejects an expired one.
 /// Requests that carry the placeholder while no token is kept are blocked; nothing else is.
 ///
 /// # Errors

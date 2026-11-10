@@ -7,7 +7,7 @@ use sandbox_microsandbox::{Decider, MicrosandboxNetworkBackend, MicrosandboxProv
 
 use crate::{
     Error,
-    authorization::{AgentPolicyEngine, PolicyUpdates},
+    authorization::{AgentPolicyEngine, PolicyUpdates, SecretMirror},
     control_plane::AgentRecord,
     persistence,
 };
@@ -84,11 +84,14 @@ impl Adapter {
         let secrets = database.clone();
         let network = Rc::new(
             MicrosandboxNetworkBackend::on_thread(move || async move {
-                let engine = Rc::new(AgentPolicyEngine::new().with_stored_secrets(secrets.clone()));
+                let secrets = SecretMirror::subscribe(&secrets)
+                    .await
+                    .map_err(|error| ::sandbox::Error::Backend(format!("could not copy the secrets: {error}")))?;
+                let engine = Rc::new(AgentPolicyEngine::new().with_secrets(secrets.clone()));
                 engine.clone().serve(updates);
                 Ok(Decider {
                     policy: engine,
-                    secret_store: Some(Rc::new(secrets)),
+                    secret_store: Some(secrets),
                 })
             })
             .await?,

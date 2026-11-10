@@ -567,6 +567,49 @@ spec:
         assert_eq!(names, ["a", "b"]);
     }
 
+    /// A policy installed after a write to the secrets returned finds the write in the network's
+    /// copy, so it never allows a new host the value the write replaced.
+    #[tokio::test(flavor = "local")]
+    async fn a_policy_waits_for_the_secrets_written_before_it() {
+        use ::sandbox::secret_store::SecretStore as _;
+
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let database = crate::persistence::Database::open(&directory.path().join("agent.db")).expect("database");
+        let record = record("worker", "6a3c1f0e-2b7d-4e59-9c84-0f1d2e3a4b5c");
+        let secret = |value: &str| crate::persistence::StoredSecret {
+            name: "API_TOKEN".into(),
+            value: Zeroizing::new(value.as_bytes().to_vec()),
+        };
+        database
+            .replace_agent_secrets(record.id, vec![secret("first")])
+            .await
+            .expect("store the secret");
+        // A large secret makes every copy slow to read, so a policy that did not wait would be
+        // installed first.
+        database
+            .set("large", &vec![0; 16 << 20])
+            .await
+            .expect("store a large secret");
+        let mirror = crate::authorization::SecretMirror::subscribe(&database)
+            .await
+            .expect("copy the secrets");
+        let (policy, updates) = crate::authorization::PolicyUpdates::channel();
+        Rc::new(crate::authorization::AgentPolicyEngine::new().with_secrets(mirror.clone())).serve(updates);
+
+        for value in ["second", "third", "fourth"] {
+            let references = database
+                .replace_agent_secrets(record.id, vec![secret(value)])
+                .await
+                .expect("replace the secret");
+            policy
+                .set_agent(&record.sandbox_name().expect("name"), &record.agent, [])
+                .await
+                .expect("install the policy");
+            let copied = mirror.resolve(&references[0]).await.expect("the copied secret");
+            assert_eq!(copied.expose(), value.as_bytes());
+        }
+    }
+
     /// The logins refreshed ahead of expiry are those of the agents that run.
     #[tokio::test(flavor = "local")]
     async fn only_the_logins_of_running_agents_are_refreshed_ahead() {
@@ -672,7 +715,11 @@ spec:
         }
         let (preparation, policy) = preparation(
             &database,
-            crate::authorization::AgentPolicyEngine::new().with_stored_secrets(database.clone()),
+            crate::authorization::AgentPolicyEngine::new().with_secrets(
+                crate::authorization::SecretMirror::subscribe(&database)
+                    .await
+                    .expect("copy the secrets"),
+            ),
         );
         (preparation, policy, database)
     }
@@ -719,6 +766,25 @@ spec:
             host,
         )
         .await
+    }
+
+    /// Whether the policy comes to decide `used` for the agent's sandbox using `secret` at `host`
+    /// within a few seconds, as a change to a stored secret reaches the network's copy of the
+    /// secrets soon after it returns.
+    async fn comes_to_use(
+        policy: &crate::authorization::AgentPolicyEngine,
+        record: &crate::control_plane::AgentRecord,
+        secret: &str,
+        host: &str,
+        used: bool,
+    ) -> bool {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while may_use(policy, record, secret, host).await != used {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok()
     }
 
     /// Whether the policy lets the agent's sandbox send an HTTP request to `host`.
@@ -914,8 +980,9 @@ spec:
             b"sk-FAKE-second"
         );
 
-        // A host the secret stops allowing gets no value from then on, before the agent is prepared
-        // again, so a value set together with the change never reaches it.
+        // A host the secret stops allowing gets no value once the change reaches the network's copy of
+        // the secrets, without the agent being prepared again. The change reaches it before a value
+        // set with it, so that value never reaches the host.
         secrets
             .set(
                 "aivar",
@@ -924,10 +991,10 @@ spec:
             )
             .await
             .expect("move the secret");
-        assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "api.aivar.no").await);
+        assert!(comes_to_use(&policy, &record, "AIVAR_API_KEY", "api.aivar.no", false).await);
         assert!(may_use(&policy, &record, "AIVAR_API_KEY", "models.example").await);
         secrets.remove("aivar").await.expect("remove").expect("it was stored");
-        assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "models.example").await);
+        assert!(comes_to_use(&policy, &record, "AIVAR_API_KEY", "models.example", false).await);
     }
 
     /// A manifest that names no hosts for a stored secret leaves them to the secret.
@@ -966,7 +1033,7 @@ spec:
             )
             .await
             .expect("move the secret");
-        assert!(!may_use(&policy, &record, "AIVAR_API_KEY", "api.aivar.no").await);
+        assert!(comes_to_use(&policy, &record, "AIVAR_API_KEY", "api.aivar.no", false).await);
         assert!(may_use(&policy, &record, "AIVAR_API_KEY", "models.example").await);
     }
 

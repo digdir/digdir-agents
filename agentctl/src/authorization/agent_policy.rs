@@ -9,6 +9,7 @@ use sandbox_authorization::{
     vocabulary::{action, context, principal_kind},
 };
 
+use super::SecretMirror;
 use crate::Agent;
 use sandbox::SandboxName;
 
@@ -17,8 +18,8 @@ use sandbox::SandboxName;
 pub struct AgentPolicyEngine {
     agents: RefCell<BTreeMap<String, AgentPolicy>>,
     platform_endpoint: RefCell<Option<PlatformEndpoint>>,
-    /// Where the secrets stored under a name are, whose hosts are read at every use.
-    stored_secrets: Option<crate::persistence::Database>,
+    /// The copy of the secrets stored under a name, whose hosts are checked at every use.
+    secrets: Option<Rc<SecretMirror>>,
 }
 
 struct PlatformEndpoint {
@@ -33,11 +34,11 @@ impl AgentPolicyEngine {
         Self::default()
     }
 
-    /// Reads the hosts of secrets stored under a name from `database`. Without it, a stored secret is
+    /// Checks the hosts of secrets stored under a name in `secrets`. Without it, a stored secret is
     /// substituted nowhere.
     #[must_use]
-    pub fn with_stored_secrets(mut self, database: crate::persistence::Database) -> Self {
-        self.stored_secrets = Some(database);
+    pub fn with_secrets(mut self, secrets: Rc<SecretMirror>) -> Self {
+        self.secrets = Some(secrets);
         self
     }
 
@@ -48,6 +49,13 @@ impl AgentPolicyEngine {
             while let Some((update, applied)) = updates.0.recv().await {
                 match update {
                     Update::Agent { sandbox, policy } => {
+                        // Preparing the agent may have written its secrets just before. The policy
+                        // waits for them, so that it never allows a new host an old value.
+                        if let Some(secrets) = &self.secrets
+                            && let Err(error) = secrets.caught_up().await
+                        {
+                            tracing::error!(%error, "could not wait for the copy of the secrets");
+                        }
                         self.agents.borrow_mut().insert(sandbox.as_str().into(), policy);
                     }
                     Update::RemoveAgent(sandbox) => {
@@ -67,10 +75,12 @@ impl AgentPolicyEngine {
 /// Each change is applied before its call returns, so what the caller does next sees it, such as
 /// revoking the connections an earlier policy admitted.
 #[derive(Clone)]
-pub struct PolicyUpdates(mpsc::UnboundedSender<(Update, oneshot::Sender<()>)>);
+pub struct PolicyUpdates(mpsc::UnboundedSender<(Update, Applied)>);
 
 /// Where an [`AgentPolicyEngine`] receives what [`PolicyUpdates`] send.
-pub struct PolicyUpdateReceiver(mpsc::UnboundedReceiver<(Update, oneshot::Sender<()>)>);
+pub struct PolicyUpdateReceiver(mpsc::UnboundedReceiver<(Update, Applied)>);
+
+type Applied = oneshot::Sender<()>;
 
 enum Update {
     Agent { sandbox: SandboxName, policy: AgentPolicy },
@@ -148,9 +158,9 @@ pub struct SecretHosts {
     /// Host patterns, such as `api.example.com` or `*.example.com`. A host must match one pattern
     /// of every list. Only a stored secret may have none, as its own hosts are checked.
     pub hosts: Vec<Vec<String>>,
-    /// The secret stored under this name, whose hosts a host must match as well. They are read
-    /// where it is stored at every use, as its value is, so changing them applies at once and a
-    /// host they no longer allow never receives a value set with them.
+    /// The secret stored under this name, whose hosts a host must match as well. They are checked
+    /// at every use, as its value is read, in a copy that every change reaches in the order it was
+    /// made, so a host they no longer allow never receives a value set with them.
     pub stored: Option<String>,
 }
 
@@ -194,7 +204,7 @@ impl PolicyEngine for AgentPolicyEngine {
             let decided = self.evaluate_request(&request);
             Ok(match self.stored_secret_to_check(&request) {
                 Some((name, host)) if decided == AuthorizationDecision::Allow => {
-                    decision(self.stored_secret_allows(&name, &host).await)
+                    decision(self.stored_secret_allows(&name, &host))
                 }
                 _ => decided,
             })
@@ -266,22 +276,12 @@ impl AgentPolicyEngine {
         Some((stored, request_host(request)?.to_owned()))
     }
 
-    /// Whether the secret stored as `name` allows `host` now. One that is gone, or cannot be read,
-    /// allows nothing.
-    async fn stored_secret_allows(&self, name: &str, host: &str) -> bool {
-        let Some(database) = &self.stored_secrets else {
-            return false;
-        };
-        crate::secrets::stored(database, name)
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|secret| {
-                secret
-                    .allowed_hosts
-                    .iter()
-                    .any(|pattern| crate::host_pattern::matches(pattern, host))
-            })
+    /// Whether the secret stored as `name` allows `host` now. One that is gone allows nothing.
+    fn stored_secret_allows(&self, name: &str, host: &str) -> bool {
+        self.secrets
+            .as_ref()
+            .and_then(|secrets| secrets.allowed_hosts(name))
+            .is_some_and(|hosts| hosts.iter().any(|pattern| crate::host_pattern::matches(pattern, host)))
     }
 
     /// Decides host-destined traffic: the Network Backend rewrites its host

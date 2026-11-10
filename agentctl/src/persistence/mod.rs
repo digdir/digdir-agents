@@ -9,6 +9,7 @@ use zeroize::Zeroizing;
 use crate::{AgentId, Error, Status, control_plane::AgentRecord, local::home};
 
 mod agents;
+mod mirror;
 mod schema;
 mod secrets;
 mod sessions;
@@ -22,6 +23,8 @@ pub struct Database {
     sender: tokio::sync::mpsc::Sender<Command>,
     changes: crate::resources::Changes,
 }
+
+pub(crate) use mirror::{MirrorMessage, SecretSnapshot};
 
 pub(crate) struct ProviderAccountWrite {
     pub(crate) provider: String,
@@ -117,6 +120,35 @@ impl Database {
             self.changes.bump();
         }
         result
+    }
+
+    /// Sends `snapshots` every stored secret, now and again after every write to the secrets, in
+    /// the order of the writes, in place of any copy subscribed before.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database thread has stopped.
+    pub(crate) async fn mirror_secrets(
+        &self,
+        snapshots: tokio::sync::mpsc::UnboundedSender<MirrorMessage>,
+    ) -> Result<(), Error> {
+        self.request(|response| Command::MirrorSecrets { snapshots, response })
+            .await
+    }
+
+    /// Waits until the copy [`Self::mirror_secrets`] sends to holds every write answered before
+    /// this call. Without a copy, it returns at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database thread has stopped.
+    pub(crate) async fn mirror_caught_up(&self) -> Result<(), Error> {
+        let (marker, reached) = oneshot::channel();
+        self.request(|response| Command::MarkMirror { marker, response })
+            .await?;
+        // A copy that is gone, or none, holds nothing to wait for.
+        let _ = reached.await;
+        Ok(())
     }
 
     pub(crate) async fn put_provider_account(&self, account: ProviderAccountWrite) -> Result<(), Error> {
@@ -652,6 +684,14 @@ impl crate::ssh::HostKeyStore for Database {
 }
 
 enum Command {
+    MirrorSecrets {
+        snapshots: tokio::sync::mpsc::UnboundedSender<MirrorMessage>,
+        response: oneshot::Sender<Result<(), Error>>,
+    },
+    MarkMirror {
+        marker: oneshot::Sender<()>,
+        response: oneshot::Sender<Result<(), Error>>,
+    },
     GetVolume {
         id: crate::volumes::VolumeId,
         response: oneshot::Sender<Result<crate::volumes::VolumeRecord, Error>>,
@@ -880,7 +920,9 @@ impl Command {
             | Self::RecordSessionStartForLaunch { .. }
             | Self::ApplySessionActivityForLaunch { .. }
             | Self::RecordSessionLaunch { .. } => true,
-            Self::Get { .. }
+            Self::MirrorSecrets { .. }
+            | Self::MarkMirror { .. }
+            | Self::Get { .. }
             | Self::GetVolume { .. }
             | Self::GetVolumeByName { .. }
             | Self::ListVolumes { .. }
@@ -909,6 +951,58 @@ impl Command {
             | Self::ResetSessionLaunchAttempts { .. } => false,
         }
     }
+
+    /// Whether the command can change a stored secret, which a copy of the secrets then needs.
+    const fn changes_secrets(&self) -> bool {
+        match self {
+            Self::SetSecret { .. }
+            | Self::DeleteSecret { .. }
+            | Self::ReplaceAgentSecrets { .. }
+            | Self::PutNamedSecret { .. }
+            | Self::SetNamedSecretHosts { .. }
+            | Self::DeleteNamedSecret { .. }
+            | Self::PutProviderAccount { .. }
+            | Self::DeleteProviderAccount { .. }
+            | Self::FinalizeDeletion { .. } => true,
+            Self::Put { .. }
+            | Self::PutVolume { .. }
+            | Self::RemoveVolume { .. }
+            | Self::UpdateStatus { .. }
+            | Self::MarkDeleting { .. }
+            | Self::SetVolumeRevisions { .. }
+            | Self::EnsureSession { .. }
+            | Self::UpdateSessionLifecycle { .. }
+            | Self::ActivateSession { .. }
+            | Self::MarkSessionDeleting { .. }
+            | Self::FinalizeSessionDeletion { .. }
+            | Self::SetSessionArchived { .. }
+            | Self::ClearSessionReport { .. }
+            | Self::RecordSessionStartForLaunch { .. }
+            | Self::ApplySessionActivityForLaunch { .. }
+            | Self::RecordSessionLaunch { .. }
+            | Self::MirrorSecrets { .. }
+            | Self::MarkMirror { .. }
+            | Self::Get { .. }
+            | Self::GetVolume { .. }
+            | Self::GetVolumeByName { .. }
+            | Self::ListVolumes { .. }
+            | Self::GetByName { .. }
+            | Self::List { .. }
+            | Self::ResolveSecret { .. }
+            | Self::NamedSecret { .. }
+            | Self::NamedSecrets { .. }
+            | Self::ProviderAccountExists { .. }
+            | Self::ProviderAccountMetadata { .. }
+            | Self::ProviderAccounts { .. }
+            | Self::GetSession { .. }
+            | Self::GetSessionByName { .. }
+            | Self::ListAllSessions { .. }
+            | Self::ListSessions { .. }
+            | Self::GetAttachTarget { .. }
+            | Self::GetSessionLaunchState { .. }
+            | Self::ResetSessionLaunchAttempts { .. } => false,
+        }
+    }
 }
 
 fn database_thread(
@@ -924,8 +1018,27 @@ fn database_thread(
     if ready.send(Ok(())).is_err() {
         return;
     }
+    let mut copy = None;
     while let Some(command) = receiver.blocking_recv() {
+        let command = match command {
+            Command::MirrorSecrets { snapshots, response } => {
+                copy = Some(snapshots);
+                mirror::publish(&connection, &mut copy);
+                let _ = response.send(Ok(()));
+                continue;
+            }
+            Command::MarkMirror { marker, response } => {
+                mirror::mark(copy.as_ref(), marker);
+                let _ = response.send(Ok(()));
+                continue;
+            }
+            command => command,
+        };
+        let secret_write = command.changes_secrets();
         execute(&mut connection, command);
+        if secret_write {
+            mirror::publish(&connection, &mut copy);
+        }
     }
 }
 
