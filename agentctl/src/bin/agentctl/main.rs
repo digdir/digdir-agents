@@ -188,7 +188,8 @@ enum Command {
     /// builder.
     ///
     /// The builder finds what changed since each definition's version, proposes each change and
-    /// writes it once you agree, for you to review and commit. To update agentctl itself, run
+    /// writes it once you agree, for you to review and commit. Without a terminal, as when an agent
+    /// runs it, it prints the update for that agent to do itself. To update agentctl itself, run
     /// `agentctl self update`.
     Update(update::UpdateArguments),
     /// Sign agents in to Claude Code.

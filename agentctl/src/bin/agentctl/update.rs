@@ -2,12 +2,16 @@
 //! agentctl, with the agent builder in its `update` session.
 //!
 //! The builder works out what changed since each definition's version, proposes the changes and
-//! writes them once the person agrees, as its instructions say. What is particular to updating is
-//! only how the session opens, and what must hold before it does: the definitions read nothing
-//! from an environment file, since moving off it is the person's to do.
+//! writes them once the person agrees, as the `agent-definition` skill says. What is particular to
+//! updating is only how the session opens, and what must hold before it does: the definitions read
+//! nothing from an environment file, since moving off it is the person's to do.
+//!
+//! An agent that runs it, as people ask the agent their definitions make to, has no terminal and
+//! follows the same skill itself, so it gets the task as the builder's session would open with it.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
     path::{Path, PathBuf},
 };
 
@@ -28,22 +32,11 @@ pub(crate) struct UpdateArguments {
 }
 
 /// Updates the definitions in the checkout with the builder, starting it there or going back to it.
+/// Without a terminal, it prints the update for the agent that ran it to do instead.
 pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, client: &Client) -> CommandResult<()> {
-    if !prompt::interactive() {
-        return Err(CommandError::Message(
-            "updating agent definitions is a conversation with the agent builder, which needs a terminal".into(),
-        ));
-    }
     let folder = builder::folder(arguments.directory)?;
-    // The builder gets the whole repository, since its definitions are found anywhere in it.
+    // Definitions are found anywhere in the repository, so the update covers all of it.
     let checkout = agent::local::repository_root(&folder).unwrap_or(&folder).to_path_buf();
-    if agent::local::home::user_home_directory().is_some_and(|home| home == checkout) {
-        return Err(CommandError::Message(
-            "the agent builder would get your whole home folder. To update a personal agent, name its folder, \
-             such as `agentctl update ~/agents/NAME`"
-                .into(),
-        ));
-    }
     let definitions = client
         .definitions(Some(checkout.clone()))
         .await?
@@ -56,8 +49,25 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
             checkout.display()
         )));
     }
-    if let Some(refusal) = environment_file_refusal(&checkout, &definitions) {
-        return Err(CommandError::Message(refusal));
+    let reading = environment_file_readers(&checkout, &definitions);
+    if !prompt::interactive() {
+        print!("{}", task(&checkout, &definitions, &reading));
+        return Ok(());
+    }
+    if agent::local::home::user_home_directory().is_some_and(|home| home == checkout) {
+        return Err(CommandError::Message(
+            "the agent builder would get your whole home folder. To update a personal agent, name its folder, \
+             such as `agentctl update ~/agents/NAME`"
+                .into(),
+        ));
+    }
+    if !reading.is_empty() {
+        return Err(CommandError::Message(format!(
+            "move these definitions off the environment file before updating them, as {} describes, then run \
+             `agentctl update` again:\n{}",
+            agent::exposed::ENVIRONMENT_FILE_GUIDE,
+            reading.join("\n")
+        )));
     }
 
     let builder = Builder::bundled()?;
@@ -108,10 +118,39 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
     Ok(())
 }
 
-/// Why the `definitions` in `checkout` cannot be updated yet, when any reads an environment file:
-/// moving its values is the person's to do, as the guide describes, and the builder may not mount
-/// one beside a manifest.
-fn environment_file_refusal(checkout: &Path, definitions: &[DefinitionSummary]) -> Option<String> {
+/// The update of the `definitions` in `checkout` for an agent to do itself, as the skill every agent
+/// has describes, with the ones `reading` an environment file, which it moves off it first.
+///
+/// The version is the one the agents run with, which inside an agent is its host's, not that of
+/// the agentctl its image may hold.
+fn task(checkout: &Path, definitions: &[DefinitionSummary], reading: &[String]) -> String {
+    let mut task = format!(
+        "Bring the agent definitions in {} up to date with agentctl {} or, inside an agent, the agentd its agent \
+         sandbox section names. Follow \"Bringing a definition up to date\" in the `agent-definition` skill: work \
+         out the version each was written for, read the release notes since then, and propose each change, with its \
+         reason, before you write it. The definitions:\n",
+        checkout.display(),
+        agent::build_version()
+    );
+    for definition in definitions {
+        let _ = writeln!(task, "  {}", relative(checkout, &definition.path));
+    }
+    if !reading.is_empty() {
+        task.push_str(
+            "Some still read an environment file, which a later release stops reading. Moving them off it is one of \
+             the changes, as that section says:\n",
+        );
+        for line in reading {
+            task.push_str(line);
+            task.push('\n');
+        }
+    }
+    task
+}
+
+/// The lines naming the `definitions` in `checkout` that read an environment file, which a later
+/// release stops reading: the variables they take from one, and the `.env` beside them.
+fn environment_file_readers(checkout: &Path, definitions: &[DefinitionSummary]) -> Vec<String> {
     // A variant reads what the manifest it extends does, so the manifests of a folder that read the
     // same variables share a line.
     let mut reading = BTreeMap::<(&Path, &[String]), Vec<String>>::new();
@@ -162,14 +201,7 @@ fn environment_file_refusal(checkout: &Path, definitions: &[DefinitionSummary]) 
             relative(checkout, file)
         )
     }));
-    (!lines.is_empty()).then(|| {
-        format!(
-            "move these definitions off the environment file before updating them, as {} describes, then run \
-             `agentctl update` again:\n{}",
-            agent::exposed::ENVIRONMENT_FILE_GUIDE,
-            lines.join("\n")
-        )
-    })
+    lines
 }
 
 /// `path` as the person knows it in `checkout`.
@@ -183,7 +215,7 @@ mod tests {
 
     use agent::control_plane::DefinitionSummary;
 
-    use super::environment_file_refusal;
+    use super::{environment_file_readers, task};
 
     fn definition(path: &str) -> DefinitionSummary {
         DefinitionSummary {
@@ -207,8 +239,8 @@ mod tests {
             ..definition("/src/app/agents/old/agent.yaml")
         };
         assert_eq!(
-            environment_file_refusal(checkout, &[definition("/src/app/agents/dev/agent.yaml"), unreadable]),
-            None
+            environment_file_readers(checkout, &[definition("/src/app/agents/dev/agent.yaml"), unreadable]),
+            Vec::<String>::new()
         );
     }
 
@@ -221,7 +253,7 @@ mod tests {
             environment_file: Some(file.clone()),
             ..definition(path)
         };
-        let refusal = environment_file_refusal(
+        let readers = environment_file_readers(
             checkout,
             &[
                 reading("/src/app/agents/dev/agent.yaml", &["GITHUB_TOKEN"]),
@@ -230,10 +262,9 @@ mod tests {
                 reading("/src/app/agents/dev/agent.off.yaml", &[]),
                 definition("/src/app/agents/other/agent.yaml"),
             ],
-        )
-        .expect("a refusal");
-        let lines = refusal.lines().skip(1).map(str::trim).collect::<Vec<_>>();
-        assert_eq!(lines.len(), 3, "{refusal}");
+        );
+        let lines = readers.iter().map(|line| line.trim()).collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3, "{lines:?}");
         assert!(
             lines
                 .iter()
@@ -243,6 +274,30 @@ mod tests {
             lines.contains(&"agents/dev/agent.yaml and agent.nested.yaml read GITHUB_TOKEN from the environment file")
         );
         assert!(lines.iter().any(|line| line.starts_with("agents/dev/.env ")));
-        assert!(!refusal.contains("agent.off.yaml") && !refusal.contains("agents/other"));
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("agent.off.yaml") || line.contains("agents/other"))
+        );
+    }
+
+    #[test]
+    fn an_agent_is_given_every_definition_and_what_reads_an_environment_file() {
+        let checkout = Path::new("/src/app");
+        let definitions = [
+            definition("/src/app/agents/dev/agent.yaml"),
+            definition("/src/app/agents/dev/agent.nested.yaml"),
+        ];
+
+        let clean = task(checkout, &definitions, &[]);
+        assert!(
+            clean.contains("\n  agents/dev/agent.yaml\n  agents/dev/agent.nested.yaml\n"),
+            "{clean}"
+        );
+        assert!(clean.contains(agent::build_version()) && clean.contains("agent sandbox section"));
+        assert!(!clean.contains("environment file"));
+
+        let reading = ["  agents/dev/agent.yaml reads GITHUB_TOKEN from the environment file".to_owned()];
+        assert!(task(checkout, &definitions, &reading).ends_with(&format!("{}\n", reading[0])));
     }
 }

@@ -85,6 +85,10 @@ It runs the [agent builder](bundled/definitions/agent-builder/) on the checkout,
 reads the release notes since the version each definition was written for, proposes each change with its reason, and
 writes the ones you agree to for you to review and commit. Running it again goes back to the same conversation.
 
+An agent can bring its own definition up to date in the same way, for example when the checkout lives inside it. Ask
+it to, or to run `agentctl update` there, which gives it the definitions to update. It proposes each change, tries
+the result and opens a pull request, and it tells you which logins and secrets to store on your machine.
+
 ## Your first agent
 
 `agentctl new` makes an agent for a repository with you. Run it in the repository's checkout, or name the checkout:

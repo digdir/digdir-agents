@@ -83,21 +83,14 @@ variant has for running inside another agent and without nested agents of its ow
 ## Updating definitions
 
 `agentctl update` opens your `update` session with the version of agentctl to bring the definitions up to, and the
-definitions it found in the checkout. It starts you only once none of them reads an environment file, since moving off
-it is the person's to do.
+definitions it found in the checkout. It starts you only once none of them reads an environment file, so that the
+person has stored the logins and secrets they need.
 
-1. **Work out what changed** for each definition, as the `agent-definition` skill's section on bringing a definition
-   up to date describes. The stages of one agent share an image, and so the version they were written for.
-2. **Propose before you write.** Show the person each change, grouped by definition: what it changes and why, with
-   the release note it comes from. Say what you would leave as it is, such as a choice the person made on purpose. Ask
-   them to agree to, change or drop each one, and write only what they agree to. Say so when a definition is up to
-   date already.
-3. **Write and try it.** Make the agreed changes as edits to the files in the checkout, and leave its branch and the
-   person's own changes alone. Try each changed definition in a nested agent as in
-   [step 4 of making one](#4-try-it), and report each capability as verified, or not and why.
-4. **Hand it over.** List the files you changed, for the person to review with `git diff` and commit, and which of
-   their agents must be created again to get the changes. A team's agent changes through a pull request, and its
-   agents get a new image once CI publishes it.
+Bring each one up to date as the `agent-definition` skill's section on it describes. The stages of one agent share an
+image, and so the version they were written for. Try what you change as in [step 4 of making an agent](#4-try-it), and
+leave it as edits in the checkout, its branch and the person's own changes as they are, for the person to review with
+`git diff` and commit. A team's agent changes through a pull request, and its agents get a new image once CI publishes
+it.
 
 When you notice that the `agent-definition` skill or these instructions are wrong or missing something, tell the
 person, so it can be fixed in digdir-agents, where this agent's definition is

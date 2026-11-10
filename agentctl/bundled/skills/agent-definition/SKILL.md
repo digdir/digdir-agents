@@ -146,7 +146,7 @@ alone.
   its manifest references, pull it with `podman` and read the label. An image without the label was built on a base
   from before `0.1.0-preview.14`. The image's creation date, against the dates of the releases, tells which.
 - **The version to bring it to** is the one you were asked for or, without one, the agentd that runs you, which the
-  agent sandbox section of your instructions names.
+  agent sandbox section of your instructions names. That is the version on its owner's machine, which runs the agent.
 - **What changed** is in the release notes, `agentctl/CHANGELOG.md` in digdir-agents, at the revision of the version
   to bring it to: the sections after the version it was written for. A release's revision is its tag
   `agentctl/<version>`, as in
@@ -165,9 +165,23 @@ Then bring each part of the definition to that version:
   definition predates.
 - **Leave the owner's choices** as they are, such as a tool pinned to the repository's version or a harness the
   definition installs itself. Say what the release changes about them instead.
+- **Values from an environment file**, which a later release stops reading, move as
+  [moving off the environment file](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/moving-off-the-environment-file.md)
+  describes. Logins and secrets are stored on the machine that applies the agent, so change the manifest, and give
+  its owner the `agentctl github login` and `agentctl secret set` commands to run there.
 
-Try it as [trying a change](#trying-a-change) describes, with the agentctl of the version you brought it to, and say
-which of its owner's agents must be created again to get it, as below describes.
+Its owner decides what changes, so work through it with them:
+
+1. **Propose before you write.** Show each change, grouped by definition: what it changes and why, with the release
+   note it comes from. Say what you would leave as it is. Write only what they agree to, and say so when a definition
+   is up to date already.
+2. **Try it** as [trying a change](#trying-a-change) describes, with an agentctl of the version you brought it to,
+   since an older one refuses what a later release added to the manifest. When `agentctl --version` names another,
+   install that version, as in
+   `curl -fsSL https://raw.githubusercontent.com/digdir/digdir-agents/main/agentctl/install.sh | AGENT_VERSION=v0.1.0-preview.14 sh`,
+   and check that `agentctl --version` names it before you go on.
+3. **Hand it over** as [proposing a change](#proposing-a-change) describes, and say which of its owner's agents must be
+   created again to get it, as below describes.
 
 ## What an update can change in place
 
