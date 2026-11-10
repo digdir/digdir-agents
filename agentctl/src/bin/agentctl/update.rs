@@ -13,7 +13,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use agent::{control_api::Client, control_plane::DefinitionSummary, local::home::ControlPlaneHome, release::Release};
+use agent::{
+    control_api::Client, control_plane::DefinitionSummary, definitions::Detail, local::home::ControlPlaneHome,
+    release::Release,
+};
 use clap::Args;
 
 use crate::{
@@ -47,7 +50,7 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
     // Definitions are found anywhere in the repository, so the update covers all of it.
     let checkout = agent::local::repository_root(&folder).unwrap_or(&folder).to_path_buf();
     let definitions = client
-        .definitions(Some(checkout.clone()))
+        .definitions(Some(checkout.clone()), Detail::Update)
         .await?
         .into_iter()
         .filter(|definition| definition.reference.is_none() && definition.path.starts_with(&checkout))

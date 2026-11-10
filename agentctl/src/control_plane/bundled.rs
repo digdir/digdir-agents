@@ -37,13 +37,17 @@ impl ControlPlane {
     /// The definitions a client can apply or run: those on disk for `directory`, as
     /// [`crate::definitions::manifests`] finds them, then the manifests agents kept until deleted
     /// were applied from, then the ones agentd carries, each in the folder agentd keeps its copy
-    /// in, written if missing.
+    /// in, written if missing. Those on disk tell as much as `detail` asks for.
     ///
     /// # Errors
     ///
     /// Returns an error when `directory` is not absolute, the agents cannot be read, or a copy
     /// cannot be written.
-    pub async fn definitions(&self, directory: Option<PathBuf>) -> Result<Vec<DefinitionSummary>, Error> {
+    pub async fn definitions(
+        &self,
+        directory: Option<PathBuf>,
+        detail: crate::definitions::Detail,
+    ) -> Result<Vec<DefinitionSummary>, Error> {
         if let Some(directory) = &directory
             && !directory.is_absolute()
         {
@@ -71,7 +75,7 @@ impl ControlPlane {
             })
             .collect();
         let mut listed =
-            tokio::task::spawn_blocking(move || crate::definitions::on_disk(directory.as_deref(), recorded))
+            tokio::task::spawn_blocking(move || crate::definitions::on_disk(directory.as_deref(), recorded, detail))
                 .await
                 .map_err(|error| Error::Daemon(format!("listing the definitions on disk failed: {error}")))?;
         listed.extend(self.bundled_definitions().await?);

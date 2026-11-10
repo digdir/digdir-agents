@@ -821,7 +821,10 @@ fn spawn_create(home: &ControlPlaneHome, inputs: Inputs, agent: String, spec: Fo
 fn spawn_discovery(socket_path: PathBuf, inputs: Inputs) {
     tokio::task::spawn_local(async move {
         let directory = std::env::current_dir().ok();
-        let (candidates, unlisted) = match Client::for_path(socket_path).definitions(directory.clone()).await {
+        let (candidates, unlisted) = match Client::for_path(socket_path)
+            .definitions(directory.clone(), agent::definitions::Detail::Choosing)
+            .await
+        {
             Ok(definitions) => (manifest_candidates(definitions, directory.as_deref()), None),
             Err(error) => (Vec::new(), Some(format!("could not list the definitions: {error}"))),
         };

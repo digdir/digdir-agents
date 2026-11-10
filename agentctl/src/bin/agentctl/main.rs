@@ -1098,7 +1098,9 @@ async fn get_resources(
                 .into());
             }
             let directory = std::env::current_dir().map_err(Error::from)?;
-            let definitions = client.definitions(Some(directory.clone())).await?;
+            let definitions = client
+                .definitions(Some(directory.clone()), agent::definitions::Detail::Choosing)
+                .await?;
             match output {
                 OutputFormat::Json => print_json(&definitions)?,
                 OutputFormat::Table => print_table(&format::definitions_table(&definitions, &directory)),
@@ -2521,7 +2523,7 @@ fn read_apply_request_in(
 /// The manifest of agentd's copy of the definition `reference` names.
 async fn referenced_manifest(client: &Client, reference: &str) -> Result<PathBuf, Error> {
     let reference = agent::DefinitionReference::parse(reference)?.to_string();
-    let definitions = client.definitions(None).await?;
+    let definitions = client.definitions(None, agent::definitions::Detail::Choosing).await?;
     let references = definitions
         .iter()
         .filter_map(|definition| Some((definition.reference.as_deref()?, &definition.path)));

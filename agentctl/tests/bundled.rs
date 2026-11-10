@@ -369,7 +369,7 @@ async fn definitions_lists_a_folders_then_the_applied_ones_then_agentds() {
 
     let listed = fixture
         .control_plane
-        .definitions(Some(folder.path().to_path_buf()))
+        .definitions(Some(folder.path().to_path_buf()), agent::definitions::Detail::Choosing)
         .await
         .expect("definitions");
 
@@ -397,7 +397,7 @@ async fn definitions_lists_a_folders_then_the_applied_ones_then_agentds() {
     assert_eq!(listed[1].path, applied.path().join("agent.yaml"));
     let error = fixture
         .control_plane
-        .definitions(Some("relative".into()))
+        .definitions(Some("relative".into()), agent::definitions::Detail::Choosing)
         .await
         .expect_err("a relative folder");
     assert!(error.to_string().contains("must be an absolute path"), "{error}");
@@ -449,7 +449,11 @@ async fn a_reference_agentd_cannot_resolve_is_refused() {
 async fn an_internal_definition_runs_only_through_its_own_request() {
     let fixture = Fixture::with_internal_sign_in();
 
-    let listed = fixture.control_plane.definitions(None).await.expect("definitions");
+    let listed = fixture
+        .control_plane
+        .definitions(None, agent::definitions::Detail::Choosing)
+        .await
+        .expect("definitions");
     assert_eq!(
         listed
             .iter()
@@ -565,7 +569,11 @@ async fn a_newer_build_replaces_agentds_copy_which_its_agents_then_read() {
 async fn a_bundled_definition_is_applied_from_agentds_copy_like_any_other() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("repo");
-    let definitions = fixture.control_plane.definitions(None).await.expect("definitions");
+    let definitions = fixture
+        .control_plane
+        .definitions(None, agent::definitions::Detail::Choosing)
+        .await
+        .expect("definitions");
     let builder = definitions
         .iter()
         .find(|definition| definition.reference.as_deref() == Some("bundled/builder"))

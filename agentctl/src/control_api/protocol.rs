@@ -236,7 +236,19 @@ pub(crate) struct ExposedFilesParams {
     pub binds: Vec<crate::control_plane::BindSource>,
 }
 
-/// Parameters of `definitions.v1.list` and `volumes.v1.manifests`.
+/// Parameters of `definitions.v1.list`.
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DefinitionListParams {
+    /// The absolute folder whose definitions on disk are listed with the others.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<std::path::PathBuf>,
+    /// How much to tell about each definition on disk.
+    #[serde(default, skip_serializing_if = "crate::definitions::Detail::is_choosing")]
+    pub detail: crate::definitions::Detail,
+}
+
+/// Parameters of `volumes.v1.manifests`.
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ManifestListParams {
