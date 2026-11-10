@@ -35,6 +35,9 @@ pub fn sandbox_sign_in() -> SandboxSignIn {
         .with_environment([
             ("GH_CONFIG_DIR".into(), CONFIGURATION.into()),
             ("GH_NO_UPDATE_NOTIFIER".into(), "1".into()),
+            // Otherwise `gh` asks the terminal for its background colour, and the relay doesn't
+            // pass the answer back, so it waits five seconds before showing the code.
+            ("GLAMOUR_STYLE".into(), "dark".into()),
         ]),
         Some(sandbox::SandboxPath::new(format!("{CONFIGURATION}/token"))),
         |_output, artifact| artifact_text("GitHub", artifact),
