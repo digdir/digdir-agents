@@ -459,7 +459,7 @@ mod tests {
                 "a login changes what the host substitutes, never what the guest holds"
             );
             for secret in secrets {
-                let resolved = manager.resolve(&secret.reference).await.expect("resolve");
+                let resolved = database.resolve(&secret.reference).await.expect("resolve");
                 assert_eq!(resolved.expose(), format!("sk-ant-oat01-{login}").as_bytes());
             }
         }

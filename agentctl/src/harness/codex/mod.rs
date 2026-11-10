@@ -2,8 +2,6 @@
 
 use std::{fmt::Write as _, io::Read as _};
 
-use sandbox::secret_store::SecretReference;
-
 use crate::{
     Error,
     harness::{LaunchRequest, LoginName, MediatedSecret, ProcessLaunch, login::LoginStore, shell_single_quoted},
@@ -46,11 +44,6 @@ const LOGIN_CONFIGURATION: [&str; 4] = [
 ];
 /// The Codex home of a sign-in in a sandbox, which exists only for that sign-in.
 const SIGN_IN_HOME: &str = "/tmp/agentctl-codex-sign-in";
-
-/// The login whose access token `reference` names. That token is refreshed before it is resolved.
-pub(super) fn access_login(reference: &SecretReference) -> Option<LoginName> {
-    LOGINS.login_of(ACCESS_SECRET, reference)
-}
 
 /// Codex's global instruction file, which holds the agent's instructions.
 pub(super) fn instructions_path(home: &str) -> String {

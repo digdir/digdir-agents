@@ -3,7 +3,7 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc, time::Instant, time::SystemTime};
 
 use base64::Engine as _;
-use sandbox::secret_store::{SecretMaterial, SecretStore as _};
+use sandbox::secret_store::SecretStore as _;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -123,11 +123,21 @@ impl Authentication {
         Ok(forgotten)
     }
 
-    pub(in crate::harness) async fn resolve_access(&self, login: &LoginName) -> Result<SecretMaterial, sandbox::Error> {
-        self.refresh_if_needed(login)
-            .await
-            .map_err(|error| sandbox::Error::Backend(error.to_string()))?;
-        self.database.resolve(&LOGINS.secret(ACCESS_SECRET, login)).await
+    /// Refreshes each of `logins` whose access token expires within [`REFRESH_AHEAD_SECONDS`], and
+    /// returns those that could not be, with why. Run often enough, every token a sandbox's request
+    /// gets is current, so no request waits for a refresh. The logins refresh at once, so one that
+    /// is slow to refresh holds up no other.
+    pub(in crate::harness) async fn refresh_due(
+        &self,
+        logins: impl IntoIterator<Item = LoginName>,
+    ) -> Vec<(LoginName, Error)> {
+        let logins = logins.into_iter().collect::<Vec<_>>();
+        let refreshed = futures_util::future::join_all(logins.iter().map(|login| self.refresh_if_needed(login))).await;
+        logins
+            .into_iter()
+            .zip(refreshed)
+            .filter_map(|(login, refreshed)| refreshed.err().map(|error| (login, error)))
+            .collect()
     }
 
     #[allow(clippy::option_if_let_else)]
@@ -547,6 +557,22 @@ mod tests {
         (endpoint, requests)
     }
 
+    /// What a sandbox's request gets as `login`'s access token after a refresh pass, or why the
+    /// pass could not refresh it.
+    async fn access_after_refresh(manager: &Authentication, login: &LoginName) -> Result<Vec<u8>, Error> {
+        let failed = manager.refresh_due([login.clone()]).await;
+        if let Some((_, error)) = failed.into_iter().find(|(failed, _)| failed == login) {
+            return Err(error);
+        }
+        Ok(manager
+            .database
+            .resolve(&LOGINS.secret(ACCESS_SECRET, login))
+            .await
+            .expect("access token")
+            .expose()
+            .to_vec())
+    }
+
     #[tokio::test(flavor = "local")]
     async fn imports_only_the_required_chatgpt_grant_state() {
         let directory = TempDir::new().expect("temporary directory");
@@ -635,12 +661,11 @@ mod tests {
             .await
             .expect("placeholder login");
 
-        let resolved = manager
-            .resolve_access(&LoginName::default())
+        let resolved = access_after_refresh(&manager, &LoginName::default())
             .await
             .expect("placeholder access token");
 
-        assert_eq!(resolved.expose(), ACCESS_PLACEHOLDER.as_bytes());
+        assert_eq!(resolved, ACCESS_PLACEHOLDER.as_bytes());
         assert_eq!(
             selected_account_id(&database, &LoginName::default())
                 .await
@@ -669,7 +694,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "local")]
-    async fn refreshes_and_rotates_before_resolving_the_access_token() {
+    async fn a_refresh_pass_rotates_an_expiring_token() {
         let directory = TempDir::new().expect("temporary directory");
         let database = persistence::Database::open(&directory.path().join("agent.db")).expect("database");
         let old_access = jwt(unix_time().expect("time") - 1);
@@ -682,12 +707,15 @@ mod tests {
             .expect("login");
 
         let login = LoginName::default();
-        let (first, second) = tokio::join!(manager.resolve_access(&login), manager.resolve_access(&login));
+        let (first, second) = tokio::join!(
+            access_after_refresh(&manager, &login),
+            access_after_refresh(&manager, &login)
+        );
         let first = first.expect("first resolved token");
         let second = second.expect("second resolved token");
 
-        assert_eq!(first.expose(), new_access.as_bytes());
-        assert_eq!(second.expose(), new_access.as_bytes());
+        assert_eq!(first, new_access.as_bytes());
+        assert_eq!(second, new_access.as_bytes());
         assert_eq!(
             database
                 .resolve(&LOGINS.secret(REFRESH_SECRET, &LoginName::default()))
@@ -723,14 +751,15 @@ mod tests {
             .await
             .expect("private login");
 
-        let failed = manager.resolve_access(&work).await.expect_err("work cannot refresh");
-        let resolved = manager
-            .resolve_access(&private)
+        let failed = access_after_refresh(&manager, &work)
+            .await
+            .expect_err("work cannot refresh");
+        let resolved = access_after_refresh(&manager, &private)
             .await
             .expect("private needs no refresh");
 
         assert!(failed.to_string().contains("agentctl codex login work"));
-        assert_eq!(resolved.expose(), current.as_bytes());
+        assert_eq!(resolved, current.as_bytes());
         assert_eq!(requests.get(), 1);
         let state = manager.refresh_state(&work);
         assert!(manager.logout(&work).await.expect("logout"));
@@ -760,12 +789,10 @@ mod tests {
             .await
             .expect("login");
 
-        let first = manager
-            .resolve_access(&LoginName::default())
+        let first = access_after_refresh(&manager, &LoginName::default())
             .await
             .expect_err("first refresh fails");
-        let second = manager
-            .resolve_access(&LoginName::default())
+        let second = access_after_refresh(&manager, &LoginName::default())
             .await
             .expect_err("cooldown retains failure");
 
@@ -792,12 +819,10 @@ mod tests {
             .await
             .expect("login");
 
-        let first = manager
-            .resolve_access(&LoginName::default())
+        let first = access_after_refresh(&manager, &LoginName::default())
             .await
             .expect_err("first refresh fails");
-        let second = manager
-            .resolve_access(&LoginName::default())
+        let second = access_after_refresh(&manager, &LoginName::default())
             .await
             .expect_err("terminal failure retained");
 
@@ -805,5 +830,75 @@ mod tests {
         assert!(first.to_string().contains("already used"));
         assert!(first.to_string().contains("agentctl codex login"));
         assert_eq!(first.to_string(), second.to_string());
+    }
+
+    /// A login whose refresh gets no answer holds up no other login's refresh.
+    #[tokio::test(flavor = "local")]
+    async fn a_slow_refresh_holds_up_no_other_login() {
+        let directory = TempDir::new().expect("temporary directory");
+        let database = persistence::Database::open(&directory.path().join("agent.db")).expect("database");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind refresh endpoint");
+        let endpoint = format!("http://{}/oauth/token", listener.local_addr().expect("local address"));
+        let new_access = jwt(unix_time().expect("time") + 3_600);
+        let answer = new_access.clone();
+        tokio::task::spawn_local(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                if read_test_request(&mut stream).await.contains("slow-refresh") {
+                    // Kept open and never answered.
+                    tokio::task::spawn_local(async move {
+                        let _unanswered = stream;
+                        std::future::pending::<()>().await;
+                    });
+                    continue;
+                }
+                let body = serde_json::json!({ "access_token": answer }).to_string();
+                let _ = stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+            }
+        });
+        let manager = Rc::new(Authentication::new(database.clone()).with_refresh_url(endpoint));
+        let expired = || jwt(unix_time().expect("time") - 1);
+        let (slow, fast) = (
+            LoginName::new("a-slow").expect("name"),
+            LoginName::new("b-fast").expect("name"),
+        );
+        manager
+            .login(slow.clone(), login_file(&expired(), "slow-refresh"), false)
+            .await
+            .expect("slow login");
+        manager
+            .login(fast.clone(), login_file(&expired(), "fast-refresh"), false)
+            .await
+            .expect("fast login");
+
+        let refreshing = tokio::task::spawn_local({
+            let manager = manager.clone();
+            let logins = [slow, fast.clone()];
+            async move { manager.refresh_due(logins).await }
+        });
+        let refreshed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let access = database
+                    .resolve(&LOGINS.secret(ACCESS_SECRET, &fast))
+                    .await
+                    .expect("access token");
+                if access.expose() == new_access.as_bytes() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        refreshing.abort();
+        refreshed.expect("the fast login should refresh while the slow one waits");
     }
 }

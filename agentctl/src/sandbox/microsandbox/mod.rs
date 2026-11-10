@@ -75,7 +75,8 @@ impl Adapter {
         policy: Rc<AgentPolicyEngine>,
         platform_port: u16,
     ) -> Result<Self, Error> {
-        let network = Rc::new(MicrosandboxNetworkBackend::new(policy.clone()).with_secret_store(credentials.clone()));
+        let network =
+            Rc::new(MicrosandboxNetworkBackend::new(policy.clone()).with_secret_store(Rc::new(database.clone())));
         let provider = Rc::new(
             MicrosandboxProvider::builder(home.join("microsandbox"))
                 .remove_unused_images_after(UNUSED_IMAGE_RETENTION)

@@ -257,6 +257,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     let mut session_controller_task = tokio::task::spawn_local(session_controller.run());
     let mut volume_controller_task = tokio::task::spawn_local(volume_controller.run());
     let mut platform_api_task = tokio::task::spawn_local(platform_api_server.serve(platform_api_listener));
+    let login_refresh_task = tokio::task::spawn_local(async move { credentials.refresh_logins().await });
     let socket_path = home.socket_path();
 
     let result = tokio::select! {
@@ -284,6 +285,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     session_controller_task.abort();
     volume_controller_task.abort();
     platform_api_task.abort();
+    login_refresh_task.abort();
     let _ = controller_task.await;
     let _ = session_controller_task.await;
     let _ = volume_controller_task.await;

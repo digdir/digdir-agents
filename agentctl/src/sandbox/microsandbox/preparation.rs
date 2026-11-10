@@ -301,6 +301,7 @@ impl Preparation {
                 }
                 return Err(harness::no_login_stored(installation.kind, &installation.login));
             };
+            self.credentials.refresh_login(installation.kind, &login).await;
             installed.push(installation.kind);
             for secret in harness::prepare(installation.kind, &login, &self.database).await? {
                 if let Some(existing) = managed_environments.insert(secret.environment, installation.kind.as_str()) {
@@ -511,6 +512,75 @@ spec:
             "b",
             "an agent keeps its login though a is now free and first by name"
         );
+    }
+
+    /// An agent given another login than its sandbox records keeps the recorded one refreshed too,
+    /// as its sandbox uses it until it is set up with the new one.
+    #[tokio::test(flavor = "local")]
+    async fn a_login_a_sandbox_still_uses_is_refreshed_ahead_with_the_one_it_was_given() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let database = crate::persistence::Database::open(&directory.path().join("agent.db")).expect("database");
+        for name in ["a", "b"] {
+            harness::store_test_login(name, &database).await;
+        }
+        let credentials = Rc::new(harness::AuthenticationManager::new(database.clone()));
+        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
+        let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
+        let preparation = super::Preparation::new(database.clone(), credentials.clone(), policy, network);
+        let agent = record("first", "6a3c1f0e-2b7d-4e59-9c84-0f1d2e3a4b5c");
+        let mut prepared = preparation.prepare(&agent).await.expect("prepare");
+        assert_eq!(prepared.logins[&harness::test_harness()].to_string(), "a");
+        prepared
+            .logins
+            .insert(harness::test_harness(), harness::LoginName::new("b").expect("name"));
+        store_materialized(&database, agent, &prepared).await;
+
+        let running = credentials
+            .running_logins(harness::test_harness())
+            .await
+            .expect("logins");
+        let names: Vec<_> = running.iter().map(ToString::to_string).collect();
+        assert_eq!(names, ["a", "b"]);
+    }
+
+    /// The logins refreshed ahead of expiry are those of the agents that run.
+    #[tokio::test(flavor = "local")]
+    async fn only_the_logins_of_running_agents_are_refreshed_ahead() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let database = crate::persistence::Database::open(&directory.path().join("agent.db")).expect("database");
+        for name in ["a", "b", "unused"] {
+            harness::store_test_login(name, &database).await;
+        }
+        let credentials = Rc::new(harness::AuthenticationManager::new(database.clone()));
+        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
+        let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
+        let preparation = super::Preparation::new(database.clone(), credentials.clone(), policy, network);
+        let (first, second) = (
+            record("first", "6a3c1f0e-2b7d-4e59-9c84-0f1d2e3a4b5c"),
+            record("second", "7b4d2a1f-3c8e-4f6a-8d95-1a2b3c4d5e6f"),
+        );
+        for agent in [&first, &second] {
+            let prepared = preparation.prepare(agent).await.expect("prepare");
+            store_materialized(&database, agent.clone(), &prepared).await;
+        }
+
+        let logins = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| harness::LoginName::new(*name).expect("name"))
+                .collect()
+        };
+        let running = credentials
+            .running_logins(harness::test_harness())
+            .await
+            .expect("logins");
+        assert_eq!(running, logins(&["a", "b"]));
+        stop(&database, second.id).await;
+        let running = credentials
+            .running_logins(harness::test_harness())
+            .await
+            .expect("logins");
+        assert_eq!(running, logins(&["a"]));
     }
 
     const GITHUB_MANIFEST: &str = "apiVersion: agents.platform/v1alpha1

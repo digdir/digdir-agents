@@ -501,29 +501,9 @@ impl AuthenticationManager {
         // From here to the end, nothing awaits.
         let mut assignments = self.assignments.borrow_mut();
         assignments.retain(|id, _| agents.iter().any(|agent| agent.id == *id));
-        let login_of = |agent: &crate::control_plane::AgentRecord| {
-            assignments
-                .get(&agent.id)
-                .and_then(|logins| logins.get(&installation.kind))
-                .or_else(|| {
-                    agent
-                        .agent
-                        .status
-                        .sandbox
-                        .as_ref()
-                        .and_then(|assignment| assignment.login(installation.kind))
-                })
-                .cloned()
-        };
+        let login_of = |agent| assigned_login(&assignments, agent, installation.kind);
         let mut in_use = std::collections::BTreeMap::<_, usize>::new();
-        for other in &agents {
-            // A stopped agent spends no quota, and one being deleted soon none.
-            if other.id == record.id
-                || other.agent.spec.is_stopped()
-                || other.agent.metadata.deletion_timestamp.is_some()
-            {
-                continue;
-            }
+        for other in agents.iter().filter(|other| other.id != record.id && runs(other)) {
             if let Some(login) = login_of(other) {
                 *in_use.entry(login).or_default() += 1;
             }
@@ -539,28 +519,109 @@ impl AuthenticationManager {
     }
 }
 
-impl sandbox::secret_store::SecretStore for AuthenticationManager {
-    fn set<'a>(
-        &'a self,
-        name: &'a str,
-        value: &'a [u8],
-    ) -> sandbox::LocalFuture<'a, Result<sandbox::secret_store::SecretReference, sandbox::Error>> {
-        sandbox::secret_store::SecretStore::set(&self.database, name, value)
-    }
-
-    fn resolve<'a>(
-        &'a self,
-        reference: &'a sandbox::secret_store::SecretReference,
-    ) -> sandbox::LocalFuture<'a, Result<sandbox::secret_store::SecretMaterial, sandbox::Error>> {
-        Box::pin(async move {
-            if let Some(login) = codex::access_login(reference) {
-                self.codex.resolve_access(&login).await
-            } else {
-                sandbox::secret_store::SecretStore::resolve(&self.database, reference).await
+impl AuthenticationManager {
+    /// Refreshes the logins of running agents whose access tokens are about to expire, every
+    /// [`LOGIN_REFRESH_INTERVAL`], for as long as it runs. A sandbox's request then gets a current
+    /// token from where it is stored, rather than waiting for the token to be refreshed. A login
+    /// that cannot be refreshed is logged when its reason first appears, rather than at every pass.
+    pub async fn refresh_logins(&self) {
+        let mut interval = tokio::time::interval(LOGIN_REFRESH_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut reported = std::collections::BTreeMap::<LoginName, String>::new();
+        loop {
+            interval.tick().await;
+            let failed = match self.running_logins(Harness::Codex).await {
+                Ok(logins) => self.codex.refresh_due(logins).await,
+                Err(error) => {
+                    tracing::warn!(%error, "could not read the agents whose logins to refresh");
+                    continue;
+                }
+            };
+            let failed = failed
+                .into_iter()
+                .map(|(login, error)| (login, error.to_string()))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            for (login, error) in &failed {
+                if reported.get(login) != Some(error) {
+                    tracing::warn!(%login, %error, "could not refresh a Codex login");
+                }
             }
-        })
+            reported = failed;
+        }
     }
 }
+
+impl AuthenticationManager {
+    /// Refreshes `login` for `harness` if it is about to expire, as an agent is prepared to run
+    /// with it, so that it starts with a current token though it was not running before. A login
+    /// that cannot be refreshed is logged, and the agent gets the token it has.
+    pub(crate) async fn refresh_login(&self, harness: Harness, login: &LoginName) {
+        if harness != Harness::Codex {
+            return;
+        }
+        for (login, error) in self.codex.refresh_due([login.clone()]).await {
+            tracing::warn!(%login, %error, "could not refresh a Codex login");
+        }
+    }
+
+    /// The logins agents that run, or are about to, have for `harness`: both the one each was
+    /// last given here and the one its sandbox records, as the sandbox uses the latter until it is
+    /// set up with the former.
+    pub(crate) async fn running_logins(
+        &self,
+        harness: Harness,
+    ) -> Result<std::collections::BTreeSet<LoginName>, Error> {
+        use crate::control_plane::AgentStore as _;
+
+        let agents = self.database.list().await?;
+        let assignments = self.assignments.borrow();
+        Ok(agents
+            .iter()
+            .filter(|agent| runs(agent))
+            .flat_map(|agent| {
+                let given = assignments.get(&agent.id).and_then(|logins| logins.get(&harness));
+                let recorded = agent
+                    .agent
+                    .status
+                    .sandbox
+                    .as_ref()
+                    .and_then(|assignment| assignment.login(harness));
+                given.into_iter().chain(recorded).cloned()
+            })
+            .collect())
+    }
+}
+
+/// Whether `agent` runs, or is about to: a stopped agent spends no quota, and one being deleted
+/// soon none.
+fn runs(agent: &crate::control_plane::AgentRecord) -> bool {
+    !agent.agent.spec.is_stopped() && agent.agent.metadata.deletion_timestamp.is_none()
+}
+
+/// The login `agent` has for `harness`: the one this daemon last gave it, or else the one its
+/// sandbox records.
+fn assigned_login(
+    assignments: &std::collections::BTreeMap<crate::AgentId, std::collections::BTreeMap<Harness, LoginName>>,
+    agent: &crate::control_plane::AgentRecord,
+    harness: Harness,
+) -> Option<LoginName> {
+    assignments
+        .get(&agent.id)
+        .and_then(|logins| logins.get(&harness))
+        .or_else(|| {
+            agent
+                .agent
+                .status
+                .sandbox
+                .as_ref()
+                .and_then(|assignment| assignment.login(harness))
+        })
+        .cloned()
+}
+
+/// How often [`AuthenticationManager::refresh_logins`] looks for logins to refresh. Well under the
+/// time before expiry at which a login is refreshed, so every one is refreshed in time.
+const LOGIN_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Where an interactive harness login sends the person to sign in.
 #[derive(Clone, Debug, Eq, PartialEq)]

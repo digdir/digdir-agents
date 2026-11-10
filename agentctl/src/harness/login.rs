@@ -260,13 +260,6 @@ impl LoginStore {
         SecretReference::from_opaque(format!("{secret}/{login}"))
     }
 
-    /// The login whose `secret` `reference` names, when it names one.
-    pub(super) fn login_of(&self, secret: &str, reference: &SecretReference) -> Option<LoginName> {
-        debug_assert!(self.secrets.contains(&secret));
-        let name = reference.as_str().strip_prefix(secret)?.strip_prefix('/')?;
-        LoginName::new(name).ok()
-    }
-
     /// Stores `login`'s secrets, as `(secret, value)` pairs, and metadata together, replacing them.
     pub(super) async fn put(
         &self,
