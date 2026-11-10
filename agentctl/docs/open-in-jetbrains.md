@@ -6,41 +6,43 @@ agent and shows it in JetBrains Client on your machine, so the IDE indexes, buil
 
 `agentctl` doesn't open Gateway for you yet ([#370](https://github.com/digdir/digdir-agents/issues/370)), so this
 guide connects by hand. [#386](https://github.com/digdir/digdir-agents/issues/386) proposes `agentctl connect`, one
-command that opens an agent in any client, Gateway among them. The steps were tried on Windows 11 with Gateway
-2026.2.2 and WebStorm 2026.2.3. macOS and Linux hosts, and Gateway through the JetBrains Toolbox App, are untested.
+command that opens an agent in any client, Gateway among them. The steps were tried with Gateway 2026.3 and Rider
+2026.3 on Linux, and with Gateway 2026.2.2 and WebStorm 2026.2.3 on Windows 11. macOS, and Gateway through the
+JetBrains Toolbox App, are untested.
 
-You need an agent with `access` of `type: ssh`, as the [.NET example](../../agents/examples/dotnet-dev/) has, and
-Gateway installed on your machine. The example here is `altinn-minimal`, from Altinn Studio's `agents/minimal`, as
-[Start an agent from a repository's definition](start-from-a-definition.md) starts it.
+You need an agent with `access` of `type: ssh`, and Gateway installed on your machine. The example is the agent from
+[the tutorial](first-agent.md), `profile-backend-developer-nested-build`, started from the `nested-build` variant of
+the definition the agent builder wrote for altinn-profile.
 
 ## Give the agent room for the IDE
 
-The backend needs about 4 GiB of memory beyond what the agent uses without it, and the agent has no swap, so an agent
-short of memory loses the backend or its harness rather than slowing down. Choosing an IDE is your choice, not the
-repository's, so add the memory in a variant of your own beside the repository's `agent.yaml`, such as
-`agents/minimal/agent.mine.yaml`:
+The backend wants at least 4 CPUs, and Gateway warns that "The host doesn't meet the minimal requirements" with fewer.
+Rider's backend took about 5 GiB of memory while it opened altinn-profile, and the agent has no swap, so an agent
+short of memory loses the backend or its harness rather than slowing down. It also needs disk: about 8 GB for Rider's
+backend in the agent's home. Choosing an IDE is your choice, not the
+repository's, so add the room in a variant of your own beside the definition's manifests, such as
+`agents/backend-developer/minimal/agent.mine.yaml`:
 
 ```yaml
 apiVersion: agents.platform/v1alpha1
 kind: AgentVariant
-extends: agent.yaml
+extends: agent.nested-build.yaml
 metadata:
-  name: altinn-minimal
+  name: profile-backend-developer-nested-build
   labels:
     client: jetbrains
 spec:
   sandbox:
     resources:
-      memory: "12Gi"
-  access:
-    - type: ssh
+      cpu: "4"
+      memory: "8Gi"
 ```
 
-Keep `metadata.name` the same as the base's, so the variant changes that agent rather than creating another. The
+`extends` names the manifest the variant changes, here the `nested-build` variant the agent was started from. Keep
+`metadata.name` the same as that one's, so the variant changes that agent rather than creating another. The
 `client: jetbrains` label marks the agent as one you open in Gateway, for tools that list agents by client, as
-[Label agents](label-agents.md) describes. The `ssh` entry adds SSH access if the base lacks it and changes nothing if
-it has it. The definition's `.gitignore` lists `agent.*.yaml`, as the .NET example's and Altinn Studio's do, so
-the variant stays yours.
+[Label agents](label-agents.md) describes. The definition's `.gitignore` lists `agent.*.yaml` apart from the
+definition's own variants, so the variant stays yours.
 
 Apply it:
 
@@ -48,20 +50,20 @@ Apply it:
 agentctl apply --variant mine --wait
 ```
 
-`agentd` restarts the agent with the new memory, so an editor connected to it loses the connection until the agent
-is ready again. The agent now has the label:
+`agentd` restarts the agent with the new size, so an editor connected to it loses the connection until the agent is
+ready again. The agent now has the label:
 
 ```sh
 agentctl get agents -L client
 ```
 
 ```text
-NAME            READY  STATUS  HARNESSES                        PROVIDER      CLIENT
-altinn-minimal  True   Ready   claudeCode (default), codex, pi  microsandbox  jetbrains
+NAME                                    READY  STATUS  HARNESSES                    PROVIDER      CLIENT
+profile-backend-developer-nested-build  True   Ready   claudeCode (default), codex  microsandbox  jetbrains
 ```
 
-Apply with `--variant mine` from now on. A plain `agentctl apply` applies `agent.yaml` again, which takes the memory
-and the label away and restarts the agent with less memory.
+Apply with `--variant mine` from now on. Applying the variant it extends again takes the room and the label away, and
+restarts the agent with less.
 
 ## Set up SSH once
 
@@ -75,42 +77,60 @@ there.
 ## Find the alias and the project
 
 ```sh
-agentctl ssh-info agent/altinn-minimal
+agentctl ssh-info agent/profile-backend-developer-nested-build
 ```
 
 Note `Alias` and `Project`. Among the lines it prints are:
 
 ```text
-Alias:       agentctl-altinn-minimal
+Alias:       agentctl-profile-backend-developer-nested-build
 User:        agent
 Directory:   /home/agent/code
-Project:     /home/agent/code/altinn-studio
+Project:     /home/agent/code/altinn-profile
 ```
 
 ## Connect from Gateway
 
-1. In Gateway, start a new SSH connection.
-2. Enter `agent` as the username, the alias as the host and `22` as the port. Choose "Check Connection and
-   Continue".
-3. Choose the IDE, such as Rider for .NET, and enter `Project` as the project's path.
-4. Wait while Gateway downloads the backend into the agent, about 1 to 1.6 GB, and on the first connect also
-   JetBrains Client onto your machine, about 700 MB. The first connect takes two to three minutes.
+1. The first time Gateway starts, it asks you to accept its user agreement, and whether to send usage statistics.
+2. Under "SSH Connection", choose "New Connection".
+3. Enter `agent` as the username, the alias as the host and `22` as the port. Choose "Check Connection and Continue".
+4. Gateway asks you to confirm the agent's host key, as `[agentctl-NAME]:0`. Choose OK at once: the question counts
+   against Gateway's 30-second limit for setting up the connection, and if it runs out, the check fails with
+   `Timeout expired: 30000 MILLISECONDS`. Check the connection again, and answer faster. Gateway remembers the key
+   once the check succeeds. It asks because it doesn't read the `HostKeyAlias` that `agentctl` looks the key up by.
+5. Choose the IDE, such as Rider for .NET, and the project. Rider asks for a solution file, such as
+   `/home/agent/code/altinn-profile/Altinn.Profile.sln`. Other IDEs take the folder `ssh-info` names as `Project`.
+6. Choose "Download IDE and Connect". On the first connect Gateway downloads JetBrains Client onto your machine,
+   787 MB for 2026.3, and the backend into the agent, 2.7 GB for Rider 2026.3, and starts the backend.
+7. JetBrains Client asks you to accept its user agreement the first time, and has 35 seconds to connect, as the next
+   section explains.
+8. The IDE asks whether to trust the project, such as "Trust and Open 'Altinn.Profile' Solution?". Trust it to let it
+   build and run the project's scripts in the agent.
+9. A paid IDE, such as Rider, asks you to activate a license: log in to your JetBrains account, or enter an activation
+   code or a license server.
 
 JetBrains Client then shows the project. Its terminal is a shell in the agent, where `git` and `gh` use the agent's
-GitHub token as they do over `agentctl ssh`.
+GitHub login as they do over `agentctl ssh`.
 
 ## Accept the user agreement the first time
 
 On a machine where JetBrains Client has never run, it asks you to accept its user agreement, and Gateway closes the
-client if it hasn't connected within about 35 seconds. If that happens, start JetBrains Client once on its own and
-accept the agreement there. On Windows it is in `%LOCALAPPDATA%\JetBrains\JetBrainsClientDist\BUILD\bin`. Then
-connect again from Gateway.
+client if it hasn't connected within 35 seconds, with the agreement still open. Accepting it in time isn't enough
+either: Gateway closes the client before it saves the answer, and it asks again on the next connect. Instead, start
+JetBrains Client once on its own and accept the agreement there. It is in the `bin` folder of the client Gateway
+downloaded:
+
+- On Windows: `%LOCALAPPDATA%\JetBrains\JetBrainsClientDist\BUILD\bin`.
+- On Linux: `~/.cache/JetBrains/JetBrainsClientDist/BUILD/JetBrainsClient-VERSION/bin/jetbrains_client.sh`.
+
+Close it, and connect again from Gateway, with the host's "+" under "Recent SSH Projects". Gateway reuses the backend
+it installed.
 
 ## Connect again
 
 Gateway keeps the connection, so next time you choose it from Gateway's list. The agent keeps the backend in its
 home, so connecting again takes about 15 seconds. Start a stopped agent first, with
-`agentctl start agent/altinn-minimal`.
+`agentctl start agent/profile-backend-developer-nested-build`.
 
 ## Known limits
 
@@ -125,4 +145,5 @@ home, so connecting again takes about 15 seconds. Start a stopped agent first, w
   `Internal error` and `Unable to establish loopback connection`, for its `.port` file in
   `%LOCALAPPDATA%\JetBrains\JetBrainsGateway2026.3`. Endpoint protection that filters the `AppData` tree can block the
   local sockets Gateway uses there.
-- **Disk.** The backend takes about 3 GB in the agent's home, and JetBrains Client about 1.8 GB on your machine.
+- **Disk.** Rider's backend takes about 8 GB in the agent's home, and WebStorm's about 3 GB. JetBrains Client takes
+  about 2.3 GB on your machine.

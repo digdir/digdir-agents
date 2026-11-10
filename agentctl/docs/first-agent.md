@@ -1,135 +1,215 @@
-# Your first agent, from an empty folder to your editor
+# Your first agent, from a repository to your editor
 
 In this tutorial you give one of your repositories an agent: a computer of its own where Claude Code works on the
-repository, and that you open in your editor as if it were a remote machine. You start from an empty folder and end
-with the repository open in VS Code, running inside the agent. It takes about half an hour, most of it waiting for the
-first image build.
+repository, and that you open in your editor as if it were a remote machine. You let the agent builder write the
+agent's definition with you, start the agent from it, and end with the repository open in VS Code, running inside the
+agent. Plan on an hour, most of it the agent builder trying what it wrote and the first image build.
 
-The example is [Altinn/altinn-profile](https://github.com/Altinn/altinn-profile), a .NET repository with no agent
-definition of its own. Use one of yours and put its owner and name wherever `Altinn` and `altinn-profile` appear. The
-commands work the same in a POSIX shell and in PowerShell.
+The example is [Altinn/altinn-profile](https://github.com/Altinn/altinn-profile), a .NET API with PostgreSQL and no
+agent definition of its own. The output below is from a run on it. Use one of your repositories and put its owner and
+name wherever `Altinn` and `altinn-profile` appear. The commands work the same in a POSIX shell and in PowerShell.
 
 ## Before you start
 
 You need:
 
-- `agentctl`, installed and logged in to Claude Code, as [the README](../README.md#install) describes.
-- Docker Engine, or Docker Desktop, running on this machine. The agent's image is built here.
-- A repository of yours on GitHub.
-- A [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with `Contents` and
-  `Pull requests` read and write on that repository.
+- `agentctl`, installed as [the README](../README.md#install) describes.
+- Docker Engine, or Docker Desktop, running on this machine. Until your team's CI publishes the agent's image, it is
+  built here.
+- A repository on GitHub, and a GitHub account that can push to it.
 - VS Code with the [Remote - SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh)
-  extension. To use a JetBrains IDE instead, finish the tutorial up to "Open the repository in VS Code", then follow
-  [Open an agent in a JetBrains IDE](open-in-jetbrains.md).
-- Room on this machine for what the example's manifest asks for under `resources`, such as its CPUs and memory.
+  extension. To use a JetBrains IDE or Zed instead, finish the tutorial up to "Open the repository in VS Code", then
+  follow [Open an agent in a JetBrains IDE](open-in-jetbrains.md) or [Open an agent in an editor](open-in-an-editor.md).
+- Room on this machine for two agents: the agent builder takes 4 CPUs and 8 GiB of memory while it runs, and the
+  example's agent 2 CPUs and 4 GiB.
 
-## Clone the repository
+## Log in once
 
-Start in an empty folder and clone your repository:
-
-```sh
-mkdir ~/code
-cd ~/code
-git clone https://github.com/Altinn/altinn-profile
-cd altinn-profile
-```
-
-This checkout is where the agent's definition will live. The agent itself never sees it: it clones the repository
-again, inside its own computer.
-
-## Add an agent definition
-
-An agent definition is a folder with a manifest, `agent.yaml`, and what the manifest refers to, such as a
-`Dockerfile`. Copy the [.NET example](../../agents/examples/dotnet-dev/) into your repository, as `agents/dev`:
+Agents run Claude Code with your subscription. Store your login:
 
 ```sh
-git clone --depth 1 https://github.com/digdir/digdir-agents ~/code/digdir-agents
-mkdir agents
-cp -r ~/code/digdir-agents/agents/examples/dotnet-dev agents/dev
-cd agents/dev
+agentctl claude login
 ```
 
-Open `agent.yaml`. Every line has a comment that says what it does. Change the agent's name, `dotnet-dev`, to your
-repository's. A name takes lowercase letters, digits and `-`, so a repository called `MyApp` gives the name `myapp`:
+It opens your browser to approve a long-lived token, and ends with `claude login default stored`.
 
-```yaml
-metadata:
-  # The agent's name in agentctl's commands and the TUI. `agentctl apply --name` overrides it, so one manifest can
-  # create several agents.
-  name: altinn-profile
-```
-
-Open `workspace.list`, which lists the repositories the agent clones when it starts, and add yours at the end, on a
-line of its own:
-
-```text
-# Repositories to clone into /home/agent/code at boot, one OWNER/NAME per line, optionally followed by a directory
-# name. A repository that is already there is left alone. Cloning needs GITHUB_TOKEN, even for a public repository.
-#
-# Altinn/dialogporten
-Altinn/altinn-profile
-```
-
-The agent clones it to `/home/agent/code/altinn-profile`, spelled as the line spells it.
-
-## Give the agent its settings
-
-The agent clones, commits and opens pull requests as your GitHub account, under the login the manifest's `accounts`
-names, `default`. Store it once on this machine, and every agent that names it uses it:
+Agents clone, commit and open pull requests as a GitHub account, through a login stored under a name. Manifests ask for
+it by that name, and the agent builder writes manifests that ask for `default`:
 
 ```sh
 agentctl github login default
 ```
 
-It opens GitHub's form for a fine-grained token, filled in. The agent clones with the GitHub CLI, which needs the token
-even for a public repository, so without it the agent starts with an empty `/home/agent/code`. The token stays on this
-machine: the agent sees only a placeholder, and `agentctl` puts the real token into requests to GitHub.
+It asks whose repositories the token will reach, opens GitHub's form for a fine-grained token with the rest filled
+in, and reads the token you paste. Answer with the owner of your repository, such as `Altinn`, and choose the
+repository under "Repository access". A fine-grained token reaches only repositories its owner owns, so a token owned
+by your own account can read a public Altinn repository but never push to it. When the token checks out, `agentctl`
+says who the agents act as:
 
-Pi uses Digdir's AI gateway, with the key stored as the secret `aivar`. Without it Pi starts, but rejects every
-prompt, so you can leave it out if you use Claude Code:
+```text
+  Login:    default
+  Acts as:  your-account (Your Name <12345678+your-account@users.noreply.github.com>)
+  Kind:     fine-grained
+  Expires:  2027-02-07
+Agents asking for the login default now use GitHub as your-account.
+```
+
+The token stays on this machine. The agent sees only a placeholder, and `agentctl` puts the real token into requests
+to GitHub. [Give an agent GitHub access](give-an-agent-github-access.md) covers organisations, other kinds of token
+and logging out.
+
+## Clone the repository
 
 ```sh
-agentctl secret set aivar --hosts api.aivar.no
+mkdir ~/repos
+cd ~/repos
+git clone https://github.com/Altinn/altinn-profile
+cd altinn-profile
 ```
+
+This checkout is where the agent's definition will live. The agent itself works on a clone of its own, inside its
+computer.
+
+## Let the agent builder write the definition
+
+```sh
+agentctl new
+```
+
+`agentctl new` starts the agent builder, an agent `agentctl` carries, with your checkout mounted, and connects you to
+a Claude Code session in it:
+
+```text
+Starting the agent builder on /home/you/repos/altinn-profile.
+  ✓ Pull OCI image (1.0s)
+✓ Resolve sandbox image (1.1s)
+  ✓ Create Microsandbox VM (3.7s)
+✓ Start sandbox (3.8s)
+```
+
+The builder reads the repository and its CI, then asks what the agent is for. In the run on altinn-profile it asked
+about:
+
+1. **The role**, from what it found: backend developer, tester, reviewer or documentation writer.
+2. **What "done" means**: build and test as CI does and open a pull request, or also run the API and its k6 and Bruno
+   tests.
+3. **Whose agent it is**: the team's, in `agents/` in the repository with an image CI publishes, or yours alone, in
+   `~/agents`.
+4. **Other repositories** the agent should have cloned beside this one.
+5. **Services and secrets**: the GitHub login, and any keys for test services, with the hosts each may reach.
+6. **The plan**: the tools and the versions it pins, the checks and what each needs, the size, and where the files go.
+
+Answer for your repository. Then the builder writes the definition, builds its image and tries it in an agent of its
+own, nested inside the builder. That takes a while: in the example, half an hour. It ends with a report of what it
+verified, such as:
+
+```text
+- The image builds and passes `agent-image-check`.
+- `dotnet build` has 0 warnings and 0 errors.
+- `profile-db up` applied 8 migrations.
+- The full `dotnet test` (Release, with coverage) passed: 941 passed, 0 failed.
+- The API serves `/health` and `/swagger` with 200 OK.
+```
+
+and what it could not verify, and why. Read that part: it is what you check next.
+
+You can leave the session with `Ctrl-b` and then `d` while the builder works. When you leave, `agentctl new` says
+how to come back and how to remove the builder:
+
+```text
+The agent builder keeps running, and `agentctl new` in /home/you/repos/altinn-profile goes back to it.
+Apply the agent it made with `agentctl apply -f` and the manifest it named. Run `agentctl delete agent-builder-altinn-profile` once you are done with it.
+```
+
+## Look at what it wrote
+
+Nothing is committed. For a team's agent, the builder writes a folder under `agents/` and a workflow that publishes its
+image:
+
+```text
+.github/workflows/agent-backend-developer.yml
+agents/backend-developer/Dockerfile
+agents/backend-developer/common/profile-db
+agents/backend-developer/common/workspace.list
+agents/backend-developer/instructions.md
+agents/backend-developer/improving.md
+agents/backend-developer/skills/pr-evidence/SKILL.md
+agents/backend-developer/minimal/agent.yaml
+agents/backend-developer/minimal/agent.nested.yaml
+agents/backend-developer/minimal/agent.nested-build.yaml
+agents/backend-developer/minimal/agent.worktree.yaml
+agents/backend-developer/minimal/environment.md
+agents/backend-developer/minimal/.gitignore
+```
+
+`minimal/agent.yaml` is the manifest. Its comments say what each part is for. Its image is the one CI publishes once
+the definition is merged, so until then you start the `nested-build` variant beside it, which builds the image from
+your checkout instead.
 
 ## Start the agent
 
+From the stage's folder:
+
 ```sh
-agentctl apply --wait
+cd agents/backend-developer/minimal
+agentctl apply --variant nested-build --wait
 ```
 
-`agentctl` builds the image with Docker, starts the agent and shows the progress until the agent is ready. The first
-build downloads the base image and the .NET SDK, and takes several minutes. Later applies reuse the image and take
-seconds. If `apply` stops with `Claude Code login "default" is not stored`, run `agentctl claude login` and apply
-again.
+`agentctl` builds the image with Docker, starts the agent and shows the progress until it is ready:
 
-Check the agent:
+```text
+agent/profile-backend-developer-nested-build applied
+  ✓ Build Docker image (2m 23s)
+  ✓ Export Docker image (35.0s)
+  ✓ Materialize image layers (4.8s)
+  ✓ Assemble root disk (505ms)
+  ✓ Import Microsandbox image (6.8s)
+✓ Resolve sandbox image (3m 06s)
+✓ Create sandbox (114ms)
+  ✓ Materialize direct root image (16.6s)
+  ✓ Create Microsandbox VM (6.1s)
+✓ Start sandbox (22.8s)
+  ✓ Prepare workspace and Podman (1.6s)
+✓ Set up agent (2.5s)
+✓ Configure SSH access (979ms)
+agent/profile-backend-developer-nested-build ready
+```
+
+Later applies reuse the image and take seconds. Check the agent:
 
 ```sh
 agentctl get agents
 ```
 
 ```text
-NAME            READY  STATUS  HARNESSES                        PROVIDER
-altinn-profile  True   Ready   claudeCode (default), codex, pi  microsandbox
+NAME                                    READY  STATUS  HARNESSES                    PROVIDER
+profile-backend-developer-nested-build  True   Ready   claudeCode (default), codex  microsandbox
 ```
 
-The agent clones `altinn-profile` while it starts, which takes a few seconds after it is ready.
+The agent clones the repository with the GitHub login a few seconds after it is ready. Check that it did:
+
+```sh
+agentctl ssh agent/profile-backend-developer-nested-build -- git -C code/altinn-profile log -1 --oneline
+```
+
+```text
+5b9fc37 Extend db col notification_name 200->254 (#1090)
+```
 
 ## Work with Claude Code in the agent
 
-From the definition's folder, start a session called `s1`:
+Start a session called `s1`:
 
 ```sh
-agentctl attach session/s1
+agentctl attach session/s1 --agent profile-backend-developer-nested-build
 ```
 
-Claude Code starts in `~/code`, which is `/home/agent/code` inside the agent. Ask it to look at `altinn-profile` and
-run its tests. It can use the .NET SDK, Git and `gh`, and push to GitHub with your token. If your tests target an older
-.NET than the image's SDK, Claude Code finds its runtime missing. Add that runtime to the `Dockerfile` and apply again.
+Claude Code starts in `~/code`, which is `/home/agent/code` inside the agent, with the instructions the builder wrote.
+Ask it to build `altinn-profile` and run its tests. It commits as the GitHub login's account, and pushes and opens pull
+requests where that account may.
 
-Press `Ctrl-b` and then `d` to leave the session, as the bar at the bottom says. The session keeps running, and
-`agentctl attach session/s1` takes you back to it.
+Press `Ctrl-b` and then `d` to leave the session, as the bar at the bottom says. The session keeps running, and the
+same `attach` command takes you back to it.
 
 ## Open the repository in VS Code
 
@@ -142,57 +222,73 @@ agentctl ssh-config install
 It adds an `Include` line at the top of `~/.ssh/config` and says so. Ask the agent where its project is:
 
 ```sh
-agentctl ssh-info agent/altinn-profile
+agentctl ssh-info agent/profile-backend-developer-nested-build
 ```
 
 Among the lines it prints, which also name the key and configuration files `agentctl` keeps for the agent, are:
 
 ```text
-Alias:       agentctl-altinn-profile
+Alias:       agentctl-profile-backend-developer-nested-build
 User:        agent
 Directory:   /home/agent/code
 Project:     /home/agent/code/altinn-profile
 ```
 
-`ssh agentctl-altinn-profile` now opens a shell in the agent. Open the project in VS Code over SSH:
+`ssh agentctl-profile-backend-developer-nested-build` now opens a shell in the agent. Open the project in VS Code:
 
 ```sh
-code --remote ssh-remote+agentctl-altinn-profile /home/agent/code/altinn-profile
+code --remote ssh-remote+agentctl-profile-backend-developer-nested-build /home/agent/code/altinn-profile
 ```
 
-The first time, VS Code asks for the platform of the remote host. Choose Linux. VS Code remembers the answer for this
-agent, and then installs its server in the agent, which takes a few seconds and about 700 MB of the agent's disk.
-Then it shows your repository. Its terminal is a shell in the agent, and what you change there is what Claude Code
-sees.
+The first time, VS Code asks two things. On Windows it asks for the platform of the remote host: choose Linux. Then it
+asks whether you trust the authors of the files in the folder. Answer straight away: VS Code connects only once you
+have, and gives up after about 17 seconds with "Connecting with SSH timed out". If it did, choose Retry. VS Code then
+installs its server in the agent, about 700 MB of the agent's disk, and shows your repository on the branch the agent
+cloned. Its terminal is a shell in the agent, and what you change there is what Claude Code sees.
 
-## Keep the definition
+## Propose the definition
 
-Commit the definition, so that your colleagues can start the same agent with their own GitHub login:
+The definition is your team's once it is merged. Commit it on a branch and open a pull request:
 
 ```sh
-git add .
-git commit -m "Add an agent definition"
+cd ~/repos/altinn-profile
+git switch -c add-backend-developer-agent
+git add agents .github/workflows/agent-backend-developer.yml
+git commit -m "Add a backend developer agent"
 ```
 
-## Stop the agent
+[Onboard a repository](onboard-a-repository.md) says what to check before the pull request, and what your teammates
+run once it is merged.
+
+## Clean up
+
+Delete the agent builder once you are done with it, with the command `agentctl new` printed:
 
 ```sh
-agentctl stop agent/altinn-profile
+agentctl delete agent-builder-altinn-profile
+```
+
+Stop the agent you started:
+
+```sh
+agentctl stop agent/profile-backend-developer-nested-build
 ```
 
 The agent keeps its disk, and `agentctl get agents` shows it as `Stopped`. VS Code loses the connection and offers to
-reconnect. `agentctl start agent/altinn-profile` starts the agent again in a few seconds, and
-`agentctl attach session/s1` resumes the session with its conversation.
+reconnect. `agentctl start agent/profile-backend-developer-nested-build` starts it again in a few seconds, and the
+`attach` command resumes the session with its conversation.
 
 ## What you did
 
-You added an agent definition to a repository, started an agent from it, worked in it with Claude Code and opened it
-in VS Code. The agent works on its own clone, so its work reaches you through GitHub, as pushes and pull requests.
+You let the agent builder write an agent definition for a repository, started an agent from it, worked in it with
+Claude Code and opened it in VS Code. The agent works on its own clone, so its work reaches you through GitHub, as
+pushes and pull requests.
 
 Next:
 
+- [Onboard a repository](onboard-a-repository.md), from the builder's draft to an agent your whole team starts.
 - [Open an agent in an editor](open-in-an-editor.md), such as Zed, or from the TUI.
 - [Open an agent in a JetBrains IDE](open-in-jetbrains.md), such as Rider.
+- [Use an agent from T3 Code](use-an-agent-from-t3-code.md).
 - [Start an agent from a repository's definition](start-from-a-definition.md), when the repository already has one.
 - `agentctl tui` shows every agent and session, and opens them with a key.
-- [Label agents](label-agents.md), and [change inherited lists in a variant](variant-lists.md) of your own.

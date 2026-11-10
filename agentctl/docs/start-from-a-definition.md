@@ -45,7 +45,15 @@ guide starts `minimal`.
 
 ## Give it its settings
 
-The definition's `.env.sample` names the values its manifest reads. Copy it to `.env` beside the manifest and fill it
+A definition gets its values from your machine in one of two ways:
+
+- **Logins and stored secrets**, which the manifest asks for by name under `accounts` and `secrets`, as the agent
+  builder writes them. Store each once, such as with `agentctl github login default`, as
+  [Give an agent GitHub access](give-an-agent-github-access.md) describes. `apply` names any that are missing.
+- **An environment file, `.env`,** beside the manifest, as Altinn Studio's definitions use today. `agentctl` stops
+  reading it in a later release, as [Moving off the environment file](moving-off-the-environment-file.md) explains.
+
+Altinn Studio's `.env.sample` names the values its manifest reads. Copy it to `.env` beside the manifest and fill it
 in:
 
 ```sh

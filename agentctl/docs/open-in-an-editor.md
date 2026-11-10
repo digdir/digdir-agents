@@ -26,15 +26,30 @@ This adds one `Include` line at the top of `~/.ssh/config`. The included file re
 agentctl tui
 ```
 
-Select the agent and press `o`. Then press `c` for VS Code or `z` for Zed. The editor opens the agent's project, the
-folder `ssh-info` names as `Project`.
+Select the agent and press `o`. The menu lists what the agent can be opened in, each with its key:
+
+```text
+open profile-backend-developer-nested-build
+▸ Shell in the sandbox        e
+  VS Code, Remote-SSH         c
+  Zed                         z
+  Desktop in the browser
+  Desktop in a VNC client
+  SSH shell                   s
+  Copy SSH alias              y
+```
+
+Press `c` for VS Code or `z` for Zed. The editor opens the agent's project, the folder `ssh-info` names as
+`Project`. Entries the agent can't offer are dimmed, and the menu says why, such as `VNC access is not declared in
+spec.access`.
 
 If SSH isn't set up yet, the agent's panel says `SSH not set up; o offers it`, and the menu ends with "Set up SSH".
 Choose it and press `Enter` to add the line, as `agentctl ssh-config install` does.
 
 VS Code needs the [Remote - SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh)
-extension. Without its command, `code`, on your `PATH`, the TUI opens VS Code through a `vscode://` link instead. Zed
-needs its command, `zed`, on your `PATH`, and the menu says so when it isn't.
+extension. Without it, VS Code opens and offers to install it, with "Install and Reload". Without its command,
+`code`, on your `PATH`, the TUI opens VS Code through a `vscode://` link instead. Zed needs its command, `zed`, on
+your `PATH`, and the menu says so when it isn't.
 
 ## Open it from the command line
 
@@ -44,10 +59,10 @@ Find the alias and the project:
 agentctl ssh-info agent/NAME
 ```
 
-For the agent `altinn-profile` from [the tutorial](first-agent.md), the output includes:
+For the agent from [the tutorial](first-agent.md), the output includes:
 
 ```text
-Alias:       agentctl-altinn-profile
+Alias:       agentctl-profile-backend-developer-nested-build
 User:        agent
 Directory:   /home/agent/code
 Project:     /home/agent/code/altinn-profile
@@ -56,22 +71,25 @@ Project:     /home/agent/code/altinn-profile
 Then open `Project` with `Alias`:
 
 ```sh
-code --remote ssh-remote+agentctl-altinn-profile /home/agent/code/altinn-profile
+code --remote ssh-remote+agentctl-profile-backend-developer-nested-build /home/agent/code/altinn-profile
 ```
 
 ```sh
-zed ssh://agentctl-altinn-profile/home/agent/code/altinn-profile
+zed ssh://agentctl-profile-backend-developer-nested-build/home/agent/code/altinn-profile
 ```
 
 ## The first connection
 
-Each editor installs a server of its own in the agent the first time it opens it:
+Each editor installs a server of its own in the agent the first time it opens it, and asks a question or two first:
 
-- **VS Code** first asks for the platform of the remote host. Choose Linux. It asks once for each agent and keeps the
-  answer in its `remote.SSH.remotePlatform` setting. Until you answer, the window waits at "Install and start server
-  if needed". The server then takes a few seconds to install, and about 700 MB of the agent's disk. Opening a folder
-  that a VS Code window already shows brings that window forward instead of opening another.
-- **Zed** puts its remote server, about 110 MB, in the agent, and opens the project in about half a minute.
+- **VS Code** on Windows first asks for the platform of the remote host. Choose Linux. It asks once for each agent and
+  keeps the answer in its `remote.SSH.remotePlatform` setting. Then it asks whether you trust the authors of the files
+  in the folder. Answer straight away: VS Code runs `ssh` in a terminal it can create only once you have, and gives up
+  after about 17 seconds with "Connecting with SSH timed out". If it did, choose Retry. The server then takes about
+  700 MB of the agent's disk, and the project opens within half a minute. Opening a folder that a VS Code window
+  already shows brings that window forward instead of opening another.
+- **Zed** puts its remote server, about 110 MB, in the agent, and opens the project in a few seconds. It opens it in
+  Restricted Mode, which you leave by trusting the folder.
 
 Later connections reuse the server, which stays in the agent's home until you delete the agent.
 

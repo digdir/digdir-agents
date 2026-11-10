@@ -2,10 +2,13 @@
 
 | Doc | Kind | What it is for |
 | --- | --- | --- |
-| [first-agent.md](first-agent.md) | Tutorial | Give a repository an agent, from an empty folder to the repository open in your editor inside the agent |
+| [first-agent.md](first-agent.md) | Tutorial | Give a repository an agent with the agent builder, from a checkout to the repository open in your editor inside the agent |
+| [onboard-a-repository.md](onboard-a-repository.md) | How-to | Take the agent builder's draft to a definition your whole team starts, with its image published by CI |
+| [give-an-agent-github-access.md](give-an-agent-github-access.md) | How-to | Let agents clone, push and open pull requests as a GitHub account, and choose the token's owner so pushes work |
 | [start-from-a-definition.md](start-from-a-definition.md) | How-to | Start an agent for a repository that already has an agent definition, such as Altinn Studio's |
 | [open-in-an-editor.md](open-in-an-editor.md) | How-to | Open an agent's project in VS Code, Zed or another editor that works over SSH |
 | [open-in-jetbrains.md](open-in-jetbrains.md) | How-to | Open an agent's project in a JetBrains IDE, such as Rider, through JetBrains Gateway |
+| [use-an-agent-from-t3-code.md](use-an-agent-from-t3-code.md) | How-to | Add an agent to T3 Code as an SSH environment and run threads in it |
 | [label-agents.md](label-agents.md) | How-to | Label agents for the client you open them in or the tool that created them, and list agents by label |
 | [variant-lists.md](variant-lists.md) | How-to | Add, change or remove one entry of an inherited list, such as `access` or `harnesses`, in a variant |
 | [web-views.md](web-views.md) | How-to | Declare the web UIs an agent serves, so clients can list them |
