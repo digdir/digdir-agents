@@ -434,9 +434,7 @@ fn environment_file_refusal(path: &str, file: &EnvironmentFile) -> String {
                 agents.push(name.clone());
                 let read = names(variables);
                 if *reapply {
-                    others.push(format!(
-                        "  {name}: {read}. Its manifest no longer reads the file, so apply it again"
-                    ));
+                    others.push(format!("  {name}: {read}. Its manifest no longer reads the file"));
                     &[]
                 } else {
                     others.push(format!("  {name}: {read}"));
