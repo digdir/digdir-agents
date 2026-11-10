@@ -1,5 +1,9 @@
-//! Signing in to GitHub through the browser, with the GitHub CLI in a sandbox, so the host needs
-//! no `gh` and neither reads nor changes a `gh` login of its own.
+//! Signing in to GitHub through the browser, with the GitHub CLI in a sandbox.
+//!
+//! Unlike the harnesses' sign-ins, it never runs a `gh` on the host, even one that is there. A
+//! configuration directory of its own doesn't isolate `gh`: it keeps tokens in the system keyring
+//! under the host and user only, and a login replaces the keyring's active token, or activates a
+//! token the person kept there for the same user.
 
 use crate::sign_in::{SandboxSignIn, artifact_text};
 
