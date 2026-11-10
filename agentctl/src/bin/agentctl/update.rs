@@ -94,8 +94,7 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
     let name = match existing {
         Some(existing) if arguments.rm => return Err(builder::kept_already("update", &checkout, &existing)),
         Some(existing) if builder.current(&existing) => {
-            eprintln!("Back to the agent builder on {}.", checkout.display());
-            builder.resume(home, client, &existing, &task).await?;
+            builder.resume(home, client, &existing, &checkout, &task).await?;
             existing.metadata.name
         }
         existing => {

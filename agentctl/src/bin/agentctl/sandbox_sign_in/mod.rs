@@ -36,13 +36,18 @@ struct SignInAgent<'a> {
 }
 
 impl<'a> SignInAgent<'a> {
-    /// Runs the sign-in agent and waits until commands run in it.
-    async fn start(client: &Client, home: &'a ControlPlaneHome) -> crate::CommandResult<Self> {
-        eprintln!("Starting a short-lived agent to sign in from. It is deleted afterwards.");
+    /// Runs the sign-in agent for `service` and waits until commands run in it, as one line about
+    /// getting the sign-in ready: the agent is how the sign-in runs, not what the person asked for.
+    async fn start(client: &Client, home: &'a ControlPlaneHome, service: &str) -> crate::CommandResult<Self> {
+        let wait = crate::progress::Wait::summarized(
+            format!("Getting ready to sign in to {service}"),
+            format!("Ready to sign in to {service}"),
+        );
         let (ran, lease) = client.run_sign_in().await?;
         let name = ran.agent.metadata.name;
-        crate::wait_until_converged(client, &name, START_TIMEOUT).await?;
+        crate::converge_shown(&wait, client, &name, START_TIMEOUT).await?;
         let target = client.ensure_execution(&name, WaitPolicy::UntilConverged).await?;
+        wait.ready();
         Ok(Self {
             home,
             target,
@@ -258,15 +263,13 @@ pub(crate) async fn sign_in(
     service: &str,
     sign_in: &SandboxSignIn,
 ) -> CommandResult<Result<Zeroizing<String>, SignInFailure>> {
-    let agent = SignInAgent::start(client, home).await?;
+    let agent = SignInAgent::start(client, home, service).await?;
     // Where a browser here would not reach the person, such as over SSH, they open the link. Saying
     // so now keeps it out of what the program draws.
     let blocked = crate::launch::launch_blocked(|name| std::env::var_os(name));
     match &blocked {
-        None => println!("\nSign in to {service}. Its sign-in page opens in your browser."),
-        Some(reason) => println!(
-            "\nSign in to {service}. No browser here would reach you: {reason}. Open the link it shows in a browser."
-        ),
+        None => println!("Its sign-in page opens in your browser."),
+        Some(reason) => println!("No browser here would reach you: {reason}. Open the link it shows in a browser."),
     }
     Ok(agent.run(sign_in, blocked.is_none()).await)
 }
