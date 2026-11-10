@@ -40,11 +40,14 @@ pub(crate) struct UpdateArguments {
 /// or prints the update for the agent that ran it.
 pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, client: &Client) -> CommandResult<()> {
     if !arguments.print_task && !prompt::interactive() {
-        return Err(CommandError::Message(
+        let folder = arguments
+            .directory
+            .map(|directory| format!(" {}", directory.display()))
+            .unwrap_or_default();
+        return Err(CommandError::Message(format!(
             "updating agent definitions is a conversation with the agent builder, which needs a terminal. An agent \
-             can do the update itself: run `agentctl update --print-task` for what to do"
-                .into(),
-        ));
+             can do the update itself: run `agentctl update --print-task{folder}` for what to do"
+        )));
     }
     let folder = builder::folder(arguments.directory)?;
     // Definitions are found anywhere in the repository, so the update covers all of it.
@@ -398,6 +401,52 @@ mod tests {
                  ghcr.io/digdir/agentctl-base:ubuntu-26.04@sha256:2ee51d4619a9… names no release; \
                  ghcr.io/digdir/agentctl:v0.1.0-preview.13 is v0.1.0-preview.13, older than v0.1.0-preview.14"
             ]
+        );
+    }
+
+    #[test]
+    fn a_build_of_main_is_compared_by_the_release_it_extends_and_a_local_one_by_none() {
+        let checkout = Path::new("/src/app");
+        let definitions = [
+            DefinitionSummary {
+                platform_images: vec![agent::definitions::PlatformImage {
+                    reference: "ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.14".into(),
+                    release: Some("v0.1.0-preview.14".into()),
+                }],
+                ..definition("/src/app/agents/current/agent.yaml")
+            },
+            DefinitionSummary {
+                platform_images: vec![agent::definitions::PlatformImage {
+                    reference: "ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.13".into(),
+                    release: Some("v0.1.0-preview.13".into()),
+                }],
+                ..definition("/src/app/agents/old/agent.yaml")
+            },
+        ];
+        let images = |version: &str| {
+            let task = task("this checkout", checkout, &definitions, version);
+            let (_, images) = task
+                .split_once(&format!("not of {version}:\n"))
+                .expect("the images part");
+            images.lines().map(str::to_owned).collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            images("v0.1.0-preview.14.main.gabc1234"),
+            [
+                "  agents/old/agent.yaml: ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.13 is \
+              v0.1.0-preview.13, older than v0.1.0-preview.14"
+            ]
+        );
+        assert_eq!(
+            images("v0.0.1-dev.20261108"),
+            [
+                "  agents/old/agent.yaml: ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.13 is \
+                 v0.1.0-preview.13",
+                "  agents/current/agent.yaml: ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.14 is \
+                 v0.1.0-preview.14",
+            ],
+            "a local build extends no release, so each image's is named"
         );
     }
 

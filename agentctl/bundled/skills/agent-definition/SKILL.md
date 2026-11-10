@@ -160,7 +160,12 @@ alone.
   `podman pull` with `podman image inspect` shows the same. An image without the label was built on a base from before
   `0.1.0-preview.14`. Its creation date, against the dates of the releases, tells which.
 - **The version to bring it to** is the one you were asked for or, without one, the agentd that runs you, which
-  `/etc/agent-platform-version` names. That is the version on its owner's machine, which runs the agent.
+  `/etc/agent-platform-version` names. That is the version on its owner's machine, which runs the agent. Only a
+  release publishes images and an `install.sh` download that name it. A build of `main`, such as
+  `v0.1.0-preview.13.main.g1a2b3c4`, and a local one, such as `v0.0.1-dev.20261101211625`, have none, since `main`'s
+  images move with `main`. For one of those, bring the definition to the release the build extends, before `.main.`,
+  or for a local build to the latest release, and say so. Its owner may want to follow `main` instead: then pin
+  `main`'s tags, such as `ubuntu-26.04`, by their current digests, and try it with the agentctl they run.
 - **What changed** is in the release notes, `agentctl/CHANGELOG.md` in digdir-agents, at the revision of the version
   to bring it to: the sections after the version it was written for. A release's revision is its tag
   `agentctl/<version>`, as in
@@ -172,7 +177,7 @@ alone.
 Then bring each part of the definition to that version:
 
 - **The base image** to the tag of that release, `ubuntu-26.04-<version>` or `ubuntu-26.04-desktop-<version>`, with
-  its digest. That brings the harnesses and tools the release ships with it.
+  its digest, which `skopeo inspect` checks exists. That brings the harnesses and tools the release ships with it.
 - **What else the platform publishes** that the definition pins, such as the `ghcr.io/digdir/agentctl` image it copies
   `agentctl` and `agentd` from for nested agents, to the same version.
 - **What the notes ask for**, in their Changed, Deprecated and Removed entries, and what this skill asks for that the
