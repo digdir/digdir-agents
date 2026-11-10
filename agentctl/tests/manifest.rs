@@ -639,6 +639,11 @@ fn nested_sandboxes_are_decoded_and_serialized_only_when_asked_for() {
     )]);
     let error = manifest::decode(&beside).expect_err("the setting should be refused beside resources");
     assert!(error.to_string().contains("unknown field `nestedSandboxes`"), "{error}");
+    // A field another version knows points to updating agentctl or the manifest.
+    assert!(
+        error.to_string().contains("agentctl self update") && error.to_string().contains("`agentctl update`"),
+        "{error}"
+    );
 
     // The manifest says how much the agent needs them, not whether the sandbox has them.
     for value in ["true", "false", "bogus"] {
@@ -755,19 +760,19 @@ fn rejects_unknown_duplicate_and_configured_access_capabilities() {
     ));
     assert!(matches!(
         manifest::decode(&manifest_with_access("  access:\n    - type: rdp\n")),
-        Err(agent::Error::Yaml(_))
+        Err(agent::Error::Yaml(_) | agent::Error::Invalid(_))
     ));
     assert!(
         matches!(
             manifest::decode(&manifest_with_access("  access:\n    - type: vnc\n      port: 5901\n")),
-            Err(agent::Error::Yaml(_))
+            Err(agent::Error::Yaml(_) | agent::Error::Invalid(_))
         ),
         "VNC access exposes no tunables"
     );
     assert!(
         matches!(
             manifest::decode(&manifest_with_access("  access:\n    - type: ssh\n      port: 22\n")),
-            Err(agent::Error::Yaml(_))
+            Err(agent::Error::Yaml(_) | agent::Error::Invalid(_))
         ),
         "SSH access exposes no tunables"
     );
@@ -776,7 +781,10 @@ fn rejects_unknown_duplicate_and_configured_access_capabilities() {
         ROOT_FILESYSTEM_MODE,
         "        mode: layered\n    access:\n      - type: ssh\n",
     )]);
-    assert!(matches!(manifest::decode(&nested), Err(agent::Error::Yaml(_))));
+    assert!(matches!(
+        manifest::decode(&nested),
+        Err(agent::Error::Yaml(_) | agent::Error::Invalid(_))
+    ));
 }
 
 #[test]
@@ -831,7 +839,7 @@ fn a_github_account_takes_only_a_name() {
         assert!(
             matches!(
                 manifest::decode(&manifest_with_access(&format!("  accounts:\n{account}"))),
-                Err(agent::Error::Yaml(_))
+                Err(agent::Error::Yaml(_) | agent::Error::Invalid(_))
             ),
             "{account}"
         );

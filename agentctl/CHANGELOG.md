@@ -53,6 +53,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Changed
 
+- A manifest with a field or value your agentctl doesn't know says which version you have, and points to `agentctl self update` for a manifest written for a later version, or `agentctl update` for one written for an earlier version. ([#438](https://github.com/digdir/digdir-agents/pull/438))
 - `agentctl apply`, `agentctl run`, `agentctl new` and `agentctl tui` ask before mounting a folder that holds `.env` files, or copying one into a `kind: Volume`, instead of refusing: ([#436](https://github.com/digdir/digdir-agents/pull/436))
   - `y` agrees only to the files named, which `agentctl describe` lists under `ExposedFiles`
   - without a terminal, they refuse unless given `--allow-env-files`
