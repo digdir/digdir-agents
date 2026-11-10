@@ -8,14 +8,11 @@ use bollard::{
     Docker,
     query_parameters::{BuildImageOptionsBuilder, BuilderVersion, TagImageOptionsBuilder},
 };
+use common::{blocking, hex};
 use futures_util::StreamExt as _;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use common::blocking;
 use sandbox::progress::{MeasuredStep, ProgressStep, SandboxProgress};
-use sandbox::{
-    Error, LocalFuture, OutputStream, PendingOperation, ProgressUnit, RootFilesystemMode,
-    image,
-};
+use sandbox::{Error, LocalFuture, OutputStream, PendingOperation, ProgressUnit, RootFilesystemMode, image};
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncWriteExt as _;
 use tokio_util::codec::{BytesCodec, FramedRead};
@@ -23,7 +20,6 @@ use uuid::Uuid;
 
 use crate::{
     client::Client,
-    encoding::lower_hex,
     error,
     image_cache::{self, ImageCache},
     platform,
@@ -555,7 +551,7 @@ async fn import_cache_reference(docker: &Docker, image: &str) -> Result<String, 
         .ok_or_else(|| Error::Backend("Docker did not report the built image ID".to_string()))?;
     Ok(format!(
         "{IMPORT_CACHE_REPOSITORY}:docker-{}",
-        lower_hex(&Sha256::digest(image_id.as_bytes()))
+        hex::encode(&Sha256::digest(image_id.as_bytes()))
     ))
 }
 
@@ -638,7 +634,7 @@ fn cache_tag(context: &Path, dockerfile: &str, target: Option<&str>, platform: &
         digest.update(component);
         digest.update([0]);
     }
-    format!("{CACHE_REPOSITORY}:{}", lower_hex(&digest.finalize()))
+    format!("{CACHE_REPOSITORY}:{}", hex::encode(&digest.finalize()))
 }
 
 fn resolve_image_handle(

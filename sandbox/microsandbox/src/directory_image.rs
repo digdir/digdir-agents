@@ -10,15 +10,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use common::blocking;
 use microsandbox_image::{
     erofs,
     tree::{DataSpool, DirectoryNode, FileTree, InodeMetadata, RegularFileId, RegularFileNode, SymlinkNode, TreeNode},
 };
-use common::blocking;
-use sandbox::{
-    Error, ProgressUnit, SandboxProgress,
-    volume::Owner,
-};
+use sandbox::{Error, ProgressUnit, SandboxProgress, volume::Owner};
 use tokio::sync::mpsc;
 
 use crate::error;

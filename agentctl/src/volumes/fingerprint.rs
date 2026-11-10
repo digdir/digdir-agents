@@ -44,14 +44,7 @@ pub(crate) async fn take(directory: PathBuf) -> Result<Fingerprint, Error> {
             .and_then(|()| fingerprint.directory(&directory, Path::new("")))
             .map_err(|error| Error::Invalid(format!("cannot read {} to copy it: {error}", directory.display())))?;
         Ok(Fingerprint {
-            digest: fingerprint
-                .hasher
-                .finalize()
-                .iter()
-                .fold(String::with_capacity(64), |mut output, byte| {
-                    let _infallible = std::fmt::Write::write_fmt(&mut output, format_args!("{byte:02x}"));
-                    output
-                }),
+            digest: common::hex::encode(&fingerprint.hasher.finalize()),
             files: fingerprint.files,
             bytes: fingerprint.bytes,
             exposed: fingerprint

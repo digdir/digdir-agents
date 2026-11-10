@@ -8,7 +8,6 @@
 mod backend;
 mod client;
 mod directory_image;
-mod encoding;
 mod error;
 mod execution;
 mod files;

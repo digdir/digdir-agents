@@ -459,8 +459,8 @@ async fn assert_atomic_replacement(backend: &MicrosandboxProvider, sandbox: &San
     // One digest per observation, each from a single open of the path, so an observation can
     // only be the complete old file, the complete new file, or a torn one. The reader marks
     // its first observation so the replacement provably overlaps with it.
-    let old_digest = hex(&Sha256::digest(&old));
-    let new_digest = hex(&Sha256::digest(&new));
+    let old_digest = common::hex::encode(&Sha256::digest(&old));
+    let new_digest = common::hex::encode(&Sha256::digest(&new));
     let ready = "/workspace/.reader-ready";
     let reader = backend
         .start_execution(
@@ -510,15 +510,6 @@ async fn assert_atomic_replacement(backend: &MicrosandboxProvider, sandbox: &San
     )
     .await;
     assert_eq!(after.stdout.as_ref(), b"4750\n0\n");
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    bytes.iter().fold(String::new(), |mut hex, byte| {
-        let _ = write!(hex, "{byte:02x}");
-        hex
-    })
 }
 
 async fn assert_hostname(backend: &MicrosandboxProvider, sandbox: &Sandbox, expected: &str) {

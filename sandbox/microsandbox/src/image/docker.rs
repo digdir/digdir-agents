@@ -15,7 +15,9 @@ use sandbox::Error;
 use serde::{Deserialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
 
-use crate::{encoding::lower_hex, error};
+use common::hex;
+
+use crate::error;
 
 #[cfg(unix)]
 const DEFAULT_HOST: &str = "unix:///var/run/docker.sock";
@@ -95,7 +97,7 @@ async fn local_context_host(config_dir: Option<&Path>, context: &str) -> Result<
     let config_dir =
         config_dir.ok_or_else(|| Error::Backend("cannot locate Docker context: set DOCKER_CONFIG".to_owned()))?;
     // Docker CLI's context store keys metadata by the SHA-256 of its name.
-    let context_id = lower_hex(&Sha256::digest(context.as_bytes()));
+    let context_id = hex::encode(&Sha256::digest(context.as_bytes()));
     let path = config_dir.join("contexts/meta").join(context_id).join("meta.json");
     let contents = read(&path, "read Docker context metadata").await?.ok_or_else(|| {
         Error::Backend(format!(
@@ -174,7 +176,7 @@ mod tests {
     }
 
     fn metadata_path(config: &Path, name: &str) -> PathBuf {
-        let id = crate::encoding::lower_hex(&Sha256::digest(name.as_bytes()));
+        let id = common::hex::encode(&Sha256::digest(name.as_bytes()));
         config.join("contexts/meta").join(id).join("meta.json")
     }
 
