@@ -5,6 +5,11 @@
 //! current phase and step live on one updating line and only work that took
 //! noticeable time leaves a permanent line, so a warm ensure prints nothing.
 //! Without a terminal every completion and output line is printed once.
+//!
+//! A command for which the agent is only the means, such as a sign-in, follows
+//! it as a [`Summary`] instead: one updating line that says what the command
+//! gets ready, and one line once it is ready. Failures are shown in full either
+//! way.
 
 use std::{
     cell::RefCell,
@@ -20,7 +25,10 @@ use agent::{
     progress::{AgentProgress, OutputPosition, Provisioning},
     resources::Revision,
 };
-use sandbox::progress::{Measurement, OperationStatus, Outcome, ProgressCursor, ProgressUnit, Update};
+use sandbox::{
+    SandboxPhase,
+    progress::{Measurement, OperationStatus, Outcome, ProgressCursor, ProgressUnit, Update},
+};
 
 /// Minimum interval between redraws of the updating line.
 const REDRAW_INTERVAL: Duration = Duration::from_millis(50);
@@ -61,6 +69,26 @@ impl Wait {
         }
     }
 
+    /// A wait shown as one line saying it is `doing` something, such as getting a sign-in ready,
+    /// until [`Self::ready`] says it is `done`.
+    pub(crate) fn summarized(doing: impl Into<String>, done: impl Into<String>) -> Self {
+        let mut renderer = Renderer::stderr();
+        renderer.summarize(Summary {
+            doing: doing.into(),
+            done: done.into(),
+            started: Instant::now(),
+        });
+        Self {
+            renderer: RefCell::new(renderer),
+        }
+    }
+
+    /// Says that what the wait was for is done: a summarized one shows its `done` line, with how
+    /// long it took.
+    pub(crate) fn ready(&self) {
+        self.renderer.borrow_mut().ready();
+    }
+
     /// Runs `call` to completion while rendering `agent`'s progress, then
     /// renders the final state and settles the terminal.
     pub(crate) async fn until<T>(&self, client: &Client, agent: &str, call: impl Future<Output = T>) -> T {
@@ -96,6 +124,21 @@ impl Wait {
     }
 }
 
+impl Drop for Wait {
+    /// Clears the updating line, also when the command fails before or between the calls it
+    /// follows, so its error starts on a line of its own.
+    fn drop(&mut self) {
+        self.renderer.get_mut().finish();
+    }
+}
+
+/// What a summarized wait says while it waits and once it is ready.
+struct Summary {
+    doing: String,
+    done: String,
+    started: Instant,
+}
+
 /// Where the renderer writes, which decides between an updating line and plain lines.
 #[derive(Clone, Copy)]
 enum Mode {
@@ -109,6 +152,8 @@ pub(crate) struct Renderer<W: Write = io::Stderr> {
     output: W,
     mode: Mode,
     active_line: bool,
+    /// The updating line last drawn.
+    last_line: String,
     last_redraw: Option<Instant>,
     last_error: Option<String>,
     /// Consecutive failed passes with the current error.
@@ -126,6 +171,10 @@ pub(crate) struct Renderer<W: Write = io::Stderr> {
     /// Ready condition already considered, so a standing failure is shown once.
     seen_condition: Option<String>,
     started: bool,
+    /// Set for a summarized wait, which shows no steps.
+    summary: Option<Summary>,
+    /// The step downloading the image, whose count a summary shows.
+    download: Option<sandbox::StepId>,
 }
 
 impl Renderer {
@@ -148,6 +197,7 @@ impl<W: Write> Renderer<W> {
             output,
             mode,
             active_line: false,
+            last_line: String::new(),
             last_redraw: None,
             last_error: None,
             failures: 0,
@@ -159,7 +209,32 @@ impl<W: Write> Renderer<W> {
             recent_output: VecDeque::new(),
             seen_condition: None,
             started: false,
+            summary: None,
+            download: None,
         }
+    }
+
+    /// Shows only `summary`'s lines from now on, starting with the one saying what it is doing.
+    fn summarize(&mut self, summary: Summary) {
+        let doing = summary.doing.clone();
+        self.summary = Some(summary);
+        if self.interactive() {
+            let _ignored = self.show_line(&format!("→ {doing}"));
+        } else {
+            let _ignored = writeln!(self.output, "{doing}...");
+        }
+    }
+
+    fn ready(&mut self) {
+        let Some(summary) = &self.summary else {
+            return;
+        };
+        let line = format!(
+            "✓ {} ({})",
+            summary.done,
+            duration(u64::try_from(summary.started.elapsed().as_millis()).unwrap_or(u64::MAX))
+        );
+        let _ignored = self.clear_active_line().and_then(|()| writeln!(self.output, "{line}"));
     }
 
     /// Revision to follow from and the output already rendered.
@@ -208,6 +283,7 @@ impl<W: Write> Renderer<W> {
         if self.pass != Some(provisioning.pass) {
             self.pass = Some(provisioning.pass);
             self.cursor = ProgressCursor::new();
+            self.download = None;
             self.printed_step = false;
             self.recent_output.clear();
             // The latest pass may have ended long before following began. It is
@@ -264,6 +340,16 @@ impl<W: Write> Renderer<W> {
                 let Some(current) = pass.current() else {
                     return Ok(());
                 };
+                if let Some(line) = self.summary_line(current) {
+                    // A download redraws for every chunk, so only a line that moves its count on
+                    // is throttled.
+                    let counted = |line: &str| line.rsplit_once(", ").map(|(head, _)| head.to_owned());
+                    return if counted(&line).is_some() && counted(&line) == counted(&self.last_line) {
+                        self.show_line_throttled(&line)
+                    } else {
+                        self.show_line(&line)
+                    };
+                }
                 let mut line = format!("→ {}", current.phase.label);
                 let Some(step) = pass.current_step() else {
                     return self.show_line(&line);
@@ -281,6 +367,53 @@ impl<W: Write> Renderer<W> {
             }
             _ => Ok(()),
         }
+    }
+
+    /// The updating line of a summarized wait while `current` runs, saying how far the image's
+    /// download is; `None` when the wait shows steps.
+    fn summary_line(&mut self, current: &sandbox::progress::ActivePhase) -> Option<String> {
+        let doing = format!("→ {}", self.summary.as_ref()?.doing);
+        let image = [SandboxPhase::ImageResolve, SandboxPhase::ImagePrepare]
+            .iter()
+            .any(|image| image.phase().id == current.phase.id);
+        if !image {
+            return Some(doing);
+        }
+        // The first step that counts bytes is the download, since nothing can be unpacked before
+        // it arrives. Others run beside it and count what they have seen so far, so only the
+        // download's count is shown.
+        if self.download.is_none() {
+            self.download = current
+                .steps
+                .iter()
+                .find(|step| {
+                    matches!(
+                        step.measurement,
+                        Some(Measurement {
+                            unit: ProgressUnit::Bytes,
+                            ..
+                        })
+                    )
+                })
+                .map(|step| step.id.clone());
+        }
+        let measurement = current
+            .steps
+            .iter()
+            .find(|step| Some(&step.id) == self.download.as_ref())
+            .and_then(|step| step.measurement);
+        let detail = measurement.map_or_else(
+            || ": preparing the image".to_owned(),
+            |measurement| format!(": downloading the image, {}", format_measurement(measurement)),
+        );
+        // What is being got ready names a folder, which can be long, so it is cut short rather than
+        // the count that shows the download moving.
+        let width = match self.mode {
+            Mode::Terminal { width } => width.saturating_sub(1),
+            Mode::Plain => usize::MAX,
+        };
+        let room = width.saturating_sub(detail.chars().count());
+        Some(format!("{}{detail}", truncate(&doing, room)))
     }
 
     /// Reports a transient failure recorded outside a sandbox pass, including
@@ -309,6 +442,9 @@ impl<W: Write> Renderer<W> {
     }
 
     fn phase_completed(&mut self, label: &str, outcome: Outcome, elapsed_ms: u64) -> io::Result<()> {
+        if self.summary.is_some() {
+            return Ok(());
+        }
         self.clear_active_line()?;
         let printed_step = std::mem::take(&mut self.printed_step);
         if !self.interactive() {
@@ -325,6 +461,9 @@ impl<W: Write> Renderer<W> {
     }
 
     fn step_completed(&mut self, name: &str, elapsed_ms: u64) -> io::Result<()> {
+        if self.summary.is_some() {
+            return Ok(());
+        }
         self.clear_active_line()?;
         if !self.interactive() || elapsed_ms >= NOTABLE_STEP_MS {
             self.printed_step = true;
@@ -378,14 +517,14 @@ impl<W: Write> Renderer<W> {
 
     fn step_output(&mut self, line: &str) -> io::Result<()> {
         self.recent_output.push_back(line.trim().to_owned());
-        if self.interactive() {
+        if self.interactive() || self.summary.is_some() {
             return Ok(());
         }
         writeln!(self.output, "{line}")
     }
 
     fn skipped(&mut self, count: u64) -> io::Result<()> {
-        if self.interactive() {
+        if self.interactive() || self.summary.is_some() {
             return Ok(());
         }
         writeln!(self.output, "… {count} output lines skipped")
@@ -415,6 +554,7 @@ impl<W: Write> Renderer<W> {
         let line = truncate(line, width.saturating_sub(1));
         write!(self.output, "\r\x1b[2K{line}")?;
         self.output.flush()?;
+        self.last_line = line;
         self.active_line = true;
         self.last_redraw = Some(Instant::now());
         Ok(())
@@ -753,6 +893,154 @@ mod tests {
                 "✗ Start sandbox failed 2× (last 0ms); waiting for the next retry",
             ]
         );
+    }
+
+    fn summarized(interactive: bool) -> Renderer<Vec<u8>> {
+        let mut renderer = renderer(interactive);
+        renderer.summarize(Summary {
+            doing: "Getting ready to sign in to GitHub".into(),
+            done: "Ready to sign in to GitHub".into(),
+            started: Instant::now(),
+        });
+        renderer
+    }
+
+    impl Daemon {
+        /// Starts the step `name` counting bytes, or moves its count on.
+        fn count(&mut self, name: &'static str, completed: u64, total: u64) -> &mut Self {
+            if !self.steps.contains_key(name) {
+                let id = StepId::generate();
+                self.steps.insert(name, id.clone());
+                self.apply(&ProgressEvent::StepStarted {
+                    id,
+                    name: name.into(),
+                    unit: Some(ProgressUnit::Bytes),
+                    total: Some(total),
+                });
+            }
+            let id = self.steps[name].clone();
+            self.apply(&ProgressEvent::StepProgress {
+                id,
+                completed,
+                total: Some(total),
+            })
+        }
+    }
+
+    #[test]
+    fn a_summary_shows_one_line_with_the_download_then_one_once_ready() {
+        let mut renderer = summarized(true);
+        let mut daemon = Daemon::new();
+        renderer.render(
+            &daemon
+                .phase(SandboxPhase::ImageResolve)
+                .count("Download image layers", 1 << 20, 2 << 30)
+                .snapshot(),
+        );
+        // Unpacking starts on the first layers while the rest download, and counts only those.
+        renderer.render(&daemon.count("Materialize image layers", 32, 32).snapshot());
+        // A download's count is redrawn at most every REDRAW_INTERVAL.
+        renderer.last_redraw = None;
+        renderer.render(&daemon.count("Download image layers", 1 << 30, 2 << 30).snapshot());
+        daemon.end_step("Download image layers", 74_000);
+        renderer.render(&daemon.count("Materialize image layers", 1 << 30, 3 << 30).snapshot());
+        daemon
+            .end_step("Materialize image layers", 3_000)
+            .end_phase(SandboxPhase::ImageResolve, Outcome::Completed, 77_000)
+            .phase(SandboxPhase::SandboxStart)
+            .step("Create Microsandbox VM");
+        renderer.render(&daemon.snapshot());
+        daemon
+            .end_step("Create Microsandbox VM", 1_500)
+            .end_phase(SandboxPhase::SandboxStart, Outcome::Completed, 1_600)
+            .succeed();
+        renderer.render(&daemon.snapshot());
+        renderer.finish();
+        renderer.ready();
+
+        let lines = lines(renderer);
+        let (done, shown) = lines.split_last().expect("lines");
+        assert_eq!(
+            shown,
+            [
+                "→ Getting ready to sign in to GitHub",
+                "→ Getting ready to sign in to GitHub: downloading the image, 1.0 MiB / 2.0 GiB",
+                "→ Getting ready to sign in to GitHub: downloading the image, 1.0 GiB / 2.0 GiB",
+                "→ Getting ready to sign in to GitHub: preparing the image",
+                "→ Getting ready to sign in to GitHub",
+            ]
+        );
+        assert!(done.starts_with("✓ Ready to sign in to GitHub ("), "{done}");
+    }
+
+    #[test]
+    fn a_summary_cuts_what_it_gets_ready_short_rather_than_the_download() {
+        let mut renderer = renderer(true);
+        renderer.summarize(Summary {
+            doing: "Starting the agent builder on /home/alice/src/digdir-agents".into(),
+            done: "Agent builder started on /home/alice/src/digdir-agents".into(),
+            started: Instant::now(),
+        });
+        let mut daemon = Daemon::new();
+        renderer.render(
+            &daemon
+                .phase(SandboxPhase::ImageResolve)
+                .count("Download image layers", 179 << 20, 590 << 20)
+                .snapshot(),
+        );
+        let lines = lines(renderer);
+        let line = lines.last().expect("a line");
+        assert_eq!(
+            line,
+            "→ Starting the agent builder on …: downloading the image, 179.0 MiB / 590.0 MiB"
+        );
+    }
+
+    #[test]
+    fn a_summary_still_shows_a_failure_in_full() {
+        let mut renderer = summarized(true);
+        let mut daemon = Daemon::new();
+        daemon
+            .phase(SandboxPhase::SandboxStart)
+            .step("Start Microsandbox VM")
+            .output("Start Microsandbox VM", "opening disk\nno such file\n");
+        renderer.render(&daemon.snapshot());
+        daemon.fail("VMDK missing");
+        renderer.render(&daemon.snapshot());
+        renderer.finish();
+
+        let lines = lines(renderer);
+        let permanent: Vec<_> = lines.iter().filter(|line| !line.starts_with('→')).collect();
+        assert_eq!(
+            permanent,
+            vec![
+                "✗ Start sandbox (0ms)",
+                "error: VMDK missing",
+                "    opening disk",
+                "    no such file",
+                "  agentd keeps retrying in the background; press Ctrl-C to stop waiting",
+                "✗ Start sandbox failed 1× (last 0ms); waiting for the next retry",
+            ]
+        );
+    }
+
+    #[test]
+    fn without_a_terminal_a_summary_prints_what_it_gets_ready_and_when_it_is() {
+        let mut renderer = summarized(false);
+        let mut daemon = Daemon::new();
+        daemon
+            .phase(SandboxPhase::SandboxStart)
+            .step("Create Microsandbox VM")
+            .output("Create Microsandbox VM", "created\n")
+            .end_step("Create Microsandbox VM", 366)
+            .end_phase(SandboxPhase::SandboxStart, Outcome::Completed, 367);
+        renderer.render(&daemon.snapshot());
+        renderer.finish();
+        renderer.ready();
+        let lines = lines(renderer);
+        assert_eq!(lines[0], "Getting ready to sign in to GitHub...");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[1].starts_with("✓ Ready to sign in to GitHub ("), "{lines:?}");
     }
 
     #[test]

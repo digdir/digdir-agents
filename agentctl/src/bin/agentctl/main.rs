@@ -1943,7 +1943,12 @@ fn inference_error(error: Error) -> CommandError {
 /// run state, Ready or stopped, and returns it then; or until a terminal
 /// error, the timeout, or Ctrl-C.
 async fn wait_until_converged(client: &Client, name: &str, timeout: Duration) -> CommandResult<Agent> {
-    let waited = progress::Wait::start()
+    converge_shown(&progress::Wait::start(), client, name, timeout).await
+}
+
+/// Waits until `name` converges, showing its progress as `wait` does.
+async fn converge_shown(wait: &progress::Wait, client: &Client, name: &str, timeout: Duration) -> CommandResult<Agent> {
+    let waited = wait
         .until(client, name, tokio::time::timeout(timeout, client.converge(name)))
         .await;
     let Ok(converged) = waited else {

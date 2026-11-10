@@ -38,11 +38,7 @@ pub(crate) async fn new(arguments: NewArguments, home: &ControlPlaneHome, client
         Some(existing) if arguments.rm => return Err(builder::kept_already("new", &checkout, &existing)),
         Some(existing) => {
             let name = existing.metadata.name.clone();
-            eprintln!(
-                "Back to the agent builder on {}, where you left it.",
-                checkout.display()
-            );
-            builder.resume(home, client, &existing, &task).await?;
+            builder.resume(home, client, &existing, &checkout, &task).await?;
             if !builder.current(&existing) {
                 eprintln!(
                     "This agent builder was started by another version of agentctl, and keeps its image. To make \

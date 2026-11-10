@@ -85,19 +85,24 @@ impl Builder {
         builder.spec.sandbox.image == self.definition.spec.sandbox.image
     }
 
-    /// Starts `builder` again if it is stopped, and talks with it about `task`.
+    /// Starts `builder` on `checkout` again if it is stopped, and talks with it about `task`.
     pub(crate) async fn resume(
         &self,
         home: &ControlPlaneHome,
         client: &Client,
         builder: &Agent,
+        checkout: &Path,
         task: &Task,
     ) -> CommandResult<()> {
+        let wait = progress::Wait::summarized(
+            format!("Going back to the agent builder on {}", checkout.display()),
+            format!("Back to the agent builder on {}, where you left it", checkout.display()),
+        );
         let name = &builder.metadata.name;
         if builder.spec.run_state() == RunState::Stopped {
             client.set_run_state(name, RunState::Running).await?;
         }
-        let target = open_session(client, name, task).await?;
+        let target = open_session(&wait, client, name, task).await?;
         agent::sessions::attach(home.path(), &target).await?;
         Ok(())
     }
@@ -148,7 +153,6 @@ impl Builder {
         agreed: BTreeSet<PathBuf>,
         remove: bool,
     ) -> CommandResult<String> {
-        eprintln!("Starting the agent builder on {}.", checkout.display());
         let request = RunRequest {
             definition: RunDefinition::Reference {
                 reference: DEFINITION.into(),
@@ -167,7 +171,12 @@ impl Builder {
         )
         .await?;
         let name = ran.agent.metadata.name;
-        let target = match open_session(client, &name, task).await {
+        // After the questions about the folders, which the updating line would cut into.
+        let wait = progress::Wait::summarized(
+            format!("Starting the agent builder on {}", checkout.display()),
+            format!("Agent builder started on {}", checkout.display()),
+        );
+        let target = match open_session(&wait, client, &name, task).await {
             Ok(target) => target,
             Err(error) => {
                 client.delete(&name).await.ok();
@@ -249,9 +258,11 @@ fn builds_on(agent: &Agent, targets: &Targets, checkout: &Path) -> bool {
 }
 
 /// The builder's session for `task`, which opens with the task's prompt once the builder has
-/// started, and goes back to the conversation when it is open already.
-async fn open_session(client: &Client, name: &str, task: &Task) -> CommandResult<AttachTarget> {
-    Ok(progress::Wait::start()
+/// started, and goes back to the conversation when it is open already. `wait` shows the progress
+/// and, once the session is open, that the builder is ready: the builder is how the command makes
+/// or updates definitions, not what the person asked for.
+async fn open_session(wait: &progress::Wait, client: &Client, name: &str, task: &Task) -> CommandResult<AttachTarget> {
+    let target = wait
         .until(
             client,
             name,
@@ -266,7 +277,9 @@ async fn open_session(client: &Client, name: &str, task: &Task) -> CommandResult
                 WaitPolicy::UntilConverged,
             ),
         )
-        .await?)
+        .await?;
+    wait.ready();
+    Ok(target)
 }
 
 #[cfg(test)]
