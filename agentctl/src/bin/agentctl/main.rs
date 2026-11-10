@@ -669,16 +669,28 @@ enum CodexCommand {
 enum GithubCommand {
     /// Keep a GitHub login under a name, separate from your own `gh` login.
     ///
-    /// At a terminal it opens GitHub's form for a fine-grained token, filled in except for the
-    /// repositories, and reads the token you paste without showing it. Agents whose manifest has
+    /// At a terminal it asks how to get the token: signing in through the browser as a GitHub user
+    /// made for agents, creating a fine-grained token in GitHub's pre-filled form, or pasting one.
+    /// It shows whom the token acts as and asks before keeping it. Agents whose manifest has
     /// `accounts: [{type: github, login: NAME}]` use it at once.
     Login {
         /// The name manifests ask for the login by, such as `altinn-studio`.
         name: String,
+        /// Sign in through the browser, approving the GitHub CLI as the user agents act as. It runs
+        /// in a short-lived agent, so this machine needs no `gh`.
+        #[arg(long, group = "way")]
+        web: bool,
+        /// Create a fine-grained token in GitHub's form, filled in except for the repositories,
+        /// and paste it.
+        #[arg(long, group = "way")]
+        fine_grained: bool,
         /// Read a token from standard input instead: fine-grained, classic or a GitHub CLI login's,
         /// such as `gh auth token | agentctl github login NAME --from-stdin`.
-        #[arg(long)]
+        #[arg(long, group = "way")]
         from_stdin: bool,
+        /// Keep the token only if it acts as this GitHub user, without asking.
+        #[arg(long, value_name = "LOGIN")]
+        user: Option<String>,
     },
     /// List the kept logins, and the logins agents ask for that are not kept.
     List,
@@ -755,8 +767,21 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             }
         }
         Command::Github { command } => match command {
-            GithubCommand::Login { name, from_stdin } => {
-                github::login(client, &name, from_stdin).await?;
+            GithubCommand::Login {
+                name,
+                web,
+                fine_grained,
+                from_stdin,
+                user,
+            } => {
+                let way = [
+                    (web, github::Way::Web),
+                    (fine_grained, github::Way::FineGrained),
+                    (from_stdin, github::Way::Stdin),
+                ]
+                .into_iter()
+                .find_map(|(given, way)| given.then_some(way));
+                github::login(client, home, &name, way, user.as_deref()).await?;
             }
             GithubCommand::List => github::list(client).await?,
             GithubCommand::Logout { name } => github::logout(client, &name).await?,
@@ -2904,8 +2929,14 @@ mod tests {
         assert!(matches!(
             parse(&["agentctl", "github", "login", "altinn-studio", "--from-stdin"]),
             Ok(Command::Github {
-                command: GithubCommand::Login { name, from_stdin: true }
+                command: GithubCommand::Login { name, from_stdin: true, web: false, fine_grained: false, user: None }
             }) if name == "altinn-studio"
+        ));
+        assert!(matches!(
+            parse(&["agentctl", "github", "login", "altinn-studio", "--web", "--user", "altinn-bot"]),
+            Ok(Command::Github {
+                command: GithubCommand::Login { web: true, user: Some(user), .. }
+            }) if user == "altinn-bot"
         ));
         assert!(matches!(
             parse(&["agentctl", "github", "logout", "altinn-studio"]),
@@ -2919,6 +2950,8 @@ mod tests {
             &["agentctl", "github", "login", "digdir", "ghp_FAKE_canary"],
             &["agentctl", "github", "login", "digdir", "--token=ghp_FAKE_canary"],
             &["agentctl", "github", "list", "ghp_FAKE_canary"],
+            &["agentctl", "github", "login", "digdir", "--web", "--fine-grained"],
+            &["agentctl", "github", "login", "digdir", "--web", "--from-stdin"],
         ] {
             assert!(parse(arguments).is_err(), "{arguments:?}");
         }

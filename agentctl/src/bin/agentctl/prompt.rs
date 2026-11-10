@@ -154,6 +154,67 @@ pub(crate) fn confirm_lines(lines: &[&str]) -> Result<bool, Error> {
     }
 }
 
+/// Asks which of `choices` to take, numbered from 1, on standard error: `lines` first, then the
+/// choices. At a terminal a single digit answers; otherwise a line with the number does. Enter
+/// alone takes the choice at `default`. Returns the index of the choice taken.
+///
+/// # Errors
+///
+/// Returns an error when standard input cannot be read or ends, or Ctrl-C cancels.
+pub(crate) fn choose(lines: &[&str], choices: &[&str], default: usize) -> Result<usize, Error> {
+    let numbered: Vec<String> = choices
+        .iter()
+        .enumerate()
+        .map(|(index, choice)| format!("{}. {choice}", index + 1))
+        .collect();
+    let all: Vec<&str> = lines
+        .iter()
+        .copied()
+        .chain(numbered.iter().map(String::as_str))
+        .collect();
+    let suffix = format!("\n  Choice [{}]: ", default + 1);
+    if std::io::stdin().is_terminal() {
+        return read_key(
+            &question(&all, &suffix),
+            |code| chosen_key(code, choices.len(), default),
+            |index| (index + 1).to_string(),
+        );
+    }
+    pose(&all, &suffix);
+    loop {
+        if let Some(index) = chosen(&read_answer()?, choices.len(), default) {
+            return Ok(index);
+        }
+        eprint!("Type a number from 1 to {}: ", choices.len());
+        std::io::stderr().flush().ok();
+    }
+}
+
+/// The index a single key chooses among `count` choices: a digit from 1, or Enter for `default`.
+fn chosen_key(code: KeyCode, count: usize, default: usize) -> Option<usize> {
+    match code {
+        KeyCode::Enter => Some(default),
+        KeyCode::Char(character) if character.is_ascii_digit() => {
+            chosen(character.encode_utf8(&mut [0; 4]), count, default)
+        }
+        _ => None,
+    }
+}
+
+/// The index a typed `answer` chooses among `count` choices: its number from 1, or `default` when
+/// it is empty.
+fn chosen(answer: &str, count: usize, default: usize) -> Option<usize> {
+    let answer = answer.trim();
+    if answer.is_empty() {
+        return Some(default);
+    }
+    answer
+        .parse::<usize>()
+        .ok()
+        .filter(|number| (1..=count).contains(number))
+        .map(|number| number - 1)
+}
+
 /// Asks for a line of text on standard error, what it is about first and the label last; Enter
 /// alone takes `default`, shown in brackets, when there is one.
 ///
@@ -223,7 +284,7 @@ fn yes_or_no(answer: &str) -> Option<bool> {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-    use super::{Pressed, pressed, yes_or_no, yes_or_no_key};
+    use super::{Pressed, chosen, chosen_key, pressed, yes_or_no, yes_or_no_key};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -263,6 +324,20 @@ mod tests {
         assert_eq!(pressed(&alt, yes_or_no_key), Pressed::Ignore);
         assert_eq!(pressed(&control('y'), yes_or_no_key), Pressed::Ignore);
         assert_eq!(pressed(&control('c'), yes_or_no_key), Pressed::Cancel);
+    }
+
+    #[test]
+    fn a_choice_is_its_number_and_enter_takes_the_default() {
+        assert_eq!(chosen_key(KeyCode::Enter, 3, 0), Some(0));
+        assert_eq!(chosen_key(KeyCode::Char('3'), 3, 0), Some(2));
+        for code in [KeyCode::Char('0'), KeyCode::Char('4'), KeyCode::Char('y'), KeyCode::Esc] {
+            assert_eq!(chosen_key(code, 3, 0), None, "{code:?}");
+        }
+        assert_eq!(chosen("", 3, 1), Some(1));
+        assert_eq!(chosen(" 2 ", 3, 0), Some(1));
+        for answer in ["0", "4", "one", "-1"] {
+            assert_eq!(chosen(answer, 3, 0), None, "{answer:?}");
+        }
     }
 
     #[test]

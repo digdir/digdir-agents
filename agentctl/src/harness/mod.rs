@@ -618,7 +618,7 @@ pub fn host_can_sign_in(harness: Harness) -> bool {
     crate::local::process::find_executable(std::env::var_os("PATH").as_deref(), &[&program]).is_some()
 }
 
-/// A sign-in that runs in a short-lived sandbox, so the host does not need the harness.
+/// A sign-in that runs in a short-lived sandbox, so the host does not need its program.
 ///
 /// Its program talks to the person through a terminal that the host relays, and the person signs
 /// in with a browser on the host, at the links [`sign_in_links`] finds in what it prints. Once it
@@ -636,6 +636,18 @@ pub struct SandboxSignIn {
 type ReadCredential = fn(&[u8], Option<&[u8]>) -> Result<Zeroizing<String>, Error>;
 
 impl SandboxSignIn {
+    pub(crate) const fn new(
+        execution: sandbox::execution::ExecutionSpec,
+        artifact: Option<sandbox::SandboxPath>,
+        credential: ReadCredential,
+    ) -> Self {
+        Self {
+            execution,
+            artifact,
+            credential,
+        }
+    }
+
     /// The credential the finished sign-in produced, from all of its terminal `output` and the
     /// contents of its [`Self::artifact`].
     ///
@@ -658,7 +670,7 @@ pub fn sandbox_sign_in(harness: Harness) -> Option<SandboxSignIn> {
 }
 
 /// The text of the artifact a sign-in of `service` leaves its credential in.
-fn artifact_text(service: &str, artifact: Option<&[u8]>) -> Result<Zeroizing<String>, Error> {
+pub(crate) fn artifact_text(service: &str, artifact: Option<&[u8]>) -> Result<Zeroizing<String>, Error> {
     artifact
         .and_then(|artifact| std::str::from_utf8(artifact).ok())
         .map(str::trim)
@@ -702,7 +714,10 @@ pub fn sign_in_links(output: &[u8]) -> Vec<reqwest::Url> {
         .filter_map(|link| {
             let url = reqwest::Url::parse(link).ok()?;
             let hyperlinked = hyperlinks.contains(&link.as_bytes());
-            (claude_code::is_sign_in_link(&url, hyperlinked) || codex::is_sign_in_link(&url)).then_some(url)
+            (claude_code::is_sign_in_link(&url, hyperlinked)
+                || codex::is_sign_in_link(&url)
+                || crate::github::is_sign_in_link(&url))
+            .then_some(url)
         })
         .collect()
 }

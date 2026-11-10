@@ -8,42 +8,164 @@ use agent::{
     accounts::{self, AccountType},
     control_api::Client,
     github::{Account, Login},
+    local::home::ControlPlaneHome,
     names,
 };
 use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
-use crate::{CommandResult, prompt};
+use crate::{CommandError, CommandResult, prompt};
 
-/// Has agentd keep a GitHub login as `name`. At a terminal the person creates a fine-grained token
-/// in GitHub's pre-filled form and pastes it without it showing. With `from_stdin` the token comes
-/// from standard input instead. What GitHub says about the token, with warnings, is shown once it
-/// is kept.
+/// How the token for a login is had.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Way {
+    /// Signing in through the browser with the GitHub CLI, in a short-lived agent.
+    Web,
+    /// Creating a fine-grained token in GitHub's pre-filled form and pasting it.
+    FineGrained,
+    /// Pasting a token the person has.
+    Paste,
+    /// Reading a token from standard input.
+    Stdin,
+}
+
+/// The ways the picker offers, the first the default, with what each is for.
+const PICKED: [(Way, &str); 3] = [
+    (
+        Way::Web,
+        "Sign in through the browser as a GitHub user made for agents, such as a bot.\n     \
+         Agents reach what that user has been given.",
+    ),
+    (
+        Way::FineGrained,
+        "Create a fine-grained token, limited to the repositories you select.",
+    ),
+    (
+        Way::Paste,
+        "Paste a token you have: fine-grained, classic, or from `gh auth token`.",
+    ),
+];
+
+/// Has agentd keep a GitHub login as `name`, with the token had the `way` given, or at a terminal
+/// the way the person picks. A token of another GitHub user than `user` is refused. A person at a
+/// terminal sees whom the token acts as and confirms before it is kept, unless `user` is given.
 ///
 /// # Errors
 ///
-/// Returns an error when the name is invalid, there is no terminal to paste on without
-/// `from_stdin`, no token is given, GitHub rejects it, or agentd cannot keep it.
-pub(crate) async fn login(client: &Client, name: &str, from_stdin: bool) -> CommandResult<()> {
+/// Returns an error when the name or user is invalid, there is no terminal for a way that needs
+/// one, no token is had, GitHub rejects it or it belongs to another user, the person declines, or
+/// agentd cannot keep it.
+pub(crate) async fn login(
+    client: &Client,
+    home: &ControlPlaneHome,
+    name: &str,
+    way: Option<Way>,
+    user: Option<&str>,
+) -> CommandResult<()> {
     let name = token_name(name)?;
-    let token = if from_stdin {
-        crate::read_token_from_stdin()?
-    } else if prompt::interactive() {
-        let owner = ask_owner()?;
-        paste_from_form(&owner, &name).await?
-    } else {
-        return Err(Error::Invalid(
-            "no terminal to paste the token on; pipe it to `agentctl github login NAME --from-stdin`".into(),
-        )
-        .into());
+    let user = user.map(user_login).transpose()?;
+    let way = match way {
+        Some(Way::Stdin) => Way::Stdin,
+        _ if !prompt::interactive() => {
+            return Err(Error::Invalid(
+                "no terminal to sign in or paste the token at; pipe a token to \
+                 `agentctl github login NAME --from-stdin`"
+                    .into(),
+            )
+            .into());
+        }
+        Some(way) => way,
+        None => pick(&name)?,
+    };
+    let token = match way {
+        Way::Stdin => crate::read_token_from_stdin()?,
+        Way::Web => sign_in(client, home, user.as_deref()).await?,
+        Way::FineGrained => {
+            let owner = ask_owner()?;
+            paste_from_form(&owner, &name).await?
+        }
+        Way::Paste => prompt::secret(&format!("Paste the GitHub token for {name} (it is not shown)"))?,
     };
     eprintln!("Checking the token with GitHub...");
-    let accounts::Login::Github(login) = client.account_login(AccountType::Github, &name, &token).await?;
+    let checked = agent::github::check(&token, &name).await?;
+    let acts_as = &checked.account.identity.login;
     let now = OffsetDateTime::now_utc();
-    eprint!("{}", summary(&login, &warnings(&login, now), now));
+    if let Some(user) = &user
+        && !acts_as.eq_ignore_ascii_case(user)
+    {
+        return Err(CommandError::Message(format!(
+            "the token acts as {acts_as}, not {user}, so it was not kept{}",
+            unused(way, acts_as)
+        )));
+    }
+    eprint!("{}", summary(&checked, &warnings(&checked, now), now));
+    if user.is_none()
+        && way != Way::Stdin
+        && !prompt::confirm_lines(&[&format!("Keep it as the login {name}, for agents to act as {acts_as}?")])?
+    {
+        return Err(CommandError::Message(format!(
+            "the token was not kept{}",
+            unused(way, acts_as)
+        )));
+    }
+    let accounts::Login::Github(login) = client.account_login(AccountType::Github, &name, &token).await?;
     println!("{}", stored_line(&login));
     println!("{}", manifest_line(&login.account.name));
     Ok(())
+}
+
+/// The way the person picks at the terminal to get the token for `name`.
+fn pick(name: &str) -> Result<Way, Error> {
+    let choices = PICKED.map(|(_, text)| text);
+    let index = prompt::choose(
+        &[&format!("How should agents get into GitHub with the login {name}?")],
+        &choices,
+        0,
+    )?;
+    Ok(PICKED[index].0)
+}
+
+/// `value` as a GitHub user's login. It is not repeated when refused, as it may be a token.
+fn user_login(value: &str) -> Result<String, Error> {
+    if agent::github::valid_owner(value) {
+        Ok(value.to_owned())
+    } else {
+        Err(Error::Invalid(
+            "--user takes a GitHub user's login: letters, digits and inner hyphens".into(),
+        ))
+    }
+}
+
+/// Signs in through the browser with the GitHub CLI in a short-lived agent, as `user` when given,
+/// and returns its token.
+async fn sign_in(client: &Client, home: &ControlPlaneHome, user: Option<&str>) -> CommandResult<Zeroizing<String>> {
+    let who = user.map_or_else(
+        || "the GitHub user agents should act as, such as a bot".to_owned(),
+        str::to_owned,
+    );
+    eprintln!(
+        "\nApprove the sign-in as {who}. GitHub approves it as whoever the browser is signed in as, \
+         so if that is you, sign out first or open the link in a private window.\n"
+    );
+    let recipe = agent::github::sandbox_sign_in();
+    Ok(
+        crate::sandbox_sign_in::sign_in(client, home, "GitHub", &recipe, crate::sandbox_sign_in::START_TIMEOUT)
+            .await??,
+    )
+}
+
+/// What becomes of a token had the `way` given that is not kept, acting as `acts_as`. A browser
+/// sign-in's token is kept nowhere else, but stays valid on GitHub.
+fn unused(way: Way, acts_as: &str) -> String {
+    if way == Way::Web {
+        format!(
+            ". It is stored nowhere, but stays valid on GitHub until {acts_as} revokes the GitHub CLI at \
+             {page}, which also signs out {acts_as}'s other `gh` logins",
+            page = agent::github::SIGN_IN_REVOKE_PAGE
+        )
+    } else {
+        String::new()
+    }
 }
 
 fn stored_line(login: &Login) -> String {
@@ -343,6 +465,24 @@ mod tests {
     }
 
     #[test]
+    fn the_browser_sign_in_is_the_default_and_its_unkept_token_is_explained() {
+        assert_eq!(PICKED[0].0, Way::Web);
+        assert_eq!(
+            unused(Way::Web, "someone"),
+            ". It is stored nowhere, but stays valid on GitHub until someone revokes the GitHub CLI at \
+             https://github.com/settings/applications, which also signs out someone's other `gh` logins"
+        );
+        assert_eq!(unused(Way::Paste, "someone"), "");
+    }
+
+    #[test]
+    fn a_user_is_a_github_login_and_is_not_repeated_when_refused() {
+        assert_eq!(user_login("altinn-bot").expect("login"), "altinn-bot");
+        let message = user_login("ghp_FAKE_canary").expect_err("not a login").to_string();
+        assert!(!message.contains("FAKE_canary"), "{message}");
+    }
+
+    #[test]
     fn the_manifest_line_names_the_account() {
         assert_eq!(
             manifest_line("digdir-agent"),
@@ -424,11 +564,15 @@ altinn  altinn-bot  classic       none stated
         assert!(forgotten(&token("digdir", TokenKind::Classic, None)).contains("https://github.com/settings/tokens\n"));
     }
 
+    fn home() -> ControlPlaneHome {
+        ControlPlaneHome::resolve(Some(std::path::Path::new("/nonexistent/agentctl"))).expect("home")
+    }
+
     #[tokio::test(flavor = "local")]
     async fn a_token_given_as_the_name_is_refused_without_being_repeated() {
         let client = Client::for_path("/nonexistent/agentctl.sock".into());
         for result in [
-            login(&client, "ghp_FAKE_canary", true).await,
+            login(&client, &home(), "ghp_FAKE_canary", Some(Way::Stdin), None).await,
             logout(&client, "ghp_FAKE_canary").await,
         ] {
             let Err(error) = result else {
@@ -448,9 +592,13 @@ altinn  altinn-bot  classic       none stated
     async fn without_a_terminal_a_login_needs_the_token_on_standard_input() {
         assert!(!prompt::interactive(), "tests run without a terminal");
         let client = Client::for_path("/nonexistent/agentctl.sock".into());
-        let Err(crate::CommandError::Agent(Error::Invalid(message))) = login(&client, "digdir", false).await else {
-            panic!("refused before reaching agentd");
-        };
-        assert!(message.contains("--from-stdin"), "{message}");
+        for way in [None, Some(Way::Web), Some(Way::FineGrained), Some(Way::Paste)] {
+            let Err(crate::CommandError::Agent(Error::Invalid(message))) =
+                login(&client, &home(), "digdir", way, None).await
+            else {
+                panic!("refused before reaching agentd");
+            };
+            assert!(message.contains("--from-stdin"), "{message}");
+        }
     }
 }

@@ -231,6 +231,30 @@ fn key_bytes(key: KeyEvent) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// Runs `sign_in` in a short-lived agent to sign in to `service`, with the person at this terminal
+/// and its sign-in page opening in this machine's browser. The outer result says whether the agent
+/// started, the inner one what the sign-in gave. The agent is deleted, with everything signed in
+/// inside it, before this returns.
+pub(crate) async fn sign_in(
+    client: &Client,
+    home: &ControlPlaneHome,
+    service: &str,
+    sign_in: &SandboxSignIn,
+    timeout: Duration,
+) -> CommandResult<Result<Zeroizing<String>, Error>> {
+    let agent = SignInAgent::start(client, home, timeout).await?;
+    // Where a browser here would not reach the person, such as over SSH, they open the link. Saying
+    // so now keeps it out of what the program draws.
+    let blocked = crate::launch::launch_blocked(|name| std::env::var_os(name));
+    match &blocked {
+        None => println!("\nSign in to {service}. Its sign-in page opens in your browser."),
+        Some(reason) => println!(
+            "\nSign in to {service}. No browser here would reach you: {reason}. Open the link it shows in a browser."
+        ),
+    }
+    Ok(agent.run(sign_in, blocked.is_none()).await)
+}
+
 /// Signs in to `harness` in a short-lived agent and stores the login as `login`, for a machine
 /// without the harness's own command.
 pub(crate) async fn store_login(
@@ -249,23 +273,7 @@ pub(crate) async fn store_login(
             harness.display_name()
         )));
     }
-    let agent = SignInAgent::start(client, home, timeout).await?;
-    // Where a browser here would not reach the person, such as over SSH, they open the link. Saying
-    // so now keeps it out of what the program draws.
-    let blocked = crate::launch::launch_blocked(|name| std::env::var_os(name));
-    match &blocked {
-        None => println!(
-            "\nSign in to {}. Its sign-in page opens in your browser.",
-            harness.display_name()
-        ),
-        Some(reason) => println!(
-            "\nSign in to {}. No browser here would reach you: {reason}. Open the link it shows in a browser.",
-            harness.display_name()
-        ),
-    }
-    let credential = agent.run(&recipe, blocked.is_none()).await;
-    // The agent goes now, with everything signed in inside it.
-    drop(agent);
+    let credential = sign_in(client, home, harness.display_name(), &recipe, timeout).await?;
     // A credential read off the sign-in's screen can be missed or come out garbled while the person
     // still sees it whole, so they can paste it instead.
     let paste = |what: String| {

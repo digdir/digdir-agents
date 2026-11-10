@@ -49,9 +49,9 @@ credentials out of it: they belong in `agentctl github login` and `agentctl secr
 
 ## Credentials
 
-`agentctl github login default` takes a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new)
-with `Contents` and `Pull requests` read and write. The agent pushes and opens pull requests as that account, and Git
-commits as it.
+`agentctl github login default` signs in as a GitHub user made for the agent, or takes a fine-grained token with
+`Contents` and `Pull requests` read and write. The agent pushes and opens pull requests as that account, and Git commits
+as it.
 
 The `aivar` secret is optional. It is the key for the company AI gateway at `api.aivar.no`, which Pi uses. Without it
 Pi starts but rejects every prompt, so `agentctl prompt --wait` times out.

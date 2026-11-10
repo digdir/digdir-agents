@@ -39,9 +39,11 @@ manifests that should use it:
 agentctl github login altinn-studio
 ```
 
-At a terminal it opens GitHub's form for a fine-grained token, filled in except for the repositories. Sign in there as
-the account agents should act as, such as in a private window. `--from-stdin` takes a token instead, such as
-`gh auth token`, which lets agents act as you everywhere you can reach.
+At a terminal it asks how to get the token. Signing in through the browser as a GitHub user made for agents, such as a
+bot, is the default: agents reach what that user has been given, and this machine needs no `gh`. A fine-grained token
+reaches only the repositories you select in GitHub's form. Either way, sign in to GitHub as that user, such as in a
+private window, and agentctl shows whom the token acts as before keeping it. `--web` and `--fine-grained` skip the
+question, and `--from-stdin` takes a token instead.
 
 Store a secret that agents use, such as an API key, under a name with the hosts its value may reach, and ask for it
 by that name in the manifests that use it:

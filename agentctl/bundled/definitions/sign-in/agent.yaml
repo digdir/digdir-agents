@@ -1,7 +1,7 @@
-# The short-lived agent `agentctl claude login` and `agentctl codex login` run the harness's sign-in in when this
-# machine does not have the harness. It is internal, as the README here describes, and agentd runs it for those
-# commands as an ephemeral agent, which it deletes when the command ends, however it ends. It runs the sign-in as a
-# command, so it declares no harness.
+# The short-lived agent that runs a sign-in when this machine doesn't have the program for it: the harness's sign-in
+# for `agentctl claude login` and `agentctl codex login`, and the GitHub CLI's for `agentctl github login` through the
+# browser. It is internal, as the README here describes, and agentd runs it for those commands as an ephemeral agent,
+# which it deletes when the command ends, however it ends. It runs the sign-in as a command, so it declares no harness.
 apiVersion: agents.platform/v1alpha1
 kind: Agent
 metadata:
@@ -30,3 +30,6 @@ spec:
       - platform.claude.com
       # `codex login --device-auth`
       - auth.openai.com
+      # `gh auth login --web`
+      - github.com
+      - api.github.com
