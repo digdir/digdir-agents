@@ -73,6 +73,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
 
 ### Fixed
 
+- On Windows, an agent with a bind mount at `/home/agent/code`, such as the agent builder `agentctl new` starts, gets past setup instead of failing with `chmod failed with error Operation not permitted`. ([#445](https://github.com/digdir/digdir-agents/pull/445))
 - Nested agents on macOS run memory-heavy work such as builds and package restores in seconds instead of minutes. Agents with `spec.sandbox.resources.nestedSandboxes` get this at their next start. ([#435](https://github.com/digdir/digdir-agents/pull/435))
 - `agentctl tui` no longer searches your whole home directory for manifests when the home directory is a Git repository, such as one for dotfiles. ([#309](https://github.com/digdir/digdir-agents/pull/309))
 - `clear`, `less` and editors no longer fail with `unknown terminal type` over `agentctl ssh`, the SSH shell in `agentctl tui` or plain `ssh agentctl-<name>` from a terminal such as Ghostty. ([#391](https://github.com/digdir/digdir-agents/pull/391))
