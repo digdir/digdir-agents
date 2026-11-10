@@ -1,0 +1,28 @@
+# The short-lived agent `agentctl claude login` and `agentctl codex login` run the harness's sign-in in when this machine
+# does not have the harness. agentctl runs it ephemeral, so agentd deletes it when the login command ends, however it
+# ends.
+apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  name: sign-in
+spec:
+  sandbox:
+    # The base every agent image builds on, which has every harness in it.
+    image:
+      type: reference
+      reference: ghcr.io/digdir/agentctl-base:ubuntu-26.04
+    platform:
+      os: linux
+    initSystem: image
+    resources:
+      cpu: "2"
+      memory: 2Gi
+      rootFilesystem:
+        capacity: 16Gi
+        mode: layered
+  # A manifest names a harness, and Pi is the one that needs no login, so the agent starts before any login exists.
+  harnesses:
+    - type: pi
+  network:
+    mode: mediated
+    allow: all
