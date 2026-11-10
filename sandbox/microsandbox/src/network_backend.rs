@@ -545,6 +545,7 @@ fn authorization_request(subject: SandboxSubject<'_>, operation: &NetworkOperati
             destination,
             transport,
             hostname,
+            hostname_resolved,
             destination_is_host,
         } => {
             let mut authorization_context = sandbox_context(subject.name)
@@ -560,6 +561,7 @@ fn authorization_request(subject: SandboxSubject<'_>, operation: &NetworkOperati
             );
             if let Some(hostname) = hostname {
                 authorization_context.insert(context::NETWORK_HOSTNAME, hostname.clone());
+                authorization_context.insert(context::NETWORK_HOSTNAME_RESOLVED, *hostname_resolved);
             }
             AuthorizationRequest {
                 principal,
@@ -926,6 +928,7 @@ mod tests {
             destination: "198.51.100.10:443".parse().expect("valid test destination"),
             transport: TransportProtocol::Tcp,
             hostname: Some("example.com".to_string()),
+            hostname_resolved: true,
             destination_is_host: false,
         }
     }
@@ -963,6 +966,34 @@ mod tests {
             secret: "PROVIDER_TOKEN".to_string(),
             locations: vec![microsandbox_network::control::SecretLocation::Header],
         }
+    }
+
+    #[test]
+    fn maps_connect_to_authorization_contract() {
+        let sandbox_id = sandbox_id();
+        let sandbox_name = sandbox_name();
+        let request = super::authorization_request(
+            super::SandboxSubject {
+                id: &sandbox_id,
+                name: &sandbox_name,
+            },
+            &operation(),
+        );
+
+        assert_eq!(request.action.as_str(), "network.connect");
+        assert_eq!(request.resource.id, "example.com:443");
+        assert_eq!(
+            request.context.attributes["network.hostname"].as_str(),
+            Some("example.com")
+        );
+        assert_eq!(
+            request.context.attributes["network.hostnameResolved"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            request.context.attributes["network.destinationIsHost"].as_bool(),
+            Some(false)
+        );
     }
 
     #[test]

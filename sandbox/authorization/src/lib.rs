@@ -68,8 +68,14 @@ pub mod vocabulary {
         /// Whether the destination is the host, reported by the trusted Network
         /// Backend when it rewrites a gateway-bound flow to host loopback.
         pub const NETWORK_DESTINATION_IS_HOST: &str = "network.destinationIsHost";
-        /// Network hostname supplied by a trusted parser.
+        /// Network hostname supplied by a trusted parser. The sandbox chooses it,
+        /// such as its TLS SNI or HTTP `Host`, so it names the host the sandbox
+        /// claims to reach.
         pub const NETWORK_HOSTNAME: &str = "network.hostname";
+        /// Whether the sandbox's own DNS resolved [`NETWORK_HOSTNAME`] to the
+        /// destination address, in an answer still live, as the trusted Network
+        /// Backend reports it.
+        pub const NETWORK_HOSTNAME_RESOLVED: &str = "network.hostnameResolved";
         /// Network source socket address.
         pub const NETWORK_SOURCE_ADDRESS: &str = "network.sourceAddress";
         /// Network transport protocol.
