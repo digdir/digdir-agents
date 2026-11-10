@@ -131,6 +131,25 @@ impl InstallPaths {
         }
         Ok(InstallLock { _file: file })
     }
+
+    /// Whether an installer or updater holds the lock that [`InstallPaths::lock`] takes. Creates
+    /// nothing, so it can be asked of any agentctl, managed or not.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an existing lock cannot be opened or queried.
+    pub fn update_running(&self) -> Result<bool, Error> {
+        let file = match File::open(self.root.join("install.lock")) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        match file.try_lock_shared() {
+            Ok(()) => Ok(false),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(true),
+            Err(std::fs::TryLockError::Error(error)) => Err(Error::Io(error)),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1276,6 +1295,19 @@ mod tests {
         let error = paths.lock().await.expect_err("second lock");
 
         assert!(error.to_string().contains("another agentctl update is already running"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn update_running_reports_a_held_install_lock() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let paths = InstallPaths::new(temporary.path().join("install"), temporary.path().join("bin")).expect("paths");
+        assert!(!paths.update_running().expect("no installation"));
+        assert!(!paths.root().exists(), "asking creates nothing");
+
+        let lock = paths.lock().await.expect("lock");
+        assert!(paths.update_running().expect("held"));
+        drop(lock);
+        assert!(!paths.update_running().expect("released"));
     }
 
     #[test]
