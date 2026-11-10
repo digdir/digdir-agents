@@ -93,15 +93,7 @@ impl ControlPlaneHome {
     ///
     /// Returns an error when the home cannot be prepared or another daemon owns its lock.
     pub fn acquire_lock(&self) -> Result<Lock, Error> {
-        self.prepare()?;
-        let path = self.0.join("agentd.lock");
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&path)?;
-        secure_file(&path)?;
+        let file = self.lock_file()?;
         match file.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
@@ -113,6 +105,30 @@ impl ControlPlaneHome {
             Err(std::fs::TryLockError::Error(error)) => return Err(Error::Io(error)),
         }
         Ok(Lock { _file: file })
+    }
+
+    /// Blocks until the daemon that owns this home lets it go, then takes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the home cannot be prepared or its lock cannot be waited for.
+    pub fn wait_for_lock(&self) -> Result<Lock, Error> {
+        let file = self.lock_file()?;
+        file.lock()?;
+        Ok(Lock { _file: file })
+    }
+
+    fn lock_file(&self) -> Result<File, Error> {
+        self.prepare()?;
+        let path = self.0.join("agentd.lock");
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)?;
+        secure_file(&path)?;
+        Ok(file)
     }
 }
 

@@ -14,6 +14,7 @@ use agent::{
     manifest,
     sandbox::forward,
     sessions::{Session, SessionName, SessionRequest},
+    upgrade::InstallPaths,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -2330,16 +2331,32 @@ async fn ensure_daemon(home: &ControlPlaneHome, client: &Client) -> Result<(), E
             return daemon.require_compatible();
         }
         if let Some(status) = daemon.try_wait()? {
-            return Err(Error::Daemon(format!(
-                "automatic startup exited with {status}; {}",
-                daemon_startup_diagnostics(home)
-            )));
+            return Err(startup_failure(
+                home,
+                &format!("automatic startup exited with {status}"),
+            ));
         }
     }
-    Err(Error::Daemon(format!(
-        "automatic startup did not become ready within 10 seconds; {}",
-        daemon_startup_diagnostics(home)
-    )))
+    Err(startup_failure(
+        home,
+        "automatic startup did not become ready within 10 seconds",
+    ))
+}
+
+/// An update stops agentd and keeps it stopped until it starts the new one, so a command that
+/// tries to start agentd meanwhile fails. The update need not be for this command's home, so the
+/// usual diagnostics stay.
+fn startup_failure(home: &ControlPlaneHome, failure: &str) -> Error {
+    let diagnostics = daemon_startup_diagnostics(home);
+    if InstallPaths::resolve()
+        .and_then(|paths| paths.update_running())
+        .unwrap_or(false)
+    {
+        return Error::Daemon(format!(
+            "{failure}, likely because an agentctl update is running; rerun this command once it has finished, or {diagnostics}"
+        ));
+    }
+    Error::Daemon(format!("{failure}; {diagnostics}"))
 }
 
 fn daemon_startup_diagnostics(home: &ControlPlaneHome) -> String {
