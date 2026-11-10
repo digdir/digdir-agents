@@ -201,14 +201,7 @@ impl ControlPlane {
                     }
                     // An update that gives no folders keeps the agent's, as its mounts cannot change.
                     let given = if request.binds.is_empty() {
-                        current
-                            .bindings
-                            .iter()
-                            .map(|(target, source)| super::BindSource {
-                                source: source.clone(),
-                                target: Some(target.clone()),
-                            })
-                            .collect()
+                        bound_folders(&current)
                     } else {
                         given.clone()
                     };
@@ -238,14 +231,7 @@ impl ControlPlane {
                         .cloned()
                         .collect();
                     self.check_exposed_files(&mut record, &allowed).await?;
-                    // The folders it was given count too: `run` finds an agent by them.
-                    if current.agent.spec == record.agent.spec
-                        && current.source_directory == record.source_directory
-                        && current.manifest_path == record.manifest_path
-                        && current.env_file == record.env_file
-                        && current.bindings == record.bindings
-                        && current.exposed_files == record.exposed_files
-                    {
+                    if unchanged(&current, &record) {
                         let mut current = current;
                         current.agent.metadata.labels = self.store.change_labels(current.id, labels).await?.effective();
                         self.notifier.notify(current.id);
@@ -766,6 +752,29 @@ pub(super) fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) 
         return Err(Error::Immutable("spec.harnesses.auth"));
     }
     Ok(())
+}
+
+/// The folders the agent `current` was given, by the target each is mounted at, for an update that gives none.
+fn bound_folders(current: &AgentRecord) -> Vec<super::BindSource> {
+    current
+        .bindings
+        .iter()
+        .map(|(target, source)| super::BindSource {
+            source: source.clone(),
+            target: Some(target.clone()),
+        })
+        .collect()
+}
+
+/// Whether applying `record` changes nothing stored for `current`. The folders it was given count too: `run` finds an
+/// agent by them.
+fn unchanged(current: &AgentRecord, record: &AgentRecord) -> bool {
+    current.agent.spec == record.agent.spec
+        && current.source_directory == record.source_directory
+        && current.manifest_path == record.manifest_path
+        && current.env_file == record.env_file
+        && current.bindings == record.bindings
+        && current.exposed_files == record.exposed_files
 }
 
 /// Another definition's agent has the name: nothing about this agent changed, so it is not an immutable field.
