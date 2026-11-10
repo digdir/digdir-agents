@@ -13,8 +13,7 @@ instructions say, so that it reports it instead of working around it.
 
 The sources of truth are in [digdir-agents](https://github.com/digdir/digdir-agents): the manifest schema in
 [manifest.rs](https://github.com/digdir/digdir-agents/blob/main/agentctl/src/manifest.rs), the commented
-[.NET example](https://github.com/digdir/digdir-agents/tree/main/agents/examples/dotnet-dev), the
-[agents digdir-agents keeps](https://github.com/digdir/digdir-agents/tree/main/agents) and the
+[.NET example](https://github.com/digdir/digdir-agents/tree/main/agents/examples/dotnet-dev) and the
 [base images](https://github.com/digdir/digdir-agents/blob/main/images/agentctl-base/README.md). Read them rather than
 guessing: the manifest refuses unknown fields.
 
@@ -50,7 +49,6 @@ agents/<name>/
 │   ├── agent.yaml
 │   ├── agent.nested.yaml, agent.nested-build.yaml, agent.worktree.yaml
 │   ├── environment.md
-│   ├── .env.sample
 │   └── .gitignore
 └── desktop/          the same, for the desktop stage
 ```
@@ -64,8 +62,7 @@ A personal agent is one folder with its manifest, variants, a `Dockerfile` with 
   another agent when that has its tools.
 - **Runtime files stay out of the image:** a `.dockerignore` that admits only what the Dockerfile copies. Instructions,
   skills and the home overlay come from the manifest, so they change without a rebuild.
-- **`.gitignore`:** `agent.*.yaml` except the variants below, and `.env`, so personal variants and values stay out
-  of Git.
+- **`.gitignore`:** `agent.*.yaml` except the variants below, so personal variants stay out of Git.
 
 ## The image
 
@@ -87,9 +84,18 @@ the tests start with Compose, `browser` for browser tests, `desktop` for the des
 
 ## The manifest
 
-- **Secrets** stay on the host. Give each the narrowest `allowedHosts` its service needs. `GITHUB_TOKEN` takes the
-  placeholder `github_pat_AGENT_MEDIATED_GITHUB_TOKEN`, since `gh` recognizes tokens by their prefix. The Git identity
-  is plain `environment`.
+- **Values come from the machine the agent runs on, not from a file beside the manifest.** A later agentctl stops
+  reading the environment file, `.env`, as
+  [moving off the environment file](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/moving-off-the-environment-file.md)
+  explains, so write no `.env` or `.env.sample`, even where older agents have one:
+  - **GitHub:** an entry of `accounts` with `type: github` and a `login`, such as `default`, gives the agent a
+    `GITHUB_TOKEN` for GitHub's hosts and commits as that account. Its owner signs in with
+    `agentctl github login default`.
+  - **Secrets** stay on the host, stored under a name with `agentctl secret set NAME --hosts HOST`. An entry of
+    `secrets` names one and the variable it goes in. Give it the narrowest `allowedHosts` its service needs, and
+    `optional` when the agent can work without it.
+  - **Plain values** that are the same for everyone go in `environment` with `value`. The agent sees them as they
+    are, so never a secret.
 - **Network:** `mediated`, allowing all, and denying `metadata.google.internal`, which hands out the credentials of
   the machine the host may run on.
 - **Harnesses:** Claude Code as the default and Codex as optional, unless the role needs others. `optional` lets the
@@ -97,8 +103,6 @@ the tests start with Compose, `browser` for browser tests, `desktop` for the des
 - **Volumes:** when agents need a large host directory they only read, a `kind: Volume` manifest copies it once for
   all of them, and each mounts it with `type: volume`. Keep a team's volume manifests in `agents/_volumes/`, where
   `agentctl tui` applies them.
-- **`.env.sample`** names every value, with a comment above each that says what it is for and where to get it. Its
-  owner copies it to `.env` beside the manifest, which `agentctl apply` reads.
 
 ## Instructions and skills
 
@@ -117,7 +121,9 @@ the tests start with Compose, `browser` for browser tests, `desktop` for the des
   `nestedSandboxes: null`.
 - **`nested-build`** extends `nested` and builds the image from the checkout (`type: build`), so a change to the
   Dockerfile can be tried before CI publishes it.
-- **`worktree`**, for a team's agent, mounts the developer's own checkout (`source: ../..`) instead of a fresh clone.
+- **`worktree`**, for a team's agent, mounts the developer's own checkout instead of a fresh clone: the repository's
+  root, three folders up from the stage's (`source: ../../..`), at the path its workspace list clones it to. The base
+  image leaves a checkout it finds there alone.
 
 ## Trying a change
 

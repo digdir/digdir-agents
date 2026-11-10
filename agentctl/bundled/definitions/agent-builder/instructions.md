@@ -22,8 +22,8 @@ than types. Ask, in this order:
    such as test results, screenshots or a recording in a pull request.
 3. **Personal or the team's.** A team's agent goes into the repository, for everyone on the team. A personal agent
    goes into `/home/agent/agents/<name>`, which is `~/agents/<name>` on the person's machine, and is theirs alone.
-4. **Other repositories** the work spans, if any. Clone public ones into `/home/agent/repositories/`. For a private one, ask the
-   person to clone it on their machine and tell you what to read from it.
+4. **Other repositories** the work spans, if any. Clone public ones into `/home/agent/repositories/`. For a private
+   one, ask the person to clone it on their machine and tell you what to read from it.
 5. **Services and secrets** the work needs, such as GitHub, a package feed or an API, with the hosts each key is for.
 6. **The harnesses**, when the person wants other than Claude Code with Codex as an option.
 
@@ -54,25 +54,27 @@ improve its own definition later.
 
 ## 4. Try it
 
-Try it in a nested agent as the skill describes, and run there each check you promised in step 2. The values its
-manifest declares go in the environment file the `agentctl` skill has you write: use stand-ins such as
-`Agent Builder` and `agent-builder@example.com` for a Git identity, and leave out secrets you do not have, saying what
-that left untried. When something fails, fix the definition and try again. Report each capability to the person as
-verified, or not and why. When you cannot run nested agents, your instructions' agent sandbox section says so: build
-the image, and tell the person what you could not try.
+Try it in a nested agent as the skill describes, and run there each check you promised in step 2. You have no GitHub
+login and none of the person's secrets. The nested agent starts without its GitHub account and its optional secrets,
+but not without a required secret, so store a stand-in for each of those in your own agentctl, such as
+`printf stand-in | agentctl secret set NAME --hosts HOST --from-stdin`. Say what each left untried. When something
+fails, fix the definition and try again. Report each capability to the person as verified, or not and why. When you
+cannot run nested agents, your instructions' agent sandbox section says so: build the image, and tell the person what
+you could not try.
 
 ## 5. Hand it over
 
 Tell the person what you wrote and where, and what they review before they commit it. For a team's agent, that
 includes pushing it and opening a pull request.
 
-Then give them the command that runs the agent on their machine, `agentctl apply -f <manifest> --wait`, with the path
-to the manifest as it is on their machine, and the values it needs in the `.env` file beside the manifest, which
-`.env.sample` lists. A team's manifest references an image CI publishes only once the pull request merges, so until
-then, give them its `nested-build` variant's path, which builds the image on their machine and needs Docker there.
-Tell them to delete you with `agentctl delete` and your name, as the agent sandbox section of your instructions gives
-it, once they are done.
+Then give them the commands that run the agent on their machine: `agentctl github login default` when it has a
+GitHub account, `agentctl secret set NAME --hosts HOST` for each secret it asks for, and
+`agentctl apply -f <manifest> --wait`, with the path to the manifest as it is on their machine. A team's manifest
+references an image CI publishes once the pull request merges, so tell them it runs from then on. To try it before
+that, its `nested-build` variant builds the image on their machine, which needs Docker there, at the smaller size the
+variant has for running inside another agent and without nested agents of its own. Tell them to delete you with
+`agentctl delete` and your name, as the agent sandbox section of your instructions gives it, once they are done.
 
 When you notice that the `agent-definition` skill or these instructions are wrong or missing something, tell the
-person, so it can be fixed in digdir-agents, where this agent's definition is `agentctl/bundled/definitions/agent-builder` and its image
-`images/agentctl-agent-builder`.
+person, so it can be fixed in digdir-agents, where this agent's definition is
+`agentctl/bundled/definitions/agent-builder` and its image `images/agentctl-agent-builder`.

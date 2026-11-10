@@ -12,7 +12,7 @@ use agent::{
     control_api::Client,
     control_plane::{BindSource, RunDefinition, RunRequest, WaitPolicy},
     local::home::ControlPlaneHome,
-    sessions::{SessionName, SessionRequest},
+    sessions::{AttachTarget, SessionName, SessionRequest},
 };
 use clap::Args;
 use sandbox::SandboxPath;
@@ -43,7 +43,8 @@ pub(crate) async fn new(arguments: NewArguments, home: &ControlPlaneHome, client
         ));
     }
     let checkout = checkout(arguments.directory)?;
-    let targets = Targets::of(&agent::bundled::Definitions::bundled()?.get(DEFINITION)?.agent())?;
+    let definition = agent::bundled::Definitions::bundled()?.get(DEFINITION)?.agent();
+    let targets = Targets::of(&definition)?;
     let agents = client.list_agents(false).await?;
     let name = match agents.iter().find(|agent| builds_on(agent, &targets, &checkout)) {
         Some(builder) => {
@@ -55,7 +56,17 @@ pub(crate) async fn new(arguments: NewArguments, home: &ControlPlaneHome, client
                 "Back to the agent builder on {}, where you left it.",
                 checkout.display()
             );
-            talk(home, client, &name).await?;
+            let target = open_session(client, &name).await?;
+            agent::sessions::attach(home.path(), &target).await?;
+            // An agent keeps the image it was made with, which holds the agentctl it tries agents
+            // with, while its instructions and skills follow agentd.
+            if builder.spec.sandbox.image != definition.spec.sandbox.image {
+                eprintln!(
+                    "This agent builder was started by another version of agentctl, and keeps its image. To make \
+                     agents with this version's, run `agentctl delete {name}` and `agentctl new` again. What it \
+                     wrote stays where it is."
+                );
+            }
             name
         }
         None => start(home, client, &targets, &checkout).await?,
@@ -95,18 +106,9 @@ impl Targets {
     /// The targets of `builder`'s bind mounts without a source: the one in its working directory
     /// for the checkout, and the other for the personal agents.
     fn of(builder: &Agent) -> Result<Self, Error> {
-        let working = agent::sandbox::platform::working_directory(&builder.spec.sandbox.platform.os);
-        let (checkout, others): (Vec<_>, Vec<_>) = builder
-            .spec
-            .sandbox
-            .mounts
-            .iter()
-            .filter_map(|mount| match mount {
-                agent::MountSpec::Bind {
-                    source: None, target, ..
-                } => Some(target.clone()),
-                _ => None,
-            })
+        let working = agent::sandbox::platform::working_directory(builder);
+        let (checkout, others): (Vec<_>, Vec<_>) = agent::definitions::unsourced_binds(builder)
+            .into_iter()
             .partition(|target| Some(target.as_str()) == working);
         match (checkout.as_slice(), others.as_slice()) {
             ([checkout], [personal_agents]) => Ok(Self {
@@ -122,19 +124,23 @@ impl Targets {
     }
 }
 
-/// Whether `agent` is a builder `new` started on `checkout`.
+/// Whether `agent` is a builder `new` started on `checkout` that is not being deleted, which `new`
+/// could not go back to.
 fn builds_on(agent: &Agent, targets: &Targets, checkout: &Path) -> bool {
     let builder = matches!(
         &agent.status.origin,
         Some(agent::Origin::Reference { reference })
             if agent::DefinitionReference::parse(reference).is_ok_and(|parsed| parsed.name() == DEFINITION)
     );
-    builder && agent.status.bindings.get(&targets.checkout).map(PathBuf::as_path) == Some(checkout)
+    builder
+        && agent.metadata.deletion_timestamp.is_none()
+        && agent.status.bindings.get(&targets.checkout).map(PathBuf::as_path) == Some(checkout)
 }
 
 /// Starts a builder on `checkout` and talks with it, returning its name. agentd names it after the
-/// checkout's folder. A builder that does not start is deleted, so that `new` starts afresh rather
-/// than going back to it.
+/// checkout's folder. A builder whose session never opens is deleted, so that `new` starts afresh
+/// rather than going back to it. Once the person has talked with it, it is kept however the
+/// attachment ends, since going back to it is what `new` offers.
 async fn start(home: &ControlPlaneHome, client: &Client, targets: &Targets, checkout: &Path) -> CommandResult<String> {
     let personal_agents = agent::local::home::user_home_directory()
         .ok_or_else(|| Error::Invalid("cannot find your home folder, where personal agents go".into()))?
@@ -161,17 +167,20 @@ async fn start(home: &ControlPlaneHome, client: &Client, targets: &Targets, chec
         })
         .await?;
     let name = ran.agent.metadata.name;
-    if let Err(error) = talk(home, client, &name).await {
-        client.delete(&name).await.ok();
-        return Err(error);
-    }
+    let target = match open_session(client, &name).await {
+        Ok(target) => target,
+        Err(error) => {
+            client.delete(&name).await.ok();
+            return Err(error);
+        }
+    };
+    agent::sessions::attach(home.path(), &target).await?;
     Ok(name)
 }
 
-/// Attaches to the builder's session, which opens with its first question, waiting for the builder
-/// to start first.
-async fn talk(home: &ControlPlaneHome, client: &Client, name: &str) -> CommandResult<()> {
-    let target = progress::Wait::start()
+/// The builder's session, which opens with its first question, once the builder has started.
+async fn open_session(client: &Client, name: &str) -> CommandResult<AttachTarget> {
+    Ok(progress::Wait::start()
         .until(
             client,
             name,
@@ -186,9 +195,7 @@ async fn talk(home: &ControlPlaneHome, client: &Client, name: &str) -> CommandRe
                 WaitPolicy::UntilConverged,
             ),
         )
-        .await?;
-    agent::sessions::attach(home.path(), &target).await?;
-    Ok(())
+        .await?)
 }
 
 #[cfg(test)]
@@ -209,8 +216,10 @@ mod tests {
     fn the_builder_leaves_new_the_checkout_and_the_personal_agents() {
         let builder = builder();
         let targets = Targets::of(&builder).expect("targets");
-        let working = agent::sandbox::platform::working_directory(&builder.spec.sandbox.platform.os);
-        assert_eq!(Some(targets.checkout.as_str()), working);
+        assert_eq!(
+            Some(targets.checkout.as_str()),
+            agent::sandbox::platform::working_directory(&builder)
+        );
         assert_ne!(targets.personal_agents, targets.checkout);
     }
 
@@ -233,6 +242,10 @@ mod tests {
         });
         assert!(builds_on(&builder, &targets, checkout));
         assert!(!builds_on(&builder, &targets, Path::new("/src/other")));
+
+        builder.metadata.deletion_timestamp = Some(time::OffsetDateTime::UNIX_EPOCH);
+        assert!(!builds_on(&builder, &targets, checkout), "a builder being deleted");
+        builder.metadata.deletion_timestamp = None;
 
         builder.status.origin = Some(agent::Origin::Reference {
             reference: "bundled/reviewer".into(),

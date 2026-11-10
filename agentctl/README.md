@@ -89,10 +89,10 @@ the `agentctl apply` command that runs the agent it made. The builder keeps runn
 before it is done and running `agentctl new` in the same checkout again goes back to the same conversation. It needs
 your Claude Code login (`agentctl claude login`).
 
-To write an agent by hand, start from the [.NET example](../agents/examples/dotnet-dev/), an [agent definition](../GLOSSARY.md) whose manifest
-and image explain each line. Let an agent make it yours: ask Claude Code or Codex to copy it and change it for the
-tools and repositories your work needs. A coding agent working in an agent can apply what it writes as a nested agent
-and try it before you do.
+To write an agent by hand, start from the [.NET example](../agents/examples/dotnet-dev/), an
+[agent definition](../GLOSSARY.md) whose manifest and image explain each line. Let an agent make it yours: ask
+Claude Code or Codex to copy it and change it for the tools and repositories your work needs. A coding agent working
+in an agent can apply what it writes as a nested agent and try it before you do.
 
 ## Documentation
 

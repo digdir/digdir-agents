@@ -38,10 +38,6 @@ spec:
         target: /home/agent/agents
         readOnly: false
 
-  # A directory copied over /home/agent every time agentd reconciles the agent.
-  home:
-    source: home
-
   # What every harness is told: how to make an agent, step by step. The agent-definition skill, which every agent
   # gets, holds the conventions.
   instructions:

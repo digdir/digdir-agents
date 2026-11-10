@@ -1,7 +1,7 @@
 # Bundled agent definitions
 
 Each folder here is an agent definition that agentd carries in its build, named by the folder: an `agent.yaml` and
-the files it names. They are for agents the platform runs for itself, such as the one that signs in to a harness,
+the files it names. They are for agents that are part of the platform, such as the agent builder `agentctl new` runs,
 whose definitions are tied to the code of the build that runs them, so they cannot come from anywhere else.
 
 Otherwise they are ordinary definitions. Their reference is `bundled/<folder>`, or the folder's name for short. agentd

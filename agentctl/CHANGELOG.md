@@ -45,7 +45,7 @@ agents. The Rust workspace version is a build detail and is not tracked here.
   - `agentctl secret list` and `remove` show and remove them, and `list` names those agents ask for that are missing
   - a definition you `agentctl run` without an environment file, such as one agentd carries, can use them too
 - `value` on an entry of `spec.environment` gives a plain value in the manifest, so it needs no environment file. ([moving off the environment file](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/moving-off-the-environment-file.md))
-- `agentctl new` makes a new agent with you: run it in a repository's checkout, and the agent builder, a definition agentd carries, asks what the agent is for, writes and tries its definition in the checkout or in `~/agents`, and tells you how to run it. Running it again in the same checkout goes back to the same conversation. ([your first agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#368](https://github.com/digdir/digdir-agents/pull/368))
+- `agentctl new` makes an agent for a repository with you: the agent builder asks what it is for, and writes and tries its definition. It keeps running until you delete it, and `agentctl new` in the checkout resumes it. ([your first agent](https://github.com/digdir/digdir-agents/tree/main/agentctl#your-first-agent), [#368](https://github.com/digdir/digdir-agents/pull/368))
 - Every agent gets an `agent-definition` skill for writing and changing agent definitions, its own included, and trying a change in a nested agent before proposing it. `agentctl skills install --bundled agent-definition` gives it to the coding agents on your machine. ([#368](https://github.com/digdir/digdir-agents/pull/368))
 
 ### Changed
