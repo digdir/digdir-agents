@@ -60,6 +60,7 @@ impl AgentPolicyEngine {
         self.agents.borrow_mut().insert(
             sandbox.as_str().into(),
             AgentPolicy {
+                allowed_hosts: agent.spec.network.allow.clone(),
                 denied_hosts: agent.spec.network.deny.clone(),
                 secrets,
             },
@@ -100,6 +101,7 @@ impl SecretHosts {
 }
 
 struct AgentPolicy {
+    allowed_hosts: crate::NetworkAllow,
     denied_hosts: Vec<String>,
     secrets: BTreeMap<String, SecretHosts>,
 }
@@ -142,10 +144,14 @@ impl AgentPolicyEngine {
             return host_destined;
         }
         match request.action.as_str() {
-            action::NETWORK_CONNECT | action::DNS_QUERY | action::HTTP_REQUEST => host
-                .map_or(AuthorizationDecision::Deny, |host| {
-                    decision(!policy.denied_hosts.iter().any(|pattern| host_matches(pattern, host)))
-                }),
+            action::NETWORK_CONNECT | action::DNS_QUERY | action::HTTP_REQUEST => {
+                host.map_or(AuthorizationDecision::Deny, |host| {
+                    decision(
+                        policy.allowed_hosts.allows(host)
+                            && !policy.denied_hosts.iter().any(|pattern| host_matches(pattern, host)),
+                    )
+                })
+            }
             action::SECRET_USE => {
                 let Some(host) = host else {
                     return AuthorizationDecision::Deny;
@@ -307,7 +313,7 @@ fn without_port(authority: &str) -> &str {
         .map_or(authority, |(host, _)| host)
 }
 
-fn host_matches(pattern: &str, host: &str) -> bool {
+pub(crate) fn host_matches(pattern: &str, host: &str) -> bool {
     let pattern = pattern.to_ascii_lowercase();
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     pattern.strip_prefix("*.").map_or_else(

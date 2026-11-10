@@ -794,6 +794,13 @@ impl Spec {
                 "spec.network.deny contains an invalid host pattern".into(),
             ));
         }
+        if let NetworkAllow::Hosts(hosts) = &self.network.allow
+            && hosts.iter().any(|host| !valid_host_pattern(host))
+        {
+            return Err(Error::Invalid(
+                "spec.network.allow contains an invalid host pattern".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -1080,13 +1087,67 @@ pub enum NetworkMode {
     Mediated,
 }
 
-/// Baseline egress policy.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// Baseline egress policy, written `all` or as a list of host patterns.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum NetworkAllow {
     /// Permit network operations except explicitly denied hosts.
     #[default]
     All,
+    /// Permit only the hosts one of these patterns matches, such as `api.example.com` or
+    /// `*.example.com`, except denied hosts. An empty list reaches no host.
+    Hosts(Vec<String>),
+}
+
+impl NetworkAllow {
+    /// Whether this allows `host`, which a pattern `*.example.com` matches below `example.com`.
+    #[must_use]
+    pub fn allows(&self, host: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Hosts(patterns) => patterns
+                .iter()
+                .any(|pattern| crate::authorization::host_matches(pattern, host)),
+        }
+    }
+}
+
+const NETWORK_ALLOW_ALL: &str = "all";
+
+impl Serialize for NetworkAllow {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::All => serializer.serialize_str(NETWORK_ALLOW_ALL),
+            Self::Hosts(patterns) => patterns.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NetworkAllow {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = NetworkAllow;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("`all` or a list of host patterns")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<NetworkAllow, E> {
+                if value == NETWORK_ALLOW_ALL {
+                    Ok(NetworkAllow::All)
+                } else {
+                    Err(E::invalid_value(serde::de::Unexpected::Str(value), &self))
+                }
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, sequence: A) -> Result<NetworkAllow, A::Error> {
+                Vec::deserialize(serde::de::value::SeqAccessDeserializer::new(sequence)).map(NetworkAllow::Hosts)
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 /// Agent-layer network policy interpreted by the host Policy Engine.

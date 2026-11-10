@@ -11,7 +11,7 @@ use std::{collections::BTreeMap, fmt::Write as _};
 use crate::{
     Harness,
     control_plane::AgentRecord,
-    manifest::{AccessSpec, Spec},
+    manifest::{AccessSpec, NetworkAllow, NetworkSpec, Spec},
 };
 
 use super::{HOME, USER, WORKING_DIRECTORY};
@@ -94,7 +94,7 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
             (!spec.environment.is_empty())
                 .then(|| format!("{}.", code_list(spec.environment.iter().map(|variable| &variable.name)))),
         ),
-        ("Network", Some(network(spec))),
+        ("Network", Some(network(&spec.network))),
     ];
     lines.extend(
         observed
@@ -180,13 +180,20 @@ fn sub_bullets(items: impl Iterator<Item = String>) -> String {
     })
 }
 
-fn network(spec: &Spec) -> String {
+fn network(network: &NetworkSpec) -> String {
     let mut text = String::from(
         "all traffic passes through the host, which intercepts TLS with a CA that the system store and \
          `NODE_EXTRA_CA_CERTS` trust.",
     );
-    if !spec.network.deny.is_empty() {
-        let _ = write!(text, " Denied: {}.", code_list(&spec.network.deny));
+    match &network.allow {
+        NetworkAllow::All => {}
+        NetworkAllow::Hosts(hosts) if hosts.is_empty() => text.push_str(" No other host is allowed."),
+        NetworkAllow::Hosts(hosts) => {
+            let _ = write!(text, " Allowed: only {}.", code_list(hosts));
+        }
+    }
+    if !network.deny.is_empty() {
+        let _ = write!(text, " Denied: {}.", code_list(&network.deny));
     }
     text
 }
@@ -227,4 +234,30 @@ fn code_list<'a>(items: impl IntoIterator<Item = &'a String>) -> String {
         .map(|item| format!("`{item}`"))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_network_line_names_the_allowed_and_denied_hosts() {
+        let trust = "all traffic passes through the host, which intercepts TLS with a CA that the system store and \
+                     `NODE_EXTRA_CA_CERTS` trust.";
+        let mut spec = NetworkSpec {
+            deny: vec!["metadata.google.internal".into()],
+            ..NetworkSpec::default()
+        };
+        assert_eq!(network(&spec), format!("{trust} Denied: `metadata.google.internal`."));
+
+        spec.allow = NetworkAllow::Hosts(vec!["github.com".into(), "*.github.com".into()]);
+        assert_eq!(
+            network(&spec),
+            format!("{trust} Allowed: only `github.com`, `*.github.com`. Denied: `metadata.google.internal`.")
+        );
+
+        spec.allow = NetworkAllow::Hosts(Vec::new());
+        spec.deny.clear();
+        assert_eq!(network(&spec), format!("{trust} No other host is allowed."));
+    }
 }

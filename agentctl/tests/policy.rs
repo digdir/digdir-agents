@@ -71,6 +71,41 @@ async fn allows_general_egress_but_scopes_each_secret_to_its_hosts() {
     );
 }
 
+/// With a list of allowed hosts, only those are reached, and a denied host is refused even when the list matches it.
+#[tokio::test(flavor = "local")]
+async fn an_allow_list_reaches_only_its_hosts() {
+    let mut agent = support::agent("worker");
+    agent.spec.network.allow = agent::NetworkAllow::Hosts(vec!["*.github.com".into(), "auth.openai.com".into()]);
+    agent.spec.network.deny.push("uploads.github.com".into());
+    let policy = AgentPolicyEngine::new();
+    let sandbox = SandboxName::new("agent-test-id").expect("Sandbox name");
+    policy.set_agent(&sandbox, &agent, []);
+
+    for operation in [action::HTTP_REQUEST, action::DNS_QUERY] {
+        for (host, expected) in [
+            ("api.github.com", AuthorizationDecision::Allow),
+            ("auth.openai.com", AuthorizationDecision::Allow),
+            ("github.com", AuthorizationDecision::Deny),
+            ("uploads.github.com", AuthorizationDecision::Deny),
+            ("example.com", AuthorizationDecision::Deny),
+        ] {
+            assert_eq!(
+                evaluate(&policy, sandbox.as_str(), operation, "externalService", host, host).await,
+                expected,
+                "{operation} {host}"
+            );
+        }
+    }
+    assert_eq!(
+        connect(&policy, sandbox.as_str(), Some("auth.openai.com"), "203.0.113.7:443").await,
+        AuthorizationDecision::Allow
+    );
+    assert_eq!(
+        connect(&policy, sandbox.as_str(), Some("example.com"), "203.0.113.8:443").await,
+        AuthorizationDecision::Deny
+    );
+}
+
 /// A stored secret is substituted only at a host that both the manifest and the secret allow.
 #[tokio::test(flavor = "local")]
 async fn a_secret_with_several_host_lists_is_used_only_where_all_of_them_match() {

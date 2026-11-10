@@ -56,6 +56,41 @@ fn home_and_network_are_optional_and_default_to_no_home_and_mediated_egress() {
 }
 
 #[test]
+fn network_allow_is_all_or_a_list_of_host_patterns() {
+    let allow = |value: &str| manifest_with(&[("    allow: all\n", &format!("    allow: {value}\n"))]);
+
+    let agent = manifest::decode(&allow("[github.com, \"*.github.com\"]")).expect("a list of hosts");
+    assert_eq!(
+        agent.spec.network.allow,
+        NetworkAllow::Hosts(vec!["github.com".into(), "*.github.com".into()])
+    );
+    let encoded = serde_yaml_ng::to_string(&agent).expect("encode");
+    assert_eq!(
+        manifest::decode(encoded.as_bytes()).expect("re-decode").spec,
+        agent.spec
+    );
+    assert!(agent.spec.network.allow.allows("api.github.com"));
+    assert!(!agent.spec.network.allow.allows("example.com"));
+
+    let agent = manifest::decode(&allow("[]")).expect("no host at all");
+    assert_eq!(agent.spec.network.allow, NetworkAllow::Hosts(Vec::new()));
+    assert!(!agent.spec.network.allow.allows("github.com"));
+
+    let error = manifest::decode(&allow("some")).expect_err("only `all` is a word");
+    assert!(
+        error.to_string().contains("`all` or a list of host patterns"),
+        "{error}"
+    );
+    let error = manifest::decode(&allow("[\"https://github.com\"]")).expect_err("a host, not a URL");
+    assert!(
+        error
+            .to_string()
+            .contains("spec.network.allow contains an invalid host pattern"),
+        "{error}"
+    );
+}
+
+#[test]
 fn a_manifest_may_set_the_run_state_and_omits_it_by_default() {
     let minimal = include_str!("fixtures/agent.yaml");
     let agent = manifest::decode(minimal.as_bytes()).expect("minimal manifest should decode");
