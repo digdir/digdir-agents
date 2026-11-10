@@ -78,7 +78,8 @@ GitHub account, `agentctl secret set NAME --hosts HOST` for each secret it asks 
 references an image CI publishes once the pull request merges, so tell them it runs from then on. To try it before
 that, its `nested-build` variant builds the image on their machine, which needs Docker there, at the smaller size the
 variant has for running inside another agent and without nested agents of its own. Tell them to delete you with
-`agentctl delete` and your name, as the agent sandbox section of your instructions gives it, once they are done.
+`agentctl delete agent/NAME`, with your name as the agent sandbox section of your instructions gives it, once they
+are done.
 
 ## Updating definitions
 

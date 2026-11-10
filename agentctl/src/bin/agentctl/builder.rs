@@ -4,7 +4,8 @@
 //! runs on a checkout, as `agentctl run` would, with the person's folder of personal agents beside
 //! it. A checkout has one builder, which keeps running until the person deletes it, and each
 //! command talks with it in a session of its own, so running the command again goes back to the
-//! same conversation.
+//! same conversation. Asked to with `--rm`, a command starts one that agentd deletes when the
+//! command ends instead.
 
 use std::{
     collections::BTreeSet,
@@ -12,7 +13,7 @@ use std::{
 };
 
 use agent::{
-    Agent, Error, ModelSelection, RunState,
+    Agent, Error, Lifetime, ModelSelection, RunState,
     control_api::Client,
     control_plane::{BindSource, RunDefinition, RunRequest, WaitPolicy},
     local::home::ControlPlaneHome,
@@ -57,13 +58,24 @@ impl Builder {
         Ok(Self { definition, targets })
     }
 
-    /// The builder on `checkout` that is not being deleted, which a command can go back to.
-    pub(crate) async fn find(&self, client: &Client, checkout: &Path) -> Result<Option<Agent>, Error> {
-        Ok(client
-            .list_agents(false)
+    /// The builder kept on `checkout` that is not being deleted, which a command can go back to. One
+    /// another command started with `--rm` is refused, since it goes when that command does, and a
+    /// second builder would write to the same files.
+    pub(crate) async fn find(&self, client: &Client, checkout: &Path) -> CommandResult<Option<Agent>> {
+        let found = client
+            .list_agents(true)
             .await?
             .into_iter()
-            .find(|agent| builds_on(agent, &self.targets, checkout)))
+            .find(|agent| builds_on(agent, &self.targets, checkout));
+        match found {
+            Some(builder) if builder.status.is_ephemeral() => Err(CommandError::Message(format!(
+                "agent/{}, the agent builder on {}, was started with --rm by another `agentctl new` or `agentctl \
+                 update`, and is deleted when that command ends. Go back to that command",
+                builder.metadata.name,
+                checkout.display()
+            ))),
+            found => Ok(found),
+        }
     }
 
     /// Whether `builder` runs the image this version runs it on. An agent keeps the image it was
@@ -125,7 +137,8 @@ impl Builder {
     /// that turned up since are asked about too. agentd names it after the checkout's folder. A
     /// builder whose session never opens is deleted, so that the command starts afresh rather than
     /// going back to it. Once the person has talked with it, it is kept however the attachment
-    /// ends, since going back to it is what the commands offer.
+    /// ends, since going back to it is what the commands offer, unless they asked to `remove` it.
+    /// Then agentd deletes it once this returns, or the command ends any other way.
     pub(crate) async fn start(
         &self,
         home: &ControlPlaneHome,
@@ -133,6 +146,7 @@ impl Builder {
         checkout: &Path,
         task: &Task,
         agreed: BTreeSet<PathBuf>,
+        remove: bool,
     ) -> CommandResult<String> {
         eprintln!("Starting the agent builder on {}.", checkout.display());
         let request = RunRequest {
@@ -140,10 +154,11 @@ impl Builder {
                 reference: DEFINITION.into(),
             },
             binds: self.binds(checkout)?,
-            lifetime: None,
+            lifetime: remove.then_some(Lifetime::Ephemeral),
             name: None,
             allow_exposed_files: agreed,
         };
+        // Held while the person talks with it: agentd deletes an ephemeral builder when it goes.
         let (ran, _lease) = consent::send(
             request,
             &ASK,
@@ -162,6 +177,17 @@ impl Builder {
         agent::sessions::attach(home.path(), &target).await?;
         Ok(name)
     }
+}
+
+/// Why `command --rm` does not start a builder on `checkout`, where `existing` is kept: going back to
+/// it is what the command does without `--rm`, and a second builder would write to the same files.
+pub(crate) fn kept_already(command: &str, checkout: &Path, existing: &Agent) -> CommandError {
+    let name = &existing.metadata.name;
+    CommandError::Message(format!(
+        "agent/{name}, the agent builder on {}, is kept already. Run `agentctl {command}` without --rm to go back \
+         to it, or `agentctl delete agent/{name}` first",
+        checkout.display()
+    ))
 }
 
 /// The folder `directory` names, or the current folder, as the folder it really is, which is how

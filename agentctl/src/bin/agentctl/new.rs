@@ -14,6 +14,10 @@ use crate::{
 pub(crate) struct NewArguments {
     /// The checkout of the repository the new agent is for. Defaults to the current folder.
     directory: Option<PathBuf>,
+    /// Delete the agent builder when this command ends, such as when you leave its session,
+    /// instead of keeping it to go back to. What it wrote stays.
+    #[arg(long)]
+    rm: bool,
 }
 
 /// Makes a new agent with the builder, starting it on the checkout or going back to it there.
@@ -31,6 +35,7 @@ pub(crate) async fn new(arguments: NewArguments, home: &ControlPlaneHome, client
         prompt: "I want to make a new agent for the repository you have checked out.".into(),
     };
     let name = match builder.find(client, &checkout).await? {
+        Some(existing) if arguments.rm => return Err(builder::kept_already("new", &checkout, &existing)),
         Some(existing) => {
             let name = existing.metadata.name.clone();
             eprintln!(
@@ -41,7 +46,7 @@ pub(crate) async fn new(arguments: NewArguments, home: &ControlPlaneHome, client
             if !builder.current(&existing) {
                 eprintln!(
                     "This agent builder was started by another version of agentctl, and keeps its image. To make \
-                     agents with this version's, run `agentctl delete {name}` and `agentctl new` again. What it \
+                     agents with this version's, run `agentctl delete agent/{name}` and `agentctl new` again. What it \
                      wrote stays where it is."
                 );
             }
@@ -49,14 +54,28 @@ pub(crate) async fn new(arguments: NewArguments, home: &ControlPlaneHome, client
         }
         None => {
             builder
-                .start(home, client, &checkout, &task, std::collections::BTreeSet::new())
+                .start(
+                    home,
+                    client,
+                    &checkout,
+                    &task,
+                    std::collections::BTreeSet::new(),
+                    arguments.rm,
+                )
                 .await?
         }
     };
-    println!(
-        "The agent builder keeps running, and `agentctl new` in {} goes back to it.\nApply the agent it made with \
-         `agentctl apply -f` and the manifest it named. Run `agentctl delete {name}` once you are done with it.",
-        checkout.display()
-    );
+    if arguments.rm {
+        println!(
+            "The agent builder is deleted. Apply the agent it made with `agentctl apply -f` and the manifest it named."
+        );
+    } else {
+        println!(
+            "The agent builder keeps running, and `agentctl new` in {} goes back to it.\nApply the agent it made \
+             with `agentctl apply -f` and the manifest it named. Run `agentctl delete agent/{name}` once you are done with \
+             it.",
+            checkout.display()
+        );
+    }
     Ok(())
 }

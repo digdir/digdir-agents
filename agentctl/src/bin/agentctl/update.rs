@@ -34,6 +34,10 @@ pub(crate) struct UpdateArguments {
     /// builder, such as an agent working in the checkout.
     #[arg(long)]
     print_task: bool,
+    /// Delete the agent builder when this command ends, such as when you leave its session,
+    /// instead of keeping it to go back to. What it wrote stays.
+    #[arg(long, conflicts_with = "print_task")]
+    rm: bool,
 }
 
 /// Updates the definitions in the checkout with the builder, starting it there or going back to it,
@@ -88,6 +92,7 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
     };
     let existing = builder.find(client, &checkout).await?;
     let name = match existing {
+        Some(existing) if arguments.rm => return Err(builder::kept_already("update", &checkout, &existing)),
         Some(existing) if builder.current(&existing) => {
             eprintln!("Back to the agent builder on {}.", checkout.display());
             builder.resume(home, client, &existing, &task).await?;
@@ -114,14 +119,20 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
                 }
                 client.delete(&name).await?;
             }
-            builder.start(home, client, &checkout, &task, agreed).await?
+            builder
+                .start(home, client, &checkout, &task, agreed, arguments.rm)
+                .await?
         }
     };
-    println!(
-        "The agent builder keeps running, and `agentctl update` in {} goes back to it.\nReview what it changed with \
-         `git diff` and commit it. Run `agentctl delete {name}` once you are done with it.",
-        checkout.display()
-    );
+    if arguments.rm {
+        println!("The agent builder is deleted. Review what it changed with `git diff` and commit it.");
+    } else {
+        println!(
+            "The agent builder keeps running, and `agentctl update` in {} goes back to it.\nReview what it changed \
+             with `git diff` and commit it. Run `agentctl delete agent/{name}` once you are done with it.",
+            checkout.display()
+        );
+    }
     Ok(())
 }
 
