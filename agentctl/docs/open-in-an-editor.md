@@ -104,6 +104,7 @@ The clone's log says why it failed:
 agentctl ssh agent/NAME -- sudo journalctl -u agent-workspace-init
 ```
 
-The agent clones with the GitHub CLI, which needs `GITHUB_TOKEN` in the agent's `.env` even for a public repository.
+The agent clones with the GitHub CLI, which needs a GitHub token even for a public repository: the login the
+manifest's `accounts` names, such as `agentctl github login default`, or `GITHUB_TOKEN` in the agent's `.env`.
 Without it, the log says `To get started with GitHub CLI, please run: gh auth login`. Add the token, apply the
 agent again and restart it with `agentctl restart agent/NAME`, which clones what is missing as it starts.

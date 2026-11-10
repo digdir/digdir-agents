@@ -74,16 +74,23 @@ The agent clones it to `/home/agent/code/altinn-profile`, spelled as the line sp
 
 ## Give the agent its settings
 
-The manifest reads its values from `.env` beside it. Make one from the sample:
+The agent clones, commits and opens pull requests as your GitHub account, under the login the manifest's `accounts`
+names, `default`. Store it once on this machine, and every agent that names it uses it:
 
 ```sh
-cp .env.sample .env
+agentctl github login default
 ```
 
-Fill in your name and email for Git, and your token as `GITHUB_TOKEN`. You can leave `AIVAR_API_KEY` empty. The agent
-clones with the GitHub CLI, which needs the token even for a public repository, so without it the agent starts with
-an empty `/home/agent/code`. The token stays on this machine: the agent sees only a placeholder, and `agentctl` puts
-the real token into requests to GitHub. The definition's `.gitignore` keeps `.env` out of Git.
+It opens GitHub's form for a fine-grained token, filled in. The agent clones with the GitHub CLI, which needs the token
+even for a public repository, so without it the agent starts with an empty `/home/agent/code`. The token stays on this
+machine: the agent sees only a placeholder, and `agentctl` puts the real token into requests to GitHub.
+
+Pi uses Digdir's AI gateway, with the key stored as the secret `aivar`. Without it Pi starts, but rejects every
+prompt, so you can leave it out if you use Claude Code:
+
+```sh
+agentctl secret set aivar --hosts api.aivar.no
+```
 
 ## Start the agent
 
@@ -160,7 +167,7 @@ sees.
 
 ## Keep the definition
 
-Commit the definition, so that your colleagues can start the same agent with their own `.env`:
+Commit the definition, so that your colleagues can start the same agent with their own GitHub login:
 
 ```sh
 git add .
