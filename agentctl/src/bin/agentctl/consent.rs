@@ -1,5 +1,5 @@
-//! Asking the person before an agent may read files that may hold real keys, such as a checkout's
-//! `.env`, which agentd finds in the folders it would mount or copy.
+//! Asking the person before agentd mounts or copies a folder with files that may hold real keys,
+//! such as a checkout's `.env`.
 
 use std::{collections::BTreeSet, path::PathBuf};
 
