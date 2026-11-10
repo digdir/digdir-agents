@@ -332,7 +332,7 @@ async fn naming_the_platform_api_reaches_only_the_host() {
             "{destination}"
         );
     }
-    let http = |destination: &'static str| {
+    let http_to = |destination: &'static str, authority: &'static str| {
         policy.evaluate(AuthorizationRequest {
             principal: Principal::new(principal_kind::SANDBOX, "sandbox-id"),
             action: Action::new(action::HTTP_REQUEST),
@@ -340,9 +340,10 @@ async fn naming_the_platform_api_reaches_only_the_host() {
             context: AuthorizationContext::new()
                 .with_attribute(context::SANDBOX_NAME, sandbox.as_str())
                 .with_attribute(context::NETWORK_DESTINATION_ADDRESS, destination)
-                .with_attribute(context::HTTP_AUTHORITY, "host.microsandbox.internal:4100"),
+                .with_attribute(context::HTTP_AUTHORITY, authority),
         })
     };
+    let http = |destination: &'static str| http_to(destination, "host.microsandbox.internal:4100");
     assert_eq!(
         http("100.64.0.2:4100").await.expect("decision"),
         AuthorizationDecision::Allow
@@ -352,6 +353,20 @@ async fn naming_the_platform_api_reaches_only_the_host() {
     assert_eq!(
         http("172.16.0.5:4100").await.expect("decision"),
         AuthorizationDecision::Allow
+    );
+    assert_eq!(
+        http_to("172.16.0.5:4100", "host.microsandbox.internal")
+            .await
+            .expect("decision"),
+        AuthorizationDecision::Allow
+    );
+    // An HTTP CONNECT through a proxy that listens on the API's port names the proxy as its
+    // destination, and the tunnel's own port in its authority.
+    assert_eq!(
+        http_to("203.0.113.7:4100", "host.microsandbox.internal:22")
+            .await
+            .expect("decision"),
+        AuthorizationDecision::Deny
     );
 
     let query = |resolver: Option<&'static str>| {

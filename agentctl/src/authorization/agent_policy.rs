@@ -252,16 +252,18 @@ impl AgentPolicyEngine {
                 .is_none()
                 .then_some(AuthorizationDecision::Allow);
         }
-        let port = destination
-            .map(|address| address.port())
-            .or_else(|| authority_port(request));
+        // Every port the request names must be the API's: an HTTP CONNECT through a proxy names
+        // the proxy as its destination and the tunnel's own port in its authority.
+        let ports = [destination.map(|address| address.port()), authority_port(request)];
+        let at_api_port =
+            |api: u16| ports.iter().any(Option::is_some) && ports.iter().flatten().all(|&port| port == api);
         // The sandbox names the alias itself, so a connection counts only towards the host's own
         // address, which only the Network Backend's flag identifies: host-reserved ranges also hold
         // other machines, such as VPN peers, and the gateway need not be in them. An HTTP request
         // carries no flag, and goes over a connection already decided, so naming the alias there
         // reaches only what that connection could.
         let at_host = action != action::NETWORK_CONNECT || flagged;
-        let allowed = alias && at_host && endpoint.as_ref().is_some_and(|endpoint| port == Some(endpoint.port));
+        let allowed = alias && at_host && endpoint.as_ref().is_some_and(|endpoint| at_api_port(endpoint.port));
         Some(decision(allowed))
     }
 }
