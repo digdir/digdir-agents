@@ -148,9 +148,11 @@ impl AgentPolicyEngine {
             action::NETWORK_CONNECT | action::DNS_QUERY | action::HTTP_REQUEST => {
                 host.map_or(AuthorizationDecision::Deny, |host| {
                     decision(
-                        policy.allowed_hosts.allows(host)
-                            && (policy.allowed_hosts == crate::NetworkAllow::All || uses_platform_dns(request))
-                            && !policy.denied_hosts.iter().any(|pattern| host_matches(pattern, host)),
+                        policy.allowed_hosts.admits(host, uses_platform_dns(request))
+                            && !policy
+                                .denied_hosts
+                                .iter()
+                                .any(|pattern| crate::host_pattern::matches(pattern, host)),
                     )
                 })
             }
@@ -162,10 +164,11 @@ impl AgentPolicyEngine {
                 // hosts are checked next.
                 decision(policy.secrets.get(&request.resource.id).is_some_and(|secret| {
                     (!secret.hosts.is_empty() || secret.stored.is_some())
-                        && secret
-                            .hosts
-                            .iter()
-                            .all(|patterns| patterns.iter().any(|pattern| host_matches(pattern, host)))
+                        && secret.hosts.iter().all(|patterns| {
+                            patterns
+                                .iter()
+                                .any(|pattern| crate::host_pattern::matches(pattern, host))
+                        })
                 }))
             }
             _ => AuthorizationDecision::Deny,
@@ -195,7 +198,12 @@ impl AgentPolicyEngine {
             .await
             .ok()
             .flatten()
-            .is_some_and(|secret| secret.allowed_hosts.iter().any(|pattern| host_matches(pattern, host)))
+            .is_some_and(|secret| {
+                secret
+                    .allowed_hosts
+                    .iter()
+                    .any(|pattern| crate::host_pattern::matches(pattern, host))
+            })
     }
 
     /// Decides host-destined traffic: the Network Backend rewrites its host
@@ -339,59 +347,10 @@ fn without_port(authority: &str) -> &str {
         .map_or(authority, |(host, _)| host)
 }
 
-pub(crate) fn host_matches(pattern: &str, host: &str) -> bool {
-    let pattern = pattern.to_ascii_lowercase();
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    pattern.strip_prefix("*.").map_or_else(
-        || host == pattern,
-        |suffix| {
-            host.len() > suffix.len()
-                && host.ends_with(suffix)
-                && host.as_bytes()[host.len() - suffix.len() - 1] == b'.'
-        },
-    )
-}
-
-/// Whether every host that `inner` matches is one that `outer` matches too.
-pub(crate) fn host_pattern_covers(outer: &str, inner: &str) -> bool {
-    // `*.suffix` is every host below the domain `suffix`: covered by the same pattern, or by one
-    // matching the domain itself as a host below its own.
-    inner.strip_prefix("*.").map_or_else(
-        || host_matches(outer, inner),
-        |suffix| outer.eq_ignore_ascii_case(inner) || (outer.starts_with("*.") && host_matches(outer, suffix)),
-    )
-}
-
 const fn decision(allowed: bool) -> AuthorizationDecision {
     if allowed {
         AuthorizationDecision::Allow
     } else {
         AuthorizationDecision::Deny
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::host_pattern_covers;
-
-    #[test]
-    fn a_pattern_covers_the_hosts_it_matches_and_the_patterns_below_it() {
-        for (outer, inner) in [
-            ("api.example.com", "api.example.com"),
-            ("*.example.com", "api.example.com"),
-            ("*.example.com", "*.example.com"),
-            ("*.example.com", "*.api.example.com"),
-            ("*.EXAMPLE.com", "API.example.com"),
-        ] {
-            assert!(host_pattern_covers(outer, inner), "{outer} covers {inner}");
-        }
-        for (outer, inner) in [
-            ("api.example.com", "*.example.com"),
-            ("api.example.com", "www.example.com"),
-            ("*.example.com", "example.com"),
-            ("*.api.example.com", "*.example.com"),
-        ] {
-            assert!(!host_pattern_covers(outer, inner), "{outer} does not cover {inner}");
-        }
     }
 }

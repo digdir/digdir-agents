@@ -69,12 +69,14 @@ fn network_allow_is_all_or_a_list_of_host_patterns() {
         manifest::decode(encoded.as_bytes()).expect("re-decode").spec,
         agent.spec
     );
-    assert!(agent.spec.network.allow.allows("api.github.com"));
-    assert!(!agent.spec.network.allow.allows("example.com"));
+    assert!(agent.spec.network.allow.admits("api.github.com", true));
+    assert!(!agent.spec.network.allow.admits("api.github.com", false));
+    assert!(!agent.spec.network.allow.admits("example.com", true));
+    assert!(NetworkAllow::All.admits("example.com", false));
 
     let agent = manifest::decode(&allow("[]")).expect("no host at all");
     assert_eq!(agent.spec.network.allow, NetworkAllow::Hosts(Vec::new()));
-    assert!(!agent.spec.network.allow.allows("github.com"));
+    assert!(!agent.spec.network.allow.admits("github.com", true));
 
     let error = manifest::decode(&allow("some")).expect_err("only `all` is a word");
     assert!(
@@ -86,6 +88,11 @@ fn network_allow_is_all_or_a_list_of_host_patterns() {
         error
             .to_string()
             .contains("spec.network.allow contains an invalid host pattern"),
+        "{error}"
+    );
+    let error = manifest::decode(&allow("[203.0.113.7]")).expect_err("a name, not an address");
+    assert!(
+        error.to_string().contains("not addresses such as \"203.0.113.7\""),
         "{error}"
     );
 }

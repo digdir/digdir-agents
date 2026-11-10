@@ -789,17 +789,25 @@ impl Spec {
                 "spec.access[{index}] duplicates an access capability"
             )));
         }
-        if self.network.deny.iter().any(|host| !valid_host_pattern(host)) {
+        if self.network.deny.iter().any(|host| !crate::host_pattern::valid(host)) {
             return Err(Error::Invalid(
                 "spec.network.deny contains an invalid host pattern".into(),
             ));
         }
-        if let NetworkAllow::Hosts(hosts) = &self.network.allow
-            && hosts.iter().any(|host| !valid_host_pattern(host))
-        {
-            return Err(Error::Invalid(
-                "spec.network.allow contains an invalid host pattern".into(),
-            ));
+        if let NetworkAllow::Hosts(hosts) = &self.network.allow {
+            if hosts.iter().any(|host| !crate::host_pattern::valid(host)) {
+                return Err(Error::Invalid(
+                    "spec.network.allow contains an invalid host pattern".into(),
+                ));
+            }
+            // A list admits a host by the name the platform's DNS resolved, so an address never
+            // matches anything.
+            if let Some(address) = hosts.iter().find(|host| crate::host_pattern::is_address(host)) {
+                return Err(Error::Invalid(format!(
+                    "spec.network.allow names hosts, not addresses such as {address:?}: an agent reaches a listed \
+                     host by its name, through its DNS"
+                )));
+            }
         }
         Ok(())
     }
@@ -881,7 +889,10 @@ impl Spec {
                 || (secret.allowed_hosts.is_empty() && secret.name.is_none())
                 || !environments.insert(&secret.environment)
                 || !placeholders.insert(placeholder)
-                || secret.allowed_hosts.iter().any(|host| !valid_host_pattern(host))
+                || secret
+                    .allowed_hosts
+                    .iter()
+                    .any(|host| !crate::host_pattern::valid(host))
             {
                 return Err(Error::Invalid(format!(
                     "spec.secrets[{index}] is invalid or duplicated"
@@ -1099,14 +1110,19 @@ pub enum NetworkAllow {
 }
 
 impl NetworkAllow {
-    /// Whether this allows `host`, which a pattern `*.example.com` matches below `example.com`.
+    /// Whether this admits traffic for `host`, the name the sandbox gives it. A list admits a name
+    /// only `through_platform_dns`: where the platform's DNS gave the sandbox the address it dials,
+    /// since otherwise the sandbox could name an allowed host for any address.
     #[must_use]
-    pub fn allows(&self, host: &str) -> bool {
+    pub fn admits(&self, host: &str, through_platform_dns: bool) -> bool {
         match self {
             Self::All => true,
-            Self::Hosts(patterns) => patterns
-                .iter()
-                .any(|pattern| crate::authorization::host_matches(pattern, host)),
+            Self::Hosts(patterns) => {
+                through_platform_dns
+                    && patterns
+                        .iter()
+                        .any(|pattern| crate::host_pattern::matches(pattern, host))
+            }
         }
     }
 }
@@ -1161,16 +1177,6 @@ pub struct NetworkSpec {
     /// Host patterns denied before the baseline decision.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deny: Vec<String>,
-}
-
-pub(crate) fn valid_host_pattern(pattern: &str) -> bool {
-    !pattern.is_empty()
-        && !pattern.contains(['/', ':', '\\'])
-        && pattern
-            .strip_prefix("*.")
-            .unwrap_or(pattern)
-            .split('.')
-            .all(|label| !label.is_empty() && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'))
 }
 
 fn valid_environment_variable(value: &str) -> bool {

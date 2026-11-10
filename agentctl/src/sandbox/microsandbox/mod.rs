@@ -17,7 +17,7 @@ pub(super) use forward::guest_tcp_dialer;
 pub use forward::{GuestConnection, GuestDialer};
 pub use terminal::{attach_terminal, start_terminal_execution};
 
-use preparation::Preparation;
+use preparation::{NetworkStep, Preparation};
 
 use super::{NestedSandboxesOutcome, Provider, ProviderEnsureOutcome, ProviderId, resolve_nested_sandboxes};
 
@@ -193,16 +193,16 @@ impl Provider for Adapter {
                 .with_environment(environment);
             let mut sandbox = self.service.ensure(&request).forward(&progress).await?;
             let network = &record.agent.spec.network;
-            if self.preparation.network_is_stale(sandbox.id()) {
-                self.preparation.restart_network(&sandbox).await?;
-                // Re-ensure starts the stopped Network with the replacement handshake bindings.
-                sandbox = self.service.ensure(&request).forward(&progress).await?;
-                self.preparation.network_admitted(request.name(), network);
-            } else {
-                self.preparation
-                    .admit_connections(request.name(), &sandbox, network)
-                    .await?;
+            match self.preparation.network_step(request.name(), sandbox.id(), network) {
+                NetworkStep::Restart => {
+                    self.preparation.restart_network(&sandbox).await?;
+                    // Re-ensure starts the stopped Network with the replacement handshake bindings.
+                    sandbox = self.service.ensure(&request).forward(&progress).await?;
+                }
+                NetworkStep::Revoke => self.preparation.revoke_connections(&sandbox).await?,
+                NetworkStep::Nothing => {}
             }
+            self.preparation.network_admitted(request.name(), network);
             Ok(ProviderEnsureOutcome {
                 sandbox,
                 runtime_restarted,

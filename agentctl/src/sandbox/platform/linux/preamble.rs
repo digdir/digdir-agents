@@ -189,7 +189,12 @@ fn network(network: &NetworkSpec) -> String {
         NetworkAllow::All => {}
         NetworkAllow::Hosts(hosts) if hosts.is_empty() => text.push_str(" No other host is allowed."),
         NetworkAllow::Hosts(hosts) => {
-            let _ = write!(text, " Allowed: only {}.", code_list(hosts));
+            let _ = write!(
+                text,
+                " Allowed: only {}, by name through this computer's DNS, since the host checks that it resolved \
+                 the name to the address dialed.",
+                code_list(hosts)
+            );
         }
     }
     if !network.deny.is_empty() {
@@ -253,7 +258,10 @@ mod tests {
         spec.allow = NetworkAllow::Hosts(vec!["github.com".into(), "*.github.com".into()]);
         assert_eq!(
             network(&spec),
-            format!("{trust} Allowed: only `github.com`, `*.github.com`. Denied: `metadata.google.internal`.")
+            format!(
+                "{trust} Allowed: only `github.com`, `*.github.com`, by name through this computer's DNS, since the \
+                 host checks that it resolved the name to the address dialed. Denied: `metadata.google.internal`."
+            )
         );
 
         spec.allow = NetworkAllow::Hosts(Vec::new());

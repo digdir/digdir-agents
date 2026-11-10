@@ -73,37 +73,58 @@ impl Preparation {
     }
 }
 
+/// What a sandbox's running network needs before it serves the agent's current policy.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum NetworkStep {
+    /// Restart it, to apply the secret bindings prepared for it. That ends its connections too.
+    Restart,
+    /// Close the connections an earlier policy admitted.
+    Revoke,
+    /// Nothing: it serves the current bindings and policy.
+    Nothing,
+}
+
+impl NetworkStep {
+    const fn of(stale_bindings: bool, earlier_policy: bool) -> Self {
+        if stale_bindings {
+            Self::Restart
+        } else if earlier_policy {
+            Self::Revoke
+        } else {
+            Self::Nothing
+        }
+    }
+}
+
 impl Preparation {
-    /// Whether the sandbox's running Network must restart to apply the bindings prepared for it.
-    pub(super) fn network_is_stale(&self, sandbox: &SandboxId) -> bool {
-        self.network.has_stale_secret_bindings(sandbox)
+    /// What `sandbox`'s running network needs to serve `network`, its agent's current policy.
+    pub(super) fn network_step(
+        &self,
+        name: &SandboxName,
+        sandbox: &SandboxId,
+        network: &crate::NetworkSpec,
+    ) -> NetworkStep {
+        NetworkStep::of(
+            self.network.has_stale_secret_bindings(sandbox),
+            self.admitted.borrow().differ(name, network),
+        )
     }
 
     pub(super) async fn restart_network(&self, sandbox: &SandboxHandle) -> Result<(), Error> {
         self.network.stop(sandbox.id()).await.map_err(Error::from)
     }
 
-    /// Brings the connections `sandbox`'s network has open under `network`, its current policy:
-    /// those an earlier policy admitted are closed, so that each one opened again is decided by
-    /// this one. A network that is not running has none.
-    pub(super) async fn admit_connections(
-        &self,
-        name: &SandboxName,
-        sandbox: &SandboxHandle,
-        network: &crate::NetworkSpec,
-    ) -> Result<(), Error> {
-        if self.admitted.borrow().differ(name, network) {
-            match self.network.revoke_all(sandbox.id()).await {
-                Err(error) if error.is_not_found() => {}
-                result => result?,
-            }
+    /// Closes the connections `sandbox`'s network admitted, so that each one opened again is
+    /// decided by the current policy. A network that is not running has none.
+    pub(super) async fn revoke_connections(&self, sandbox: &SandboxHandle) -> Result<(), Error> {
+        match self.network.revoke_all(sandbox.id()).await {
+            Err(error) if error.is_not_found() => Ok(()),
+            result => result.map_err(Error::from),
         }
-        self.network_admitted(name, network);
-        Ok(())
     }
 
     /// Records that `sandbox`'s network has no connection open under a policy other than
-    /// `network`, such as once it restarted.
+    /// `network`, once it restarted or revoked them.
     pub(super) fn network_admitted(&self, sandbox: &SandboxName, network: &crate::NetworkSpec) {
         self.admitted.borrow_mut().admit(sandbox, network);
     }
@@ -876,6 +897,15 @@ spec:
         assert_eq!(secret_value(&environment, &secret(true))?, Some("token"));
         assert_eq!(secret_value(&environment, &secret(false))?, Some("token"));
         Ok(())
+    }
+
+    #[test]
+    fn restarting_the_network_comes_before_revoking_its_connections() {
+        use super::NetworkStep;
+        assert_eq!(NetworkStep::of(true, true), NetworkStep::Restart);
+        assert_eq!(NetworkStep::of(true, false), NetworkStep::Restart);
+        assert_eq!(NetworkStep::of(false, true), NetworkStep::Revoke);
+        assert_eq!(NetworkStep::of(false, false), NetworkStep::Nothing);
     }
 
     #[test]
