@@ -5,7 +5,8 @@ the file `--env-file` named. The file sat in or near a checkout, where it was ea
 agent, and every agent kept its own copy of the same keys. Each kind of value now has a place of its own.
 
 `agentctl describe agent/NAME` shows the agents that still read the file: their `EnvironmentFile` condition names the
-variables to move. Once you have moved them, apply the agent again, and delete the file when no agent reads it.
+variables to move. Once you have moved them, apply the agent again, and delete the file when no agent reads it. Until
+then, agentctl mounts no folder that holds the file into an agent, such as the checkout it is in.
 
 ## A GitHub token, and Git's name and email
 

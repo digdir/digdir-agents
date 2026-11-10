@@ -17,6 +17,7 @@ use agent::{
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
+mod consent;
 mod format;
 mod github;
 mod launch;
@@ -77,6 +78,10 @@ enum Command {
         /// beside the manifest. Keep files containing secrets outside bind-mounted directories.
         #[arg(long)]
         env_file: Option<PathBuf>,
+        /// Let the agent read the `.env` files found in the folders it mounts or copies, which may hold
+        /// real keys, without asking. At a terminal agentctl asks, and otherwise refuses them.
+        #[arg(long)]
+        allow_env_files: bool,
         /// Stay attached after applying and show provisioning progress until the agent is Ready.
         #[arg(long)]
         wait: bool,
@@ -116,6 +121,10 @@ enum Command {
         /// disk; defaults to `.env` beside its manifest.
         #[arg(long)]
         env_file: Option<PathBuf>,
+        /// Let the agent read the `.env` files found in the folders it mounts or copies, which may hold
+        /// real keys, without asking. At a terminal agentctl asks, and otherwise refuses them.
+        #[arg(long)]
+        allow_env_files: bool,
         #[command(flatten)]
         selection: SessionSelection,
     },
@@ -741,6 +750,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             mounts,
             name,
             env_file,
+            allow_env_files,
             wait,
             timeout,
         } => {
@@ -750,7 +760,15 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 None => apply_manifest_path(filename, variant, &directory)?,
             };
             if manifest_kind(&filename).as_deref() == Some(agent::volumes::KIND) {
-                apply_volume(client, filename, name, env_file, wait.then_some(timeout)).await?;
+                apply_volume(
+                    client,
+                    filename,
+                    name,
+                    env_file,
+                    allow_env_files,
+                    wait.then_some(timeout),
+                )
+                .await?;
                 return Ok(ExitCode::SUCCESS);
             }
             let mut request = read_apply_request(filename, env_file)?;
@@ -758,7 +776,19 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 request.agent.metadata.name = name;
             }
             request.binds = absolute_binds(mounts)?;
-            let applied = client.apply(request).await?;
+            let reader = format!("agent/{}", request.agent.metadata.name);
+            let ask = consent::Ask {
+                reader: &reader,
+                action: "Mount",
+                allowed: allow_env_files,
+            };
+            let applied = consent::send(
+                request,
+                &ask,
+                |request| &mut request.allow_exposed_files,
+                |request| client.apply(request),
+            )
+            .await?;
             let name = applied.metadata.name;
             println!("agent/{name} applied");
             if wait {
@@ -870,6 +900,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             name,
             session,
             env_file,
+            allow_env_files,
             selection,
         } => {
             let mut binds = mounts;
@@ -880,6 +911,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 lifetime: rm.then_some(agent::Lifetime::Ephemeral),
                 name,
                 env_file,
+                allow_env_files,
             };
             let session = (!detach).then(|| SessionName::new(session)).transpose()?;
             run_agent(home, client, run, session, selection).await?;
@@ -2344,6 +2376,7 @@ async fn apply_volume(
     filename: PathBuf,
     name: Option<String>,
     env_file: Option<PathBuf>,
+    allow_env_files: bool,
     wait: Option<Duration>,
 ) -> CommandResult<()> {
     if env_file.is_some() {
@@ -2353,7 +2386,19 @@ async fn apply_volume(
     if let Some(name) = name {
         request.volume.metadata.name = name;
     }
-    let applied = client.apply_volume(request).await?;
+    let reader = format!("Every agent that mounts volume/{}", request.volume.metadata.name);
+    let ask = consent::Ask {
+        reader: &reader,
+        action: "Copy",
+        allowed: allow_env_files,
+    };
+    let applied = consent::send(
+        request,
+        &ask,
+        |request| &mut request.allow_exposed_files,
+        |request| client.apply_volume(request),
+    )
+    .await?;
     let name = applied.metadata.name;
     println!("volume/{name} applied");
     let Some(timeout) = wait else {
@@ -2420,6 +2465,7 @@ fn read_volume_request(filename: PathBuf) -> Result<agent::volumes::ApplyVolumeR
         source_directory,
         manifest_path: Some(filename),
         volume,
+        allow_exposed_files: std::collections::BTreeSet::new(),
     })
 }
 
@@ -2446,6 +2492,7 @@ fn read_apply_request_in(
         env_file,
         binds: Vec::new(),
         create_only: false,
+        allow_exposed_files: std::collections::BTreeSet::new(),
         agent,
     })
 }
@@ -2478,12 +2525,14 @@ struct Run {
     lifetime: Option<agent::Lifetime>,
     name: Option<String>,
     env_file: Option<PathBuf>,
+    /// Whether `--allow-env-files` lets the agent read the `.env` files in its folders.
+    allow_env_files: bool,
 }
 
 impl Run {
     /// The request for agentd: a definition written as a path is one on disk, and anything else
     /// is a reference agentd resolves.
-    fn request(self) -> Result<agent::control_plane::RunRequest, Error> {
+    fn request(&self) -> Result<agent::control_plane::RunRequest, Error> {
         if !is_written_as_path(&self.definition)
             && self.definition.contains(['/', '\\'])
             && Path::new(&self.definition).exists()
@@ -2502,7 +2551,7 @@ impl Run {
             } else {
                 path
             };
-            let read = read_apply_request(manifest, self.env_file)?;
+            let read = read_apply_request(manifest, self.env_file.clone())?;
             agent::control_plane::RunDefinition::Local {
                 source_directory: read.source_directory,
                 manifest_path: read
@@ -2518,14 +2567,15 @@ impl Run {
             )));
         } else {
             agent::control_plane::RunDefinition::Reference {
-                reference: self.definition,
+                reference: self.definition.clone(),
             }
         };
         Ok(agent::control_plane::RunRequest {
             definition,
-            binds: absolute_binds(self.binds)?,
+            binds: absolute_binds(self.binds.clone())?,
             lifetime: self.lifetime,
-            name: self.name,
+            name: self.name.clone(),
+            allow_exposed_files: std::collections::BTreeSet::new(),
         })
     }
 }
@@ -2555,7 +2605,18 @@ async fn run_agent(
     session: Option<SessionName>,
     selection: SessionSelection,
 ) -> CommandResult<()> {
-    let (ran, _lease) = client.run(run.request()?).await?;
+    let ask = consent::Ask {
+        reader: "The agent",
+        action: "Mount",
+        allowed: run.allow_env_files,
+    };
+    let (ran, _lease) = consent::send(
+        run.request()?,
+        &ask,
+        |request| &mut request.allow_exposed_files,
+        |request| client.run(request),
+    )
+    .await?;
     let name = ran.agent.metadata.name;
     println!("agent/{name} created");
     let Some(session) = session else {
@@ -3344,6 +3405,7 @@ mod tests {
             CommandError::Agent(Error::Rpc(agent::control_api::ResponseError {
                 code,
                 message: message.into(),
+                data: None,
             }))
         };
         assert_eq!(
@@ -3366,6 +3428,7 @@ mod tests {
         let ambiguous = inference_error(Error::Rpc(agent::control_api::ResponseError {
             code: -32602,
             message: "more than one agent is found here (first, second); pass --agent NAME or --variant VARIANT".into(),
+            data: None,
         }));
         assert_eq!(
             ambiguous.to_string(),
@@ -3375,6 +3438,7 @@ mod tests {
         let missing = inference_error(Error::Rpc(agent::control_api::ResponseError {
             code: -32004,
             message: "Agent not found".into(),
+            data: None,
         }));
         assert_eq!(
             missing.to_string(),

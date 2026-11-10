@@ -79,6 +79,7 @@ pub(crate) fn volume_request(name: &str, source: PathBuf) -> ApplyVolumeRequest 
     ApplyVolumeRequest {
         manifest_path: None,
         source_directory: std::env::temp_dir(),
+        allow_exposed_files: std::collections::BTreeSet::new(),
         volume: Volume {
             api_version: agent::API_VERSION.into(),
             kind: agent::volumes::KIND.into(),
@@ -315,6 +316,7 @@ async fn applying_a_source_that_matches_the_latest_revision_again_clears_a_faile
         bytes: latest.bytes,
         failure: Some("cannot read a file".into()),
         progress: None,
+        exposed_files: std::collections::BTreeSet::new(),
     });
     let version = record.version;
     fixture.volumes.put(record, version).await.expect("failed copy");
@@ -434,7 +436,7 @@ async fn a_copy_reports_its_progress_on_the_revision_it_takes() {
 }
 
 #[tokio::test(flavor = "local")]
-async fn a_copy_volume_refuses_a_source_holding_a_dot_env_file() {
+async fn a_copy_volume_holds_dot_env_files_once_the_person_agrees_to_them() {
     let fixture = volume_fixture();
     let temporary = TempDirectory::new("volume-secrets");
     let source = temporary.path().join("apps");
@@ -442,11 +444,31 @@ async fn a_copy_volume_refuses_a_source_holding_a_dot_env_file() {
     std::fs::write(source.join("app/.env"), b"PRIVATE=value\n").expect(".env");
     let error = fixture
         .service
-        .apply(volume_request("apps", source))
+        .apply(volume_request("apps", source.clone()))
         .await
         .expect_err("the copy would hold .env");
-    assert!(error.to_string().contains("copies"), "{error}");
+    let agent::Error::ExposedFiles(files) = &error else {
+        panic!("{error}");
+    };
     assert_eq!(fixture.service.list().await.expect("list"), []);
+
+    let agreed = files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(agreed.iter().all(|file| file.ends_with("apps/app/.env")), "{agreed:?}");
+    let mut request = volume_request("apps", source.clone());
+    request.allow_exposed_files.clone_from(&agreed);
+    let applied = fixture.service.apply(request).await.expect("agreed to");
+    let copy = applied.status.copy.expect("a copy is taken");
+    assert_eq!(copy.exposed_files, agreed);
+
+    std::fs::write(source.join(".env"), b"PRIVATE=value\n").expect("another .env");
+    fixture
+        .service
+        .apply(volume_request("apps", source))
+        .await
+        .expect_err("another file asks again");
 }
 
 /// agentd's home holds its database and the copies themselves.
@@ -552,6 +574,7 @@ fn mounting_agent(name: &str, volume: &str) -> ApplyRequest {
         env_file: None,
         binds: Vec::new(),
         create_only: false,
+        allow_exposed_files: std::collections::BTreeSet::new(),
         agent,
     }
 }
@@ -902,6 +925,7 @@ async fn an_agent_cannot_select_a_secret_file_inside_an_earlier_source_of_a_volu
             env_file: Some(earlier.join("credentials.env")),
             binds: Vec::new(),
             create_only: false,
+            allow_exposed_files: std::collections::BTreeSet::new(),
             agent: request,
         })
         .await

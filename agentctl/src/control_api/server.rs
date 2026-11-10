@@ -12,9 +12,9 @@ use crate::{
 };
 
 use super::protocol::{
-    AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, CODE_IMMUTABLE, CODE_INTERNAL,
-    CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND, CODE_PARSE_ERROR, CODE_UPDATING,
-    DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
+    AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, CODE_EXPOSED_FILES, CODE_IMMUTABLE,
+    CODE_INTERNAL, CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND, CODE_PARSE_ERROR,
+    CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
     MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT,
     METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS,
     METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS,
@@ -1506,6 +1506,13 @@ fn result_response<T: Serialize>(id: u64, result: Result<T, Error>) -> Response 
         Err(Error::Conflict) => error_response(id, CODE_IMMUTABLE, Error::Conflict.to_string()),
         Err(Error::Invalid(message)) => error_response(id, CODE_INVALID_PARAMS, message),
         Err(error @ Error::Stopped(_)) => error_response(id, CODE_INVALID_PARAMS, error.to_string()),
+        Err(Error::ExposedFiles(files)) => {
+            let mut response = error_response(id, CODE_EXPOSED_FILES, Error::ExposedFiles(files.clone()).to_string());
+            if let Some(error) = &mut response.error {
+                error.data = serde_json::to_value(files).ok().map(Box::new);
+            }
+            response
+        }
         Err(error) => error_response(id, CODE_INTERNAL, error.to_string()),
     }
 }

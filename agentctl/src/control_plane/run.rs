@@ -27,6 +27,11 @@ pub struct RunRequest {
     /// The agent's name. agentd chooses one from the definition and the folder it is given when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The files that may hold real keys, such as a checkout's `.env`, that the person agreed to let
+    /// the agent read, as absolute host paths. agentd refuses the request when its mounts hold any
+    /// other.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub allow_exposed_files: std::collections::BTreeSet<PathBuf>,
 }
 
 /// A host folder given for a bind mount when an agent is applied or run, as with
@@ -150,7 +155,7 @@ impl ControlPlane {
             prepared.agent.validate()?;
             // Another request that took the name first is found on the next pass: it may be an
             // agent of this definition on these folders, which this one is then refused for.
-            match Box::pin(self.create(&prepared, lifetime)).await {
+            match Box::pin(self.create(&prepared, lifetime, &request.allow_exposed_files)).await {
                 Ok(record) => break record,
                 Err(Error::Conflict) => {}
                 Err(error) => return Err(error),

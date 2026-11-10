@@ -70,6 +70,7 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
         origin: record.origin.clone(),
         lifetime: record.lifetime,
         bindings: record.bindings.clone(),
+        exposed_files: record.exposed_files.clone(),
     })?;
     let transaction = connection.transaction().map_err(database_error)?;
     let changed = if expected_generation == 0 {
@@ -220,7 +221,8 @@ enum StoredSource {
     Directory(std::path::PathBuf),
 }
 
-/// Origin-column payload: where the agent's definition comes from and how agentd runs it, which
+/// Origin-column payload: where the agent's definition comes from and how agentd runs it, with the
+/// files it may read that the person agreed to, which
 /// [`AgentRecord`] keeps as separate fields.
 #[derive(serde::Deserialize, serde::Serialize)]
 struct StoredOrigin {
@@ -230,6 +232,8 @@ struct StoredOrigin {
     lifetime: crate::Lifetime,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     bindings: std::collections::BTreeMap<::sandbox::SandboxPath, std::path::PathBuf>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    exposed_files: std::collections::BTreeSet<std::path::PathBuf>,
 }
 
 #[allow(
@@ -286,6 +290,7 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
         origin: origin.origin,
         lifetime: origin.lifetime,
         bindings: origin.bindings,
+        exposed_files: origin.exposed_files,
     })
 }
 

@@ -908,6 +908,9 @@ fn render_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal, hit_map
                 .row(note_line(&after))
                 .render(frame, area, FORM_WIDTH, hit_map);
         }
+        Modal::ConfirmExposedFiles {
+            reader, action, files, ..
+        } => render_confirm_exposed_files(frame, area, reader, action, files, hit_map),
         Modal::NewSession(form) => render_new_session(frame, area, form, hit_map),
         Modal::CreateAgent(form) => render_create_agent(frame, area, form, &app.agents, hit_map),
         Modal::ApplyVolume(form) => render_apply_volume(frame, area, form, &app.volumes, hit_map),
@@ -1009,6 +1012,48 @@ fn render_confirm_quit(frame: &mut Frame, area: Rect, app: &App, hit_map: &mut H
         form = form.row(note_line(&format!("  …and {more} more")));
     }
     form.render(frame, area, FORM_WIDTH, hit_map);
+}
+
+/// Names the files that may hold real keys an agent would read, as `agentctl apply` does, as many
+/// as fit an 80x24 terminal.
+fn render_confirm_exposed_files(
+    frame: &mut Frame,
+    area: Rect,
+    reader: &str,
+    action: &str,
+    files: &[agent::exposed::ExposedFile],
+    hit_map: &mut HitMap,
+) {
+    const LISTED: usize = 8;
+    let width = usize::from(FORM_WIDTH.saturating_sub(4));
+    let listed = crate::consent::listed(files);
+    let folder = files
+        .first()
+        .filter(|first| files.iter().all(|file| file.folder == first.folder))
+        .map(|first| abbreviate_home(&first.folder.display().to_string()));
+    let these = folder.map_or_else(
+        || "these files:".to_owned(),
+        |folder| format!("these files in {folder}:"),
+    );
+    let mut form = Form::new(" .env files ", Color::Yellow, &CONFIRM_HINTS)
+        .row(Line::from(format!("{reader} will be able to read")));
+    for row in wrap(&these, width) {
+        form = form.row(Line::from(row));
+    }
+    let shown = if listed.len() > LISTED { LISTED - 1 } else { LISTED };
+    for file in listed.iter().take(shown) {
+        form = form.row(Line::styled(
+            fixed_width(&format!("  {file}"), width).trim_end().to_owned(),
+            Style::new().fg(Color::Yellow),
+        ));
+    }
+    if listed.len() > shown {
+        form = form.row(note_line(&format!("  …and {} more", listed.len() - shown)));
+    }
+    form.row(note_line("They may hold real keys, and the agent can reach"))
+        .row(note_line("the internet."))
+        .row(Line::from(format!("{action} anyway?")))
+        .render(frame, area, FORM_WIDTH, hit_map);
 }
 
 /// Shows the exact line SSH setup adds, and where, before anything is written.

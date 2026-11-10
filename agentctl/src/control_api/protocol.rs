@@ -55,6 +55,8 @@ pub(crate) const CODE_INTERNAL: i32 = -32603;
 pub(crate) const CODE_NOT_FOUND: i32 = -32004;
 pub(crate) const CODE_IMMUTABLE: i32 = -32009;
 pub(crate) const CODE_UPDATING: i32 = -32010;
+/// The agent would be able to read files that may hold real keys; `data` lists them.
+pub(crate) const CODE_EXPOSED_FILES: i32 = -32011;
 pub(crate) const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 // Turns can contain most of the text in a 64 MiB transcript read.
 pub(crate) const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
@@ -94,6 +96,9 @@ pub struct ResponseError {
     pub code: i32,
     /// Human-readable error message.
     pub message: String,
+    /// What the error is about, for the codes that carry it. Boxed, as most errors carry nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Box<serde_json::Value>>,
 }
 
 impl ResponseError {
@@ -363,6 +368,7 @@ pub(crate) fn error_response(id: u64, code: i32, message: impl Into<String>) -> 
         error: Some(ResponseError {
             code,
             message: message.into(),
+            data: None,
         }),
     }
 }

@@ -52,8 +52,13 @@ impl ControlPlane {
     /// # Errors
     ///
     /// Returns [`Error::Conflict`] when another agent took its name first, and an error when it
-    /// would expose a secret or cannot be stored.
-    pub(super) async fn create(&self, prepared: &Prepared, lifetime: Lifetime) -> Result<AgentRecord, Error> {
+    /// would expose a secret or a file the person did not agree to in `allowed`, or cannot be stored.
+    pub(super) async fn create(
+        &self,
+        prepared: &Prepared,
+        lifetime: Lifetime,
+        allowed: &std::collections::BTreeSet<PathBuf>,
+    ) -> Result<AgentRecord, Error> {
         let mut record = AgentRecord {
             id: AgentId::generate(),
             source_directory: prepared.source_directory.clone(),
@@ -65,9 +70,10 @@ impl ControlPlane {
             origin: prepared.origin.clone(),
             lifetime,
             bindings: prepared.bindings.clone(),
+            exposed_files: std::collections::BTreeSet::new(),
         };
         record.agent.metadata.generation = 1;
-        self.reject_exposed_secrets(&record).await?;
+        self.check_exposed_files(&mut record, allowed).await?;
         self.store.put(record.clone(), 0).await?;
         Ok(record)
     }

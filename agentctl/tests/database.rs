@@ -33,6 +33,7 @@ fn record_with_id(name: &str, generation: u64, id: AgentId) -> AgentRecord {
         origin: agent::Origin::Local,
         lifetime: agent::Lifetime::UntilDeleted,
         bindings: std::collections::BTreeMap::new(),
+        exposed_files: std::collections::BTreeSet::new(),
     }
 }
 

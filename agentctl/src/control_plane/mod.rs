@@ -22,8 +22,8 @@ pub use convergence::{Convergence, WaitPolicy};
 pub use reconciler::{Reconciler, SessionNotifier};
 pub use resource::{AgentId, AgentRecord, ENV_FILE};
 pub use run::{BindSource, Ran, RunDefinition, RunRequest};
-pub(crate) use service::reject_secrets_in_copy;
 pub use service::{ApplyRequest, ControlPlane, ImmediateStops, Notifier};
+pub(crate) use service::{environment_files, reject_secrets_in_copy};
 
 /// Separates desired-state writes from reconciler status writes using generation checks.
 pub trait AgentStore {

@@ -108,6 +108,7 @@ impl Reconciler {
                             source: source.clone(),
                             files: requested.files,
                             bytes: requested.bytes,
+                            exposed_files: requested.exposed_files.clone(),
                             storage: storage.clone(),
                             agents: Vec::new(),
                             progress: None,
