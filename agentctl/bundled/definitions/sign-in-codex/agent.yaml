@@ -1,0 +1,29 @@
+# The short-lived agent `agentctl codex login` signs in in when this machine does not have Codex, with
+# `codex login --device-auth`. It is internal, as the README here describes, and agentd runs it for that command as an
+# ephemeral agent, which it deletes when the command ends, however it ends. It runs the sign-in as a command, so it
+# declares no harness.
+apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  name: sign-in-codex
+spec:
+  sandbox:
+    # The base images' sign-in image with Codex alone, in the layers the base images have too, so the sign-in downloads
+    # little that the agents after it do not reuse.
+    image:
+      type: reference
+      reference: ghcr.io/digdir/agentctl-base:ubuntu-26.04-sign-in-codex
+    platform:
+      os: linux
+    resources:
+      cpu: "2"
+      memory: 2Gi
+      rootFilesystem:
+        capacity: 16Gi
+        mode: layered
+  network:
+    mode: mediated
+    # Only the hosts the sign-in reaches, so the credential it mints can go nowhere else. A harness update that reaches
+    # another host breaks the sign-in until the host is added here, as the harness upgrade guide says.
+    allow:
+      - auth.openai.com

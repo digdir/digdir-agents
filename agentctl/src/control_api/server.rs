@@ -25,7 +25,8 @@ use super::protocol::{
     METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET,
     METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, PROTOCOL_VERSION, ProgressParams,
     ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams,
-    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
+    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, SignInAgentParams, error_response,
+    read_message,
 };
 use super::protocol::{
     METHOD_SECRET_LIST, METHOD_SECRET_REMOVE, METHOD_SECRET_SET, SecretRemoveResult, SecretSetParams,
@@ -104,8 +105,11 @@ pub trait AgentApi {
         request: control_plane::RunRequest,
     ) -> LocalFuture<'_, Result<(control_plane::Ran, crate::AgentId), Error>>;
 
-    /// Runs the agent a harness sign-in runs in; see [`control_plane::ControlPlane::run_sign_in`].
-    fn run_sign_in(&self) -> LocalFuture<'_, Result<(control_plane::Ran, crate::AgentId), Error>>;
+    /// Runs the agent a sign-in runs in; see [`control_plane::ControlPlane::run_sign_in`].
+    fn run_sign_in<'a>(
+        &'a self,
+        definition: &'a str,
+    ) -> LocalFuture<'a, Result<(control_plane::Ran, crate::AgentId), Error>>;
 
     /// Lists the definitions a client can apply or run; see [`control_plane::ControlPlane::definitions`].
     fn definitions(
@@ -171,8 +175,11 @@ impl AgentApi for control_plane::ControlPlane {
         Box::pin(async move { Self::run(self, request).await })
     }
 
-    fn run_sign_in(&self) -> LocalFuture<'_, Result<(control_plane::Ran, crate::AgentId), Error>> {
-        Box::pin(async move { Self::run_sign_in(self).await })
+    fn run_sign_in<'a>(
+        &'a self,
+        definition: &'a str,
+    ) -> LocalFuture<'a, Result<(control_plane::Ran, crate::AgentId), Error>> {
+        Box::pin(async move { Self::run_sign_in(self, definition).await })
     }
 
     fn definitions(
@@ -848,7 +855,7 @@ impl Server {
             METHOD_AUTH_LOGIN => self.handle_auth_login(request.id, request.params).await,
             METHOD_AUTH_LOGOUT => self.handle_auth_logout(request.id, request.params).await,
             METHOD_AUTH_LOGINS => result_response(request.id, self.authentication.logins().await),
-            METHOD_AUTH_SIGN_IN_AGENT => result_response(request.id, owning(owned, self.agents.run_sign_in().await)),
+            METHOD_AUTH_SIGN_IN_AGENT => self.handle_sign_in_agent(request.id, request.params, owned).await,
             METHOD_ACCOUNT_LOGIN => Box::pin(self.handle_account_login(request.id, request.params)).await,
             METHOD_ACCOUNT_LOGOUT => Box::pin(self.handle_account_logout(request.id, request.params)).await,
             METHOD_ACCOUNT_LIST => match &self.accounts {
@@ -929,6 +936,18 @@ impl Server {
             return error_response(id, CODE_INVALID_PARAMS, "invalid run parameters");
         };
         result_response(id, owning(owned, self.agents.run(params).await))
+    }
+
+    async fn handle_sign_in_agent(
+        &self,
+        id: u64,
+        value: Value,
+        owned: &std::cell::RefCell<Vec<crate::AgentId>>,
+    ) -> Response {
+        let Ok(params) = serde_json::from_value::<SignInAgentParams>(value) else {
+            return error_response(id, CODE_INVALID_PARAMS, "definition is required");
+        };
+        result_response(id, owning(owned, self.agents.run_sign_in(&params.definition).await))
     }
 
     async fn handle_volume_apply(&self, id: u64, value: Value) -> Response {

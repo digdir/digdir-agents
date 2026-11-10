@@ -75,13 +75,14 @@ attributing a failure to the bump, repeat the check on an agent built with the p
 | Nested agent                                                         | Both        | Inside a session, `agentctl claude login` and `agentctl codex login` let a nested agent run both harnesses.                                                                                                             |
 | New `agentd` with the previous pin                                   | Both        | When the change touches adapter code, an agent on the previous image still creates, prompts, reads turns and resumes.                                                                                                   |
 
-Without the harness on the machine, `agentctl claude login` and `agentctl codex login` sign in inside an agent of the
-base image, and read the sign-in off its terminal. `agentctl github login NAME --web` does the same with the base image's
-`gh`, so bumping `gh` needs the same check. Builds other than releases run `main`'s base image there, so try each
-sign-in once the bump's base image is published from `main`: with an `agentctl` built from `main` and a `PATH` that
-leaves out `claude` and `codex`, the sign-in page opens in the browser, and the login is stored. That agent reaches only
-the hosts its [definition](../bundled/definitions/sign-in/agent.yaml) allows, so a sign-in that fails to reach a host
-needs the host added there.
+Without the harness on the machine, `agentctl claude login` and `agentctl codex login` sign in inside an agent, and read
+the sign-in off its terminal. `agentctl github login NAME --web` does the same with `gh`, so bumping `gh` needs the same
+check. Each runs on a sign-in image the base images' [Dockerfile](../../images/agentctl-base/Dockerfile) builds with
+the same pin. Builds other than releases run `main`'s sign-in images, so try each sign-in once the bump's images are
+published from `main`: with an `agentctl` built from `main` and a `PATH` that leaves out `claude` and `codex`, the
+sign-in page opens in the browser, and the login is stored. Each sign-in's agent reaches only the hosts its definition
+in [`bundled/definitions`](../bundled/definitions) allows, so a sign-in that fails to reach a host needs the host added
+there.
 
 ## Pi
 

@@ -17,10 +17,11 @@ them after the definitions on disk. [`agent::bundled`](../../src/bundled/mod.rs)
   `spec.secrets` names a secret stored on the machine with `name`.
 - Its image is one each release publishes, named by its `main` tag, such as `ghcr.io/digdir/agentctl-base:ubuntu-26.04`
   or the agent builder's `ghcr.io/digdir/agentctl-agent-builder:main`. A released agentd runs that image as its own
-  release tagged it, so a definition always runs on the image built with it. A new image needs adding to
-  `RELEASED_IMAGES` in [`agent::bundled`](../../src/bundled/mod.rs) and to the release workflow.
+  release tagged it, so a definition always runs on the image built with it. A new image needs adding to the release
+  workflow. agentd refuses an image releases do not publish, and one named by a tag of a single release or commit.
 
 An internal definition is part of one of agentctl's own commands, such as the sign-in agent of `agentctl claude login`,
-and is no use on its own. agentd neither lists it nor runs it by reference, and the command runs it through a Control
-API request of its own. A new one needs adding to `INTERNAL` in [`agent::bundled`](../../src/bundled/mod.rs), with a
-request that runs it.
+and is no use on its own. agentd neither lists it nor runs it by reference. The command names it in a Control API
+request for its kind, such as the request for a sign-in agent, which each sign-in names. A new one needs adding to
+`internal_names` in [`agent::bundled`](../../src/bundled/mod.rs), and the first of a new kind needs a request that runs
+it.

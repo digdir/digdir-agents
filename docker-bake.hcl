@@ -20,8 +20,10 @@ variable "BASE_DISTRIBUTION" {
   default = "ubuntu-26.04"
 }
 
+# The sign-in images share the headless image's layers for the tools they hold, which only holds when one build makes
+# them all.
 group "base" {
-  targets = ["base-headless", "base-desktop"]
+  targets = ["base-headless", "base-desktop", "base-sign-in-claude", "base-sign-in-codex", "base-sign-in-github"]
 }
 
 target "_source" {
@@ -51,6 +53,25 @@ target "base-desktop" {
   tags     = ["${BASE_REPOSITORY}:${BASE_DISTRIBUTION}-desktop"]
   labels = {
     "org.opencontainers.image.description" = "Desktop base image for agentctl agents: the headless image plus Chromium and a VNC desktop"
+  }
+}
+
+# The images agentctl's sign-ins run in when the machine does not have the program for one, published in the base
+# images' repository, which holds the layers they share.
+target "base-sign-in" {
+  inherits = ["_source"]
+  context  = "images/agentctl-base"
+  name     = "base-sign-in-${service}"
+  matrix = {
+    service = ["claude", "codex", "github"]
+  }
+  target = "sign-in-${service}"
+  tags   = ["${BASE_REPOSITORY}:${BASE_DISTRIBUTION}-sign-in-${service}"]
+  labels = {
+    "org.opencontainers.image.title"       = "agentctl-base"
+    "org.opencontainers.image.description" = "The image agentctl's ${service} sign-in runs in when the machine does not have the program for it"
+    "org.opencontainers.image.version"     = AGENT_VERSION
+    "no.digdir.agentctl.base.version"      = AGENT_VERSION
   }
 }
 

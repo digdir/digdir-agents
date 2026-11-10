@@ -1,8 +1,134 @@
 # The agentctl base images, published as ghcr.io/digdir/agentctl-base:ubuntu-26.04 (the headless stage) and
-# :ubuntu-26.04-desktop. They meet agentd's image contract (agentctl/docs/image-contract.md) and carry the harness
-# pins agentd's adapters are tested with, so an agent image only adds its own tools. README.md beside this file
-# describes them.
-FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS headless
+# :ubuntu-26.04-desktop, and the images agentctl's sign-ins run in. The base images meet agentd's image contract
+# (agentctl/docs/image-contract.md) and carry the harness pins agentd's adapters are tested with, so an agent image only
+# adds its own tools. README.md beside this file describes them.
+FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS ubuntu
+
+# The tools the base and sign-in images share are each built in a stage of their own, into /out, and copied in with
+# COPY --link. A layer copied that way does not depend on the layers below it, so every image that copies a tool gets
+# the same layer, and a machine that has one of the images does not download that tool again for another.
+
+# What the tools' stages download them with. No image keeps it.
+FROM ubuntu AS fetch
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates curl xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# agentd runs the harnesses' activity hooks and Claude Code's status line with `node`, and Codex starts with it.
+FROM fetch AS node
+ARG TARGETARCH
+ARG NODE_VERSION=24.22.1
+RUN case "${TARGETARCH}" in \
+        amd64) NODE_ARCH=x64 ;; \
+        arm64) NODE_ARCH=arm64 ;; \
+        *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && NODE_ARCHIVE="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+    && NODE_SHA256="$(curl -fsSL "https://nodejs.org/download/release/v${NODE_VERSION}/SHASUMS256.txt" \
+        | awk -v filename="${NODE_ARCHIVE}" '$2 == filename { print $1 }')" \
+    && test -n "${NODE_SHA256}" \
+    && curl -fsSL "https://nodejs.org/download/release/v${NODE_VERSION}/${NODE_ARCHIVE}" -o /tmp/node.tar.xz \
+    && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
+    && install -d /out/usr/local \
+    && tar -xJf /tmp/node.tar.xz --strip-components=1 --no-same-owner -C /out/usr/local \
+        --exclude="node-v${NODE_VERSION}-linux-${NODE_ARCH}/include" \
+    && rm /tmp/node.tar.xz \
+    && /out/usr/local/bin/node --version
+
+# `agentctl github login` signs in through the browser with this `gh`, so a bump is tried as
+# agentctl/docs/harness-upgrades.md describes.
+FROM fetch AS gh
+ARG TARGETARCH
+ARG GH_VERSION=2.103.0
+RUN case "${TARGETARCH}" in \
+        amd64) GH_SHA256=fdd768eb70f6409f80fcfa9f3a1c0adf0fc98d827ab3ce0bed2ac22762c5d786 ;; \
+        arm64) GH_SHA256=7f322df34e624d14f5ec0c4acb121fd6dfa14392fdbbd1066aa8e0a05ac3721e ;; \
+        *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && GH_ARCHIVE="gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
+    && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${GH_ARCHIVE}" -o /tmp/gh.tar.gz \
+    && echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/gh.tar.gz -C /tmp \
+    && install -D -m 0755 "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /out/usr/local/bin/gh \
+    && rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}" \
+    && /out/usr/local/bin/gh --version
+
+# The harness pins agentd's adapters are tested with (agentctl/docs/harness-upgrades.md). agentd verifies and
+# configures the harnesses an agent declares, but never installs one. npm installs each into /out alone, with the
+# Node.js above.
+FROM fetch AS npm
+COPY --from=node /out/ /
+
+FROM npm AS claude-code
+ARG CLAUDE_CODE_VERSION=2.1.321
+# Agent sandboxes mount their CA bundle here; this step's Node downloads trust it, as do the other harnesses'.
+RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
+      export NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem; \
+    fi; \
+    npm install --global --prefix /out/usr/local --allow-scripts=@anthropic-ai/claude-code \
+        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && scratch="$(mktemp -d)" \
+    && HOME="${scratch}" TMPDIR="${scratch}" /out/usr/local/bin/claude --version
+
+FROM npm AS codex
+ARG CODEX_VERSION=0.167.0
+RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
+      export NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem; \
+    fi; \
+    npm install --global --prefix /out/usr/local "@openai/codex@${CODEX_VERSION}" \
+    && scratch="$(mktemp -d)" \
+    && HOME="${scratch}" TMPDIR="${scratch}" /out/usr/local/bin/codex --version
+
+FROM npm AS pi
+ARG PI_VERSION=1.5.0
+RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
+      export NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem; \
+    fi; \
+    npm install --global --prefix /out/usr/local --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+    && scratch="$(mktemp -d)" \
+    && HOME="${scratch}" TMPDIR="${scratch}" /out/usr/local/bin/pi --version
+
+# The images agentctl's sign-ins run in when this machine does not have the program for one, published as
+# ghcr.io/digdir/agentctl-base:ubuntu-26.04-sign-in-<service>. Each holds what agentd needs to run a command in it and
+# the one program its sign-in runs, in the same layer as the headless image's, so the first sign-in downloads little
+# that the agents after it do not reuse. They are not agent images, and agent-image-check fails them. They come before
+# the base images, so that a build without --target still builds the desktop image.
+FROM ubuntu AS sign-in
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# agentd's setup steps run through sudo, and the agent's mediated CA joins the ca-certificates bundle.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# The agent user, as in the headless image.
+RUN usermod --login agent --home /home/agent --move-home ubuntu \
+    && groupmod --new-name agent ubuntu \
+    && printf 'agent ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/agent \
+    && chmod 0440 /etc/sudoers.d/agent \
+    && install -d -m 0755 -o agent -g agent /home/agent/code
+
+ENV HOME=/home/agent
+ENV LANG=C.UTF-8
+
+USER agent
+WORKDIR /home/agent/code
+
+FROM sign-in AS sign-in-claude
+ENV DISABLE_AUTOUPDATER=1
+COPY --link --from=claude-code /out/ /
+
+FROM sign-in AS sign-in-codex
+COPY --link --from=node /out/ /
+COPY --link --from=codex /out/ /
+
+FROM sign-in AS sign-in-github
+ENV GH_NO_UPDATE_NOTIFIER=1
+COPY --link --from=gh /out/ /
+
+FROM ubuntu AS headless
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -63,12 +189,10 @@ RUN usermod --login agent --home /home/agent --move-home ubuntu \
     && rm -f /etc/machine-id /var/lib/dbus/machine-id \
     && touch /etc/machine-id
 
+COPY --link --from=node /out/ /
+COPY --link --from=gh /out/ /
+
 ARG TARGETARCH
-# agentd runs the harnesses' activity hooks and Claude Code's status line with `node`.
-ARG NODE_VERSION=24.22.1
-# `agentctl github login` signs in through the browser with this `gh`, so a bump is tried as
-# agentctl/docs/harness-upgrades.md describes.
-ARG GH_VERSION=2.103.0
 ARG GH_STACK_VERSION=0.2.1
 # Terminal evidence for pull requests: asciinema records a command, agg renders the cast to a GIF.
 ARG ASCIINEMA_VERSION=3.2.1
@@ -77,31 +201,16 @@ ARG AGG_VERSION=1.9.0
 # gh-stack, asciinema and agg publish no checksum files, so their digests are pinned here and move together with
 # the version.
 RUN case "${TARGETARCH}" in \
-        amd64) NODE_ARCH=x64; RUST_ARCH=x86_64; \
-            GH_SHA256=fdd768eb70f6409f80fcfa9f3a1c0adf0fc98d827ab3ce0bed2ac22762c5d786; \
+        amd64) RUST_ARCH=x86_64; \
             GH_STACK_SHA256=ffe9d48b6342faffc3b0cb420202ff1df32e24faf32693debd7423274bbdf859; \
             ASCIINEMA_SHA256=1b405bbda565b33c3c4718de67fedc3535580603c0694b1ff3fb04f363430a20; \
             AGG_SHA256=f111e315cd71056b116302342553dd765b7297579ed511f111d0cedb442aeda6 ;; \
-        arm64) NODE_ARCH=arm64; RUST_ARCH=aarch64; \
-            GH_SHA256=7f322df34e624d14f5ec0c4acb121fd6dfa14392fdbbd1066aa8e0a05ac3721e; \
+        arm64) RUST_ARCH=aarch64; \
             GH_STACK_SHA256=25ec261a391261a1462d38f85c230b0e0b14ae3547926130996541f62f25f78b; \
             ASCIINEMA_SHA256=b516a6d896844c0ffbc96e0a55afe4cbcc79216abde0fc64fdda4e39bee421ea; \
             AGG_SHA256=2b4be407b97e00e1c313a41d154ced8fa3d02c560c8f47a0db4950a2576444c9 ;; \
         *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
-    && NODE_ARCHIVE="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
-    && NODE_SHA256="$(curl -fsSL "https://nodejs.org/download/release/v${NODE_VERSION}/SHASUMS256.txt" \
-        | awk -v filename="${NODE_ARCHIVE}" '$2 == filename { print $1 }')" \
-    && test -n "${NODE_SHA256}" \
-    && curl -fsSL "https://nodejs.org/download/release/v${NODE_VERSION}/${NODE_ARCHIVE}" -o /tmp/node.tar.xz \
-    && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
-    && tar -xJf /tmp/node.tar.xz --strip-components=1 --no-same-owner -C /usr/local \
-        --exclude="node-v${NODE_VERSION}-linux-${NODE_ARCH}/include" \
-    && GH_ARCHIVE="gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
-    && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${GH_ARCHIVE}" -o /tmp/gh.tar.gz \
-    && echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c - \
-    && tar -xzf /tmp/gh.tar.gz -C /tmp \
-    && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/bin/gh \
     && GH_STACK_DIR=/home/agent/.local/share/gh/extensions/gh-stack \
     && install -d "${GH_STACK_DIR}" \
     && curl -fsSL \
@@ -128,7 +237,7 @@ RUN case "${TARGETARCH}" in \
         -o /tmp/agg \
     && echo "${AGG_SHA256}  /tmp/agg" | sha256sum -c - \
     && install -m 0755 /tmp/agg /usr/local/bin/agg \
-    && rm -rf /tmp/node.tar.xz /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}" /tmp/asciinema /tmp/agg \
+    && rm -f /tmp/asciinema /tmp/agg \
     && node --version \
     && gh --version \
     && asciinema --version \
@@ -154,25 +263,9 @@ RUN case "${TARGETARCH}" in \
 RUN git config --system credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential' \
     && git config --system credential.https://gist.github.com.helper '!/usr/local/bin/gh auth git-credential'
 
-# The harness pins agentd's adapters are tested with (agentctl/docs/harness-upgrades.md). agentd verifies and
-# configures the harnesses an agent declares, but never installs one.
-ARG CLAUDE_CODE_VERSION=2.1.321
-ARG CODEX_VERSION=0.167.0
-ARG PI_VERSION=1.5.0
-
-# Agent sandboxes mount their CA bundle here; this step's Node downloads trust it.
-RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
-      export NODE_EXTRA_CA_CERTS=/run/agent/tls/ca-bundle.pem; \
-    fi; \
-    npm install --global --allow-scripts=@anthropic-ai/claude-code \
-        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-    && npm install --global "@openai/codex@${CODEX_VERSION}" \
-    && npm install --global --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \
-    && scratch="$(mktemp -d)" \
-    && HOME="${scratch}" TMPDIR="${scratch}" claude --version \
-    && HOME="${scratch}" TMPDIR="${scratch}" codex --version \
-    && HOME="${scratch}" TMPDIR="${scratch}" pi --version \
-    && rm -rf "${scratch}" /root/.npm /root/.cache /tmp/node-compile-cache
+COPY --link --from=claude-code /out/ /
+COPY --link --from=codex /out/ /
+COPY --link --from=pi /out/ /
 
 COPY headless/ /
 # The optional parts `agent-feature install` adds to an image built on this one.

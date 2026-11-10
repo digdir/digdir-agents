@@ -171,6 +171,9 @@ pub(super) fn acquire_host_credential(
     Ok(credential)
 }
 
+/// The internal definition [`sandbox_sign_in`] runs in, whose image has Codex.
+pub(super) const SIGN_IN_DEFINITION: &str = "sign-in-codex";
+
 /// Creates a separate `ChatGPT` login grant with `codex login --device-auth` in a sandbox.
 ///
 /// The device sign-in shows a link and a one-time code to enter there, so the
@@ -183,6 +186,7 @@ pub(super) fn sandbox_sign_in() -> SandboxSignIn {
         .chain(["login", "--device-auth"])
         .map(str::to_owned);
     SandboxSignIn::new(
+        SIGN_IN_DEFINITION,
         sandbox::execution::ExecutionSpec::command(sandbox::SandboxPath::new("/usr/bin/env"), arguments),
         Some(sandbox::SandboxPath::new(format!(
             "{}/.codex/auth.json",

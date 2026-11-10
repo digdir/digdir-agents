@@ -618,6 +618,9 @@ pub fn host_can_sign_in(harness: Harness) -> bool {
     crate::local::process::find_executable(std::env::var_os("PATH").as_deref(), &[&program]).is_some()
 }
 
+/// The internal definitions of the agents the harnesses' [sandbox sign-ins](sandbox_sign_in) run in.
+pub(crate) const SIGN_IN_DEFINITIONS: [&str; 2] = [claude_code::SIGN_IN_DEFINITION, codex::SIGN_IN_DEFINITION];
+
 /// The sign-in for a harness's platform login, run in a sandbox; `None` for a harness without one.
 #[must_use]
 pub fn sandbox_sign_in(harness: Harness) -> Option<crate::sign_in::SandboxSignIn> {

@@ -15,6 +15,8 @@ use crate::Error;
 /// output and artifact.
 #[derive(Clone, Debug)]
 pub struct SandboxSignIn {
+    /// The internal definition of the agent it runs in, whose image has its program.
+    pub definition: &'static str,
     /// The program to start in a terminal Execution.
     pub execution: sandbox::execution::ExecutionSpec,
     /// The file that holds the credential once the sign-in has exited, for the host to read back.
@@ -32,12 +34,14 @@ type ReadCredential = fn(&[u8], Option<&[u8]>) -> Result<Zeroizing<String>, Erro
 
 impl SandboxSignIn {
     pub(crate) const fn new(
+        definition: &'static str,
         execution: sandbox::execution::ExecutionSpec,
         artifact: Option<sandbox::SandboxPath>,
         opens: OpensLink,
         credential: ReadCredential,
     ) -> Self {
         Self {
+            definition,
             execution,
             artifact,
             opens,

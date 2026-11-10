@@ -269,6 +269,9 @@ fn find_setup_token(output: &[u8]) -> Option<zeroize::Zeroizing<String>> {
     Some(token)
 }
 
+/// The internal definition [`sandbox_sign_in`] runs in, whose image has Claude Code.
+pub(super) const SIGN_IN_DEFINITION: &str = "sign-in-claude";
+
 /// Mints a long-lived Claude token with `claude setup-token` in a sandbox.
 ///
 /// No browser in the sandbox would reach the person, so the one it opens does
@@ -276,6 +279,7 @@ fn find_setup_token(output: &[u8]) -> Option<zeroize::Zeroizing<String>> {
 /// that the sign-in page shows back into its terminal, and it prints the token.
 pub(super) fn sandbox_sign_in() -> SandboxSignIn {
     SandboxSignIn::new(
+        SIGN_IN_DEFINITION,
         sandbox::execution::ExecutionSpec::command(
             sandbox::SandboxPath::new("/usr/bin/env"),
             ["claude".into(), "setup-token".into()],
