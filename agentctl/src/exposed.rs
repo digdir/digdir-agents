@@ -399,7 +399,7 @@ pub const UNREAD: &str = "No manifest beside this environment file and no agent 
 
 /// Why no agent may be given a folder with the environment file `path`, and every step that gets
 /// rid of the file: what reads it, where each value goes instead, and what to run again.
-fn environment_file_refusal(path: &str, file: &EnvironmentFile, manifests: Manifests) -> String {
+fn environment_file_refusal(path: &str, file: &EnvironmentFile, changed: Manifests) -> String {
     let mut lines = Vec::new();
     if file.readers.is_empty() {
         lines.extend([format!("{}:", UNREAD.to_ascii_lowercase()), format!("  {path}")]);
@@ -418,16 +418,16 @@ fn environment_file_refusal(path: &str, file: &EnvironmentFile, manifests: Manif
         "It is read by:".into(),
     ]);
     // The manifests of a folder mostly read the same, a variant what its base does.
-    let mut beside = Vec::<(&[Variable], Vec<String>)>::new();
+    let mut manifests = Vec::<(&[Variable], Vec<String>)>::new();
     let mut others = Vec::new();
     let mut agents = Vec::new();
     let mut moving = Vec::<Variable>::new();
     for reader in &file.readers {
         let variables = match reader {
             Reader::Manifest { name, variables } => {
-                match beside.iter_mut().find(|(read, _)| read == variables) {
+                match manifests.iter_mut().find(|(read, _)| read == variables) {
                     Some((_, names)) => names.push(name.clone()),
-                    None => beside.push((variables, vec![name.clone()])),
+                    None => manifests.push((variables, vec![name.clone()])),
                 }
                 variables.as_slice()
             }
@@ -460,12 +460,12 @@ fn environment_file_refusal(path: &str, file: &EnvironmentFile, manifests: Manif
         }
     }
     lines.extend(
-        beside
+        manifests
             .into_iter()
             .map(|(variables, files)| format!("  {}: {}", sentence_list(&files), names(variables))),
     );
     lines.extend(others);
-    lines.extend([String::new(), moving_out(&moving, &agents, manifests)]);
+    lines.extend([String::new(), moving_out(&moving, &agents, changed)]);
     lines.join("\n")
 }
 
@@ -473,29 +473,37 @@ fn environment_file_refusal(path: &str, file: &EnvironmentFile, manifests: Manif
 /// goes instead, then applying the `agents` that read it again. Whoever changes the `manifests`
 /// does that between the two.
 pub(crate) fn moving_out(variables: &[Variable], agents: &[String], manifests: Manifests) -> String {
+    let by_hand = manifests == Manifests::ByHand;
     let mut lines = Vec::new();
     if !variables.is_empty() {
         lines.push(
-            match manifests {
-                Manifests::ByHand => "Move each value out of the file:",
-                Manifests::ByBuilder => "Store each value, unless it is stored already:",
+            if by_hand {
+                "Move each value out of the file:"
+            } else {
+                "Keep each value, unless it is stored already:"
             }
             .into(),
         );
         lines.extend(moves(variables, manifests));
         lines.push(String::new());
     }
-    let agents = sentence_list(agents);
-    lines.push(match manifests {
-        Manifests::ByHand if agents.is_empty() => "Then delete the file and run this again.".into(),
-        Manifests::ByHand => format!("Then apply {agents} again, delete the file and run this again."),
-        Manifests::ByBuilder if agents.is_empty() => {
-            "Then delete the file and run this again. The agent builder changes the manifests.".into()
-        }
-        Manifests::ByBuilder => format!(
-            "Then delete the file and run this again. The agent builder changes the manifests, and you apply \
-             {agents} again."
-        ),
+    let apply = if agents.is_empty() {
+        None
+    } else {
+        Some(format!("apply {} again", sentence_list(agents)))
+    };
+    lines.push(if by_hand {
+        let apply = apply.map(|apply| format!("{apply}, ")).unwrap_or_default();
+        format!("Then {apply}delete the file and run this again.")
+    } else {
+        // The builder cannot see what the machine stores, and the agents get the changed manifests.
+        let apply = apply
+            .map(|apply| format!(", after which you {apply}"))
+            .unwrap_or_default();
+        format!(
+            "Then delete the file and run this again, and tell the agent builder what you stored. It changes the \
+             manifests{apply}."
+        )
     });
     lines.join("\n")
 }
@@ -661,7 +669,7 @@ fn moves(variables: &[Variable], manifests: Manifests) -> Vec<String> {
             ]);
         } else {
             // It is in the file alone, and the builder is never given the file.
-            lines.push("    Note it:   the agent builder asks you for its value".into());
+            lines.push("    Note it:   for the agent builder to write into the manifest".into());
         }
     }
     lines
@@ -930,15 +938,21 @@ mod tests {
         for expected in [
             "Sign in:   agentctl github login default",
             "Store it:  agentctl secret set aivar-api-key --hosts api.aivar.no",
-            "Note it:   the agent builder asks you for its value",
-            "Then delete the file and run this again. The agent builder changes the manifests, and you apply \
-             agent/dev again.",
+            "Note it:   for the agent builder to write into the manifest",
+            "Then delete the file and run this again, and tell the agent builder what you stored. It changes the \
+             manifests, after which you apply agent/dev again.",
         ] {
             assert!(lines.contains(&expected), "{expected:?} is missing from:\n{refused}");
         }
         assert!(
             !refused.contains("Manifest:"),
             "no change is left to the person: {refused}"
+        );
+        let unapplied = file(vec![manifest("agent.yaml")], Vec::new());
+        let refused = refusal_from(&[unapplied], None, Manifests::ByBuilder);
+        assert!(
+            refused.ends_with("tell the agent builder what you stored. It changes the manifests."),
+            "nothing to apply again: {refused}"
         );
 
         let left = file(Vec::new(), vec![Stored::GithubLogin { login: "work".into() }]);

@@ -9,8 +9,10 @@ variables to move. Once you have moved them, apply the agent again, and delete t
 then, agentctl mounts no folder that holds the file into an agent, such as the checkout it is in.
 
 A command that would mount such a folder says instead what still reads the file, and for each value the command that
-stores it and the change to its entry in the manifest. `agentctl update` leaves the manifests to the agent builder:
-store the values, delete the file and run it again, and the builder proposes the changes to the manifests.
+stores it and the change to its entry in the manifest. `agentctl update` leaves the manifests to the agent builder,
+which cannot be given a checkout that holds the file. So there the file goes first: store the secrets, note the plain
+values, delete the file and run it again. The builder proposes the changes to the manifests, and you apply your agents
+again once it has made them.
 
 When no manifest beside the file and no agent on this machine reads it any more, the command names what those
 manifests now take from agentctl. At a terminal it then offers to delete the file, and goes on. `agentctl tui` leaves
