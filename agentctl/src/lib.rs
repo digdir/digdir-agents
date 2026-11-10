@@ -103,6 +103,9 @@ pub enum Error {
     /// Session lifecycle or attachment failed.
     #[error("Session operation failed: {0}")]
     Session(String),
+    /// Blocking work stopped or panicked.
+    #[error(transparent)]
+    Blocking(#[from] ::sandbox::blocking::Error),
     /// Local persistence or transport failed.
     #[error("I/O operation failed: {0}")]
     Io(#[from] std::io::Error),

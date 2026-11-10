@@ -11,7 +11,11 @@ use bollard::{
 use futures_util::StreamExt as _;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use sandbox::progress::{MeasuredStep, ProgressStep, SandboxProgress};
-use sandbox::{Error, LocalFuture, OutputStream, PendingOperation, ProgressUnit, RootFilesystemMode, image};
+use sandbox::{
+    Error, LocalFuture, OutputStream, PendingOperation, ProgressUnit, RootFilesystemMode,
+    blocking::{self, Cancel, Work},
+    image,
+};
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncWriteExt as _;
 use tokio_util::codec::{BytesCodec, FramedRead};
@@ -945,18 +949,17 @@ async fn create_context_archive(
     context: PathBuf,
     dockerfile: PathBuf,
 ) -> Result<tempfile::TempPath, Error> {
-    tokio::task::spawn_blocking(move || {
+    blocking::run(Work::Copy, "archiving the Docker build context", move |cancel| {
         let archive = tempfile::NamedTempFile::new_in(scratch)?;
         let path = archive.into_temp_path();
         let file = File::create(&path)?;
         let ignore = dockerignore(&context)?;
         let mut builder = tar::Builder::new(file);
-        append_directory(&mut builder, &context, &context, &dockerfile, &ignore)?;
+        append_directory(&mut builder, &context, &context, &dockerfile, &ignore, cancel)?;
         builder.finish()?;
         Ok::<_, std::io::Error>(path)
     })
-    .await
-    .map_err(error::backend)?
+    .await?
     .map_err(|source| error::io("create Docker build context archive", source))
 }
 
@@ -977,11 +980,13 @@ fn append_directory(
     directory: &Path,
     dockerfile: &Path,
     ignore: &Gitignore,
+    cancel: &Cancel,
 ) -> Result<(), std::io::Error> {
     let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
 
     for entry in entries {
+        cancel.check().map_err(std::io::Error::other)?;
         let path = entry.path();
         let relative = path.strip_prefix(context).map_err(std::io::Error::other)?;
         let metadata = std::fs::symlink_metadata(&path)?;
@@ -993,7 +998,7 @@ fn append_directory(
             if !excluded {
                 archive.append_dir(relative, &path)?;
             }
-            append_directory(archive, context, &path, dockerfile, ignore)?;
+            append_directory(archive, context, &path, dockerfile, ignore, cancel)?;
         } else if forced || !excluded {
             archive.append_path_with_name(&path, relative)?;
         }

@@ -218,6 +218,9 @@ pub enum Error {
         #[source]
         source: Box<Self>,
     },
+    /// Blocking work stopped or panicked.
+    #[error(transparent)]
+    Blocking(#[from] crate::blocking::Error),
     /// An implementation-specific failure.
     #[error("Sandbox implementation error: {0}")]
     Backend(String),
@@ -262,7 +265,7 @@ impl Error {
             | Self::UnsupportedNetworkEndpoint(_) => ErrorKind::Unsupported,
             Self::Io { .. } => ErrorKind::Io,
             Self::ExecutionFailed { .. } | Self::ExecutionStreamEnded { .. } => ErrorKind::Execution,
-            Self::OperationStreamEnded | Self::Backend(_) => ErrorKind::Backend,
+            Self::OperationStreamEnded | Self::Blocking(_) | Self::Backend(_) => ErrorKind::Backend,
             Self::VolumeInUse(_) => ErrorKind::InUse,
             Self::Component { source, .. } => source.kind(),
         }

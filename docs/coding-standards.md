@@ -27,6 +27,10 @@ talk to each other is in the [architecture principles](architecture.md#principle
 
 - Use Tokio's `LocalRuntime` and keep state single-threaded with `Rc`, `Cell` and `RefCell`. Do not use `Arc` or
   `Mutex` unless a dependency's API requires them.
+- Run work that blocks, such as file system calls, with [`sandbox::blocking::run`](../sandbox/core/src/blocking.rs)
+  rather than on the runtime's thread, which serves every request and sandbox. It limits how much of each kind runs
+  at once and lets the work stop when nothing waits for it. Work that takes time in proportion to its input checks
+  its `Cancel` between steps. Clippy rejects starting a blocking task or a thread anywhere else.
 
 ## Tests
 

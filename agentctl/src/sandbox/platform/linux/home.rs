@@ -2,7 +2,10 @@
 
 use std::{io::Cursor, path::Path};
 
-use ::sandbox::{SandboxHandle, SandboxPath};
+use ::sandbox::{
+    SandboxHandle, SandboxPath,
+    blocking::{self, Work},
+};
 
 use crate::{Error, local::files::walk_source};
 
@@ -20,15 +23,16 @@ pub(super) async fn archive_home(
 
 /// Archives a resolved host directory on a blocking thread; `field` names the manifest field in errors.
 async fn archive_directory(source: std::path::PathBuf, field: String) -> Result<Vec<u8>, Error> {
-    let task = format!("Agent {field} scan task failed");
-    tokio::task::spawn_blocking(move || archive_directory_blocking(&source, &field))
-        .await
-        .map_err(|error| Error::Daemon(format!("{task}: {error}")))?
+    blocking::run(Work::Copy, "archiving the agent's home", move |cancel| {
+        archive_directory_blocking(&source, &field, cancel)
+    })
+    .await?
 }
 
-fn archive_directory_blocking(source: &Path, field: &str) -> Result<Vec<u8>, Error> {
+fn archive_directory_blocking(source: &Path, field: &str, cancel: &blocking::Cancel) -> Result<Vec<u8>, Error> {
     let mut archive = tar::Builder::new(Vec::new());
     walk_source(source, field, |relative, path, is_dir| {
+        cancel.check()?;
         if is_dir {
             archive.append_dir(relative, path)?;
         } else {

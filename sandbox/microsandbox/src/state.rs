@@ -1,8 +1,14 @@
 use std::{collections::BTreeMap, io::Write as _, path::PathBuf};
 
 use sandbox::{
-    Hostname, SandboxId, SandboxName, SandboxResources, backend::CreateSandboxRequest, image::ResolvedImage,
-    init::InitSystem, mount::Mount, network::NetworkAttachment, volume::VolumeId,
+    Hostname, SandboxId, SandboxName, SandboxResources,
+    backend::CreateSandboxRequest,
+    blocking::{self, Work},
+    image::ResolvedImage,
+    init::InitSystem,
+    mount::Mount,
+    network::NetworkAttachment,
+    volume::VolumeId,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
@@ -241,7 +247,7 @@ where
     T: Serialize + Send + Sync + 'static,
 {
     let serialized = serde_json::to_vec_pretty(value).map_err(error::backend)?;
-    tokio::task::spawn_blocking(move || {
+    blocking::run(Work::Brief, "writing Microsandbox state", move |_| {
         let parent = path
             .parent()
             .ok_or_else(|| std::io::Error::other("state record has no parent directory"))?;
@@ -255,8 +261,7 @@ where
         }
         Ok::<(), std::io::Error>(())
     })
-    .await
-    .map_err(error::backend)?
+    .await?
     .map_err(|source| error::io("persist Microsandbox state", source))
 }
 

@@ -6,6 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use ::sandbox::blocking::{self, Work};
+
 use crate::{Error, control_plane::AgentStore};
 
 use super::{Definition, Definitions};
@@ -48,7 +50,7 @@ impl Folders {
     pub async fn write(&self, definition: &Definition) -> Result<PathBuf, Error> {
         let (root, target, partial) = self.write_beside(definition).await?;
         let name = definition.name().to_owned();
-        tokio::task::spawn_blocking(move || {
+        blocking::run(Work::Brief, "writing a bundled definition", move |_| {
             let replaced = root.join(format!(".{name}.replaced"));
             let _ = std::fs::remove_dir_all(&replaced);
             match std::fs::rename(&target, &replaced) {
@@ -62,8 +64,7 @@ impl Folders {
             let _ = std::fs::remove_dir_all(&replaced);
             Ok(target)
         })
-        .await
-        .map_err(|error| Error::Daemon(format!("writing a bundled definition failed: {error}")))?
+        .await?
         .map_err(Error::from)
     }
 
@@ -80,7 +81,7 @@ impl Folders {
             return Ok(target);
         }
         let (_, target, partial) = self.write_beside(definition).await?;
-        tokio::task::spawn_blocking(move || {
+        blocking::run(Work::Brief, "writing a bundled definition", move |_| {
             if let Err(error) = std::fs::rename(&partial, &target) {
                 let _ = std::fs::remove_dir_all(&partial);
                 if !target.is_dir() {
@@ -89,8 +90,7 @@ impl Folders {
             }
             Ok(target)
         })
-        .await
-        .map_err(|error| Error::Daemon(format!("writing a bundled definition failed: {error}")))?
+        .await?
         .map_err(Error::from)
     }
 
@@ -101,7 +101,7 @@ impl Folders {
         let target = self.path(definition.name());
         let files = definition.files().clone();
         let name = definition.name().to_owned();
-        tokio::task::spawn_blocking(move || {
+        blocking::run(Work::Brief, "writing a bundled definition", move |_| {
             std::fs::create_dir_all(&root)?;
             let partial = tempfile::Builder::new()
                 .prefix(&format!(".{name}."))
@@ -118,8 +118,7 @@ impl Folders {
             }
             Ok::<_, std::io::Error>((root, target, partial.keep()))
         })
-        .await
-        .map_err(|error| Error::Daemon(format!("writing a bundled definition failed: {error}")))?
+        .await?
         .map_err(Error::from)
     }
 
@@ -141,10 +140,11 @@ impl Folders {
             .chain(carried.iter().map(|definition| OsString::from(definition.name())))
             .collect::<BTreeSet<_>>();
         let root = self.root.clone();
-        tokio::task::spawn_blocking(move || remove_unused(&root, &kept))
-            .await
-            .map_err(|error| Error::Daemon(format!("removing unused bundled definitions failed: {error}")))?
-            .map_err(Error::from)
+        blocking::run(Work::Brief, "removing unused bundled definitions", move |_| {
+            remove_unused(&root, &kept)
+        })
+        .await?
+        .map_err(Error::from)
     }
 }
 

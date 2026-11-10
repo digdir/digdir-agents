@@ -102,6 +102,10 @@ const ctx = {{ sessionManager: {{ getSessionId: () => "native-1", getSessionFile
             ),
         )
         .expect("driver");
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "serves the reports while the test runs the extension"
+        )]
         let reports = std::thread::spawn(move || {
             let mut bodies = Vec::new();
             // The driver exits after its last report; the listener then sees no more connections.
