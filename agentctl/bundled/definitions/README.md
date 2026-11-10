@@ -18,7 +18,7 @@ them after the definitions on disk. [`agent::bundled`](../../src/bundled/mod.rs)
 - Its image is one each release publishes, named by its `main` tag, such as `ghcr.io/digdir/agentctl-base:ubuntu-26.04`
   or the agent builder's `ghcr.io/digdir/agentctl-agent-builder:main`. A released agentd runs that image as its own
   release tagged it, so a definition always runs on the image built with it. A new image needs adding to the release
-  workflow, and agentd refuses one in a repository releases do not publish to.
+  workflow. agentd refuses an image releases do not publish, and one named by a tag of a single release or commit.
 
 An internal definition is part of one of agentctl's own commands, such as the sign-in agent of `agentctl claude login`,
 and is no use on its own. agentd neither lists it nor runs it by reference. The command names it in a Control API

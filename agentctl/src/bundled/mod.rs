@@ -203,10 +203,18 @@ struct EmbeddedFile {
     executable: bool,
 }
 
-/// Whether `reference` names an image each release publishes by a tag, without a digest, as `main`
-/// publishes it.
+/// Whether `reference` names an image each release publishes by the tag `main` moves, such as
+/// `ubuntu-26.04`, without a digest. A tag of one release or one commit, such as
+/// `ubuntu-26.04-v0.1.0` or `ubuntu-26.04-sha-1a2b3c4d5e`, names one build, which a release's own
+/// tag cannot be made from.
 fn main_tagged(reference: &str) -> bool {
-    !reference.contains('@') && crate::release::published_tag(reference).is_some_and(|tag| !tag.is_empty())
+    !reference.contains('@')
+        && crate::release::published_tag(reference).is_some_and(|tag| {
+            !tag.is_empty()
+                && crate::release::Release::of_tag(tag).is_none()
+                && !tag.starts_with("sha-")
+                && !tag.contains("-sha-")
+        })
 }
 
 /// Every folder of `bundled/definitions/`, as `bundled/build.rs` embeds it.
@@ -380,6 +388,10 @@ mod tests {
             "ghcr.io/example/other:1",
             "ghcr.io/digdir/agentctl-base@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             "ghcr.io/digdir/agentctl-base:ubuntu-26.04@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "ghcr.io/digdir/agentctl-base:ubuntu-26.04-v0.1.0-preview.13",
+            "ghcr.io/digdir/agentctl-base:ubuntu-26.04-sha-1a2b3c4d5e",
+            "ghcr.io/digdir/agentctl-agent-builder:v0.1.0",
+            "ghcr.io/digdir/agentctl-agent-builder:sha-1a2b3c4d5e",
         ] {
             let error = definition(image).expect_err(image);
             assert!(error.to_string().contains("an image each release publishes"), "{error}");

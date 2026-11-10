@@ -89,6 +89,45 @@ RUN if [ -r /run/agent/tls/ca-bundle.pem ]; then \
     && scratch="$(mktemp -d)" \
     && HOME="${scratch}" TMPDIR="${scratch}" /out/usr/local/bin/pi --version
 
+# The images agentctl's sign-ins run in when this machine does not have the program for one, published as
+# ghcr.io/digdir/agentctl-base:ubuntu-26.04-sign-in-<service>. Each holds what agentd needs to run a command in it and
+# the one program its sign-in runs, in the same layer as the headless image's, so the first sign-in downloads little
+# that the agents after it do not reuse. They are not agent images, and agent-image-check fails them. They come before
+# the base images, so that a build without --target still builds the desktop image.
+FROM ubuntu AS sign-in
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# agentd's setup steps run through sudo, and the agent's mediated CA joins the ca-certificates bundle.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# The agent user, as in the headless image.
+RUN usermod --login agent --home /home/agent --move-home ubuntu \
+    && groupmod --new-name agent ubuntu \
+    && printf 'agent ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/agent \
+    && chmod 0440 /etc/sudoers.d/agent \
+    && install -d -m 0755 -o agent -g agent /home/agent/code
+
+ENV HOME=/home/agent
+ENV LANG=C.UTF-8
+
+USER agent
+WORKDIR /home/agent/code
+
+FROM sign-in AS sign-in-claude
+ENV DISABLE_AUTOUPDATER=1
+COPY --link --from=claude-code /out/ /
+
+FROM sign-in AS sign-in-codex
+COPY --link --from=node /out/ /
+COPY --link --from=codex /out/ /
+
+FROM sign-in AS sign-in-github
+ENV GH_NO_UPDATE_NOTIFIER=1
+COPY --link --from=gh /out/ /
+
 FROM ubuntu AS headless
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -291,41 +330,3 @@ USER agent
 WORKDIR /home/agent/code
 
 ENTRYPOINT ["/usr/lib/systemd/systemd"]
-
-# The images agentctl's sign-ins run in when this machine does not have the program for one, published as
-# ghcr.io/digdir/agentctl-base:ubuntu-26.04-sign-in-<service>. Each holds what agentd needs to run a command in it and
-# the one program its sign-in runs, in the same layer as the headless image's, so the first sign-in downloads little
-# that the agents after it do not reuse. They are not agent images, and agent-image-check fails them.
-FROM ubuntu AS sign-in
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-# agentd's setup steps run through sudo, and the agent's mediated CA joins the ca-certificates bundle.
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates sudo \
-    && rm -rf /var/lib/apt/lists/*
-
-# The agent user, as in the headless image.
-RUN usermod --login agent --home /home/agent --move-home ubuntu \
-    && groupmod --new-name agent ubuntu \
-    && printf 'agent ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/agent \
-    && chmod 0440 /etc/sudoers.d/agent \
-    && install -d -m 0755 -o agent -g agent /home/agent/code
-
-ENV HOME=/home/agent
-ENV LANG=C.UTF-8
-
-USER agent
-WORKDIR /home/agent/code
-
-FROM sign-in AS sign-in-claude
-ENV DISABLE_AUTOUPDATER=1
-COPY --link --from=claude-code /out/ /
-
-FROM sign-in AS sign-in-codex
-COPY --link --from=node /out/ /
-COPY --link --from=codex /out/ /
-
-FROM sign-in AS sign-in-github
-ENV GH_NO_UPDATE_NOTIFIER=1
-COPY --link --from=gh /out/ /
