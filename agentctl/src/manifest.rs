@@ -1925,8 +1925,6 @@ fn display_leaf(path: &Path) -> String {
     )
 }
 
-/// An error in the manifest at `path`, named by its file. A validation message is shown as it is;
-/// any other error says which form of the manifest, `context`, could not be read.
 /// What to do about a manifest `error` that names a field or a value this version does not know,
 /// which the manifest's own version of agentctl would: update agentctl for a manifest written for
 /// a later version, or the manifest for one written for an earlier version.
@@ -1941,6 +1939,8 @@ fn other_version(error: &serde_yaml_ng::Error) -> Option<String> {
     })
 }
 
+/// An error in the manifest at `path`, named by its file. A validation message is shown as it is;
+/// any other error says which form of the manifest, `context`, could not be read.
 fn manifest_error(path: &Path, context: &str, error: &Error) -> Error {
     match error {
         Error::Invalid(message) => Error::Invalid(format!("{}: {message}", display_leaf(path))),
