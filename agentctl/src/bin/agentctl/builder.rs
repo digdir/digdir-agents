@@ -134,7 +134,12 @@ impl Builder {
         if files.is_empty() {
             return Ok(BTreeSet::new());
         }
-        Ok(consent::agree(&files, &ASK)?)
+        let agreed = consent::agree(&files, &ASK)?;
+        if !agreed.delete.is_empty() {
+            let now = client.exposed_files(self.binds(checkout)?).await?;
+            consent::delete(&agreed.delete, &now)?;
+        }
+        Ok(agreed.read)
     }
 
     /// Starts a builder on `checkout` and talks with it about `task`, returning its name, with the

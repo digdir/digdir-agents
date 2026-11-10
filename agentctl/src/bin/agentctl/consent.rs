@@ -39,29 +39,42 @@ where
         match send(request.clone()).await {
             Err(Error::ExposedFiles(files)) => {
                 let agreed = agree(&files, ask)?;
-                // Fewer are agreed to than agentd named once an environment file was deleted.
-                if agreed.len() == files.len() && agreed.is_subset(allowed(&mut request)) {
-                    // agentd refuses what was agreed to, which asking again would not change.
-                    return Err(Error::ExposedFiles(files));
+                if agreed.delete.is_empty() {
+                    if agreed.read.is_subset(allowed(&mut request)) {
+                        // agentd refuses what was agreed to, which asking again would not change.
+                        return Err(Error::ExposedFiles(files));
+                    }
+                } else {
+                    match send(request.clone()).await {
+                        Err(Error::ExposedFiles(now)) => delete(&agreed.delete, &now)?,
+                        result => return result,
+                    }
                 }
-                *allowed(&mut request) = agreed;
+                *allowed(&mut request) = agreed.read;
             }
             result => return result,
         }
     }
 }
 
-/// The paths of `files` once the person agrees to them, or why not. An agent's environment file is
-/// never agreed to. One that nothing reads any more is deleted instead, once the person agrees to
-/// that, and is then not among the paths. Every question is asked before a file is deleted, so a no
-/// to any of them leaves everything as it was.
-pub(crate) fn agree(files: &[ExposedFile], ask: &Ask<'_>) -> Result<BTreeSet<PathBuf>, Error> {
+/// What the person agreed to about the files an agent would see.
+pub(crate) struct Agreed {
+    /// The files the agent may read.
+    pub(crate) read: BTreeSet<PathBuf>,
+    /// The environment files to delete, which [`delete`] does.
+    pub(crate) delete: Vec<ExposedFile>,
+}
+
+/// What the person agrees to about `files`, or why not. An agent's environment file is never agreed
+/// to. One that nothing reads any more is deleted instead, once the person agrees to that. Nothing
+/// is deleted here, so a no to any question leaves everything as it was.
+pub(crate) fn agree(files: &[ExposedFile], ask: &Ask<'_>) -> Result<Agreed, Error> {
     // The person knows the files by their paths from the folder they work in.
     let from = crate::builder::folder(None).ok();
     let (environment, files): (Vec<_>, Vec<_>) =
         files.iter().cloned().partition(|file| file.environment_file.is_some());
-    let unread = unread(&environment, from.as_deref())?;
-    for file in &unread {
+    let delete = unread(&environment, from.as_deref())?;
+    for file in &delete {
         if !prompt::interactive() {
             return Err(Error::Invalid(agent::exposed::refusal_from(
                 &environment,
@@ -73,15 +86,35 @@ pub(crate) fn agree(files: &[ExposedFile], ask: &Ask<'_>) -> Result<BTreeSet<Pat
             return Err(Error::Invalid("nothing was changed".into()));
         }
     }
-    let agreed = if files.is_empty() {
+    let read = if files.is_empty() {
         BTreeSet::new()
     } else {
         agree_to_read(&files, ask)?
     };
+    Ok(Agreed {
+        read,
+        delete: delete.into_iter().cloned().collect(),
+    })
+}
+
+/// Deletes the environment files the person agreed to delete, given what agentd finds `now`. They
+/// may have taken a while to answer, so a file something has come to read since stays.
+///
+/// # Errors
+///
+/// Returns what to do about the files that are read now, with nothing deleted, or the file that
+/// could not be deleted.
+pub(crate) fn delete(agreed: &[ExposedFile], now: &[ExposedFile]) -> Result<(), Error> {
+    let from = crate::builder::folder(None).ok();
+    let still = |file: &&ExposedFile| agreed.iter().any(|agreed| agreed.path == file.path);
+    let unread = unread(&now.iter().filter(still).cloned().collect::<Vec<_>>(), from.as_deref())?
+        .into_iter()
+        .filter(|file| file.environment_file.is_some())
+        .map(|file| (file.path.clone(), file.shown(from.as_deref())))
+        .collect::<Vec<_>>();
     let mut deleted = Vec::new();
-    for file in unread {
-        let shown = file.shown(from.as_deref());
-        if let Err(error) = std::fs::remove_file(&file.path) {
+    for (path, shown) in unread {
+        if let Err(error) = std::fs::remove_file(&path) {
             let before = if deleted.is_empty() {
                 String::new()
             } else {
@@ -91,7 +124,7 @@ pub(crate) fn agree(files: &[ExposedFile], ask: &Ask<'_>) -> Result<BTreeSet<Pat
         }
         deleted.push(shown);
     }
-    Ok(agreed)
+    Ok(())
 }
 
 /// The paths of `files`, which may hold real keys and are no agent's environment file, once the
@@ -254,13 +287,16 @@ mod tests {
             file("/src/app", ".env", false),
         ];
         let ask = Ask { allowed: true, ..ASK };
-        let refused = agree(&files, &ask).expect_err("refused").to_string();
+        let refused = agree(&files, &ask)
+            .map(|agreed| agreed.read)
+            .expect_err("refused")
+            .to_string();
         assert!(
             refused.contains("agents/reviewer/.env") && !refused.contains("/src/app/.env"),
             "{refused}"
         );
         assert_eq!(
-            agree(&files[1..], &ask).expect("agreed"),
+            agree(&files[1..], &ask).map(|agreed| agreed.read).expect("agreed"),
             BTreeSet::from([PathBuf::from("/src/app/.env")])
         );
     }
@@ -286,7 +322,9 @@ mod tests {
             lines.iter().any(|line| line.contains("agentctl github login work")),
             "what to store before it goes: {lines:?}"
         );
-        agree(&[left], &Ask { allowed: true, ..ASK }).expect_err("nobody to ask");
+        agree(&[left], &Ask { allowed: true, ..ASK })
+            .map(|agreed| agreed.read)
+            .expect_err("nobody to ask");
         assert!(directory.path().join(".env").exists());
     }
 
@@ -316,9 +354,42 @@ mod tests {
     }
 
     #[test]
+    fn a_file_agreed_to_is_deleted_unless_something_has_come_to_read_it() {
+        let directory = tempfile::tempdir().expect("directory");
+        let folder = directory.path().display().to_string();
+        for name in ["a", "b"] {
+            std::fs::create_dir(directory.path().join(name)).expect("folder");
+            std::fs::write(directory.path().join(name).join(".env"), "KEY=1").expect("file");
+        }
+        let agreed = [file(&folder, "a/.env", true), file(&folder, "b/.env", true)];
+        let exists = |name: &str| directory.path().join(name).join(".env").exists();
+
+        // An agent was applied with the second while the person answered.
+        let mut read = agreed[1].clone();
+        read.environment_file = Some(agent::exposed::EnvironmentFile {
+            readers: vec![agent::exposed::Reader::Unreadable {
+                name: "agent.yaml".into(),
+            }],
+            stored: Vec::new(),
+        });
+        let refused = delete(&agreed, &[agreed[0].clone(), read])
+            .expect_err("read now")
+            .to_string();
+        assert!(refused.contains("agent.yaml"), "{refused}");
+        assert!(exists("a") && exists("b"), "neither is deleted");
+
+        // Another file agentd finds now was never asked about, so it stays.
+        std::fs::write(directory.path().join(".env"), "KEY=1").expect("file");
+        delete(&agreed[..1], &[agreed[0].clone(), file(&folder, ".env", true)]).expect("deleted");
+        assert!(!exists("a") && exists("b") && directory.path().join(".env").exists());
+    }
+
+    #[test]
     fn without_a_terminal_or_the_flag_nothing_is_agreed_to() {
         assert!(!prompt::interactive(), "tests run without a terminal");
-        let refused = agree(&[file("/src/app", ".env", false)], &ASK).expect_err("refused");
+        let refused = agree(&[file("/src/app", ".env", false)], &ASK)
+            .map(|agreed| agreed.read)
+            .expect_err("refused");
         assert!(refused.to_string().contains("--allow-env-files"));
     }
 }

@@ -106,7 +106,8 @@ pub enum Reader {
 pub struct Variable {
     /// The variable the agent gets, which names its entry in the manifest.
     pub name: String,
-    /// The variable in the file, when it has another name.
+    /// The variable in the file, when its entry names one with `source`. It is the agent's variable
+    /// otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     /// The hosts its value may reach when it is a secret, which may be none. A plain value, which
@@ -145,21 +146,21 @@ pub(crate) struct Applied {
 /// The values `spec` reads from an environment file: those of `spec.environment` without a `value`
 /// and of `spec.secrets` without a `name`.
 pub(crate) fn variables(spec: &crate::Spec) -> Vec<Variable> {
-    let variable = |name: &str, source: &str, allowed_hosts| Variable {
-        name: name.to_owned(),
-        source: (source != name).then(|| source.to_owned()),
-        allowed_hosts,
-    };
-    let plain = spec
-        .environment
-        .iter()
-        .filter_map(|entry| Some(variable(&entry.name, entry.source()?, None)));
+    let plain = spec.environment.iter().filter_map(|entry| {
+        entry.source()?;
+        Some(Variable {
+            name: entry.name.clone(),
+            source: entry.source.clone(),
+            allowed_hosts: None,
+        })
+    });
     let secret = spec.secrets.iter().filter_map(|entry| {
-        Some(variable(
-            &entry.environment,
-            entry.source()?,
-            Some(entry.allowed_hosts.clone()),
-        ))
+        entry.source()?;
+        Some(Variable {
+            name: entry.environment.clone(),
+            source: entry.source.clone(),
+            allowed_hosts: Some(entry.allowed_hosts.clone()),
+        })
     });
     plain.chain(secret).collect()
 }
@@ -275,27 +276,14 @@ fn environment_file(path: &Path, environment_files: &[Applied]) -> Option<Enviro
                 .is_some_and(|spec| variables(&spec).is_empty()),
         })
         .collect::<Vec<_>>();
-    let mut beside = path
-        .parent()
-        .and_then(|parent| std::fs::read_dir(parent).ok())
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "yaml" || extension == "yml")
-        })
-        .collect::<Vec<_>>();
-    beside.sort();
-    let conventional = |path: &PathBuf| crate::manifest::is_manifest_filename(path);
-    if readers.is_empty() && !beside.iter().any(conventional) {
+    let manifests = manifests_beside(path);
+    if readers.is_empty() && manifests.is_empty() {
         return None;
     }
     let mut stored = BTreeSet::new();
     // Only the `.env` beside a manifest is read without being named.
     if path.file_name().is_some_and(is_exposed_name) {
-        for manifest in &beside {
+        for manifest in &manifests {
             let name = manifest
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
@@ -316,12 +304,7 @@ fn environment_file(path: &Path, environment_files: &[Applied]) -> Option<Enviro
                         })
                     }));
                 }
-                // `agentctl apply -f` takes a manifest under any name, so one that says it is an
-                // agent's counts, while other YAML in the folder is nobody's manifest.
-                Err(_) if conventional(manifest) || declares_agent(manifest) => {
-                    readers.push(Reader::Unreadable { name });
-                }
-                Err(_) => {}
+                Err(_) => readers.push(Reader::Unreadable { name }),
             }
         }
     }
@@ -331,15 +314,37 @@ fn environment_file(path: &Path, environment_files: &[Applied]) -> Option<Enviro
     })
 }
 
-/// Whether the YAML file at `path` says it is an agent's manifest or a variant of one, whatever
-/// else this version makes of it.
-fn declares_agent(path: &Path) -> bool {
-    std::fs::read_to_string(path).is_ok_and(|text| {
-        text.lines().any(|line| {
-            line.strip_prefix("kind:")
-                .is_some_and(|kind| [crate::KIND, crate::VARIANT_KIND].contains(&kind.trim()))
+/// The agent manifests in the folder of `path`, by name: the files named as manifests are, and the
+/// YAML files under another name that say they are one, which `agentctl apply -f` takes too.
+fn manifests_beside(path: &Path) -> Vec<PathBuf> {
+    /// More than a manifest holds, so that other YAML in the folder costs little to rule out.
+    const LARGEST: u64 = 1024 * 1024;
+    let declares_agent = |path: &Path| {
+        // A regular file only, as reading another kind, such as a pipe, may never end.
+        std::fs::metadata(path).is_ok_and(|file| file.is_file() && file.len() <= LARGEST)
+            && std::fs::read(path)
+                .ok()
+                .and_then(|bytes| serde_yaml_ng::from_slice::<serde_yaml_ng::Value>(&bytes).ok())
+                .and_then(|manifest| Some(manifest.get("kind")?.as_str()?.to_owned()))
+                .is_some_and(|kind| kind == crate::KIND || kind == crate::VARIANT_KIND)
+    };
+    let mut manifests = path
+        .parent()
+        .and_then(|parent| std::fs::read_dir(parent).ok())
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            crate::manifest::is_manifest_filename(path)
+                || (path
+                    .extension()
+                    .is_some_and(|extension| extension == "yaml" || extension == "yml")
+                    && declares_agent(path))
         })
-    })
+        .collect::<Vec<_>>();
+    manifests.sort();
+    manifests
 }
 
 /// The paths of the `found` files, once the person has agreed to every one of them: each is in
@@ -369,17 +374,17 @@ pub fn refusal(files: &[ExposedFile]) -> String {
 /// there.
 #[must_use]
 pub fn refusal_from(files: &[ExposedFile], from: Option<&Path>) -> String {
+    // A file in several of the folders is one file to the person.
+    let mut seen = BTreeSet::new();
     let environment = files
         .iter()
+        .filter(|file| seen.insert(&file.path))
         .filter_map(|file| {
             Some(environment_file_refusal(
                 &file.shown(from),
                 file.environment_file.as_ref()?,
             ))
         })
-        // A file in several of the folders is one file to the person.
-        .collect::<BTreeSet<_>>()
-        .into_iter()
         .collect::<Vec<_>>();
     if !environment.is_empty() {
         return environment.join("\n\n");
@@ -528,11 +533,9 @@ impl EnvironmentFile {
 fn names(variables: &[Variable]) -> String {
     variables
         .iter()
-        .map(|variable| {
-            variable.source.as_ref().map_or_else(
-                || variable.name.clone(),
-                |source| format!("{} ({source} in the file)", variable.name),
-            )
+        .map(|variable| match &variable.source {
+            Some(source) if *source != variable.name => format!("{} ({source} in the file)", variable.name),
+            _ => variable.name.clone(),
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -581,6 +584,7 @@ fn moves(variables: &[Variable]) -> Vec<String> {
             "                     login: default".into(),
         ]);
     }
+    let mut named = Vec::<(String, String)>::new();
     for variable in others {
         lines.push(format!("  {}", names(std::slice::from_ref(variable))));
         // An entry takes its value from the file's variable or from elsewhere, never both.
@@ -592,17 +596,20 @@ fn moves(variables: &[Variable]) -> Vec<String> {
         };
         if let Some(allowed_hosts) = &variable.allowed_hosts {
             // Named after the file's variable, which is what tells one credential from another.
-            let name = variable
-                .source
-                .as_ref()
-                .unwrap_or(&variable.name)
-                .to_ascii_lowercase()
-                .replace('_', "-");
+            let source = variable.source.as_ref().unwrap_or(&variable.name);
+            let name = source.to_ascii_lowercase().replace('_', "-");
             let name = if crate::names::valid(&name) {
                 name
             } else {
                 "NAME".into()
             };
+            // Two of the file's variables may differ only in what a name leaves out, such as case.
+            let taken = |name: &str| named.iter().any(|(other, taken)| taken == name && other != source);
+            let name = std::iter::once(name.clone())
+                .chain((2..named.len() + 2).map(|number| format!("{name}-{number}")))
+                .find(|name| !taken(name))
+                .unwrap_or(name);
+            named.push((source.clone(), name.clone()));
             lines.extend([
                 format!("    Store it:  {}", secret_set(&name, allowed_hosts)),
                 format!(
@@ -792,27 +799,65 @@ mod tests {
     async fn a_manifest_under_another_name_reads_the_environment_file_beside_it_too() {
         let directory = tempfile::tempdir().expect("directory");
         let root = std::fs::canonicalize(directory.path()).expect("root");
-        std::fs::write(root.join("agent.yaml"), manifest("")).expect("manifest");
-        std::fs::write(
-            root.join("worker.yaml"),
-            manifest("  environment:\n    - name: EDITOR\n"),
-        )
-        .expect("manifest");
-        std::fs::write(root.join("old.yml"), "kind: Agent\nspec:\n  mounts: []\n").expect("manifest");
-        std::fs::write(root.join("compose.yaml"), "services: {}\n").expect("other YAML");
-        std::fs::write(root.join(".env"), "EDITOR=vim").expect("file");
+        let reads = manifest("  environment:\n    - name: EDITOR\n");
+        // What marks a manifest is its kind, however the YAML writes it.
+        let unreadable = [
+            "kind: Agent # worker\nspec:\n  mounts: []\n",
+            "{'kind': 'Agent', spec: {mounts: []}}\n",
+        ];
+        for (folder, files) in [
+            (
+                "beside",
+                vec![("agent.yaml", manifest("")), ("worker.yaml", reads.clone())],
+            ),
+            ("alone", vec![("worker.yaml", reads)]),
+            (
+                "old",
+                vec![
+                    ("a.yml", unreadable[0].to_owned()),
+                    ("b.yaml", unreadable[1].to_owned()),
+                ],
+            ),
+            ("other", vec![("compose.yaml", "services: {}\n".to_owned())]),
+        ] {
+            std::fs::create_dir_all(root.join(folder)).expect("folder");
+            std::fs::write(root.join(folder).join(".env"), "EDITOR=vim").expect("file");
+            for (name, content) in files {
+                std::fs::write(root.join(folder).join(name), content).expect("YAML");
+            }
+        }
 
         let files = found(&root, Vec::new()).await;
 
-        let readers = &files[0].environment_file.as_ref().expect("beside a manifest").readers;
+        let readers = files
+            .iter()
+            .map(|file| {
+                let readers = file.environment_file.as_ref().map(|file| {
+                    file.readers
+                        .iter()
+                        .map(|reader| match reader {
+                            Reader::Manifest { name, .. } => format!("{name} reads"),
+                            Reader::Unreadable { name } => format!("{name} is unreadable"),
+                            Reader::Agent { name, .. } => name.clone(),
+                        })
+                        .collect::<Vec<_>>()
+                });
+                (file.relative(), readers)
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
             readers,
-            &[
-                Reader::Unreadable { name: "old.yml".into() },
-                Reader::Manifest {
-                    name: "worker.yaml".into(),
-                    variables: vec![variable("EDITOR", None)]
-                },
+            [
+                (Path::new("alone/.env"), Some(vec!["worker.yaml reads".to_owned()])),
+                (Path::new("beside/.env"), Some(vec!["worker.yaml reads".to_owned()])),
+                (
+                    Path::new("old/.env"),
+                    Some(vec![
+                        "a.yml is unreadable".to_owned(),
+                        "b.yaml is unreadable".to_owned()
+                    ])
+                ),
+                (Path::new("other/.env"), None),
             ]
         );
     }
@@ -896,22 +941,29 @@ mod tests {
             "within its folder for a reader elsewhere"
         );
 
-        // The same variable from two of the file's, as two manifests may have it, is two credentials.
-        let renamed = |source: &str| Variable {
-            source: Some(source.into()),
-            ..variable("API_KEY", Some(&["api.example.com"]))
+        // The same variable from several of the file's, as manifests may have it, is as many
+        // credentials, and an entry that names the file's variable stops naming it.
+        let renamed = |manifest: &str, source: &str| Reader::Manifest {
+            name: manifest.into(),
+            variables: vec![Variable {
+                source: Some(source.into()),
+                ..variable("API_KEY", Some(&["api.example.com"]))
+            }],
         };
         let read = file(
-            vec![Reader::Manifest {
-                name: "agent.yaml".into(),
-                variables: vec![renamed("DEV_KEY"), renamed("PROD_KEY")],
-            }],
+            vec![
+                renamed("agent.dev.yaml", "DEV_KEY"),
+                renamed("agent.other.yaml", "Dev_KEY"),
+                renamed("agent.yaml", "API_KEY"),
+            ],
             Vec::new(),
         );
         let refused = refusal(&[read]);
         for expected in [
             "Store it:  agentctl secret set dev-key --hosts api.example.com",
-            "Manifest:  replace `source: PROD_KEY` with `name: prod-key` in its entry in spec.secrets",
+            "Store it:  agentctl secret set dev-key-2 --hosts api.example.com",
+            "Manifest:  replace `source: Dev_KEY` with `name: dev-key-2` in its entry in spec.secrets",
+            "Manifest:  replace `source: API_KEY` with `name: api-key` in its entry in spec.secrets",
         ] {
             assert!(
                 refused.lines().any(|line| line.trim() == expected),
