@@ -2,7 +2,7 @@
 # :ubuntu-26.04-desktop, and the images agentctl's sign-ins run in. The base images meet agentd's image contract
 # (agentctl/docs/image-contract.md) and carry the harness pins agentd's adapters are tested with, so an agent image only
 # adds its own tools. README.md beside this file describes them.
-FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS ubuntu
+FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c AS ubuntu
 
 # The tools the base and sign-in images share are each built in a stage of their own, into /out, and copied in with
 # COPY --link. A layer copied that way does not depend on the layers below it, so every image that copies a tool gets
