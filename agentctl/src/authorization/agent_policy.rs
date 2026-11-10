@@ -1,6 +1,8 @@
 //! Agent implementation of `sandbox_authorization::PolicyEngine`.
 
-use std::{cell::RefCell, collections::BTreeMap};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+
+use tokio::sync::{mpsc, oneshot};
 
 use sandbox_authorization::{
     AuthorizationDecision, AuthorizationRequest, PolicyEngine,
@@ -39,38 +41,101 @@ impl AgentPolicyEngine {
         self
     }
 
+    /// Applies the changes `updates` receives until every [`PolicyUpdates`] sending them is gone.
+    /// It runs on the thread the engine decides on, which may be another than theirs.
+    pub fn serve(self: Rc<Self>, mut updates: PolicyUpdateReceiver) {
+        tokio::task::spawn_local(async move {
+            while let Some((update, applied)) = updates.0.recv().await {
+                match update {
+                    Update::Agent { sandbox, policy } => {
+                        self.agents.borrow_mut().insert(sandbox.as_str().into(), policy);
+                    }
+                    Update::RemoveAgent(sandbox) => {
+                        self.agents.borrow_mut().remove(sandbox.as_str());
+                    }
+                    Update::PlatformEndpoint(endpoint) => *self.platform_endpoint.borrow_mut() = Some(endpoint),
+                }
+                let _ = applied.send(());
+            }
+        });
+    }
+}
+
+/// Changes the policy of an [`AgentPolicyEngine`] that [`AgentPolicyEngine::serve`] runs, which
+/// may be on another thread.
+///
+/// Each change is applied before its call returns, so what the caller does next sees it, such as
+/// revoking the connections an earlier policy admitted.
+#[derive(Clone)]
+pub struct PolicyUpdates(mpsc::UnboundedSender<(Update, oneshot::Sender<()>)>);
+
+/// Where an [`AgentPolicyEngine`] receives what [`PolicyUpdates`] send.
+pub struct PolicyUpdateReceiver(mpsc::UnboundedReceiver<(Update, oneshot::Sender<()>)>);
+
+enum Update {
+    Agent { sandbox: SandboxName, policy: AgentPolicy },
+    RemoveAgent(SandboxName),
+    PlatformEndpoint(PlatformEndpoint),
+}
+
+impl PolicyUpdates {
+    /// A sender of policy changes, and where an engine receives them.
+    #[must_use]
+    pub fn channel() -> (Self, PolicyUpdateReceiver) {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        (Self(sender), PolicyUpdateReceiver(receiver))
+    }
+
     /// Registers the one sandbox-reachable host endpoint exposed by the platform.
     ///
     /// Host-destined traffic (the Network Backend's host alias, and raw dials
     /// into host-reserved address ranges) is denied except for exactly this
     /// endpoint; without a registered endpoint it is denied entirely.
-    pub fn set_platform_endpoint(&self, host: impl Into<String>, port: u16) {
-        *self.platform_endpoint.borrow_mut() = Some(PlatformEndpoint {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the engine is gone.
+    pub async fn set_platform_endpoint(&self, host: impl Into<String>, port: u16) -> Result<(), crate::Error> {
+        self.apply(Update::PlatformEndpoint(PlatformEndpoint {
             host: host.into(),
             port,
-        });
+        }))
+        .await
     }
 
     /// Replaces the policy for one desired agent generation, whose sandbox gets `secrets`.
     /// Connections an earlier policy admitted stay open until they are revoked.
-    pub fn set_agent(&self, sandbox: &SandboxName, agent: &Agent, secrets: impl IntoIterator<Item = SecretHosts>) {
-        let secrets = secrets
-            .into_iter()
-            .map(|secret| (secret.environment.clone(), secret))
-            .collect();
-        self.agents.borrow_mut().insert(
-            sandbox.as_str().into(),
-            AgentPolicy {
-                allowed_hosts: agent.spec.network.allow.clone(),
-                denied_hosts: agent.spec.network.deny.clone(),
-                secrets,
-            },
-        );
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the engine is gone.
+    pub async fn set_agent(
+        &self,
+        sandbox: &SandboxName,
+        agent: &Agent,
+        secrets: impl IntoIterator<Item = SecretHosts>,
+    ) -> Result<(), crate::Error> {
+        self.apply(Update::Agent {
+            sandbox: sandbox.clone(),
+            policy: AgentPolicy::of(agent, secrets),
+        })
+        .await
     }
 
     /// Removes policy for a released agent.
-    pub fn remove_agent(&self, sandbox: &SandboxName) {
-        self.agents.borrow_mut().remove(sandbox.as_str());
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the engine is gone.
+    pub async fn remove_agent(&self, sandbox: &SandboxName) -> Result<(), crate::Error> {
+        self.apply(Update::RemoveAgent(sandbox.clone())).await
+    }
+
+    async fn apply(&self, update: Update) -> Result<(), crate::Error> {
+        let (applied, is_applied) = oneshot::channel();
+        let gone = || crate::Error::Daemon("the network policy engine stopped".into());
+        self.0.send((update, applied)).map_err(|_| gone())?;
+        is_applied.await.map_err(|_| gone())
     }
 }
 
@@ -105,6 +170,19 @@ struct AgentPolicy {
     allowed_hosts: crate::NetworkAllow,
     denied_hosts: Vec<String>,
     secrets: BTreeMap<String, SecretHosts>,
+}
+
+impl AgentPolicy {
+    fn of(agent: &Agent, secrets: impl IntoIterator<Item = SecretHosts>) -> Self {
+        Self {
+            allowed_hosts: agent.spec.network.allow.clone(),
+            denied_hosts: agent.spec.network.deny.clone(),
+            secrets: secrets
+                .into_iter()
+                .map(|secret| (secret.environment.clone(), secret))
+                .collect(),
+        }
+    }
 }
 
 impl PolicyEngine for AgentPolicyEngine {

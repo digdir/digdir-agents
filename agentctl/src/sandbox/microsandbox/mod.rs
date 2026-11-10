@@ -3,9 +3,14 @@
 use std::{path::Path, rc::Rc};
 
 use ::sandbox::{EnsureSandboxRequest, ErrorKind, LocalFuture, Platform, SandboxHandle, SandboxService, SandboxState};
-use sandbox_microsandbox::{MicrosandboxNetworkBackend, MicrosandboxProvider};
+use sandbox_microsandbox::{Decider, MicrosandboxNetworkBackend, MicrosandboxProvider};
 
-use crate::{Error, authorization::AgentPolicyEngine, control_plane::AgentRecord, persistence};
+use crate::{
+    Error,
+    authorization::{AgentPolicyEngine, PolicyUpdates},
+    control_plane::AgentRecord,
+    persistence,
+};
 
 mod execution;
 mod forward;
@@ -63,30 +68,41 @@ pub struct Adapter {
 }
 
 impl Adapter {
-    /// Opens one configured Microsandbox Provider and its mediated Network Backend.
+    /// Opens one configured Microsandbox Provider and its mediated Network Backend, which decides
+    /// what each sandbox may reach on a thread of its own.
     ///
     /// # Errors
     ///
-    /// Returns an error when Provider state cannot be opened.
+    /// Returns an error when Provider state cannot be opened or the network thread cannot start.
     pub async fn open(
         home: &Path,
         database: persistence::Database,
         credentials: Rc<crate::harness::AuthenticationManager>,
-        policy: Rc<AgentPolicyEngine>,
         platform_port: u16,
     ) -> Result<Self, Error> {
-        let network =
-            Rc::new(MicrosandboxNetworkBackend::new(policy.clone()).with_secret_store(Rc::new(database.clone())));
-        let provider = Rc::new(
-            MicrosandboxProvider::builder(home.join("microsandbox"))
-                .remove_unused_images_after(UNUSED_IMAGE_RETENTION)
-                .remove_unclaimed_volume_copies()
-                .open()
-                .await?,
+        let (policy, updates) = PolicyUpdates::channel();
+        let secrets = database.clone();
+        let network = Rc::new(
+            MicrosandboxNetworkBackend::on_thread(move || async move {
+                let engine = Rc::new(AgentPolicyEngine::new().with_stored_secrets(secrets.clone()));
+                engine.clone().serve(updates);
+                Ok(Decider {
+                    policy: engine,
+                    secret_store: Some(Rc::new(secrets)),
+                })
+            })
+            .await?,
         );
+        let mut provider = MicrosandboxProvider::builder(home.join("microsandbox"))
+            .remove_unused_images_after(UNUSED_IMAGE_RETENTION)
+            .remove_unclaimed_volume_copies();
+        if let Some(runtime) = network.runtime() {
+            provider = provider.network_runtime(runtime);
+        }
+        let provider = Rc::new(provider.open().await?);
         tokio::task::spawn_local(remove_unused_images_periodically(Rc::downgrade(&provider)));
         let service = SandboxService::new(provider.clone()).with_network_backend(network.clone());
-        policy.set_platform_endpoint(HOST_ALIAS, platform_port);
+        policy.set_platform_endpoint(HOST_ALIAS, platform_port).await?;
         Ok(Self {
             id: ProviderId::new(PROVIDER_ID)?,
             provider,
@@ -261,8 +277,7 @@ impl Provider for Adapter {
             self.service
                 .release(&name, record.agent.spec.sandbox.resolved_retention_policy())
                 .await?;
-            self.preparation.release(&name);
-            Ok(())
+            self.preparation.release(&name).await
         })
     }
 }

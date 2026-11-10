@@ -155,13 +155,27 @@ impl Client {
         &self.backend
     }
 
+    /// Binds the network control endpoint of the sandbox whose runtime is `name`, served on
+    /// `runtime` when given, or else on the runtime that calls this.
     pub(crate) async fn bind_network_controller(
         &self,
         name: &str,
+        runtime: Option<&tokio::runtime::Handle>,
     ) -> Result<microsandbox_network::control::NetworkControlHost, Error> {
-        self.backend
-            .bind_network_controller(name)
+        let Some(runtime) = runtime else {
+            return self
+                .backend
+                .bind_network_controller(name)
+                .await
+                .map_err(error::microsandbox);
+        };
+        // The endpoint serves its socket from a task it starts on the runtime that binds it.
+        let backend = self.backend.clone();
+        let name = name.to_owned();
+        runtime
+            .spawn(async move { backend.bind_network_controller(&name).await })
             .await
+            .map_err(error::backend)?
             .map_err(error::microsandbox)
     }
 

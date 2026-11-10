@@ -52,6 +52,9 @@ pub struct MicrosandboxProvider {
     image_backend: MicrosandboxImageBackend,
     pub(crate) state: StateStore,
     pub(crate) executions: ExecutionControls,
+    /// Where each sandbox's network control endpoint is served, when not on the Provider's own
+    /// runtime.
+    network_runtime: Option<tokio::runtime::Handle>,
 }
 
 /// Configures the host storage used by a [`MicrosandboxProvider`].
@@ -62,6 +65,7 @@ pub struct MicrosandboxProviderBuilder {
     registry_authentication: Option<sandbox::image::RegistryAuthentication>,
     runtime_bundle: Option<RuntimeBundle>,
     remove_unclaimed_volume_copies: bool,
+    network_runtime: Option<tokio::runtime::Handle>,
 }
 
 #[derive(Clone)]
@@ -81,6 +85,7 @@ impl MicrosandboxProvider {
             registry_authentication: None,
             runtime_bundle: None,
             remove_unclaimed_volume_copies: false,
+            network_runtime: None,
         }
     }
 
@@ -166,6 +171,7 @@ impl MicrosandboxProvider {
             image_backend,
             state,
             executions: Rc::new(RefCell::new(HashMap::new())),
+            network_runtime: None,
         };
         if remove_unclaimed_volume_copies && let Err(error) = provider.remove_unclaimed_volume_copies().await {
             tracing::warn!(%error, "failed to remove unclaimed Volume copies; retrying when the Provider next opens");
@@ -647,6 +653,15 @@ impl MicrosandboxProviderBuilder {
         self
     }
 
+    /// Serves each sandbox's network control endpoint on `runtime`, such as that of the thread a
+    /// [`crate::MicrosandboxNetworkBackend`] decides on, so that a busy Provider thread cannot
+    /// delay a sandbox's requests. Without it, they are served on the runtime that opens them.
+    #[must_use]
+    pub fn network_runtime(mut self, runtime: tokio::runtime::Handle) -> Self {
+        self.network_runtime = Some(runtime);
+        self
+    }
+
     /// Removes cached images no sandbox uses once `retention`, at least an hour, has passed
     /// since each was last resolved, imported or released by a deleted sandbox. A sandbox keeps
     /// its image until it is deleted, running or not.
@@ -698,7 +713,7 @@ impl MicrosandboxProviderBuilder {
     /// Returns an error when a configured path is empty or cannot be
     /// initialized by the Microsandbox runtime.
     pub async fn open(self) -> Result<MicrosandboxProvider, Error> {
-        MicrosandboxProvider::open_configured(
+        let mut provider = MicrosandboxProvider::open_configured(
             self.home,
             self.cache_directory,
             self.unused_image_retention,
@@ -706,7 +721,9 @@ impl MicrosandboxProviderBuilder {
             self.runtime_bundle,
             self.remove_unclaimed_volume_copies,
         )
-        .await
+        .await?;
+        provider.network_runtime = self.network_runtime;
+        Ok(provider)
     }
 }
 
@@ -828,7 +845,10 @@ impl SandboxBackend for MicrosandboxProvider {
             let record = self.state.sandbox_by_id(id).await?;
             match self.prepare_runtime_network(&record)? {
                 RuntimeNetwork::Controlled => {
-                    let controller = self.client.bind_network_controller(&record.runtime_name).await?;
+                    let controller = self
+                        .client
+                        .bind_network_controller(&record.runtime_name, self.network_runtime.as_ref())
+                        .await?;
                     network_endpoint::open(controller).map(network::NetworkEndpoint::Control)
                 }
                 RuntimeNetwork::Unattached => Err(Error::invalid("network", "Sandbox has no attachment")),

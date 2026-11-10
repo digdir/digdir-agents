@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     num::NonZeroUsize,
     pin::Pin,
     task::{Context, Poll},
@@ -9,6 +10,7 @@ use sandbox::network::{
     BatchReceiver, BatchSender, NetworkBatch, NetworkControlEndpoint, NetworkControlEndpointProperties,
     NetworkControlMessage, NetworkControlProtocolId, NetworkEndpointError, NetworkTransferProgress,
 };
+use tokio::sync::mpsc;
 use tokio_util::sync::PollSender;
 
 pub(crate) fn open(controller: NetworkControlHost) -> Result<NetworkControlEndpoint, sandbox::Error> {
@@ -25,8 +27,10 @@ pub(crate) fn open(controller: NetworkControlHost) -> Result<NetworkControlEndpo
             receiver: parts.incoming,
         },
         ControlSender {
+            listener: parts.outgoing.clone(),
             sender: PollSender::new(parts.outgoing),
             maximum_message_length: maximum_message_length.get(),
+            released: None,
         },
     ))
 }
@@ -65,6 +69,10 @@ impl BatchReceiver<NetworkControlMessage> for ControlReceiver {
 struct ControlSender {
     sender: PollSender<zeroize::Zeroizing<Vec<u8>>>,
     maximum_message_length: usize,
+    /// Closed once the endpoint's listener has ended, which removes its socket.
+    listener: mpsc::Sender<zeroize::Zeroizing<Vec<u8>>>,
+    /// Resolves once the listener has ended, after shutting down started waiting for it.
+    released: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
 }
 
 impl BatchSender<NetworkControlMessage> for ControlSender {
@@ -116,10 +124,17 @@ impl BatchSender<NetworkControlMessage> for ControlSender {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_shutdown(mut self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Result<(), NetworkEndpointError>> {
+    /// Closes this direction, then waits until the endpoint's listener has ended and removed its
+    /// socket, so that another endpoint can bind the same one. The listener ends once the
+    /// receiving direction is dropped too.
+    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Result<(), NetworkEndpointError>> {
         self.sender.abort_send();
         self.sender.close();
-        Poll::Ready(Ok(()))
+        let listener = self.listener.clone();
+        let released = self
+            .released
+            .get_or_insert_with(|| Box::pin(async move { listener.closed().await }));
+        released.as_mut().poll(context).map(Ok)
     }
 }
 

@@ -27,4 +27,4 @@ pub use backend::{MicrosandboxProvider, MicrosandboxProviderBuilder};
 /// default level. The runtime's agent client logs every relay connection at INFO.
 pub const LOG_DIRECTIVES: &str = "microsandbox_agent_client=warn";
 pub use guest_tcp::{GuestTcpDialer, GuestTcpStream};
-pub use network_backend::{MicrosandboxNetworkBackend, SecretBinding};
+pub use network_backend::{Decider, MicrosandboxNetworkBackend, SecretBinding};

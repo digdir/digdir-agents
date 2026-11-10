@@ -2,4 +2,4 @@
 
 mod agent_policy;
 
-pub use agent_policy::{AgentPolicyEngine, SecretHosts};
+pub use agent_policy::{AgentPolicyEngine, PolicyUpdateReceiver, PolicyUpdates, SecretHosts};

@@ -2,24 +2,37 @@
 
 use crate::support;
 
-use agent::authorization::{AgentPolicyEngine, SecretHosts};
+use std::rc::Rc;
+
+use agent::authorization::{AgentPolicyEngine, PolicyUpdates, SecretHosts};
 use sandbox::SandboxName;
 use sandbox_authorization::{
     Action, AuthorizationContext, AuthorizationDecision, AuthorizationRequest, PolicyEngine as _, Principal, Resource,
     vocabulary::{action, context, principal_kind, resource_kind},
 };
 
+/// A policy engine served on this thread, and what changes its policy.
+fn served() -> (PolicyUpdates, Rc<AgentPolicyEngine>) {
+    let (updates, received) = PolicyUpdates::channel();
+    let engine = Rc::new(AgentPolicyEngine::new());
+    engine.clone().serve(received);
+    (updates, engine)
+}
+
 #[tokio::test(flavor = "local")]
 async fn allows_general_egress_but_scopes_each_secret_to_its_hosts() {
     let mut agent = support::agent("worker");
     agent.spec.network.deny.push("blocked.example".into());
-    let policy = AgentPolicyEngine::new();
+    let (updates, policy) = served();
     let sandbox = SandboxName::new("agent-test-id").expect("Sandbox name");
-    policy.set_agent(
-        &sandbox,
-        &agent,
-        [SecretHosts::new("GITHUB_TOKEN", vec!["github.com".into()])],
-    );
+    updates
+        .set_agent(
+            &sandbox,
+            &agent,
+            [SecretHosts::new("GITHUB_TOKEN", vec!["github.com".into()])],
+        )
+        .await
+        .expect("change the policy");
 
     assert_eq!(
         evaluate(
@@ -77,9 +90,12 @@ async fn an_allow_list_reaches_only_its_hosts() {
     let mut agent = support::agent("worker");
     agent.spec.network.allow = agent::NetworkAllow::Hosts(vec!["*.github.com".into(), "auth.openai.com".into()]);
     agent.spec.network.deny.push("uploads.github.com".into());
-    let policy = AgentPolicyEngine::new();
+    let (updates, policy) = served();
     let sandbox = SandboxName::new("agent-test-id").expect("Sandbox name");
-    policy.set_agent(&sandbox, &agent, []);
+    updates
+        .set_agent(&sandbox, &agent, [])
+        .await
+        .expect("change the policy");
 
     for operation in [action::HTTP_REQUEST, action::DNS_QUERY] {
         for (host, expected) in [
@@ -139,7 +155,10 @@ async fn an_allow_list_reaches_only_its_hosts() {
 
     // Allowing every host leaves the name where it was dialed unchecked.
     let open = SandboxName::new("agent-open-id").expect("Sandbox name");
-    policy.set_agent(&open, &support::agent("open"), []);
+    updates
+        .set_agent(&open, &support::agent("open"), [])
+        .await
+        .expect("change the policy");
     assert_eq!(
         connect_resolved(&policy, open.as_str(), "example.com", "203.0.113.9:8443", false).await,
         AuthorizationDecision::Allow
@@ -173,20 +192,23 @@ async fn connect_resolved(
 #[tokio::test(flavor = "local")]
 async fn a_secret_with_several_host_lists_is_used_only_where_all_of_them_match() {
     let agent = support::agent("worker");
-    let policy = AgentPolicyEngine::new();
+    let (updates, policy) = served();
     let sandbox = SandboxName::new("agent-test-id").expect("Sandbox name");
-    policy.set_agent(
-        &sandbox,
-        &agent,
-        [SecretHosts {
-            environment: "API_KEY".into(),
-            hosts: vec![
-                vec!["*.example.com".into()],
-                vec!["api.example.com".into(), "other.test".into()],
-            ],
-            stored: None,
-        }],
-    );
+    updates
+        .set_agent(
+            &sandbox,
+            &agent,
+            [SecretHosts {
+                environment: "API_KEY".into(),
+                hosts: vec![
+                    vec!["*.example.com".into()],
+                    vec!["api.example.com".into(), "other.test".into()],
+                ],
+                stored: None,
+            }],
+        )
+        .await
+        .expect("change the policy");
     for (host, decision) in [
         ("api.example.com", AuthorizationDecision::Allow),
         ("www.example.com", AuthorizationDecision::Deny),
@@ -211,9 +233,12 @@ async fn a_secret_with_several_host_lists_is_used_only_where_all_of_them_match()
 #[tokio::test(flavor = "local")]
 async fn host_destined_traffic_reaches_only_the_platform_api() {
     let agent = support::agent("worker");
-    let policy = AgentPolicyEngine::new();
+    let (updates, policy) = served();
     let sandbox = SandboxName::new("agent-test-id").expect("Sandbox name");
-    policy.set_agent(&sandbox, &agent, []);
+    updates
+        .set_agent(&sandbox, &agent, [])
+        .await
+        .expect("change the policy");
 
     // Fail closed: without a registered Platform API endpoint every host-destined
     // connect is denied, even under the allow-all egress default.
@@ -228,7 +253,10 @@ async fn host_destined_traffic_reaches_only_the_platform_api() {
         AuthorizationDecision::Deny
     );
 
-    policy.set_platform_endpoint("host.microsandbox.internal", 4_100);
+    updates
+        .set_platform_endpoint("host.microsandbox.internal", 4_100)
+        .await
+        .expect("change the policy");
 
     assert_eq!(
         connect_flagged(
@@ -296,10 +324,16 @@ async fn host_destined_traffic_reaches_only_the_platform_api() {
 async fn naming_the_platform_api_reaches_only_the_host() {
     let mut agent = support::agent("worker");
     agent.spec.network.allow = agent::NetworkAllow::Hosts(Vec::new());
-    let policy = AgentPolicyEngine::new();
+    let (updates, policy) = served();
     let sandbox = SandboxName::new("agent-test-id").expect("Sandbox name");
-    policy.set_agent(&sandbox, &agent, []);
-    policy.set_platform_endpoint("host.microsandbox.internal", 4_100);
+    updates
+        .set_agent(&sandbox, &agent, [])
+        .await
+        .expect("change the policy");
+    updates
+        .set_platform_endpoint("host.microsandbox.internal", 4_100)
+        .await
+        .expect("change the policy");
 
     assert_eq!(
         connect_flagged(
@@ -393,10 +427,16 @@ async fn naming_the_platform_api_reaches_only_the_host() {
 #[tokio::test(flavor = "local")]
 async fn host_destined_flag_denies_the_gateway_by_number_outside_guessed_ranges() {
     let agent = support::agent("worker");
-    let policy = AgentPolicyEngine::new();
+    let (updates, policy) = served();
     let sandbox = SandboxName::new("agent-test-id").expect("Sandbox name");
-    policy.set_agent(&sandbox, &agent, []);
-    policy.set_platform_endpoint("host.microsandbox.internal", 4_100);
+    updates
+        .set_agent(&sandbox, &agent, [])
+        .await
+        .expect("change the policy");
+    updates
+        .set_platform_endpoint("host.microsandbox.internal", 4_100)
+        .await
+        .expect("change the policy");
 
     // The default guest pool 172.16/12 is not a guessed reserved range, so
     // before the Backend flag an HTTP dial to the gateway with a plausible but

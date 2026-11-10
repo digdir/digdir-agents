@@ -1,9 +1,10 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    future::poll_fn,
+    future::{Future, poll_fn},
     num::NonZeroUsize,
     rc::Rc,
+    time::Duration,
 };
 
 use microsandbox_network::control::{
@@ -25,18 +26,33 @@ use sandbox_authorization::{
     Action, AuthorizationContext, AuthorizationDecision, AuthorizationRequest, PolicyEngine, Principal, Resource,
     vocabulary::{action, context, principal_kind, resource_kind},
 };
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroizing;
 
 const BACKEND_ID: &str = "microsandbox";
 const RECEIVE_BATCH_SIZE: usize = 16;
 
 /// Microsandbox Network Backend using the trusted runtime's protocol engine.
+///
+/// Each running sandbox's network has a driver, which answers what its runtime asks, such as
+/// whether it may connect somewhere, with a [`Decider`]. The drivers run on the caller's thread,
+/// or on a thread of their own with [`Self::on_thread`].
 pub struct MicrosandboxNetworkBackend {
-    policy: Rc<dyn PolicyEngine>,
-    secret_store: Option<Rc<dyn SecretStore>>,
+    /// Where the drivers run, which starts each driver it is sent.
+    starts: mpsc::UnboundedSender<DriverStart>,
+    /// The runtime of the drivers' own thread, when they have one.
+    runtime: Option<tokio::runtime::Handle>,
     secret_bindings: RefCell<HashMap<SandboxName, Vec<SecretBinding>>>,
     drivers: RefCell<HashMap<SandboxId, Driver>>,
+}
+
+/// What a driver decides each request with.
+#[derive(Clone)]
+pub struct Decider {
+    /// Decides whether each request is allowed.
+    pub policy: Rc<dyn PolicyEngine>,
+    /// Holds the values of the secrets bound to a sandbox. Without one, no secret is substituted.
+    pub secret_store: Option<Rc<dyn SecretStore>>,
 }
 
 /// Host-owned mapping from a non-secret placeholder to current secret material.
@@ -47,12 +63,26 @@ pub struct SecretBinding {
     reference: SecretReference,
 }
 
+/// A running driver, as the backend sees it.
 struct Driver {
+    /// Closed once the driver has stopped and released its endpoint, on its own or when told to.
     commands: mpsc::Sender<DriverCommand>,
-    task: JoinHandle<()>,
+    /// Stops the driver, whatever it waits for. Taken once it is told to, while it releases its
+    /// endpoint.
+    stop: Option<oneshot::Sender<()>>,
     sandbox_name: SandboxName,
     /// The bindings the running data plane applies, fixed when it started.
     secret_bindings: Vec<SecretBinding>,
+}
+
+/// What a driver needs to start.
+struct DriverStart {
+    sandbox_id: SandboxId,
+    sandbox_name: SandboxName,
+    endpoint: NetworkControlEndpointParts,
+    secret_bindings: Vec<SecretBinding>,
+    commands: mpsc::Receiver<DriverCommand>,
+    stop: oneshot::Receiver<()>,
 }
 
 #[derive(Clone, Copy)]
@@ -65,23 +95,94 @@ enum DriverCommand {
     RevokeAll,
 }
 
+/// How long a stopped driver waits for its endpoint's socket to close, which it does once the
+/// runtime reads what was sent to it, before leaving it behind.
+const ENDPOINT_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+
 impl MicrosandboxNetworkBackend {
-    /// Creates a Network Backend that evaluates every runtime request with `policy`.
+    /// Creates a Network Backend whose drivers run on the caller's thread and decide with
+    /// `decider`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a local Tokio runtime, which runs the drivers.
     #[must_use]
-    pub fn new(policy: Rc<dyn PolicyEngine>) -> Self {
+    pub fn new(decider: Decider) -> Self {
+        let (starts, received) = mpsc::unbounded_channel();
+        tokio::task::spawn_local(run_drivers(received, decider));
+        Self::with_drivers(starts, None)
+    }
+
+    /// Creates a Network Backend whose drivers run on a thread of their own, so that nothing else
+    /// the caller's thread does delays a sandbox's requests. `decider` makes, on that thread, what
+    /// they decide with, and the backend is returned once it has. The thread ends once the backend
+    /// is dropped.
+    ///
+    /// Serve the sandboxes' network control endpoints on [`Self::runtime`] too.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the thread or its runtime cannot be started, or `decider` fails.
+    pub async fn on_thread<F, Made>(decider: F) -> Result<Self, Error>
+    where
+        F: FnOnce() -> Made + Send + 'static,
+        Made: Future<Output = Result<Decider, Error>> + 'static,
+    {
+        let (starts, received) = mpsc::unbounded_channel::<DriverStart>();
+        let (ready, runtime) = oneshot::channel::<Result<tokio::runtime::Handle, Error>>();
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the drivers live on this thread for as long as the backend does, rather than block"
+        )]
+        std::thread::Builder::new()
+            .name("agent-network".into())
+            .spawn(move || {
+                let runtime = match tokio::runtime::LocalRuntime::new() {
+                    Ok(runtime) => runtime,
+                    Err(source) => {
+                        let _ = ready.send(Err(Error::Io {
+                            operation: "start the Microsandbox Network runtime",
+                            source,
+                        }));
+                        return;
+                    }
+                };
+                let handle = runtime.handle().clone();
+                runtime.block_on(async move {
+                    let decider = match decider().await {
+                        Ok(decider) => decider,
+                        Err(error) => {
+                            let _ = ready.send(Err(error));
+                            return;
+                        }
+                    };
+                    let _ = ready.send(Ok(handle));
+                    run_drivers(received, decider).await;
+                });
+            })
+            .map_err(|source| Error::Io {
+                operation: "start the Microsandbox Network thread",
+                source,
+            })?;
+        let runtime = runtime
+            .await
+            .map_err(|_| Error::Backend("the Microsandbox Network thread stopped as it started".into()))??;
+        Ok(Self::with_drivers(starts, Some(runtime)))
+    }
+
+    fn with_drivers(starts: mpsc::UnboundedSender<DriverStart>, runtime: Option<tokio::runtime::Handle>) -> Self {
         Self {
-            policy,
-            secret_store: None,
+            starts,
+            runtime,
             secret_bindings: RefCell::new(HashMap::new()),
             drivers: RefCell::new(HashMap::new()),
         }
     }
 
-    /// Configures the host Secret Store used by mediated requests.
+    /// The runtime the drivers run on, when they have a thread of their own.
     #[must_use]
-    pub fn with_secret_store(mut self, store: Rc<dyn SecretStore>) -> Self {
-        self.secret_store = Some(store);
-        self
+    pub fn runtime(&self) -> Option<tokio::runtime::Handle> {
+        self.runtime.clone()
     }
 
     /// Replaces the secret bindings applied when this named sandbox's network starts.
@@ -109,7 +210,7 @@ impl MicrosandboxNetworkBackend {
     #[must_use]
     pub fn has_stale_secret_bindings(&self, sandbox_id: &SandboxId) -> bool {
         let drivers = self.drivers.borrow();
-        let Some(driver) = drivers.get(sandbox_id).filter(|driver| !driver.task.is_finished()) else {
+        let Some(driver) = drivers.get(sandbox_id).filter(|driver| driver.is_running()) else {
             return false;
         };
         self.secret_bindings
@@ -137,7 +238,7 @@ impl MicrosandboxNetworkBackend {
             .drivers
             .borrow()
             .get(sandbox_id)
-            .filter(|driver| !driver.task.is_finished())
+            .filter(|driver| driver.is_running())
             .map(|driver| driver.commands.clone())
             .ok_or_else(|| Error::not_found(ResourceKind::Network, sandbox_id))?;
         commands
@@ -146,12 +247,35 @@ impl MicrosandboxNetworkBackend {
             .map_err(|_| Error::Backend("Microsandbox Network controller stopped".into()))
     }
 
+    /// Stops the sandbox's driver, if it has one, and waits until it has released its endpoint,
+    /// so that the next one can serve the same socket. The driver stays known until then, so a
+    /// later stop or start waits for it too, though this one's caller gave up.
     async fn stop_driver(&self, sandbox_id: &SandboxId) {
-        let driver = self.drivers.borrow_mut().remove(sandbox_id);
-        if let Some(driver) = driver {
-            driver.task.abort();
-            let _ = driver.task.await;
+        let released = {
+            let mut drivers = self.drivers.borrow_mut();
+            let Some(driver) = drivers.get_mut(sandbox_id) else {
+                return;
+            };
+            if let Some(stop) = driver.stop.take() {
+                let _ = stop.send(());
+            }
+            driver.commands.clone()
+        };
+        released.closed().await;
+        let mut drivers = self.drivers.borrow_mut();
+        if drivers
+            .get(sandbox_id)
+            .is_some_and(|driver| driver.commands.same_channel(&released))
+        {
+            drivers.remove(sandbox_id);
         }
+    }
+}
+
+impl Driver {
+    /// Whether the driver serves its sandbox: it has not been told to stop, nor stopped.
+    fn is_running(&self) -> bool {
+        self.stop.is_some() && !self.commands.is_closed()
     }
 }
 
@@ -161,10 +285,7 @@ impl NetworkBackend for MicrosandboxNetworkBackend {
     }
 
     fn is_running(&self, sandbox_id: &SandboxId) -> bool {
-        self.drivers
-            .borrow()
-            .get(sandbox_id)
-            .is_some_and(|driver| !driver.task.is_finished())
+        self.drivers.borrow().get(sandbox_id).is_some_and(Driver::is_running)
     }
 
     fn select_endpoint(
@@ -192,46 +313,31 @@ impl NetworkBackend for MicrosandboxNetworkBackend {
                 )));
             }
             let (commands, command_rx) = mpsc::channel(16);
-            let policy = self.policy.clone();
-            let secret_store = self.secret_store.clone();
+            let (stop, stop_rx) = oneshot::channel();
             let secret_bindings = self
                 .secret_bindings
                 .borrow()
                 .get(&request.sandbox_name)
                 .cloned()
                 .unwrap_or_default();
-            let sandbox_id = request.sandbox_id.clone();
-            let log_sandbox_id = sandbox_id.clone();
-            let log_sandbox_name = request.sandbox_name.clone();
-            let driver_sandbox_name = request.sandbox_name.clone();
-            let driver_secret_bindings = secret_bindings.clone();
-            let task = tokio::task::spawn_local(async move {
-                if let Err(error) = drive(
-                    sandbox_id,
-                    request.sandbox_name,
-                    endpoint.into_parts(),
-                    policy,
-                    secret_store,
-                    secret_bindings,
-                    command_rx,
-                )
-                .await
-                {
-                    tracing::warn!(
-                        %error,
-                        sandbox = %log_sandbox_id,
-                        sandbox_name = %log_sandbox_name,
-                        "Microsandbox Network data plane stopped"
-                    );
-                }
-            });
+            let start = DriverStart {
+                sandbox_id: request.sandbox_id.clone(),
+                sandbox_name: request.sandbox_name.clone(),
+                endpoint: endpoint.into_parts(),
+                secret_bindings: secret_bindings.clone(),
+                commands: command_rx,
+                stop: stop_rx,
+            };
+            self.starts
+                .send(start)
+                .map_err(|_| Error::Backend("the Microsandbox Network drivers stopped".into()))?;
             self.drivers.borrow_mut().insert(
                 request.sandbox_id,
                 Driver {
                     commands,
-                    task,
-                    sandbox_name: driver_sandbox_name,
-                    secret_bindings: driver_secret_bindings,
+                    stop: Some(stop),
+                    sandbox_name: request.sandbox_name,
+                    secret_bindings,
                 },
             );
             Ok(())
@@ -247,6 +353,69 @@ impl NetworkBackend for MicrosandboxNetworkBackend {
 
     fn delete<'a>(&'a self, sandbox_id: &'a SandboxId) -> LocalFuture<'a, Result<(), Error>> {
         self.stop(sandbox_id)
+    }
+}
+
+/// Starts each driver `starts` receives, until the backend sending them is gone.
+async fn run_drivers(mut starts: mpsc::UnboundedReceiver<DriverStart>, decider: Decider) {
+    while let Some(start) = starts.recv().await {
+        tokio::task::spawn_local(run_driver(start, decider.clone()));
+    }
+}
+
+/// Runs one driver until its sandbox's endpoint closes or it is told to stop, then releases the
+/// endpoint.
+async fn run_driver(start: DriverStart, decider: Decider) {
+    let DriverStart {
+        sandbox_id,
+        sandbox_name,
+        mut endpoint,
+        secret_bindings,
+        mut commands,
+        stop,
+    } = start;
+    let driven = drive(
+        &sandbox_id,
+        &sandbox_name,
+        &mut endpoint,
+        &decider,
+        &secret_bindings,
+        &mut commands,
+    );
+    // Stopping drops whatever the driver waits for, such as a response its runtime does not read.
+    let result = tokio::select! {
+        result = driven => result,
+        _ = stop => Ok(()),
+    };
+    if let Err(error) = result {
+        tracing::warn!(
+            %error,
+            sandbox = %sandbox_id,
+            sandbox_name = %sandbox_name,
+            "Microsandbox Network data plane stopped"
+        );
+    }
+    release(endpoint, &sandbox_id).await;
+    // Closes the commands, which tells the backend the driver stopped.
+    drop(commands);
+}
+
+/// Gives up `endpoint`, and waits until its socket is closed and removed, so that the sandbox's
+/// next driver can serve the same one.
+async fn release(endpoint: NetworkControlEndpointParts, sandbox_id: &SandboxId) {
+    let NetworkControlEndpointParts {
+        from_sandbox,
+        mut to_sandbox,
+        ..
+    } = endpoint;
+    drop(from_sandbox);
+    let released = tokio::time::timeout(
+        ENDPOINT_RELEASE_TIMEOUT,
+        poll_fn(|context| to_sandbox.as_mut().poll_shutdown(context)),
+    )
+    .await;
+    if released.is_err() {
+        tracing::warn!(sandbox = %sandbox_id, "Microsandbox Network endpoint did not close in time");
     }
 }
 
@@ -316,13 +485,12 @@ impl SecretBinding {
 }
 
 async fn drive(
-    sandbox_id: SandboxId,
-    sandbox_name: SandboxName,
-    mut endpoint: NetworkControlEndpointParts,
-    policy: Rc<dyn PolicyEngine>,
-    secret_store: Option<Rc<dyn SecretStore>>,
-    secret_bindings: Vec<SecretBinding>,
-    mut commands: mpsc::Receiver<DriverCommand>,
+    sandbox_id: &SandboxId,
+    sandbox_name: &SandboxName,
+    endpoint: &mut NetworkControlEndpointParts,
+    decider: &Decider,
+    secret_bindings: &[SecretBinding],
+    commands: &mut mpsc::Receiver<DriverCommand>,
 ) -> Result<(), Error> {
     let batch_size = NonZeroUsize::new(RECEIVE_BATCH_SIZE)
         .ok_or_else(|| Error::Backend("invalid Microsandbox Network receive batch size".into()))?;
@@ -338,17 +506,17 @@ async fn drive(
                             let runtime_message = serde_json::from_slice(message.as_bytes()).map_err(protocol_error)?;
                             let response = handle_runtime_message(
                                 SandboxSubject {
-                                    id: &sandbox_id,
-                                    name: &sandbox_name,
+                                    id: sandbox_id,
+                                    name: sandbox_name,
                                 },
                                 runtime_message,
-                                policy.as_ref(),
-                                secret_store.as_deref(),
-                                &secret_bindings,
+                                decider.policy.as_ref(),
+                                decider.secret_store.as_deref(),
+                                secret_bindings,
                                 &mut state,
                             ).await?;
                             if let Some(response) = response {
-                                send(&mut endpoint, response).await?;
+                                send(endpoint, response).await?;
                             }
                         }
                     }
@@ -357,10 +525,11 @@ async fn drive(
             }
             command = commands.recv() => {
                 let Some(DriverCommand::RevokeAll) = command else {
+                    // The backend is gone.
                     return Ok(());
                 };
                 for flow_id in state.flows.drain() {
-                    send(&mut endpoint, ControllerMessage::Revoke { flow_id }).await?;
+                    send(endpoint, ControllerMessage::Revoke { flow_id }).await?;
                 }
             }
         }
@@ -1022,9 +1191,12 @@ mod tests {
         assert_eq!(request.context.attributes["http.streamId"].as_integer(), Some(3));
     }
 
-    #[test]
-    fn secret_bindings_are_scoped_by_sandbox_name() {
-        let backend = MicrosandboxNetworkBackend::new(Rc::new(StaticPolicy::allow_all()));
+    #[tokio::test(flavor = "local")]
+    async fn secret_bindings_are_scoped_by_sandbox_name() {
+        let backend = MicrosandboxNetworkBackend::new(super::Decider {
+            policy: Rc::new(StaticPolicy::allow_all()),
+            secret_store: None,
+        });
         let first = SandboxName::new("first").expect("valid sandbox name");
         let second = SandboxName::new("second").expect("valid sandbox name");
         backend
@@ -1101,7 +1273,10 @@ mod tests {
                 .expect("start Network Backend");
         }
         let (first, second) = (TestControlEndpoint::new(), TestControlEndpoint::new());
-        let backend = MicrosandboxNetworkBackend::new(Rc::new(StaticPolicy::allow_all()));
+        let backend = MicrosandboxNetworkBackend::new(super::Decider {
+            policy: Rc::new(StaticPolicy::allow_all()),
+            secret_store: None,
+        });
         let sandbox_id = sandbox_id();
         let binding = |reference: &str| {
             vec![SecretBinding::new("TOKEN", SecretReference::from_opaque(reference)).expect("valid binding")]
@@ -1138,7 +1313,10 @@ mod tests {
             .await
             .expect("bind Network control endpoint");
         let endpoint = crate::network_endpoint::open(controller).expect("open Network control endpoint");
-        let backend = MicrosandboxNetworkBackend::new(Rc::new(StaticPolicy::allow_all()));
+        let backend = MicrosandboxNetworkBackend::new(super::Decider {
+            policy: Rc::new(StaticPolicy::allow_all()),
+            secret_store: None,
+        });
         let sandbox_id = sandbox_id();
         backend
             .start(StartNetworkRequest {
@@ -1188,7 +1366,10 @@ mod tests {
             .await
             .expect("bind Network control endpoint");
         let endpoint = crate::network_endpoint::open(controller).expect("open Network control endpoint");
-        let backend = MicrosandboxNetworkBackend::new(Rc::new(StaticPolicy::deny_all()));
+        let backend = MicrosandboxNetworkBackend::new(super::Decider {
+            policy: Rc::new(StaticPolicy::deny_all()),
+            secret_store: None,
+        });
         let sandbox_id = sandbox_id();
         backend
             .start(StartNetworkRequest {
@@ -1232,7 +1413,10 @@ mod tests {
             .set("provider-token", b"first")
             .await
             .expect("store initial secret");
-        let backend = MicrosandboxNetworkBackend::new(policy.clone()).with_secret_store(store.clone());
+        let backend = MicrosandboxNetworkBackend::new(super::Decider {
+            policy: policy.clone(),
+            secret_store: Some(store.clone()),
+        });
         backend
             .set_secret_bindings(
                 sandbox_name(),
@@ -1343,5 +1527,288 @@ mod tests {
                 .await
                 .is_none()
         );
+    }
+
+    /// The sandbox's runtime is answered while the thread that started the network does
+    /// something else and runs nothing, as a busy daemon thread would.
+    #[test]
+    fn a_network_on_its_own_thread_decides_while_the_starting_thread_is_busy() {
+        let runtime = tokio::runtime::LocalRuntime::new().expect("runtime");
+        let backend = runtime
+            .block_on(MicrosandboxNetworkBackend::on_thread(|| async {
+                Ok(super::Decider {
+                    policy: Rc::new(StaticPolicy::allow_all()),
+                    secret_store: None,
+                })
+            }))
+            .expect("start the Network thread");
+        let control = TestControlEndpoint::new();
+        let network_runtime = backend.runtime().expect("the Network thread's runtime");
+        runtime.block_on(async {
+            let path = control.path.clone();
+            let controller = network_runtime
+                .spawn(microsandbox_network::control::NetworkControlHost::bind(path))
+                .await
+                .expect("bind task")
+                .expect("bind Network control endpoint");
+            backend
+                .start(StartNetworkRequest {
+                    sandbox_id: sandbox_id(),
+                    sandbox_name: sandbox_name(),
+                    endpoint: NetworkEndpoint::Control(
+                        crate::network_endpoint::open(controller).expect("open Network control endpoint"),
+                    ),
+                })
+                .await
+                .expect("start Network Backend");
+        });
+
+        let (decided, decision) = std::sync::mpsc::channel();
+        let path = control.path;
+        #[allow(clippy::disallowed_methods, reason = "stands in for the sandbox's runtime process")]
+        let sandbox = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("sandbox runtime");
+            runtime.block_on(async {
+                let client = NetworkControlClient::new(path, &tokio::runtime::Handle::current());
+                let _ = decided.send(client.authorize(operation()).await.is_ok());
+            });
+        });
+        // This thread waits without running its runtime, so only the Network thread can answer.
+        let allowed = decision
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the request should be decided while this thread is busy");
+        assert!(allowed);
+        sandbox.join().expect("sandbox thread");
+        runtime.block_on(async { backend.stop(&sandbox_id()).await.expect("stop Network Backend") });
+    }
+
+    /// A stopped network releases its socket before it returns, so the sandbox's next network
+    /// binds a socket nothing else removes.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_network_has_removed_its_socket() {
+        let runtime = tokio::runtime::LocalRuntime::new().expect("runtime");
+        let backend = runtime
+            .block_on(MicrosandboxNetworkBackend::on_thread(|| async {
+                Ok(super::Decider {
+                    policy: Rc::new(StaticPolicy::allow_all()),
+                    secret_store: None,
+                })
+            }))
+            .expect("start the Network thread");
+        let network_runtime = backend.runtime().expect("the Network thread's runtime");
+        let control = TestControlEndpoint::new();
+        runtime.block_on(async {
+            for _ in 0..20 {
+                let controller = network_runtime
+                    .spawn(microsandbox_network::control::NetworkControlHost::bind(
+                        control.path.clone(),
+                    ))
+                    .await
+                    .expect("bind task")
+                    .expect("bind Network control endpoint");
+                backend
+                    .start(StartNetworkRequest {
+                        sandbox_id: sandbox_id(),
+                        sandbox_name: sandbox_name(),
+                        endpoint: NetworkEndpoint::Control(
+                            crate::network_endpoint::open(controller).expect("open Network control endpoint"),
+                        ),
+                    })
+                    .await
+                    .expect("start Network Backend");
+                assert!(control.path.exists(), "a running network serves its socket");
+                backend.stop(&sandbox_id()).await.expect("stop Network Backend");
+                assert!(!control.path.exists(), "a stopped network has removed its socket");
+            }
+        });
+    }
+
+    /// Stopping does not wait for a runtime that reads nothing it is sent.
+    #[tokio::test(flavor = "local")]
+    async fn a_network_stops_while_its_runtime_reads_nothing() {
+        use std::{
+            pin::Pin,
+            task::{Context, Poll},
+        };
+
+        use sandbox::network::{
+            BatchReceiver, BatchSender, NetworkBatch, NetworkControlEndpoint, NetworkControlEndpointProperties,
+            NetworkControlMessage, NetworkControlProtocolId, NetworkEndpointError, NetworkTransferProgress,
+        };
+
+        /// Says hello once, then nothing more.
+        struct Hello(Option<Vec<u8>>);
+        impl BatchReceiver<NetworkControlMessage> for Hello {
+            fn poll_receive(
+                mut self: Pin<&mut Self>,
+                _context: &mut Context<'_>,
+                output: &mut NetworkBatch<NetworkControlMessage>,
+            ) -> Poll<Result<NetworkTransferProgress, NetworkEndpointError>> {
+                let Some(hello) = self.0.take() else {
+                    return Poll::Pending;
+                };
+                let _ = output.push_back(NetworkControlMessage::from(zeroize::Zeroizing::new(hello)));
+                Poll::Ready(Ok(NetworkTransferProgress::Items(
+                    std::num::NonZeroUsize::new(1).expect("one"),
+                )))
+            }
+        }
+        /// Accepts nothing.
+        struct Full;
+        impl BatchSender<NetworkControlMessage> for Full {
+            fn poll_send(
+                self: Pin<&mut Self>,
+                _context: &mut Context<'_>,
+                _pending: &mut NetworkBatch<NetworkControlMessage>,
+            ) -> Poll<Result<NetworkTransferProgress, NetworkEndpointError>> {
+                Poll::Pending
+            }
+            fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Result<(), NetworkEndpointError>> {
+                Poll::Ready(Ok(()))
+            }
+            fn poll_shutdown(
+                self: Pin<&mut Self>,
+                _context: &mut Context<'_>,
+            ) -> Poll<Result<(), NetworkEndpointError>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let hello = serde_json::to_vec(&microsandbox_network::control::RuntimeMessage::Hello {
+            protocol: microsandbox_network::control::NETWORK_CONTROL_PROTOCOL.into(),
+        })
+        .expect("hello");
+        let endpoint = NetworkControlEndpoint::new(
+            NetworkControlEndpointProperties::new(
+                NetworkControlProtocolId::new(microsandbox_network::control::NETWORK_CONTROL_PROTOCOL),
+                std::num::NonZeroUsize::new(1 << 16).expect("length"),
+            ),
+            Hello(Some(hello)),
+            Full,
+        );
+        let backend = MicrosandboxNetworkBackend::new(super::Decider {
+            policy: Rc::new(StaticPolicy::allow_all()),
+            secret_store: None,
+        });
+        backend
+            .start(StartNetworkRequest {
+                sandbox_id: sandbox_id(),
+                sandbox_name: sandbox_name(),
+                endpoint: NetworkEndpoint::Control(endpoint),
+            })
+            .await
+            .expect("start Network Backend");
+        // Lets the driver take the hello and block sending its answer.
+        tokio::task::yield_now().await;
+
+        tokio::time::timeout(Duration::from_secs(5), backend.stop(&sandbox_id()))
+            .await
+            .expect("the network should stop")
+            .expect("stop Network Backend");
+    }
+
+    /// A stop whose caller gives up still holds back the next stop, and so the next start, until
+    /// the driver has released its endpoint.
+    #[tokio::test(flavor = "local")]
+    async fn a_cancelled_stop_still_holds_back_the_next_one_until_the_endpoint_is_released() {
+        use std::{
+            pin::Pin,
+            sync::{
+                Arc,
+                atomic::{AtomicBool, Ordering},
+            },
+            task::{Context, Poll},
+        };
+
+        use sandbox::network::{
+            BatchReceiver, BatchSender, NetworkBatch, NetworkControlEndpoint, NetworkControlEndpointProperties,
+            NetworkControlMessage, NetworkControlProtocolId, NetworkEndpointError, NetworkTransferProgress,
+        };
+
+        /// Receives nothing.
+        struct Silent;
+        impl BatchReceiver<NetworkControlMessage> for Silent {
+            fn poll_receive(
+                self: Pin<&mut Self>,
+                _context: &mut Context<'_>,
+                _output: &mut NetworkBatch<NetworkControlMessage>,
+            ) -> Poll<Result<NetworkTransferProgress, NetworkEndpointError>> {
+                Poll::Pending
+            }
+        }
+        /// Shuts down once `released` is set.
+        struct Held {
+            released: Arc<AtomicBool>,
+        }
+        impl BatchSender<NetworkControlMessage> for Held {
+            fn poll_send(
+                self: Pin<&mut Self>,
+                _context: &mut Context<'_>,
+                _pending: &mut NetworkBatch<NetworkControlMessage>,
+            ) -> Poll<Result<NetworkTransferProgress, NetworkEndpointError>> {
+                Poll::Pending
+            }
+            fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Result<(), NetworkEndpointError>> {
+                Poll::Ready(Ok(()))
+            }
+            fn poll_shutdown(
+                self: Pin<&mut Self>,
+                context: &mut Context<'_>,
+            ) -> Poll<Result<(), NetworkEndpointError>> {
+                if self.released.load(Ordering::SeqCst) {
+                    return Poll::Ready(Ok(()));
+                }
+                context.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+
+        let released = Arc::new(AtomicBool::new(false));
+        let endpoint = NetworkControlEndpoint::new(
+            NetworkControlEndpointProperties::new(
+                NetworkControlProtocolId::new(microsandbox_network::control::NETWORK_CONTROL_PROTOCOL),
+                std::num::NonZeroUsize::new(1 << 16).expect("length"),
+            ),
+            Silent,
+            Held {
+                released: released.clone(),
+            },
+        );
+        let backend = MicrosandboxNetworkBackend::new(super::Decider {
+            policy: Rc::new(StaticPolicy::allow_all()),
+            secret_store: None,
+        });
+        backend
+            .start(StartNetworkRequest {
+                sandbox_id: sandbox_id(),
+                sandbox_name: sandbox_name(),
+                endpoint: NetworkEndpoint::Control(endpoint),
+            })
+            .await
+            .expect("start Network Backend");
+
+        let quick = Duration::from_millis(50);
+        assert!(
+            tokio::time::timeout(quick, backend.stop(&sandbox_id())).await.is_err(),
+            "the stop waits for the release"
+        );
+        assert!(
+            !backend.is_running(&sandbox_id()),
+            "a stopping network no longer serves"
+        );
+        assert!(
+            tokio::time::timeout(quick, backend.stop(&sandbox_id())).await.is_err(),
+            "a later stop waits for the same release"
+        );
+
+        released.store(true, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(5), backend.stop(&sandbox_id()))
+            .await
+            .expect("the stop should return once the endpoint is released")
+            .expect("stop Network Backend");
     }
 }

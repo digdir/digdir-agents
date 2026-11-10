@@ -4,7 +4,7 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 use crate::{
     Error,
-    authorization::{AgentPolicyEngine, SecretHosts},
+    authorization::{PolicyUpdates, SecretHosts},
     control_plane, environment, harness, persistence,
 };
 use ::sandbox::{SandboxHandle, SandboxId, SandboxName, network::NetworkBackend as _};
@@ -14,7 +14,7 @@ use sandbox_microsandbox::{MicrosandboxNetworkBackend, SecretBinding};
 pub(super) struct Preparation {
     database: persistence::Database,
     credentials: Rc<harness::AuthenticationManager>,
-    policy: Rc<AgentPolicyEngine>,
+    policy: PolicyUpdates,
     network: Rc<MicrosandboxNetworkBackend>,
     admitted: RefCell<AdmittedNetworks>,
 }
@@ -85,7 +85,7 @@ impl Preparation {
     pub(super) const fn new(
         database: persistence::Database,
         credentials: Rc<harness::AuthenticationManager>,
-        policy: Rc<AgentPolicyEngine>,
+        policy: PolicyUpdates,
         network: Rc<MicrosandboxNetworkBackend>,
     ) -> Self {
         Self {
@@ -170,7 +170,7 @@ impl Preparation {
                     .iter()
                     .map(|secret| SecretHosts::new(secret.environment, secret.allowed_hosts.clone())),
             );
-            self.policy.set_agent(&sandbox_name, &record.agent, policy);
+            self.policy.set_agent(&sandbox_name, &record.agent, policy).await?;
             self.admitted
                 .borrow_mut()
                 .install(&sandbox_name, &record.agent.spec.network);
@@ -198,7 +198,8 @@ impl Preparation {
         }
         .await;
         if result.is_err() {
-            self.remove(&sandbox_name);
+            // The pass's own error says more than one from removing what it set up.
+            let _ = self.remove(&sandbox_name).await;
         }
         result
     }
@@ -333,15 +334,15 @@ impl Preparation {
         })
     }
 
-    pub(super) fn remove(&self, sandbox: &SandboxName) {
-        self.policy.remove_agent(sandbox);
+    async fn remove(&self, sandbox: &SandboxName) -> Result<(), Error> {
         self.network.remove_secret_bindings(sandbox);
+        self.policy.remove_agent(sandbox).await
     }
 
     /// Forgets `sandbox` once it is released, with the connections its network had open.
-    pub(super) fn release(&self, sandbox: &SandboxName) {
-        self.remove(sandbox);
+    pub(super) async fn release(&self, sandbox: &SandboxName) -> Result<(), Error> {
         self.admitted.borrow_mut().forget(sandbox);
+        self.remove(sandbox).await
     }
 }
 
@@ -391,6 +392,28 @@ spec:
     mode: mediated
     allow: all
 ";
+
+    /// A Preparation over `database` whose policy is decided by `engine`, on this thread, and the
+    /// engine.
+    fn preparation(
+        database: &crate::persistence::Database,
+        engine: crate::authorization::AgentPolicyEngine,
+    ) -> (super::Preparation, Rc<crate::authorization::AgentPolicyEngine>) {
+        let (policy, updates) = crate::authorization::PolicyUpdates::channel();
+        let engine = Rc::new(engine);
+        engine.clone().serve(updates);
+        let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(
+            sandbox_microsandbox::Decider {
+                policy: engine.clone(),
+                secret_store: None,
+            },
+        ));
+        let credentials = Rc::new(harness::AuthenticationManager::new(database.clone()));
+        (
+            super::Preparation::new(database.clone(), credentials, policy, network),
+            engine,
+        )
+    }
 
     /// An agent named `name` whose one harness may use any stored login.
     fn record(name: &str, id: &str) -> crate::control_plane::AgentRecord {
@@ -445,10 +468,7 @@ spec:
         for name in ["a", "b"] {
             harness::store_test_login(name, &database).await;
         }
-        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
-        let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
-        let credentials = Rc::new(harness::AuthenticationManager::new(database.clone()));
-        let preparation = super::Preparation::new(database.clone(), credentials, policy, network);
+        let (preparation, _) = preparation(&database, crate::authorization::AgentPolicyEngine::new());
         let (first, second) = (
             record("first", "6a3c1f0e-2b7d-4e59-9c84-0f1d2e3a4b5c"),
             record("second", "7b4d2a1f-3c8e-4f6a-8d95-1a2b3c4d5e6f"),
@@ -481,10 +501,7 @@ spec:
         for name in ["a", "b"] {
             harness::store_test_login(name, &database).await;
         }
-        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
-        let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
-        let credentials = Rc::new(harness::AuthenticationManager::new(database.clone()));
-        let preparation = super::Preparation::new(database.clone(), credentials, policy, network);
+        let (preparation, _) = preparation(&database, crate::authorization::AgentPolicyEngine::new());
         let login = |prepared: &super::PreparedNetwork| prepared.logins[&harness::test_harness()].to_string();
 
         let first = record("first", "6a3c1f0e-2b7d-4e59-9c84-0f1d2e3a4b5c");
@@ -524,8 +541,15 @@ spec:
             harness::store_test_login(name, &database).await;
         }
         let credentials = Rc::new(harness::AuthenticationManager::new(database.clone()));
-        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
-        let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
+        let (policy, updates) = crate::authorization::PolicyUpdates::channel();
+        let engine = Rc::new(crate::authorization::AgentPolicyEngine::new());
+        engine.clone().serve(updates);
+        let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(
+            sandbox_microsandbox::Decider {
+                policy: engine,
+                secret_store: None,
+            },
+        ));
         let preparation = super::Preparation::new(database.clone(), credentials.clone(), policy, network);
         let agent = record("first", "6a3c1f0e-2b7d-4e59-9c84-0f1d2e3a4b5c");
         let mut prepared = preparation.prepare(&agent).await.expect("prepare");
@@ -552,8 +576,15 @@ spec:
             harness::store_test_login(name, &database).await;
         }
         let credentials = Rc::new(harness::AuthenticationManager::new(database.clone()));
-        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new());
-        let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
+        let (policy, updates) = crate::authorization::PolicyUpdates::channel();
+        let engine = Rc::new(crate::authorization::AgentPolicyEngine::new());
+        engine.clone().serve(updates);
+        let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(
+            sandbox_microsandbox::Decider {
+                policy: engine,
+                secret_store: None,
+            },
+        ));
         let preparation = super::Preparation::new(database.clone(), credentials.clone(), policy, network);
         let (first, second) = (
             record("first", "6a3c1f0e-2b7d-4e59-9c84-0f1d2e3a4b5c"),
@@ -639,18 +670,11 @@ spec:
         for name in ["digdir", "altinn"] {
             store_token(&database, name, None).await;
         }
-        let policy = Rc::new(crate::authorization::AgentPolicyEngine::new().with_stored_secrets(database.clone()));
-        let network = Rc::new(sandbox_microsandbox::MicrosandboxNetworkBackend::new(policy.clone()));
-        (
-            super::Preparation::new(
-                database.clone(),
-                Rc::new(harness::AuthenticationManager::new(database.clone())),
-                policy.clone(),
-                network,
-            ),
-            policy,
-            database,
-        )
+        let (preparation, policy) = preparation(
+            &database,
+            crate::authorization::AgentPolicyEngine::new().with_stored_secrets(database.clone()),
+        );
+        (preparation, policy, database)
     }
 
     /// Whether the policy allows the agent's sandbox `action` on `resource` in a request to `host`.

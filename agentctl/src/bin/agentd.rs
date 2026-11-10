@@ -115,18 +115,11 @@ async fn open_sandboxes(
     home: &ControlPlaneHome,
     database: &persistence::Database,
     credentials: Rc<agent::harness::AuthenticationManager>,
-    policy: Rc<agent::authorization::AgentPolicyEngine>,
     platform_api_port: u16,
 ) -> Result<(Rc<agent::sandbox::Service>, String), Error> {
     let microsandbox = Rc::new(
-        agent::sandbox::microsandbox::Adapter::open(
-            home.path(),
-            database.clone(),
-            credentials,
-            policy,
-            platform_api_port,
-        )
-        .await?,
+        agent::sandbox::microsandbox::Adapter::open(home.path(), database.clone(), credentials, platform_api_port)
+            .await?,
     );
     let platform_api_url = microsandbox.platform_url();
     let provider: Rc<dyn agent::sandbox::Provider> = microsandbox;
@@ -145,14 +138,13 @@ async fn open_sandboxes(
 async fn run_control_plane(home: ControlPlaneHome, database: persistence::Database) -> Result<(), Error> {
     let store = Rc::new(database.clone());
     let credentials = Rc::new(agent::harness::AuthenticationManager::new(database.clone()));
-    let policy = Rc::new(agent::authorization::AgentPolicyEngine::new().with_stored_secrets(database.clone()));
     let platform_api_listener = agent::platform_api::bind().await?;
     // Earlier releases reused a port persisted here; nothing reads it any more.
     // TODO: Remove with `AGENT_SESSION_HOOK_URL` in the session launch environment.
     let _ = tokio::fs::remove_file(home.path().join("platform-api-port")).await;
     let platform_api_port = platform_api_listener.local_addr()?.port();
     let (sandboxes, platform_api_url) =
-        open_sandboxes(&home, &database, credentials.clone(), policy, platform_api_port).await?;
+        open_sandboxes(&home, &database, credentials.clone(), platform_api_port).await?;
     let session_reports: Rc<dyn agent::sessions::SessionReports> = store.clone();
     let session_store: Rc<dyn agent::sessions::SessionStore> = store.clone();
     let session_runtime: Rc<dyn agent::sessions::SessionRuntime> = Rc::new(agent::sessions::Tmux);

@@ -6,11 +6,15 @@ use std::{cell::RefCell, panic::AssertUnwindSafe, rc::Rc};
 use futures_util::FutureExt as _;
 use sandbox::{
     ByteQuantity, CpuQuantity, EnsureSandboxRequest, Platform, RetentionPolicy, RootFilesystem, SandboxHandle,
-    SandboxName, SandboxResources, SandboxService, SandboxSpec, backend::SandboxBackend as _, execution::ExecutionSpec,
-    image::ImageSource, memory::MemorySecretStore, secret_store::SecretStore as _,
+    SandboxName, SandboxResources, SandboxService, SandboxSpec,
+    backend::SandboxBackend as _,
+    execution::ExecutionSpec,
+    image::ImageSource,
+    memory::MemorySecretStore,
+    secret_store::{SecretReference, SecretStore as _},
 };
-use sandbox_authorization::{AuthorizationDecision, AuthorizationRequest, LocalFuture, PolicyEngine};
-use sandbox_microsandbox::{MicrosandboxNetworkBackend, MicrosandboxProvider, SecretBinding};
+use sandbox_authorization::{AuthorizationDecision, AuthorizationRequest, LocalFuture, PolicyEngine, StaticPolicy};
+use sandbox_microsandbox::{Decider, MicrosandboxNetworkBackend, MicrosandboxProvider, SecretBinding};
 
 struct RecordingPolicy {
     denied_action: RefCell<Option<String>>,
@@ -60,7 +64,10 @@ async fn controlled_network_authorizes_dns_tcp_and_http_and_fails_closed() {
         .set("provider-token", b"integration-secret")
         .await
         .expect("integration secret should be stored");
-    let network = Rc::new(MicrosandboxNetworkBackend::new(policy.clone()).with_secret_store(secrets.clone()));
+    let network = Rc::new(MicrosandboxNetworkBackend::new(Decider {
+        policy: policy.clone(),
+        secret_store: Some(secrets.clone()),
+    }));
     let sandbox_name = SandboxName::new("controlled-network").expect("test sandbox name should be valid");
     network
         .set_secret_bindings(
@@ -163,7 +170,10 @@ async fn resource_restart_after_reopening_the_provider_keeps_network_control() {
     let sandbox_name = SandboxName::new("controlled-restart").expect("test sandbox name should be valid");
     {
         let backend = Rc::new(MicrosandboxProvider::open(&home).await.expect("Backend should open"));
-        let network = Rc::new(MicrosandboxNetworkBackend::new(Rc::new(RecordingPolicy::allow_all())));
+        let network = Rc::new(MicrosandboxNetworkBackend::new(Decider {
+            policy: Rc::new(RecordingPolicy::allow_all()),
+            secret_store: None,
+        }));
         // Dropped without release: the runtime keeps running, as when agentd exits.
         let _abandoned = SandboxService::new(backend)
             .with_network_backend(network)
@@ -178,7 +188,10 @@ async fn resource_restart_after_reopening_the_provider_keeps_network_control() {
     let policy = Rc::new(RecordingPolicy::allow_all());
     policy.deny("network.connect");
     let backend = Rc::new(MicrosandboxProvider::open(&home).await.expect("Backend should reopen"));
-    let network = Rc::new(MicrosandboxNetworkBackend::new(policy.clone()));
+    let network = Rc::new(MicrosandboxNetworkBackend::new(Decider {
+        policy: policy.clone(),
+        secret_store: None,
+    }));
     let service = SandboxService::new(backend).with_network_backend(network);
     let request = EnsureSandboxRequest::new(sandbox_name, spec("2"));
     let sandbox = service
@@ -196,6 +209,109 @@ async fn resource_restart_after_reopening_the_provider_keeps_network_control() {
             "restarted sandbox reached the network without host control"
         );
         assert_action(&policy.requests.borrow(), "network.connect");
+    })
+    .catch_unwind()
+    .await;
+    service
+        .delete(request.name())
+        .await
+        .expect("controlled sandbox should delete");
+    if let Err(payload) = test_result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+/// Answers every secret use with the same value.
+struct OneSecret;
+
+impl sandbox::secret_store::SecretStore for OneSecret {
+    fn set<'a>(
+        &'a self,
+        name: &'a str,
+        _value: &'a [u8],
+    ) -> sandbox::LocalFuture<'a, Result<SecretReference, sandbox::Error>> {
+        Box::pin(async move { Ok(SecretReference::from_opaque(name)) })
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        _reference: &'a SecretReference,
+    ) -> sandbox::LocalFuture<'a, Result<sandbox::secret_store::SecretMaterial, sandbox::Error>> {
+        Box::pin(async {
+            Ok(sandbox::secret_store::SecretMaterial::new(
+                b"integration-secret".to_vec(),
+            ))
+        })
+    }
+}
+
+/// As agentd runs it: the network decides on a thread of its own and serves the sandbox's control
+/// socket there.
+#[tokio::test(flavor = "local")]
+#[ignore = "requires Internet access, a Docker Engine API, Microsandbox host runtime and hardware virtualization"]
+async fn a_network_on_its_own_thread_mediates_its_sandbox() {
+    let temporary = tempfile::tempdir().expect("temporary integration home should be created");
+    let network = Rc::new(
+        MicrosandboxNetworkBackend::on_thread(|| async {
+            Ok(Decider {
+                policy: Rc::new(StaticPolicy::allow_all()),
+                secret_store: Some(Rc::new(OneSecret)),
+            })
+        })
+        .await
+        .expect("the Network thread should start"),
+    );
+    let backend = Rc::new(
+        MicrosandboxProvider::builder(temporary.path().join("control-plane"))
+            .network_runtime(network.runtime().expect("the Network thread's runtime"))
+            .open()
+            .await
+            .expect("Backend should open"),
+    );
+    let sandbox_name = SandboxName::new("threaded-network").expect("test sandbox name should be valid");
+    network
+        .set_secret_bindings(
+            sandbox_name.clone(),
+            vec![
+                SecretBinding::with_placeholder(
+                    "PROVIDER_TOKEN",
+                    "$MEDIATED_TOKEN",
+                    SecretReference::from_opaque("provider-token"),
+                )
+                .expect("integration secret binding should be valid"),
+            ],
+        )
+        .expect("secret mediation should be configured");
+    let service = SandboxService::new(backend).with_network_backend(network);
+    let request = EnsureSandboxRequest::new(
+        sandbox_name,
+        SandboxSpec {
+            image: ImageSource::Reference {
+                reference: "docker.io/library/alpine:3.22".to_string(),
+            },
+            platform: native_linux_platform(),
+            resources: resources(),
+            init_system: sandbox::init::InitSystem::Backend,
+            retention_policy: RetentionPolicy::Delete,
+        },
+    );
+    let sandbox = service.ensure(&request).await.expect("controlled sandbox should start");
+
+    let test_result = AssertUnwindSafe(async {
+        let allowed = sandbox
+            .run_execution(shell("wget -T 10 -qO- http://example.com"))
+            .await
+            .expect("allowed request should execute");
+        assert!(allowed.status.success(), "allowed request failed: {allowed:?}");
+        // The runtime blocks a request carrying the placeholder unless the secret's use is allowed
+        // and its value substituted.
+        let mediated = sandbox
+            .run_execution(shell(
+                "wget -T 10 -qO /dev/null --header='Authorization: Bearer $MEDIATED_TOKEN' https://example.net",
+            ))
+            .await
+            .expect("mediated request should execute");
+        assert!(mediated.status.success(), "mediated request failed: {mediated:?}");
     })
     .catch_unwind()
     .await;
