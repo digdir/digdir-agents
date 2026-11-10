@@ -97,13 +97,93 @@ async fn an_allow_list_reaches_only_its_hosts() {
         }
     }
     assert_eq!(
-        connect(&policy, sandbox.as_str(), Some("auth.openai.com"), "203.0.113.7:443").await,
+        connect_resolved(&policy, sandbox.as_str(), "auth.openai.com", "203.0.113.7:443", true).await,
         AuthorizationDecision::Allow
     );
     assert_eq!(
-        connect(&policy, sandbox.as_str(), Some("example.com"), "203.0.113.8:443").await,
+        connect_resolved(&policy, sandbox.as_str(), "example.com", "203.0.113.8:443", true).await,
         AuthorizationDecision::Deny
     );
+    // An allowed name the sandbox's DNS never gave for the address it dials, as a program sends
+    // to reach any address.
+    assert_eq!(
+        connect_resolved(&policy, sandbox.as_str(), "auth.openai.com", "203.0.113.9:8443", false).await,
+        AuthorizationDecision::Deny
+    );
+    assert_eq!(
+        connect(&policy, sandbox.as_str(), Some("auth.openai.com"), "203.0.113.9:80").await,
+        AuthorizationDecision::Deny,
+        "a runtime that does not report it fails closed"
+    );
+
+    // A resolver the sandbox picks could answer an allowed name with any address.
+    let to_resolver = |resolver: Option<&'static str>| {
+        let mut authorization_context = AuthorizationContext::new()
+            .with_attribute(context::SANDBOX_NAME, sandbox.as_str())
+            .with_attribute(context::DNS_RECORD_TYPE, "A");
+        if let Some(resolver) = resolver {
+            authorization_context.insert(context::DNS_RESOLVER, resolver);
+        }
+        policy.evaluate(AuthorizationRequest {
+            principal: Principal::new(principal_kind::SANDBOX, "sandbox-id"),
+            action: Action::new(action::DNS_QUERY),
+            resource: Resource::new(resource_kind::DOMAIN, "auth.openai.com"),
+            context: authorization_context,
+        })
+    };
+    assert_eq!(to_resolver(None).await.expect("decision"), AuthorizationDecision::Allow);
+    assert_eq!(
+        to_resolver(Some("198.51.100.53:53")).await.expect("decision"),
+        AuthorizationDecision::Deny
+    );
+
+    // Allowing every host leaves the name where it was dialed unchecked.
+    let open = SandboxName::new("agent-open-id").expect("Sandbox name");
+    policy.set_agent(&open, &support::agent("open"), []);
+    assert_eq!(
+        connect_resolved(&policy, open.as_str(), "example.com", "203.0.113.9:8443", false).await,
+        AuthorizationDecision::Allow
+    );
+}
+
+/// Replacing an agent's policy says when the hosts it may reach changed, so that agentd closes the
+/// connections the earlier one admitted.
+#[tokio::test(flavor = "local")]
+async fn replacing_a_policy_says_whether_its_hosts_changed() {
+    let policy = AgentPolicyEngine::new();
+    let sandbox = SandboxName::new("agent-test-id").expect("Sandbox name");
+    let mut agent = support::agent("worker");
+    assert!(!policy.set_agent(&sandbox, &agent, []), "nothing was admitted before");
+    assert!(!policy.set_agent(&sandbox, &agent, [SecretHosts::new("TOKEN", vec!["github.com".into()])]));
+
+    agent.spec.network.deny.push("example.com".into());
+    assert!(policy.set_agent(&sandbox, &agent, []));
+    agent.spec.network.allow = agent::NetworkAllow::Hosts(vec!["github.com".into()]);
+    assert!(policy.set_agent(&sandbox, &agent, []));
+    assert!(!policy.set_agent(&sandbox, &agent, []));
+}
+
+async fn connect_resolved(
+    policy: &AgentPolicyEngine,
+    agent: &str,
+    hostname: &str,
+    destination: &str,
+    resolved: bool,
+) -> AuthorizationDecision {
+    policy
+        .evaluate(AuthorizationRequest {
+            principal: Principal::new(principal_kind::SANDBOX, "sandbox-id"),
+            action: Action::new(action::NETWORK_CONNECT),
+            resource: Resource::new(resource_kind::EXTERNAL_SERVICE, hostname),
+            context: AuthorizationContext::new()
+                .with_attribute(context::SANDBOX_NAME, agent)
+                .with_attribute(context::NETWORK_DESTINATION_ADDRESS, destination)
+                .with_attribute(context::NETWORK_DESTINATION_IS_HOST, false)
+                .with_attribute(context::NETWORK_HOSTNAME, hostname)
+                .with_attribute(context::NETWORK_HOSTNAME_RESOLVED, resolved),
+        })
+        .await
+        .expect("policy decision")
 }
 
 /// A stored secret is substituted only at a host that both the manifest and the secret allow.

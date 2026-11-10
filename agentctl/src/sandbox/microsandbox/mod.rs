@@ -164,6 +164,7 @@ impl Provider for Adapter {
             let harnesses = prepared.harnesses;
             let logins = prepared.logins;
             let accounts = prepared.accounts;
+            let network_policy_changed = prepared.network_policy_changed;
             for (name, value) in prepared.environment {
                 if environment.insert(name.clone(), value).is_some() {
                     return Err(Error::Invalid(format!(
@@ -196,6 +197,8 @@ impl Provider for Adapter {
                 self.preparation.restart_network(&sandbox).await?;
                 // Re-ensure starts the stopped Network with the replacement handshake bindings.
                 sandbox = self.service.ensure(&request).forward(&progress).await?;
+            } else if network_policy_changed {
+                self.preparation.revoke_connections(&sandbox).await?;
             }
             Ok(ProviderEnsureOutcome {
                 sandbox,

@@ -24,6 +24,8 @@ pub(super) struct PreparedNetwork {
     pub(super) logins: BTreeMap<crate::Harness, harness::LoginName>,
     /// What setup configures in the guest for the accounts the agent acts as.
     pub(super) accounts: crate::sandbox::AccountSetup,
+    /// Whether the hosts the agent may reach changed, so connections opened before must close.
+    pub(super) network_policy_changed: bool,
 }
 
 struct PreparedHarnesses {
@@ -60,6 +62,15 @@ impl Preparation {
         self.network.stop(sandbox.id()).await.map_err(Error::from)
     }
 
+    /// Closes the connections `sandbox`'s network admitted, so that each one opened again is
+    /// decided by the current policy. A network that is not running has none.
+    pub(super) async fn revoke_connections(&self, sandbox: &SandboxHandle) -> Result<(), Error> {
+        match self.network.revoke_all(sandbox.id()).await {
+            Err(error) if error.is_not_found() => Ok(()),
+            result => result.map_err(Error::from),
+        }
+    }
+
     pub(super) async fn prepare(&self, record: &control_plane::AgentRecord) -> Result<PreparedNetwork, Error> {
         let sandbox_name = record.sandbox_name()?;
         let result = async {
@@ -76,7 +87,7 @@ impl Preparation {
                     .iter()
                     .map(|secret| SecretHosts::new(secret.environment, secret.allowed_hosts.clone())),
             );
-            self.policy.set_agent(&sandbox_name, &record.agent, policy);
+            let network_policy_changed = self.policy.set_agent(&sandbox_name, &record.agent, policy);
             for secret in managed_secrets {
                 bindings.push(SecretBinding::with_placeholder(
                     secret.environment,
@@ -97,6 +108,7 @@ impl Preparation {
                 harnesses: installed,
                 logins,
                 accounts: accounts.setup,
+                network_policy_changed,
             })
         }
         .await;

@@ -51,13 +51,20 @@ impl AgentPolicyEngine {
         });
     }
 
-    /// Replaces the policy for one desired agent generation, whose sandbox gets `secrets`.
-    pub fn set_agent(&self, sandbox: &SandboxName, agent: &Agent, secrets: impl IntoIterator<Item = SecretHosts>) {
+    /// Replaces the policy for one desired agent generation, whose sandbox gets `secrets`, and
+    /// returns whether it changes the hosts an earlier one let the sandbox reach. Connections that
+    /// policy admitted stay open until they are revoked.
+    pub fn set_agent(
+        &self,
+        sandbox: &SandboxName,
+        agent: &Agent,
+        secrets: impl IntoIterator<Item = SecretHosts>,
+    ) -> bool {
         let secrets = secrets
             .into_iter()
             .map(|secret| (secret.environment.clone(), secret))
             .collect();
-        self.agents.borrow_mut().insert(
+        let replaced = self.agents.borrow_mut().insert(
             sandbox.as_str().into(),
             AgentPolicy {
                 allowed_hosts: agent.spec.network.allow.clone(),
@@ -65,6 +72,9 @@ impl AgentPolicyEngine {
                 secrets,
             },
         );
+        replaced.is_some_and(|earlier| {
+            earlier.allowed_hosts != agent.spec.network.allow || earlier.denied_hosts != agent.spec.network.deny
+        })
     }
 
     /// Removes policy for a released agent.
@@ -148,6 +158,7 @@ impl AgentPolicyEngine {
                 host.map_or(AuthorizationDecision::Deny, |host| {
                     decision(
                         policy.allowed_hosts.allows(host)
+                            && (policy.allowed_hosts == crate::NetworkAllow::All || uses_platform_dns(request))
                             && !policy.denied_hosts.iter().any(|pattern| host_matches(pattern, host)),
                     )
                 })
@@ -283,6 +294,23 @@ const fn is_host_reserved(address: std::net::IpAddr) -> bool {
                 // Link-local fe80::/10.
                 || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0b1100_0000) == 0x80)
         }
+    }
+}
+
+/// Whether `request` keeps to the names the platform's DNS gave the sandbox, as an agent that
+/// reaches only some hosts must. The sandbox names the host it connects to itself, such as in its
+/// TLS SNI or HTTP `Host`, so a connection counts only where that DNS resolved the name to the
+/// address it dials. Answers from a resolver the sandbox picks would count as well, so a DNS query
+/// to one is refused. An HTTP request goes over a connection already decided.
+fn uses_platform_dns(request: &AuthorizationRequest) -> bool {
+    match request.action.as_str() {
+        action::NETWORK_CONNECT => request
+            .context
+            .get(context::NETWORK_HOSTNAME_RESOLVED)
+            .and_then(sandbox_authorization::AuthorizationValue::as_bool)
+            .unwrap_or(false),
+        action::DNS_QUERY => request.context.get(context::DNS_RESOLVER).is_none(),
+        _ => true,
     }
 }
 
