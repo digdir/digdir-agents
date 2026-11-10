@@ -6,9 +6,9 @@
 use std::{collections::BTreeSet, io::Write as _, path::Path, time::Duration};
 
 use agent::{
-    Error, Harness, Lifetime,
+    Error, Harness,
     control_api::{AgentLease, Client},
-    control_plane::{RunDefinition, RunRequest, WaitPolicy},
+    control_plane::WaitPolicy,
     harness::{LoginName, SandboxSignIn},
     local::home::ControlPlaneHome,
     sandbox::ExecutionTarget,
@@ -27,9 +27,6 @@ use crate::{CommandError, CommandResult};
 /// How long a sign-in agent may take to start, which includes pulling its image the first time.
 pub(crate) const START_TIMEOUT: Duration = Duration::from_mins(20);
 
-/// The definition agentd carries for the sign-in agent, in `agentctl/bundled/definitions/`.
-const SIGN_IN_DEFINITION: &str = "bundled/sign-in";
-
 /// A running sign-in agent. It is ephemeral, so agentd deletes it once this is dropped or the
 /// process ends, however it ends.
 pub(crate) struct SignInAgent<'a> {
@@ -45,18 +42,8 @@ impl<'a> SignInAgent<'a> {
         home: &'a ControlPlaneHome,
         timeout: Duration,
     ) -> crate::CommandResult<Self> {
-        eprintln!("Starting a short-lived agent to sign in from; it is deleted afterwards.");
-        let (ran, lease) = client
-            .run(RunRequest {
-                definition: RunDefinition::Reference {
-                    reference: SIGN_IN_DEFINITION.into(),
-                },
-                binds: Vec::new(),
-                lifetime: Some(Lifetime::Ephemeral),
-                name: None,
-                allow_exposed_files: BTreeSet::new(),
-            })
-            .await?;
+        eprintln!("Starting a short-lived agent to sign in from. It is deleted afterwards.");
+        let (ran, lease) = client.run_sign_in().await?;
         let name = ran.agent.metadata.name;
         crate::wait_until_converged(client, &name, timeout).await?;
         let target = client.ensure_execution(&name, WaitPolicy::UntilConverged).await?;
@@ -67,15 +54,16 @@ impl<'a> SignInAgent<'a> {
         })
     }
 
-    /// Runs `sign_in` with this terminal relayed to it, and returns the credential it leaves.
-    pub(crate) async fn run(&self, sign_in: &SandboxSignIn) -> Result<Zeroizing<String>, Error> {
+    /// Runs `sign_in` with this terminal relayed to it, and returns the credential it leaves. With
+    /// `open_links`, each sign-in page it shows opens in this machine's browser.
+    pub(crate) async fn run(&self, sign_in: &SandboxSignIn, open_links: bool) -> Result<Zeroizing<String>, Error> {
         let base =
             agent::sandbox::platform::execution_spec(&self.target.operating_system, &["/bin/true".into()], true)?;
         let mut spec = sign_in.execution.clone().with_environment(base.environment().clone());
         if let Some(directory) = base.working_directory() {
             spec = spec.with_working_directory(directory.clone());
         }
-        let output = relay(self.home.path(), &self.target, spec).await?;
+        let output = relay(self.home.path(), &self.target, spec, open_links).await?;
         let artifact = match &sign_in.artifact {
             Some(path) => Some(self.read(path.as_str()).await?),
             None => None,
@@ -107,12 +95,13 @@ impl<'a> SignInAgent<'a> {
     }
 }
 
-/// Runs `spec` in a terminal relayed to this one until it exits, opening each sign-in page it
-/// shows in this machine's browser, and returns everything it printed.
+/// Runs `spec` in a terminal relayed to this one until it exits, with `open_links` opening each
+/// sign-in page it shows in this machine's browser, and returns everything it printed.
 async fn relay(
     home: &Path,
     target: &ExecutionTarget,
     spec: sandbox::execution::ExecutionSpec,
+    open_links: bool,
 ) -> Result<Zeroizing<Vec<u8>>, Error> {
     let size = crossterm::terminal::size()
         .ok()
@@ -122,7 +111,7 @@ async fn relay(
         agent::sandbox::start_terminal_execution(home, &target.sandbox, StartTerminalExecutionRequest::new(spec, size))
             .await?;
     let raw = RawMode::enable()?;
-    let result = pump(started).await;
+    let result = pump(started, open_links).await;
     drop(raw);
     let (output, status) = result?;
     if !status.success() {
@@ -156,11 +145,10 @@ impl Drop for RawMode {
 
 async fn pump(
     mut started: sandbox::terminal::StartedTerminalExecution,
+    open_links: bool,
 ) -> Result<(Zeroizing<Vec<u8>>, sandbox::execution::ExitStatus), Error> {
     let mut output = Zeroizing::new(Vec::new());
     let mut opened = BTreeSet::new();
-    // Where a browser here would not reach the person, such as over SSH, they open the link.
-    let blocked = crate::launch::launch_blocked(|name| std::env::var_os(name));
     let mut keys = EventStream::new();
     let mut stdout = std::io::stdout();
     loop {
@@ -170,18 +158,16 @@ async fn pump(
                     stdout.write_all(&bytes)?;
                     stdout.flush()?;
                     output.extend_from_slice(&bytes);
-                    for link in agent::harness::sign_in_links(&output) {
+                    let links = if open_links { agent::harness::sign_in_links(&output) } else { Vec::new() };
+                    for link in links {
                         if !opened.insert(link.to_string()) {
                             continue;
                         }
-                        match &blocked {
-                            Some(reason) => {
-                                write!(stdout, "\r\n(agentctl does not open the link here: {reason}. Open it in your browser.)\r\n")?;
-                                stdout.flush()?;
-                            }
-                            None => {
-                                crate::launch::open_url(link.as_str()).await.ok();
-                            }
+                        // Written among what the program draws, which it may draw over, but the
+                        // person would otherwise wait for a page that never opens.
+                        if let Err(error) = crate::launch::open_url(link.as_str()).await {
+                            write!(stdout, "\r\n(The sign-in page did not open: {error}. Open the link in your browser.)\r\n")?;
+                            stdout.flush()?;
                         }
                     }
                 }
@@ -264,11 +250,20 @@ pub(crate) async fn store_login(
         )));
     }
     let agent = SignInAgent::start(client, home, timeout).await?;
-    println!(
-        "\nSign in to {}. Its sign-in page opens in your browser.",
-        harness.display_name()
-    );
-    let credential = agent.run(&recipe).await;
+    // Where a browser here would not reach the person, such as over SSH, they open the link. Saying
+    // so now keeps it out of what the program draws.
+    let blocked = crate::launch::launch_blocked(|name| std::env::var_os(name));
+    match &blocked {
+        None => println!(
+            "\nSign in to {}. Its sign-in page opens in your browser.",
+            harness.display_name()
+        ),
+        Some(reason) => println!(
+            "\nSign in to {}. No browser here would reach you: {reason}. Open the link it shows in a browser.",
+            harness.display_name()
+        ),
+    }
+    let credential = agent.run(&recipe, blocked.is_none()).await;
     // The agent goes now, with everything signed in inside it.
     drop(agent);
     // A credential read off the sign-in's screen can be missed or come out garbled while the person

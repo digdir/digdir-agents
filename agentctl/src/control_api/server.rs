@@ -16,15 +16,16 @@ use super::protocol::{
     CODE_INTERNAL, CODE_INVALID_PARAMS, CODE_INVALID_REQUEST, CODE_METHOD_NOT_FOUND, CODE_NOT_FOUND, CODE_PARSE_ERROR,
     CODE_UPDATING, DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
     MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT,
-    METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS,
-    METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS,
-    METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SESSION_ARCHIVE,
-    METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT,
-    METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP,
-    METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET,
-    METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, PROTOCOL_VERSION, ProgressParams,
-    ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams,
-    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response, read_message,
+    METHOD_APPLY, METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_AUTH_SIGN_IN_AGENT,
+    METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH,
+    METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN,
+    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
+    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
+    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
+    METHOD_VOLUME_GET, METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, PROTOCOL_VERSION,
+    ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams,
+    SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, error_response,
+    read_message,
 };
 use super::protocol::{
     METHOD_SECRET_LIST, METHOD_SECRET_REMOVE, METHOD_SECRET_SET, SecretRemoveResult, SecretSetParams,
@@ -103,6 +104,9 @@ pub trait AgentApi {
         request: control_plane::RunRequest,
     ) -> LocalFuture<'_, Result<(control_plane::Ran, crate::AgentId), Error>>;
 
+    /// Runs the agent a harness sign-in runs in; see [`control_plane::ControlPlane::run_sign_in`].
+    fn run_sign_in(&self) -> LocalFuture<'_, Result<(control_plane::Ran, crate::AgentId), Error>>;
+
     /// Lists the definitions a client can apply or run; see [`control_plane::ControlPlane::definitions`].
     fn definitions(
         &self,
@@ -157,6 +161,10 @@ impl AgentApi for control_plane::ControlPlane {
         request: control_plane::RunRequest,
     ) -> LocalFuture<'_, Result<(control_plane::Ran, crate::AgentId), Error>> {
         Box::pin(async move { Self::run(self, request).await })
+    }
+
+    fn run_sign_in(&self) -> LocalFuture<'_, Result<(control_plane::Ran, crate::AgentId), Error>> {
+        Box::pin(async move { Self::run_sign_in(self).await })
     }
 
     fn definitions(
@@ -823,6 +831,7 @@ impl Server {
             METHOD_AUTH_LOGIN => self.handle_auth_login(request.id, request.params).await,
             METHOD_AUTH_LOGOUT => self.handle_auth_logout(request.id, request.params).await,
             METHOD_AUTH_LOGINS => result_response(request.id, self.authentication.logins().await),
+            METHOD_AUTH_SIGN_IN_AGENT => result_response(request.id, owning(owned, self.agents.run_sign_in().await)),
             METHOD_ACCOUNT_LOGIN => Box::pin(self.handle_account_login(request.id, request.params)).await,
             METHOD_ACCOUNT_LOGOUT => Box::pin(self.handle_account_logout(request.id, request.params)).await,
             METHOD_ACCOUNT_LIST => match &self.accounts {
@@ -902,13 +911,7 @@ impl Server {
         let Ok(params) = serde_json::from_value::<control_plane::RunRequest>(value) else {
             return error_response(id, CODE_INVALID_PARAMS, "invalid run parameters");
         };
-        let result = self.agents.run(params).await.map(|(ran, agent)| {
-            if ran.agent.status.is_ephemeral() {
-                owned.borrow_mut().push(agent);
-            }
-            ran
-        });
-        result_response(id, result)
+        result_response(id, owning(owned, self.agents.run(params).await))
     }
 
     async fn handle_volume_apply(&self, id: u64, value: Value) -> Response {
@@ -1453,6 +1456,7 @@ fn is_mutating(method: &str) -> bool {
             | METHOD_EXECUTION_ENSURE
             | METHOD_AUTH_LOGIN
             | METHOD_AUTH_LOGOUT
+            | METHOD_AUTH_SIGN_IN_AGENT
             | METHOD_ACCOUNT_LOGIN
             | METHOD_ACCOUNT_LOGOUT
             | METHOD_SECRET_SET
@@ -1463,6 +1467,20 @@ fn is_mutating(method: &str) -> bool {
             | METHOD_SESSION_ARCHIVE
             | METHOD_SESSION_UNARCHIVE
     )
+}
+
+/// The agent a run made, recorded in `owned`, the agents of the connection that asked for it, when
+/// it is ephemeral, so that it lives only as long as that connection.
+fn owning(
+    owned: &std::cell::RefCell<Vec<crate::AgentId>>,
+    ran: Result<(control_plane::Ran, crate::AgentId), Error>,
+) -> Result<control_plane::Ran, Error> {
+    ran.map(|(ran, agent)| {
+        if ran.agent.status.is_ephemeral() {
+            owned.borrow_mut().push(agent);
+        }
+        ran
+    })
 }
 
 fn name_params(value: Value) -> Result<NameParams, Response> {

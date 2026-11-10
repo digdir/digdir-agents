@@ -75,6 +75,11 @@ attributing a failure to the bump, repeat the check on an agent built with the p
 | Nested agent                                                         | Both        | Inside a session, `agentctl claude login` and `agentctl codex login` let a nested agent run both harnesses.                                                                                                             |
 | New `agentd` with the previous pin                                   | Both        | When the change touches adapter code, an agent on the previous image still creates, prompts, reads turns and resumes.                                                                                                   |
 
+Without the harness on the machine, `agentctl claude login` and `agentctl codex login` sign in inside an agent of the
+base image, and read the sign-in off its terminal. Builds other than releases run `main`'s base image there, so try
+both once the bump's base image is published from `main`: with an `agentctl` built from `main` and a `PATH` that leaves
+out `claude` and `codex`, the sign-in page opens in the browser, and the login is stored.
+
 ## Pi
 
 Test Pi on an agent that configures it, such as [self-dev](../../agents/self-dev/README.md#pi). The checks above apply,

@@ -1,6 +1,6 @@
-# The short-lived agent `agentctl claude login` and `agentctl codex login` run the harness's sign-in in when this machine
-# does not have the harness. agentctl runs it ephemeral, so agentd deletes it when the login command ends, however it
-# ends.
+# The short-lived agent `agentctl claude login` and `agentctl codex login` run the harness's sign-in in when this
+# machine does not have the harness. It is internal, as the README here describes, and agentd runs it for those
+# commands as an ephemeral agent, which it deletes when the command ends, however it ends.
 apiVersion: agents.platform/v1alpha1
 kind: Agent
 metadata:

@@ -287,13 +287,17 @@ pub(super) fn sandbox_sign_in() -> SandboxSignIn {
     }
 }
 
-/// Whether `url` is the page where `claude setup-token` signs in. It prints the
-/// page as a hyperlink too, so the whole link is found however it wraps.
-pub(super) fn is_sign_in_link(url: &reqwest::Url) -> bool {
-    matches!(
-        url.host_str(),
-        Some("claude.com" | "claude.ai" | "platform.claude.com" | "console.anthropic.com")
-    ) && url.path().ends_with("/oauth/authorize")
+/// Whether `url` is the page where `claude setup-token` signs in, whole. It wraps
+/// the link over rows, which cuts its text short, possibly in the middle of a
+/// value of its query, and prints it as a `hyperlinked` one that holds all of
+/// it, so only the hyperlink counts.
+pub(super) fn is_sign_in_link(url: &reqwest::Url, hyperlinked: bool) -> bool {
+    hyperlinked
+        && matches!(
+            url.host_str(),
+            Some("claude.com" | "claude.ai" | "platform.claude.com" | "console.anthropic.com")
+        )
+        && url.path().ends_with("/oauth/authorize")
 }
 
 /// Reads a pasted token through the empty line that ends it. The interface
@@ -563,6 +567,19 @@ mod tests {
                 assert_eq!(link, whole, "after {end} bytes");
             }
         }
+    }
+
+    /// Without its hyperlink, each row holds part of the link, and the first still names the
+    /// sign-in page, so opening it would show the person a broken one.
+    #[test]
+    fn a_wrapped_link_without_its_hyperlink_is_not_opened() {
+        let mut output = SIGN_IN_LINK
+            .as_bytes()
+            .chunks(80)
+            .collect::<Vec<_>>()
+            .join(b"\r\r\n".as_slice());
+        output.extend_from_slice(b"\r\r\n");
+        assert_eq!(crate::harness::sign_in_links(&output), []);
     }
 
     #[test]

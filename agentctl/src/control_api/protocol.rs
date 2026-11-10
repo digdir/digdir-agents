@@ -27,6 +27,7 @@ pub(crate) const METHOD_VNC_ACCESS: &str = "agents.v1.vncAccess";
 pub(crate) const METHOD_AUTH_LOGIN: &str = "authentication.v1.login";
 pub(crate) const METHOD_AUTH_LOGOUT: &str = "authentication.v1.logout";
 pub(crate) const METHOD_AUTH_LOGINS: &str = "authentication.v1.logins";
+pub(crate) const METHOD_AUTH_SIGN_IN_AGENT: &str = "authentication.v1.signInAgent";
 pub(crate) const METHOD_ACCOUNT_LOGIN: &str = "accounts.v1.login";
 pub(crate) const METHOD_ACCOUNT_LOGOUT: &str = "accounts.v1.logout";
 pub(crate) const METHOD_ACCOUNT_LIST: &str = "accounts.v1.list";

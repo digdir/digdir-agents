@@ -24,9 +24,9 @@ mod launch;
 mod new;
 mod progress;
 mod prompt;
+mod sandbox_sign_in;
 mod secret;
 mod self_update;
-mod sign_in;
 mod skills;
 mod tui;
 mod watch;
@@ -2663,7 +2663,8 @@ async fn login(
                 "",
             ),
             None => {
-                let stored = sign_in::store_login(client, home, harness, name, sign_in::START_TIMEOUT).await?;
+                let stored =
+                    sandbox_sign_in::store_login(client, home, harness, name, sandbox_sign_in::START_TIMEOUT).await?;
                 println!("{} login {} stored", stored.provider, stored.login);
                 return Ok(());
             }

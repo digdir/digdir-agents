@@ -10,16 +10,16 @@ use super::protocol::{
     AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, CODE_EXPOSED_FILES, DaemonInfo,
     DirectoryParams, ExecutionEnsureParams, JSON_RPC_VERSION, LoginParams, LogoutParams, LogoutResult,
     MAX_RESPONSE_BYTES, METHOD_ACCOUNT_LIST, METHOD_ACCOUNT_LOGIN, METHOD_ACCOUNT_LOGOUT, METHOD_APPLY,
-    METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_CONVERGE, METHOD_DEFINITIONS, METHOD_DELETE,
-    METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST, METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY,
-    METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SECRET_LIST, METHOD_SECRET_REMOVE, METHOD_SECRET_SET,
-    METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE, METHOD_SESSION_GET, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE, METHOD_SHUTDOWN, METHOD_SSH_ACCESS,
-    METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE,
-    METHOD_VOLUME_GET, METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, ProgressParams,
-    ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SecretRemoveResult, SecretSetParams,
-    SessionEnsureParams, SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams,
-    ShutdownResult, read_message,
+    METHOD_AUTH_LOGIN, METHOD_AUTH_LOGINS, METHOD_AUTH_LOGOUT, METHOD_AUTH_SIGN_IN_AGENT, METHOD_CONVERGE,
+    METHOD_DEFINITIONS, METHOD_DELETE, METHOD_EXECUTION_ENSURE, METHOD_GET, METHOD_HEALTH, METHOD_LIST,
+    METHOD_PROGRESS, METHOD_RESOLVE_DIRECTORY, METHOD_RESOURCES_WATCH, METHOD_RESTART, METHOD_RUN, METHOD_SECRET_LIST,
+    METHOD_SECRET_REMOVE, METHOD_SECRET_SET, METHOD_SESSION_ARCHIVE, METHOD_SESSION_DELETE, METHOD_SESSION_ENSURE,
+    METHOD_SESSION_GET, METHOD_SESSION_LIST, METHOD_SESSION_PROMPT, METHOD_SESSION_TURNS, METHOD_SESSION_UNARCHIVE,
+    METHOD_SHUTDOWN, METHOD_SSH_ACCESS, METHOD_START, METHOD_STOP, METHOD_STOP_NOW, METHOD_VNC_ACCESS,
+    METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET, METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS,
+    ManifestListParams, NameParams, ProgressParams, ReadMessage, Request, ResourcesWatchParams, Response,
+    RestartParams, SecretRemoveResult, SecretSetParams, SessionEnsureParams, SessionListParams, SessionParams,
+    SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult, read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -115,6 +115,19 @@ impl Client {
         let (ran, connection) = self.exchange::<_, control_plane::Ran>(METHOD_RUN, request).await?;
         let lease = AgentLease(ran.agent.status.is_ephemeral().then_some(connection));
         Ok((ran, lease))
+    }
+
+    /// Runs the agent a harness sign-in runs in when this machine does not have the harness; see
+    /// [`control_plane::ControlPlane::run_sign_in`]. It lives while the returned lease does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the control-plane operation fails.
+    pub async fn run_sign_in(&self) -> Result<(control_plane::Ran, AgentLease), Error> {
+        let (ran, connection) = self
+            .exchange::<_, control_plane::Ran>(METHOD_AUTH_SIGN_IN_AGENT, serde_json::json!({}))
+            .await?;
+        Ok((ran, AgentLease(Some(connection))))
     }
 
     /// Lists the definitions a client can apply or run: those on disk for the absolute folder

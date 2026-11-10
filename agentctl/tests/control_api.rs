@@ -1730,6 +1730,26 @@ async fn an_ephemeral_agent_lives_as_long_as_the_connection_that_asked_for_it() 
 }
 
 #[tokio::test(flavor = "local")]
+async fn a_sign_in_agent_lives_as_long_as_the_connection_that_asked_for_it() {
+    let fixture = bundled::Fixture::with_internal_sign_in();
+    let client = api_with(fixture.control_plane.clone()).client;
+
+    let (ran, lease) = client.run_sign_in().await.expect("sign-in");
+    let name = ran.agent.metadata.name;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let record = fixture.store.get_by_name(&name).await.expect("sign-in");
+    assert_eq!(
+        record.agent.metadata.deletion_timestamp, None,
+        "kept while its client is there"
+    );
+    drop(lease);
+    assert!(
+        bundled::deleting(&fixture.store, &name).await,
+        "deleted once its client is gone"
+    );
+}
+
+#[tokio::test(flavor = "local")]
 async fn listings_leave_out_ephemeral_agents_unless_asked_and_count_them() {
     let fixture = bundled::Fixture::new();
     let client = api_with(fixture.control_plane.clone()).client;

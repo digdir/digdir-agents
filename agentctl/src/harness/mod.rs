@@ -608,14 +608,14 @@ pub fn acquire_host_credential(
 /// it, a [`sandbox_sign_in`] can sign in instead.
 #[must_use]
 pub fn host_can_sign_in(harness: Harness) -> bool {
-    let program = match harness {
-        Harness::ClaudeCode => "claude",
-        Harness::Codex => "codex",
+    let executable = match harness {
+        Harness::ClaudeCode | Harness::Codex => harness.footprint().executable,
         Harness::Pi => return false,
     };
-    let program = format!("{program}{}", std::env::consts::EXE_SUFFIX);
-    std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|directory| directory.join(&program).is_file()))
+    // The sign-in starts the bare name, which finds only a program with the platform's own
+    // extension, such as `claude.exe`, and never a `.cmd` shim.
+    let program = format!("{executable}{}", std::env::consts::EXE_SUFFIX);
+    crate::local::process::find_executable(std::env::var_os("PATH").as_deref(), &[&program]).is_some()
 }
 
 /// A sign-in that runs in a short-lived sandbox, so the host does not need the harness.
@@ -669,12 +669,14 @@ fn artifact_text(service: &str, artifact: Option<&[u8]>) -> Result<Zeroizing<Str
 
 /// The sign-in pages that a sign-in's terminal `output` links to, for the host to open in a browser.
 ///
-/// Only the sign-in pages of the services here count, by host and path, so a program cannot send
-/// the person's browser to another site. What a page is asked for, in its query, is the program's. Call it again as output arrives: it returns every link so far, so the caller
-/// remembers which it has opened, and leaves out a link until the output shows where it ends.
+/// Only the sign-in pages of the services here count, so a program cannot send the person's browser
+/// to another site. What a page is asked for, in its query, is the program's.
+///
+/// Call it again as output arrives: it returns every link so far, so the caller remembers which it
+/// has opened, and leaves out a link until the output shows where it ends.
 #[must_use]
 pub fn sign_in_links(output: &[u8]) -> Vec<reqwest::Url> {
-    let text = terminal_text(output);
+    let (text, hyperlinks) = terminal_text(output);
     let mut candidates = Vec::<&str>::new();
     for (start, _) in text.windows(8).enumerate().filter(|(_, window)| *window == b"https://") {
         let rest = &text[start..];
@@ -697,8 +699,11 @@ pub fn sign_in_links(output: &[u8]) -> Vec<reqwest::Url> {
                 .iter()
                 .any(|other| other.len() > link.len() && other.starts_with(**link))
         })
-        .filter_map(|link| reqwest::Url::parse(link).ok())
-        .filter(|url| claude_code::is_sign_in_link(url) || codex::is_sign_in_link(url))
+        .filter_map(|link| {
+            let url = reqwest::Url::parse(link).ok()?;
+            let hyperlinked = hyperlinks.contains(&link.as_bytes());
+            (claude_code::is_sign_in_link(&url, hyperlinked) || codex::is_sign_in_link(&url)).then_some(url)
+        })
         .collect()
 }
 
@@ -710,12 +715,14 @@ fn url_byte(byte: u8) -> bool {
 ///
 /// A colour change is dropped, so that it cannot split a word. Any other sequence becomes a
 /// space, because it may stand for one, as a cursor movement does, or end a line before a redraw.
-/// A hyperlink's target becomes text of its own. A sequence that `output` ends in the middle of is
-/// dropped with the rest, so that text still arriving never looks finished.
-fn terminal_text(output: &[u8]) -> Vec<u8> {
+/// A hyperlink's target becomes text of its own, and is also returned on its own. A sequence that
+/// `output` ends in the middle of is dropped with the rest, so that text still arriving never looks
+/// finished.
+fn terminal_text(output: &[u8]) -> (Vec<u8>, Vec<&[u8]>) {
     const ESCAPE: u8 = 0x1b;
     const BELL: u8 = 0x07;
     let mut text = Vec::with_capacity(output.len());
+    let mut hyperlinks = Vec::new();
     let mut rest = output;
     while let Some((&byte, after)) = rest.split_first() {
         if byte != ESCAPE {
@@ -748,6 +755,7 @@ fn terminal_text(output: &[u8]) -> Vec<u8> {
                 {
                     text.extend_from_slice(target);
                     text.push(b' ');
+                    hyperlinks.push(target);
                 }
                 rest = &body[end + terminator..];
             }
@@ -761,7 +769,7 @@ fn terminal_text(output: &[u8]) -> Vec<u8> {
             None => break,
         }
     }
-    text
+    (text, hyperlinks)
 }
 
 /// The target of an OSC 8 hyperlink sequence, `8;parameters;target`, unless it ends one.
