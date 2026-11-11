@@ -15,6 +15,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ### Fixed
 
+- Agents that could not clone their repositories for want of a GitHub login clone them once `agentctl github login NAME` keeps it, without a restart. ([#482](https://github.com/digdir/digdir-agents/issues/482))
 - An agent running without its GitHub login, or without the repositories its image clones, says so: `agentctl apply --wait` warns, `agentctl describe` shows `Accounts` and `Workspace` conditions, and `agentctl tui` shows a yellow `Ready`, naming `agentctl github login NAME`. Images on the next base image clone public repositories without a login. ([#481](https://github.com/digdir/digdir-agents/issues/481))
 - SSH connections to an agent, such as `ssh agentctl-NAME` or T3 Code's environments, and commands such as `agentctl exec` wait while Microsandbox is being installed or updated instead of failing, and the SSH client says what it waits for. ([#456](https://github.com/digdir/digdir-agents/issues/456))
 - On Windows, `agentctl get definitions` writes paths below the current folder with `/` alone, such as `./agents/desktop`, instead of `./agents\desktop`. ([#453](https://github.com/digdir/digdir-agents/issues/453))

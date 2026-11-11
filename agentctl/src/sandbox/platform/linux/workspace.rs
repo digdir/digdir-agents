@@ -4,7 +4,7 @@ use ::sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
 
 use crate::{Error, sandbox::WorkspaceClone};
 
-use super::{SYSTEMCTL, checked_output, systemd_available, wait_for_systemd};
+use super::{SYSTEMCTL, checked_output, run_checked, systemd_available, wait_for_systemd};
 
 /// The base image's unit that clones the repositories its `/etc/agent-workspace.d` lists.
 const UNIT: &str = "agent-workspace-init.service";
@@ -12,12 +12,12 @@ const UNIT: &str = "agent-workspace-init.service";
 const PROPERTIES: &str = "LoadState,ActiveState,Result,ConditionResult";
 
 /// How far the image's workspace clone got; nothing when the image has no such clone or lists
-/// no repositories.
+/// no repositories. With `retry`, a clone that failed is started again, without waiting for it.
 ///
 /// # Errors
 ///
-/// Returns an error when systemd cannot be asked.
-pub(super) async fn observe(sandbox: &SandboxHandle) -> Result<Option<WorkspaceClone>, Error> {
+/// Returns an error when systemd cannot be asked or the clone cannot be started again.
+pub(super) async fn observe(sandbox: &SandboxHandle, retry: bool) -> Result<Option<WorkspaceClone>, Error> {
     if !systemd_available(sandbox).await? {
         return Ok(None);
     }
@@ -31,7 +31,13 @@ pub(super) async fn observe(sandbox: &SandboxHandle) -> Result<Option<WorkspaceC
         ))
         .await?;
     checked_output("/usr/bin/sudo", &args, &output)?;
-    Ok(parse(&String::from_utf8_lossy(&output.stdout)))
+    let clone = parse(&String::from_utf8_lossy(&output.stdout));
+    if retry && clone == Some(WorkspaceClone::Failed) {
+        run_checked(sandbox, "/usr/bin/sudo", ["-n", SYSTEMCTL, "reset-failed", UNIT]).await?;
+        run_checked(sandbox, "/usr/bin/sudo", ["-n", SYSTEMCTL, "start", "--no-block", UNIT]).await?;
+        return Ok(Some(WorkspaceClone::Cloning));
+    }
+    Ok(clone)
 }
 
 /// Reads `systemctl show` output for [`UNIT`]. A unit whose condition was not met, as when the

@@ -251,9 +251,21 @@ impl Linux {
         Ok(PlatformSetup {
             missing_sources: missing,
             skills: placed,
-            workspace: workspace::observe(sandbox).await?,
+            workspace: workspace::observe(sandbox, logins_arrived(record, accounts)).await?,
         })
     }
+}
+
+/// Whether this pass is the first to find every login the agent asks for kept, as after
+/// `agentctl github login`, which sets the agent up again. A workspace clone that failed before
+/// then likely failed for want of the login, so it is tried again. Only on that pass, so a clone
+/// that fails for another reason is not tried again on every resync. A pass after a restart or a
+/// failed pass finds no report of them either, so it may try a failed clone once more.
+fn logins_arrived(record: &control_plane::AgentRecord, accounts: &crate::sandbox::AccountSetup) -> bool {
+    let reported_kept = record.agent.status.conditions.iter().any(|condition| {
+        condition.kind == crate::Condition::ACCOUNTS && condition.status == crate::ConditionStatus::True
+    });
+    !record.agent.spec.accounts.is_empty() && accounts.missing_logins.is_empty() && !reported_kept
 }
 
 /// Where the agent's sessions start.
