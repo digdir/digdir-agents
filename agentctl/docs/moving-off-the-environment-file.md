@@ -12,7 +12,9 @@ then, agentctl mounts no folder that holds the file into an agent, such as the c
 store the file's GitHub token as the login `default` and each secret under a name made from its variable, deletes the
 file, and has the agent builder change the manifests to take the values from there. You apply your agents again once it
 has. When it cannot store a value for you, such as one that differs between two files, it says how to store it
-yourself. Any other command that would mount a folder holding the file refuses and points you to `agentctl update`.
+yourself. The agent builder is also given your folder of personal agents, so when one of those still reads such a file,
+it asks you to run `agentctl update` on that folder first. Any other command that would mount a folder holding the file
+refuses and points you to `agentctl update`.
 The sections below say where each kind of value goes, for moving a manifest by hand.
 
 When no manifest beside the file and no agent on this machine reads it any more, the command names what those

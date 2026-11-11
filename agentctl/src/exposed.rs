@@ -476,19 +476,15 @@ impl EnvironmentFile {
     }
 
     /// The values to move out of the `files` before they can go: those their readers read, each
-    /// once. An agent whose manifest no longer reads its file only needs applying again.
+    /// once. That includes what an agent reads whose manifest no longer does, such as one pulled
+    /// since, as the values are in the file alone until the agent is applied again.
     #[must_use]
     pub fn moving<'a>(files: impl IntoIterator<Item = &'a Self>) -> Vec<Variable> {
         let mut moving = Vec::<Variable>::new();
         for reader in files.into_iter().flat_map(|file| &file.readers) {
             let variables = match reader {
-                Reader::Manifest { variables, .. }
-                | Reader::Agent {
-                    variables,
-                    reapply: false,
-                    ..
-                } => variables.as_slice(),
-                Reader::Unreadable { .. } | Reader::Agent { reapply: true, .. } => &[],
+                Reader::Manifest { variables, .. } | Reader::Agent { variables, .. } => variables.as_slice(),
+                Reader::Unreadable { .. } => &[],
             };
             for variable in variables {
                 if !moving.contains(variable) {
