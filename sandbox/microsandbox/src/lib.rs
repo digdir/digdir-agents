@@ -15,6 +15,7 @@ mod guest_tcp;
 mod heartbeat;
 mod image;
 mod image_cache;
+mod install_lease;
 mod network_backend;
 mod network_endpoint;
 mod platform;

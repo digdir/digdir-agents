@@ -1458,6 +1458,7 @@ fn ssh_client_failure(error: &std::io::Error) -> String {
 /// Progress and errors go to standard error, which `ssh` shows to the user;
 /// standard output carries only the SSH byte stream.
 async fn ssh_proxy(home: &ControlPlaneHome, client: &Client, resource: String) -> CommandResult<ExitCode> {
+    show_warnings();
     let agent = resolve_execution_agent(client, Some(resource), None, None).await?;
     let wait = progress::Wait::start();
     let target = wait
@@ -1478,6 +1479,19 @@ async fn ssh_proxy(home: &ControlPlaneHome, client: &Client, resource: String) -
     // A blocked standard-input read would keep the runtime from shutting down;
     // the relay is finished, so leave immediately.
     std::process::exit(0)
+}
+
+/// Shows warnings on standard error, such as why connecting waits, for a relay whose standard
+/// output carries only the relayed stream.
+fn show_warnings() {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .without_time()
+        .with_target(false)
+        .with_level(false)
+        .init();
 }
 
 fn install_ssh_config(home: &ControlPlaneHome) -> CommandResult<()> {
@@ -1601,6 +1615,7 @@ async fn open_locally(url: &str) {
 /// This is the seam for a viewer that dials through a command rather than a
 /// port, and for tooling that wants the RFB stream without a listening socket.
 async fn vnc_proxy(home: &ControlPlaneHome, client: &Client, resource: String) -> CommandResult<ExitCode> {
+    show_warnings();
     let agent = resolve_execution_agent(client, Some(resource), None, None).await?;
     let access = client.vnc_access(&agent).await?;
     let wait = progress::Wait::start();
