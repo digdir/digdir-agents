@@ -7,7 +7,7 @@
 
 use std::{
     fmt::Write as _,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf, Prefix},
 };
 
 use crate::{Error, sandbox::platform::PORTABLE_TERMINAL};
@@ -55,30 +55,72 @@ pub fn render_config(entries: &[HostEntry], user_home: Option<&Path>) -> String 
     text
 }
 
-/// Renders a host path for `IdentityFile`, `UserKnownHostsFile` or `Include`.
+/// Renders a host path for `IdentityFile` or `UserKnownHostsFile`.
 ///
 /// A path below the user's home is written `~/...` with forward slashes, which
 /// every OpenSSH port expands; anything else is written as the host spells it.
-/// Anything outside a conservative character set is double-quoted with `"` and
-/// `\` escaped, which is what OpenSSH's tokenizer understands, and `%` is
-/// doubled because OpenSSH percent-expands all three directives.
 #[must_use]
 pub fn render_path(path: &Path, user_home: Option<&Path>) -> String {
-    let text = user_home
-        .and_then(|home| path.strip_prefix(home).ok())
-        .filter(|relative| !relative.as_os_str().is_empty())
-        .map_or_else(
-            || path.display().to_string(),
-            |relative| {
-                let mut text = String::from("~");
-                for component in relative.components() {
-                    text.push('/');
-                    text.push_str(&component.as_os_str().to_string_lossy());
-                }
-                text
-            },
-        );
-    quote_config_value(&text).replace('%', "%%")
+    config_path_word(&home_relative(path, user_home).unwrap_or_else(|| path.display().to_string()))
+}
+
+/// `path` as `~/...` with forward slashes, when it is below `user_home`.
+fn home_relative(path: &Path, user_home: Option<&Path>) -> Option<String> {
+    let relative = path.strip_prefix(user_home?).ok()?;
+    if relative.as_os_str().is_empty() {
+        return None;
+    }
+    let mut text = String::from("~");
+    for component in relative.components() {
+        text.push('/');
+        text.push_str(&component.as_os_str().to_string_lossy());
+    }
+    Some(text)
+}
+
+/// One path as an OpenSSH configuration token.
+///
+/// Anything outside a conservative character set is double-quoted with `"` and
+/// `\` escaped, which is what OpenSSH's tokenizer understands, and `%` is
+/// doubled because OpenSSH percent-expands the directives that take a path.
+fn config_path_word(text: &str) -> String {
+    quote_config_value(text).replace('%', "%%")
+}
+
+/// The spellings of an absolute Windows path that the OpenSSH clients on Windows read as
+/// absolute, or `None` for any other path, which every client reads as the host spells it.
+///
+/// Win32-OpenSSH reads `C:/data/agent-home`. The MSYS build that Git for Windows ships reads
+/// only `/c/data/agent-home`, and takes anything that does not start with `/` or `~` as relative
+/// to `~/.ssh`. A share, `//server/share/...`, reads the same in both.
+fn windows_spellings(path: &Path) -> Option<Vec<String>> {
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return None;
+    };
+    if components.next() != Some(Component::RootDir) {
+        return None;
+    }
+    let mut rest = String::new();
+    for component in components {
+        rest.push('/');
+        rest.push_str(&component.as_os_str().to_string_lossy());
+    }
+    match prefix.kind() {
+        Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+            let drive = char::from(drive);
+            Some(vec![
+                format!("{}:{rest}", drive.to_ascii_uppercase()),
+                format!("/{}{rest}", drive.to_ascii_lowercase()),
+            ])
+        }
+        Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => Some(vec![format!(
+            "//{}/{}{rest}",
+            server.to_string_lossy(),
+            share.to_string_lossy()
+        )]),
+        Prefix::Verbatim(_) | Prefix::DeviceNS(_) => None,
+    }
 }
 
 /// What reads a command line: how the host runs the string OpenSSH hands to
@@ -401,9 +443,19 @@ pub enum IncludeOutcome {
 }
 
 /// Renders the `Include` directive for the generated configuration.
+///
+/// A configuration below the user's home is named `~/...`, which every client
+/// reads. One elsewhere on Windows is named in each spelling the clients there
+/// read as absolute, since no single one works in all of them: each client
+/// includes the file it finds and skips the name that matches nothing.
 #[must_use]
 pub fn render_include(config: &Path, user_home: Option<&Path>) -> String {
-    format!("Include {}", render_path(config, user_home))
+    let spellings = home_relative(config, user_home).map_or_else(
+        || windows_spellings(config).unwrap_or_else(|| vec![config.display().to_string()]),
+        |text| vec![text],
+    );
+    let words: Vec<String> = spellings.iter().map(|text| config_path_word(text)).collect();
+    format!("Include {}", words.join(" "))
 }
 
 /// Idempotently inserts `include` as the first line of `user_config`.
@@ -490,8 +542,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        CommandShell, IncludeOutcome, directory_word, install_include, remove_known_host, render_proxy_command,
-        resolves_through_agentctl, shell_word, upsert_known_host,
+        CommandShell, IncludeOutcome, directory_word, install_include, remove_known_host, render_include,
+        render_proxy_command, resolves_through_agentctl, shell_word, upsert_known_host,
     };
 
     const AGENTCTL: &str = "/usr/local/bin/agentctl";
@@ -737,6 +789,55 @@ mod tests {
             install_include(&config, "include ~/.agent/ssh/config").expect("indented global line counts"),
             IncludeOutcome::AlreadyInstalled
         );
+    }
+
+    /// A configuration below the user's home is named from `~`, which every client expands, and
+    /// one elsewhere as the host spells it. On Unix a backslash is part of a file name, so it is
+    /// kept, escaped for OpenSSH's tokenizer.
+    #[cfg(unix)]
+    #[test]
+    fn include_names_the_configuration_from_the_home_or_as_spelled() {
+        let user_home = Some(Path::new("/home/ada"));
+        for (config, line) in [
+            ("/home/ada/.agent/ssh/config", "Include ~/.agent/ssh/config"),
+            ("/srv/agent-home/ssh/config", "Include /srv/agent-home/ssh/config"),
+            (
+                r"/srv/my agents\/100%/config",
+                r#"Include "/srv/my agents\\/100%%/config""#,
+            ),
+        ] {
+            assert_eq!(render_include(Path::new(config), user_home), line, "{config}");
+        }
+    }
+
+    /// Git for Windows' `ssh` takes `C:/...` as relative to `~/.ssh`, and Win32-OpenSSH does not
+    /// read `/c/...`, so a configuration outside the user's home is named in both spellings. A
+    /// share reads the same in both, and one below the home is named from `~`.
+    #[cfg(windows)]
+    #[test]
+    fn include_outside_the_home_names_the_configuration_for_every_windows_client() {
+        let user_home = Some(Path::new(r"C:\Users\ada"));
+        for (config, line) in [
+            (
+                r"C:\data\agent-home\ssh\config",
+                "Include C:/data/agent-home/ssh/config /c/data/agent-home/ssh/config",
+            ),
+            (
+                r"\\?\C:\data\agent-home\ssh\config",
+                "Include C:/data/agent-home/ssh/config /c/data/agent-home/ssh/config",
+            ),
+            (
+                r"d:\my agents\100%\ssh\config",
+                r#"Include "D:/my agents/100%%/ssh/config" "/d/my agents/100%%/ssh/config""#,
+            ),
+            (
+                r"\\server\share\agent-home\ssh\config",
+                "Include //server/share/agent-home/ssh/config",
+            ),
+            (r"C:\Users\ada\.agent\ssh\config", "Include ~/.agent/ssh/config"),
+        ] {
+            assert_eq!(render_include(Path::new(config), user_home), line, "{config}");
+        }
     }
 
     #[cfg(unix)]
