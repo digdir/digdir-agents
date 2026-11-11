@@ -395,14 +395,16 @@ pub(crate) fn definitions_table(
                 } else {
                     &definition.path
                 };
+                // Joined with `/` on every host, as people write it and `agentctl run` takes it on Windows too.
                 path.strip_prefix(directory).map_or_else(
                     |_| path.display().to_string(),
                     |relative| {
-                        if relative.as_os_str().is_empty() {
-                            ".".to_owned()
-                        } else {
-                            format!("./{}", relative.display())
+                        let mut text = String::from(".");
+                        for component in relative.components() {
+                            text.push('/');
+                            text.push_str(&component.as_os_str().to_string_lossy());
                         }
+                        text
                     },
                 )
             });
@@ -591,6 +593,38 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("SandboxReconcileFailed") && line.contains(" 3m "))
         );
+    }
+
+    /// A definition below the current folder is written with `/` alone, also where the host uses `\`.
+    #[test]
+    fn definitions_table_writes_relative_paths_with_slashes() {
+        let directory = Path::new(if cfg!(windows) { r"C:\src\app" } else { "/src/app" });
+        let desktop = directory.join("agents").join("desktop");
+        let definitions = [
+            directory.join(agent::manifest::MANIFEST_FILE),
+            desktop.join(agent::manifest::MANIFEST_FILE),
+            desktop.join("agent.nested.yaml"),
+        ]
+        .map(|path| agent::control_plane::DefinitionSummary {
+            path,
+            aliases: Vec::new(),
+            reference: None,
+            name: Some("app".into()),
+            error: None,
+            slots: Vec::new(),
+            environment_file_variables: Vec::new(),
+            environment_file: None,
+            platform_images: Vec::new(),
+            ignored: false,
+        });
+
+        let written = definitions_table(&definitions, directory)
+            .iter()
+            .skip(1)
+            .map(|line| line.split_whitespace().next().unwrap_or_default().to_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(written, [".", "./agents/desktop", "./agents/desktop/agent.nested.yaml"]);
     }
 
     /// Pasted, every command `vnc-info` suggests reaches the agent's own home, not the default.
