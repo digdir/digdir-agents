@@ -45,13 +45,13 @@ spec:
 Store it under a name, with the hosts its value may reach, and ask for it by that name:
 
 ```sh
-agentctl secret set aivar --hosts api.aivar.no
+agentctl secret set aivar-api-key --hosts api.aivar.no
 ```
 
 ```yaml
 spec:
   secrets:
-    - name: aivar
+    - name: aivar-api-key
       environment: AIVAR_API_KEY
 ```
 
@@ -91,5 +91,5 @@ host it runs on replaces with the real values in requests to their hosts, so the
 
 ```sh
 printf '%s' "$GITHUB_TOKEN" | agentctl github login default --from-stdin
-printf '%s' "$AIVAR_API_KEY" | agentctl secret set aivar --hosts api.aivar.no --from-stdin
+printf '%s' "$AIVAR_API_KEY" | agentctl secret set aivar-api-key --hosts api.aivar.no --from-stdin
 ```

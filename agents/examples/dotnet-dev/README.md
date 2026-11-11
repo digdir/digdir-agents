@@ -11,8 +11,8 @@ Install `agentctl` and log in as its [README](../../../agentctl/README.md#instal
 directory:
 
 ```sh
-agentctl github login default                    # the account it clones, commits and opens pull requests as
-agentctl secret set aivar --hosts api.aivar.no   # optional: the key for Digdir's AI gateway, which Pi uses
+agentctl github login default                            # the account it clones, commits and opens pull requests as
+agentctl secret set aivar-api-key --hosts api.aivar.no   # optional: the key for Digdir's AI gateway, which Pi uses
 agentctl apply --wait
 agentctl tui
 ```
