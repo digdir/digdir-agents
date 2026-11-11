@@ -28,7 +28,7 @@ const PROVIDER: &str = "github";
 /// Secret name prefix; each token is `github-access-token/<name>`.
 const ACCESS_SECRET: &str = "github-access-token";
 /// The variable that carries the inert token in the sandbox.
-pub(crate) const ACCESS_ENVIRONMENT: &str = "GITHUB_TOKEN";
+pub const ACCESS_ENVIRONMENT: &str = "GITHUB_TOKEN";
 /// `gh` attaches files only with a token it recognizes by prefix, so the placeholder carries one.
 /// It is the same for every kind of token, so replacing a token with one of another kind leaves
 /// the sandbox's environment, and so the sandbox, as it is.

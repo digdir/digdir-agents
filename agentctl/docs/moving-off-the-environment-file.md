@@ -11,15 +11,15 @@ then, agentctl mounts no folder that holds the file into an agent, such as the c
 `agentctl update` moves a checkout, or a folder of personal agents, off the file in one go. At a terminal it offers to
 store the file's GitHub token as the login `default` and each secret under a name made from its variable, deletes the
 file, and has the agent builder change the manifests to take the values from there. You apply your agents again once it
-has. When it cannot store a value for you, such as one that differs between two files, it says how to store it
-yourself. The agent builder is also given your folder of personal agents, so when one of those still reads such a file,
-it asks you to run `agentctl update` on that folder first. Any other command that would mount a folder holding the file
-refuses and points you to `agentctl update`.
-The sections below say where each kind of value goes, for moving a manifest by hand.
+has. After you pull manifests that someone else moved this way, `agentctl update` stores what they take from the
+variable each login or secret is named after, and deletes the file. When it cannot store a value for you, such as one
+that differs between two files, it says how to store it yourself.
 
-When no manifest beside the file and no agent on this machine reads it any more, the command names what those
-manifests now take from agentctl. At a terminal it then offers to delete the file, and goes on. `agentctl tui` leaves
-deleting it to you.
+The agent builder is also given your folder of personal agents, so when one of those still reads such a file,
+`agentctl update` asks you to run it on that folder first. Any other command that would mount a folder holding the file
+refuses and points you to `agentctl update`. Once no manifest beside the file and no agent on this machine reads it,
+those commands name what the manifests take from agentctl, and at a terminal offer to delete the file. The sections
+below say where each kind of value goes, for moving a manifest by hand.
 
 ## A GitHub token, and Git's name and email
 

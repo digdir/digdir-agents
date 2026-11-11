@@ -62,14 +62,21 @@ pub(crate) async fn move_off(
     binds: Vec<agent::control_plane::BindSource>,
 ) -> CommandResult<Option<String>> {
     let from = crate::builder::folder(None).ok();
+    // Every environment file here, also one nothing reads any more, as a pull may have moved its
+    // manifests off it while its values are in the file alone.
     let (read, outside): (Vec<_>, Vec<_>) = files
         .iter()
+        .filter(|file| file.environment_file.is_some())
+        .partition(|file| file.path.starts_with(checkout));
+    // One elsewhere that nothing reads is only offered for deletion, as for any command.
+    let outside = outside
+        .into_iter()
         .filter(|file| {
             file.environment_file
                 .as_ref()
                 .is_some_and(|file| !file.readers.is_empty())
         })
-        .partition(|file| file.path.starts_with(checkout));
+        .collect::<Vec<_>>();
     if let Some(first) = outside.first() {
         let outside = outside.iter().copied().cloned().collect::<Vec<_>>();
         return Err(CommandError::Message(format!(
@@ -89,12 +96,14 @@ pub(crate) async fn move_off(
     let (entries, unread) = plan(client, &read).await?;
     let shown = read.iter().map(|file| file.shown(from.as_deref())).collect::<Vec<_>>();
     let mut lines = vec![
-        "agentctl update gives the agent builder this checkout, but agents read their keys from these \
-         environment files in it, which an agent must not see:"
+        "agentctl update gives the agent builder this checkout, but these environment files in it hold \
+         agents' keys, which an agent must not see:"
             .to_owned(),
     ];
     lines.extend(shown.iter().map(|file| format!("  {file}")));
-    lines.push("Where each value goes instead:".into());
+    if !entries.is_empty() {
+        lines.push("Where each value goes instead:".into());
+    }
     let width = entries.iter().map(|entry| entry.what.len()).max().unwrap_or_default();
     let table = entries
         .iter()
@@ -151,13 +160,15 @@ async fn plan(client: &Client, read: &[&ExposedFile]) -> CommandResult<(Vec<Entr
             unkept.join("\n  ")
         ))
     };
-    let moves = without_token(agent::exposed::moves(&moving), &values, &kept);
+    let mut moves = agent::exposed::moves(&moving);
+    moves.extend(taken(environment(), &moves, &values));
+    let moves = without_token(moves, &values, &kept);
     let entries = entries(&moves, &values, &kept).map_err(by_hand)?;
     let unmet = unmet(environment(), &entries, &kept);
     if !unmet.is_empty() {
         return Err(by_hand(unmet));
     }
-    Ok((entries, unread(environment(), &moving, &values)))
+    Ok((entries, unread(environment(), &moves, &values)))
 }
 
 /// Stores what the `entries` keep. The login comes first, so the person may still decline it once
@@ -204,13 +215,9 @@ fn told(entries: &[Entry], agents: &[String]) -> String {
 }
 
 /// What a manifest beside the `files` that agentctl cannot read may lose with them: every variable
-/// in the files, given their `values`, that is not `moving`. Nothing tells what such a manifest
-/// reads, but it can read only what the files hold.
-fn unread<'a>(
-    files: impl IntoIterator<Item = &'a EnvironmentFile>,
-    moving: &[Variable],
-    values: &Values,
-) -> Option<String> {
+/// in the files, given their `values`, that none of `moves` takes. Nothing tells what such a
+/// manifest reads, but it can read only what the files hold.
+fn unread<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Move], values: &Values) -> Option<String> {
     let manifests = files
         .into_iter()
         .flat_map(|file| &file.readers)
@@ -223,10 +230,7 @@ fn unread<'a>(
         return None;
     }
     let these = agent::exposed::sentence_list(&manifests.into_iter().collect::<Vec<_>>());
-    let read = moving
-        .iter()
-        .map(|variable| variable.source.as_deref().unwrap_or(&variable.name))
-        .collect::<BTreeSet<_>>();
+    let read = moves.iter().map(Move::source).collect::<BTreeSet<_>>();
     let others = values
         .iter()
         .flat_map(BTreeMap::keys)
@@ -241,6 +245,62 @@ fn unread<'a>(
             agent::exposed::sentence_list(&others.into_iter().collect::<Vec<_>>())
         )
     })
+}
+
+/// The moves for what the manifests beside the `files` take from agentctl that none of `moves`
+/// stores, from the variable in the files it is named after, as [`agent::exposed::moves`] names
+/// it. A manifest moved off the file, such as one pulled since, no longer says which variable it
+/// took, but one that `agentctl update` moved took the one its secret or login is named after.
+fn taken<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Move], values: &Values) -> Vec<Move> {
+    let github_token = agent::github::ACCESS_ENVIRONMENT;
+    let variables = values.iter().flat_map(BTreeMap::keys).collect::<BTreeSet<_>>();
+    let mut taken = Vec::<Move>::new();
+    for needed in files.into_iter().flat_map(|file| &file.stored) {
+        let covered = moves.iter().chain(&taken).any(|change| match (change, needed) {
+            (Move::GithubLogin { .. }, agent::exposed::Stored::GithubLogin { login }) => login == MOVED_LOGIN,
+            (Move::Secret { name, .. }, agent::exposed::Stored::Secret { name: needed, .. }) => {
+                name.as_ref() == Some(needed)
+            }
+            _ => false,
+        });
+        if covered {
+            continue;
+        }
+        match needed {
+            agent::exposed::Stored::GithubLogin { login }
+                if login == MOVED_LOGIN && variables.iter().any(|variable| *variable == github_token) =>
+            {
+                taken.push(Move::GithubLogin {
+                    source: github_token.into(),
+                    variables: vec![Variable {
+                        name: github_token.into(),
+                        source: None,
+                        allowed_hosts: Some(Vec::new()),
+                    }],
+                });
+            }
+            agent::exposed::Stored::Secret { name, allowed_hosts } => {
+                let Some(source) = variables
+                    .iter()
+                    .find(|variable| agent::exposed::secret_name(variable) == *name)
+                else {
+                    continue;
+                };
+                taken.push(Move::Secret {
+                    variable: Variable {
+                        name: (*source).clone(),
+                        source: None,
+                        allowed_hosts: Some(allowed_hosts.clone()),
+                    },
+                    source: (*source).clone(),
+                    name: Some(name.clone()),
+                    hosts: allowed_hosts.clone(),
+                });
+            }
+            agent::exposed::Stored::GithubLogin { .. } => {}
+        }
+    }
+    taken
 }
 
 /// `moves` with Git's name and email as plain values again when there is no GitHub token to keep
@@ -646,6 +706,47 @@ mod tests {
     }
 
     #[test]
+    fn what_migrated_manifests_take_comes_from_the_variable_it_is_named_after() {
+        // A coworker's file once their pull moved the manifests beside it off the file, with no
+        // agent applied with it.
+        let pulled = EnvironmentFile {
+            readers: Vec::new(),
+            stored: vec![
+                agent::exposed::Stored::GithubLogin {
+                    login: MOVED_LOGIN.into(),
+                },
+                agent::exposed::Stored::Secret {
+                    name: "azure-devops-pat".into(),
+                    allowed_hosts: vec!["dev.azure.com".into()],
+                },
+                agent::exposed::Stored::Secret {
+                    name: "ado-other".into(),
+                    allowed_hosts: vec!["dev.azure.com".into()],
+                },
+            ],
+        };
+        let values = [file(&[
+            ("GITHUB_TOKEN", "token"),
+            ("AZURE_DEVOPS_PAT", "pat"),
+            ("UNUSED", "x"),
+        ])];
+
+        let moves = taken([&pulled], &[], &values);
+        let entries = entries(&moves, &values, &NOTHING).expect("kept");
+
+        assert_eq!(
+            places(&entries),
+            [
+                "GITHUB_TOKEN: the GitHub login default",
+                "AZURE_DEVOPS_PAT: the secret azure-devops-pat, for dev.azure.com",
+            ]
+        );
+        let unmet = unmet([&pulled], &entries, &NOTHING);
+        assert_eq!(unmet.len(), 1, "a name no variable has: {unmet:?}");
+        assert!(unmet[0].contains("agentctl secret set ado-other"), "{unmet:?}");
+    }
+
+    #[test]
     fn without_a_token_gits_name_and_email_stay_values_for_the_builder() {
         let moves = agent::exposed::moves(&[
             variable("GITHUB_TOKEN", Some(&["api.github.com"])),
@@ -690,11 +791,23 @@ mod tests {
         }];
         let values = [file(&[("KEY", "k"), ("OTHER", "o")]), file(&[("KEY", "k")])];
 
-        let line = unread(&[environment_file(vec![unreadable])], &moving, &values).expect("named");
+        let line = unread(
+            &[environment_file(vec![unreadable])],
+            &agent::exposed::moves(&moving),
+            &values,
+        )
+        .expect("named");
         assert!(
             line.contains("agent.mine.yaml") && line.contains("OTHER") && !line.contains("KEY,"),
             "{line}"
         );
-        assert_eq!(unread(&[environment_file(Vec::new())], &moving, &values), None);
+        assert_eq!(
+            unread(
+                &[environment_file(Vec::new())],
+                &agent::exposed::moves(&moving),
+                &values
+            ),
+            None
+        );
     }
 }

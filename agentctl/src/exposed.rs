@@ -567,6 +567,13 @@ impl Move {
     }
 }
 
+/// The name a secret from the environment file's variable `source` is stored under, before what
+/// keeps two of them apart, such as `api-key` for `API_KEY`.
+#[must_use]
+pub fn secret_name(source: &str) -> String {
+    source.to_ascii_lowercase().replace('_', "-")
+}
+
 /// Where each of `variables` goes instead of the environment file.
 ///
 /// A secret is named after the file's variable, which is what tells one credential from another,
@@ -626,7 +633,7 @@ pub fn moves(variables: &[Variable]) -> Vec<Move> {
             continue;
         }
         let source = credential(variable);
-        let name = source.to_ascii_lowercase().replace('_', "-");
+        let name = secret_name(&source);
         // Two of the file's variables may differ only in what a name leaves out, such as case.
         let taken = |name: &str| named.iter().any(|(other, taken)| taken == name && *other != source);
         let name = std::iter::once(name.clone())
