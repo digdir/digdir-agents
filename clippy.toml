@@ -8,4 +8,7 @@ disallowed-methods = [
   { path = "tokio::runtime::Handle::spawn_blocking", reason = "run it with `common::blocking::run`, which lets it stop once nothing waits for it" },
   { path = "std::thread::spawn", reason = "run blocking work with `common::blocking::run`, which lets it stop once nothing waits for it" },
   { path = "std::thread::Builder::spawn", reason = "run blocking work with `common::blocking::run`, which lets it stop once nothing waits for it" },
+  { path = "std::fs::canonicalize", reason = "use `common::fs::canonicalize`, which gives Windows paths as people read them" },
+  { path = "std::path::Path::canonicalize", reason = "use `common::fs::canonicalize`, which gives Windows paths as people read them" },
+  { path = "tokio::fs::canonicalize", reason = "use `common::fs::canonicalize_async`, which gives Windows paths as people read them" },
 ]

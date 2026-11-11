@@ -416,7 +416,7 @@ pub fn merge<T>(
     let mut seen = std::collections::HashMap::<PathBuf, usize>::new();
     let mut listed = Vec::<Listed<T>>::new();
     for (path, recorded) in paths {
-        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        let canonical = common::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         if let Some(index) = seen.get(&canonical).copied() {
             let entry = &mut listed[index];
             if entry.path != path && !entry.aliases.contains(&path) {

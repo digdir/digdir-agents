@@ -21,7 +21,7 @@ use agent::{
 };
 use sandbox::SandboxPath;
 
-use crate::{CommandError, CommandResult, consent, progress};
+use crate::{CommandError, CommandResult, consent, environment_file, progress};
 
 /// The builder's definition, by its name among those agentd carries.
 const DEFINITION: &str = "agent-builder";
@@ -34,33 +34,18 @@ const PERSONAL_AGENTS: &str = "agents";
 pub(crate) struct Task {
     pub(crate) session: &'static str,
     pub(crate) prompt: String,
-    /// Whether the task has the builder change the manifests that read an environment file.
-    pub(crate) manifests: agent::exposed::Manifests,
+    /// Whether the task has the builder move the manifests of the checkout off their environment
+    /// files, which then go first, as the builder may not be given a folder that holds one.
+    pub(crate) moves_off: bool,
 }
 
-impl Task {
-    /// How the person is asked about the `files` in the builder's folders that may hold real keys.
-    /// The builder is talked with at a terminal, so the person is there to answer.
-    ///
-    /// The task is about the definitions in `checkout`. An environment file elsewhere, such as beside
-    /// a personal agent, belongs to manifests the builder is not asked to change, so the person is
-    /// then given the steps for changing manifests by hand.
-    fn ask(&self, files: &[agent::exposed::ExposedFile], checkout: &Path) -> consent::Ask<'static> {
-        let elsewhere = files
-            .iter()
-            .any(|file| file.environment_file.is_some() && !file.path.starts_with(checkout));
-        consent::Ask {
-            reader: "The agent builder",
-            action: "Mount",
-            allowed: false,
-            manifests: if elsewhere {
-                agent::exposed::Manifests::ByHand
-            } else {
-                self.manifests
-            },
-        }
-    }
-}
+/// How the person is asked about the files in the builder's folders that may hold real keys. The
+/// builder is talked with at a terminal, so the person is there to answer.
+const ASK: consent::Ask<'static> = consent::Ask {
+    reader: "The agent builder",
+    action: "Mount",
+    allowed: false,
+};
 
 /// The builder as this build of agentctl runs it.
 pub(crate) struct Builder {
@@ -146,29 +131,47 @@ impl Builder {
 
     /// The files that may hold real keys in the folders the builder would be given on `checkout`,
     /// once the person agrees to let it read them, or why it may not. Asking before a command
-    /// changes anything lets it stop with nothing deleted or started.
+    /// changes anything lets it stop with nothing deleted or started. When the `task` has the
+    /// builder change the manifests that read an environment file, the person may have agentctl
+    /// keep the file's values and delete it, and the task then says where the values are.
     pub(crate) async fn agree(
         &self,
         client: &Client,
         checkout: &Path,
-        task: &Task,
+        task: &mut Task,
     ) -> CommandResult<BTreeSet<PathBuf>> {
         let mut files = client.exposed_files(self.binds(checkout)?).await?;
+        let mut agreed = BTreeSet::new();
         loop {
+            files.retain(|file| !agreed.contains(&file.path));
             if files.is_empty() {
-                return Ok(BTreeSet::new());
+                return Ok(agreed);
             }
-            let ask = task.ask(&files, checkout);
-            let agreed = consent::agree(&files, &ask)?;
-            if agreed.delete.is_empty() {
-                return Ok(agreed.read);
+            // Every question comes before anything changes, so that a no leaves everything as it was.
+            let moving = if task.moves_off {
+                environment_file::ask(client, &files, checkout).await?
+            } else {
+                None
+            };
+            let rest = files
+                .iter()
+                .filter(|file| moving.as_ref().is_none_or(|moving| !moving.moves(file)))
+                .cloned()
+                .collect::<Vec<_>>();
+            let answered = consent::agree(&rest, &ASK)?;
+            if let Some(moving) = moving {
+                task.prompt
+                    .push_str(&moving.apply(client, self.binds(checkout)?).await?);
             }
+            agreed.extend(answered.read);
             let now = client.exposed_files(self.binds(checkout)?).await?;
-            if consent::asked_about_all(&files, &now) {
-                consent::delete(&agreed.delete, &now, &ask)?;
-                return Ok(agreed.read);
+            // One that turned up while the person answered is asked about before anything is deleted.
+            if !answered.delete.is_empty() && consent::asked_about_all(&rest, &now) {
+                consent::delete(&answered.delete, &now)?;
+                files = client.exposed_files(self.binds(checkout)?).await?;
+            } else {
+                files = now;
             }
-            files = now;
         }
     }
 
@@ -200,7 +203,7 @@ impl Builder {
         // Held while the person talks with it: agentd deletes an ephemeral builder when it goes.
         let (ran, _lease) = consent::send(
             request,
-            &task.ask(&[], checkout),
+            &ASK,
             |request| &mut request.allow_exposed_files,
             |request| client.run(request),
         )
@@ -238,7 +241,7 @@ pub(crate) fn kept_already(command: &str, checkout: &Path, existing: &Agent) -> 
 /// agentd records the folders an agent is given.
 pub(crate) fn folder(directory: Option<PathBuf>) -> CommandResult<PathBuf> {
     let directory = directory.unwrap_or_else(|| PathBuf::from("."));
-    std::fs::canonicalize(&directory)
+    common::fs::canonicalize(&directory)
         .ok()
         .filter(|folder| folder.is_dir())
         .ok_or_else(|| {
@@ -321,35 +324,7 @@ async fn open_session(wait: &progress::Wait, client: &Client, name: &str, task: 
 mod tests {
     use std::path::Path;
 
-    use super::{Builder, DEFINITION, Task, builds_on};
-
-    #[test]
-    fn the_builder_is_left_only_the_manifests_of_the_checkout_its_task_is_about() {
-        use agent::exposed::{EnvironmentFile, ExposedFile, Manifests};
-
-        let task = Task {
-            session: "update",
-            prompt: String::new(),
-            manifests: Manifests::ByBuilder,
-        };
-        let file = |folder: &str, relative: &str| ExposedFile {
-            path: Path::new(folder).join(relative),
-            folder: folder.into(),
-            target: None,
-            environment_file: Some(EnvironmentFile::default()),
-        };
-        let checkout = Path::new("/src/app");
-        let own = file("/src/app", "agents/dev/.env");
-
-        assert_eq!(
-            task.ask(std::slice::from_ref(&own), checkout).manifests,
-            Manifests::ByBuilder
-        );
-        // The builder is given the folder of personal agents too, whose manifests it is not asked to
-        // change.
-        let personal = file("/home/me/agents", "mine/.env");
-        assert_eq!(task.ask(&[own, personal], checkout).manifests, Manifests::ByHand);
-    }
+    use super::{Builder, DEFINITION, builds_on};
 
     #[test]
     fn the_builder_leaves_the_checkout_and_the_personal_agents() {

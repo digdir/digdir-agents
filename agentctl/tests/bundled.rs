@@ -248,7 +248,7 @@ async fn run_makes_the_agent_with_its_folder_from_agentds_copy_of_the_definition
         agent.status.origin
     );
     assert_eq!(agent.status.lifetime, None, "kept until deleted");
-    let workspace = workspace.canonicalize().expect("canonical workspace");
+    let workspace = common::fs::canonicalize(&workspace).expect("canonical workspace");
     assert_eq!(
         agent.status.bindings,
         BTreeMap::from([(sandbox::SandboxPath::new(CHECKOUT), workspace.clone())])
@@ -729,7 +729,7 @@ async fn the_files_a_run_would_ask_about_are_found_before_anything_runs() {
         .await
         .expect("exposed files");
 
-    let canonical = workspace.canonicalize().expect("canonical workspace");
+    let canonical = common::fs::canonicalize(&workspace).expect("canonical workspace");
     let found = files
         .iter()
         .map(|file| {
@@ -777,10 +777,7 @@ async fn applying_a_manifest_that_now_names_the_given_folder_forgets_it_was_give
     let fixture = Fixture::new();
     let definition = TempDirectory::new("bundled-local");
     std::fs::create_dir_all(definition.path().join("checkout")).expect("checkout");
-    let worktree = fixture
-        .workspace("worktree")
-        .canonicalize()
-        .expect("canonical worktree");
+    let worktree = common::fs::canonicalize(fixture.workspace("worktree")).expect("canonical worktree");
     let declaring = |source: &Path| {
         let mut manifest = manifest("dev", BASE_IMAGE);
         manifest.spec.sandbox.mounts = vec![MountSpec::Bind {
@@ -911,7 +908,7 @@ async fn a_folder_given_for_a_bind_mount_replaces_the_manifests_and_makes_anothe
         "the manifest's own folder given is the same: {same}"
     );
     assert_eq!(other.agent.metadata.name, "dev-worktree");
-    let worktree = worktree.canonicalize().expect("canonical worktree");
+    let worktree = common::fs::canonicalize(&worktree).expect("canonical worktree");
     assert!(
         matches!(&other.agent.spec.sandbox.mounts[..], [MountSpec::Bind { source: Some(source), .. }] if *source == worktree),
         "{:?}",

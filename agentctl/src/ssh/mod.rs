@@ -420,7 +420,7 @@ impl Access {
 /// survives upgrades between reconciliation passes.
 #[must_use]
 pub fn stable_agentctl_path(sibling: &Path, path_variable: Option<&std::ffi::OsStr>) -> PathBuf {
-    let Ok(target) = std::fs::canonicalize(sibling) else {
+    let Ok(target) = common::fs::canonicalize(sibling) else {
         return sibling.to_path_buf();
     };
     let file_name = sibling.file_name().map(std::ffi::OsStr::to_owned);
@@ -429,7 +429,7 @@ pub fn stable_agentctl_path(sibling: &Path, path_variable: Option<&std::ffi::OsS
         .flat_map(std::env::split_paths)
         .filter(|directory| directory.is_absolute())
         .filter_map(|directory| Some(directory.join(file_name.as_ref()?)))
-        .find(|candidate| std::fs::canonicalize(candidate).is_ok_and(|resolved| resolved == target))
+        .find(|candidate| common::fs::canonicalize(candidate).is_ok_and(|resolved| resolved == target))
         .unwrap_or_else(|| sibling.to_path_buf())
 }
 

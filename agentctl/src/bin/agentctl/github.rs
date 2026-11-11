@@ -92,7 +92,7 @@ pub(crate) async fn login(
 
 /// Checks `token` with GitHub and has agentd keep it as `name`, once it acts as `user`, or, at a
 /// terminal, once the person confirms whom it acts as.
-async fn keep(client: &Client, name: &str, token: &str, way: Way, user: Option<&str>) -> CommandResult<()> {
+pub(crate) async fn keep(client: &Client, name: &str, token: &str, way: Way, user: Option<&str>) -> CommandResult<()> {
     eprintln!("Checking the token with GitHub...");
     // Ctrl-C would otherwise end agentctl before it says what becomes of the token.
     let checked = tokio::select! {

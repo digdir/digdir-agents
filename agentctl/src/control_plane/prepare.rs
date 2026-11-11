@@ -196,7 +196,7 @@ impl ControlPlane {
                 path.display()
             )));
         }
-        let folder = tokio::fs::canonicalize(path)
+        let folder = common::fs::canonicalize_async(path)
             .await
             .map_err(|error| Error::Invalid(format!("folder {} cannot be resolved: {error}", path.display())))?;
         if !tokio::fs::metadata(&folder).await?.is_dir() {
@@ -234,7 +234,7 @@ impl ControlPlane {
 }
 
 async fn canonical(path: &Path) -> PathBuf {
-    tokio::fs::canonicalize(path)
+    common::fs::canonicalize_async(path)
         .await
         .unwrap_or_else(|_| path.to_path_buf())
 }

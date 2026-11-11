@@ -8,15 +8,20 @@ agent, and every agent kept its own copy of the same keys. Each kind of value no
 variables to move. Once you have moved them, apply the agent again, and delete the file when no agent reads it. Until
 then, agentctl mounts no folder that holds the file into an agent, such as the checkout it is in.
 
-A command that would mount such a folder says instead what still reads the file, and for each value the command that
-stores it and the change to its entry in the manifest. `agentctl update` leaves the manifests to the agent builder,
-which cannot be given a checkout that holds the file. So there the file goes first: store the secrets, note the plain
-values, delete the file and run it again. The builder proposes the changes to the manifests, and you apply your agents
-again once it has made them.
+`agentctl update` moves a checkout, or a folder of personal agents, off the file in one go. At a terminal it offers to
+store the file's GitHub token as the login `default` and each secret under a name made from its variable, deletes the
+file, and has the agent builder change the manifests to take the values from there. It shows plain values, which the
+builder writes into the manifests, and names any other keys in the file, which are deleted with it. You apply your
+agents again once the manifests take their values from agentctl. After you pull manifests that someone else moved this
+way, `agentctl update` stores what they take from your file, each secret from the variable its entry gives agents and
+the login from `GITHUB_TOKEN`, and deletes the file. When it cannot store a value for you, such as one that differs
+between two files, it says how to store it yourself.
 
-When no manifest beside the file and no agent on this machine reads it any more, the command names what those
-manifests now take from agentctl. At a terminal it then offers to delete the file, and goes on. `agentctl tui` leaves
-deleting it to you.
+The agent builder is also given your folder of personal agents, so when one of those still reads such a file,
+`agentctl update` asks you to run it on that folder first. Any other command that would mount a folder holding the file
+refuses and points you to `agentctl update`. Once no manifest beside the file and no agent on this machine reads it,
+those commands name what the manifests take from agentctl, and at a terminal offer to delete the file. The sections
+below say where each kind of value goes, for moving a manifest by hand.
 
 ## A GitHub token, and Git's name and email
 

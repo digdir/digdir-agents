@@ -260,9 +260,9 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
     let status = row.get::<_, String>(5)?;
     let optional_mount_sources = row.get::<_, String>(6)?;
     let volume_revisions = row.get::<_, String>(7)?;
-    let origin = serde_json::from_str::<StoredOrigin>(&row.get::<_, String>(8)?).map_err(conversion_error)?;
+    let origin = super::decode_json::<StoredOrigin>(&row.get::<_, String>(8)?).map_err(conversion_error)?;
     let id = id.parse::<AgentId>().map_err(conversion_error)?;
-    let (source_directory, manifest_path, env_file) = match serde_json::from_str(&source).map_err(conversion_error)? {
+    let (source_directory, manifest_path, env_file) = match super::decode_json(&source).map_err(conversion_error)? {
         StoredSource::Provenance(provenance) => (
             provenance.source_directory,
             provenance.manifest_path,
@@ -270,7 +270,7 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
         ),
         StoredSource::Directory(directory) => (directory, None, None),
     };
-    let mut agent = serde_json::from_str::<Agent>(&desired).map_err(conversion_error)?;
+    let mut agent = super::decode_json::<Agent>(&desired).map_err(conversion_error)?;
     if agent.metadata.name != active_name {
         return Err(rusqlite::Error::InvalidQuery);
     }
@@ -278,15 +278,15 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
         .map(time::OffsetDateTime::from_unix_timestamp)
         .transpose()
         .map_err(conversion_error)?;
-    agent.status = serde_json::from_str(&status).map_err(conversion_error)?;
+    agent.status = super::decode_json(&status).map_err(conversion_error)?;
     Ok(AgentRecord {
         id,
         source_directory,
         manifest_path,
         env_file,
         agent,
-        optional_mount_sources: serde_json::from_str(&optional_mount_sources).map_err(conversion_error)?,
-        volume_revisions: serde_json::from_str(&volume_revisions).map_err(conversion_error)?,
+        optional_mount_sources: super::decode_json(&optional_mount_sources).map_err(conversion_error)?,
+        volume_revisions: super::decode_json(&volume_revisions).map_err(conversion_error)?,
         origin: origin.origin,
         lifetime: origin.lifetime,
         bindings: origin.bindings,

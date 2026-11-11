@@ -295,7 +295,7 @@ impl ControlPlane {
             if other.id == record.id || other.agent.metadata.deletion_timestamp.is_some() {
                 continue;
             }
-            environment_files.extend(environment_file(&other).await?);
+            environment_files.extend(present_environment_file(&other).await?);
             others.push(other);
         }
         let folders = record
@@ -345,11 +345,7 @@ impl ControlPlane {
                     source.display(),
                     secret_file.display(),
                     record.agent.metadata.name,
-                    crate::exposed::moving_out(
-                        &own.variables,
-                        std::slice::from_ref(&own.agent),
-                        crate::exposed::Manifests::ByHand,
-                    ),
+                    crate::exposed::MOVING_OFF,
                 )));
             }
         }
@@ -789,7 +785,7 @@ pub(super) async fn resolve_mount_sources(
                 continue;
             }
         }
-        let resolved = tokio::fs::canonicalize(&unresolved)
+        let resolved = common::fs::canonicalize_async(&unresolved)
             .await
             .map_err(|error| Error::Invalid(format!("{field} {} cannot be resolved: {error}", unresolved.display())))?;
         if !tokio::fs::metadata(&resolved).await?.is_dir() {
@@ -886,7 +882,7 @@ fn bind_mount_sources(record: &AgentRecord) -> Vec<(String, PathBuf)> {
 }
 
 async fn canonical_or_original(path: &std::path::Path) -> PathBuf {
-    tokio::fs::canonicalize(path)
+    common::fs::canonicalize_async(path)
         .await
         .unwrap_or_else(|_| path.to_path_buf())
 }
@@ -912,18 +908,15 @@ pub(crate) async fn reject_secrets_in_copy(
                 source.display(),
                 applied.file.display(),
                 applied.agent,
-                crate::exposed::moving_out(
-                    &applied.variables,
-                    std::slice::from_ref(&applied.agent),
-                    crate::exposed::Manifests::ByHand,
-                ),
+                crate::exposed::MOVING_OFF,
             )));
         }
     }
     Ok(())
 }
 
-/// The environment files the active agents read values from, each with the agent that reads it.
+/// The environment files the active agents read values from, each with the agent that reads it, while
+/// the file exists.
 ///
 /// # Errors
 ///
@@ -932,7 +925,7 @@ pub(crate) async fn environment_files(agents: &dyn super::AgentStore) -> Result<
     let mut files = Vec::new();
     for agent in agents.list().await? {
         if agent.agent.metadata.deletion_timestamp.is_none() {
-            files.extend(environment_file(&agent).await?);
+            files.extend(present_environment_file(&agent).await?);
         }
     }
     Ok(files)
@@ -953,8 +946,18 @@ async fn environment_file(record: &AgentRecord) -> Result<Option<crate::exposed:
         file: canonical_secret_file(&path).await,
         agent: format!("agent/{}", record.agent.metadata.name),
         variables,
-        manifest: record.manifest_path.clone(),
     }))
+}
+
+/// [`environment_file`] of an agent other than the one being checked, while the file exists. One
+/// that is gone, such as once `agentctl update` has stored its values and deleted it, holds nothing
+/// another agent could see. The agent being checked is refused a file inside its mounts even before
+/// the file exists, as it would see the file once created.
+async fn present_environment_file(record: &AgentRecord) -> Result<Option<crate::exposed::Applied>, Error> {
+    Ok(match environment_file(record).await? {
+        Some(applied) if tokio::fs::symlink_metadata(&applied.file).await.is_ok() => Some(applied),
+        _ => None,
+    })
 }
 
 /// Canonical form of a secret file for comparison against canonical bind mount sources.
@@ -966,7 +969,7 @@ async fn canonical_secret_file(path: &std::path::Path) -> PathBuf {
     let mut missing = Vec::new();
     let mut ancestor = path;
     loop {
-        if let Ok(canonical) = tokio::fs::canonicalize(ancestor).await {
+        if let Ok(canonical) = common::fs::canonicalize_async(ancestor).await {
             return missing
                 .iter()
                 .rev()
@@ -1002,7 +1005,7 @@ async fn definition_sources(
             .map(|source| match crate::definitions::source(source)? {
                 DefinitionSource::Repository(root) => Some(root.to_path_buf()),
                 DefinitionSource::Folder(folder) => {
-                    let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+                    let folder = common::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
                     (directory == folder).then_some(folder)
                 }
             })

@@ -55,9 +55,16 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
     }
     let folder = builder::folder(arguments.directory)?;
     // Definitions are found anywhere in the repository, so the update covers all of it.
-    let checkout = agent::local::repository_root(&folder).unwrap_or(&folder).to_path_buf();
+    let repository = agent::local::repository_root(&folder);
+    let checkout = repository.unwrap_or(&folder).to_path_buf();
+    // Outside a repository, agents are found from the folder that holds `agents/`, so a folder of
+    // agents, such as the personal agents in `~/agents`, is looked at from there.
+    let from = match checkout.parent() {
+        Some(parent) if repository.is_none() && checkout.file_name() == Some("agents".as_ref()) => parent,
+        _ => &checkout,
+    };
     let definitions = client
-        .definitions(Some(checkout.clone()), Detail::Update)
+        .definitions(Some(from.to_path_buf()), Detail::Update)
         .await?
         .into_iter()
         .filter(|definition| definition.reference.is_none() && definition.path.starts_with(&checkout))
@@ -86,11 +93,10 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
         ));
     }
     let builder = Builder::bundled()?;
-    let task = Task {
+    let mut task = Task {
         session: "update",
         prompt: task("this checkout", &checkout, &definitions, agent::build_version()),
-        // The task has the builder move the definitions off an environment file.
-        manifests: agent::exposed::Manifests::ByBuilder,
+        moves_off: true,
     };
     let existing = builder.find(client, &checkout).await?;
     let name = match existing {
@@ -100,10 +106,10 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
             existing.metadata.name
         }
         existing => {
-            // Asked first, so that a refusal leaves a builder of another version where it is.
-            let agreed = builder.agree(client, &checkout, &task).await?;
-            if let Some(existing) = existing {
-                let name = existing.metadata.name;
+            // Every question comes before anything changes, and a builder of another version goes
+            // only once the folders are agreed to, so that a no or a refusal leaves it where it is.
+            if let Some(existing) = &existing {
+                let name = &existing.metadata.name;
                 let started_by = format!(
                     "agent/{name}, the agent builder on {}, was started by another version of agentctl. It keeps \
                      the image it was made with, so it would try the definitions with that version's agentctl.",
@@ -118,7 +124,10 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
                         "kept agent/{name}. Updating takes an agent builder of this version"
                     )));
                 }
-                client.delete(&name).await?;
+            }
+            let agreed = builder.agree(client, &checkout, &mut task).await?;
+            if let Some(existing) = existing {
+                client.delete(&existing.metadata.name).await?;
             }
             builder
                 .start(home, client, &checkout, &task, agreed, arguments.rm)

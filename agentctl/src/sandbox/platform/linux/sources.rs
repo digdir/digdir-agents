@@ -67,7 +67,7 @@ pub(super) fn resolve_source(
     source: &Path,
     field: &str,
 ) -> Result<std::path::PathBuf, Error> {
-    let source = std::fs::canonicalize(crate::manifest::resolve_host_path(manifest_directory, source, field)?)?;
+    let source = common::fs::canonicalize(crate::manifest::resolve_host_path(manifest_directory, source, field)?)?;
     if !source.is_dir() {
         return Err(Error::Invalid(format!("{field} must identify a directory")));
     }

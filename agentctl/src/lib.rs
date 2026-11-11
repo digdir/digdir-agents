@@ -11,7 +11,7 @@ pub mod control_plane;
 mod controller;
 pub mod definitions;
 mod dockerfile;
-mod environment;
+pub mod environment;
 pub mod exposed;
 pub mod github;
 pub mod harness;

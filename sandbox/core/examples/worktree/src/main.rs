@@ -268,7 +268,7 @@ fn current_git_repository() -> Result<PathBuf, Box<dyn Error>> {
 }
 
 fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf, io::Error> {
-    let path = std::fs::canonicalize(path)?;
+    let path = common::fs::canonicalize(path)?;
     if !path.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

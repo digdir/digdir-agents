@@ -5384,6 +5384,7 @@ name = "sandbox-worktree"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "common",
  "futures-util",
  "sandbox",
  "sandbox-microsandbox",
