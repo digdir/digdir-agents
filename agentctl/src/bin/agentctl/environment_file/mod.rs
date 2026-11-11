@@ -11,26 +11,34 @@ use plan::{Entry, Kept, MOVED_LOGIN, Plan, Store};
 
 use crate::{CommandError, CommandResult, consent, github, prompt};
 
-/// Offers to keep the values that agents read from the environment `files` in `checkout` in
-/// agentctl's store, then deletes the files, so that `binds` can be given to the agent builder,
-/// which changes the manifests that read them. Returns, once the files are gone, what the builder's
-/// task adds: where the manifests take each value from now, which the builder cannot see. Returns
-/// nothing when no agent reads any of those files.
+/// What `agentctl update` moves off once the person has agreed to it: the environment files in the
+/// checkout, and where each of their values goes.
+pub(crate) struct Moving {
+    read: Vec<ExposedFile>,
+    shown: Vec<String>,
+    entries: Vec<Entry>,
+    agents: Vec<String>,
+    /// Where each value goes, as the question showed it.
+    table: Vec<String>,
+}
+
+/// Asks the person to have agentctl keep the values that agents read from the environment `files`
+/// in `checkout` and delete the files, so that the agent builder, which changes the manifests that
+/// read them, can be given the checkout. Nothing changes until [`Moving::apply`]. Returns nothing
+/// when there is no such file.
 ///
 /// Files elsewhere, such as beside a personal agent, belong to manifests the builder is not asked
-/// to change, so the person moves those off first, before anything here changes.
+/// to change, so the person moves those off first.
 ///
 /// # Errors
 ///
 /// Returns what the person stores by hand when agentctl cannot store every value, such as one that
-/// differs between the files, or why nothing changed when they say no, or when storing or deleting
-/// fails.
-pub(crate) async fn move_off(
+/// differs between the files, or why nothing changed when they say no.
+pub(crate) async fn ask(
     client: &Client,
     files: &[ExposedFile],
     checkout: &std::path::Path,
-    binds: Vec<agent::control_plane::BindSource>,
-) -> CommandResult<Option<String>> {
+) -> CommandResult<Option<Moving>> {
     let from = crate::builder::folder(None).ok();
     // Every environment file here, also one nothing reads any more, as a pull may have moved its
     // manifests off it while its values are in the file alone.
@@ -75,7 +83,7 @@ pub(crate) async fn move_off(
     } = planned(client, &read).await?;
     let shown = read.iter().map(|file| file.shown(from.as_deref())).collect::<Vec<_>>();
     let mut lines = vec![
-        "agentctl update gives the agent builder this checkout, but these environment files in it hold \
+        "agentctl update gives the agent builder this folder, but these environment files in it hold \
          agents' keys, which an agent must not see:"
             .to_owned(),
     ];
@@ -98,34 +106,71 @@ pub(crate) async fn move_off(
     if !prompt::confirm_lines(&lines.iter().map(String::as_str).collect::<Vec<_>>())? {
         return Err(CommandError::Message("nothing was changed".into()));
     }
-    store(client, &entries).await?;
-    // The person may have taken a while to answer, so a file something has come to read since stays.
-    let now = client.exposed_files(binds).await?;
-    if read.iter().any(|file| !now.contains(file)) {
-        return Err(CommandError::Message(
-            "the keys are stored, but what reads the files changed while you answered, so they were not deleted. \
+    let read = read.into_iter().cloned().collect();
+    Ok(Some(Moving {
+        read,
+        shown,
+        entries,
+        agents,
+        table,
+    }))
+}
+
+impl Moving {
+    /// Whether `file` is one of the files this moves off.
+    pub(crate) fn moves(&self, file: &ExposedFile) -> bool {
+        self.read.iter().any(|read| read.path == file.path)
+    }
+
+    /// Stores the values the person agreed to and deletes the files, once agentd finds nothing else
+    /// reads them in `binds`. Returns what the builder's task adds: where the manifests take each
+    /// value from now, which the builder cannot see.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when storing fails, or when deleting does or would lose what something has
+    /// come to read since.
+    pub(crate) async fn apply(
+        self,
+        client: &Client,
+        binds: Vec<agent::control_plane::BindSource>,
+    ) -> CommandResult<String> {
+        let Self {
+            read,
+            shown,
+            entries,
+            agents,
+            table,
+        } = self;
+        store(client, &entries).await?;
+        // The person may have taken a while to answer, so a file something has come to read since stays.
+        let now = client.exposed_files(binds).await?;
+        if read.iter().any(|file| !now.contains(file)) {
+            return Err(CommandError::Message(
+                "the keys are stored, but what reads the files changed while you answered, so they were not deleted. \
              Run this again"
-                .into(),
-        ));
-    }
-    let paths = read.iter().map(|file| file.path.clone()).zip(shown).collect::<Vec<_>>();
-    let deleted =
-        consent::remove(&paths).map_err(|error| CommandError::Message(format!("the keys are stored, but {error}")))?;
-    println!("Deleted {}.", agent::exposed::sentence_list(&deleted));
-    // Also where the person sees it, in case the builder does not start.
-    if !table.is_empty() {
-        println!("The agent builder has the manifests take each value from here:");
-        for line in &table {
-            println!("{line}");
+                    .into(),
+            ));
         }
+        let paths = read.iter().map(|file| file.path.clone()).zip(shown).collect::<Vec<_>>();
+        let deleted = consent::remove(&paths)
+            .map_err(|error| CommandError::Message(format!("the keys are stored, but {error}")))?;
+        println!("Deleted {}.", agent::exposed::sentence_list(&deleted));
+        // Also where the person sees it, in case the builder does not start.
+        if !table.is_empty() {
+            println!("The agent builder has the manifests take each value from here:");
+            for line in &table {
+                println!("{line}");
+            }
+        }
+        if !agents.is_empty() {
+            println!(
+                "Apply {} again once the manifests take their values from there, so they no longer read the files.",
+                agent::exposed::sentence_list(&agents)
+            );
+        }
+        Ok(told(&entries, &agents))
     }
-    if !agents.is_empty() {
-        println!(
-            "Apply {} again once the manifests take their values from there, so they no longer read the files.",
-            agent::exposed::sentence_list(&agents)
-        );
-    }
-    Ok(Some(told(&entries, &agents)))
 }
 
 /// The [`plan::plan`] for the environment files `read`, with their values and what agentctl keeps

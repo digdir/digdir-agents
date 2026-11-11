@@ -141,27 +141,37 @@ impl Builder {
         task: &mut Task,
     ) -> CommandResult<BTreeSet<PathBuf>> {
         let mut files = client.exposed_files(self.binds(checkout)?).await?;
+        let mut agreed = BTreeSet::new();
         loop {
+            files.retain(|file| !agreed.contains(&file.path));
             if files.is_empty() {
-                return Ok(BTreeSet::new());
+                return Ok(agreed);
             }
-            if task.moves_off
-                && let Some(told) = environment_file::move_off(client, &files, checkout, self.binds(checkout)?).await?
-            {
-                task.prompt.push_str(&told);
-                files = client.exposed_files(self.binds(checkout)?).await?;
-                continue;
+            // Every question comes before anything changes, so that a no leaves everything as it was.
+            let moving = if task.moves_off {
+                environment_file::ask(client, &files, checkout).await?
+            } else {
+                None
+            };
+            let rest = files
+                .iter()
+                .filter(|file| moving.as_ref().is_none_or(|moving| !moving.moves(file)))
+                .cloned()
+                .collect::<Vec<_>>();
+            let answered = consent::agree(&rest, &ASK)?;
+            if let Some(moving) = moving {
+                task.prompt
+                    .push_str(&moving.apply(client, self.binds(checkout)?).await?);
             }
-            let agreed = consent::agree(&files, &ASK)?;
-            if agreed.delete.is_empty() {
-                return Ok(agreed.read);
-            }
+            agreed.extend(answered.read);
             let now = client.exposed_files(self.binds(checkout)?).await?;
-            if consent::asked_about_all(&files, &now) {
-                consent::delete(&agreed.delete, &now)?;
-                return Ok(agreed.read);
+            // One that turned up while the person answered is asked about before anything is deleted.
+            if !answered.delete.is_empty() && consent::asked_about_all(&rest, &now) {
+                consent::delete(&answered.delete, &now)?;
+                files = client.exposed_files(self.binds(checkout)?).await?;
+            } else {
+                files = now;
             }
-            files = now;
         }
     }
 

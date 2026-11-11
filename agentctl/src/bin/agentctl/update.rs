@@ -55,9 +55,16 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
     }
     let folder = builder::folder(arguments.directory)?;
     // Definitions are found anywhere in the repository, so the update covers all of it.
-    let checkout = agent::local::repository_root(&folder).unwrap_or(&folder).to_path_buf();
+    let repository = agent::local::repository_root(&folder);
+    let checkout = repository.unwrap_or(&folder).to_path_buf();
+    // Outside a repository, agents are found from the folder that holds `agents/`, so a folder of
+    // agents, such as the personal agents in `~/agents`, is looked at from there.
+    let from = match checkout.parent() {
+        Some(parent) if repository.is_none() && checkout.file_name() == Some("agents".as_ref()) => parent,
+        _ => &checkout,
+    };
     let definitions = client
-        .definitions(Some(checkout.clone()), Detail::Update)
+        .definitions(Some(from.to_path_buf()), Detail::Update)
         .await?
         .into_iter()
         .filter(|definition| definition.reference.is_none() && definition.path.starts_with(&checkout))

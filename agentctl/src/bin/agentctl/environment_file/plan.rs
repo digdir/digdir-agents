@@ -433,6 +433,21 @@ fn what(change: &Move) -> String {
         .join(", ")
 }
 
+/// The value the files hold for the variable `source`, or `Err` when they hold different ones: the
+/// files are one place for a value, so they must agree on it. An empty value is none, as an
+/// optional secret takes it.
+fn value<'a>(values: &'a Values, source: &str) -> Result<Option<&'a Zeroizing<String>>, ()> {
+    let mut found = values
+        .iter()
+        .filter_map(|values| values.get(source))
+        .filter(|value| !value.is_empty());
+    let value = found.next();
+    if found.any(|other| Some(other) != value) {
+        return Err(());
+    }
+    Ok(value)
+}
+
 /// Where each of `moves` goes, in their order, given the `values` of each file and what is `kept`
 /// already, or what agentctl cannot store, each with what the person does instead. A secret no file
 /// holds a value for, such as an optional one left blank, is named still, as others who pull the
@@ -460,20 +475,25 @@ fn entries(moves: &[Move], values: &Values, kept: &Kept) -> Result<Vec<Entry>, V
             Move::Secret { name: Some(name), .. } if kept.secrets.contains(name) => {
                 (format!("the secret {name}"), true, String::new())
             }
+            Move::Secret {
+                name: Some(name),
+                hosts,
+                ..
+            } if !hosts.is_empty() => (
+                format!("the secret {name}, for {}", hosts.join(", ")),
+                false,
+                format!("Store the one agents should get with `{}`", secret_set(name, hosts)),
+            ),
+            // Without a value there is nothing to store, so nothing that storing needs.
+            Move::Secret { name: Some(name), .. } if value(values, source) == Ok(None) => {
+                (format!("the secret {name}"), false, String::new())
+            }
             Move::Secret { name, hosts, .. } => {
-                let command = secret_set(name.as_deref().unwrap_or("NAME"), hosts);
-                let Some(name) = name.as_deref().filter(|_| !hosts.is_empty()) else {
-                    unkept.push(format!(
-                        "{source}: agentctl cannot tell what to store it as. Store it with `{command}`, then run this \
-                         again"
-                    ));
-                    continue;
-                };
-                (
-                    format!("the secret {name}, for {}", hosts.join(", ")),
-                    false,
-                    format!("Store the one agents should get with `{command}`"),
-                )
+                unkept.push(format!(
+                    "{source}: agentctl cannot tell what to store it as. Store it with `{}`, then run this again",
+                    secret_set(name.as_deref().unwrap_or("NAME"), hosts)
+                ));
+                continue;
             }
             Move::Plain { .. } if secret.contains(source) => {
                 unkept.push(format!(
@@ -492,19 +512,12 @@ fn entries(moves: &[Move], values: &Values, kept: &Kept) -> Result<Vec<Entry>, V
             });
             continue;
         }
-        // The files are one place for a value, so they must agree on it. An empty value is none, as
-        // an optional secret takes it.
-        let mut found = values
-            .iter()
-            .filter_map(|values| values.get(source))
-            .filter(|value| !value.is_empty());
-        let value = found.next();
-        if found.any(|other| Some(other) != value) {
+        let Ok(value) = value(values, source) else {
             unkept.push(format!(
                 "{source}: the files hold different values. {by_hand}, then run this again"
             ));
             continue;
-        }
+        };
         let Some(value) = value.cloned() else {
             if matches!(change, Move::Secret { .. }) {
                 entries.push(Entry {
@@ -868,6 +881,10 @@ mod tests {
         }
         let required = pulled(vec![secret("aivar-api-key", &["api.aivar.no"], false)]);
         assert!(plan(&[&required], &[values(&[])], &NOTHING).is_err());
+
+        // One left blank that leaves the hosts to the stored secret.
+        let blank = pulled(vec![secret("aivar-api-key", &[], true)]);
+        assert!(plan(&[&blank], &[values(&[("AIVAR_API_KEY", "")])], &NOTHING).is_ok());
 
         // A migrated entry that leaves the hosts to the stored secret: by hand, then done.
         let without_hosts = pulled(vec![secret("aivar-api-key", &[], false)]);
