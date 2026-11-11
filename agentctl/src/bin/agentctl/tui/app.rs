@@ -3040,7 +3040,16 @@ fn agent_state(agent: &Agent) -> AgentState {
         ),
         (None, None) => match ready.map(|ready| ready.status) {
             None => state(Tone::Gray, "Pending", String::new(), None),
-            Some(ConditionStatus::True) => state(Tone::Green, "Ready", String::new(), entered),
+            Some(ConditionStatus::True) => {
+                let shortfalls = Condition::shortfalls(&agent.status.conditions)
+                    .map(|condition| condition.message.as_str())
+                    .collect::<Vec<_>>();
+                if shortfalls.is_empty() {
+                    state(Tone::Green, "Ready", String::new(), entered)
+                } else {
+                    state(Tone::Yellow, "Ready", shortfalls.join(" · "), entered)
+                }
+            }
             Some(_) => failed(Tone::Cyan, "Starting", message(), entered),
         },
     }
@@ -4827,6 +4836,43 @@ pub(crate) mod tests {
         assert_eq!(
             (rows[0].state, rows[0].tone, rows[0].detail.as_str()),
             ("Waiting", Tone::Yellow, "volume \"apps\" is taking its first copy")
+        );
+    }
+
+    #[test]
+    fn a_ready_agent_without_its_account_or_checkout_says_what_it_lacks() {
+        let mut lacking = ready_agent("lacking");
+        for (kind, status, message) in [
+            (
+                Condition::ACCOUNTS,
+                ConditionStatus::False,
+                "run `agentctl github login default`",
+            ),
+            (Condition::WORKSPACE, ConditionStatus::False, "could not clone"),
+            (
+                Condition::OPTIONAL_SOURCES,
+                ConditionStatus::False,
+                "left out ~/.gitconfig",
+            ),
+        ] {
+            lacking.status.conditions.push(agent::Condition {
+                kind: kind.into(),
+                status,
+                reason: String::new(),
+                message: message.into(),
+                last_transition_time: None,
+            });
+        }
+        let mut app = App::new();
+        app.apply_snapshot(vec![lacking], Vec::new());
+        let rows = app.render_rows();
+        assert_eq!(
+            (rows[0].state, rows[0].tone, rows[0].detail.as_str()),
+            (
+                "Ready",
+                Tone::Yellow,
+                "run `agentctl github login default` · could not clone"
+            )
         );
     }
 

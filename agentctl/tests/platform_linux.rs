@@ -21,6 +21,7 @@ use tokio::io::AsyncReadExt as _;
 static NO_ACCOUNTS: agent::sandbox::AccountSetup = agent::sandbox::AccountSetup {
     git_identity: None,
     instructions: Vec::new(),
+    missing_logins: Vec::new(),
 };
 
 const PLATFORM_API_URL: &str = "http://host.microsandbox.internal:4100";
@@ -1884,6 +1885,7 @@ async fn linux_setup_commits_as_the_agents_account_unless_the_manifest_names_som
             email: "1+digdir-bot@users.noreply.github.com".into(),
         }),
         instructions: Vec::new(),
+        missing_logins: Vec::new(),
     };
     let setting = |key: &str, value: &str| (key.to_owned(), value.to_owned());
 

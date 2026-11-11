@@ -10,6 +10,7 @@ pub(crate) mod ssh;
 mod systemd;
 pub(crate) mod vnc;
 mod volumes;
+mod workspace;
 
 use std::collections::BTreeSet;
 
@@ -250,6 +251,7 @@ impl Linux {
         Ok(PlatformSetup {
             missing_sources: missing,
             skills: placed,
+            workspace: workspace::observe(sandbox).await?,
         })
     }
 }
