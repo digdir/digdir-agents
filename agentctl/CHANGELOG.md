@@ -16,6 +16,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 ### Fixed
 
 - On Windows, `agentctl get definitions` writes paths below the current folder with `/` alone, such as `./agents/desktop`, instead of `./agents\desktop`. ([#453](https://github.com/digdir/digdir-agents/issues/453))
+- On Windows, with `AGENT_HOME` outside your user folder, `ssh agentctl-NAME` from Git Bash, or VS Code started there, reaches the agent instead of failing with `Could not resolve hostname`. Run `agentctl ssh-config install` again to get this. ([#455](https://github.com/digdir/digdir-agents/issues/455))
 
 ## [0.1.0-preview.14] - 2026-11-11
 
