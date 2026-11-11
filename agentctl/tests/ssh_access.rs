@@ -139,7 +139,11 @@ impl Fixture {
     /// The `ProxyCommand` the generated configuration gives `agent`, which names this home. Its
     /// words are quoted for this host's shell, with `%` doubled for OpenSSH.
     fn proxy_command(&self, agent: &str) -> String {
-        let shell = agent::ssh::CommandShell::host();
+        self.proxy_command_for(agent, agent::ssh::CommandShell::host())
+    }
+
+    /// [`Self::proxy_command`] with its words quoted for `shell`.
+    fn proxy_command_for(&self, agent: &str, shell: agent::ssh::CommandShell) -> String {
         format!(
             "{} --home {} ssh-proxy agent/{agent}",
             agent::ssh::shell_word(AGENTCTL, shell).replace('%', "%%"),
@@ -523,6 +527,41 @@ async fn deletion_removes_host_material_and_config_lists_only_active_ssh_agents(
         .queue_execution_events_matching(is_server_check, exited(0));
     queue_valid_environment_policy(&fixture.backend);
     assert!(fixture.access.reconcile(&worker, &sandbox).await.expect("grant"));
+
+    // Win32-OpenSSH runs a `ProxyCommand` through `CreateProcess` and Git for Windows' `ssh`
+    // through bash, so on Windows the configuration first includes a copy quoted for bash, named
+    // `/c/...` as only the second reads it. The copy includes nothing. Elsewhere there is none.
+    let generated = std::fs::read_to_string(fixture.ssh_home().config_path()).expect("configuration");
+    let msys = std::fs::read_to_string(fixture.ssh_home().msys_config_path()).ok();
+    if cfg!(windows) {
+        let (global, _) = generated.split_once("\nHost ").expect("host blocks");
+        let include = global
+            .lines()
+            .find(|line| line.starts_with("Include "))
+            .expect("an include of the copy before the host blocks");
+        let named = include.trim_start_matches("Include ").trim_matches('"');
+        assert!(
+            named.starts_with('/') && named.ends_with("/agent-home/ssh/config.msys"),
+            "{include}"
+        );
+        let mut expected = generated.replace(&format!("\n{include}\n"), "");
+        for agent in ["reviewer", "worker"] {
+            expected = expected.replace(
+                &format!("ProxyCommand {}\n", fixture.proxy_command(agent)),
+                &format!(
+                    "ProxyCommand {}\n",
+                    fixture.proxy_command_for(agent, ssh::CommandShell::Posix)
+                ),
+            );
+        }
+        assert!(
+            !expected.contains(&fixture.proxy_command("worker")),
+            "the home needs quoting, which differs between the shells"
+        );
+        assert_eq!(msys.as_deref(), Some(expected.as_str()));
+    } else {
+        assert_eq!(msys, None);
+    }
 
     #[cfg(unix)]
     for (agent, listed) in [

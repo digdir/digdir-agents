@@ -83,6 +83,14 @@ impl SshHome {
         self.0.join("config")
     }
 
+    /// Returns the copy of the generated configuration for the MSYS build of OpenSSH that Git for
+    /// Windows ships, whose `ProxyCommand` is quoted for bash. It is written on Windows only, where
+    /// the generated configuration includes it for that client.
+    #[must_use]
+    pub fn msys_config_path(&self) -> PathBuf {
+        self.0.join("config.msys")
+    }
+
     /// Returns the `known_hosts` file pre-seeded with every agent's host key.
     #[must_use]
     pub fn known_hosts_path(&self) -> PathBuf {
@@ -380,14 +388,38 @@ impl Access {
         self.rewrite_config().await
     }
 
-    /// Rewrites the generated client configuration from every active agent with SSH access.
+    /// Rewrites the generated client configuration from every active agent with SSH access, and on
+    /// Windows its copy for the MSYS build of OpenSSH, which the configuration includes and which
+    /// differs only in the shell its `ProxyCommand`s are quoted for.
     async fn rewrite_config(&self) -> Result<(), Error> {
-        let mut entries = self
+        let mut records: Vec<AgentRecord> = self
             .agents
             .list()
             .await?
             .into_iter()
             .filter(|record| record.agent.metadata.deletion_timestamp.is_none() && record.agent.spec.ssh_access())
+            .collect();
+        records.sort_by(|left, right| left.agent.metadata.name.cmp(&right.agent.metadata.name));
+        prepare_directory(self.home.root())?;
+        let msys_config = self.home.msys_config_path();
+        if cfg!(windows) {
+            self.write_config(&records, &msys_config, CommandShell::Posix, None)?;
+        }
+        let chained = cfg!(windows).then_some(msys_config.as_path());
+        self.write_config(&records, &self.home.config_path(), CommandShell::host(), chained)
+    }
+
+    /// Writes one generated client configuration, with each `ProxyCommand` quoted for `shell`,
+    /// which first includes `msys_config` for Git for Windows' `ssh` when it is given.
+    fn write_config(
+        &self,
+        records: &[AgentRecord],
+        path: &Path,
+        shell: CommandShell,
+        msys_config: Option<&Path>,
+    ) -> Result<(), Error> {
+        let entries = records
+            .iter()
             .map(|record| {
                 Ok(HostEntry {
                     alias: alias(&record.agent.metadata.name),
@@ -396,7 +428,7 @@ impl Access {
                         &self.agentctl,
                         &self.control_home,
                         &record.agent.metadata.name,
-                        CommandShell::host(),
+                        shell,
                     )?,
                     host_key_alias: host_key_alias(record.id),
                     identity_file: self.home.identity_path(record.id),
@@ -404,10 +436,8 @@ impl Access {
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        entries.sort_by(|left, right| left.alias.cmp(&right.alias));
-        prepare_directory(self.home.root())?;
-        let text = render_config(&entries, self.user_home.as_deref());
-        client_config::write_private_file(&self.home.config_path(), text.as_bytes())
+        let text = render_config(&entries, msys_config, self.user_home.as_deref());
+        client_config::write_private_file(path, text.as_bytes())
     }
 }
 

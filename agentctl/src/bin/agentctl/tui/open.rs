@@ -692,4 +692,47 @@ mod tests {
             assert_eq!(SshSetup::resolve("worker", Some(&user)).await, expected, "{text}");
         }
     }
+
+    /// On Windows the generated configuration chains its copy for Git for Windows' `ssh`, so the
+    /// setup is found whichever `ssh` comes first on `PATH`, Win32-OpenSSH or that MSYS build,
+    /// through the user's `Include` and through `-F` alike.
+    #[cfg(windows)]
+    #[tokio::test(flavor = "local")]
+    async fn ssh_setup_is_found_through_the_windows_configuration_and_its_copy() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let generated = directory.path().join("u$AB12").join("config");
+        let msys = generated.with_file_name("config.msys");
+        std::fs::create_dir_all(generated.parent().expect("parent")).expect("directory");
+        for (path, shell, chained) in [
+            (&msys, agent::ssh::CommandShell::Posix, None),
+            (&generated, agent::ssh::CommandShell::Windows, Some(msys.as_path())),
+        ] {
+            let entry = agent::ssh::HostEntry {
+                alias: agent::ssh::alias("worker"),
+                user: "agent".into(),
+                proxy_command: agent::ssh::render_proxy_command(
+                    Path::new(r"C:\Program Files\Agent\agentctl.exe"),
+                    Path::new(r"C:\Users\$AB12\.agent"),
+                    "worker",
+                    shell,
+                )
+                .expect("proxy command"),
+                host_key_alias: "agent-1".into(),
+                identity_file: directory.path().join("id_ed25519"),
+                known_hosts_file: directory.path().join("known_hosts"),
+            };
+            std::fs::write(path, agent::ssh::render_config(&[entry], chained, None)).expect("generated");
+        }
+        let user = directory.path().join("user_config");
+        let include = agent::ssh::render_include(&generated, None);
+        std::fs::write(&user, format!("{include}\n")).expect("user config");
+        for config in [&user, &generated] {
+            assert_eq!(
+                SshSetup::resolve("worker", Some(config)).await,
+                SshSetup::Installed,
+                "{}",
+                config.display()
+            );
+        }
+    }
 }
