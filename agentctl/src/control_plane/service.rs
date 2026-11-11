@@ -295,7 +295,7 @@ impl ControlPlane {
             if other.id == record.id || other.agent.metadata.deletion_timestamp.is_some() {
                 continue;
             }
-            environment_files.extend(environment_file(&other).await?);
+            environment_files.extend(present_environment_file(&other).await?);
             others.push(other);
         }
         let folders = record
@@ -915,7 +915,8 @@ pub(crate) async fn reject_secrets_in_copy(
     Ok(())
 }
 
-/// The environment files the active agents read values from, each with the agent that reads it.
+/// The environment files the active agents read values from, each with the agent that reads it, while
+/// the file exists.
 ///
 /// # Errors
 ///
@@ -924,7 +925,7 @@ pub(crate) async fn environment_files(agents: &dyn super::AgentStore) -> Result<
     let mut files = Vec::new();
     for agent in agents.list().await? {
         if agent.agent.metadata.deletion_timestamp.is_none() {
-            files.extend(environment_file(&agent).await?);
+            files.extend(present_environment_file(&agent).await?);
         }
     }
     Ok(files)
@@ -947,6 +948,17 @@ async fn environment_file(record: &AgentRecord) -> Result<Option<crate::exposed:
         variables,
         manifest: record.manifest_path.clone(),
     }))
+}
+
+/// [`environment_file`] of an agent other than the one being checked, while the file exists. One
+/// that is gone, such as once `agentctl update` has stored its values and deleted it, holds nothing
+/// another agent could see. The agent being checked is refused a file inside its mounts even before
+/// the file exists, as it would see the file once created.
+async fn present_environment_file(record: &AgentRecord) -> Result<Option<crate::exposed::Applied>, Error> {
+    Ok(match environment_file(record).await? {
+        Some(applied) if tokio::fs::symlink_metadata(&applied.file).await.is_ok() => Some(applied),
+        _ => None,
+    })
 }
 
 /// Canonical form of a secret file for comparison against canonical bind mount sources.

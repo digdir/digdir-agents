@@ -1830,6 +1830,45 @@ async fn selected_secret_file_inside_a_bind_mount_is_rejected() {
     assert_eq!(exposed(&error), [(PathBuf::from("secrets.env"), true)]);
 }
 
+/// `agentctl update` stores the values of another agent's environment file and deletes it, after
+/// which the agent builder may be given the folder it was in.
+#[tokio::test(flavor = "local")]
+async fn another_agents_environment_file_counts_only_while_it_exists() {
+    let fixture = fixture();
+    let checkout = tempfile::tempdir().expect("checkout");
+    let file = checkout.path().join("credentials.env");
+    std::fs::write(&file, "GITHUB_TOKEN=value\n").expect("environment file");
+    let source = tempfile::tempdir().expect("manifest directory");
+    let mut request = apply_request_in("worker", source.path().to_path_buf());
+    request.env_file = Some(file.clone());
+    request.agent.spec.secrets.push(SecretSpec {
+        environment: "GITHUB_TOKEN".into(),
+        optional: false,
+        placeholder: None,
+        allowed_hosts: vec!["github.com".into()],
+        source: None,
+        name: None,
+    });
+    fixture.control_plane.apply(request).await.expect("applied");
+    let given = [agent::control_plane::BindSource {
+        source: checkout.path().to_path_buf(),
+        target: None,
+    }];
+
+    let found = fixture.control_plane.exposed_files(&given).await.expect("found");
+    assert_eq!(
+        found
+            .iter()
+            .map(|file| file.environment_file.is_some())
+            .collect::<Vec<_>>(),
+        [true]
+    );
+
+    std::fs::remove_file(&file).expect("deleted");
+    let found = fixture.control_plane.exposed_files(&given).await.expect("found");
+    assert!(found.is_empty(), "{found:?}");
+}
+
 #[tokio::test(flavor = "local")]
 async fn git_ignored_nested_dot_env_is_rejected_case_insensitively_without_declared_secrets() {
     let fixture = fixture();

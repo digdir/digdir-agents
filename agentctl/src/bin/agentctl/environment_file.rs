@@ -227,6 +227,20 @@ async fn stored(client: &Client) -> Result<Stored, Error> {
     })
 }
 
+/// The variables agents get the value of `change` as, with the file's name for it where that
+/// differs, as the manifests still name it.
+fn what(change: &Move) -> String {
+    change
+        .variables()
+        .iter()
+        .map(|variable| match &variable.source {
+            Some(source) if *source != variable.name => format!("{} ({source} in the file)", variable.name),
+            _ => variable.name.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Where each of `moves` goes, in their order, given the `values` of each file and what is
 /// `stored` already, or what agentctl cannot store, each with what the person does instead. A value
 /// no file holds is left out, as nothing that reads it could have started.
@@ -241,12 +255,7 @@ fn entries(moves: &[Move], values: &Values, stored: &Stored) -> Result<Vec<Entry
     let mut unkept = Vec::new();
     for change in moves {
         let source = change.source();
-        let what = change
-            .variables()
-            .iter()
-            .map(|variable| variable.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
+        let what = what(change);
         // Where it goes, whether it is there already, and how the person puts it there.
         let (place, there, by_hand) = match change {
             Move::GithubLogin { .. } => (
@@ -293,8 +302,12 @@ fn entries(moves: &[Move], values: &Values, stored: &Stored) -> Result<Vec<Entry
             });
             continue;
         }
-        // The files are one place for a value, so they must agree on it.
-        let mut found = values.iter().filter_map(|values| values.get(source));
+        // The files are one place for a value, so they must agree on it. An empty value is none, as
+        // an optional secret takes it.
+        let mut found = values
+            .iter()
+            .filter_map(|values| values.get(source))
+            .filter(|value| !value.is_empty());
         let value = found.next();
         if found.any(|other| Some(other) != value) {
             unkept.push(format!(
@@ -434,8 +447,8 @@ mod tests {
         assert_eq!(
             places(&entries),
             [
-                "GITHUB_TOKEN: the GitHub login default",
-                "GITHUB_TOKEN: the secret prod-gh, for api.github.com",
+                "GITHUB_TOKEN (DEV_GH in the file): the GitHub login default",
+                "GITHUB_TOKEN (PROD_GH in the file): the secret prod-gh, for api.github.com",
             ]
         );
         assert!(entries.iter().all(|entry| entry.store.is_some()), "both are stored");
@@ -453,6 +466,39 @@ mod tests {
             assert!(unkept.iter().all(|line| !line.contains("key-value")), "{unkept:?}");
             assert!(unkept.iter().any(|line| line.contains("as a secret")), "{unkept:?}");
         }
+    }
+
+    #[test]
+    fn an_empty_value_is_none_and_a_renamed_one_names_its_variable_in_the_file() {
+        let renamed = |source: &str| Variable {
+            source: Some(source.into()),
+            ..variable("GIT_AUTHOR_NAME", None)
+        };
+        let moves = agent::exposed::moves(&[
+            variable("AIVAR_API_KEY", Some(&["api.aivar.no"])),
+            renamed("WORK_NAME"),
+            renamed("PERSONAL_NAME"),
+        ]);
+        let values = [
+            file(&[("AIVAR_API_KEY", ""), ("WORK_NAME", "Alice")]),
+            file(&[("AIVAR_API_KEY", "key"), ("PERSONAL_NAME", "A.")]),
+        ];
+
+        let entries = entries(&moves, &values, &NOTHING).expect("kept");
+
+        assert_eq!(
+            places(&entries),
+            [
+                "AIVAR_API_KEY: the secret aivar-api-key, for api.aivar.no",
+                "GIT_AUTHOR_NAME (WORK_NAME in the file): the value Alice, which the agent builder writes into the \
+                 manifests",
+                "GIT_AUTHOR_NAME (PERSONAL_NAME in the file): the value A., which the agent builder writes into the \
+                 manifests",
+            ],
+            "an empty value does not disagree with another"
+        );
+        let blank = super::entries(&moves[..1], &[file(&[("AIVAR_API_KEY", "")])], &NOTHING).expect("nothing to keep");
+        assert!(blank.is_empty(), "an empty value is never stored");
     }
 
     #[test]
@@ -477,7 +523,6 @@ mod tests {
         };
         let unreadable = Reader::Unreadable {
             name: "agent.mine.yaml".into(),
-            error: String::new(),
         };
         let moving = [Variable {
             source: Some("KEY".into()),

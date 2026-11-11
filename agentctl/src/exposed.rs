@@ -89,12 +89,7 @@ pub enum Reader {
     /// A manifest beside the file, by its file name.
     Manifest { name: String, variables: Vec<Variable> },
     /// A manifest beside the file that agentctl cannot read, so it may read any value.
-    Unreadable {
-        name: String,
-        /// Why it cannot be read, such as a field this version does not know.
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        error: String,
-    },
+    Unreadable { name: String },
     /// An agent applied with the file, as `agent/NAME`.
     Agent {
         name: String,
@@ -309,10 +304,7 @@ fn environment_file(path: &Path, environment_files: &[Applied]) -> Option<Enviro
                         })
                     }));
                 }
-                Err(error) => readers.push(Reader::Unreadable {
-                    name,
-                    error: error.to_string(),
-                }),
+                Err(_) => readers.push(Reader::Unreadable { name }),
             }
         }
     }
@@ -763,7 +755,7 @@ mod tests {
 
         let files = found(&root, vec![applied]).await;
 
-        let mut left = files
+        let left = files
             .iter()
             .map(|file| {
                 (
@@ -772,13 +764,6 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        // Why a manifest cannot be read is the resolver's to word, but the person is told it.
-        for reader in left.iter_mut().flat_map(|(_, file)| &mut file.readers) {
-            if let Reader::Unreadable { error, .. } = reader {
-                assert!(error.contains("apiVersion"), "{error}");
-                error.clear();
-            }
-        }
         let manifest = |name: &str| Reader::Manifest {
             name: name.into(),
             variables: editor.clone(),
@@ -822,7 +807,6 @@ mod tests {
                     EnvironmentFile {
                         readers: vec![Reader::Unreadable {
                             name: "agent.yaml".into(),
-                            error: String::new(),
                         }],
                         stored: Vec::new(),
                     }

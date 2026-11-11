@@ -370,7 +370,6 @@ mod tests {
         read.environment_file = Some(agent::exposed::EnvironmentFile {
             readers: vec![agent::exposed::Reader::Unreadable {
                 name: "agent.yaml".into(),
-                error: String::new(),
             }],
             stored: Vec::new(),
         });
@@ -398,7 +397,6 @@ mod tests {
         read.environment_file = Some(agent::exposed::EnvironmentFile {
             readers: vec![agent::exposed::Reader::Unreadable {
                 name: "agent.yaml".into(),
-                error: String::new(),
             }],
             stored: Vec::new(),
         });
