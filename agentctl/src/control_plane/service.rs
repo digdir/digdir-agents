@@ -946,7 +946,6 @@ async fn environment_file(record: &AgentRecord) -> Result<Option<crate::exposed:
         file: canonical_secret_file(&path).await,
         agent: format!("agent/{}", record.agent.metadata.name),
         variables,
-        manifest: record.manifest_path.clone(),
     }))
 }
 

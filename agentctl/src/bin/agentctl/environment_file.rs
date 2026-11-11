@@ -79,10 +79,15 @@ pub(crate) async fn move_off(
         .collect::<Vec<_>>();
     if let Some(first) = outside.first() {
         let outside = outside.iter().copied().cloned().collect::<Vec<_>>();
+        let folder = first.folder.display().to_string();
+        let folder = if folder.contains(' ') {
+            format!("\"{folder}\"")
+        } else {
+            folder
+        };
         return Err(CommandError::Message(format!(
-            "{}\nRun `agentctl update {}` first, then this again.",
+            "{}\nRun `agentctl update {folder}` first, then this again.",
             agent::exposed::refusal_from(&outside, from.as_deref()),
-            first.folder.display()
         )));
     }
     let mut seen = BTreeSet::new();
@@ -93,7 +98,7 @@ pub(crate) async fn move_off(
     if read.is_empty() {
         return Ok(None);
     }
-    let (entries, unread) = plan(client, &read).await?;
+    let (entries, others) = plan(client, &read).await?;
     let shown = read.iter().map(|file| file.shown(from.as_deref())).collect::<Vec<_>>();
     let mut lines = vec![
         "agentctl update gives the agent builder this checkout, but these environment files in it hold \
@@ -110,7 +115,7 @@ pub(crate) async fn move_off(
         .map(|entry| format!("  {:width$}  {}", entry.what, entry.place))
         .collect::<Vec<_>>();
     lines.extend(table.iter().cloned());
-    lines.extend(unread);
+    lines.extend(others);
     lines.push(if entries.iter().any(|entry| entry.store.is_some()) {
         "Store the keys, delete the files and go on?".into()
     } else {
@@ -132,28 +137,38 @@ pub(crate) async fn move_off(
     let paths = read.iter().map(|file| file.path.clone()).zip(shown).collect::<Vec<_>>();
     let deleted =
         consent::remove(&paths).map_err(|error| CommandError::Message(format!("the keys are stored, but {error}")))?;
+    println!("Deleted {}.", agent::exposed::sentence_list(&deleted));
     // Also where the person sees it, in case the builder does not start.
-    println!(
-        "Deleted {}. The agent builder has the manifests take each value from here:",
-        agent::exposed::sentence_list(&deleted)
-    );
-    for line in &table {
-        println!("{line}");
+    if !table.is_empty() {
+        println!("The agent builder has the manifests take each value from here:");
+        for line in &table {
+            println!("{line}");
+        }
     }
     let agents = EnvironmentFile::agents(read.iter().filter_map(|file| file.environment_file.as_ref()));
+    if !agents.is_empty() {
+        println!(
+            "Apply {} again once the manifests take their values from there, so they no longer read the files.",
+            agent::exposed::sentence_list(&agents)
+        );
+    }
     Ok(Some(told(&entries, &agents)))
 }
 
 /// Where each value the environment files `read` hold goes, or what the person stores by hand
-/// first, with what a manifest agentctl cannot read may lose with them.
+/// first, with what else the files hold, which goes with them.
 async fn plan(client: &Client, read: &[&ExposedFile]) -> CommandResult<(Vec<Entry>, Option<String>)> {
     let environment = || read.iter().filter_map(|file| file.environment_file.as_ref());
     let moving = EnvironmentFile::moving(environment());
     let mut values = Vec::new();
     for file in read {
-        values.push(agent::environment::read(&file.path).await?);
+        values.push(
+            agent::environment::read(&file.path)
+                .await
+                .map_err(|error| CommandError::Message(format!("{}: {error}", file.path.display())))?,
+        );
     }
-    let kept = stored(client).await?;
+    let kept = kept(client).await?;
     let by_hand = |unkept: Vec<String>| {
         CommandError::Message(format!(
             "these values in the environment files need storing by hand:\n  {}",
@@ -168,7 +183,7 @@ async fn plan(client: &Client, read: &[&ExposedFile]) -> CommandResult<(Vec<Entr
     if !unmet.is_empty() {
         return Err(by_hand(unmet));
     }
-    Ok((entries, unread(environment(), &moves, &values)))
+    Ok((entries, others(environment(), &moves, &values)))
 }
 
 /// Stores what the `entries` keep. The login comes first, so the person may still decline it once
@@ -197,10 +212,15 @@ async fn store(client: &Client, entries: &[Entry]) -> CommandResult<()> {
 /// What the agent builder's task adds once the files are gone: where the manifests take each value
 /// from now, and the `agents` the person applies again once the builder has changed them.
 fn told(entries: &[Entry], agents: &[String]) -> String {
-    let mut told = String::from(
-        "The person has deleted the environment files, and agentctl keeps their values instead. Have the \
-                    manifests take them from there:\n",
-    );
+    let mut told = String::from("The person has deleted the environment files.");
+    if !entries.is_empty() {
+        // Others who pull the manifests have their values stored by the same names.
+        told.push_str(
+            " Have the manifests take each value from where agentctl keeps it, by exactly these names, \
+             keeping each secret's allowedHosts:",
+        );
+    }
+    told.push('\n');
     for entry in entries {
         let _ = writeln!(told, "  {}: {}", entry.what, entry.place);
     }
@@ -214,10 +234,10 @@ fn told(entries: &[Entry], agents: &[String]) -> String {
     told
 }
 
-/// What a manifest beside the `files` that agentctl cannot read may lose with them: every variable
-/// in the files, given their `values`, that none of `moves` takes. Nothing tells what such a
-/// manifest reads, but it can read only what the files hold.
-fn unread<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Move], values: &Values) -> Option<String> {
+/// What else the `files` hold, given their `values`: every variable none of `moves` takes, which
+/// is deleted with them unstored. A manifest beside them that agentctl cannot read may take any of
+/// those, but only those, so they are named whether or not one does.
+fn others<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Move], values: &Values) -> Option<String> {
     let manifests = files
         .into_iter()
         .flat_map(|file| &file.readers)
@@ -226,25 +246,41 @@ fn unread<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Mov
             Reader::Manifest { .. } | Reader::Agent { .. } => None,
         })
         .collect::<BTreeSet<_>>();
-    if manifests.is_empty() {
-        return None;
-    }
-    let these = agent::exposed::sentence_list(&manifests.into_iter().collect::<Vec<_>>());
-    let read = moves.iter().map(Move::source).collect::<BTreeSet<_>>();
+    let unreadable = agent::exposed::sentence_list(&manifests.into_iter().collect::<Vec<_>>());
+    // Git's name and email go with the login, so they are taken too.
+    let taken = moves
+        .iter()
+        .flat_map(|change| {
+            std::iter::once(change.source()).chain(
+                change
+                    .variables()
+                    .iter()
+                    .map(|variable| variable.source.as_deref().unwrap_or(&variable.name)),
+            )
+        })
+        .collect::<BTreeSet<_>>();
     let others = values
         .iter()
         .flat_map(BTreeMap::keys)
-        .filter(|name| !read.contains(name.as_str()))
+        .filter(|name| !taken.contains(name.as_str()))
         .cloned()
-        .collect::<BTreeSet<_>>();
-    Some(if others.is_empty() {
-        format!("agentctl cannot read {these}, but the files hold nothing else they could read.")
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if others.is_empty() {
+        return (!unreadable.is_empty())
+            .then(|| format!("agentctl cannot read {unreadable}, but the files hold nothing else it could take."));
+    }
+    let readers = if unreadable.is_empty() {
+        "nothing here takes".to_owned()
     } else {
-        format!(
-            "agentctl cannot read {these}, so they may also read {}, which go with the files.",
-            agent::exposed::sentence_list(&others.into_iter().collect::<Vec<_>>())
-        )
-    })
+        format!("only {unreadable}, which agentctl cannot read, may take")
+    };
+    Some(format!(
+        "The files also hold {}, which {readers}. They are deleted with the files and not stored, so copy any you \
+         need first.",
+        agent::exposed::sentence_list(&others)
+    ))
 }
 
 /// The moves for what the manifests beside the `files` take from agentctl that none of `moves`
@@ -254,8 +290,29 @@ fn unread<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Mov
 fn taken<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Move], values: &Values) -> Vec<Move> {
     let github_token = agent::github::ACCESS_ENVIRONMENT;
     let variables = values.iter().flat_map(BTreeMap::keys).collect::<BTreeSet<_>>();
+    let needed = files.into_iter().flat_map(|file| &file.stored).collect::<Vec<_>>();
+    // Storing a secret sets its hosts, so it takes those of every entry that names it.
+    let hosts = |name: &str| {
+        let mut hosts = Vec::<String>::new();
+        for needed in &needed {
+            if let agent::exposed::Stored::Secret {
+                name: other,
+                allowed_hosts,
+                ..
+            } = needed
+                && other == name
+            {
+                for host in allowed_hosts {
+                    if !hosts.contains(host) {
+                        hosts.push(host.clone());
+                    }
+                }
+            }
+        }
+        hosts
+    };
     let mut taken = Vec::<Move>::new();
-    for needed in files.into_iter().flat_map(|file| &file.stored) {
+    for needed in needed.iter().copied() {
         let covered = moves.iter().chain(&taken).any(|change| match (change, needed) {
             (Move::GithubLogin { .. }, agent::exposed::Stored::GithubLogin { login }) => login == MOVED_LOGIN,
             (Move::Secret { name, .. }, agent::exposed::Stored::Secret { name: needed, .. }) => {
@@ -279,7 +336,7 @@ fn taken<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Move
                     }],
                 });
             }
-            agent::exposed::Stored::Secret { name, allowed_hosts } => {
+            agent::exposed::Stored::Secret { name, .. } => {
                 let Some(source) = variables
                     .iter()
                     .find(|variable| agent::exposed::secret_name(variable) == *name)
@@ -290,11 +347,11 @@ fn taken<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Move
                     variable: Variable {
                         name: (*source).clone(),
                         source: None,
-                        allowed_hosts: Some(allowed_hosts.clone()),
+                        allowed_hosts: Some(hosts(name)),
                     },
                     source: (*source).clone(),
                     name: Some(name.clone()),
-                    hosts: allowed_hosts.clone(),
+                    hosts: hosts(name),
                 });
             }
             agent::exposed::Stored::GithubLogin { .. } => {}
@@ -306,7 +363,7 @@ fn taken<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Move
 /// `moves` with Git's name and email as plain values again when there is no GitHub token to keep
 /// them with: no login is stored, and the files hold no token or an empty one, as for an optional
 /// one left blank.
-fn without_token(moves: Vec<Move>, values: &Values, kept: &Stored) -> Vec<Move> {
+fn without_token(moves: Vec<Move>, values: &Values, kept: &Kept) -> Vec<Move> {
     let has = |source: &str| {
         values
             .iter()
@@ -332,8 +389,9 @@ fn without_token(moves: Vec<Move>, values: &Values, kept: &Stored) -> Vec<Move> 
 
 /// What the manifests beside the `files` take from agentctl that is neither kept already nor among
 /// the `entries` to store, such as the secret a manifest pulled since names. Deleting the files
-/// would lose its value, so the person stores it first.
-fn unmet<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, entries: &[Entry], kept: &Stored) -> Vec<String> {
+/// would lose its value, so the person stores it first. An optional secret is not missed, as one
+/// the person has no key for is left out.
+fn unmet<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, entries: &[Entry], kept: &Kept) -> Vec<String> {
     let storing = |login: Option<&str>, secret: Option<&str>| {
         entries.iter().any(|entry| match &entry.store {
             Some(Store::Login(_)) => login == Some(MOVED_LOGIN),
@@ -352,17 +410,15 @@ fn unmet<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, entries: &[En
                      github login {login}`, then run this again"
                 ));
             }
-            agent::exposed::Stored::Secret { name, allowed_hosts }
-                if !kept.secrets.contains(name) && !storing(None, Some(name)) =>
-            {
-                let hosts = if allowed_hosts.is_empty() {
-                    "HOST".to_owned()
-                } else {
-                    allowed_hosts.join(",")
-                };
+            agent::exposed::Stored::Secret {
+                name,
+                allowed_hosts,
+                optional: false,
+            } if !kept.secrets.contains(name) && !storing(None, Some(name)) => {
                 unmet.insert(format!(
-                    "the secret {name}: the manifests take it, but it is not stored. Store it with `agentctl secret \
-                     set {name} --hosts {hosts}`, then run this again"
+                    "the secret {name}: the manifests take it, but it is not stored. Store it with `{}`, then run \
+                     this again",
+                    agent::exposed::secret_set(name, allowed_hosts)
                 ));
             }
             agent::exposed::Stored::GithubLogin { .. } | agent::exposed::Stored::Secret { .. } => {}
@@ -372,13 +428,13 @@ fn unmet<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, entries: &[En
 }
 
 /// The names of the GitHub logins and the secrets agentctl keeps already.
-struct Stored {
+struct Kept {
     logins: BTreeSet<String>,
     secrets: BTreeSet<String>,
 }
 
-async fn stored(client: &Client) -> Result<Stored, Error> {
-    Ok(Stored {
+async fn kept(client: &Client) -> Result<Kept, Error> {
+    Ok(Kept {
         logins: client
             .accounts()
             .await?
@@ -409,10 +465,11 @@ fn what(change: &Move) -> String {
         .join(", ")
 }
 
-/// Where each of `moves` goes, in their order, given the `values` of each file and what is
-/// `stored` already, or what agentctl cannot store, each with what the person does instead. A value
-/// no file holds is left out, as nothing that reads it could have started.
-fn entries(moves: &[Move], values: &Values, stored: &Stored) -> Result<Vec<Entry>, Vec<String>> {
+/// Where each of `moves` goes, in their order, given the `values` of each file and what is `kept`
+/// already, or what agentctl cannot store, each with what the person does instead. A secret no file
+/// holds a value for, such as an optional one left blank, is named still, as others who pull the
+/// manifests may have one. A plain value no file holds is left out.
+fn entries(moves: &[Move], values: &Values, kept: &Kept) -> Result<Vec<Entry>, Vec<String>> {
     // A plain value is shown and given to the builder, so one that a manifest reads as a secret is not.
     let secret = moves
         .iter()
@@ -428,29 +485,26 @@ fn entries(moves: &[Move], values: &Values, stored: &Stored) -> Result<Vec<Entry
         let (place, there, by_hand) = match change {
             Move::GithubLogin { .. } => (
                 format!("the GitHub login {MOVED_LOGIN}"),
-                stored.logins.contains(MOVED_LOGIN),
+                kept.logins.contains(MOVED_LOGIN),
                 format!("Sign in with `agentctl github login {MOVED_LOGIN}`"),
             ),
+            // One stored already needs neither a name made here nor hosts.
+            Move::Secret { name: Some(name), .. } if kept.secrets.contains(name) => {
+                (format!("the secret {name}"), true, String::new())
+            }
             Move::Secret { name, hosts, .. } => {
-                let command = format!(
-                    "`agentctl secret set {} --hosts {}`",
-                    name.as_deref().unwrap_or("NAME"),
-                    if hosts.is_empty() {
-                        "HOST".to_owned()
-                    } else {
-                        hosts.join(",")
-                    }
-                );
+                let command = agent::exposed::secret_set(name.as_deref().unwrap_or("NAME"), hosts);
                 let Some(name) = name.as_deref().filter(|_| !hosts.is_empty()) else {
                     unkept.push(format!(
-                        "{source}: agentctl cannot tell what to store it as. Store it with {command}, then run this again"
+                        "{source}: agentctl cannot tell what to store it as. Store it with `{command}`, then run this \
+                         again"
                     ));
                     continue;
                 };
                 (
                     format!("the secret {name}, for {}", hosts.join(", ")),
-                    stored.secrets.contains(name),
-                    format!("Store the one agents should get with {command}"),
+                    false,
+                    format!("Store the one agents should get with `{command}`"),
                 )
             }
             Move::Plain { .. } if secret.contains(source) => {
@@ -484,6 +538,13 @@ fn entries(moves: &[Move], values: &Values, stored: &Stored) -> Result<Vec<Entry
             continue;
         }
         let Some(value) = value.cloned() else {
+            if matches!(change, Move::Secret { .. }) {
+                entries.push(Entry {
+                    what,
+                    place: format!("{place}, with no value in the files"),
+                    store: None,
+                });
+            }
             continue;
         };
         let (place, store) = match change {
@@ -500,13 +561,15 @@ fn entries(moves: &[Move], values: &Values, stored: &Stored) -> Result<Vec<Entry
                     value,
                 }),
             ),
-            Move::Secret { name: None, .. } | Move::Plain { .. } => (
+            // Only a plain value is ever shown.
+            Move::Plain { .. } => (
                 format!(
                     "the value {}, which the agent builder writes into the manifests",
                     value.as_str()
                 ),
                 None,
             ),
+            Move::Secret { name: None, .. } => continue,
         };
         entries.push(Entry { what, place, store });
     }
@@ -525,7 +588,7 @@ mod tests {
         }
     }
 
-    const NOTHING: Stored = Stored {
+    const NOTHING: Kept = Kept {
         logins: BTreeSet::new(),
         secrets: BTreeSet::new(),
     };
@@ -558,7 +621,7 @@ mod tests {
             file(&[("GITHUB_TOKEN", "t"), ("AZURE_DEVOPS_PAT", "p"), ("EDITOR", "vim")]),
             file(&[("GITHUB_TOKEN", "t"), ("STUDIO_API_KEY", "s")]),
         ];
-        let stored = Stored {
+        let stored = Kept {
             logins: BTreeSet::new(),
             secrets: BTreeSet::from(["studio-api-key".to_owned()]),
         };
@@ -570,12 +633,14 @@ mod tests {
             [
                 "GITHUB_TOKEN, GIT_USER_NAME: the GitHub login default",
                 "AZURE_DEVOPS_PAT: the secret azure-devops-pat, for dev.azure.com",
-                "STUDIO_API_KEY: the secret studio-api-key, for altinn.studio, stored already",
+                "STUDIO_API_KEY: the secret studio-api-key, stored already",
                 "EDITOR: the value vim, which the agent builder writes into the manifests",
+                // Named still, for others who pull the manifests and have one.
+                "MISSING: the secret missing, for example.com, with no value in the files",
             ]
         );
         let to_store = entries.iter().map(|entry| entry.store.is_some()).collect::<Vec<_>>();
-        assert_eq!(to_store, [true, true, false, false]);
+        assert_eq!(to_store, [true, true, false, false, false]);
     }
 
     #[test]
@@ -594,7 +659,7 @@ mod tests {
         assert!(!unkept[0].contains("first-secret"), "never shows a secret: {unkept:?}");
 
         // Once the person has stored it, the files no longer need to agree.
-        let stored = Stored {
+        let stored = Kept {
             logins: BTreeSet::new(),
             secrets: BTreeSet::from(["azure-devops-pat".to_owned()]),
         };
@@ -666,7 +731,14 @@ mod tests {
             "an empty value does not disagree with another"
         );
         let blank = super::entries(&moves[..1], &[file(&[("AIVAR_API_KEY", "")])], &NOTHING).expect("nothing to keep");
-        assert!(blank.is_empty(), "an empty value is never stored");
+        assert_eq!(
+            places(&blank),
+            ["AIVAR_API_KEY: the secret aivar-api-key, for api.aivar.no, with no value in the files"]
+        );
+        assert!(
+            blank.iter().all(|entry| entry.store.is_none()),
+            "an empty value is never stored"
+        );
     }
 
     #[test]
@@ -676,11 +748,11 @@ mod tests {
             readers: vec![Reader::Agent {
                 name: "agent/dev".into(),
                 variables: vec![variable("AZURE_DEVOPS_PAT", Some(&["dev.azure.com"]))],
-                reapply: true,
             }],
             stored: vec![agent::exposed::Stored::Secret {
                 name: secret.into(),
                 allowed_hosts: vec!["dev.azure.com".into()],
+                optional: false,
             }],
         };
         let values = [self::file(&[("AZURE_DEVOPS_PAT", "pat")])];
@@ -718,10 +790,12 @@ mod tests {
                 agent::exposed::Stored::Secret {
                     name: "azure-devops-pat".into(),
                     allowed_hosts: vec!["dev.azure.com".into()],
+                    optional: false,
                 },
                 agent::exposed::Stored::Secret {
                     name: "ado-other".into(),
                     allowed_hosts: vec!["dev.azure.com".into()],
+                    optional: false,
                 },
             ],
         };
@@ -744,6 +818,44 @@ mod tests {
         let unmet = unmet([&pulled], &entries, &NOTHING);
         assert_eq!(unmet.len(), 1, "a name no variable has: {unmet:?}");
         assert!(unmet[0].contains("agentctl secret set ado-other"), "{unmet:?}");
+    }
+
+    #[test]
+    fn a_pulled_secret_the_person_has_no_key_for_stops_update_only_when_it_is_required() {
+        let secret = |name: &str, hosts: &[&str], optional: bool| agent::exposed::Stored::Secret {
+            name: name.into(),
+            allowed_hosts: hosts.iter().map(|&host| host.to_owned()).collect(),
+            optional,
+        };
+        let pulled = |stored| EnvironmentFile {
+            readers: Vec::new(),
+            stored,
+        };
+        let plan = |file: &EnvironmentFile, values: &[BTreeMap<String, Zeroizing<String>>], kept: &Kept| {
+            let moves = taken([file], &[], values);
+            entries(&moves, values, kept).map(|entries| unmet([file], &entries, kept))
+        };
+
+        // An optional key left blank, or not in the file at all.
+        let optional = pulled(vec![secret("aivar-api-key", &["api.aivar.no"], true)]);
+        for values in [vec![file(&[("AIVAR_API_KEY", "")])], vec![file(&[])]] {
+            assert_eq!(plan(&optional, &values, &NOTHING), Ok(Vec::new()));
+        }
+        let required = pulled(vec![secret("aivar-api-key", &["api.aivar.no"], false)]);
+        assert_eq!(plan(&required, &[file(&[])], &NOTHING).map(|unmet| unmet.len()), Ok(1));
+
+        // A migrated entry that leaves the hosts to the stored secret: by hand, then done.
+        let without_hosts = pulled(vec![secret("aivar-api-key", &[], false)]);
+        let values = [file(&[("AIVAR_API_KEY", "key")])];
+        assert!(
+            plan(&without_hosts, &values, &NOTHING).is_err(),
+            "it cannot tell the hosts"
+        );
+        let kept = Kept {
+            logins: BTreeSet::new(),
+            secrets: BTreeSet::from(["aivar-api-key".to_owned()]),
+        };
+        assert_eq!(plan(&without_hosts, &values, &kept), Ok(Vec::new()), "stored by hand");
     }
 
     #[test]
@@ -777,37 +889,47 @@ mod tests {
     }
 
     #[test]
-    fn what_a_manifest_that_cannot_be_read_may_take_is_what_the_files_hold_besides() {
+    fn what_else_the_files_hold_is_named_before_it_goes_with_them() {
         let environment_file = |readers| EnvironmentFile {
             readers,
             stored: Vec::new(),
         };
-        let unreadable = Reader::Unreadable {
+        let unreadable = || Reader::Unreadable {
             name: "agent.mine.yaml".into(),
         };
-        let moving = [Variable {
-            source: Some("KEY".into()),
-            ..variable("API_KEY", Some(&["example.com"]))
-        }];
-        let values = [file(&[("KEY", "k"), ("OTHER", "o")]), file(&[("KEY", "k")])];
+        // Git's name and email go with the login, so the files hold nothing else of theirs.
+        let moves = agent::exposed::moves(&[
+            variable("GITHUB_TOKEN", Some(&["api.github.com"])),
+            variable("GIT_USER_NAME", None),
+            Variable {
+                source: Some("KEY".into()),
+                ..variable("API_KEY", Some(&["example.com"]))
+            },
+        ]);
+        let values = [
+            file(&[
+                ("GITHUB_TOKEN", "t"),
+                ("GIT_USER_NAME", "Alice"),
+                ("KEY", "k"),
+                ("OLD", "o"),
+            ]),
+            file(&[("KEY", "k")]),
+        ];
 
-        let line = unread(
-            &[environment_file(vec![unreadable])],
-            &agent::exposed::moves(&moving),
-            &values,
-        )
-        .expect("named");
+        let line = others(&[environment_file(vec![unreadable()])], &moves, &values).expect("named");
         assert!(
-            line.contains("agent.mine.yaml") && line.contains("OTHER") && !line.contains("KEY,"),
+            line.contains("The files also hold OLD, which only agent.mine.yaml")
+                && line.contains("deleted with the files and not stored"),
             "{line}"
         );
-        assert_eq!(
-            unread(
-                &[environment_file(Vec::new())],
-                &agent::exposed::moves(&moving),
-                &values
-            ),
-            None
+        let line = others(&[environment_file(Vec::new())], &moves, &values).expect("named");
+        assert!(line.contains("OLD, which nothing here takes"), "{line}");
+
+        let held = [file(&[("GITHUB_TOKEN", "t"), ("GIT_USER_NAME", "Alice"), ("KEY", "k")])];
+        assert_eq!(others(&[environment_file(Vec::new())], &moves, &held), None);
+        assert!(
+            others(&[environment_file(vec![unreadable()])], &moves, &held)
+                .is_some_and(|line| line.contains("nothing else it could take"))
         );
     }
 }

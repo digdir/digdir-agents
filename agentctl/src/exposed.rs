@@ -90,14 +90,9 @@ pub enum Reader {
     Manifest { name: String, variables: Vec<Variable> },
     /// A manifest beside the file that agentctl cannot read, so it may read any value.
     Unreadable { name: String },
-    /// An agent applied with the file, as `agent/NAME`.
-    Agent {
-        name: String,
-        variables: Vec<Variable>,
-        /// Whether its manifest has stopped reading the file since, so applying it again is all it
-        /// takes.
-        reapply: bool,
-    },
+    /// An agent applied with the file, as `agent/NAME`. Its manifest may have stopped reading the
+    /// file since, such as through a pull, but the agent reads it until it is applied again.
+    Agent { name: String, variables: Vec<Variable> },
 }
 
 /// A value an agent reads from an environment file.
@@ -128,7 +123,14 @@ pub enum Stored {
     /// The GitHub login of an entry in `spec.accounts`.
     GithubLogin { login: String },
     /// The stored secret an entry in `spec.secrets` names, with the hosts the entry narrows it to.
-    Secret { name: String, allowed_hosts: Vec<String> },
+    Secret {
+        name: String,
+        allowed_hosts: Vec<String>,
+        /// Whether the agent starts without it, so that a person who has no such key need not
+        /// store one.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        optional: bool,
+    },
 }
 
 /// An environment file an agent was applied with, and what the agent reads from it.
@@ -139,8 +141,6 @@ pub(crate) struct Applied {
     /// The agent, as `agent/NAME`.
     pub(crate) agent: String,
     pub(crate) variables: Vec<Variable>,
-    /// The manifest it was applied from, when agentd knows it.
-    pub(crate) manifest: Option<PathBuf>,
 }
 
 /// The values `spec` reads from an environment file: those of `spec.environment` without a `value`
@@ -269,11 +269,6 @@ fn environment_file(path: &Path, environment_files: &[Applied]) -> Option<Enviro
         .map(|applied| Reader::Agent {
             name: applied.agent.clone(),
             variables: applied.variables.clone(),
-            reapply: applied
-                .manifest
-                .as_deref()
-                .and_then(|manifest| reads(manifest).ok())
-                .is_some_and(|spec| variables(&spec).is_empty()),
         })
         .collect::<Vec<_>>();
     let manifests = manifests_beside(path);
@@ -301,6 +296,7 @@ fn environment_file(path: &Path, environment_files: &[Applied]) -> Option<Enviro
                         Some(Stored::Secret {
                             name: secret.name.clone()?,
                             allowed_hosts: secret.allowed_hosts.clone(),
+                            optional: secret.optional,
                         })
                     }));
                 }
@@ -403,7 +399,11 @@ pub fn refusal_from(files: &[ExposedFile], from: Option<&Path>) -> String {
     if !unread.is_empty() {
         let mut lines = vec![format!("{}:", UNREAD.to_ascii_lowercase()), list(&unread)];
         lines.extend(EnvironmentFile::stored_lines_of(unread.iter().map(|(_, file)| *file)));
-        lines.push("Delete them, then run this again.".into());
+        lines.push(
+            "Delete them once you have, then run this again. `agentctl update` in their checkout stores what the \
+             manifests take from the files for you and deletes them."
+                .into(),
+        );
         blocks.push(lines.join("\n"));
     }
     if !blocks.is_empty() {
@@ -442,7 +442,9 @@ impl EnvironmentFile {
                 Stored::GithubLogin { login } => {
                     logins.insert(login);
                 }
-                Stored::Secret { name, allowed_hosts } => {
+                Stored::Secret {
+                    name, allowed_hosts, ..
+                } => {
                     let hosts = hosts.entry(name).or_default();
                     for host in allowed_hosts {
                         if !hosts.contains(host) {
@@ -513,7 +515,8 @@ impl EnvironmentFile {
 
 /// The command that stores the secret `name` for `allowed_hosts`, which the person fills in when the
 /// manifest names none.
-fn secret_set(name: &str, allowed_hosts: &[String]) -> String {
+#[must_use]
+pub fn secret_set(name: &str, allowed_hosts: &[String]) -> String {
     let hosts = if allowed_hosts.is_empty() {
         "HOST".to_owned()
     } else {
@@ -707,7 +710,6 @@ mod tests {
             file: canonical.join("tools").join("beta.env"),
             agent: "agent/reviewer".into(),
             variables: vec![variable("KEY", None)],
-            manifest: None,
         };
         let files = found(root, vec![reviewer]).await;
 
@@ -753,7 +755,6 @@ mod tests {
             file: root.join("applied/.env"),
             agent: "agent/dev".into(),
             variables: token.clone(),
-            manifest: Some(root.join("applied/agent.yaml")),
         };
 
         let files = found(&root, vec![applied]).await;
@@ -780,7 +781,6 @@ mod tests {
                         readers: vec![Reader::Agent {
                             name: "agent/dev".into(),
                             variables: token,
-                            reapply: true
                         }],
                         stored: Vec::new(),
                     }
@@ -793,7 +793,8 @@ mod tests {
                             Stored::GithubLogin { login: "work".into() },
                             Stored::Secret {
                                 name: "aivar".into(),
-                                allowed_hosts: vec!["api.aivar.no".into()]
+                                allowed_hosts: vec!["api.aivar.no".into()],
+                                optional: false,
                             },
                         ],
                     }
@@ -831,7 +832,6 @@ mod tests {
             file: root.join("secrets.env"),
             agent: "agent/dev".into(),
             variables: vec![variable("KEY", None)],
-            manifest: None,
         };
 
         let files = found(&root.join("checkout"), vec![applied]).await;
@@ -868,11 +868,11 @@ mod tests {
 
         assert_eq!(refused.matches("agents/dev/.env").count(), 1, "{refused}");
         assert!(refused.contains(MOVING_OFF), "{refused}");
-        for expected in [
-            "agents/old/.env",
-            "the GitHub login work  agentctl github login work",
-            "Delete them, then run this again.",
-        ] {
+        assert!(
+            refused.contains("`agentctl update` in their checkout stores what the manifests take"),
+            "a file nothing reads goes there too: {refused}"
+        );
+        for expected in ["agents/old/.env", "the GitHub login work  agentctl github login work"] {
             assert!(
                 refused.lines().any(|line| line.trim() == expected),
                 "{expected:?} is missing from:\n{refused}"
@@ -930,6 +930,7 @@ mod tests {
         let secret = |host: &str| Stored::Secret {
             name: "shared".into(),
             allowed_hosts: vec![host.into()],
+            optional: false,
         };
         let file = |stored| EnvironmentFile {
             readers: Vec::new(),
