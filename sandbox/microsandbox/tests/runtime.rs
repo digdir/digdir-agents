@@ -73,6 +73,7 @@ async fn retained_lifecycle_execution_files_and_volumes() {
     assert_eq!(output.stdout.as_ref(), b"default-entrypoint\n");
 
     assert_terminal_execution(backend.as_ref(), &sandbox).await;
+    assert_execution_input(backend.as_ref(), &sandbox).await;
 
     backend
         .write_file(
@@ -742,6 +743,42 @@ async fn assert_terminal_execution(backend: &dyn sandbox::backend::SandboxBacken
         output.contains("terminal:hello:42x111"),
         "unexpected terminal output: {output}"
     );
+}
+
+async fn assert_execution_input(backend: &dyn sandbox::backend::SandboxBackend, sandbox: &Sandbox) {
+    let mut execution = backend
+        .start_execution(
+            &sandbox.id,
+            StartExecutionRequest::new(shell("cat; echo end")).with_input(),
+        )
+        .await
+        .expect("Execution with input should start");
+    let input = execution.input.take().expect("the Execution should take input");
+    input
+        .write_input(Bytes::from_static(b"piped\n"))
+        .await
+        .expect("input should be written");
+    // `cat` exits only once it reads end-of-file.
+    input.close_input().await.expect("input should close");
+    let output = execution.collect().await.expect("Execution should exit");
+    assert!(output.status.success());
+    assert_eq!(output.stdout.as_ref(), b"piped\nend\n");
+
+    // A command that exits before reading its input still reports its own exit status.
+    let mut execution = backend
+        .start_execution(&sandbox.id, StartExecutionRequest::new(shell("exit 3")).with_input())
+        .await
+        .expect("Execution with input should start");
+    let input = execution.input.take().expect("the Execution should take input");
+    let writes = async {
+        while input.write_input(Bytes::from(vec![b'x'; 64 * 1024])).await.is_ok() {}
+        std::future::pending::<()>().await;
+    };
+    let status = tokio::select! {
+        output = execution.collect() => output.expect("Execution should exit").status,
+        () = writes => unreachable!(),
+    };
+    assert_eq!(status.code, 3);
 }
 
 async fn collect_progress(

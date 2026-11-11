@@ -91,7 +91,9 @@ agentctl exec agent/NAME -- systemctl is-system-running
 
 - `--harness` is `claudeCode`, `codex` or `pi`. For trials, use the cheapest model and the lowest effort it offers.
 - `prompt --wait` returns when the turn completes; read its result with `turns`.
-- `exec` runs a command directly, for checking what a session did.
+- `exec` runs a command directly, for checking what a session did. It passes on standard input that is a pipe or a
+  file, such as a script piped into `sh`. A command that reads it waits for it to end, so give it `</dev/null` when
+  there is nothing to pass.
 - `attach` and `tui` need an interactive terminal; avoid them.
 - `agentctl get agents` and `agentctl get sessions --agent NAME` list what exists.
 

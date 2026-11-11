@@ -17,7 +17,7 @@ use bytes::Bytes;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt as _;
 use sandbox::{
-    execution::ExecutionEvent,
+    execution::{ExecutionEvent, StartExecutionRequest},
     terminal::{StartTerminalExecutionRequest, TerminalEvent, TerminalSize},
 };
 use zeroize::Zeroizing;
@@ -98,7 +98,8 @@ impl<'a> SignInAgent<'a> {
             &["/bin/cat".into(), path.into()],
             false,
         )?;
-        let mut execution = agent::sandbox::start_execution(self.home.path(), &self.target, spec).await?;
+        let mut execution =
+            agent::sandbox::start_execution(self.home.path(), &self.target, StartExecutionRequest::new(spec)).await?;
         let mut contents = Zeroizing::new(Vec::new());
         while let Some(event) = execution.events.next().await {
             match event? {

@@ -14,7 +14,7 @@ use crate::{Error, sandbox::Assignment};
 pub(crate) async fn start_execution(
     home: &std::path::Path,
     assignment: &Assignment,
-    spec: execution::ExecutionSpec,
+    request: execution::StartExecutionRequest,
 ) -> Result<execution::StartedExecution, Error> {
     let provider = MicrosandboxProvider::open(home.join("microsandbox")).await?;
     let Assignment::Materialized { id, .. } = assignment else {
@@ -23,7 +23,7 @@ pub(crate) async fn start_execution(
     provider.backend().inspect(id).await?;
     provider
         .backend()
-        .start_execution(id, execution::StartExecutionRequest::new(spec))
+        .start_execution(id, request)
         .await
         .map_err(Error::from)
 }
