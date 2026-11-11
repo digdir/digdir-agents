@@ -1,0 +1,60 @@
+# T3 Code as an orchestrator in a sandbox of its own. T3 Code's server and web client run here, and the agents it
+# hands work to are nested agents of this one, started through the agentctl and agentd in the image. The host needs
+# only agentctl: `agentctl port-forward t3-master 3773:3773` brings the web client to http://127.0.0.1:3773.
+#
+# `t3-join` beside this file gives it a repository to work on: the repository's agent definition as a worker T3 Code
+# can start, and a checkout the workers share.
+apiVersion: agents.platform/v1alpha1
+kind: Agent
+metadata:
+  name: t3-master
+spec:
+  sandbox:
+    image:
+      type: build
+      context: .
+      dockerfile: Dockerfile
+    platform:
+      os: linux
+    resources:
+      # T3 Code, the builds of the workers' images and the workers themselves. Two workers of 4 CPUs and 8Gi fit.
+      cpu: "10"
+      memory: "24Gi"
+      rootFilesystem:
+        # Each worker's disk and every image built for one live on this disk.
+        capacity: "160Gi"
+        mode: direct
+      # The workers are sandboxes of this one. Without nesting the orchestrator is pointless, so fail rather than
+      # start.
+      nestedSandboxes: required
+    initSystem: image
+
+  # Brings the T3 Code build, which has no release yet. It never deletes files in the sandbox.
+  home:
+    source: home
+
+  instructions:
+    - source: instructions.md
+
+  # The login T3 Code's own threads use, and the one the nested agentd passes on to the workers.
+  harnesses:
+    - type: claudeCode
+      auth: mediated
+      default: true
+      login: any
+
+  # The GitHub account stored with `agentctl github login default`. Without it the orchestrator starts, but neither
+  # it nor its workers clone private repositories, push or open pull requests.
+  accounts:
+    - type: github
+      login: default
+
+  access:
+    # T3 Code reaches its workers over SSH, and `t3-join` copies definitions in over it.
+    - type: ssh
+
+  network:
+    mode: mediated
+    allow: all
+    deny:
+      - metadata.google.internal

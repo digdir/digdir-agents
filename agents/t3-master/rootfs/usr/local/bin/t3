@@ -1,0 +1,4 @@
+#!/bin/sh
+# T3 Code's CLI against the server this agent runs, for `t3 pair`, `t3 project` and `t3 thread`.
+export T3CODE_HOME=/home/agent/.t3
+exec "$(ls -d /home/agent/.local/opt/t3/*/ | tail -n 1)t3" "$@"

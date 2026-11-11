@@ -1,0 +1,3 @@
+# The home is copied into the agent, not built into the image.
+home/
+t3-join
