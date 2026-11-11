@@ -143,7 +143,10 @@ impl Client {
                 .map_err(|source| error::io("resolve Microsandbox volume directory", source))?;
             builder.volumes_dir(volumes)
         };
-        let backend = builder.build().await.map_err(error::microsandbox)?;
+        let backend = builder.build_lazy().map_err(error::microsandbox)?;
+        crate::install_lease::wait_out(|| backend.db())
+            .await
+            .map_err(error::microsandbox)?;
         Ok(Self {
             backend: Arc::new(backend),
             runtime_bundle,
