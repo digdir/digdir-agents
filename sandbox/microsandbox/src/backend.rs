@@ -1095,8 +1095,12 @@ impl RuntimeNetwork {
 /// outside `2000::/3`, so it falls through to the default. That must hold if the
 /// pool ever changes. An explicit allow would be worse: DNS rebind protection
 /// admits a private answer that an explicit address rule allows, so a name a page
-/// controls could then resolve to the gateway. NAT64 (`64:ff9b::/96`) is also
-/// outside `2000::/3`, so IPv6-only hosts with DNS64 keep working.
+/// controls could then resolve to the gateway. The well-known NAT64 prefix
+/// (`64:ff9b::/96`) is also outside `2000::/3`, so IPv6-only hosts with DNS64 keep
+/// working. A network-specific NAT64 prefix (RFC 6052) inside `2000::/3` is still
+/// refused, which on such a host cuts off IPv4-only services too. That is rare
+/// enough to leave to the fix in Microsandbox (digdir/microsandbox#19), after
+/// which this rule can go.
 fn controlled_network_policy() -> Result<microsandbox::NetworkPolicy, Error> {
     microsandbox::NetworkPolicy::builder()
         .default_allow()
