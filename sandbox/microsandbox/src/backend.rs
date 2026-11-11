@@ -1082,17 +1082,25 @@ impl RuntimeNetwork {
 
 /// Microsandbox's own policy for a runtime under host network control.
 ///
-/// The host controller authorizes every flow, so this policy only refuses IPv6
-/// beyond the sandbox's gateway. Under a controller the runtime completes the
-/// guest's TCP handshake before the host dials, so a destination the host cannot
-/// reach over IPv6 looks connected to the guest and then stalls. Clients that try
-/// IPv6 first, such as curl, then never fall back to IPv4. A refused handshake is
-/// reset at once, so they do. Destinations with only IPv6 addresses become
-/// unreachable, which costs far less.
+/// The host controller authorizes every flow, so this policy only refuses global
+/// unicast IPv6. Under a controller the runtime completes the guest's TCP
+/// handshake before the host dials, so a destination the host cannot reach over
+/// IPv6 looks connected to the guest and then stalls. Clients that try IPv6
+/// first, such as curl, then never fall back to IPv4. A refused handshake is reset
+/// at once, so they do. Destinations with only IPv6 addresses become unreachable,
+/// which costs far less.
+///
+/// The sandbox's gateway, `host.microsandbox.internal`, stays reachable without a
+/// rule of its own: Microsandbox's IPv6 pool is the ULA `fd42:6d73:62::/48`,
+/// outside `2000::/3`, so it falls through to the default. That must hold if the
+/// pool ever changes. An explicit allow would be worse: DNS rebind protection
+/// admits a private answer that an explicit address rule allows, so a name a page
+/// controls could then resolve to the gateway. NAT64 (`64:ff9b::/96`) is also
+/// outside `2000::/3`, so IPv6-only hosts with DNS64 keep working.
 fn controlled_network_policy() -> Result<microsandbox::NetworkPolicy, Error> {
     microsandbox::NetworkPolicy::builder()
         .default_allow()
-        .egress(|egress| egress.allow_host().deny().cidr("::/0"))
+        .egress(|egress| egress.deny().cidr("2000::/3"))
         .build()
         .map_err(error::backend)
 }
@@ -1182,9 +1190,9 @@ mod tests {
     // The runtime resets a TCP handshake that its own policy refuses with a rule.
     // A refusal by default only may be answered with an HTTP denial instead.
     #[test]
-    fn controlled_runtime_resets_ipv6_beyond_the_gateway_at_once() {
+    fn controlled_runtime_resets_global_ipv6_at_once() {
         use microsandbox_network::{
-            policy::{EgressEvaluation, HostnameSource, Protocol},
+            policy::{Action, EgressEvaluation, HostnameSource, Protocol},
             shared::SharedState,
         };
 
@@ -1206,6 +1214,13 @@ mod tests {
         assert_eq!(syn("151.101.2.137:443"), (EgressEvaluation::Allow, false));
         assert_eq!(syn("[2a04:4e42::649]:443"), (EgressEvaluation::Deny, false));
         assert_eq!(syn(&format!("[{gateway_ipv6}]:8080")), (EgressEvaluation::Allow, false));
+        assert_eq!(syn("[64:ff9b::808:808]:443"), (EgressEvaluation::Allow, false));
+        // DNS rebind protection admits a private answer only when an explicit rule allows it.
+        assert!(
+            policy.rules.iter().all(|rule| rule.action == Action::Deny),
+            "no rule may allow, or a name could resolve to the gateway: {:?}",
+            policy.rules
+        );
     }
 
     // A persisted attachment that this build cannot enforce must never reach
