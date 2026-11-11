@@ -30,11 +30,12 @@ pub(crate) async fn new(arguments: NewArguments, home: &ControlPlaneHome, client
     let checkout = builder::folder(arguments.directory)?;
     let builder = Builder::bundled()?;
     // The builder makes one agent at a time.
-    let task = Task {
+    let mut task = Task {
         session: "new-agent",
         prompt: "I want to make a new agent for the repository you have checked out.".into(),
         moves_off: false,
     };
+    builder::note_git_outside(&checkout, &mut task);
     let name = match builder.find(client, &checkout).await? {
         Some(existing) if arguments.rm => return Err(builder::kept_already("new", &checkout, &existing)),
         Some(existing) => {

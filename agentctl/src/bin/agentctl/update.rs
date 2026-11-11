@@ -98,6 +98,7 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
         prompt: task("this checkout", &checkout, &definitions, agent::build_version()),
         moves_off: true,
     };
+    builder::note_git_outside(&checkout, &mut task);
     let existing = builder.find(client, &checkout).await?;
     let name = match existing {
         Some(existing) if arguments.rm => return Err(builder::kept_already("update", &checkout, &existing)),

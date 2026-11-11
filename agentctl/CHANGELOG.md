@@ -13,6 +13,10 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ## [Unreleased]
 
+### Changed
+
+- `agentctl new` and `agentctl update` on a linked Git worktree say before the agent builder starts that Git does not work in it, so review what it writes with `git status` and `git diff` on your machine, or run them in a clone. ([#486](https://github.com/digdir/digdir-agents/issues/486))
+
 ### Fixed
 
 - SSH connections to an agent, such as `ssh agentctl-NAME` or T3 Code's environments, and commands such as `agentctl exec` wait while Microsandbox is being installed or updated instead of failing, and the SSH client says what it waits for. ([#456](https://github.com/digdir/digdir-agents/issues/456))
