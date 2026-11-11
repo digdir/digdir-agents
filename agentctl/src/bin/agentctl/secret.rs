@@ -20,7 +20,7 @@ pub(crate) enum SecretCommand {
     /// `name: NAME` on one of its `secrets` get it at once, but only at its hosts, and only
     /// those of them the manifest lists when it lists any.
     Set {
-        /// The name manifests ask for the secret by, such as `aivar`.
+        /// The name manifests ask for the secret by, such as `aivar-api-key`.
         name: String,
         /// The hosts its value may reach, separated by commas, such as `api.example.com` or
         /// `*.example.com`. Needed for a new secret; a replaced one keeps its hosts without it.

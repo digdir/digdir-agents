@@ -49,12 +49,12 @@ Store a secret that agents use, such as an API key, under a name with the hosts 
 by that name in the manifests that use it:
 
 ```sh
-agentctl secret set aivar --hosts api.aivar.no
+agentctl secret set aivar-api-key --hosts api.aivar.no
 ```
 
 ```yaml
 secrets:
-  - name: aivar
+  - name: aivar-api-key
     environment: AIVAR_API_KEY
 ```
 

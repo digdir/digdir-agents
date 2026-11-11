@@ -85,7 +85,7 @@ spec:
   # the variable, and the host puts the real value into requests to the secret's hosts, and nowhere else.
   secrets:
     # The key for Digdir's AI gateway, which Pi uses. Without it Pi starts, but rejects every prompt.
-    - name: aivar
+    - name: aivar-api-key
       environment: AIVAR_API_KEY
       optional: true
       # Narrows the secret's own hosts for this agent.

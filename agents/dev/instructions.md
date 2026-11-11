@@ -12,8 +12,8 @@ none, say which tests you could not run.
 
 To try a change in a nested agent, apply a variant from the task's worktree. `nested` runs the published image, and
 `nested-build` builds it from the checkout it is applied from, which a change to `agents/dev/Dockerfile` or what it
-copies needs. Store its GitHub login and the `aivar` secret, which Pi uses, as the `agentctl` skill says. Use `desktop`
-instead of `minimal` for a browser and a desktop.
+copies needs. Store its GitHub login and the `aivar-api-key` secret, which Pi uses, as the `agentctl` skill says. Use
+`desktop` instead of `minimal` for a browser and a desktop.
 
 ```sh
 cd /home/agent/code/.worktrees/<task>/agents/dev/minimal

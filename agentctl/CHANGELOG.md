@@ -15,6 +15,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ### Fixed
 
+- On Windows, `agentctl get definitions` writes paths below the current folder with `/` alone, such as `./agents/desktop`, instead of `./agents\desktop`. ([#453](https://github.com/digdir/digdir-agents/issues/453))
 - Agents with mediated network reach hosts that also have IPv6 addresses, such as `index.crates.io`, over IPv4 at once, instead of hanging until the client gives up. They no longer use IPv6. To fix an existing agent, delete it and apply again. ([#452](https://github.com/digdir/digdir-agents/issues/452))
 
 ## [0.1.0-preview.14] - 2026-11-11

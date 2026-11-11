@@ -35,7 +35,7 @@ The images are built from this directory's `Dockerfile` on the
 make user-install
 agentctl claude login
 agentctl github login default
-agentctl secret set aivar --hosts api.aivar.no   # optional, for Pi
+agentctl secret set aivar-api-key --hosts api.aivar.no   # optional, for Pi
 cd agents/dev/minimal
 agentctl apply --wait
 agentctl attach session/s1
@@ -61,8 +61,8 @@ credentials out of it: they belong in `agentctl github login` and `agentctl secr
 `Contents` and `Pull requests` read and write. The agent pushes and opens pull requests as that account, and Git commits
 as it.
 
-The `aivar` secret is optional. It is the key for the company AI gateway at `api.aivar.no`, which Pi uses. Without it
-Pi starts but rejects every prompt, so `agentctl prompt --wait` times out.
+The `aivar-api-key` secret is optional. It is the key for the company AI gateway at `api.aivar.no`, which Pi uses.
+Without it Pi starts but rejects every prompt, so `agentctl prompt --wait` times out.
 
 ## Pi
 

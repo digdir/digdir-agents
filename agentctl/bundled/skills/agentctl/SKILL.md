@@ -39,7 +39,7 @@ them through it. For the agents in `agents/` of digdir-agents:
 
 ```sh
 printf '%s' "$GITHUB_TOKEN" | agentctl github login default --from-stdin
-printf '%s' "$AIVAR_API_KEY" | agentctl secret set aivar --hosts api.aivar.no --from-stdin
+printf '%s' "$AIVAR_API_KEY" | agentctl secret set aivar-api-key --hosts api.aivar.no --from-stdin
 ```
 
 A manifest that still reads an environment file names its values in `environment` and `secrets` without a `name`.
@@ -55,8 +55,8 @@ agent's disk can grow to its `rootFilesystem.capacity`, and every image built fo
 - The agents already there are the user's work. Change only those you create or the user names, and never run
   `stop --all` or `kill --all`.
 - Logins and stored secrets are the user's. When `apply`, `create` or `describe` reports one missing, ask the user to
-  run the command it names, such as `agentctl claude login work` or `agentctl secret set aivar --hosts api.aivar.no`;
-  do not sign in or store one yourself.
+  run the command it names, such as `agentctl claude login work` or
+  `agentctl secret set aivar-api-key --hosts api.aivar.no`; do not sign in or store one yourself.
 - Environment files hold real secrets: never read, write or print one.
 
 ## Apply
