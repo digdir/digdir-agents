@@ -12,6 +12,9 @@ const EVENTS: &[(&str, ActivityEvent)] = &[
     ("StopFailure", ActivityEvent::TurnCompleted),
     ("PermissionRequest", ActivityEvent::WaitingForInput),
     ("Notification", ActivityEvent::WaitingForInput),
+    // Fires once every tool call of a model step has resolved, so after the operator answers a
+    // question or approves a call, and not while another call in the same step still waits.
+    ("PostToolBatch", ActivityEvent::TurnContinued),
 ];
 
 /// `Notification` types that mean Claude Code is blocked on the operator;
@@ -75,4 +78,26 @@ pub(super) fn configuration(hook_path: &str) -> serde_json::Value {
         })
         .collect::<serde_json::Map<_, _>>();
     serde_json::Value::Object(hooks)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::harness::hook_script::tests::report;
+
+    /// An answered question resumes the turn, so the session must leave `WaitingForInput` before
+    /// Claude Code ends the turn.
+    #[tokio::test]
+    async fn an_answered_question_reports_the_turn_going_on() {
+        let script = super::script().expect("script");
+        let asked = serde_json::json!({
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "AskUserQuestion",
+        });
+        assert_eq!(report(&script, &asked).await["event"], "waitingForInput");
+        let answered = serde_json::json!({
+            "hook_event_name": "PostToolBatch",
+            "tool_calls": [{ "tool_name": "AskUserQuestion" }],
+        });
+        assert_eq!(report(&script, &answered).await["event"], "turnContinued");
+    }
 }

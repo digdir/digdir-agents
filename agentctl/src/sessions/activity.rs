@@ -59,6 +59,9 @@ pub enum ActivityEvent {
     TurnCompleted,
     /// The harness is blocked awaiting an operator decision.
     WaitingForInput,
+    /// The harness went on with its turn after its tool calls resolved, such as a question the
+    /// operator answered or a tool call they approved.
+    TurnContinued,
 }
 
 impl Activity {
@@ -70,7 +73,7 @@ impl Activity {
             // A delayed or duplicate start report must not move a session back
             // from a later activity state.
             ActivityEvent::SessionStart if !matches!(self.phase, Phase::Unknown) => return self,
-            ActivityEvent::SessionStart | ActivityEvent::TurnStarted => {
+            ActivityEvent::SessionStart | ActivityEvent::TurnStarted | ActivityEvent::TurnContinued => {
                 self.phase = Phase::Working;
             }
             ActivityEvent::TurnCompleted => {
@@ -123,6 +126,8 @@ mod tests {
             (ActivityEvent::SessionStart, Phase::Working, 0),
             (ActivityEvent::TurnStarted, Phase::Working, 0),
             (ActivityEvent::WaitingForInput, Phase::WaitingForInput, 0),
+            (ActivityEvent::TurnContinued, Phase::Working, 0),
+            (ActivityEvent::TurnContinued, Phase::Working, 0),
             (ActivityEvent::TurnCompleted, Phase::WaitingForInput, 1),
             (ActivityEvent::TurnStarted, Phase::Working, 1),
             (ActivityEvent::TurnCompleted, Phase::WaitingForInput, 2),
