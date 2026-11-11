@@ -305,7 +305,9 @@ pub(crate) fn format_age(created_at: time::OffsetDateTime) -> String {
 }
 
 /// Renders turns as `agentctl turns` prints them: a heading per turn, then one
-/// line per text part or tool call, marked with its author.
+/// line per text part or tool call, marked with its author. A call that asks the
+/// operator something is followed by its questions and their options, so the
+/// reader can answer with `agentctl prompt`.
 pub(crate) fn turn_lines(turns: &[agent::sessions::Turn]) -> Vec<String> {
     use agent::sessions::{Part, Role};
     let mut lines = Vec::new();
@@ -320,13 +322,34 @@ pub(crate) fn turn_lines(turns: &[agent::sessions::Turn]) -> Vec<String> {
                 Role::Assistant => "assistant",
             };
             for part in &message.parts {
-                lines.push(match part {
-                    Part::Text { text } => format!("[{who}] {text}"),
-                    Part::ToolCall { name, failed } => {
+                match part {
+                    Part::Text { text } => lines.push(format!("[{who}] {text}")),
+                    Part::ToolCall {
+                        name,
+                        failed,
+                        questions,
+                    } => {
                         let mark = if *failed { " (failed)" } else { "" };
-                        format!("[{who}] -> {name}{mark}")
+                        lines.push(format!("[{who}] -> {name}{mark}"));
+                        for question in questions {
+                            let header = if question.header.is_empty() {
+                                String::new()
+                            } else {
+                                format!("[{}] ", question.header)
+                            };
+                            let any = if question.multi_select { " (one or more)" } else { "" };
+                            lines.push(format!("    {header}{}{any}", question.question));
+                            for (number, option) in question.options.iter().enumerate() {
+                                let description = if option.description.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(": {}", option.description)
+                                };
+                                lines.push(format!("      {}. {}{description}", number + 1, option.label));
+                            }
+                        }
                     }
-                });
+                }
             }
         }
     }
@@ -531,6 +554,36 @@ pub(crate) fn copy_state(copy: &agent::volumes::CopyStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turns_show_the_questions_a_tool_call_asks() {
+        let turns: Vec<agent::sessions::Turn> = serde_json::from_value(serde_json::json!([
+            {"messages": [{"role": "assistant", "parts": [{
+                "kind": "toolCall",
+                "name": "AskUserQuestion",
+                "questions": [
+                    {"question": "Which role?", "header": "Role", "options": [
+                        {"label": "Developer", "description": "Writes code"},
+                        {"label": "Reviewer"}
+                    ]},
+                    {"question": "Which checks?", "multiSelect": true, "options": [{"label": "Lint"}]}
+                ]
+            }]}]}
+        ]))
+        .expect("turns");
+        assert_eq!(
+            turn_lines(&turns),
+            [
+                "=== turn 1 ===",
+                "[assistant] -> AskUserQuestion",
+                "    [Role] Which role?",
+                "      1. Developer: Writes code",
+                "      2. Reviewer",
+                "    Which checks? (one or more)",
+                "      1. Lint",
+            ]
+        );
+    }
 
     #[test]
     fn describe_shows_the_failure_class_and_condition_age() {

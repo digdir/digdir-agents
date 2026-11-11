@@ -201,6 +201,7 @@ impl Builder {
                         parts.push(Part::ToolCall {
                             name: name.to_owned(),
                             failed: false,
+                            questions: Vec::new(),
                         });
                     }
                 }
@@ -297,7 +298,7 @@ mod tests {
             .iter()
             .flat_map(|message| &message.parts)
             .filter_map(|part| match part {
-                Part::ToolCall { name, failed } => Some((name.as_str(), *failed)),
+                Part::ToolCall { name, failed, .. } => Some((name.as_str(), *failed)),
                 Part::Text { .. } => None,
             })
             .collect()
