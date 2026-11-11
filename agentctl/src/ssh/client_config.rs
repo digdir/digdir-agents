@@ -49,7 +49,7 @@ pub fn render_config(entries: &[HostEntry], msys_config: Option<&Path>, user_hom
          # Include it from your own client configuration with `agentctl ssh-config install`.\n",
     );
     if let Some(WindowsSpelling::Drive { msys, .. }) = msys_config.and_then(windows_spelling) {
-        let _infallible = writeln!(text, "\nInclude {}", config_path_word(&msys));
+        let _infallible = writeln!(text, "\nInclude {}", config_path_word(&glob_literal(&msys)));
     }
     for entry in entries {
         // `SetEnv TERM` replaces the terminal type ssh sends with one the guest knows, as attaching
@@ -100,6 +100,27 @@ fn home_relative(path: &Path, user_home: Option<&Path>) -> Option<String> {
 /// doubled because OpenSSH percent-expands the directives that take a path.
 fn config_path_word(text: &str) -> String {
     quote_config_value(text).replace('%', "%%")
+}
+
+/// `path` as a glob pattern that matches only itself, for an `Include`, which OpenSSH expands
+/// with `glob(3)` once the configuration's own quoting is removed.
+///
+/// A name may hold `[` and `]`, as in `C:\agents[1]`, which would otherwise match a
+/// one-character name. Each such character is put in a bracket expression of its own, `[[]`,
+/// which every client's `glob` reads alike. A backslash escape would not do: Win32-OpenSSH takes
+/// it as a separator.
+fn glob_literal(path: &str) -> String {
+    let mut literal = String::with_capacity(path.len());
+    for character in path.chars() {
+        if matches!(character, '[' | ']' | '*' | '?') {
+            literal.push('[');
+            literal.push(character);
+            literal.push(']');
+        } else {
+            literal.push(character);
+        }
+    }
+    literal
 }
 
 /// How the OpenSSH clients on Windows spell an absolute Windows path.
@@ -483,7 +504,10 @@ pub fn render_include(config: &Path, user_home: Option<&Path>) -> String {
         },
         |text| vec![text],
     );
-    let words: Vec<String> = spellings.iter().map(|text| config_path_word(text)).collect();
+    let words: Vec<String> = spellings
+        .iter()
+        .map(|text| config_path_word(&glob_literal(text)))
+        .collect();
     format!("Include {}", words.join(" "))
 }
 
@@ -866,6 +890,12 @@ mod tests {
                 "Include //server/share/agent-home/ssh/config",
             ),
             (r"C:\Users\ada\.agent\ssh\config", "Include ~/.agent/ssh/config"),
+            // OpenSSH globs an `Include`, so a bracket matches only itself, in both clients.
+            (
+                r"C:\agents[1]$work\ssh\config",
+                r#"Include "C:/agents[[]1[]]$work/ssh/config" "/c/agents[[]1[]]$work/ssh/config""#,
+            ),
+            (r"C:\Users\ada\[x]\ssh\config", r#"Include "~/[[]x[]]/ssh/config""#),
         ] {
             assert_eq!(render_include(Path::new(config), user_home), line, "{config}");
         }
@@ -954,6 +984,16 @@ mod tests {
                 user_home
             ),
             plain
+        );
+        // OpenSSH globs an `Include`, so brackets in a folder's name match only themselves.
+        let bracketed = render_config(
+            std::slice::from_ref(&entry),
+            Some(Path::new(r"C:\agents[1]$work\ssh\config.msys")),
+            user_home,
+        );
+        assert!(
+            bracketed.contains("\nInclude \"/c/agents[[]1[]]$work/ssh/config.msys\"\n"),
+            "{bracketed}"
         );
     }
 

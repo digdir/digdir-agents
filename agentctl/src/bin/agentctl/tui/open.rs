@@ -695,28 +695,35 @@ mod tests {
 
     /// On Windows the generated configuration chains its copy for Git for Windows' `ssh`, so the
     /// setup is found whichever `ssh` comes first on `PATH`, Win32-OpenSSH or that MSYS build,
-    /// through the user's `Include` and through `-F` alike.
+    /// through the user's `Include` and through `-F` alike. Each client installed in its usual
+    /// place also resolves the `ProxyCommand` quoted for how it runs one, from a folder whose name
+    /// has what bash and `glob` read specially.
     #[cfg(windows)]
     #[tokio::test(flavor = "local")]
     async fn ssh_setup_is_found_through_the_windows_configuration_and_its_copy() {
+        use agent::ssh::CommandShell;
+
         let directory = tempfile::tempdir().expect("temporary directory");
-        let generated = directory.path().join("u$AB12").join("config");
+        let generated = directory.path().join("u[1]$AB12").join("config");
         let msys = generated.with_file_name("config.msys");
         std::fs::create_dir_all(generated.parent().expect("parent")).expect("directory");
+        let proxy_command = |shell| {
+            agent::ssh::render_proxy_command(
+                Path::new(r"C:\Program Files\Agent\agentctl.exe"),
+                Path::new(r"C:\Users\$AB12\.agent"),
+                "worker",
+                shell,
+            )
+            .expect("proxy command")
+        };
         for (path, shell, chained) in [
-            (&msys, agent::ssh::CommandShell::Posix, None),
-            (&generated, agent::ssh::CommandShell::Windows, Some(msys.as_path())),
+            (&msys, CommandShell::Posix, None),
+            (&generated, CommandShell::Windows, Some(msys.as_path())),
         ] {
             let entry = agent::ssh::HostEntry {
                 alias: agent::ssh::alias("worker"),
                 user: "agent".into(),
-                proxy_command: agent::ssh::render_proxy_command(
-                    Path::new(r"C:\Program Files\Agent\agentctl.exe"),
-                    Path::new(r"C:\Users\$AB12\.agent"),
-                    "worker",
-                    shell,
-                )
-                .expect("proxy command"),
+                proxy_command: proxy_command(shell),
                 host_key_alias: "agent-1".into(),
                 identity_file: directory.path().join("id_ed25519"),
                 known_hosts_file: directory.path().join("known_hosts"),
@@ -733,6 +740,31 @@ mod tests {
                 "{}",
                 config.display()
             );
+        }
+
+        for (client, shell) in [
+            (r"C:\Windows\System32\OpenSSH\ssh.exe", CommandShell::Windows),
+            (r"C:\Program Files\Git\usr\bin\ssh.exe", CommandShell::Posix),
+        ] {
+            if !Path::new(client).is_file() {
+                continue;
+            }
+            let expected = proxy_command(shell);
+            for config in [&user, &generated] {
+                let output = std::process::Command::new(client)
+                    .arg("-F")
+                    .arg(config)
+                    .args(["-G", &agent::ssh::alias("worker")])
+                    .stdin(Stdio::null())
+                    .output()
+                    .expect("ssh -G");
+                let resolved = String::from_utf8_lossy(&output.stdout);
+                let proxy = resolved
+                    .lines()
+                    .find_map(|line| line.strip_prefix("proxycommand "))
+                    .unwrap_or_default();
+                assert_eq!(proxy, expected, "{client} with {}", config.display());
+            }
         }
     }
 }
