@@ -134,7 +134,7 @@ impl Service {
         self.store.session_attach_target(session.id).await
     }
 
-    /// Delivers a prompt to a running session's harness.
+    /// Delivers a prompt to a session's harness, resuming it first when the session is Idle.
     ///
     /// With `wait`, snapshots the completed-turn counter before delivery and
     /// waits for it to advance with identical waiting activity in two consecutive
@@ -150,7 +150,7 @@ impl Service {
     ///
     /// # Errors
     ///
-    /// Returns an error when the session is not running, the harness has not
+    /// Returns an error when the session is archived, cannot be resumed, the harness has not
     /// become ready for input within a short grace period, the input cannot be
     /// delivered, the session fails mid-turn, or the wait exceeds `timeout`.
     pub async fn prompt(
@@ -277,13 +277,20 @@ impl Service {
         self.runtime.turns(&session, &sandbox, last).await
     }
 
+    /// Opens a session's sandbox to take input. An Idle session's harness is resumed first, as an
+    /// attach resumes it, so a client without a terminal can go on with the conversation.
     async fn open_running(&self, agent: &str, name: &SessionName) -> Result<(Session, SandboxHandle), Error> {
-        let session = self.visible(agent, name).await?;
+        let mut session = self.visible(agent, name).await?;
         if session.is_archived() {
             return Err(session.archived_error());
         }
         let owner = self.sandboxes.agent(session.agent_id).await?;
         owner.reject_stopped()?;
+        if session.status.lifecycle.state == LifecycleState::Idle {
+            self.store.activate_session(session.id).await?;
+            self.wakeup.reconcile(session.id).await?;
+            session = self.store.get_session(session.id).await?;
+        }
         if session.status.lifecycle.state != LifecycleState::Running {
             return Err(session.not_running_error());
         }

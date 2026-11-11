@@ -301,7 +301,7 @@ enum Command {
         #[command(flatten)]
         input: PromptInput,
     },
-    /// Deliver a prompt to a running session's harness.
+    /// Deliver a prompt to a session's harness, resuming an Idle session first.
     Prompt {
         #[command(flatten)]
         target: SessionTarget,
