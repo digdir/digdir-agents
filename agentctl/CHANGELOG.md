@@ -15,6 +15,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ### Fixed
 
+- `agentctl prompt`, and `p` in `agentctl tui`, resume an Idle session and deliver the prompt, instead of failing with `its lifecycle is idle` until you attach to it. ([#483](https://github.com/digdir/digdir-agents/issues/483))
 - SSH connections to an agent, such as `ssh agentctl-NAME` or T3 Code's environments, and commands such as `agentctl exec` wait while Microsandbox is being installed or updated instead of failing, and the SSH client says what it waits for. ([#456](https://github.com/digdir/digdir-agents/issues/456))
 - On Windows, `agentctl get definitions` writes paths below the current folder with `/` alone, such as `./agents/desktop`, instead of `./agents\desktop`. ([#453](https://github.com/digdir/digdir-agents/issues/453))
 - On Windows, with `AGENT_HOME` outside your user folder, `ssh agentctl-NAME` from Git Bash, or VS Code started there, reaches the agent instead of failing with `Could not resolve hostname`. Run `agentctl ssh-config install` again to get this. ([#455](https://github.com/digdir/digdir-agents/issues/455))
