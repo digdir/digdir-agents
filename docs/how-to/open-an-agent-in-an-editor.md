@@ -206,5 +206,7 @@ agentctl delete agent/altinn-minimal   # removes the agent, its disk and its ses
   `agent-workspace-init.service` had failed, `~/code` was empty and `systemctl is-system-running` said `degraded`.
   The repository is public, so an anonymous clone would have worked. Nothing in `apply`, `describe` or the TUI said
   that the login was missing or that the clone had failed. Until that is fixed, check with
-  `agentctl exec agent/altinn-minimal -- systemctl --failed`. The test went on with a clone made by hand in the
-  agent.
+  `agentctl exec agent/altinn-minimal -- systemctl --failed`. A running agent gets the token at the next reconcile
+  after `agentctl github login default`, so `gh auth status` turns good by itself, but the clone is not tried again.
+  `agentctl restart agent/altinn-minimal` runs it: after the restart the agent had the full clone, with the
+  account's name as Git's `user.name`, and `systemctl is-system-running` said `running`.
