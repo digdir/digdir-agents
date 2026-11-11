@@ -222,6 +222,7 @@ fn deletion_question(files: &[&ExposedFile], from: Option<&std::path::Path>) -> 
     lines.extend(agent::exposed::EnvironmentFile::stored_lines_of(
         files.iter().filter_map(|file| file.environment_file.as_ref()),
     ));
+    lines.push(agent::exposed::UPDATE_STORES.into());
     lines.push(
         if files.len() == 1 {
             "Delete the file?"

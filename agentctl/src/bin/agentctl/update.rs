@@ -106,10 +106,10 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
             existing.metadata.name
         }
         existing => {
-            // Asked first, so that a refusal leaves a builder of another version where it is.
-            let agreed = builder.agree(client, &checkout, &mut task).await?;
-            if let Some(existing) = existing {
-                let name = existing.metadata.name;
+            // Every question comes before anything changes, and a builder of another version goes
+            // only once the folders are agreed to, so that a no or a refusal leaves it where it is.
+            if let Some(existing) = &existing {
+                let name = &existing.metadata.name;
                 let started_by = format!(
                     "agent/{name}, the agent builder on {}, was started by another version of agentctl. It keeps \
                      the image it was made with, so it would try the definitions with that version's agentctl.",
@@ -124,7 +124,10 @@ pub(crate) async fn update(arguments: UpdateArguments, home: &ControlPlaneHome, 
                         "kept agent/{name}. Updating takes an agent builder of this version"
                     )));
                 }
-                client.delete(&name).await?;
+            }
+            let agreed = builder.agree(client, &checkout, &mut task).await?;
+            if let Some(existing) = existing {
+                client.delete(&existing.metadata.name).await?;
             }
             builder
                 .start(home, client, &checkout, &task, agreed, arguments.rm)

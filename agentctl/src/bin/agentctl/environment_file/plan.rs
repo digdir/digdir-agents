@@ -60,6 +60,9 @@ pub(super) fn plan(files: &[&EnvironmentFile], values: &Values, kept: &Kept) -> 
     let moving = moving(files());
     let mut moves = moves(&moving);
     moves.extend(taken(files(), &moves, values));
+    // The login is stored first, so the person may still decline it once GitHub says whom it acts
+    // as, before anything is stored.
+    moves.sort_by_key(|change| !matches!(change, Move::GithubLogin { .. }));
     let moves = without_token(moves, values, kept);
     let entries = entries(&moves, values, kept)?;
     let unmet = unmet(files(), &entries, kept);
@@ -72,6 +75,9 @@ pub(super) fn plan(files: &[&EnvironmentFile], values: &Values, kept: &Kept) -> 
         entries,
     })
 }
+
+/// The variables of Git's name and email, which a GitHub login's account gives agents instead.
+const GIT_IDENTITY: [&str; 2] = ["GIT_USER_NAME", "GIT_USER_EMAIL"];
 
 /// The GitHub login that a GitHub token in an environment file is kept as.
 pub(super) const MOVED_LOGIN: &str = "default";
@@ -127,7 +133,6 @@ fn secret_name(source: &str) -> String {
 /// A secret is named after the file's variable, which is what tells one credential from another,
 /// whichever variables agents get it as.
 fn moves(variables: &[Variable]) -> Vec<Move> {
-    const GIT_IDENTITY: [&str; 2] = ["GIT_USER_NAME", "GIT_USER_EMAIL"];
     let credential = |variable: &Variable| variable.source.clone().unwrap_or_else(|| variable.name.clone());
     let is_token =
         |variable: &Variable| variable.allowed_hosts.is_some() && variable.name == agent::github::ACCESS_ENVIRONMENT;
@@ -237,8 +242,9 @@ fn agents<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>) -> Vec<Strin
 /// is deleted with them unstored. A manifest beside them that agentctl cannot read may take any of
 /// those, but only those, so they are named whether or not one does.
 fn others<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Move], values: &Values) -> Option<String> {
+    let files = files.into_iter().collect::<Vec<_>>();
     let manifests = files
-        .into_iter()
+        .iter()
         .flat_map(|file| &file.readers)
         .filter_map(|reader| match reader {
             Reader::Unreadable { name, .. } => Some(name.clone()),
@@ -246,8 +252,7 @@ fn others<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Mov
         })
         .collect::<BTreeSet<_>>();
     let unreadable = sentence_list(&manifests.into_iter().collect::<Vec<_>>());
-    // Git's name and email go with the login, so they are taken too.
-    let taken = moves
+    let mut taken = moves
         .iter()
         .flat_map(|change| {
             std::iter::once(change.source()).chain(
@@ -258,6 +263,15 @@ fn others<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Mov
             )
         })
         .collect::<BTreeSet<_>>();
+    // A GitHub login's account gives agents Git's name and email, so those are not lost with it.
+    let login = moves.iter().any(|change| matches!(change, Move::GithubLogin { .. }))
+        || files
+            .iter()
+            .flat_map(|file| &file.stored)
+            .any(|stored| matches!(stored, Stored::GithubLogin { .. }));
+    if login {
+        taken.extend(GIT_IDENTITY);
+    }
     let others = values
         .iter()
         .flat_map(BTreeMap::keys)
@@ -283,9 +297,9 @@ fn others<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Mov
 }
 
 /// The moves for what the manifests beside the `files` take from agentctl that none of `moves`
-/// stores, from the variable in the files it is named after, as [`moves`] names
-/// it. A manifest moved off the file, such as one pulled since, no longer says which variable it
-/// took, but one that `agentctl update` moved took the one its secret or login is named after.
+/// stores, such as what a manifest that a pull has moved off the file takes. A secret's value is in
+/// the variable its entry gives agents, or, for an entry that renamed one with `source`, in the
+/// variable its name was made from, as [`moves`] names it. The login's is in `GITHUB_TOKEN`.
 fn taken<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Move], values: &Values) -> Vec<Move> {
     let github_token = agent::github::ACCESS_ENVIRONMENT;
     let variables = values.iter().flat_map(BTreeMap::keys).collect::<BTreeSet<_>>();
@@ -333,8 +347,12 @@ fn taken<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, moves: &[Move
                     }],
                 });
             }
-            Stored::Secret { name, .. } => {
-                let Some(source) = variables.iter().find(|variable| secret_name(variable) == *name) else {
+            Stored::Secret { name, environment, .. } => {
+                let Some(source) = variables
+                    .iter()
+                    .find(|variable| **variable == environment)
+                    .or_else(|| variables.iter().find(|variable| secret_name(variable) == *name))
+                else {
                     continue;
                 };
                 taken.push(Move::Secret {
@@ -406,6 +424,7 @@ fn unmet<'a>(files: impl IntoIterator<Item = &'a EnvironmentFile>, entries: &[En
                 name,
                 allowed_hosts,
                 optional: false,
+                ..
             } if !kept.secrets.contains(name) && !storing(None, Some(name)) => {
                 unmet.insert(format!(
                     "the secret {name}: the manifests take it, but it is not stored. Store it with `{}`, then run \
@@ -611,6 +630,7 @@ mod tests {
     fn secret(name: &str, hosts: &[&str], optional: bool) -> Stored {
         Stored::Secret {
             name: name.into(),
+            environment: String::new(),
             allowed_hosts: hosts.iter().map(|&host| host.to_owned()).collect(),
             optional,
         }
@@ -868,6 +888,60 @@ mod tests {
             [
                 "GITHUB_TOKEN: the GitHub login default",
                 "AZURE_DEVOPS_PAT: the secret azure-devops-pat, for dev.azure.com",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pulled_secret_comes_from_the_variable_its_entry_gives_agents_whatever_its_name() {
+        // As this repository's own agents take Pi's key.
+        let named = |optional| Stored::Secret {
+            name: "aivar".into(),
+            environment: "AIVAR_API_KEY".into(),
+            allowed_hosts: vec!["api.aivar.no".into()],
+            optional,
+        };
+        let held = [values(&[("AIVAR_API_KEY", "key")])];
+        for optional in [false, true] {
+            let plan = plan(&[&pulled(vec![named(optional)])], &held, &NOTHING).expect("planned");
+            assert_eq!(places(&plan), ["AIVAR_API_KEY: the secret aivar, for api.aivar.no"]);
+            assert_eq!(plan.others, None, "nothing is lost");
+        }
+    }
+
+    #[test]
+    fn a_coworkers_git_name_and_email_go_with_the_login_the_pulled_manifests_take() {
+        let file = pulled(vec![Stored::GithubLogin {
+            login: MOVED_LOGIN.into(),
+        }]);
+        let held = [values(&[
+            ("GIT_USER_NAME", "Alice"),
+            ("GIT_USER_EMAIL", "alice@example.com"),
+            ("GITHUB_TOKEN", "token"),
+        ])];
+        let plan = plan(&[&file], &held, &NOTHING).expect("planned");
+        assert_eq!(places(&plan), ["GITHUB_TOKEN: the GitHub login default"]);
+        assert_eq!(plan.others, None, "{:?}", plan.others);
+    }
+
+    #[test]
+    fn the_login_is_stored_before_any_secret() {
+        // An agent applied before the pull reads a key, and the pulled manifests take the login.
+        let file = EnvironmentFile {
+            readers: vec![Reader::Agent {
+                name: "agent/dev".into(),
+                variables: vec![variable("API_KEY", Some(&["example.com"]))],
+            }],
+            stored: vec![Stored::GithubLogin {
+                login: MOVED_LOGIN.into(),
+            }],
+        };
+        let held = [values(&[("API_KEY", "key"), ("GITHUB_TOKEN", "token")])];
+        assert_eq!(
+            places(&plan(&[&file], &held, &NOTHING).expect("planned")),
+            [
+                "GITHUB_TOKEN: the GitHub login default",
+                "API_KEY: the secret api-key, for example.com",
             ]
         );
     }

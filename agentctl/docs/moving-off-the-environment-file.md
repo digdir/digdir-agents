@@ -13,9 +13,9 @@ store the file's GitHub token as the login `default` and each secret under a nam
 file, and has the agent builder change the manifests to take the values from there. It shows plain values, which the
 builder writes into the manifests, and names any other keys in the file, which are deleted with it. You apply your
 agents again once the manifests take their values from agentctl. After you pull manifests that someone else moved this
-way, `agentctl update` stores what they take from the variable each login or secret is named after, and deletes the
-file. When it cannot store a value for you, such as one that differs between two files, it says how to store it
-yourself.
+way, `agentctl update` stores what they take from your file, each secret from the variable its entry gives agents and
+the login from `GITHUB_TOKEN`, and deletes the file. When it cannot store a value for you, such as one that differs
+between two files, it says how to store it yourself.
 
 The agent builder is also given your folder of personal agents, so when one of those still reads such a file,
 `agentctl update` asks you to run it on that folder first. Any other command that would mount a folder holding the file

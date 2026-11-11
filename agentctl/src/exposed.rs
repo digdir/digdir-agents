@@ -125,6 +125,10 @@ pub enum Stored {
     /// The stored secret an entry in `spec.secrets` names, with the hosts the entry narrows it to.
     Secret {
         name: String,
+        /// The variable the entry gives agents, which is the file's variable the value came from
+        /// unless the entry renamed one with `source`.
+        #[serde(default)]
+        environment: String,
         allowed_hosts: Vec<String>,
         /// Whether the agent starts without it, so that a person who has no such key need not
         /// store one.
@@ -295,6 +299,7 @@ fn environment_file(path: &Path, environment_files: &[Applied]) -> Option<Enviro
                     stored.extend(spec.secrets.iter().filter_map(|secret| {
                         Some(Stored::Secret {
                             name: secret.name.clone()?,
+                            environment: secret.environment.clone(),
                             allowed_hosts: secret.allowed_hosts.clone(),
                             optional: secret.optional,
                         })
@@ -399,11 +404,9 @@ pub fn refusal_from(files: &[ExposedFile], from: Option<&Path>) -> String {
     if !unread.is_empty() {
         let mut lines = vec![format!("{}:", UNREAD.to_ascii_lowercase()), list(&unread)];
         lines.extend(EnvironmentFile::stored_lines_of(unread.iter().map(|(_, file)| *file)));
-        lines.push(
-            "Delete them once you have, then run this again. `agentctl update` in their checkout stores what the \
-             manifests take from the files for you and deletes them."
-                .into(),
-        );
+        lines.push(format!(
+            "Delete them once you have, then run this again. {UPDATE_STORES}"
+        ));
         blocks.push(lines.join("\n"));
     }
     if !blocks.is_empty() {
@@ -423,6 +426,11 @@ pub fn refusal_from(files: &[ExposedFile], from: Option<&Path>) -> String {
 /// values and has the agent builder change the manifests that read it.
 pub const MOVING_OFF: &str = "`agentctl update`, run in the checkout or the folder of agents the manifests are in, \
                               moves the keys into agentctl's store and the manifests off the file.";
+
+/// What gets an environment file that nothing reads any more out of the way without storing by
+/// hand what the manifests beside it take.
+pub const UPDATE_STORES: &str =
+    "`agentctl update` in their checkout stores what the manifests take from the files for you and deletes them.";
 
 /// What agentctl knows of environment files that nothing it can see reads any more. A manifest
 /// elsewhere may still name one, which is why deleting them is the person's to agree to.
@@ -627,6 +635,7 @@ mod tests {
                             Stored::GithubLogin { login: "work".into() },
                             Stored::Secret {
                                 name: "aivar".into(),
+                                environment: "AIVAR_API_KEY".into(),
                                 allowed_hosts: vec!["api.aivar.no".into()],
                                 optional: false,
                             },
