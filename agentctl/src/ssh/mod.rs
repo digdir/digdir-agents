@@ -36,8 +36,9 @@ use crate::{
 };
 
 pub use client_config::{
-    CommandShell, HostEntry, IncludeOutcome, directory_word, install_include, remove_known_host, render_config,
-    render_include, render_path, render_proxy_command, resolves_through_agentctl, shell_word, upsert_known_host,
+    CommandShell, HostEntry, IncludeOutcome, MSYS_CONFIG, directory_word, install_include, remove_known_host,
+    render_config, render_include, render_path, render_proxy_command, resolves_through_agentctl, shell_word,
+    upsert_known_host,
 };
 pub use keys::KeyPair;
 
@@ -88,7 +89,7 @@ impl SshHome {
     /// the generated configuration includes it for that client.
     #[must_use]
     pub fn msys_config_path(&self) -> PathBuf {
-        self.0.join("config.msys")
+        self.0.join(MSYS_CONFIG)
     }
 
     /// Returns the `known_hosts` file pre-seeded with every agent's host key.

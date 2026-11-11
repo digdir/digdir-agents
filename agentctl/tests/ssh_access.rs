@@ -541,7 +541,7 @@ async fn deletion_removes_host_material_and_config_lists_only_active_ssh_agents(
             .expect("an include of the copy before the host blocks");
         let named = include.trim_start_matches("Include ").trim_matches('"');
         assert!(
-            named.starts_with('/') && named.ends_with("/agent-home/ssh/config.msys"),
+            named.starts_with('/') && named.ends_with("/agent-home/ssh/config|msys"),
             "{include}"
         );
         let mut expected = generated.replace(&format!("\n{include}\n"), "");

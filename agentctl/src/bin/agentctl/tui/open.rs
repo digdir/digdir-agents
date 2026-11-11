@@ -697,15 +697,19 @@ mod tests {
     /// setup is found whichever `ssh` comes first on `PATH`, Win32-OpenSSH or that MSYS build,
     /// through the user's `Include` and through `-F` alike. Each client installed in its usual
     /// place also resolves the `ProxyCommand` quoted for how it runs one, from a folder whose name
-    /// has what bash and `glob` read specially.
+    /// has what bash, `glob`, `%` tokens and `${NAME}` read specially. The folder is the user's
+    /// alone, as the agent home is, since Win32-OpenSSH refuses a configuration others may write.
     #[cfg(windows)]
     #[tokio::test(flavor = "local")]
     async fn ssh_setup_is_found_through_the_windows_configuration_and_its_copy() {
         use agent::ssh::CommandShell;
 
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let generated = directory.path().join("u[1]$AB12").join("config");
-        let msys = generated.with_file_name("config.msys");
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let directory =
+            agent::local::home::ControlPlaneHome::resolve(Some(&temporary.path().join("home"))).expect("folder");
+        directory.prepare().expect("the user's own folder");
+        let generated = directory.path().join("u[1]$AB12%${x}").join("config");
+        let msys = generated.with_file_name(agent::ssh::MSYS_CONFIG);
         std::fs::create_dir_all(generated.parent().expect("parent")).expect("directory");
         let proxy_command = |shell| {
             agent::ssh::render_proxy_command(
@@ -758,6 +762,12 @@ mod tests {
                     .stdin(Stdio::null())
                     .output()
                     .expect("ssh -G");
+                assert!(
+                    output.status.success(),
+                    "{client} with {}: {}",
+                    config.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                );
                 let resolved = String::from_utf8_lossy(&output.stdout);
                 let proxy = resolved
                     .lines()

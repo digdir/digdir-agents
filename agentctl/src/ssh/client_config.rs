@@ -1,7 +1,7 @@
 //! OpenSSH client configuration files owned by the platform.
 //!
 //! `agentd` rewrites `<home>/ssh/config` and `<home>/ssh/known_hosts` as agents
-//! are applied and deleted, and on Windows also `<home>/ssh/config.msys`, which
+//! are applied and deleted, and on Windows also `<home>/ssh/config|msys`, which
 //! `config` includes for Git for Windows' `ssh`; `agentctl ssh-config install` inserts one `Include`
 //! of that config at the top of the user's own `~/.ssh/config` and touches
 //! nothing else in it.
@@ -35,9 +35,14 @@ pub struct HostEntry {
 /// `msys_config` names, on Windows, the copy of this configuration whose `ProxyCommand`s are
 /// quoted for bash, which Git for Windows' MSYS build of OpenSSH runs them with. It is included
 /// first, in the MSYS spelling `/c/...`, which only that client reads: it takes its entries from
-/// the copy, since OpenSSH keeps the first value it reads for each option, and Win32-OpenSSH finds
-/// no such file and uses the entries below, quoted for `CreateProcess`. Chaining it from here
-/// reaches every way of using this configuration, an `Include` of the user's or `ssh -F`.
+/// the copy, since OpenSSH keeps the first value it reads for each option, and Win32-OpenSSH uses
+/// the entries below, quoted for `CreateProcess`. Chaining it from here reaches every way of using
+/// this configuration, an `Include` of the user's or `ssh -F`.
+///
+/// Win32-OpenSSH reads `/c/...` as a folder `c` at the root of the current drive, where any user
+/// may create folders. The copy's name, [`MSYS_CONFIG`], holds a character that MSYS spells `|`,
+/// so the name Win32-OpenSSH reads holds a `|`, which no Windows file name can, and no other user
+/// can put a file there for it to read.
 ///
 /// Both clients read a share, `//server/share/...`, alike, so a copy on one is not included. Git's
 /// `ssh` then runs the `CreateProcess` form through bash, which reads the backslashes of the
@@ -49,7 +54,7 @@ pub fn render_config(entries: &[HostEntry], msys_config: Option<&Path>, user_hom
          # Include it from your own client configuration with `agentctl ssh-config install`.\n",
     );
     if let Some(WindowsSpelling::Drive { msys, .. }) = msys_config.and_then(windows_spelling) {
-        let _infallible = writeln!(text, "\nInclude {}", config_path_word(&glob_literal(&msys)));
+        let _infallible = writeln!(text, "\nInclude {}", include_word(&msys));
     }
     for entry in entries {
         // `SetEnv TERM` replaces the terminal type ssh sends with one the guest knows, as attaching
@@ -102,25 +107,51 @@ fn config_path_word(text: &str) -> String {
     quote_config_value(text).replace('%', "%%")
 }
 
-/// `path` as a glob pattern that matches only itself, for an `Include`, which OpenSSH expands
-/// with `glob(3)` once the configuration's own quoting is removed.
+/// The file name of the generated configuration's copy for Git for Windows' `ssh`, which MSYS
+/// spells `config|msys`, as [`render_config`] describes.
 ///
-/// A name may hold `[` and `]`, as in `C:\agents[1]`, which would otherwise match a
-/// one-character name. Each such character is put in a bracket expression of its own, `[[]`,
-/// which every client's `glob` reads alike. A backslash escape would not do: Win32-OpenSSH takes
-/// it as a separator.
-fn glob_literal(path: &str) -> String {
-    let mut literal = String::with_capacity(path.len());
+/// MSYS stores a character that Windows file names cannot hold, such as `|`, as that character
+/// plus U+F000.
+pub const MSYS_CONFIG: &str = "config\u{F07C}msys";
+
+/// `path` as one `Include` argument that names only that file.
+///
+/// OpenSSH expands an `Include` with `glob(3)` once the configuration's own quoting is removed.
+/// Recent versions first expand `%` tokens and `${NAME}`, and Win32-OpenSSH 9.5 does neither, so
+/// no plain spelling of a `%` or `${` suits every client. A bracket expression of its own
+/// matches the character alone in each: `[[]`, `[%%]`, which reads as `[%]` once `%%` is
+/// undone, and `[{]`, after which no `${` is left. A backslash escape would not do on Windows,
+/// where Win32-OpenSSH takes it as a separator, but a Windows spelling holds none. On Unix a
+/// backslash is part of a file name, and `\\` is the only way to make `glob` match it.
+fn include_word(path: &str) -> String {
+    let mut pattern = String::with_capacity(path.len());
     for character in path.chars() {
-        if matches!(character, '[' | ']' | '*' | '?') {
-            literal.push('[');
-            literal.push(character);
-            literal.push(']');
-        } else {
-            literal.push(character);
+        match character {
+            '[' | ']' | '*' | '?' | '{' => {
+                pattern.push('[');
+                pattern.push(character);
+                pattern.push(']');
+            }
+            '%' => pattern.push_str("[%%]"),
+            '\\' => pattern.push_str(r"\\"),
+            _ => pattern.push(character),
         }
     }
-    literal
+    quote_config_value(&pattern)
+}
+
+/// `name` as MSYS spells it: a character it stored as one Windows file names cannot hold, plus
+/// U+F000, is that character again.
+fn msys_name(name: &str) -> String {
+    name.chars()
+        .map(|character| {
+            u32::from(character)
+                .checked_sub(0xF000)
+                .and_then(char::from_u32)
+                .filter(|original| ('\u{1}'..='\u{1f}').contains(original) || "\"*:<>?|".contains(*original))
+                .unwrap_or(character)
+        })
+        .collect()
 }
 
 /// How the OpenSSH clients on Windows spell an absolute Windows path.
@@ -154,7 +185,7 @@ fn windows_spelling(path: &Path) -> Option<WindowsSpelling> {
             let drive = char::from(drive);
             Some(WindowsSpelling::Drive {
                 win32: format!("{}:{rest}", drive.to_ascii_uppercase()),
-                msys: format!("/{}{rest}", drive.to_ascii_lowercase()),
+                msys: format!("/{}{}", drive.to_ascii_lowercase(), msys_name(&rest)),
             })
         }
         Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => Some(WindowsSpelling::Share(format!(
@@ -493,21 +524,23 @@ pub enum IncludeOutcome {
 /// A configuration below the user's home is named `~/...`, which every client
 /// reads. One elsewhere on Windows is named in each spelling the clients there
 /// read as absolute, since no single one works in all of them: each client
-/// includes the file it finds and skips the name that matches nothing.
+/// includes the file it finds and skips the name that matches nothing. The
+/// spelling for Git for Windows' `ssh` names the configuration's copy for it,
+/// for the reason [`render_config`] gives.
 #[must_use]
 pub fn render_include(config: &Path, user_home: Option<&Path>) -> String {
     let spellings = home_relative(config, user_home).map_or_else(
         || match windows_spelling(config) {
-            Some(WindowsSpelling::Drive { win32, msys }) => vec![win32, msys],
+            Some(WindowsSpelling::Drive { win32, .. }) => match windows_spelling(&config.with_file_name(MSYS_CONFIG)) {
+                Some(WindowsSpelling::Drive { msys, .. }) => vec![win32, msys],
+                _ => vec![win32],
+            },
             Some(WindowsSpelling::Share(share)) => vec![share],
             None => vec![config.display().to_string()],
         },
         |text| vec![text],
     );
-    let words: Vec<String> = spellings
-        .iter()
-        .map(|text| config_path_word(&glob_literal(text)))
-        .collect();
+    let words: Vec<String> = spellings.iter().map(|text| include_word(text)).collect();
     format!("Include {}", words.join(" "))
 }
 
@@ -599,7 +632,7 @@ mod tests {
         render_proxy_command, resolves_through_agentctl, shell_word, upsert_known_host,
     };
     #[cfg(windows)]
-    use super::{HostEntry, render_config};
+    use super::{HostEntry, MSYS_CONFIG, render_config};
 
     const AGENTCTL: &str = "/usr/local/bin/agentctl";
     const HOME: &str = "/home/someone/.agent";
@@ -848,7 +881,7 @@ mod tests {
 
     /// A configuration below the user's home is named from `~`, which every client expands, and
     /// one elsewhere as the host spells it. On Unix a backslash is part of a file name, so it is
-    /// kept, escaped for OpenSSH's tokenizer.
+    /// kept, escaped for `glob` and then for OpenSSH's tokenizer.
     #[cfg(unix)]
     #[test]
     fn include_names_the_configuration_from_the_home_or_as_spelled() {
@@ -858,16 +891,60 @@ mod tests {
             ("/srv/agent-home/ssh/config", "Include /srv/agent-home/ssh/config"),
             (
                 r"/srv/my agents\/100%/config",
-                r#"Include "/srv/my agents\\/100%%/config""#,
+                r#"Include "/srv/my agents\\\\/100[%%]/config""#,
             ),
         ] {
             assert_eq!(render_include(Path::new(config), user_home), line, "{config}");
         }
     }
 
-    /// Git for Windows' `ssh` takes `C:/...` as relative to `~/.ssh`, and Win32-OpenSSH does not
-    /// read `/c/...`, so a configuration outside the user's home is named in both spellings. A
-    /// share reads the same in both, and one below the home is named from `~`.
+    /// OpenSSH includes the named file and no other, whatever its folder's name holds that the
+    /// tokenizer, `%` tokens, `${NAME}` or `glob` would read specially, and beside a folder whose
+    /// name such a pattern would match instead.
+    #[cfg(unix)]
+    #[test]
+    fn include_reaches_only_the_named_file_through_ssh() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let user = directory.path().join("user_config");
+        for (name, decoy) in [
+            ("a[1]b", Some("a1b")),
+            ("st*r?", Some("st-r!")),
+            ("100%", None),
+            ("e${HOME}f", None),
+            (r"back\slash", Some("backslash")),
+            ("we$ird \"quote\" {x}", None),
+        ] {
+            for (folder, user_name) in [(Some(name), "named"), (decoy, "decoy")] {
+                let Some(folder) = folder else { continue };
+                let folder = directory.path().join(folder);
+                std::fs::create_dir_all(&folder).expect("folder");
+                std::fs::write(folder.join("config"), format!("Host worker\n    User {user_name}\n"))
+                    .expect("configuration");
+            }
+            let include = render_include(&directory.path().join(name).join("config"), None);
+            std::fs::write(&user, format!("{include}\nHost *\n    User nothing\n")).expect("user config");
+            let resolved = std::process::Command::new("ssh")
+                .arg("-F")
+                .arg(&user)
+                .args(["-G", "worker"])
+                .output()
+                .expect("ssh");
+            assert!(
+                resolved.status.success(),
+                "OpenSSH refuses {include:?}: {}",
+                String::from_utf8_lossy(&resolved.stderr)
+            );
+            let user_line = String::from_utf8_lossy(&resolved.stdout)
+                .lines()
+                .find_map(|line| line.strip_prefix("user ").map(str::to_owned));
+            assert_eq!(user_line.as_deref(), Some("named"), "{include}");
+        }
+    }
+
+    /// Git for Windows' `ssh` takes `C:/...` as relative to `~/.ssh`, so a configuration outside
+    /// the user's home is named for it by the spelling `/c/...` of its copy for that client, which
+    /// no file can stand in for when Win32-OpenSSH reads it. A share reads the same in both, and
+    /// one below the home is named from `~`.
     #[cfg(windows)]
     #[test]
     fn include_outside_the_home_names_the_configuration_for_every_windows_client() {
@@ -875,15 +952,16 @@ mod tests {
         for (config, line) in [
             (
                 r"C:\data\agent-home\ssh\config",
-                "Include C:/data/agent-home/ssh/config /c/data/agent-home/ssh/config",
+                r#"Include C:/data/agent-home/ssh/config "/c/data/agent-home/ssh/config|msys""#,
             ),
             (
                 r"\\?\C:\data\agent-home\ssh\config",
-                "Include C:/data/agent-home/ssh/config /c/data/agent-home/ssh/config",
+                r#"Include C:/data/agent-home/ssh/config "/c/data/agent-home/ssh/config|msys""#,
             ),
+            // `%` and `{` read alike whether or not a client expands `%` tokens and `${NAME}`.
             (
-                r"d:\my agents\100%\ssh\config",
-                r#"Include "D:/my agents/100%%/ssh/config" "/d/my agents/100%%/ssh/config""#,
+                r"d:\my agents\100%${x}\ssh\config",
+                r#"Include "D:/my agents/100[%%]$[{]x}/ssh/config" "/d/my agents/100[%%]$[{]x}/ssh/config|msys""#,
             ),
             (
                 r"\\server\share\agent-home\ssh\config",
@@ -893,7 +971,7 @@ mod tests {
             // OpenSSH globs an `Include`, so a bracket matches only itself, in both clients.
             (
                 r"C:\agents[1]$work\ssh\config",
-                r#"Include "C:/agents[[]1[]]$work/ssh/config" "/c/agents[[]1[]]$work/ssh/config""#,
+                r#"Include "C:/agents[[]1[]]$work/ssh/config" "/c/agents[[]1[]]$work/ssh/config|msys""#,
             ),
             (r"C:\Users\ada\[x]\ssh\config", r#"Include "~/[[]x[]]/ssh/config""#),
         ] {
@@ -965,11 +1043,11 @@ mod tests {
         let user_home = Some(Path::new(r"C:\Users\$AB12"));
         let chained = render_config(
             std::slice::from_ref(&entry),
-            Some(Path::new(r"C:\Users\$AB12\.agent\ssh\config.msys")),
+            Some(&Path::new(r"C:\Users\$AB12\.agent\ssh").join(MSYS_CONFIG)),
             user_home,
         );
         let plain = render_config(std::slice::from_ref(&entry), None, user_home);
-        let include = "\nInclude \"/c/Users/$AB12/.agent/ssh/config.msys\"\n";
+        let include = "\nInclude \"/c/Users/$AB12/.agent/ssh/config|msys\"\n";
         let (header, hosts) = chained.split_once(include).expect("the include");
         assert_eq!(format!("{header}{hosts}"), plain);
         assert!(
@@ -980,7 +1058,7 @@ mod tests {
         assert_eq!(
             render_config(
                 std::slice::from_ref(&entry),
-                Some(Path::new(r"\\server\share\agents\ssh\config.msys")),
+                Some(&Path::new(r"\\server\share\agents\ssh").join(MSYS_CONFIG)),
                 user_home
             ),
             plain
@@ -988,11 +1066,11 @@ mod tests {
         // OpenSSH globs an `Include`, so brackets in a folder's name match only themselves.
         let bracketed = render_config(
             std::slice::from_ref(&entry),
-            Some(Path::new(r"C:\agents[1]$work\ssh\config.msys")),
+            Some(&Path::new(r"C:\agents[1]$work\ssh").join(MSYS_CONFIG)),
             user_home,
         );
         assert!(
-            bracketed.contains("\nInclude \"/c/agents[[]1[]]$work/ssh/config.msys\"\n"),
+            bracketed.contains("\nInclude \"/c/agents[[]1[]]$work/ssh/config|msys\"\n"),
             "{bracketed}"
         );
     }
