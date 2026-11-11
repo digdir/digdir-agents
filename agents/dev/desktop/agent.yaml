@@ -54,8 +54,8 @@ spec:
     - type: github
       login: default
   secrets:
-    # From `agentctl secret set aivar --hosts api.aivar.no`.
-    - name: aivar
+    # From `agentctl secret set aivar-api-key --hosts api.aivar.no`.
+    - name: aivar-api-key
       environment: AIVAR_API_KEY
       optional: true
       allowedHosts:
