@@ -116,6 +116,7 @@ async fn controlled_network_authorizes_dns_tcp_and_http_and_fails_closed() {
         }
 
         assert_node_trusts_interception(&sandbox).await;
+        assert_ipv6_fails_at_once(&sandbox).await;
         assert_mediated_secret_enforcement(&sandbox, policy.as_ref()).await;
 
         let requests_before_denial = policy.requests.borrow().len();
@@ -220,6 +221,35 @@ async fn assert_node_trusts_interception(sandbox: &SandboxHandle) {
     assert!(
         node_trust.status.success(),
         "NODE_EXTRA_CA_CERTS must name the interception CA readable by any guest user: {node_trust:?}"
+    );
+}
+
+// A connection that looks established and then stalls keeps clients that try IPv6 first from
+// falling back to IPv4. The guest has no IPv6 route when the host has none. The attempt is timed in
+// the guest, from `/proc/uptime` before and after it, so a refusal that only comes after a wait
+// fails too.
+async fn assert_ipv6_fails_at_once(sandbox: &SandboxHandle) {
+    const AT_ONCE_SECONDS: f64 = 2.0;
+    let ipv6 = sandbox
+        .run_execution(shell(
+            "cut -d' ' -f1 /proc/uptime; wget -T 10 -qO /dev/null 'http://[2001:db8::1]/' 2>&1; cut -d' ' -f1 /proc/uptime",
+        ))
+        .await
+        .expect("IPv6 request should execute");
+    let output = String::from_utf8_lossy(&ipv6.stdout);
+    let lines: Vec<&str> = output.lines().collect();
+    let uptime = |line: Option<&&str>| -> f64 {
+        line.and_then(|line| line.trim().parse().ok())
+            .expect("the guest should print its uptime before and after the attempt")
+    };
+    let elapsed = uptime(lines.last()) - uptime(lines.first());
+    assert!(
+        output.contains("refused") || output.contains("unreachable"),
+        "an IPv6 connection must be refused: {output}"
+    );
+    assert!(
+        elapsed < AT_ONCE_SECONDS,
+        "an IPv6 connection must fail at once, but took {elapsed:.2}s: {output}"
     );
 }
 

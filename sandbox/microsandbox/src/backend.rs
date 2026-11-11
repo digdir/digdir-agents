@@ -544,8 +544,8 @@ impl MicrosandboxProvider {
             .hostname(record.hostname().as_str());
         builder = builder.envs(record.environment.clone());
         if network == RuntimeNetwork::Controlled {
-            builder =
-                builder.network(|network| network.policy(microsandbox::NetworkPolicy::allow_all()).tls(|tls| tls));
+            let policy = controlled_network_policy()?;
+            builder = builder.network(|network| network.policy(policy).tls(|tls| tls));
         }
         if record.init_system == sandbox::init::InitSystem::Image {
             builder = builder.init("auto");
@@ -1080,6 +1080,35 @@ impl RuntimeNetwork {
     }
 }
 
+/// Microsandbox's own policy for a runtime under host network control.
+///
+/// The host controller authorizes every flow, so this policy only refuses global
+/// unicast IPv6. Under a controller the runtime completes the guest's TCP
+/// handshake before the host dials, so a destination the host cannot reach over
+/// IPv6 looks connected to the guest and then stalls. Clients that try IPv6
+/// first, such as curl, then never fall back to IPv4. A refused handshake is reset
+/// at once, so they do. Destinations with only IPv6 addresses become unreachable,
+/// which costs far less.
+///
+/// The sandbox's gateway, `host.microsandbox.internal`, stays reachable without a
+/// rule of its own: Microsandbox's IPv6 pool is the ULA `fd42:6d73:62::/48`,
+/// outside `2000::/3`, so it falls through to the default. That must hold if the
+/// pool ever changes. An explicit allow would be worse: DNS rebind protection
+/// admits a private answer that an explicit address rule allows, so a name a page
+/// controls could then resolve to the gateway. The well-known NAT64 prefix
+/// (`64:ff9b::/96`) is also outside `2000::/3`, so IPv6-only hosts with DNS64 keep
+/// working. A network-specific NAT64 prefix (RFC 6052) inside `2000::/3` is still
+/// refused, which on such a host cuts off IPv4-only services too. That is rare
+/// enough to leave to the fix in Microsandbox (digdir/microsandbox#19), after
+/// which this rule can go.
+fn controlled_network_policy() -> Result<microsandbox::NetworkPolicy, Error> {
+    microsandbox::NetworkPolicy::builder()
+        .default_allow()
+        .egress(|egress| egress.deny().cidr("2000::/3"))
+        .build()
+        .map_err(error::backend)
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 pub(crate) mod test_records {
@@ -1159,6 +1188,42 @@ mod tests {
         assert_eq!(
             RuntimeNetwork::for_attachment(controlled.network.as_ref()).ok(),
             Some(RuntimeNetwork::Controlled)
+        );
+    }
+
+    // The runtime resets a TCP handshake that its own policy refuses with a rule.
+    // A refusal by default only may be answered with an HTTP denial instead.
+    #[test]
+    fn controlled_runtime_resets_global_ipv6_at_once() {
+        use microsandbox_network::{
+            policy::{Action, EgressEvaluation, HostnameSource, Protocol},
+            shared::SharedState,
+        };
+
+        let policy = super::controlled_network_policy().expect("controlled network policy should build");
+        let shared = SharedState::new(4);
+        let gateway_ipv6 = "fd42:6d73:62:1::1".parse().expect("gateway IPv6 should parse");
+        shared.set_gateway_ips(
+            Some("100.96.0.1".parse().expect("gateway IPv4 should parse")),
+            Some(gateway_ipv6),
+        );
+        let syn = |destination: &str| {
+            let destination = destination.parse().expect("destination should parse");
+            (
+                policy.evaluate_egress_with_source(destination, Protocol::Tcp, &shared, HostnameSource::Deferred),
+                policy.egress_denied_by_default(destination, Protocol::Tcp, &shared, HostnameSource::Deferred),
+            )
+        };
+
+        assert_eq!(syn("151.101.2.137:443"), (EgressEvaluation::Allow, false));
+        assert_eq!(syn("[2a04:4e42::649]:443"), (EgressEvaluation::Deny, false));
+        assert_eq!(syn(&format!("[{gateway_ipv6}]:8080")), (EgressEvaluation::Allow, false));
+        assert_eq!(syn("[64:ff9b::808:808]:443"), (EgressEvaluation::Allow, false));
+        // DNS rebind protection admits a private answer only when an explicit rule allows it.
+        assert!(
+            policy.rules.iter().all(|rule| rule.action == Action::Deny),
+            "no rule may allow, or a name could resolve to the gateway: {:?}",
+            policy.rules
         );
     }
 
