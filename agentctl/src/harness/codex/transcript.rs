@@ -177,6 +177,7 @@ impl Builder {
                     parts: vec![Part::ToolCall {
                         name: name.to_owned(),
                         failed: false,
+                        questions: Vec::new(),
                     }],
                 });
                 if let Some(call_id) = payload.get("call_id").and_then(Value::as_str) {
@@ -186,7 +187,7 @@ impl Builder {
             Some("function_call_output" | "custom_tool_call_output") => {
                 let nested_failed = self.pending_nested_command_failed.unwrap_or(false);
                 let mut consumed_nested_result = false;
-                if let Some(Part::ToolCall { name, failed }) = self.tool_part(payload) {
+                if let Some(Part::ToolCall { name, failed, .. }) = self.tool_part(payload) {
                     *failed |= command_failed(name, payload.get("output"));
                     if name == "exec" {
                         *failed |= nested_failed;
@@ -219,6 +220,7 @@ impl Builder {
         if let Some(Part::ToolCall {
             name,
             failed: tool_failed,
+            ..
         }) = self.tool_part_by_call_id(id)
         {
             if is_command_tool(name) {
@@ -346,7 +348,7 @@ mod tests {
             .iter()
             .flat_map(|message| &message.parts)
             .filter_map(|part| match part {
-                Part::ToolCall { name, failed } => Some((name.as_str(), *failed)),
+                Part::ToolCall { name, failed, .. } => Some((name.as_str(), *failed)),
                 Part::Text { .. } => None,
             })
             .collect::<Vec<_>>();
@@ -435,7 +437,7 @@ mod tests {
             .iter()
             .flat_map(|message| &message.parts)
             .filter_map(|part| match part {
-                Part::ToolCall { name, failed } => Some((name.as_str(), *failed)),
+                Part::ToolCall { name, failed, .. } => Some((name.as_str(), *failed)),
                 Part::Text { .. } => None,
             })
             .collect::<Vec<_>>();
@@ -472,7 +474,7 @@ mod tests {
             .iter()
             .flat_map(|message| &message.parts)
             .filter_map(|part| match part {
-                Part::ToolCall { name, failed } => Some((name.as_str(), *failed)),
+                Part::ToolCall { name, failed, .. } => Some((name.as_str(), *failed)),
                 Part::Text { .. } => None,
             })
             .collect::<Vec<_>>();
