@@ -169,7 +169,7 @@ fn keyed_lists_merge_by_key_while_other_lists_replace() {
 }
 
 #[test]
-fn a_patch_delete_entry_removes_the_inherited_one_and_an_empty_list_clears_them() {
+fn a_patch_delete_entry_removes_the_inherited_one_and_null_removes_them_all() {
     let directory = agent_directory();
     write(
         directory.path(),
@@ -191,7 +191,7 @@ fn a_patch_delete_entry_removes_the_inherited_one_and_an_empty_list_clears_them(
       $patch: delete
     - name: GONE_FROM_THE_BASE
       $patch: delete
-  skills: []
+  skills: null
   instructions: []
 ",
         ),
@@ -216,6 +216,110 @@ fn a_patch_delete_entry_removes_the_inherited_one_and_an_empty_list_clears_them(
         agent.spec.home.as_ref().map(|home| home.source.as_path()),
         Some(Path::new("home"))
     );
+}
+
+#[test]
+fn a_patch_replace_entry_of_its_own_replaces_the_inherited_list() {
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.team.yaml",
+        &variant("agent.yaml", "team", TEAM_SPEC),
+    );
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.team.yaml",
+            "mine",
+            "spec:
+  environment:
+    - $patch: replace
+    - name: Z
+    - name: A
+  skills:
+    - $patch: replace
+",
+        ),
+    );
+
+    let agent = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect("replacing variant")
+        .agent;
+    assert_eq!(
+        agent
+            .spec
+            .environment
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Z", "A"]
+    );
+    assert_eq!(agent.spec.skills, []);
+}
+
+#[test]
+fn patch_directives_on_a_mapping_remove_or_replace_it() {
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.team.yaml",
+        &variant(
+            "agent.yaml",
+            "team",
+            "spec:
+  home:
+    $patch: delete
+  harnesses:
+    - type: claudeCode
+      defaults:
+        model: fable
+        effort: xhigh
+",
+        ),
+    );
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.team.yaml",
+            "mine",
+            "spec:
+  sandbox:
+    platform:
+      $patch: replace
+      os: linux
+  harnesses:
+    - type: claudeCode
+      defaults:
+        $patch: replace
+        model: opus
+    - type: codex
+      auth: mediated
+      default: true
+      defaults:
+        $patch: replace
+        effort: high
+",
+        ),
+    );
+
+    let team = manifest::resolve(&directory.path().join("agent.team.yaml"))
+        .expect("removing variant")
+        .agent;
+    assert_eq!(team.spec.home, None);
+    let value = serde_json::to_value(
+        manifest::resolve(&directory.path().join("agent.mine.yaml"))
+            .expect("replacing variant")
+            .agent,
+    )
+    .expect("Agent JSON");
+    let spec = &value["spec"];
+    // A merge would have kept the base's architecture and the team's effort.
+    assert_eq!(spec["sandbox"]["platform"], serde_json::json!({"os": "linux"}));
+    assert_eq!(spec["harnesses"][0]["defaults"], serde_json::json!({"model": "opus"}));
+    // A directive inside a new entry applies too, rather than reaching the agent.
+    assert_eq!(spec["harnesses"][1]["defaults"], serde_json::json!({"effort": "high"}));
 }
 
 #[test]
@@ -246,18 +350,38 @@ fn a_keyed_entry_of_another_type_replaces_the_inherited_one_whole() {
 }
 
 #[test]
-fn refuses_patch_markers_a_variant_cannot_apply() {
+fn refuses_patches_a_variant_cannot_apply_unambiguously() {
     let directory = agent_directory();
     for (name, spec, expected) in [
         (
             "replace",
             "spec:\n  access:\n    - type: ssh\n      $patch: replace\n",
-            "must be \"delete\"",
+            "spec.access: $patch: replace goes in an entry of its own",
+        ),
+        (
+            "merge",
+            "spec:\n  environment:\n    - name: A\n      $patch: merge\n",
+            "spec.environment: $patch must be \"delete\" or \"replace\"",
+        ),
+        (
+            "mapping",
+            "spec:\n  home:\n    $patch: merge\n",
+            "spec.home: $patch must be \"delete\" or \"replace\"",
         ),
         (
             "nameless",
             "spec:\n  environment:\n    - $patch: delete\n",
-            "spec.environment: an entry with $patch must name the entry it removes by its name",
+            "spec.environment: an entry with $patch: delete must name the entry it removes by its name",
+        ),
+        (
+            "empty",
+            "spec:\n  access: []\n",
+            "spec.access: an empty list changes nothing in a variant",
+        ),
+        (
+            "twice",
+            "spec:\n  environment:\n    - name: C\n    - name: C\n      source: C_FILE\n",
+            "spec.environment: two entries have the name \"C\"",
         ),
         (
             "unkeyed",

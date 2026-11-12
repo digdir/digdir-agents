@@ -1568,11 +1568,10 @@ pub fn decode(bytes: &[u8]) -> Result<Agent, Error> {
 
 /// Expands a complete agent or chained agent variant from `path`.
 ///
-/// Variant bases are restricted to conventional sibling filenames. Mappings
-/// merge recursively, and `null` removes inherited fields. The lists in
-/// [`KEYED_LISTS`] merge entry by entry on their key, an entry with
-/// `$patch: delete` removes the inherited one, and an empty list clears them.
-/// Other lists and scalars replace inherited values.
+/// Variant bases are restricted to conventional sibling filenames. A variant
+/// applies to its base as a strategic merge patch does in Kustomize, with the
+/// lists in [`KEYED_LISTS`] merged on their key. `agentctl/docs/variants.md`
+/// has the rules and where they differ from Kustomize's.
 ///
 /// # Errors
 ///
@@ -1746,9 +1745,32 @@ fn sibling_base(path: &Path, extends: &str) -> Result<PathBuf, Error> {
     Ok(parent.join(base))
 }
 
-/// The field a variant's list entry carries to remove the inherited entry with its key, as in Kubernetes' strategic
-/// merge patch.
+/// The field that carries a strategic merge patch directive in a variant.
 const PATCH_FIELD: &str = "$patch";
+
+/// The strategic merge patch directives that Kustomize and Kubernetes apply the same way. A variant refuses the others
+/// rather than pick one tool's reading.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Directive {
+    /// Removes the inherited mapping, or the inherited list entry with the same key.
+    Delete,
+    /// Replaces the inherited mapping, or, as a list entry of its own, the inherited list.
+    Replace,
+}
+
+impl Directive {
+    /// Removes the directive from `mapping`, which `field` leads to.
+    fn take(mapping: &mut serde_yaml_ng::Mapping, field: &str) -> Result<Option<Self>, String> {
+        let Some(value) = mapping.remove(serde_yaml_ng::Value::String(PATCH_FIELD.into())) else {
+            return Ok(None);
+        };
+        match value.as_str() {
+            Some("delete") => Ok(Some(Self::Delete)),
+            Some("replace") => Ok(Some(Self::Replace)),
+            _ => Err(format!("{field}: {PATCH_FIELD} must be \"delete\" or \"replace\"")),
+        }
+    }
+}
 
 /// The lists a variant merges entry by entry, by the field names that lead to them, with each entry's key. The key is
 /// what validation already requires to be unique in the list, so an entry in a variant names one inherited entry.
@@ -1819,8 +1841,7 @@ fn merge_value(
             // Internally tagged union values are one logical scalar choice.
             // Changing the discriminator replaces the whole mapping so fields
             // belonging to the previous variant cannot leak into the new one.
-            *base = patch;
-            return Ok(());
+            *base = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
         }
     }
     match (base, patch) {
@@ -1834,13 +1855,11 @@ fn merge_value(
             Ok(())
         }
         (serde_yaml_ng::Value::Sequence(base), serde_yaml_ng::Value::Sequence(patch)) => {
-            match ListKey::at(fields) {
-                // An empty list clears the inherited one, since that is what `[]` reads as.
-                Some(key) if !patch.is_empty() => merge_list(base, patch, key, fields),
-                _ => {
-                    *base = patch;
-                    Ok(())
-                }
+            if let Some(key) = ListKey::at(fields) {
+                merge_list(base, patch, key, fields)
+            } else {
+                *base = patch;
+                Ok(())
             }
         }
         (base, patch) => {
@@ -1853,9 +1872,16 @@ fn merge_value(
 fn merge_field(
     base: &mut serde_yaml_ng::Mapping,
     key: serde_yaml_ng::Value,
-    value: serde_yaml_ng::Value,
+    mut value: serde_yaml_ng::Value,
     fields: &mut Vec<String>,
 ) -> Result<(), String> {
+    let directive = match value.as_mapping_mut() {
+        Some(mapping) => Directive::take(mapping, &fields.join("."))?,
+        None => None,
+    };
+    if directive == Some(Directive::Delete) {
+        value = serde_yaml_ng::Value::Null;
+    }
     if value.is_null() {
         if base.remove(&key).is_none() {
             // Preserve a null for fields absent from the concrete base.
@@ -1863,22 +1889,28 @@ fn merge_field(
             // strict deserialization rejects unknown null-valued fields.
             base.insert(key, value);
         }
-    } else if let Some(inherited) = base.get_mut(&key) {
-        merge_value(inherited, value, fields)?;
-    } else if value.is_sequence() && ListKey::at(fields).is_some() {
-        // Merging into an empty list consumes the removal markers, which would otherwise fail decoding.
-        let mut list = serde_yaml_ng::Value::Sequence(Vec::new());
-        merge_value(&mut list, value, fields)?;
-        base.insert(key, list);
-    } else {
-        base.insert(key, value);
+        return Ok(());
     }
-    Ok(())
+    match base.get_mut(&key) {
+        Some(inherited) if directive.is_none() => merge_value(inherited, value, fields),
+        _ => {
+            // A new or replacing value is merged into an empty one, which applies the directives inside it.
+            let mut fresh = match value {
+                serde_yaml_ng::Value::Mapping(_) => serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new()),
+                serde_yaml_ng::Value::Sequence(_) => serde_yaml_ng::Value::Sequence(Vec::new()),
+                _ => serde_yaml_ng::Value::Null,
+            };
+            merge_value(&mut fresh, value, fields)?;
+            base.insert(key, fresh);
+            Ok(())
+        }
+    }
 }
 
 /// Merges each entry of a variant's keyed list into the inherited entry with its key, keeping the inherited order and
-/// adding new keys after it. An entry marked `$patch: delete` removes the inherited one instead. Removing a key the
-/// base does not have is not an error, so a variant keeps working after its base drops the entry.
+/// adding new keys after it. An entry marked `$patch: delete` removes the inherited one, and an entry holding only
+/// `$patch: replace` makes the variant's entries replace the inherited list. Removing a key the base does not have is
+/// not an error, so a variant keeps working after its base drops the entry.
 fn merge_list(
     base: &mut Vec<serde_yaml_ng::Value>,
     patch: Vec<serde_yaml_ng::Value>,
@@ -1886,17 +1918,51 @@ fn merge_list(
     fields: &mut Vec<String>,
 ) -> Result<(), String> {
     let field = fields.join(".");
+    if patch.is_empty() {
+        // Kustomize leaves the inherited entries as they are, which is rarely what an empty list means.
+        return Err(format!(
+            "{field}: an empty list changes nothing in a variant. Write null to remove the inherited entries"
+        ));
+    }
+    let mut entries = Vec::with_capacity(patch.len());
+    let mut names = std::collections::BTreeSet::new();
+    let mut replace = false;
     for mut entry in patch {
-        let marker = entry
-            .as_mapping_mut()
-            .and_then(|mapping| mapping.remove(serde_yaml_ng::Value::String(PATCH_FIELD.into())));
-        let Some(name) = key.of(&entry) else {
-            if marker.is_some() {
+        let directive = match entry.as_mapping_mut() {
+            Some(mapping) => Directive::take(mapping, &field)?,
+            None => None,
+        };
+        let name = key.of(&entry);
+        match (directive, &name) {
+            (Some(Directive::Replace), None) if entry.as_mapping().is_some_and(serde_yaml_ng::Mapping::is_empty) => {
+                replace = true;
+                continue;
+            }
+            (Some(Directive::Replace), _) => {
                 return Err(format!(
-                    "{field}: an entry with {PATCH_FIELD} must name the entry it removes by its {}",
+                    "{field}: {PATCH_FIELD}: replace goes in an entry of its own, where it replaces the inherited list"
+                ));
+            }
+            (Some(Directive::Delete), None) => {
+                return Err(format!(
+                    "{field}: an entry with {PATCH_FIELD}: delete must name the entry it removes by its {}",
                     key.field()
                 ));
             }
+            _ => {}
+        }
+        if let Some(name) = &name
+            && !names.insert(name.clone())
+        {
+            return Err(format!("{field}: two entries have the {} {name:?}", key.field()));
+        }
+        entries.push((directive == Some(Directive::Delete), name, entry));
+    }
+    if replace {
+        base.clear();
+    }
+    for (delete, name, entry) in entries {
+        let Some(name) = name else {
             // Decoding reports what the entry lacks.
             base.push(entry);
             continue;
@@ -1904,19 +1970,18 @@ fn merge_list(
         let inherited = base
             .iter()
             .position(|candidate| key.of(candidate).as_deref() == Some(&name));
-        match (marker, inherited) {
-            (Some(serde_yaml_ng::Value::String(operation)), inherited) if operation == "delete" => {
-                if let Some(index) = inherited {
-                    base.remove(index);
-                }
+        match (delete, inherited) {
+            (true, Some(index)) => {
+                base.remove(index);
             }
-            (Some(_), _) => {
-                return Err(format!(
-                    "{field}: {PATCH_FIELD} on {name:?} must be \"delete\", the only operation a variant supports"
-                ));
+            (true, None) => {}
+            (false, Some(index)) => merge_value(&mut base[index], entry, fields)?,
+            (false, None) => {
+                // Merging into an empty entry applies the directives inside it.
+                let mut added = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
+                merge_value(&mut added, entry, fields)?;
+                base.push(added);
             }
-            (None, Some(index)) => merge_value(&mut base[index], entry, fields)?,
-            (None, None) => base.push(entry),
         }
     }
     Ok(())
