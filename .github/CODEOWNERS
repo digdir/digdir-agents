@@ -12,7 +12,7 @@
 #   1. the default owner for everything
 #   2. safe exceptions (lines without an owner remove the requirement)
 #   3. sensitive files inside the safe exceptions
-#   4. areas with another owner (agentctl/sandbox), which override all of the above
+#   4. open areas (agentctl/sandbox), which override all of the above
 
 # 1. Default: everything needs review, including paths that do not exist yet
 *                             @olebhansen
@@ -30,25 +30,27 @@
 package.json                  @olebhansen
 package-lock.json             @olebhansen
 
-# 4. The agent layer moved in from altinn-studio (ki-lab) is owned by its team.
-#    Listed last so these paths do not need the default owner, and vice versa.
-/agentctl/                    @martinothamar
-/sandbox/                     @martinothamar
-/images/agentctl-base/        @martinothamar
-/docker-bake.hcl              @martinothamar
+# 4. The agent layer moved in from altinn-studio (ki-lab) is open: its authors
+#    ask for a review when they want one, rather than every pull request
+#    waiting on an approver. Listed last so these paths do not need the default
+#    owner, including the dependency files in them.
+/agentctl/
+/sandbox/
+/images/agentctl-base/
+/docker-bake.hcl
 # The Rust workspace at the root and the agentctl/sandbox workflows
-/Cargo.toml                   @martinothamar
-/Cargo.lock                   @martinothamar
-/rust-toolchain.toml          @martinothamar
-/rustfmt.toml                 @martinothamar
-/clippy.toml                  @martinothamar
-/deny.toml                    @martinothamar
-/Makefile                     @martinothamar
-/.cargo/                      @martinothamar
-/.editorconfig                @martinothamar
-/.github/workflows/rust.yml   @martinothamar
-/.github/workflows/agentctl-*.yml @martinothamar
-/.github/workflows/images.yml @martinothamar
-/.github/workflows/dev-images.yml   @martinothamar
+/Cargo.toml
+/Cargo.lock
+/rust-toolchain.toml
+/rustfmt.toml
+/clippy.toml
+/deny.toml
+/Makefile
+/.cargo/
+/.editorconfig
+/.github/workflows/rust.yml
+/.github/workflows/agentctl-*.yml
+/.github/workflows/images.yml
+/.github/workflows/dev-images.yml
 # The agentctl agent that develops the platform itself
-/agents/dev/                  @martinothamar
+/agents/dev/
