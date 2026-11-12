@@ -2,11 +2,13 @@
 //!
 //! Every agent runs on the same platform, so what a harness needs to know about it is generated
 //! here, from the agent's manifest and what setup found in its sandbox, rather than copied into
-//! each agent's instruction file, where it drifts from the release that runs it. It states facts
-//! only, one labelled line each, with a sub-bullet per item where a line lists several; how to drive
-//! agents, nested ones included, is the `agentctl` skill's.
+//! each agent's instruction file, where it drifts from the release that runs it. It states facts,
+//! then the platform's ground rules, one labelled line each, with a sub-bullet per item where a
+//! line lists several; how to drive agents, nested ones included, is the `agentctl` skill's.
 
 use std::{collections::BTreeMap, fmt::Write as _};
+
+use ::sandbox::mount::Mount;
 
 use crate::{
     Harness,
@@ -88,6 +90,7 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
         ),
         ("Resources", Some(resources(spec))),
         ("Harnesses", harnesses(spec, observed.harnesses)),
+        ("Folders", folders(&record.sandbox_mounts())),
         ("Secrets", secrets(spec, observed.environment)),
         (
             "Plain environment",
@@ -106,6 +109,9 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
     lines.extend([
         ("Access", access(spec, name)),
         ("Nested agents", Some(nested_agents(spec, observed).to_owned())),
+        ("Changes", Some(CHANGES.to_owned())),
+        ("Cleanup", Some(CLEANUP.to_owned())),
+        ("Clones", Some(CLONES.to_owned())),
     ]);
     let mut section = format!(
         "{BEGIN}# Agent sandbox\n\n\
@@ -150,6 +156,42 @@ fn harnesses(spec: &Spec, installed: &[Harness]) -> Option<String> {
         }
     })))
 }
+
+/// One sub-bullet per folder mounted from the person's machine, read-only ones marked; nothing
+/// without any. A volume is left out: it is a copy, so the agent's changes to it stay in the agent.
+fn folders(mounts: &[Mount]) -> Option<String> {
+    let folders: Vec<String> = mounts
+        .iter()
+        .filter_map(|mount| match mount {
+            Mount::Bind {
+                target,
+                read_only: true,
+                ..
+            } => Some(format!("`{}` (read-only)", target.as_str())),
+            Mount::Bind { target, .. } => Some(format!("`{}`", target.as_str())),
+            Mount::Volume { .. } | Mount::Tmpfs { .. } => None,
+        })
+        .collect();
+    (!folders.is_empty()).then(|| {
+        format!(
+            "the person's own files, mounted from their machine: changes happen at once and outlive this agent, \
+             so don't switch branches, reset or push there unless asked.{}",
+            sub_bullets(folders.into_iter())
+        )
+    })
+}
+
+/// What the agent may do without asking, and where it notes what the image should have had.
+const CHANGES: &str = "inside this VM, apart from the person's folders, act freely. Send something out through the \
+                       host only when a task asks. Note what you change in the system, and why, in \
+                       `~/system-changes.md`, so it can be moved into the image.";
+
+/// What the agent removes, so its disk keeps room for later tasks.
+const CLEANUP: &str = "stop the servers and containers you start. When a task is done, remove what you created for \
+                       it, such as one-off images, finished worktrees and build output, and nothing else.";
+
+/// How the agent treats a repository it works in, so that it neither builds on stale code nor loses anyone's work.
+const CLONES: &str = "fetch first, branch from the default branch, and never discard work you didn't make.";
 
 /// One sub-bullet per secret, with the hosts it is sent to or that it was left unconfigured.
 fn secrets(spec: &Spec, environment: &BTreeMap<String, String>) -> Option<String> {
@@ -244,6 +286,22 @@ fn code_list<'a>(items: impl IntoIterator<Item = &'a String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_the_sandbox_owns_is_no_folder_of_the_persons() {
+        let mounts = [
+            Mount::Volume {
+                id: "5c0fd6ac-1d5a-4f8b-9f58-6b0f4de1f6c1".parse().expect("volume ID"),
+                target: ::sandbox::SandboxPath::new("/home/agent/reference"),
+                read_only: false,
+            },
+            Mount::Tmpfs {
+                target: ::sandbox::SandboxPath::new("/scratch"),
+                capacity: "1Gi".parse().expect("capacity"),
+            },
+        ];
+        assert_eq!(folders(&mounts), None);
+    }
 
     #[test]
     fn the_network_line_names_the_allowed_and_denied_hosts() {
