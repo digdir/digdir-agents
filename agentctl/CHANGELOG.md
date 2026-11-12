@@ -13,6 +13,13 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ## [Unreleased]
 
+### Changed
+
+- Breaking: agent variants merge as Kustomize patches do: ([agent variants](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/variants.md), [#504](https://github.com/digdir/digdir-agents/pull/504))
+  - `$patch: replace` replaces an inherited list or mapping, and `$patch: delete` removes a mapping
+  - an empty list of entries, such as `skills: []`, is refused. Write `skills: null` to remove the inherited entries
+  - two entries with the same key in one list, such as `name` in `environment`, are refused
+
 ### Fixed
 
 - SSH connections to an agent, such as `ssh agentctl-NAME` or T3 Code's environments, and commands such as `agentctl exec` wait while Microsandbox is being installed or updated instead of failing, and the SSH client says what it waits for. ([#456](https://github.com/digdir/digdir-agents/issues/456))
