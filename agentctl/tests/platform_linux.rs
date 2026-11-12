@@ -282,9 +282,9 @@ persist real values.
 - **Access:** people on the host reach this computer with `agentctl ssh worker`.
 - **Nested agents:** available (`/dev/kvm`, no Podman, so only manifests with an image `reference`); see the \
 `agentctl` skill.
-- **Changes:** inside this VM, apart from the person's folders, act freely. Send something out through the host only \
-when a task asks. Note what you change in the system, and why, in `~/system-changes.md`, so it can be moved into the \
-image.
+- **Changes:** inside this VM, apart from the person's folders, act freely, such as installing the tools a task \
+needs. Send something out through the host only when a task asks. Note what you install or change in the system, \
+and why, in `~/system-changes.md`, so it can be moved into the image.
 - **Cleanup:** stop the servers and containers you start. When a task is done, remove what you created for it, such \
 as one-off images, finished worktrees and build output, and nothing else.
 - **Clones:** fetch first, branch from the default branch, and never discard work you didn't make.

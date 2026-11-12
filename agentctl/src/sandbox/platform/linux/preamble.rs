@@ -182,9 +182,10 @@ fn folders(mounts: &[Mount]) -> Option<String> {
 }
 
 /// What the agent may do without asking, and where it notes what the image should have had.
-const CHANGES: &str = "inside this VM, apart from the person's folders, act freely. Send something out through the \
-                       host only when a task asks. Note what you change in the system, and why, in \
-                       `~/system-changes.md`, so it can be moved into the image.";
+const CHANGES: &str = "inside this VM, apart from the person's folders, act freely, such as installing the tools \
+                       a task needs. Send something out through the host only when a task asks. Note what you \
+                       install or change in the system, and why, in `~/system-changes.md`, so it can be moved \
+                       into the image.";
 
 /// What the agent removes, so its disk keeps room for later tasks.
 const CLEANUP: &str = "stop the servers and containers you start. When a task is done, remove what you created for \
