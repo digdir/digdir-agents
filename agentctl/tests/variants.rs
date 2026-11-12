@@ -79,6 +79,9 @@ const TEAM_SPEC: &str = "spec:
   secrets:
     - environment: TOKEN
       allowedHosts: [api.github.com]
+  instructions:
+    - source: team.md
+      optional: true
   skills:
     - source: skills/review
   sandbox:
@@ -105,6 +108,8 @@ fn keyed_lists_merge_by_key_while_other_lists_replace() {
             "spec:
   instructions:
     - source: mine.md
+    - source: team.md
+      optional: null
   accounts:
     - type: github
       login: mine
@@ -165,7 +170,11 @@ fn keyed_lists_merge_by_key_while_other_lists_replace() {
         spec["accounts"],
         serde_json::json!([{"type": "github", "login": "mine"}])
     );
-    assert_eq!(spec["instructions"], serde_json::json!([{"source": "mine.md"}]));
+    // Instruction files are concatenated in this order, so the variant's file follows those it extends.
+    assert_eq!(
+        spec["instructions"],
+        serde_json::json!([{"source": "instructions.md"}, {"source": "team.md"}, {"source": "mine.md"}])
+    );
 }
 
 #[test]
@@ -192,7 +201,9 @@ fn a_patch_delete_entry_removes_the_inherited_one_and_an_empty_list_clears_them(
     - name: GONE_FROM_THE_BASE
       $patch: delete
   skills: []
-  instructions: []
+  instructions:
+    - source: instructions.md
+      $patch: delete
 ",
         ),
     );
@@ -211,7 +222,15 @@ fn a_patch_delete_entry_removes_the_inherited_one_and_an_empty_list_clears_them(
         ["B"]
     );
     assert_eq!(agent.spec.skills, []);
-    assert_eq!(agent.spec.instructions, []);
+    assert_eq!(
+        agent
+            .spec
+            .instructions
+            .iter()
+            .map(|entry| entry.source.as_path())
+            .collect::<Vec<_>>(),
+        [Path::new("team.md")]
+    );
     assert_eq!(
         agent.spec.home.as_ref().map(|home| home.source.as_path()),
         Some(Path::new("home"))
@@ -258,11 +277,6 @@ fn refuses_patch_markers_a_variant_cannot_apply() {
             "nameless",
             "spec:\n  environment:\n    - $patch: delete\n",
             "spec.environment: an entry with $patch must name the entry it removes by its name",
-        ),
-        (
-            "unkeyed",
-            "spec:\n  instructions:\n    - source: a.md\n      $patch: delete\n",
-            "$patch",
         ),
     ] {
         let file = format!("agent.{name}.yaml");

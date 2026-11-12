@@ -14,9 +14,5 @@ spec:
         source: ../../..
         target: /home/agent/code/digdir-agents
         readOnly: false
-  # A variant's instructions replace the list it extends.
   instructions:
-    - source: ../instructions.md
-    - source: environment.md
-    - source: ../improving.md
     - source: ../worktree.md
