@@ -722,15 +722,7 @@ impl Spec {
         {
             return Err(Error::Invalid("spec.home.source must not be empty".into()));
         }
-        if let Some(index) = self
-            .instructions
-            .iter()
-            .position(|instructions| instructions.source.as_os_str().is_empty())
-        {
-            return Err(Error::Invalid(format!(
-                "spec.instructions[{index}].source must not be empty"
-            )));
-        }
+        self.validate_instructions()?;
         self.validate_skills()?;
         let mut harness_kinds = std::collections::BTreeSet::new();
         let mut duplicate_harness = None;
@@ -931,6 +923,26 @@ impl Spec {
             return Err(Error::Invalid(
                 "spec.environment must declare GIT_USER_NAME and GIT_USER_EMAIL together".into(),
             ));
+        }
+        Ok(())
+    }
+
+    /// A variant names an entry by its source as written, so no two entries may share one.
+    fn validate_instructions(&self) -> Result<(), Error> {
+        let mut sources = std::collections::BTreeSet::new();
+        for (index, instructions) in self.instructions.iter().enumerate() {
+            let source = instructions.source.as_os_str();
+            if source.is_empty() {
+                return Err(Error::Invalid(format!(
+                    "spec.instructions[{index}].source must not be empty"
+                )));
+            }
+            if !sources.insert(source) {
+                return Err(Error::Invalid(format!(
+                    "spec.instructions[{index}] duplicates source \"{}\"",
+                    instructions.source.display()
+                )));
+            }
         }
         Ok(())
     }
@@ -1784,13 +1796,14 @@ impl Directive {
 
 /// The lists a variant merges entry by entry, by the field names that lead to them, with each entry's key. The key is
 /// what validation already requires to be unique in the list, so an entry in a variant names one inherited entry.
-/// Other lists replace the inherited one whole: a list of strings has no key, and `instructions` may repeat a source.
+/// Other lists replace the inherited one whole, since a list of strings has no key.
 const KEYED_LISTS: &[(&[&str], ListKey)] = &[
     (&["spec", "access"], ListKey::Field("type")),
     (&["spec", "accounts"], ListKey::Field("type")),
     (&["spec", "harnesses"], ListKey::Field("type")),
     (&["spec", "environment"], ListKey::Field("name")),
     (&["spec", "secrets"], ListKey::Field("environment")),
+    (&["spec", "instructions"], ListKey::Field("source")),
     (&["spec", "skills"], ListKey::Skill),
     (&["spec", "sandbox", "mounts"], ListKey::Field("target")),
 ];
