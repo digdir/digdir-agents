@@ -127,6 +127,9 @@ the tests start with Compose, `browser` for browser tests, `desktop` for the des
 
 ## Variants
 
+A variant holds only what differs from the manifest it extends, and merges into it as
+[agent variants](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/variants.md) describes.
+
 - **`nested`** runs the same image inside another agent, sized to fit there, such as 2 CPUs, 3Gi and 24Gi, with
   `nestedSandboxes: null`.
 - **`nested-build`** extends `nested` and builds the image from the checkout (`type: build`), so a change to the
