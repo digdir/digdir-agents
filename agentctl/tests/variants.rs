@@ -178,7 +178,7 @@ fn keyed_lists_merge_by_key_while_other_lists_replace() {
 }
 
 #[test]
-fn a_patch_delete_entry_removes_the_inherited_one_and_an_empty_list_clears_them() {
+fn a_patch_delete_entry_removes_the_inherited_one_and_null_removes_them_all() {
     let directory = agent_directory();
     write(
         directory.path(),
@@ -200,7 +200,7 @@ fn a_patch_delete_entry_removes_the_inherited_one_and_an_empty_list_clears_them(
       $patch: delete
     - name: GONE_FROM_THE_BASE
       $patch: delete
-  skills: []
+  skills: null
   instructions:
     - source: instructions.md
       $patch: delete
@@ -238,6 +238,131 @@ fn a_patch_delete_entry_removes_the_inherited_one_and_an_empty_list_clears_them(
 }
 
 #[test]
+fn a_patch_replace_entry_of_its_own_replaces_the_inherited_list() {
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.team.yaml",
+        &variant("agent.yaml", "team", TEAM_SPEC),
+    );
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.team.yaml",
+            "mine",
+            "spec:
+  environment:
+    - $patch: replace
+    - name: Z
+    - name: A
+  skills:
+    - $patch: replace
+",
+        ),
+    );
+
+    let agent = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect("replacing variant")
+        .agent;
+    assert_eq!(
+        agent
+            .spec
+            .environment
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Z", "A"]
+    );
+    assert_eq!(agent.spec.skills, []);
+}
+
+#[test]
+fn patch_directives_on_a_mapping_remove_or_replace_it() {
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.team.yaml",
+        &variant(
+            "agent.yaml",
+            "team",
+            "spec:
+  home:
+    $patch: delete
+  harnesses:
+    - type: claudeCode
+      defaults:
+        model: fable
+        effort: xhigh
+",
+        ),
+    );
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.team.yaml",
+            "mine",
+            "spec:
+  sandbox:
+    platform:
+      $patch: replace
+      os: linux
+  harnesses:
+    - type: claudeCode
+      defaults:
+        $patch: replace
+        model: opus
+    - type: codex
+      auth: mediated
+      default: true
+      defaults:
+        $patch: replace
+        effort: high
+",
+        ),
+    );
+
+    let team = manifest::resolve(&directory.path().join("agent.team.yaml"))
+        .expect("removing variant")
+        .agent;
+    assert_eq!(team.spec.home, None);
+    let value = serde_json::to_value(
+        manifest::resolve(&directory.path().join("agent.mine.yaml"))
+            .expect("replacing variant")
+            .agent,
+    )
+    .expect("Agent JSON");
+    let spec = &value["spec"];
+    // A merge would have kept the base's architecture and the team's effort.
+    assert_eq!(spec["sandbox"]["platform"], serde_json::json!({"os": "linux"}));
+    assert_eq!(spec["harnesses"][0]["defaults"], serde_json::json!({"model": "opus"}));
+    // A directive inside a new entry applies too, rather than reaching the agent.
+    assert_eq!(spec["harnesses"][1]["defaults"], serde_json::json!({"effort": "high"}));
+}
+
+#[test]
+fn a_patch_delete_on_a_mapping_the_base_lacks_changes_nothing() {
+    // The base's harness has no `defaults`. Kustomize leaves a field the base lacks alone, so a variant that removes
+    // one keeps working after its base drops it, as a `$patch: delete` entry does.
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.yaml",
+            "mine",
+            "spec:\n  harnesses:\n    - type: claudeCode\n      defaults:\n        $patch: delete\n",
+        ),
+    );
+
+    let agent = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect("removing a mapping the base lacks")
+        .agent;
+    assert_eq!(agent.spec.harnesses[0].defaults, agent::ModelSelection::default());
+}
+
+#[test]
 fn a_keyed_entry_of_another_type_replaces_the_inherited_one_whole() {
     let directory = agent_directory();
     write(
@@ -265,18 +390,38 @@ fn a_keyed_entry_of_another_type_replaces_the_inherited_one_whole() {
 }
 
 #[test]
-fn refuses_patch_markers_a_variant_cannot_apply() {
+fn refuses_patches_a_variant_cannot_apply_unambiguously() {
     let directory = agent_directory();
     for (name, spec, expected) in [
         (
             "replace",
             "spec:\n  access:\n    - type: ssh\n      $patch: replace\n",
-            "must be \"delete\"",
+            "spec.access: $patch: replace goes in an entry of its own",
+        ),
+        (
+            "merge",
+            "spec:\n  environment:\n    - name: A\n      $patch: merge\n",
+            "spec.environment: $patch must be \"delete\" or \"replace\"",
+        ),
+        (
+            "mapping",
+            "spec:\n  home:\n    $patch: merge\n",
+            "spec.home: $patch must be \"delete\" or \"replace\"",
         ),
         (
             "nameless",
             "spec:\n  environment:\n    - $patch: delete\n",
-            "spec.environment: an entry with $patch must name the entry it removes by its name",
+            "spec.environment: an entry with $patch: delete must name the entry it removes by its name",
+        ),
+        (
+            "empty",
+            "spec:\n  access: []\n",
+            "spec.access: an empty list changes nothing in a variant",
+        ),
+        (
+            "twice",
+            "spec:\n  environment:\n    - name: C\n    - name: C\n      source: C_FILE\n",
+            "spec.environment: two entries have the name \"C\"",
         ),
     ] {
         let file = format!("agent.{name}.yaml");
@@ -296,6 +441,27 @@ fn refuses_patch_markers_a_variant_cannot_apply() {
     .expect("complete manifest");
     let error = manifest::resolve(&directory.path().join("agent.yaml")).expect_err("marker in a complete agent");
     assert!(error.to_string().contains("$patch"), "{error}");
+}
+
+#[test]
+fn an_entry_without_its_key_is_reported_by_its_key_not_by_a_directive_inside_it() {
+    // Decoding names what the entry lacks, rather than a directive inside it that a merge would have applied.
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.yaml",
+            "mine",
+            "spec:\n  harnesses:\n    - auth: mediated\n      defaults:\n        $patch: replace\n        model: opus\n",
+        ),
+    );
+
+    let error = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect_err("an entry without its key")
+        .to_string();
+    assert!(error.contains("missing field `type`"), "{error}");
+    assert!(!error.contains("$patch"), "{error}");
 }
 
 #[test]
@@ -343,6 +509,123 @@ fn null_removes_optional_fields_and_required_removal_fails_final_validation() {
     let error = manifest::resolve(&directory.path().join("agent.required.yaml")).expect_err("required removal");
     assert!(error.to_string().contains("resources"));
     assert!(error.to_string().contains("agent.required.yaml"));
+}
+
+#[test]
+fn null_on_a_field_the_base_does_not_set_changes_nothing() {
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.yaml",
+            "mine",
+            "spec:
+  skills: null
+  harnesses:
+    - type: claudeCode
+      optional: null
+  network:
+    deny: null
+",
+        ),
+    );
+
+    let agent = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect("nulls on fields the base does not set")
+        .agent;
+    assert_eq!(agent.spec, support::agent("mine").spec);
+}
+
+/// A variant keeps the `null` it gives a field its base does not set, so that a field agentctl does not know still
+/// fails decoding. Every field a manifest may leave out must then read `null` too, which serde does for an `Option` and
+/// otherwise only through a `deserialize_with`, such as `null_as_default`.
+#[test]
+fn every_field_a_manifest_may_leave_out_reads_null() {
+    // What agentd writes, which no manifest sets.
+    const NOT_IN_MANIFESTS: &[&str] = &[
+        "Agent.status",
+        "Metadata.generation",
+        "Status.",
+        "MountedVolume.",
+        "Condition.",
+        "Provenance.",
+    ];
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let manifest = defaulted_fields(&source.join("manifest.rs"))
+        .into_iter()
+        .filter(|(field, _)| !NOT_IN_MANIFESTS.iter().any(|exempt| field.starts_with(exempt)));
+    // A harness entry is decoded as `DeclaredHarnessSpec`.
+    let harness = defaulted_fields(&source.join("harness/mod.rs"))
+        .into_iter()
+        .filter(|(field, _)| field.starts_with("DeclaredHarnessSpec."));
+    let fields = manifest.chain(harness).collect::<Vec<_>>();
+
+    // Finding these shows that the scan reads the fields as they are written, rather than passing by finding none.
+    for expected in [
+        "Spec.instructions",
+        "MountSpec.optional",
+        "DeclaredHarnessSpec.optional",
+    ] {
+        assert!(
+            fields.iter().any(|(field, _)| field == expected),
+            "{expected} not found in {fields:?}"
+        );
+    }
+    let missing = fields
+        .iter()
+        .filter(|(_, reads_null)| !reads_null)
+        .map(|(field, _)| field.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "{missing:?} have a serde default but read no null, so a variant's null for one fails when its base does not \
+         set it. Give each `deserialize_with = \"null_as_default\"`, or a helper that reads null as its own default."
+    );
+}
+
+/// The fields in `path` that have a serde default and are not an `Option`, as `Type.field`, each with whether a
+/// `deserialize_with` reads it.
+fn defaulted_fields(path: &Path) -> Vec<(String, bool)> {
+    let source = std::fs::read_to_string(path).expect("manifest source should be readable");
+    let mut fields = Vec::new();
+    let mut item = String::new();
+    let mut attribute = String::new();
+    for line in source.lines().map(str::trim) {
+        if !attribute.is_empty() && !attribute.ends_with(")]") {
+            attribute.push_str(line);
+            continue;
+        }
+        if line.starts_with("#[serde(") {
+            line.clone_into(&mut attribute);
+            continue;
+        }
+        if line.starts_with("#[") || line.starts_with("//") {
+            continue;
+        }
+        let declaration = line.trim_start_matches("pub(crate) ").trim_start_matches("pub ");
+        if let Some(rest) = declaration
+            .strip_prefix("struct ")
+            .or_else(|| declaration.strip_prefix("enum "))
+        {
+            rest.split(|character: char| !character.is_alphanumeric() && character != '_')
+                .next()
+                .unwrap_or_default()
+                .clone_into(&mut item);
+        } else if let Some((name, kind)) = declaration.strip_suffix(',').and_then(|field| field.split_once(": ")) {
+            let keys = attribute
+                .trim_start_matches("#[serde(")
+                .trim_end_matches(")]")
+                .split(',')
+                .map(|key| key.split('=').next().unwrap_or_default().trim())
+                .collect::<Vec<_>>();
+            if keys.contains(&"default") && !kind.starts_with("Option<") {
+                fields.push((format!("{item}.{name}"), keys.contains(&"deserialize_with")));
+            }
+        }
+        attribute.clear();
+    }
+    fields
 }
 
 #[test]

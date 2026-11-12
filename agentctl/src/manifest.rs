@@ -227,29 +227,29 @@ pub struct Spec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<SandboxPath>,
     /// Agent-wide guidance installed through every declared Harness Adapter, concatenated in order.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub instructions: Vec<InstructionsSpec>,
     /// Skill directories installed through every declared Harness Adapter.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillSpec>,
     /// Harness installations available to sessions in this agent. An agent without one runs no
     /// sessions, only the commands run in it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub harnesses: Vec<HarnessSpec>,
     /// Deliberately selected non-secret values exposed in plaintext inside the sandbox.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub environment: Vec<EnvironmentSpec>,
     /// Host-owned values made available only through mediated requests.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretSpec>,
     /// Ways the agent's user reaches into the sandbox besides sessions and `exec`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub access: Vec<AccessSpec>,
     /// Accounts the Agent acts as, each signed in once on the host with `agentctl`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<AccountSpec>,
     /// Sandbox egress mediation policy; mediated with every host allowed when omitted.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub network: NetworkSpec,
 }
 
@@ -328,13 +328,13 @@ pub struct SandboxManifestSpec {
     /// Desired mutable compute and writable root filesystem resources.
     pub resources: ResourcesManifestSpec,
     /// Process responsible for initializing the sandbox after backend setup.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub init_system: InitSystem,
     /// Whether the agent retains the sandbox when releasing it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_policy: Option<RetentionPolicy>,
     /// Host filesystem and in-memory attachments materialized with the sandbox.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<MountSpec>,
 }
 
@@ -434,7 +434,7 @@ pub enum MountSpec {
         /// Whether a missing source leaves the mount out rather than failing apply. A sandbox's mounts cannot
         /// change, so whether the source exists is decided when the agent is created: a source that appears or
         /// disappears later changes nothing until the agent is recreated.
-        #[serde(default, skip_serializing_if = "is_false")]
+        #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "is_false")]
         optional: bool,
     },
     /// A volume, by name. The agent keeps the revision it gets first, and waits until the volume has a revision
@@ -451,7 +451,7 @@ pub enum MountSpec {
         /// making the agent wait. As for a bind mount, this is decided when the agent gets its revisions:
         /// a volume applied later is mounted once the agent is recreated. A volume taking its first copy
         /// is still waited for.
-        #[serde(default, skip_serializing_if = "is_false")]
+        #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "is_false")]
         optional: bool,
     },
     /// Anonymous in-memory storage with an explicit capacity.
@@ -572,7 +572,11 @@ pub struct PlatformManifestSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_version: Option<String>,
     /// Required operating-system features.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "null_as_default",
+        skip_serializing_if = "std::collections::BTreeSet::is_empty"
+    )]
     pub os_features: std::collections::BTreeSet<String>,
 }
 
@@ -1019,7 +1023,7 @@ pub struct InstructionsSpec {
     /// Host file, resolved relative to the manifest directory.
     pub source: std::path::PathBuf,
     /// Whether a missing source is skipped rather than failing setup.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "is_false")]
     pub optional: bool,
 }
 
@@ -1034,7 +1038,7 @@ pub struct SkillSpec {
     pub name: Option<String>,
     /// Whether a missing source directory is skipped rather than failing setup. A skill installed before its
     /// source went missing stays in the agent until it is recreated.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "is_false")]
     pub optional: bool,
 }
 
@@ -1058,14 +1062,14 @@ pub struct SecretSpec {
     /// Guest environment variable and stable secret binding name.
     pub environment: String,
     /// Whether the agent runs without it when its value is missing, rather than failing.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "is_false")]
     pub optional: bool,
     /// Optional inert value; the selected Network Backend generates one when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
     /// Hosts at which this secret may be substituted. A secret stored under [`Self::name`] has
     /// hosts of its own, which these can only narrow, so it may leave them out.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub allowed_hosts: Vec<String>,
     /// Optional variable name in the manifest directory's `.env`; defaults to `environment`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1079,6 +1083,16 @@ pub struct SecretSpec {
 #[allow(clippy::trivially_copy_pass_by_ref)]
 const fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// Reads `null` as the field's default, as leaving the field out does. A variant keeps the `null` it gives a field its
+/// base does not set, so that a field agentctl does not know still fails decoding.
+pub(crate) fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 impl SecretSpec {
@@ -1187,7 +1201,7 @@ pub struct NetworkSpec {
     /// Baseline egress decision.
     pub allow: NetworkAllow,
     /// Host patterns denied before the baseline decision.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub deny: Vec<String>,
 }
 
@@ -1580,11 +1594,10 @@ pub fn decode(bytes: &[u8]) -> Result<Agent, Error> {
 
 /// Expands a complete agent or chained agent variant from `path`.
 ///
-/// Variant bases are restricted to conventional sibling filenames. Mappings
-/// merge recursively, and `null` removes inherited fields. The lists in
-/// [`KEYED_LISTS`] merge entry by entry on their key, an entry with
-/// `$patch: delete` removes the inherited one, and an empty list clears them.
-/// Other lists and scalars replace inherited values.
+/// Variant bases are restricted to conventional sibling filenames. A variant
+/// applies to its base as a strategic merge patch does in Kustomize, with the
+/// lists in [`KEYED_LISTS`] merged on their key. `agentctl/docs/variants.md`
+/// has the rules and where they differ from Kustomize's.
 ///
 /// # Errors
 ///
@@ -1758,9 +1771,38 @@ fn sibling_base(path: &Path, extends: &str) -> Result<PathBuf, Error> {
     Ok(parent.join(base))
 }
 
-/// The field a variant's list entry carries to remove the inherited entry with its key, as in Kubernetes' strategic
-/// merge patch.
+/// The field that carries a strategic merge patch directive in a variant.
 const PATCH_FIELD: &str = "$patch";
+
+/// The strategic merge patch directives that Kustomize and Kubernetes both take for the same purpose. A variant refuses
+/// the others rather than pick one tool's reading.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Directive {
+    /// Removes the inherited mapping, or the inherited list entry with the same key.
+    Delete,
+    /// Replaces the inherited mapping, or, as a list entry of its own, the inherited list.
+    Replace,
+}
+
+impl Directive {
+    /// Removes the directive from `value` when it is a mapping. `fields` lead to `value`.
+    fn take(value: &mut serde_yaml_ng::Value, fields: &[String]) -> Result<Option<Self>, String> {
+        let Some(directive) = value
+            .as_mapping_mut()
+            .and_then(|mapping| mapping.remove(serde_yaml_ng::Value::String(PATCH_FIELD.into())))
+        else {
+            return Ok(None);
+        };
+        match directive.as_str() {
+            Some("delete") => Ok(Some(Self::Delete)),
+            Some("replace") => Ok(Some(Self::Replace)),
+            _ => Err(format!(
+                "{}: {PATCH_FIELD} must be \"delete\" or \"replace\"",
+                fields.join(".")
+            )),
+        }
+    }
+}
 
 /// The lists a variant merges entry by entry, by the field names that lead to them, with each entry's key. The key is
 /// what validation already requires to be unique in the list, so an entry in a variant names one inherited entry.
@@ -1832,8 +1874,7 @@ fn merge_value(
             // Internally tagged union values are one logical scalar choice.
             // Changing the discriminator replaces the whole mapping so fields
             // belonging to the previous variant cannot leak into the new one.
-            *base = patch;
-            return Ok(());
+            *base = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
         }
     }
     match (base, patch) {
@@ -1847,13 +1888,11 @@ fn merge_value(
             Ok(())
         }
         (serde_yaml_ng::Value::Sequence(base), serde_yaml_ng::Value::Sequence(patch)) => {
-            match ListKey::at(fields) {
-                // An empty list clears the inherited one, since that is what `[]` reads as.
-                Some(key) if !patch.is_empty() => merge_list(base, patch, key, fields),
-                _ => {
-                    *base = patch;
-                    Ok(())
-                }
+            if let Some(key) = ListKey::at(fields) {
+                merge_list(base, patch, key, fields)
+            } else {
+                *base = patch;
+                Ok(())
             }
         }
         (base, patch) => {
@@ -1866,32 +1905,42 @@ fn merge_value(
 fn merge_field(
     base: &mut serde_yaml_ng::Mapping,
     key: serde_yaml_ng::Value,
-    value: serde_yaml_ng::Value,
+    mut value: serde_yaml_ng::Value,
     fields: &mut Vec<String>,
 ) -> Result<(), String> {
+    let directive = Directive::take(&mut value, fields)?;
+    if directive == Some(Directive::Delete) {
+        value = serde_yaml_ng::Value::Null;
+    }
     if value.is_null() {
         if base.remove(&key).is_none() {
             // Preserve a null for fields absent from the concrete base.
-            // Known optional fields still decode successfully, while
-            // strict deserialization rejects unknown null-valued fields.
+            // Known fields decode it as their default, while strict
+            // deserialization rejects unknown null-valued fields.
             base.insert(key, value);
         }
-    } else if let Some(inherited) = base.get_mut(&key) {
-        merge_value(inherited, value, fields)?;
-    } else if value.is_sequence() && ListKey::at(fields).is_some() {
-        // Merging into an empty list consumes the removal markers, which would otherwise fail decoding.
-        let mut list = serde_yaml_ng::Value::Sequence(Vec::new());
-        merge_value(&mut list, value, fields)?;
-        base.insert(key, list);
-    } else {
-        base.insert(key, value);
+        return Ok(());
     }
-    Ok(())
+    match base.get_mut(&key) {
+        Some(inherited) if directive.is_none() => merge_value(inherited, value, fields),
+        _ => {
+            // A new or replacing value is merged into an empty one, which applies the directives inside it.
+            let mut fresh = match value {
+                serde_yaml_ng::Value::Mapping(_) => serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new()),
+                serde_yaml_ng::Value::Sequence(_) => serde_yaml_ng::Value::Sequence(Vec::new()),
+                _ => serde_yaml_ng::Value::Null,
+            };
+            merge_value(&mut fresh, value, fields)?;
+            base.insert(key, fresh);
+            Ok(())
+        }
+    }
 }
 
 /// Merges each entry of a variant's keyed list into the inherited entry with its key, keeping the inherited order and
-/// adding new keys after it. An entry marked `$patch: delete` removes the inherited one instead. Removing a key the
-/// base does not have is not an error, so a variant keeps working after its base drops the entry.
+/// adding new keys after it. An entry marked `$patch: delete` removes the inherited one, and an entry holding only
+/// `$patch: replace` makes the variant's entries replace the inherited list. Removing a key the base does not have is
+/// not an error, so a variant keeps working after its base drops the entry.
 fn merge_list(
     base: &mut Vec<serde_yaml_ng::Value>,
     patch: Vec<serde_yaml_ng::Value>,
@@ -1899,37 +1948,64 @@ fn merge_list(
     fields: &mut Vec<String>,
 ) -> Result<(), String> {
     let field = fields.join(".");
+    if patch.is_empty() {
+        // Kustomize leaves the inherited entries as they are, which is rarely what an empty list means.
+        return Err(format!(
+            "{field}: an empty list changes nothing in a variant. Write null to remove the inherited entries"
+        ));
+    }
+    let mut entries = Vec::with_capacity(patch.len());
+    let mut names = std::collections::BTreeSet::new();
+    let mut replace = false;
     for mut entry in patch {
-        let marker = entry
-            .as_mapping_mut()
-            .and_then(|mapping| mapping.remove(serde_yaml_ng::Value::String(PATCH_FIELD.into())));
-        let Some(name) = key.of(&entry) else {
-            if marker.is_some() {
+        let directive = Directive::take(&mut entry, fields)?;
+        let name = key.of(&entry);
+        match (directive, &name) {
+            (Some(Directive::Replace), None) if entry.as_mapping().is_some_and(serde_yaml_ng::Mapping::is_empty) => {
+                replace = true;
+                continue;
+            }
+            (Some(Directive::Replace), _) => {
                 return Err(format!(
-                    "{field}: an entry with {PATCH_FIELD} must name the entry it removes by its {}",
+                    "{field}: {PATCH_FIELD}: replace goes in an entry of its own, where it replaces the inherited list"
+                ));
+            }
+            (Some(Directive::Delete), None) => {
+                return Err(format!(
+                    "{field}: an entry with {PATCH_FIELD}: delete must name the entry it removes by its {}",
                     key.field()
                 ));
             }
-            // Decoding reports what the entry lacks.
-            base.push(entry);
-            continue;
-        };
-        let inherited = base
-            .iter()
-            .position(|candidate| key.of(candidate).as_deref() == Some(&name));
-        match (marker, inherited) {
-            (Some(serde_yaml_ng::Value::String(operation)), inherited) if operation == "delete" => {
-                if let Some(index) = inherited {
-                    base.remove(index);
-                }
+            _ => {}
+        }
+        if let Some(name) = &name
+            && !names.insert(name.clone())
+        {
+            return Err(format!("{field}: two entries have the {} {name:?}", key.field()));
+        }
+        entries.push((directive == Some(Directive::Delete), name, entry));
+    }
+    if replace {
+        base.clear();
+    }
+    for (delete, name, entry) in entries {
+        let inherited = name.and_then(|name| {
+            base.iter()
+                .position(|candidate| key.of(candidate).as_deref() == Some(&name))
+        });
+        match (delete, inherited) {
+            (true, Some(index)) => {
+                base.remove(index);
             }
-            (Some(_), _) => {
-                return Err(format!(
-                    "{field}: {PATCH_FIELD} on {name:?} must be \"delete\", the only operation a variant supports"
-                ));
+            (true, None) => {}
+            (false, Some(index)) => merge_value(&mut base[index], entry, fields)?,
+            (false, None) => {
+                // Merging into an empty entry applies the directives inside it. An entry without its key is added too,
+                // for decoding to report what it lacks.
+                let mut added = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
+                merge_value(&mut added, entry, fields)?;
+                base.push(added);
             }
-            (None, Some(index)) => merge_value(&mut base[index], entry, fields)?,
-            (None, None) => base.push(entry),
         }
     }
     Ok(())
