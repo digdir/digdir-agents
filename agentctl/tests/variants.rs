@@ -537,6 +537,97 @@ fn null_on_a_field_the_base_does_not_set_changes_nothing() {
     assert_eq!(agent.spec, support::agent("mine").spec);
 }
 
+/// A variant keeps the `null` it gives a field its base does not set, so that a field agentctl does not know still
+/// fails decoding. Every field a manifest may leave out must then read `null` too, which serde does for an `Option` and
+/// otherwise only through a `deserialize_with`, such as `null_as_default`.
+#[test]
+fn every_field_a_manifest_may_leave_out_reads_null() {
+    // What agentd writes, which no manifest sets.
+    const NOT_IN_MANIFESTS: &[&str] = &[
+        "Agent.status",
+        "Metadata.generation",
+        "Status.",
+        "MountedVolume.",
+        "Condition.",
+        "Provenance.",
+    ];
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let manifest = defaulted_fields(&source.join("manifest.rs"))
+        .into_iter()
+        .filter(|(field, _)| !NOT_IN_MANIFESTS.iter().any(|exempt| field.starts_with(exempt)));
+    // A harness entry is decoded as `DeclaredHarnessSpec`.
+    let harness = defaulted_fields(&source.join("harness/mod.rs"))
+        .into_iter()
+        .filter(|(field, _)| field.starts_with("DeclaredHarnessSpec."));
+    let fields = manifest.chain(harness).collect::<Vec<_>>();
+
+    // Finding these shows that the scan reads the fields as they are written, rather than passing by finding none.
+    for expected in [
+        "Spec.instructions",
+        "MountSpec.optional",
+        "DeclaredHarnessSpec.optional",
+    ] {
+        assert!(
+            fields.iter().any(|(field, _)| field == expected),
+            "{expected} not found in {fields:?}"
+        );
+    }
+    let missing = fields
+        .iter()
+        .filter(|(_, reads_null)| !reads_null)
+        .map(|(field, _)| field.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "{missing:?} have a serde default but read no null, so a variant's null for one fails when its base does not \
+         set it. Give each `deserialize_with = \"null_as_default\"`, or a helper that reads null as its own default."
+    );
+}
+
+/// The fields in `path` that have a serde default and are not an `Option`, as `Type.field`, each with whether a
+/// `deserialize_with` reads it.
+fn defaulted_fields(path: &Path) -> Vec<(String, bool)> {
+    let source = std::fs::read_to_string(path).expect("manifest source should be readable");
+    let mut fields = Vec::new();
+    let mut item = String::new();
+    let mut attribute = String::new();
+    for line in source.lines().map(str::trim) {
+        if !attribute.is_empty() && !attribute.ends_with(")]") {
+            attribute.push_str(line);
+            continue;
+        }
+        if line.starts_with("#[serde(") {
+            line.clone_into(&mut attribute);
+            continue;
+        }
+        if line.starts_with("#[") || line.starts_with("//") {
+            continue;
+        }
+        let declaration = line.trim_start_matches("pub(crate) ").trim_start_matches("pub ");
+        if let Some(rest) = declaration
+            .strip_prefix("struct ")
+            .or_else(|| declaration.strip_prefix("enum "))
+        {
+            rest.split(|character: char| !character.is_alphanumeric() && character != '_')
+                .next()
+                .unwrap_or_default()
+                .clone_into(&mut item);
+        } else if let Some((name, kind)) = declaration.strip_suffix(',').and_then(|field| field.split_once(": ")) {
+            let keys = attribute
+                .trim_start_matches("#[serde(")
+                .trim_end_matches(")]")
+                .split(',')
+                .map(|key| key.split('=').next().unwrap_or_default().trim())
+                .collect::<Vec<_>>();
+            if keys.contains(&"default") && !kind.starts_with("Option<") {
+                fields.push((format!("{item}.{name}"), keys.contains(&"deserialize_with")));
+            }
+        }
+        attribute.clear();
+    }
+    fields
+}
+
 #[test]
 fn rejects_unknown_variant_fields_even_when_null() {
     let directory = agent_directory();
