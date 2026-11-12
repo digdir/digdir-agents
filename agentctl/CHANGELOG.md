@@ -18,8 +18,8 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 - Breaking: `spec.instructions` in a variant, such as `agent.mine.yaml`, merges with the base's list by `source` instead of replacing it. List only the files to add, which follow the base's, or to change, and remove a base file with `$patch: delete`. A manifest may not repeat a `source`. ([#477](https://github.com/digdir/digdir-agents/issues/477))
 - Breaking: agent variants merge as Kustomize patches do: ([agent variants](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/variants.md), [#504](https://github.com/digdir/digdir-agents/pull/504))
   - `$patch: replace` replaces a list or mapping, and `$patch: delete` removes a mapping
-  - `[]` on a list of entries is refused. Write `null` to remove the entries
-  - a key named twice in one list is refused
+  - `[]` on a list of entries is refused. Write `null` instead
+  - a key named twice in one list is refused. Merge the two entries
   - `null` on a field the base doesn't set is no longer an error
 
 ### Fixed
