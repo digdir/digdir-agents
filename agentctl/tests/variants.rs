@@ -705,3 +705,24 @@ fn null_for_a_keyed_list_the_base_lacks_changes_nothing_as_the_empty_list_refusa
         .agent;
     assert_eq!(agent.spec.skills, []);
 }
+
+#[test]
+fn an_entry_without_its_key_is_reported_by_its_key_not_by_a_directive_inside_it() {
+    // The entry lacks the `type` that names it, so it is never merged and its directive reaches decoding.
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.yaml",
+            "mine",
+            "spec:\n  harnesses:\n    - auth: mediated\n      defaults:\n        $patch: replace\n        model: opus\n",
+        ),
+    );
+
+    let error = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect_err("an entry without its key")
+        .to_string();
+    assert!(error.contains("missing field `type`"), "{error}");
+    assert!(!error.contains("$patch"), "{error}");
+}
