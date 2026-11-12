@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Joins a repository to the T3 orchestrator: copies the repository's agent definitions into the orchestrator as
+# workers T3 Code can start, and clones the repository there as the checkout T3 Code's threads work in.
+#
+#   t3-join [--master NAME] [CHECKOUT]
+#
+# CHECKOUT is a checkout of the repository on this machine, the current folder by default. Its `agents/` folder holds
+# the definitions, committed or not. Run it again after changing them.
+set -euo pipefail
+
+master=t3-master
+checkout=.
+while (( $# )); do
+  case "$1" in
+    --master) master=$2; shift 2 ;;
+    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) checkout=$1; shift ;;
+  esac
+done
+
+agentctl=${AGENTCTL:-agentctl}
+root=$(git -C "${checkout}" rev-parse --show-toplevel)
+remote=$(git -C "${root}" remote get-url origin)
+# OWNER/NAME from an HTTPS or SSH remote.
+repository=$(printf '%s' "${remote}" | sed -E 's#^(https://[^/]+/|git@[^:]+:)##; s#\.git$##')
+name=${repository##*/}
+
+if [[ -z "$(find "${root}/agents" -name agent.yaml -print -quit 2>/dev/null)" ]]; then
+  echo "t3-join: ${root} has no agent definition in agents/. Make one with \`agentctl new\` first." >&2
+  exit 1
+fi
+
+echo "Copying the agent definitions of ${repository} to agent/${master}:~/workers/${name}"
+# Environment files hold real secrets and never enter a sandbox.
+tar -C "${root}/agents" --exclude=.env --exclude='.env.*' -czf - . \
+  | "${agentctl}" ssh "${master}" -- "rm -rf ~/workers/${name} && mkdir -p ~/workers/${name} && tar -xzf - -C ~/workers/${name}"
+
+echo "Cloning ${repository} into agent/${master}:~/code/${name}"
+"${agentctl}" ssh "${master}" -- "test -d ~/code/${name}/.git || git clone https://github.com/${repository}.git ~/code/${name}"
+
+echo "Adding ${name} as a project in T3 Code"
+"${agentctl}" ssh "${master}" -- "t3 project add --title ${name} ~/code/${name} >/dev/null 2>&1" \
+  || echo "${name} is a project in T3 Code already."
+
+echo "Worker manifests T3 Code now offers:"
+"${agentctl}" ssh "${master}" -- "find ~/workers/${name} -name 'agent*.yaml' | sort"

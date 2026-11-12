@@ -8,5 +8,6 @@ The docs that span components. A component keeps its own docs in a `docs/` direc
 | [architecture.md](architecture.md) | The principles the code follows, and diagrams of how the parts fit together |
 | [coding-standards.md](coding-standards.md) | How to write code here, beyond what the formatter and linter enforce |
 | [documentation.md](documentation.md) | How to name, place and write docs, and how to change the diagrams |
+| [how-to/](how-to/README.md) | Step-by-step guides: adding an agent to a repository, opening one in an editor, running a T3 orchestrator, and working with agents day to day |
 | [ideas.md](ideas.md) | Ideas from earlier use that are not concrete enough for an issue yet |
 | [presentations/](presentations/) | Slide decks on agentctl and the Sandbox SDK, including a security view, and on harness engineering in Altinn Studio |

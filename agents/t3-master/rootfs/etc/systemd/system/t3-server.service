@@ -1,0 +1,16 @@
+[Unit]
+Description=T3 Code server and web client on the guest loopback
+After=agent-ssh-config-init.service
+
+[Service]
+Type=exec
+User=agent
+Group=agent
+Environment=HOME=/home/agent
+ExecStart=/usr/local/libexec/t3-server
+OOMPolicy=continue
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
