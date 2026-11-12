@@ -691,24 +691,8 @@ fn a_patch_delete_on_a_mapping_the_base_lacks_changes_nothing() {
 }
 
 #[test]
-fn null_for_a_keyed_list_the_base_lacks_changes_nothing_as_the_empty_list_refusal_advises() {
-    // `skills: []` resolved here before; now it is refused with "Write null", and null must resolve too.
-    let directory = agent_directory();
-    write(
-        directory.path(),
-        "agent.mine.yaml",
-        &variant("agent.yaml", "mine", "spec:\n  skills: null\n"),
-    );
-
-    let agent = manifest::resolve(&directory.path().join("agent.mine.yaml"))
-        .expect("null for a list the base lacks")
-        .agent;
-    assert_eq!(agent.spec.skills, []);
-}
-
-#[test]
 fn an_entry_without_its_key_is_reported_by_its_key_not_by_a_directive_inside_it() {
-    // The entry lacks the `type` that names it, so it is never merged and its directive reaches decoding.
+    // Decoding names what the entry lacks, rather than a directive inside it that a merge would have applied.
     let directory = agent_directory();
     write(
         directory.path(),

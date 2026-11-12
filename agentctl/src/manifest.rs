@@ -1972,14 +1972,10 @@ fn merge_list(
         base.clear();
     }
     for (delete, name, entry) in entries {
-        let Some(name) = name else {
-            // Decoding reports what the entry lacks.
-            base.push(entry);
-            continue;
-        };
-        let inherited = base
-            .iter()
-            .position(|candidate| key.of(candidate).as_deref() == Some(&name));
+        let inherited = name.and_then(|name| {
+            base.iter()
+                .position(|candidate| key.of(candidate).as_deref() == Some(&name))
+        });
         match (delete, inherited) {
             (true, Some(index)) => {
                 base.remove(index);
@@ -1987,7 +1983,8 @@ fn merge_list(
             (true, None) => {}
             (false, Some(index)) => merge_value(&mut base[index], entry, fields)?,
             (false, None) => {
-                // Merging into an empty entry applies the directives inside it.
+                // Merging into an empty entry applies the directives inside it. An entry without its key is added too,
+                // for decoding to report what it lacks.
                 let mut added = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
                 merge_value(&mut added, entry, fields)?;
                 base.push(added);
