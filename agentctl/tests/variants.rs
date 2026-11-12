@@ -668,3 +668,40 @@ fn validates_filename_grammar() {
         assert!(rejected.parse::<AgentVariantName>().is_err(), "{rejected}");
     }
 }
+
+#[test]
+fn a_patch_delete_on_a_mapping_the_base_lacks_changes_nothing() {
+    // The base's harness has no `defaults`. Kustomize leaves a field the base lacks alone, so a variant that removes
+    // one keeps working after its base drops it, as a `$patch: delete` entry does.
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.yaml",
+            "mine",
+            "spec:\n  harnesses:\n    - type: claudeCode\n      defaults:\n        $patch: delete\n",
+        ),
+    );
+
+    let agent = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect("removing a mapping the base lacks")
+        .agent;
+    assert_eq!(agent.spec.harnesses[0].defaults, agent::ModelSelection::default());
+}
+
+#[test]
+fn null_for_a_keyed_list_the_base_lacks_changes_nothing_as_the_empty_list_refusal_advises() {
+    // `skills: []` resolved here before; now it is refused with "Write null", and null must resolve too.
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant("agent.yaml", "mine", "spec:\n  skills: null\n"),
+    );
+
+    let agent = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect("null for a list the base lacks")
+        .agent;
+    assert_eq!(agent.spec.skills, []);
+}
