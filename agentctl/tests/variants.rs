@@ -342,6 +342,27 @@ fn patch_directives_on_a_mapping_remove_or_replace_it() {
 }
 
 #[test]
+fn a_patch_delete_on_a_mapping_the_base_lacks_changes_nothing() {
+    // The base's harness has no `defaults`. Kustomize leaves a field the base lacks alone, so a variant that removes
+    // one keeps working after its base drops it, as a `$patch: delete` entry does.
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.yaml",
+            "mine",
+            "spec:\n  harnesses:\n    - type: claudeCode\n      defaults:\n        $patch: delete\n",
+        ),
+    );
+
+    let agent = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect("removing a mapping the base lacks")
+        .agent;
+    assert_eq!(agent.spec.harnesses[0].defaults, agent::ModelSelection::default());
+}
+
+#[test]
 fn a_keyed_entry_of_another_type_replaces_the_inherited_one_whole() {
     let directory = agent_directory();
     write(
@@ -420,6 +441,27 @@ fn refuses_patches_a_variant_cannot_apply_unambiguously() {
     .expect("complete manifest");
     let error = manifest::resolve(&directory.path().join("agent.yaml")).expect_err("marker in a complete agent");
     assert!(error.to_string().contains("$patch"), "{error}");
+}
+
+#[test]
+fn an_entry_without_its_key_is_reported_by_its_key_not_by_a_directive_inside_it() {
+    // Decoding names what the entry lacks, rather than a directive inside it that a merge would have applied.
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.yaml",
+            "mine",
+            "spec:\n  harnesses:\n    - auth: mediated\n      defaults:\n        $patch: replace\n        model: opus\n",
+        ),
+    );
+
+    let error = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect_err("an entry without its key")
+        .to_string();
+    assert!(error.contains("missing field `type`"), "{error}");
+    assert!(!error.contains("$patch"), "{error}");
 }
 
 #[test]
@@ -681,46 +723,4 @@ fn validates_filename_grammar() {
     for rejected in ["", "Nested", "nested_build", "nested-", "../nested"] {
         assert!(rejected.parse::<AgentVariantName>().is_err(), "{rejected}");
     }
-}
-
-#[test]
-fn a_patch_delete_on_a_mapping_the_base_lacks_changes_nothing() {
-    // The base's harness has no `defaults`. Kustomize leaves a field the base lacks alone, so a variant that removes
-    // one keeps working after its base drops it, as a `$patch: delete` entry does.
-    let directory = agent_directory();
-    write(
-        directory.path(),
-        "agent.mine.yaml",
-        &variant(
-            "agent.yaml",
-            "mine",
-            "spec:\n  harnesses:\n    - type: claudeCode\n      defaults:\n        $patch: delete\n",
-        ),
-    );
-
-    let agent = manifest::resolve(&directory.path().join("agent.mine.yaml"))
-        .expect("removing a mapping the base lacks")
-        .agent;
-    assert_eq!(agent.spec.harnesses[0].defaults, agent::ModelSelection::default());
-}
-
-#[test]
-fn an_entry_without_its_key_is_reported_by_its_key_not_by_a_directive_inside_it() {
-    // Decoding names what the entry lacks, rather than a directive inside it that a merge would have applied.
-    let directory = agent_directory();
-    write(
-        directory.path(),
-        "agent.mine.yaml",
-        &variant(
-            "agent.yaml",
-            "mine",
-            "spec:\n  harnesses:\n    - auth: mediated\n      defaults:\n        $patch: replace\n        model: opus\n",
-        ),
-    );
-
-    let error = manifest::resolve(&directory.path().join("agent.mine.yaml"))
-        .expect_err("an entry without its key")
-        .to_string();
-    assert!(error.contains("missing field `type`"), "{error}");
-    assert!(!error.contains("$patch"), "{error}");
 }
