@@ -29,8 +29,27 @@ struct Arguments {
     home: Option<PathBuf>,
 }
 
+/// Stack of the thread the control plane runs on.
+///
+/// Every subsystem runs on that one thread, and creating a sandbox polls a long chain of nested
+/// futures whose frames add up: about 1 MiB in an optimized build and 2.5 MiB in a debug build.
+/// A Windows main thread has 1 MiB, where Linux and macOS give it 8 MiB, so the control plane
+/// gets a thread with the same 8 MiB on every platform. The pages are committed only as they
+/// are used.
+const CONTROL_PLANE_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "this thread is the process's one runtime thread, not blocking work to hand to `common::blocking`"
+)]
 fn main() -> ExitCode {
-    match run() {
+    let result = std::thread::Builder::new()
+        .name("control-plane".into())
+        .stack_size(CONTROL_PLANE_STACK_SIZE)
+        .spawn(run)
+        .map_err(Error::from)
+        .and_then(|thread| thread.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)));
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("agentd: {error}");
