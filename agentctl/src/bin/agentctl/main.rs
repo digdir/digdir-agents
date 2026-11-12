@@ -1414,7 +1414,8 @@ async fn ssh(
     .await?;
     let access = client.ssh_access(&agent).await?;
     let mut ssh = ProcessCommand::new(ssh_client_executable());
-    ssh.args(ssh_client_arguments(&access)).args(command);
+    ssh_config_arguments(&mut ssh, &access.config_file);
+    ssh.arg(&access.alias).args(command);
     run_ssh_client(ssh)
 }
 
@@ -1422,9 +1423,22 @@ fn ssh_client_executable() -> String {
     format!("ssh{}", std::env::consts::EXE_SUFFIX)
 }
 
-/// Arguments that point the OpenSSH client at an agent's generated alias.
-fn ssh_client_arguments(access: &agent::ssh::AccessInfo) -> [&std::ffi::OsStr; 3] {
-    ["-F".as_ref(), access.config_file.as_os_str(), access.alias.as_ref()]
+/// Adds `-F config` to an OpenSSH client command line, so that it reads `config` in place of the
+/// user's configuration.
+///
+/// On Windows the path goes in double quotes, which Rust leaves out of an argument without a
+/// space. Git for Windows' `ssh` expands `*`, `?`, `[...]` and `{...}` in an argument outside
+/// quotes, as a shell would, and would then read another file.
+fn ssh_config_arguments(ssh: &mut ProcessCommand, config: &Path) {
+    ssh.arg("-F");
+    #[cfg(windows)]
+    if let Some(text) = config.to_str() {
+        use std::os::windows::process::CommandExt as _;
+
+        ssh.raw_arg(agent::ssh::shell_word(text, agent::ssh::CommandShell::Windows));
+        return;
+    }
+    ssh.arg(config);
 }
 
 #[cfg(unix)]

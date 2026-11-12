@@ -918,8 +918,12 @@ mod tests {
                 let Some(folder) = folder else { continue };
                 let folder = directory.path().join(folder);
                 std::fs::create_dir_all(&folder).expect("folder");
-                std::fs::write(folder.join("config"), format!("Host worker\n    User {user_name}\n"))
-                    .expect("configuration");
+                // OpenSSH refuses an included file others may write, as one is under umask 002.
+                super::write_private_file(
+                    &folder.join("config"),
+                    format!("Host worker\n    User {user_name}\n").as_bytes(),
+                )
+                .expect("configuration");
             }
             let include = render_include(&directory.path().join(name).join("config"), None);
             std::fs::write(&user, format!("{include}\nHost *\n    User nothing\n")).expect("user config");

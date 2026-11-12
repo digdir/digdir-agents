@@ -136,15 +136,16 @@ impl SshSetup {
 
     /// [`Self::check`] against `config` in place of the user's configuration.
     async fn resolve(agent: &str, config: Option<&Path>) -> Self {
-        let mut ssh = tokio::process::Command::new(crate::ssh_client_executable());
+        let mut ssh = std::process::Command::new(crate::ssh_client_executable());
         if let Some(config) = config {
-            ssh.arg("-F").arg(config);
+            crate::ssh_config_arguments(&mut ssh, config);
         }
         ssh.arg("-G")
             .arg(agent::ssh::alias(agent))
             .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+            .stderr(Stdio::null());
+        let mut ssh = tokio::process::Command::from(ssh);
+        ssh.kill_on_drop(true);
         match tokio::time::timeout(SSH_CHECK_TIMEOUT, ssh.output()).await {
             Ok(Ok(output)) if output.status.success() => {
                 if agent::ssh::resolves_through_agentctl(&String::from_utf8_lossy(&output.stdout), agent) {
@@ -755,9 +756,9 @@ mod tests {
             }
             let expected = proxy_command(shell);
             for config in [&user, &generated] {
-                let output = std::process::Command::new(client)
-                    .arg("-F")
-                    .arg(config)
+                let mut ssh = std::process::Command::new(client);
+                crate::ssh_config_arguments(&mut ssh, config);
+                let output = ssh
                     .args(["-G", &agent::ssh::alias("worker")])
                     .stdin(Stdio::null())
                     .output()
