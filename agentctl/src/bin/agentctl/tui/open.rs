@@ -752,6 +752,8 @@ mod tests {
             (r"C:\Program Files\Git\usr\bin\ssh.exe", CommandShell::Posix),
         ] {
             if !Path::new(client).is_file() {
+                // A CI host has both clients, so there neither goes unchecked.
+                assert!(std::env::var_os("CI").is_none(), "{client} is missing");
                 continue;
             }
             let expected = proxy_command(shell);

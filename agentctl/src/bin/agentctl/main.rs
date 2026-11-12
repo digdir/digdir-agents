@@ -1447,26 +1447,61 @@ fn ssh_arguments(ssh: &mut ProcessCommand, arguments: impl IntoIterator<Item = i
     for argument in arguments {
         let argument = argument.as_ref();
         #[cfg(windows)]
-        if let Some(text) = argument.to_str()
-            && (text.is_empty()
-                || text.starts_with(['~', '@'])
-                || text
-                    .chars()
-                    .any(|character| character.is_whitespace() || "\"'*?[]{}".contains(character)))
-        {
+        if let Some(quoted) = quoted_for_msys(argument) {
             use std::os::windows::process::CommandExt as _;
 
-            // A word that needs no quoting for `CreateProcess` holds nothing to escape inside quotes.
-            let word = agent::ssh::shell_word(text, agent::ssh::CommandShell::Windows);
-            ssh.raw_arg(if word.starts_with('"') {
-                word
-            } else {
-                format!("\"{word}\"")
-            });
+            ssh.raw_arg(quoted);
             continue;
         }
         ssh.arg(argument);
     }
+}
+
+/// `argument` in double quotes as `CreateProcess` command lines are read, when it holds what
+/// Git for Windows' `ssh` reads specially outside them, as [`ssh_arguments`] describes, and
+/// `None` when it can go as it is.
+///
+/// It reads the UTF-16 units, so a path that is not valid Unicode is quoted like any other. The
+/// backslashes before a `"` and before the closing quote are doubled, as
+/// [`agent::ssh::shell_word`] does for [`agent::ssh::CommandShell::Windows`].
+#[cfg(windows)]
+fn quoted_for_msys(argument: &std::ffi::OsStr) -> Option<std::ffi::OsString> {
+    use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+
+    const QUOTE: u16 = 0x22;
+    const BACKSLASH: u16 = 0x5C;
+    let is = |unit: &u16, test: &dyn Fn(char) -> bool| char::from_u32(u32::from(*unit)).is_some_and(test);
+    let units: Vec<u16> = argument.encode_wide().collect();
+    let special = units
+        .first()
+        .is_none_or(|unit| is(unit, &|character| "~@".contains(character)))
+        || units.iter().any(|unit| {
+            is(unit, &|character| {
+                character.is_whitespace() || "\"'*?[]{}".contains(character)
+            })
+        });
+    if !special {
+        return None;
+    }
+    let mut quoted = vec![QUOTE];
+    let mut backslashes = 0;
+    for unit in units {
+        if unit == BACKSLASH {
+            backslashes += 1;
+            continue;
+        }
+        let kept = if unit == QUOTE {
+            2 * backslashes + 1
+        } else {
+            backslashes
+        };
+        quoted.extend(std::iter::repeat_n(BACKSLASH, kept));
+        quoted.push(unit);
+        backslashes = 0;
+    }
+    quoted.extend(std::iter::repeat_n(BACKSLASH, 2 * backslashes));
+    quoted.push(QUOTE);
+    Some(std::ffi::OsString::from_wide(&quoted))
 }
 
 #[cfg(unix)]
@@ -1542,6 +1577,9 @@ fn install_ssh_config(home: &ControlPlaneHome) -> CommandResult<()> {
     match include.install()? {
         agent::ssh::IncludeOutcome::Installed => println!("added `{line}` at the top of {user_config}"),
         agent::ssh::IncludeOutcome::AlreadyInstalled => println!("{user_config} already contains `{line}`"),
+        agent::ssh::IncludeOutcome::Replaced => {
+            println!("replaced the `Include` an earlier version added to {user_config} with `{line}`");
+        }
     }
     Ok(())
 }
@@ -2959,6 +2997,8 @@ mod tests {
     fn an_msys_program_reads_each_ssh_argument_as_given() {
         let printf = Path::new(r"C:\Program Files\Git\usr\bin\printf.exe");
         if !printf.is_file() {
+            // A CI host has Git for Windows, so there the test never passes without running.
+            assert!(std::env::var_os("CI").is_none(), "{} is missing", printf.display());
             return;
         }
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -2991,6 +3031,38 @@ mod tests {
         let output = command.current_dir(directory.path()).output().expect("printf");
         let expected = arguments.map(|argument| format!("[{argument}]\n")).concat();
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+    }
+
+    /// A path that is not valid Unicode is quoted like any other, and only what Git for Windows'
+    /// `ssh` reads specially is.
+    #[cfg(windows)]
+    #[test]
+    fn an_ssh_argument_that_is_not_unicode_is_quoted_too() {
+        use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+
+        let wide = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+        // An unpaired surrogate, which a Windows file name may hold and a `str` may not.
+        let unpaired = [wide(r"C:\a{b}\"), vec![0xD800], wide(r"\c\")].concat();
+        let argument = std::ffi::OsString::from_wide(&unpaired);
+        assert_eq!(argument.to_str(), None);
+        let quoted = quoted_for_msys(&argument).expect("quoted");
+        let expected = [wide(r#""C:\a{b}\"#), vec![0xD800], wide(r#"\c\\""#)].concat();
+        assert_eq!(quoted.encode_wide().collect::<Vec<u16>>(), expected);
+
+        let plain = std::ffi::OsString::from_wide(&[wide(r"C:\a\\b\"), vec![0xD800]].concat());
+        assert_eq!(quoted_for_msys(&plain), None);
+        for (argument, quoted) in [
+            ("", Some(r#""""#)),
+            ("~", Some(r#""~""#)),
+            ("a~@", None),
+            (r#"a\"b\\"#, Some(r#""a\\\"b\\\\""#)),
+        ] {
+            assert_eq!(
+                quoted_for_msys(argument.as_ref()),
+                quoted.map(std::ffi::OsString::from),
+                "{argument}"
+            );
+        }
     }
 
     #[test]

@@ -2691,6 +2691,7 @@ mod tests {
         app.ssh_include = Some(agent::ssh::UserInclude {
             user_config: "/tmp/user/.ssh/config".into(),
             line: "Include ~/.agent/ssh/config".into(),
+            earlier: Vec::new(),
         });
         app.selection = Some(TreeRowId::Agent("agent-00".into()));
         app.on_key(crossterm::event::KeyEvent::new(

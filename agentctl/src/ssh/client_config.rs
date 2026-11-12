@@ -84,6 +84,26 @@ pub fn render_path(path: &Path, user_home: Option<&Path>) -> String {
     config_path_word(&home_relative(path, user_home).unwrap_or_else(|| path.display().to_string()))
 }
 
+/// Refuses a path OpenSSH cannot be given as `IdentityFile` or `UserKnownHostsFile`.
+///
+/// OpenSSH reads `${NAME}` in those as an environment variable and has no way to write a
+/// literal `${`: the client stops when the variable is not set or the brace is not closed, and
+/// reads another file when it is.
+///
+/// # Errors
+///
+/// Returns an error when the path as [`render_path`] writes it holds `${`.
+pub(super) fn require_nameable(path: &Path, user_home: Option<&Path>) -> Result<(), Error> {
+    if render_path(path, user_home).contains("${") {
+        return Err(Error::Invalid(format!(
+            "OpenSSH cannot be given {}: it reads `${{` in a path as the start of an environment variable; \
+             use an agent home whose path has no `${{`",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 /// `path` as `~/...` with forward slashes, when it is below `user_home`.
 fn home_relative(path: &Path, user_home: Option<&Path>) -> Option<String> {
     let relative = path.strip_prefix(user_home?).ok()?;
@@ -517,6 +537,33 @@ pub enum IncludeOutcome {
     Installed,
     /// The file already carried the line.
     AlreadyInstalled,
+    /// The line took the place of one an earlier version of `agentctl` had added.
+    Replaced,
+}
+
+/// The `Include` lines earlier versions of `agentctl` wrote for the generated configuration,
+/// where they differ from [`render_include`]'s.
+///
+/// Up to 0.1.0-preview.14 the line named the configuration as the host spells it. After that
+/// and before the copy for Git for Windows' `ssh` existed, a configuration outside the user's
+/// home on Windows was named in both clients' spellings. Neither escaped what `glob` reads
+/// specially, so such a line now names another file or none, and with a `%` or `${` it stops
+/// recent clients from reading the user's configuration at all.
+#[must_use]
+pub(super) fn earlier_includes(config: &Path, user_home: Option<&Path>) -> Vec<String> {
+    let mut lines = vec![format!("Include {}", render_path(config, user_home))];
+    if home_relative(config, user_home).is_none()
+        && let Some(WindowsSpelling::Drive { win32, msys }) = windows_spelling(config)
+    {
+        lines.push(format!(
+            "Include {} {}",
+            config_path_word(&win32),
+            config_path_word(&msys)
+        ));
+    }
+    let current = render_include(config, user_home);
+    lines.retain(|line| *line != current);
+    lines
 }
 
 /// Renders the `Include` directive for the generated configuration.
@@ -558,13 +605,44 @@ pub fn render_include(config: &Path, user_home: Option<&Path>) -> String {
 ///
 /// Returns an error when the file cannot be read or written.
 pub fn install_include(user_config: &Path, include: &str) -> Result<IncludeOutcome, Error> {
+    replace_include(user_config, include, &[])
+}
+
+/// [`install_include`], which also removes each of `earlier`, the lines earlier versions wrote
+/// for the same configuration, where it applies unconditionally, with one empty line after it.
+///
+/// A line an earlier version wrote may stop OpenSSH from reading the file, so it cannot be left
+/// for the user to find. One nested in a block is the user's own and is kept.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be read or written.
+pub(super) fn replace_include(user_config: &Path, include: &str, earlier: &[String]) -> Result<IncludeOutcome, Error> {
     let target = link_target(user_config)?;
     let existing = match std::fs::read_to_string(&target) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error.into()),
     };
-    if global_lines(&existing).any(|line| line == include) {
+    let global = global_lines(&existing).count();
+    let (mut installed, mut replaced, mut after_removed) = (false, false, false);
+    let mut kept = String::with_capacity(existing.len());
+    for (index, line) in existing.split_inclusive('\n').enumerate() {
+        let trimmed = line.trim();
+        let follows_removed = std::mem::take(&mut after_removed);
+        if index < global {
+            if trimmed == include {
+                installed = true;
+            } else if earlier.iter().any(|earlier| earlier == trimmed) {
+                (replaced, after_removed) = (true, true);
+                continue;
+            } else if follows_removed && trimmed.is_empty() {
+                continue;
+            }
+        }
+        kept.push_str(line);
+    }
+    if installed && !replaced {
         return Ok(IncludeOutcome::AlreadyInstalled);
     }
     if let Some(directory) = target.parent()
@@ -573,13 +651,19 @@ pub fn install_include(user_config: &Path, include: &str) -> Result<IncludeOutco
         std::fs::create_dir_all(directory)?;
         crate::local::home::secure_directory(directory)?;
     }
-    let mut text = format!("{include}\n");
-    if !existing.is_empty() {
-        text.push('\n');
-        text.push_str(&existing);
-    }
+    let text = if installed {
+        kept
+    } else if kept.is_empty() {
+        format!("{include}\n")
+    } else {
+        format!("{include}\n\n{kept}")
+    };
     write_private_file(&target, text.as_bytes())?;
-    Ok(IncludeOutcome::Installed)
+    Ok(if replaced {
+        IncludeOutcome::Replaced
+    } else {
+        IncludeOutcome::Installed
+    })
 }
 
 /// Follows a chain of symbolic links to the file they name, whether or not it
@@ -628,8 +712,9 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        CommandShell, IncludeOutcome, directory_word, install_include, remove_known_host, render_include,
-        render_proxy_command, resolves_through_agentctl, shell_word, upsert_known_host,
+        CommandShell, IncludeOutcome, directory_word, earlier_includes, install_include, remove_known_host,
+        render_include, render_proxy_command, replace_include, require_nameable, resolves_through_agentctl, shell_word,
+        upsert_known_host,
     };
     #[cfg(windows)]
     use super::{HostEntry, MSYS_CONFIG, render_config};
@@ -980,6 +1065,97 @@ mod tests {
             (r"C:\Users\ada\[x]\ssh\config", r#"Include "~/[[]x[]]/ssh/config""#),
         ] {
             assert_eq!(render_include(Path::new(config), user_home), line, "{config}");
+        }
+    }
+
+    /// Installing removes the line an earlier version wrote for the same configuration where it
+    /// applies unconditionally, with the empty line after it, whether or not the new line is
+    /// there already. A copy nested in a block is the user's own and stays.
+    #[test]
+    fn an_include_of_an_earlier_version_is_replaced() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let config = directory.path().join("config");
+        let (include, earlier) = ("Include ~/new", ["Include ~/old".to_owned()]);
+        for (existing, replaced) in [
+            (
+                "# mine\n  Include ~/old\n\nUser me\nHost x\n  Include ~/old\n",
+                "Include ~/new\n\n# mine\nUser me\nHost x\n  Include ~/old\n",
+            ),
+            (
+                "Include ~/new\n\nInclude ~/old\n\nHost x\n",
+                "Include ~/new\n\nHost x\n",
+            ),
+            ("Include ~/old\n", "Include ~/new\n"),
+        ] {
+            std::fs::write(&config, existing).expect("user config");
+            assert_eq!(
+                replace_include(&config, include, &earlier).expect("replace"),
+                IncludeOutcome::Replaced,
+                "{existing}"
+            );
+            assert_eq!(std::fs::read_to_string(&config).expect("read"), replaced);
+            assert_eq!(
+                replace_include(&config, include, &earlier).expect("repeat"),
+                IncludeOutcome::AlreadyInstalled
+            );
+        }
+        std::fs::write(&config, "Host x\n  Include ~/old\n").expect("user config");
+        assert_eq!(
+            replace_include(&config, include, &earlier).expect("install"),
+            IncludeOutcome::Installed
+        );
+    }
+
+    /// The lines earlier versions wrote are known only where they differ from today's.
+    #[cfg(unix)]
+    #[test]
+    fn earlier_includes_are_the_ones_that_no_longer_name_the_configuration() {
+        let user_home = Some(Path::new("/home/someone"));
+        for (config, earlier) in [
+            ("/home/someone/.agent/ssh/config", vec![]),
+            ("/srv/agent-home/ssh/config", vec![]),
+            ("/srv/100%/ssh/config", vec![r#"Include "/srv/100%%/ssh/config""#]),
+            ("/home/someone/a[1]/ssh/config", vec![r#"Include "~/a[1]/ssh/config""#]),
+        ] {
+            assert_eq!(earlier_includes(Path::new(config), user_home), earlier, "{config}");
+        }
+    }
+
+    /// On Windows a configuration outside the user's home had two earlier lines: as the host
+    /// spells it, and in both clients' spellings of the configuration itself.
+    #[cfg(windows)]
+    #[test]
+    fn earlier_includes_are_the_ones_that_no_longer_name_the_configuration() {
+        let user_home = Some(Path::new(r"C:\Users\ada"));
+        for (config, earlier) in [
+            (r"C:\Users\ada\.agent\ssh\config", vec![]),
+            (
+                r"C:\data\agent-home\ssh\config",
+                vec![
+                    r#"Include "C:\\data\\agent-home\\ssh\\config""#,
+                    "Include C:/data/agent-home/ssh/config /c/data/agent-home/ssh/config",
+                ],
+            ),
+            (
+                r"\\server\share\agent-home\ssh\config",
+                vec![r#"Include "\\\\server\\share\\agent-home\\ssh\\config""#],
+            ),
+            (r"C:\Users\ada\[x]\ssh\config", vec![r#"Include "~/[x]/ssh/config""#]),
+        ] {
+            assert_eq!(earlier_includes(Path::new(config), user_home), earlier, "{config}");
+        }
+    }
+
+    /// OpenSSH has no way to write a literal `${` in `IdentityFile` or `UserKnownHostsFile`, so
+    /// a path with one is refused. A `$` or a `{` alone is read as it is.
+    #[test]
+    fn a_path_openssh_would_read_an_environment_variable_in_is_refused() {
+        for (path, nameable) in [
+            ("/srv/a${b}/ssh/known_hosts", false),
+            ("/srv/a${b/ssh/known_hosts", false),
+            ("/srv/$a{b}$/ssh/known_hosts", true),
+        ] {
+            assert_eq!(require_nameable(Path::new(path), None).is_ok(), nameable, "{path}");
         }
     }
 

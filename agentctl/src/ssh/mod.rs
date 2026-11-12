@@ -125,6 +125,8 @@ pub struct UserInclude {
     pub user_config: PathBuf,
     /// The complete `Include` line.
     pub line: String,
+    /// The lines earlier versions wrote for the same configuration, which installing removes.
+    pub earlier: Vec<String>,
 }
 
 impl UserInclude {
@@ -136,19 +138,22 @@ impl UserInclude {
     pub fn for_home(home: &ControlPlaneHome) -> Result<Self, Error> {
         let user_home = crate::local::home::user_home_directory()
             .ok_or_else(|| Error::Invalid("the user home directory is not set (HOME or USERPROFILE)".into()))?;
+        let config = SshHome::new(home).config_path();
         Ok(Self {
             user_config: user_home.join(".ssh").join("config"),
-            line: render_include(&SshHome::new(home).config_path(), Some(&user_home)),
+            line: render_include(&config, Some(&user_home)),
+            earlier: client_config::earlier_includes(&config, Some(&user_home)),
         })
     }
 
-    /// Adds the line at the top of the user's configuration unless it is there.
+    /// Adds the line at the top of the user's configuration unless it is there, and removes the
+    /// ones earlier versions wrote for the same configuration.
     ///
     /// # Errors
     ///
     /// Returns an error when the configuration cannot be read or written.
     pub fn install(&self) -> Result<IncludeOutcome, Error> {
-        install_include(&self.user_config, &self.line)
+        client_config::replace_include(&self.user_config, &self.line, &self.earlier)
     }
 }
 
@@ -401,6 +406,9 @@ impl Access {
             .filter(|record| record.agent.metadata.deletion_timestamp.is_none() && record.agent.spec.ssh_access())
             .collect();
         records.sort_by(|left, right| left.agent.metadata.name.cmp(&right.agent.metadata.name));
+        if !records.is_empty() {
+            client_config::require_nameable(&self.home.known_hosts_path(), self.user_home.as_deref())?;
+        }
         prepare_directory(self.home.root())?;
         let msys_config = self.home.msys_config_path();
         if cfg!(windows) {

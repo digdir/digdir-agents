@@ -152,8 +152,13 @@ impl Fixture {
     }
 
     fn new() -> Self {
+        Self::in_home("agent-home")
+    }
+
+    /// A fixture whose control-plane home is the folder `name`.
+    fn in_home(name: &str) -> Self {
         let directory = TempDir::new().expect("temporary directory");
-        let home = ControlPlaneHome::resolve(Some(&directory.path().join("agent-home"))).expect("home");
+        let home = ControlPlaneHome::resolve(Some(&directory.path().join(name))).expect("home");
         home.prepare().expect("prepare home");
         let store = Rc::new(InMemoryAgentStore::new());
         let keys = Rc::new(InMemoryHostKeyStore::new());
@@ -508,6 +513,31 @@ async fn withdrawing_access_removes_guest_and_host_state() {
         .backend
         .queue_execution_events_matching(is_state_check, exited(1));
     assert!(!fixture.access.reconcile(&record, &sandbox).await.expect("steady"));
+}
+
+/// OpenSSH reads `${NAME}` in `IdentityFile` and `UserKnownHostsFile` as an environment variable
+/// and cannot be given a literal one, so SSH access in such a home fails with the reason
+/// instead of writing a configuration no client can read.
+#[tokio::test(flavor = "local")]
+async fn a_home_openssh_cannot_name_fails_with_the_reason() {
+    let fixture = Fixture::in_home("agent${x}home");
+    let worker = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", true);
+    fixture.store(&worker, 0).await;
+    let sandbox = fixture.sandbox(&worker).await;
+    fixture
+        .backend
+        .queue_execution_events_matching(is_server_check, exited(0));
+    queue_valid_environment_policy(&fixture.backend);
+    let error = fixture
+        .access
+        .reconcile(&worker, &sandbox)
+        .await
+        .expect_err("a home with `${`");
+    assert!(
+        error.to_string().contains("reads `${` in a path"),
+        "unexpected error: {error}"
+    );
+    assert!(!fixture.access.home().config_path().exists());
 }
 
 #[tokio::test(flavor = "local")]
