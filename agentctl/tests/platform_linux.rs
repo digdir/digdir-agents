@@ -172,6 +172,23 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
     }];
     resource.spec.access = vec![agent::AccessSpec::Ssh {}];
     resource.spec.network.deny = vec!["metadata.google.internal".into()];
+    let bind = |target: &str, read_only: bool, optional: bool| agent::MountSpec::Bind {
+        source: Some(directory.path().to_path_buf()),
+        target: SandboxPath::new(target),
+        read_only,
+        optional,
+    };
+    // Only the folders mounted from the host are listed: not the optional one whose source was missing when the
+    // agent was created, nor storage the sandbox owns.
+    resource.spec.sandbox.mounts = vec![
+        bind("/home/agent/code/app", false, false),
+        bind("/home/agent/code/reports", true, false),
+        bind("/home/agent/code/missing", false, true),
+        agent::MountSpec::Tmpfs {
+            target: SandboxPath::new("/scratch"),
+            capacity: "1Gi".parse().expect("capacity"),
+        },
+    ];
     let record = AgentRecord {
         id: agent_id,
         source_directory: directory.path().to_path_buf(),
@@ -252,6 +269,10 @@ comments and API calls, reaches real services and people.
 - **Harnesses:**
   - Claude Code (default)
   - Codex: not installed until the host logs in to it
+- **Folders:** the person's own files, mounted from their machine: changes happen at once and outlive this agent, \
+so don't switch branches, reset or push there unless asked.
+  - `/home/agent/code/app`
+  - `/home/agent/code/reports` (read-only)
 - **Secrets:** inert placeholders the host replaces only in requests to their hosts; never search for, print or \
 persist real values.
   - `GITHUB_TOKEN`: github.com, api.github.com
@@ -262,6 +283,12 @@ persist real values.
 - **Access:** people on the host reach this computer with `agentctl ssh worker`.
 - **Nested agents:** available (`/dev/kvm`, no Podman, so only manifests with an image `reference`); see the \
 `agentctl` skill.
+- **Changes:** inside this VM, apart from the person's folders, act freely, such as installing the tools a task \
+needs. Send something out through the host only when a task asks. Note what you install or change in the system, \
+and why, in `~/system-changes.md`, so it can be moved into the image.
+- **Cleanup:** stop the servers and containers you start. When a task is done, remove what you created for it, such \
+as one-off images, finished worktrees and build output, and nothing else.
+- **Clones:** fetch first, branch from the default branch, and never discard work you didn't make.
 <!-- agentd: end of Agent sandbox section -->
 
 <!-- agentd: the agent's own instructions, from spec.instructions -->
