@@ -1415,7 +1415,7 @@ async fn ssh(
     let access = client.ssh_access(&agent).await?;
     let mut ssh = ProcessCommand::new(ssh_client_executable());
     ssh_config_arguments(&mut ssh, &access.config_file);
-    ssh.arg(&access.alias).args(command);
+    ssh_arguments(&mut ssh, std::iter::once(&access.alias).chain(command));
     run_ssh_client(ssh)
 }
 
@@ -1425,20 +1425,48 @@ fn ssh_client_executable() -> String {
 
 /// Adds `-F config` to an OpenSSH client command line, so that it reads `config` in place of the
 /// user's configuration.
-///
-/// On Windows the path goes in double quotes, which Rust leaves out of an argument without a
-/// space. Git for Windows' `ssh` expands `*`, `?`, `[...]` and `{...}` in an argument outside
-/// quotes, as a shell would, and would then read another file.
 fn ssh_config_arguments(ssh: &mut ProcessCommand, config: &Path) {
-    ssh.arg("-F");
-    #[cfg(windows)]
-    if let Some(text) = config.to_str() {
-        use std::os::windows::process::CommandExt as _;
+    ssh_arguments(ssh, [std::ffi::OsStr::new("-F"), config.as_os_str()]);
+}
 
-        ssh.raw_arg(agent::ssh::shell_word(text, agent::ssh::CommandShell::Windows));
-        return;
+/// Adds `arguments` to an OpenSSH client command line, each for the client to read as it is given.
+///
+/// On Windows, Git for Windows' `ssh` reads an argument outside double quotes as a shell would
+/// when a Windows program starts it: it expands `*`, `?`, `[...]` and `{...}` against the current
+/// folder and a leading `~` to the user's home, reads a leading `@` as naming a file of arguments,
+/// and takes `'` as a quote. It would then read another configuration, or run another command in
+/// the agent than the one given. Rust quotes an argument only when it has a space, so one that
+/// holds any of those goes in double quotes here. Turning the expansion off with `MSYS=noglob`
+/// would not do: it leaves `@`, and a `\"` inside quotes is then no longer read as a quote.
+///
+/// Any other argument stays outside quotes, because inside them that `ssh` reads `\\` as one
+/// backslash and Win32-OpenSSH reads it as two. So no spelling suits both for an argument that
+/// needs quotes and has two backslashes in a row before anything but a `"` or its end: it is
+/// quoted for `CreateProcess`, and Git's `ssh` gets it with each such pair as one backslash.
+fn ssh_arguments(ssh: &mut ProcessCommand, arguments: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>) {
+    for argument in arguments {
+        let argument = argument.as_ref();
+        #[cfg(windows)]
+        if let Some(text) = argument.to_str()
+            && (text.is_empty()
+                || text.starts_with(['~', '@'])
+                || text
+                    .chars()
+                    .any(|character| character.is_whitespace() || "\"'*?[]{}".contains(character)))
+        {
+            use std::os::windows::process::CommandExt as _;
+
+            // A word that needs no quoting for `CreateProcess` holds nothing to escape inside quotes.
+            let word = agent::ssh::shell_word(text, agent::ssh::CommandShell::Windows);
+            ssh.raw_arg(if word.starts_with('"') {
+                word
+            } else {
+                format!("\"{word}\"")
+            });
+            continue;
+        }
+        ssh.arg(argument);
     }
-    ssh.arg(config);
 }
 
 #[cfg(unix)]
@@ -2922,6 +2950,48 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    /// A program built as Git for Windows' `ssh` is, started as `agentctl` starts `ssh`, gets each
+    /// argument as given, whatever it holds that such a program would expand outside quotes:
+    /// names in the current folder, the user's home, and a file of arguments.
+    #[cfg(windows)]
+    #[test]
+    fn an_msys_program_reads_each_ssh_argument_as_given() {
+        let printf = Path::new(r"C:\Program Files\Git\usr\bin\printf.exe");
+        if !printf.is_file() {
+            return;
+        }
+        let directory = tempfile::tempdir().expect("temporary directory");
+        for name in ["a.md", "b.md"] {
+            std::fs::write(directory.path().join(name), "").expect("file");
+        }
+        std::fs::write(directory.path().join("arguments"), "from the file\n").expect("file of arguments");
+        let arguments = [
+            "*.md",
+            "?.md",
+            "[ab].md",
+            "{a,b}.md",
+            "~",
+            "@arguments",
+            "-F",
+            "",
+            "two words",
+            r#"say "hi" to *"#,
+            r"C:\agents\",
+            r"C:\my agents\",
+            r"a\b c\",
+            // Outside quotes, where two backslashes in a row stay two.
+            r"a\\b",
+            r"\\server\share\",
+            "it's $HOME",
+        ];
+        let mut command = ProcessCommand::new(printf);
+        ssh_arguments(&mut command, ["--", r"[%s]\n"]);
+        ssh_arguments(&mut command, arguments);
+        let output = command.current_dir(directory.path()).output().expect("printf");
+        let expected = arguments.map(|argument| format!("[{argument}]\n")).concat();
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+    }
 
     #[test]
     fn a_mount_names_its_target_after_the_last_colon_before_a_slash() {
