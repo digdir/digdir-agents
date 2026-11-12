@@ -35,9 +35,9 @@ spec:
   order. On a mapping, it replaces the inherited mapping.
 - `$patch: delete` on a mapping removes it, as `null` does.
 
-A variant takes only the directives that Kustomize and Kubernetes both take for the same purpose, and refuses the
-others rather than pick one tool's reading. It refuses an empty list of entries too: Kustomize leaves the inherited entries as they
-are, which is rarely what `[]` means. Write `null` to remove them.
+A variant takes only the directives that Kustomize and Kubernetes both take for the same purpose, and refuses the others
+rather than pick one tool's reading. It refuses an empty list of entries too: Kustomize leaves the inherited entries as
+they are, which is rarely what `[]` means. Write `null` to remove them.
 
 ## Where a variant differs from Kustomize
 
