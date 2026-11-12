@@ -1758,8 +1758,8 @@ fn sibling_base(path: &Path, extends: &str) -> Result<PathBuf, Error> {
 /// The field that carries a strategic merge patch directive in a variant.
 const PATCH_FIELD: &str = "$patch";
 
-/// The strategic merge patch directives that Kustomize and Kubernetes apply the same way. A variant refuses the others
-/// rather than pick one tool's reading.
+/// The strategic merge patch directives that Kustomize and Kubernetes both take for the same purpose. A variant refuses
+/// the others rather than pick one tool's reading.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Directive {
     /// Removes the inherited mapping, or the inherited list entry with the same key.
