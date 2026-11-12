@@ -227,29 +227,29 @@ pub struct Spec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<SandboxPath>,
     /// Agent-wide guidance installed through every declared Harness Adapter, concatenated in order.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub instructions: Vec<InstructionsSpec>,
     /// Skill directories installed through every declared Harness Adapter.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillSpec>,
     /// Harness installations available to sessions in this agent. An agent without one runs no
     /// sessions, only the commands run in it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub harnesses: Vec<HarnessSpec>,
     /// Deliberately selected non-secret values exposed in plaintext inside the sandbox.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub environment: Vec<EnvironmentSpec>,
     /// Host-owned values made available only through mediated requests.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretSpec>,
     /// Ways the agent's user reaches into the sandbox besides sessions and `exec`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub access: Vec<AccessSpec>,
     /// Accounts the Agent acts as, each signed in once on the host with `agentctl`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<AccountSpec>,
     /// Sandbox egress mediation policy; mediated with every host allowed when omitted.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub network: NetworkSpec,
 }
 
@@ -328,13 +328,13 @@ pub struct SandboxManifestSpec {
     /// Desired mutable compute and writable root filesystem resources.
     pub resources: ResourcesManifestSpec,
     /// Process responsible for initializing the sandbox after backend setup.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub init_system: InitSystem,
     /// Whether the agent retains the sandbox when releasing it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_policy: Option<RetentionPolicy>,
     /// Host filesystem and in-memory attachments materialized with the sandbox.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub mounts: Vec<MountSpec>,
 }
 
@@ -434,7 +434,7 @@ pub enum MountSpec {
         /// Whether a missing source leaves the mount out rather than failing apply. A sandbox's mounts cannot
         /// change, so whether the source exists is decided when the agent is created: a source that appears or
         /// disappears later changes nothing until the agent is recreated.
-        #[serde(default, skip_serializing_if = "is_false")]
+        #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "is_false")]
         optional: bool,
     },
     /// A volume, by name. The agent keeps the revision it gets first, and waits until the volume has a revision
@@ -451,7 +451,7 @@ pub enum MountSpec {
         /// making the agent wait. As for a bind mount, this is decided when the agent gets its revisions:
         /// a volume applied later is mounted once the agent is recreated. A volume taking its first copy
         /// is still waited for.
-        #[serde(default, skip_serializing_if = "is_false")]
+        #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "is_false")]
         optional: bool,
     },
     /// Anonymous in-memory storage with an explicit capacity.
@@ -572,7 +572,7 @@ pub struct PlatformManifestSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_version: Option<String>,
     /// Required operating-system features.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub os_features: std::collections::BTreeSet<String>,
 }
 
@@ -1007,7 +1007,7 @@ pub struct InstructionsSpec {
     /// Host file, resolved relative to the manifest directory.
     pub source: std::path::PathBuf,
     /// Whether a missing source is skipped rather than failing setup.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "is_false")]
     pub optional: bool,
 }
 
@@ -1022,7 +1022,7 @@ pub struct SkillSpec {
     pub name: Option<String>,
     /// Whether a missing source directory is skipped rather than failing setup. A skill installed before its
     /// source went missing stays in the agent until it is recreated.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "is_false")]
     pub optional: bool,
 }
 
@@ -1046,14 +1046,14 @@ pub struct SecretSpec {
     /// Guest environment variable and stable secret binding name.
     pub environment: String,
     /// Whether the agent runs without it when its value is missing, rather than failing.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "is_false")]
     pub optional: bool,
     /// Optional inert value; the selected Network Backend generates one when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
     /// Hosts at which this secret may be substituted. A secret stored under [`Self::name`] has
     /// hosts of its own, which these can only narrow, so it may leave them out.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub allowed_hosts: Vec<String>,
     /// Optional variable name in the manifest directory's `.env`; defaults to `environment`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1067,6 +1067,16 @@ pub struct SecretSpec {
 #[allow(clippy::trivially_copy_pass_by_ref)]
 const fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// Reads `null` as the field's default, as leaving the field out does. A variant keeps the `null` it gives a field its
+/// base does not set, so that a field agentctl does not know still fails decoding.
+pub(crate) fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 impl SecretSpec {
@@ -1175,7 +1185,7 @@ pub struct NetworkSpec {
     /// Baseline egress decision.
     pub allow: NetworkAllow,
     /// Host patterns denied before the baseline decision.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
     pub deny: Vec<String>,
 }
 
@@ -1885,8 +1895,8 @@ fn merge_field(
     if value.is_null() {
         if base.remove(&key).is_none() {
             // Preserve a null for fields absent from the concrete base.
-            // Known optional fields still decode successfully, while
-            // strict deserialization rejects unknown null-valued fields.
+            // Known fields decode it as their default, while strict
+            // deserialization rejects unknown null-valued fields.
             base.insert(key, value);
         }
         return Ok(());

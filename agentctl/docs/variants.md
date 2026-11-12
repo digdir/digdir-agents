@@ -7,7 +7,8 @@ in an overlay, so a variant reads as a Kustomize patch does, except where this p
 
 ## Merging
 
-- A mapping merges field by field, a value replaces the inherited one, and `null` removes the inherited field.
+- A mapping merges field by field, and a value replaces the inherited one. `null` removes the inherited field, and
+  changes nothing where the base sets none.
 - A list of entries merges entry by entry, on the field that names an entry, such as a harness's `type`, an
   environment variable's `name` or a mount's `target`. An entry with an inherited key changes that entry, and one with
   a new key is added. A manifest can't repeat a key, and a variant can't name one twice.

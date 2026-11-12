@@ -456,6 +456,32 @@ fn null_removes_optional_fields_and_required_removal_fails_final_validation() {
 }
 
 #[test]
+fn null_on_a_field_the_base_does_not_set_changes_nothing() {
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.yaml",
+            "mine",
+            "spec:
+  skills: null
+  harnesses:
+    - type: claudeCode
+      optional: null
+  network:
+    deny: null
+",
+        ),
+    );
+
+    let agent = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect("nulls on fields the base does not set")
+        .agent;
+    assert_eq!(agent.spec, support::agent("mine").spec);
+}
+
+#[test]
 fn rejects_unknown_variant_fields_even_when_null() {
     let directory = agent_directory();
     for (name, spec) in [
