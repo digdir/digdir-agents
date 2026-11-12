@@ -572,7 +572,11 @@ pub struct PlatformManifestSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_version: Option<String>,
     /// Required operating-system features.
-    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "null_as_default",
+        skip_serializing_if = "std::collections::BTreeSet::is_empty"
+    )]
     pub os_features: std::collections::BTreeSet<String>,
 }
 
