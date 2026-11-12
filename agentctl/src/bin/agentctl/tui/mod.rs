@@ -1151,8 +1151,10 @@ async fn ssh_shell(client: &Client, agent: &str) -> Result<(), Error> {
     .await?;
     let access = client.ssh_access(agent).await?;
     // Awaited, not waited on: the TUI's forwards and watch share this thread.
-    let status = tokio::process::Command::new(crate::ssh_client_executable())
-        .args(crate::ssh_client_arguments(&access))
+    let mut ssh = std::process::Command::new(crate::ssh_client_executable());
+    crate::ssh_config_arguments(&mut ssh, &access.config_file);
+    ssh.arg(&access.alias);
+    let status = tokio::process::Command::from(ssh)
         .status()
         .await
         .map_err(|error| Error::Invalid(crate::ssh_client_failure(&error)))?;
