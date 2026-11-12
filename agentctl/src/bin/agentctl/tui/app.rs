@@ -5504,6 +5504,7 @@ pub(crate) mod tests {
         app.ssh_include = Some(agent::ssh::UserInclude {
             user_config: "/tmp/user/.ssh/config".into(),
             line: "Include ~/.agent/ssh/config".into(),
+            earlier: Vec::new(),
         });
         app.apply_snapshot(vec![worker], vec![session("worker", "main", "working")]);
         app
