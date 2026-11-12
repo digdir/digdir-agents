@@ -136,15 +136,16 @@ impl SshSetup {
 
     /// [`Self::check`] against `config` in place of the user's configuration.
     async fn resolve(agent: &str, config: Option<&Path>) -> Self {
-        let mut ssh = tokio::process::Command::new(crate::ssh_client_executable());
+        let mut ssh = std::process::Command::new(crate::ssh_client_executable());
         if let Some(config) = config {
-            ssh.arg("-F").arg(config);
+            crate::ssh_config_arguments(&mut ssh, config);
         }
         ssh.arg("-G")
             .arg(agent::ssh::alias(agent))
             .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+            .stderr(Stdio::null());
+        let mut ssh = tokio::process::Command::from(ssh);
+        ssh.kill_on_drop(true);
         match tokio::time::timeout(SSH_CHECK_TIMEOUT, ssh.output()).await {
             Ok(Ok(output)) if output.status.success() => {
                 if agent::ssh::resolves_through_agentctl(&String::from_utf8_lossy(&output.stdout), agent) {
@@ -690,6 +691,93 @@ mod tests {
             let user = directory.path().join("user_config");
             std::fs::write(&user, &text).expect("user config");
             assert_eq!(SshSetup::resolve("worker", Some(&user)).await, expected, "{text}");
+        }
+    }
+
+    /// On Windows the generated configuration chains its copy for Git for Windows' `ssh`, so the
+    /// setup is found whichever `ssh` comes first on `PATH`, Win32-OpenSSH or that MSYS build,
+    /// through the user's `Include` and through `-F` alike. Each client installed in its usual
+    /// place also resolves the `ProxyCommand` quoted for how it runs one, from a folder whose name
+    /// has what bash, `glob`, `%` tokens and `${NAME}` read specially. The folder is the user's
+    /// alone, as the agent home is, since Win32-OpenSSH refuses a configuration others may write.
+    #[cfg(windows)]
+    #[tokio::test(flavor = "local")]
+    async fn ssh_setup_is_found_through_the_windows_configuration_and_its_copy() {
+        use agent::ssh::CommandShell;
+
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let directory =
+            agent::local::home::ControlPlaneHome::resolve(Some(&temporary.path().join("home"))).expect("folder");
+        directory.prepare().expect("the user's own folder");
+        let generated = directory.path().join("u[1]$AB12%${x}").join("config");
+        let msys = generated.with_file_name(agent::ssh::MSYS_CONFIG);
+        std::fs::create_dir_all(generated.parent().expect("parent")).expect("directory");
+        let proxy_command = |shell| {
+            agent::ssh::render_proxy_command(
+                Path::new(r"C:\Program Files\Agent\agentctl.exe"),
+                Path::new(r"C:\Users\$AB12\.agent"),
+                "worker",
+                shell,
+            )
+            .expect("proxy command")
+        };
+        for (path, shell, chained) in [
+            (&msys, CommandShell::Posix, None),
+            (&generated, CommandShell::Windows, Some(msys.as_path())),
+        ] {
+            let entry = agent::ssh::HostEntry {
+                alias: agent::ssh::alias("worker"),
+                user: "agent".into(),
+                proxy_command: proxy_command(shell),
+                host_key_alias: "agent-1".into(),
+                identity_file: directory.path().join("id_ed25519"),
+                known_hosts_file: directory.path().join("known_hosts"),
+            };
+            std::fs::write(path, agent::ssh::render_config(&[entry], chained, None)).expect("generated");
+        }
+        let user = directory.path().join("user_config");
+        let include = agent::ssh::render_include(&generated, None);
+        std::fs::write(&user, format!("{include}\n")).expect("user config");
+        for config in [&user, &generated] {
+            assert_eq!(
+                SshSetup::resolve("worker", Some(config)).await,
+                SshSetup::Installed,
+                "{}",
+                config.display()
+            );
+        }
+
+        for (client, shell) in [
+            (r"C:\Windows\System32\OpenSSH\ssh.exe", CommandShell::Windows),
+            (r"C:\Program Files\Git\usr\bin\ssh.exe", CommandShell::Posix),
+        ] {
+            if !Path::new(client).is_file() {
+                // A CI host has both clients, so there neither goes unchecked.
+                assert!(std::env::var_os("CI").is_none(), "{client} is missing");
+                continue;
+            }
+            let expected = proxy_command(shell);
+            for config in [&user, &generated] {
+                let mut ssh = std::process::Command::new(client);
+                crate::ssh_config_arguments(&mut ssh, config);
+                let output = ssh
+                    .args(["-G", &agent::ssh::alias("worker")])
+                    .stdin(Stdio::null())
+                    .output()
+                    .expect("ssh -G");
+                assert!(
+                    output.status.success(),
+                    "{client} with {}: {}",
+                    config.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let resolved = String::from_utf8_lossy(&output.stdout);
+                let proxy = resolved
+                    .lines()
+                    .find_map(|line| line.strip_prefix("proxycommand "))
+                    .unwrap_or_default();
+                assert_eq!(proxy, expected, "{client} with {}", config.display());
+            }
         }
     }
 }
