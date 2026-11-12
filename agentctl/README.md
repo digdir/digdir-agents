@@ -113,6 +113,8 @@ To write an agent by hand, start from the [.NET example](../agents/examples/dotn
 Claude Code or Codex to copy it and change it for the tools and repositories your work needs. A coding agent working
 in an agent can apply what it writes as a nested agent and try it before you do.
 
+[Your first agent, from a repository to your editor](docs/first-agent.md) walks through it step by step.
+
 ## Documentation
 
 - [docs/](docs/README.md): how-tos and references, such as labelling agents and the agent fields clients read
