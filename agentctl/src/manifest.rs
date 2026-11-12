@@ -1785,15 +1785,21 @@ enum Directive {
 }
 
 impl Directive {
-    /// Removes the directive from `mapping`, which `field` leads to.
-    fn take(mapping: &mut serde_yaml_ng::Mapping, field: &str) -> Result<Option<Self>, String> {
-        let Some(value) = mapping.remove(serde_yaml_ng::Value::String(PATCH_FIELD.into())) else {
+    /// Removes the directive from `value` when it is a mapping. `fields` lead to `value`.
+    fn take(value: &mut serde_yaml_ng::Value, fields: &[String]) -> Result<Option<Self>, String> {
+        let Some(directive) = value
+            .as_mapping_mut()
+            .and_then(|mapping| mapping.remove(serde_yaml_ng::Value::String(PATCH_FIELD.into())))
+        else {
             return Ok(None);
         };
-        match value.as_str() {
+        match directive.as_str() {
             Some("delete") => Ok(Some(Self::Delete)),
             Some("replace") => Ok(Some(Self::Replace)),
-            _ => Err(format!("{field}: {PATCH_FIELD} must be \"delete\" or \"replace\"")),
+            _ => Err(format!(
+                "{}: {PATCH_FIELD} must be \"delete\" or \"replace\"",
+                fields.join(".")
+            )),
         }
     }
 }
@@ -1902,10 +1908,7 @@ fn merge_field(
     mut value: serde_yaml_ng::Value,
     fields: &mut Vec<String>,
 ) -> Result<(), String> {
-    let directive = match value.as_mapping_mut() {
-        Some(mapping) => Directive::take(mapping, &fields.join("."))?,
-        None => None,
-    };
+    let directive = Directive::take(&mut value, fields)?;
     if directive == Some(Directive::Delete) {
         value = serde_yaml_ng::Value::Null;
     }
@@ -1955,10 +1958,7 @@ fn merge_list(
     let mut names = std::collections::BTreeSet::new();
     let mut replace = false;
     for mut entry in patch {
-        let directive = match entry.as_mapping_mut() {
-            Some(mapping) => Directive::take(mapping, &field)?,
-            None => None,
-        };
+        let directive = Directive::take(&mut entry, fields)?;
         let name = key.of(&entry);
         match (directive, &name) {
             (Some(Directive::Replace), None) if entry.as_mapping().is_some_and(serde_yaml_ng::Mapping::is_empty) => {
