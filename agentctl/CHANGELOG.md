@@ -13,6 +13,10 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ## [Unreleased]
 
+### Changed
+
+- The Agent sandbox section at the top of an agent's instructions now lists the folders mounted from your machine, and adds rules its own instructions can override, such as cleaning up after a task and noting system changes in `~/system-changes.md`. ([#505](https://github.com/digdir/digdir-agents/pull/505))
+
 ### Fixed
 
 - SSH connections to an agent, such as `ssh agentctl-NAME` or T3 Code's environments, and commands such as `agentctl exec` wait while Microsandbox is being installed or updated instead of failing, and the SSH client says what it waits for. ([#456](https://github.com/digdir/digdir-agents/issues/456))
