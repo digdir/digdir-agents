@@ -14,5 +14,9 @@ spec:
         source: ../../..
         target: /home/agent/code/digdir-agents
         readOnly: false
+  # The base's files are listed too, so that an agentctl from before variants merged instructions keeps them.
   instructions:
+    - source: ../instructions.md
+    - source: environment.md
+    - source: ../improving.md
     - source: ../worktree.md
