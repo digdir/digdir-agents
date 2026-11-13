@@ -14,6 +14,7 @@ use sandbox::progress::{OperationStatus, Progress};
 use time::OffsetDateTime;
 
 use super::open::{Environment, MenuEntry, OpenMenu, OpenTarget, SshSetup};
+use super::session_names;
 use crate::{format, forward::ForwardSpec};
 
 /// Output lines of a failed pass the agent side panel shows.
@@ -611,12 +612,15 @@ impl SessionField {
 
 /// New session form state: a name, optional model and effort, and a harness picker.
 ///
-/// Empty model and effort fields leave the choice to the daemon, which applies
-/// the selected installation's manifest defaults and then the harness's own.
+/// An empty name field stands for a generated name. Empty model and effort fields
+/// leave the choice to the daemon, which applies the selected installation's
+/// manifest defaults and then the harness's own.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SessionForm {
     pub(crate) agent: String,
     pub(crate) name: String,
+    /// The name the session gets while the name field is empty, free when the form opened.
+    pub(crate) generated: Option<SessionName>,
     pub(crate) model: String,
     pub(crate) effort: String,
     pub(crate) field: SessionField,
@@ -678,7 +682,10 @@ impl SessionForm {
     /// Validates the form. An existing name is rejected, because ensuring it
     /// would attach to that session instead of creating one.
     fn submit(&self, sessions: &[Session]) -> Result<Action, String> {
-        let session = SessionName::new(self.name.clone()).map_err(|invalid| invalid.to_string())?;
+        let session = match &self.generated {
+            Some(generated) if self.name.is_empty() => generated.clone(),
+            _ => SessionName::new(self.name.clone()).map_err(|invalid| invalid.to_string())?,
+        };
         if sessions
             .iter()
             .any(|existing| existing.agent == self.agent && existing.name == session)
@@ -2729,9 +2736,15 @@ impl App {
             .iter()
             .position(|spec| spec.default)
             .unwrap_or_default();
+        let generated = session_names::random(|name| {
+            self.sessions
+                .iter()
+                .any(|session| session.agent == agent.metadata.name && session.name.as_str() == name)
+        });
         self.modal = Some(Modal::NewSession(SessionForm {
             agent: agent.metadata.name.clone(),
             name: String::new(),
+            generated,
             model: String::new(),
             effort: String::new(),
             field: SessionField::Name,
@@ -4300,9 +4313,15 @@ pub(crate) mod tests {
     fn new_session_modal_validates_the_name_and_creates_on_enter() {
         let mut app = populated();
         app.on_key(key(KeyCode::Char('n')));
-        assert!(matches!(app.modal, Some(Modal::NewSession(_))));
+        let Some(Modal::NewSession(form)) = &mut app.modal else {
+            panic!("expected the NewSession modal");
+        };
+        form.generated = None;
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
-        assert!(matches!(&app.modal, Some(Modal::NewSession(form)) if form.error.is_some()));
+        assert!(
+            matches!(&app.modal, Some(Modal::NewSession(form)) if form.error.is_some()),
+            "an empty name is refused when no name was generated"
+        );
         app.on_key(key(KeyCode::Char('s')));
         app.on_key(key(KeyCode::Char('!')));
         app.on_key(key(KeyCode::Char('1')));
@@ -4329,6 +4348,64 @@ pub(crate) mod tests {
         assert!(matches!(
             &app.modal,
             Some(Modal::NewSession(form)) if form.error.as_deref() == Some("session \"s1\" already exists")
+        ));
+    }
+
+    #[test]
+    fn new_session_modal_creates_an_unnamed_session_under_the_generated_name() {
+        let mut app = populated();
+        app.on_key(key(KeyCode::Char('n')));
+        let Some(Modal::NewSession(form)) = &app.modal else {
+            panic!("expected the NewSession modal");
+        };
+        let generated = form.generated.clone().expect("a generated name");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::CreateSession {
+                agent: "builder".into(),
+                session: generated,
+                harness: Harness::ClaudeCode,
+                model_selection: ModelSelection::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn new_session_modal_rejects_a_generated_name_taken_since_it_opened() {
+        let mut app = populated();
+        app.on_key(key(KeyCode::Char('n')));
+        let Some(Modal::NewSession(form)) = &app.modal else {
+            panic!("expected the NewSession modal");
+        };
+        let generated = form.generated.clone().expect("a generated name");
+        let mut sessions = app.sessions.clone();
+        sessions.push(session("builder", generated.as_str(), "idle"));
+        app.apply_snapshot(app.agents.clone(), sessions);
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert!(matches!(
+            &app.modal,
+            Some(Modal::NewSession(form))
+                if form.error.as_deref() == Some(format!("session {:?} already exists", generated.as_str()).as_str())
+        ));
+    }
+
+    #[test]
+    fn new_session_modal_generates_a_name_the_agent_has_no_session_by() {
+        let mut names = session_names::all().collect::<Vec<_>>();
+        let free = names.pop().expect("names");
+        let mut sessions = names
+            .iter()
+            .map(|name| session("worker", name, "idle"))
+            .collect::<Vec<_>>();
+        sessions.push(session("builder", &free, "idle"));
+        let mut app = App::new();
+        app.apply_snapshot(vec![agent("worker"), agent("builder")], sessions);
+        app.select_index(2);
+        app.on_key(key(KeyCode::Char('n')));
+        assert!(matches!(
+            &app.modal,
+            Some(Modal::NewSession(form))
+                if form.agent == "worker" && form.generated.as_ref().map(SessionName::as_str) == Some(free.as_str())
         ));
     }
 

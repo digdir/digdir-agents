@@ -1,6 +1,7 @@
 mod app;
 mod open;
 mod provisioning;
+mod session_names;
 mod terminal;
 mod view;
 
