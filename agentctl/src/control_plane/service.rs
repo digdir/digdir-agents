@@ -671,6 +671,9 @@ pub(super) fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) 
     if current.agent.spec.home != desired.spec.home {
         return Err(Error::Immutable("spec.home"));
     }
+    if current.agent.spec.post_create != desired.spec.post_create {
+        return Err(Error::Immutable("spec.postCreate"));
+    }
     // An agent that allowed all hosts may have resolved an allowed name with a DNS resolver of its
     // own, and its network keeps that answer. A list counts only answers from the platform's DNS,
     // so the agent starts again without them.

@@ -1767,6 +1767,10 @@ async fn linux_setup_leaves_out_missing_optional_sources_until_they_exist() {
             "spec.skills[0].source skills/review",
         ]
     );
+    assert_eq!(
+        missing.post_create, None,
+        "an agent without postCreate steps reports none"
+    );
     let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
     assert!(
         instructions.ends_with("spec.instructions -->\nrequired\n"),
@@ -1933,4 +1937,244 @@ async fn linux_setup_commits_as_the_agents_account_unless_the_manifest_names_som
         ]
     );
     assert_eq!(git_settings_written(&[], &NO_ACCOUNTS).await, []);
+}
+
+/// A record in `directory` whose agent declares `steps` as its `postCreate` steps, each a name and its commands.
+fn post_create_record(directory: &std::path::Path, steps: &[(&str, &str)]) -> AgentRecord {
+    let mut record = optional_sources_record(directory, "personal.md", "skills/review");
+    record.agent.spec.instructions.truncate(1);
+    record.agent.spec.skills.clear();
+    record.agent.spec.post_create = steps
+        .iter()
+        .map(|(name, run)| agent::PostCreateStep {
+            name: (*name).into(),
+            run: (*run).into(),
+        })
+        .collect();
+    record
+}
+
+/// The commands of the `postCreate` steps `backend` ran since its first `executions` executions, with the log each
+/// wrote to. A step's commands are the last argument of the shell that runs it, and its log the one in the step folder.
+fn steps_run_since(backend: &memory::Provider, executions: usize) -> Vec<(String, String)> {
+    backend
+        .execution_specs()
+        .into_iter()
+        .skip(executions)
+        .filter_map(|spec| match spec.program() {
+            Program::Command { executable, args } if executable.as_str() == "/bin/sh" => Some((
+                args.last()?.clone(),
+                args.iter()
+                    .find(|arg| arg.starts_with("/var/lib/agent-post-create/"))?
+                    .clone(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+fn is_step(run: &'static str) -> impl Fn(&sandbox::execution::ExecutionSpec) -> bool {
+    move |spec| {
+        matches!(spec.program(), Program::Command { executable, args }
+            if executable.as_str() == "/bin/sh" && args.last().map(String::as_str) == Some(run))
+    }
+}
+
+/// Answers the next check for a record of the steps that ran, in a sandbox that has none yet, as a guest does.
+fn no_record_yet(backend: &memory::Provider) {
+    backend.queue_execution_events_matching(
+        |spec| is_presence_check(spec, "-e", "/var/lib/agent-post-create/state.json"),
+        completed(1),
+    );
+}
+
+fn is_boot_id_read(spec: &sandbox::execution::ExecutionSpec) -> bool {
+    matches!(spec.program(), Program::Command { executable, args }
+        if executable.as_str() == "/bin/cat" && args == &["/proc/sys/kernel/random/boot_id"])
+}
+
+fn printed(stdout: &str) -> Vec<ExecutionEvent> {
+    vec![
+        ExecutionEvent::Started { process_id: None },
+        ExecutionEvent::Stdout(stdout.to_owned().into()),
+        ExecutionEvent::Exited(ExitStatus { code: 0 }),
+    ]
+}
+
+/// The steps run in order, as the agent user in its home with their output in a log, and a later pass runs none of them
+/// again.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_runs_post_create_steps_once_in_order() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(
+        directory.path(),
+        &[("dotfiles", "git clone dotfiles"), ("install", "./install")],
+    );
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 2).await;
+    let platform = Linux::new(PLATFORM_API_URL);
+    no_record_yet(&backend);
+
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("setup");
+
+    assert_eq!(set_up.post_create, Some(agent::sandbox::PostCreateOutcome::Completed));
+    assert_eq!(
+        steps_run_since(&backend, 0),
+        [
+            (
+                "git clone dotfiles".to_owned(),
+                "/var/lib/agent-post-create/dotfiles.log".to_owned()
+            ),
+            (
+                "./install".to_owned(),
+                "/var/lib/agent-post-create/install.log".to_owned()
+            ),
+        ]
+    );
+    let step = backend
+        .execution_specs()
+        .into_iter()
+        .find(is_step("./install"))
+        .expect("the install step");
+    assert_eq!(step.working_directory().map(SandboxPath::as_str), Some("/home/agent"));
+    assert_eq!(step.environment().get("HOME").map(String::as_str), Some("/home/agent"));
+
+    let executions = backend.execution_specs().len();
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a later pass");
+    assert_eq!(set_up.post_create, Some(agent::sandbox::PostCreateOutcome::Completed));
+    assert!(steps_run_since(&backend, executions).is_empty(), "no step runs twice");
+}
+
+/// A failed step stops the ones after it and is reported with the end of its output. Further passes in the same boot
+/// leave it alone, and once the guest has booted again it runs again, followed by the rest.
+#[tokio::test(flavor = "local")]
+async fn a_failed_post_create_step_stops_the_rest_and_runs_again_after_a_boot() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(
+        directory.path(),
+        &[("first", "true"), ("clone", "git clone private"), ("last", "./install")],
+    );
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 3).await;
+    let platform = Linux::new(PLATFORM_API_URL);
+    no_record_yet(&backend);
+    // The step prints the end of its log when it fails, here with a terminal escape the host must not pass on.
+    backend.queue_execution_events_matching(
+        is_step("git clone private"),
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stderr("Cloning into 'private'...\n\u{1b}[31mfatal: repository not found\n".into()),
+            ExecutionEvent::Exited(ExitStatus { code: 128 }),
+        ],
+    );
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a failed step fails no setup");
+
+    let Some(agent::sandbox::PostCreateOutcome::Failed(message)) = set_up.post_create else {
+        panic!("a failed step is reported: {:?}", set_up.post_create);
+    };
+    for part in [
+        "\"clone\"",
+        "code 128",
+        "Cloning into 'private'...",
+        "fatal: repository not found",
+        "/var/lib/agent-post-create/clone.log",
+    ] {
+        assert!(message.contains(part), "{part:?} in {message}");
+    }
+    assert!(!message.contains('\u{1b}'), "{message:?}");
+    let expected = agent::sandbox::PostCreateOutcome::Failed(message);
+    assert_eq!(
+        steps_run_since(&backend, 0)
+            .into_iter()
+            .map(|(run, _)| run)
+            .collect::<Vec<_>>(),
+        ["true", "git clone private"]
+    );
+
+    let executions = backend.execution_specs().len();
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a pass in the same boot");
+    assert_eq!(set_up.post_create, Some(expected), "the failure is still reported");
+    assert!(
+        steps_run_since(&backend, executions).is_empty(),
+        "a failed step does not run on every pass"
+    );
+
+    let executions = backend.execution_specs().len();
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-b\n"));
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a pass after a boot");
+    assert_eq!(set_up.post_create, Some(agent::sandbox::PostCreateOutcome::Completed));
+    assert_eq!(
+        steps_run_since(&backend, executions)
+            .into_iter()
+            .map(|(run, _)| run)
+            .collect::<Vec<_>>(),
+        ["git clone private", "./install"],
+        "the step that succeeded before does not run again"
+    );
+}
+
+/// The record of the steps that ran is in a folder the agent user owns, and is read on every pass of a ready agent. One
+/// that setup cannot read back, such as one cut short or changed in the guest, must not make the steps that succeeded
+/// run again under the agent's sessions.
+#[tokio::test(flavor = "local")]
+async fn a_post_create_record_setup_cannot_read_back_runs_no_step_that_succeeded_again() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(
+        directory.path(),
+        &[("dotfiles", "git clone dotfiles"), ("install", "./install")],
+    );
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 2).await;
+    let platform = Linux::new(PLATFORM_API_URL);
+    no_record_yet(&backend);
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("setup");
+    assert_eq!(set_up.post_create, Some(agent::sandbox::PostCreateOutcome::Completed));
+    let state = read_file(&sandbox, "/var/lib/agent-post-create/state.json").await;
+    assert!(!state.is_empty(), "the steps that ran are recorded");
+
+    // What a guest process can leave behind in a folder its user owns.
+    sandbox
+        .write_file(
+            &SandboxPath::new("/var/lib/agent-post-create/state.json"),
+            Box::pin(Cursor::new(state[..state.len() / 2].to_vec())),
+        )
+        .await
+        .expect("damage the record");
+    let executions = backend.execution_specs().len();
+    let later = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a damaged record fails no setup");
+    assert!(
+        matches!(&later.post_create, Some(agent::sandbox::PostCreateOutcome::Failed(message)) if message.contains("state.json")),
+        "the damaged record is reported: {:?}",
+        later.post_create
+    );
+
+    assert_eq!(
+        steps_run_since(&backend, executions),
+        [],
+        "a step that succeeded never runs again in that sandbox"
+    );
 }

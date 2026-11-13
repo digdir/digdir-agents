@@ -847,12 +847,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                     "ready"
                 };
                 println!("agent/{name} {outcome}");
-                if let Some(condition) = converged
-                    .status
-                    .conditions
-                    .iter()
-                    .find(|condition| condition.kind == agent::Condition::ENVIRONMENT_FILE)
-                {
+                for condition in ready_warnings(&converged.status.conditions) {
                     eprintln!("Warning: {}", condition.message);
                 }
             }
@@ -2983,6 +2978,14 @@ fn absolute(current_dir: impl Fn() -> std::io::Result<PathBuf>, path: PathBuf) -
     }
 }
 
+/// The conditions `apply --wait` warns of. The agent is ready despite them, so they would otherwise go unseen.
+fn ready_warnings(conditions: &[agent::Condition]) -> impl Iterator<Item = &agent::Condition> {
+    conditions.iter().filter(|condition| {
+        condition.kind == agent::Condition::ENVIRONMENT_FILE
+            || (condition.kind == agent::Condition::POST_CREATE && condition.status == agent::ConditionStatus::False)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]
@@ -3633,6 +3636,51 @@ mod tests {
             found_manifests(&repository.join("src")),
             [repository.join("deploy/agent/agent.yaml")],
             "anywhere in the repository"
+        );
+    }
+
+    /// `apply --wait` warns of a failed `postCreate` step once the agent is ready. A step that hangs fails only once its
+    /// time runs out, after the image, the boot and the rest of setup, so a default wait no longer than that time ends
+    /// in a timeout error before the warning can show.
+    #[test]
+    fn apply_wait_warns_of_an_environment_file_and_a_failed_post_create_step_only() {
+        let condition = |kind: &str, status| agent::Condition {
+            kind: kind.into(),
+            status,
+            reason: String::new(),
+            message: kind.into(),
+            last_transition_time: None,
+        };
+        let conditions = [
+            condition(agent::Condition::READY, agent::ConditionStatus::True),
+            condition(agent::Condition::OPTIONAL_SOURCES, agent::ConditionStatus::False),
+            condition(agent::Condition::ENVIRONMENT_FILE, agent::ConditionStatus::True),
+            condition(agent::Condition::POST_CREATE, agent::ConditionStatus::False),
+        ];
+        assert_eq!(
+            super::ready_warnings(&conditions)
+                .map(|condition| condition.kind.as_str())
+                .collect::<Vec<_>>(),
+            [agent::Condition::ENVIRONMENT_FILE, agent::Condition::POST_CREATE]
+        );
+        let completed = [condition(agent::Condition::POST_CREATE, agent::ConditionStatus::True)];
+        assert_eq!(
+            super::ready_warnings(&completed).count(),
+            0,
+            "steps that all ran are no warning"
+        );
+    }
+
+    #[test]
+    fn apply_waits_by_default_for_longer_than_a_post_create_step_may_run() {
+        let applied = Arguments::try_parse_from(["agentctl", "apply", "--wait"]).expect("waiting apply");
+        let Command::Apply { timeout, .. } = applied.command else {
+            panic!("expected apply command");
+        };
+        let step = Duration::from_secs(u64::from(agent::manifest::POST_CREATE_STEP_TIMEOUT_MINUTES) * 60);
+        assert!(
+            timeout > step,
+            "`apply --wait` gives up after {timeout:?}, before a step that hangs fails after {step:?}"
         );
     }
 

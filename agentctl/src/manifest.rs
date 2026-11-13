@@ -251,6 +251,11 @@ pub struct Spec {
     /// Sandbox egress mediation policy; mediated with every host allowed when omitted.
     #[serde(default, deserialize_with = "null_as_default")]
     pub network: NetworkSpec,
+    /// Setup that runs in the sandbox once per agent, in order, before it is first ready, such as someone's own
+    /// configuration cloned and installed. Unlike setup in the image, a variant can add steps. A changed list takes a
+    /// recreated agent, as the image and `home` do.
+    #[serde(default, deserialize_with = "null_as_default", skip_serializing_if = "Vec::is_empty")]
+    pub post_create: Vec<PostCreateStep>,
 }
 
 /// Whether an agent's sandbox runs.
@@ -728,6 +733,7 @@ impl Spec {
         }
         self.validate_instructions()?;
         self.validate_skills()?;
+        self.validate_post_create()?;
         let mut harness_kinds = std::collections::BTreeSet::new();
         let mut duplicate_harness = None;
         let mut default_count = 0;
@@ -970,6 +976,44 @@ impl Spec {
         }
         Ok(())
     }
+
+    fn validate_post_create(&self) -> Result<(), Error> {
+        let mut names = std::collections::BTreeSet::new();
+        for (index, step) in self.post_create.iter().enumerate() {
+            if !valid_post_create_name(&step.name) {
+                return Err(Error::Invalid(format!(
+                    "spec.postCreate[{index}].name {:?} is invalid: use letters, digits, '.', '_' and '-', not \
+                     starting with '.', at most 64 characters",
+                    step.name
+                )));
+            }
+            if !names.insert(step.name.as_str()) {
+                return Err(Error::Invalid(format!(
+                    "spec.postCreate[{index}] duplicates step {:?}",
+                    step.name
+                )));
+            }
+            if step.run.trim().is_empty() {
+                return Err(Error::Invalid(format!(
+                    "spec.postCreate[{index}].run must not be empty"
+                )));
+            }
+            // The guest gets `run` as one argument, which can hold no NUL byte and is limited in length, so a step
+            // past either could never start and its agent would never be ready.
+            if step.run.contains('\0') {
+                return Err(Error::Invalid(format!(
+                    "spec.postCreate[{index}].run must not contain a NUL byte"
+                )));
+            }
+            if step.run.len() > MAX_POST_CREATE_RUN {
+                return Err(Error::Invalid(format!(
+                    "spec.postCreate[{index}].run is longer than {MAX_POST_CREATE_RUN} bytes: put a longer script in a \
+                     file the step runs"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// One explicitly selected non-secret value copied from the agent environment file.
@@ -1053,6 +1097,42 @@ impl SkillSpec {
                 .filter(|name| !name.is_empty() && *name != ".")
         })
     }
+}
+
+/// One step of an agent's `postCreate` setup.
+///
+/// It runs `run` with `sh -e` as the sandbox user, in its home and with the environment `agentctl exec` gets, for at
+/// most [`POST_CREATE_STEP_TIMEOUT_MINUTES`]. A step that fails stops the steps after it, and the agent is ready
+/// without them. They run again from the failed step once the sandbox boots again, such as on `agentctl restart`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PostCreateStep {
+    /// Names the step in progress, conditions and variants, and its log in the sandbox: at most 64 letters, digits,
+    /// `.`, `_` and `-`, not starting with `.`.
+    pub name: String,
+    /// The shell commands to run.
+    pub run: String,
+}
+
+/// How long one `postCreate` step may run before it is stopped and counted as failed.
+///
+/// A step runs once, so it may take as long as cloning a large repository. The bound keeps one that hangs from holding
+/// its agent out of `Ready`, and is short enough that the warning for it shows within `apply --wait`'s default wait,
+/// which also covers the image and the boot.
+pub const POST_CREATE_STEP_TIMEOUT_MINUTES: u32 = 5;
+
+/// The longest `run` a `postCreate` step may have, well within the longest argument Linux passes to a program.
+const MAX_POST_CREATE_RUN: usize = 64 * 1024;
+
+/// Whether `name` can name a `postCreate` step. It names a file in the sandbox and is quoted in conditions people read
+/// in a terminal, so it is kept to characters that are safe in both.
+fn valid_post_create_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 /// One host-owned value exposed to sandbox processes only as an inert environment placeholder.
@@ -1416,6 +1496,8 @@ impl Condition {
     /// Condition type for an agent the person agreed could read files that may hold real keys, such
     /// as a checkout's `.env`. Its message names them.
     pub const EXPOSED_FILES: &'static str = "ExposedFiles";
+    /// Condition type for whether the agent's `postCreate` steps have all run. Its message names a step that failed.
+    pub const POST_CREATE: &'static str = "PostCreate";
     /// Condition type for declared SSH access underneath `Ready`.
     pub const SSH_READY: &'static str = "SshReady";
     /// VNC access is reconciled and the bridge to the desktop is listening.
@@ -1816,6 +1898,7 @@ const KEYED_LISTS: &[(&[&str], ListKey)] = &[
     (&["spec", "instructions"], ListKey::Field("source")),
     (&["spec", "skills"], ListKey::Skill),
     (&["spec", "sandbox", "mounts"], ListKey::Field("target")),
+    (&["spec", "postCreate"], ListKey::Field("name")),
 ];
 
 /// How an entry of a keyed list names itself.

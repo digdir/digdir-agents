@@ -277,6 +277,7 @@ impl Reconciler {
         conditions.extend(optional_sources_condition(record, &ensured.missing_sources));
         conditions.extend(environment_file_condition(record));
         conditions.extend(exposed_files_condition(record));
+        conditions.extend(post_create_condition(ensured.post_create.as_ref()));
         conditions.push(condition(Condition::READY, ConditionStatus::True, "SandboxReady", ""));
         let status = Status::observed(record.agent.metadata.generation, Some(assignment), conditions);
         // As on failure, readiness is stored before followers see the pass end.
@@ -742,6 +743,18 @@ fn environment_file_condition(record: &AgentRecord) -> Option<Condition> {
             crate::exposed::ENVIRONMENT_FILE_GUIDE,
         ),
     ))
+}
+
+/// Whether the agent's `postCreate` steps have all run, for an agent that declares any.
+fn post_create_condition(outcome: Option<&crate::sandbox::PostCreateOutcome>) -> Option<Condition> {
+    Some(match outcome? {
+        crate::sandbox::PostCreateOutcome::Completed => {
+            condition(Condition::POST_CREATE, ConditionStatus::True, "Completed", "")
+        }
+        crate::sandbox::PostCreateOutcome::Failed(message) => {
+            condition(Condition::POST_CREATE, ConditionStatus::False, "StepFailed", message)
+        }
+    })
 }
 
 /// Names the files that may hold real keys which the person agreed to let the agent read: in its bind
