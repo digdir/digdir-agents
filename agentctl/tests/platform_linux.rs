@@ -2246,7 +2246,7 @@ async fn a_failure_the_guest_wrote_in_the_record_is_reported_printable_and_bound
         "failed": {
             "step": "install",
             "boot": "boot-a",
-            "message": format!("\u{1b}]52;c;aGk=\u{7}\u{1b}[2J{}", "x".repeat(60_000)),
+            "message": format!("\u{1b}]52;c;aGk=\u{7}\u{1b}[2J\u{202e}\u{2028}{}", "x".repeat(60_000)),
         },
     });
     sandbox
@@ -2266,7 +2266,12 @@ async fn a_failure_the_guest_wrote_in_the_record_is_reported_printable_and_bound
     let Some(agent::sandbox::PostCreateOutcome::Failed(message)) = set_up.post_create else {
         panic!("the recorded failure is reported: {:?}", set_up.post_create);
     };
-    assert!(!message.chars().any(char::is_control), "{message:?}");
+    assert!(
+        !message
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '\u{202e}' | '\u{2028}')),
+        "{message:?}"
+    );
     assert!(
         message.chars().count() <= 1025,
         "{} characters",

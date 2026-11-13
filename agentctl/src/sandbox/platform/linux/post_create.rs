@@ -6,7 +6,13 @@
 //! rather than in the agent's status, which is stored only when a pass ends, so it is written as each step ends. The
 //! guest's boot id is what tells a later pass that the sandbox has booted since.
 
-use ::sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
+use std::time::Duration;
+
+use ::sandbox::{
+    SandboxHandle, SandboxPath,
+    execution::{ExecutionEvent, ExecutionSpec, StartExecutionRequest},
+};
+use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -33,15 +39,20 @@ const MAX_STATE: usize = 64 * 1024;
 const BOOT_ID: &str = "/proc/sys/kernel/random/boot_id";
 /// The most of a failure's message the condition carries.
 const MAX_MESSAGE: usize = 1024;
+/// The most of a failed step's output its message quotes, from the end, so the reason and where the log is always fit.
+const QUOTED_OUTPUT: usize = 400;
+/// The most of the end of a failed step's output agentd keeps as the guest sends it.
+const OUTPUT_TAIL: usize = 2048;
+/// How long agentd waits for the guest to kill a step it stopped waiting for.
+const KILL_LIMIT: Duration = Duration::from_secs(10);
 /// The exit code `timeout` returns when it stopped the step for running out of time.
 const TIMED_OUT: i32 = 124;
 /// The exit code when the step was killed: by `timeout`, when it ignored being stopped, or for want of memory.
 const KILLED: i32 = 137;
 /// Runs the step's commands with nothing to read and their output in its log. On failure it prints the end of the log,
-/// for the condition to quote. Only that end reaches agentd, so a step that prints without end fills the guest's disk
-/// rather than agentd's memory.
+/// for the condition to quote. `--` keeps commands that start with `-` from being read as the shell's options.
 const STEP_SCRIPT: &str = r#"log=$1 limit=$2 run=$3
-/usr/bin/timeout --kill-after=10s "$limit" /bin/sh -e -c "$run" </dev/null >"$log" 2>&1 && exit 0
+/usr/bin/timeout --kill-after=10s "$limit" /bin/sh -e -c -- "$run" </dev/null >"$log" 2>&1 && exit 0
 status=$?
 /usr/bin/tail -c 2048 "$log" >&2
 exit "$status""#;
@@ -133,20 +144,21 @@ pub(super) async fn run(
             ),
         });
         write_state(sandbox, &state).await?;
-        let output = sandbox.run_execution(execution(step, &log)?).await?;
-        if output.status.success() {
+        let end = run_step(sandbox, execution(step, &log)?).await?;
+        if matches!(end, StepEnd::Exited { code: 0, .. }) {
             state.completed.push(step.name.clone());
             state.failed = None;
             write_state(sandbox, &state).await?;
             started.complete().await;
             continue;
         }
-        let message = failure_message(step, &log, output.status.code, &output.stderr);
+        let message = failure_message(step, &log, &end);
         if let Some(failure) = &mut state.failed {
             failure.message.clone_from(&message);
         }
         write_state(sandbox, &state).await?;
-        started.complete().await;
+        // Left uncompleted, so progress shows the step as failed.
+        drop(started);
         return Ok(Some(failed(&message)));
     }
     Ok(Some(PostCreateOutcome::Completed))
@@ -166,14 +178,92 @@ fn execution(step: &PostCreateStep, log: &str) -> Result<ExecutionSpec, Error> {
     Ok(execution_spec(&command, false)?.with_working_directory(SandboxPath::new(HOME)))
 }
 
+/// How a step ended.
+enum StepEnd {
+    /// It exited with `code` after `elapsed`, having printed `stderr` last: the end of its log, when it failed.
+    Exited {
+        code: i32,
+        elapsed: Duration,
+        stderr: Vec<u8>,
+    },
+    /// agentd stopped waiting for it, and killed it.
+    OutOfTime,
+}
+
+/// How long a step may run before the guest's `timeout` stops it.
+fn step_limit() -> Duration {
+    Duration::from_secs(u64::from(POST_CREATE_STEP_TIMEOUT_MINUTES) * 60)
+}
+
+/// Runs a step, keeping only the end of what it prints, for no longer than its limit, the 10 seconds `timeout` gives a
+/// step that ignores being stopped, and half a minute to spare. The guest's `timeout` ends a step on its own. This
+/// bound holds when the guest keeps one from ending, such as with a FIFO at its log or a process it left holding its
+/// output.
+async fn run_step(sandbox: &SandboxHandle, spec: ExecutionSpec) -> Result<StepEnd, Error> {
+    let started_at = tokio::time::Instant::now();
+    let deadline = started_at + step_limit() + Duration::from_secs(40);
+    let Ok(started) = tokio::time::timeout_at(deadline, sandbox.start_execution(StartExecutionRequest::new(spec))).await
+    else {
+        return Ok(StepEnd::OutOfTime);
+    };
+    let started = started?;
+    let mut events = started.events;
+    let mut stderr = Vec::new();
+    loop {
+        let Ok(event) = tokio::time::timeout_at(deadline, events.next()).await else {
+            // Whatever keeps the step running is the guest's to end; agentd only waits so long.
+            let _killed = tokio::time::timeout(KILL_LIMIT, sandbox.kill_execution(&started.id)).await;
+            return Ok(StepEnd::OutOfTime);
+        };
+        match event.transpose()? {
+            Some(ExecutionEvent::Stderr(chunk)) => keep_end(&mut stderr, &chunk, OUTPUT_TAIL),
+            Some(ExecutionEvent::Exited(status)) => {
+                return Ok(StepEnd::Exited {
+                    code: status.code,
+                    elapsed: started_at.elapsed(),
+                    stderr,
+                });
+            }
+            Some(ExecutionEvent::Failed { message }) => {
+                return Err(Error::SandboxSetup(format!("a postCreate step could not run: {message}")));
+            }
+            // The step's own output goes to its log, and a start or an event a later backend adds says nothing of its end.
+            Some(_) => {}
+            None => {
+                return Err(Error::SandboxSetup(
+                    "a postCreate step ended without an exit status".into(),
+                ));
+            }
+        }
+    }
+}
+
+/// Appends `chunk` to `kept`, keeping only its last `limit` bytes.
+fn keep_end(kept: &mut Vec<u8>, chunk: &[u8], limit: usize) {
+    kept.extend_from_slice(&chunk[chunk.len().saturating_sub(limit)..]);
+    let excess = kept.len().saturating_sub(limit);
+    kept.drain(..excess);
+}
+
 /// Says which step failed and why, quoting the end of its output, and where the rest of it is.
-fn failure_message(step: &PostCreateStep, log: &str, code: i32, stderr: &[u8]) -> String {
-    let what = match code {
-        TIMED_OUT => format!("did not finish within {POST_CREATE_STEP_TIMEOUT_MINUTES} minutes"),
-        KILLED => format!("was killed, after {POST_CREATE_STEP_TIMEOUT_MINUTES} minutes or for want of memory"),
-        code => format!("exited with code {code}"),
+fn failure_message(step: &PostCreateStep, log: &str, end: &StepEnd) -> String {
+    let out_of_time = format!("did not finish within {POST_CREATE_STEP_TIMEOUT_MINUTES} minutes");
+    let (what, stderr) = match end {
+        StepEnd::OutOfTime => (out_of_time, &[][..]),
+        // `timeout` returns these once the step outlasts its limit. A step can return them sooner of its own accord.
+        StepEnd::Exited {
+            code: TIMED_OUT | KILLED,
+            elapsed,
+            stderr,
+        } if *elapsed >= step_limit() => (out_of_time, stderr.as_slice()),
+        StepEnd::Exited {
+            code: KILLED, stderr, ..
+        } => ("was killed, as when it runs out of memory".to_owned(), stderr.as_slice()),
+        StepEnd::Exited { code, stderr, .. } => (format!("exited with code {code}"), stderr.as_slice()),
     };
     let tail = last_lines(&String::from_utf8_lossy(stderr));
+    let skipped = tail.chars().count().saturating_sub(QUOTED_OUTPUT);
+    let tail = tail.chars().skip(skipped).collect::<String>();
     let tail = if tail.is_empty() {
         String::new()
     } else {
@@ -192,15 +282,27 @@ fn runs_again(log: &str) -> String {
 /// A failure, with its message as it may be shown in a terminal on the host. The message carries what the guest wrote,
 /// in a step's output or in the record, so it is kept to one line of printable characters and a bounded length.
 fn failed(message: &str) -> PostCreateOutcome {
-    let mut printable = message
-        .chars()
-        .map(|character| if character.is_control() { ' ' } else { character })
-        .collect::<String>();
+    let mut printable = message.chars().map(printable).collect::<String>();
     if let Some((end, _)) = printable.char_indices().nth(MAX_MESSAGE) {
         printable.truncate(end);
         printable.push('…');
     }
     PostCreateOutcome::Failed(printable)
+}
+
+/// `character`, or a space in place of one that could move or recolour a terminal, or reorder or break the line it
+/// shows.
+const fn printable(character: char) -> char {
+    if character.is_control()
+        || matches!(
+            character,
+            '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
+    {
+        ' '
+    } else {
+        character
+    }
 }
 
 async fn boot_id(sandbox: &SandboxHandle) -> Result<String, Error> {
@@ -241,30 +343,43 @@ async fn write_state(sandbox: &SandboxHandle, state: &State) -> Result<(), Error
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::{KILLED, TIMED_OUT, failure_message};
+    use super::{KILLED, StepEnd, TIMED_OUT, failure_message, keep_end, step_limit};
     use crate::PostCreateStep;
 
-    fn failed(code: i32) -> String {
+    fn failed(code: i32, elapsed: std::time::Duration) -> String {
         let step = PostCreateStep {
             name: "clone".into(),
             run: "git clone x".into(),
         };
-        failure_message(
-            &step,
-            "/var/lib/agent-post-create/clone.log",
+        let end = StepEnd::Exited {
             code,
-            b"fatal: not found\n",
-        )
+            elapsed,
+            stderr: b"fatal: not found\n".to_vec(),
+        };
+        failure_message(&step, "/var/lib/agent-post-create/clone.log", &end)
     }
 
     #[test]
     fn a_step_stopped_for_its_time_is_not_reported_as_exiting_on_its_own() {
         for code in [TIMED_OUT, KILLED] {
-            let message = failed(code);
-            assert!(!message.contains("exited with code"), "{message}");
+            let message = failed(code, step_limit());
+            assert!(message.contains("did not finish"), "{message}");
             assert!(message.contains("fatal: not found"), "{message}");
         }
-        assert!(failed(128).contains("exited with code 128"));
+        assert!(failed(128, step_limit()).contains("exited with code 128"));
+    }
+
+    #[test]
+    fn agentd_keeps_only_the_end_of_a_steps_output() {
+        let mut kept = Vec::new();
+        for _ in 0..1024 {
+            keep_end(&mut kept, &[b'x'; 1024], 2048);
+        }
+        keep_end(&mut kept, b"the end", 2048);
+        assert_eq!(kept.len(), 2048);
+        assert!(kept.ends_with(b"the end"));
+        keep_end(&mut kept, &[b'y'; 4096], 2048);
+        assert_eq!(kept, [b'y'; 2048]);
     }
 }
 
@@ -323,12 +438,14 @@ mod shell_tests {
             (3, "no input\n".into(), "no input\n".into()),
             "a step has nothing to read, and keeps its exit code"
         );
+        assert_eq!(step("-x", "10m").0, 127, "a command that starts with - is a command, not an option");
         let started = std::time::Instant::now();
         let (code, ..) = step("sleep 30", "1s");
         assert_eq!(code, super::TIMED_OUT);
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
-            "a step is stopped at its limit"
-        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "a step is stopped at its limit");
+        let started = std::time::Instant::now();
+        let (code, ..) = step("trap '' TERM; sleep 60", "1s");
+        assert_eq!(code, super::KILLED);
+        assert!(started.elapsed() < std::time::Duration::from_secs(20), "a step that ignores being stopped is killed");
     }
 }

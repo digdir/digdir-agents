@@ -49,13 +49,15 @@ impl ExecutionService {
         record.reject_stopped()?;
         let record = match self.convergence.converge(name, wait).await {
             Ok(record) => record,
-            Err(error) => {
+            // The failure a failed postCreate step leaves, which the agent's status still names.
+            Err(error @ Error::Invalid(_)) => {
                 let record = self.agents.get_by_name(name).await?;
-                if !record.agent.status.post_create_failed() {
+                if record.agent.metadata.deletion_timestamp.is_some() || !record.agent.status.post_create_failed() {
                     return Err(error);
                 }
                 record
             }
+            Err(error) => return Err(error),
         };
         record.reject_stopped()?;
         target(record, name)
