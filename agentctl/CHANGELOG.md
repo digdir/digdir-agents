@@ -22,6 +22,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
   - `[]` on a list of entries is refused. Write `null` instead
   - a key named twice in one list is refused. Merge the two entries
   - `null` on a field the base doesn't set is no longer an error
+- `agentctl new` and `agentctl update` on a linked Git worktree say before the agent builder starts that Git does not work in it, so review what it writes with `git status` and `git diff` on your machine, or run them in a clone. ([#486](https://github.com/digdir/digdir-agents/issues/486))
 
 ### Fixed
 
