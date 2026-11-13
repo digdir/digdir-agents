@@ -70,6 +70,9 @@ agentctl apply --variant nested --wait
 - **Name:** `apply` updates the agent of the manifest's name, and refuses one first applied from another directory.
   Others may share this `agentctl`, such as the user on a host or other sessions in an agent: check
   `agentctl get agents` first, and pass `--name` to give yours a name of its own.
+- **Yours:** on an agent you create for your own task, pass `--label managed-by=NAME`, where NAME says what created
+  it, such as `claude-code`. Then `agentctl get agents -l managed-by=NAME` lists only yours, and clients that keep host
+  lists leave them alone. So leave it off an agent you set up for the user to open in their editor.
 - **Env file:** only for a manifest that still reads one. Without `--env-file`, the first `apply` uses `.env` beside
   the manifest, and later ones the file it recorded.
 - **Image:** `type: build` builds the image first and takes minutes; `type: reference` pulls it.

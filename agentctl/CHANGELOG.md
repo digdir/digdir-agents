@@ -16,8 +16,9 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 ### Added
 
 - Agent labels say what an agent is for, such as `client: t3code`: ([client discovery](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/design/client-discovery.md#labels), [#405](https://github.com/digdir/digdir-agents/issues/405))
-  - set them in a manifest's `metadata.labels`, or from the host with `agentctl label agent/NAME KEY=VALUE` and `agentctl apply --label`, which a later `apply` keeps
+  - declare them in `metadata.labels`, or set them with `agentctl label agent/NAME KEY=VALUE` or `apply --label`, which a later `apply` keeps
   - `KEY-` removes one, and no change restarts the agent
+  - `agentctl get agents -l client=t3code` selects by them, also with `--watch`, and `-L client` adds a column
 - Editors you open from `agentctl tui` open the repository the agent's image clones, when it clones one, instead of `/home/agent/code`. `agentctl ssh-info` gives that folder as `projectDirectory`, and `agentctl get agents -o json` lists every repository the image clones under `status.sandbox.projects`. ([#405](https://github.com/digdir/digdir-agents/issues/405))
 - `status.phase` in `agentctl get agents -o json` says in one word what you can do with an agent now, such as `Ready`, `Provisioning`, `Stopped` or `Retrying`, the same state `agentctl tui` shows. The `STATUS` column of `agentctl get agents` shows it too. ([#405](https://github.com/digdir/digdir-agents/issues/405))
 - `agentctl get agents -o json` gives each agent a `metadata.uid` that stays the same until the agent is deleted, so a tool that remembers an agent can tell when one with the same name is a new agent. ([#301](https://github.com/digdir/digdir-agents/issues/301))
@@ -31,6 +32,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
   - `[]` on a list of entries is refused. Write `null` instead
   - a key named twice in one list is refused. Merge the two entries
   - `null` on a field the base doesn't set is no longer an error
+- Coding agents that follow the bundled `agentctl` skill label the agents they create for their own task with `managed-by`, so clients that keep host lists can leave them out. ([#405](https://github.com/digdir/digdir-agents/issues/405))
 
 ### Fixed
 
