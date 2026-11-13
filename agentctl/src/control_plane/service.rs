@@ -262,7 +262,9 @@ impl ControlPlane {
                 Err(error) => return Err(error),
                 Ok(record) => {
                     self.notifier.notify(record.id);
-                    return Ok(projected(record));
+                    let mut agent = projected(record);
+                    agent.status.phase = Some(agent.phase());
+                    return Ok(agent);
                 }
             }
         }
@@ -609,6 +611,7 @@ impl ControlPlane {
         let progress = self.provisioning.summary(record.id);
         let mut agent = projected(record);
         agent.status.progress = progress;
+        agent.status.phase = Some(agent.phase());
         agent
     }
 }
