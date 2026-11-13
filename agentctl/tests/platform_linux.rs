@@ -2545,3 +2545,37 @@ async fn a_failed_post_create_step_is_not_reported_as_completed_in_progress() {
         "the failed step is shown as done"
     );
 }
+
+/// The message of a failed step says where its log is and quotes the end of its output, the line that most often says
+/// why, even when a line before it is long, as a command echoed by `set -x` or a response body on one line is.
+#[tokio::test(flavor = "local")]
+async fn a_failed_post_create_step_keeps_the_end_of_its_output_and_its_log_in_the_message() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(directory.path(), &[("clone", "git clone private")]);
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 1).await;
+    no_record_yet(&backend);
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    // Well within the 2 KiB of the log the step prints when it fails.
+    let output = format!("+ git clone {}\nfatal: repository not found\n", "x".repeat(1_200));
+    backend.queue_execution_events_matching(
+        is_step("git clone private"),
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stderr(output.into()),
+            ExecutionEvent::Exited(ExitStatus { code: 128 }),
+        ],
+    );
+
+    let set_up = Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a failed step fails no setup");
+
+    let Some(agent::sandbox::PostCreateOutcome::Failed(message)) = set_up.post_create else {
+        panic!("a failed step is reported: {:?}", set_up.post_create);
+    };
+    for part in ["fatal: repository not found", "/var/lib/agent-post-create/clone.log"] {
+        assert!(message.contains(part), "{part:?} is cut from {message}");
+    }
+}
