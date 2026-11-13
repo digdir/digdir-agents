@@ -80,8 +80,11 @@ impl std::fmt::Display for ProviderId {
 }
 
 /// Sticky runtime assignment for one agent's sandbox.
+///
+/// It is part of the agent's [`Status`](crate::Status), so unknown fields are tolerated for the same reason: a build
+/// can read what a newer `agentd` recorded.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase", tag = "state")]
+#[serde(rename_all = "camelCase", tag = "state")]
 pub enum Assignment {
     /// A Provider has been durably selected before external effects begin.
     Selected {
@@ -107,6 +110,10 @@ pub enum Assignment {
         /// The host login each installed harness with one uses, which later passes keep.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         logins: BTreeMap<crate::Harness, crate::harness::LoginName>,
+        /// The checkouts the image clones into the workspace at boot, as paths in the sandbox. They are read from
+        /// what the image declares, so a clone may still be under way, or may have failed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        projects: Vec<String>,
     },
 }
 
@@ -143,6 +150,15 @@ impl Assignment {
         match self {
             Self::Selected { .. } => None,
             Self::Materialized { harnesses, .. } => Some(harnesses),
+        }
+    }
+
+    /// Returns the checkouts the image clones into the workspace: none before the sandbox is materialized.
+    #[must_use]
+    pub fn projects(&self) -> &[String] {
+        match self {
+            Self::Selected { .. } => &[],
+            Self::Materialized { projects, .. } => projects,
         }
     }
 
@@ -295,6 +311,8 @@ pub struct EnsureOutcome {
     pub missing_sources: Vec<String>,
     /// The skills setup placed in the harnesses' skill folders.
     pub skills: PlacedSkills,
+    /// The checkouts the image clones into the workspace.
+    pub projects: Vec<String>,
 }
 
 /// What platform setup did in the sandbox.
@@ -305,6 +323,8 @@ pub struct PlatformSetup {
     /// The skills it placed in the harnesses' skill folders, having removed those an earlier pass
     /// placed that the agent no longer declares.
     pub skills: PlacedSkills,
+    /// The checkouts the image clones into the workspace at boot, as paths in the sandbox.
+    pub projects: Vec<String>,
 }
 
 /// Runtime-selectable setup for an operating system reported by a materialized sandbox.
@@ -435,6 +455,7 @@ impl Service {
             nested_sandboxes: outcome.nested_sandboxes,
             missing_sources: set_up.missing_sources,
             skills: set_up.skills,
+            projects: set_up.projects,
         })
     }
 

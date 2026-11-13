@@ -57,6 +57,7 @@ fn ready_record(name: &str, id: AgentId) -> AgentRecord {
                 .map(|installation| installation.kind)
                 .collect(),
             skills: std::collections::BTreeMap::new(),
+            projects: Vec::new(),
         }),
         vec![Condition {
             kind: "Ready".into(),

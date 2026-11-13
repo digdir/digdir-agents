@@ -635,6 +635,7 @@ async fn descriptor_json_is_the_documented_shape() {
         "configFile",
         "proxyCommand",
         "workingDirectory",
+        "projectDirectory",
     ];
     expected.sort_unstable();
     assert_eq!(object.keys().map(String::as_str).collect::<Vec<_>>(), expected);
@@ -645,6 +646,48 @@ async fn descriptor_json_is_the_documented_shape() {
     assert_eq!(value["user"], "agent");
     assert_eq!(value["proxyCommand"], fixture.proxy_command("worker"));
     assert_eq!(value["workingDirectory"], "/home/agent/code");
+    assert_eq!(
+        value["projectDirectory"], "/home/agent/code",
+        "an agent whose image clones nothing opens in the working directory"
+    );
     let decoded: ssh::AccessInfo = serde_json::from_value(value).expect("round trip");
     assert_eq!(decoded, info);
+}
+
+/// Editors open the one checkout the image clones, and the working directory when it clones several or none.
+#[tokio::test(flavor = "local")]
+async fn editors_open_the_only_checkout_the_image_clones() {
+    let fixture = Fixture::new();
+    let mut worker = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", true);
+    let project_directory = |worker: &AgentRecord, projects: &[&str]| {
+        let mut worker = worker.clone();
+        worker.agent.status.sandbox = Some(agent::sandbox::Assignment::Materialized {
+            provider: agent::sandbox::ProviderId::new("memory").expect("Provider ID"),
+            id: "3f978c33-4d43-4ea4-b58d-10b90ef166af".parse().expect("Sandbox ID"),
+            harnesses: Vec::new(),
+            skills: std::collections::BTreeMap::new(),
+            logins: std::collections::BTreeMap::new(),
+            projects: projects.iter().map(|&project| project.to_owned()).collect(),
+        });
+        fixture.access.info(&worker).expect("descriptor").project_directory
+    };
+
+    assert_eq!(
+        project_directory(&worker, &["/home/agent/code/digdir-agents"]),
+        "/home/agent/code/digdir-agents"
+    );
+    assert_eq!(
+        project_directory(
+            &worker,
+            &["/home/agent/code/digdir-agents", "/home/agent/code/altinn-profile"]
+        ),
+        "/home/agent/code"
+    );
+    assert_eq!(project_directory(&worker, &[]), "/home/agent/code");
+    worker.agent.status.sandbox = None;
+    assert_eq!(
+        fixture.access.info(&worker).expect("descriptor").project_directory,
+        "/home/agent/code",
+        "an agent without a sandbox yet opens in the working directory"
+    );
 }
