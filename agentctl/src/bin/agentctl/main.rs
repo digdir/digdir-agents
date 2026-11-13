@@ -3636,6 +3636,22 @@ mod tests {
         );
     }
 
+    /// `apply --wait` fails with a failed `postCreate` step's reason. A step that hangs fails only once its time runs
+    /// out, after the image, the boot and the rest of setup, so a default wait no longer than that time ends in a
+    /// timeout error before the reason can show.
+    #[test]
+    fn apply_waits_by_default_for_longer_than_a_post_create_step_may_run() {
+        let applied = Arguments::try_parse_from(["agentctl", "apply", "--wait"]).expect("waiting apply");
+        let Command::Apply { timeout, .. } = applied.command else {
+            panic!("expected apply command");
+        };
+        let step = Duration::from_secs(u64::from(agent::manifest::POST_CREATE_STEP_TIMEOUT_MINUTES) * 60);
+        assert!(
+            timeout > step,
+            "`apply --wait` gives up after {timeout:?}, before a step that hangs fails after {step:?}"
+        );
+    }
+
     #[test]
     fn apply_defaults_to_agent_yaml_and_accepts_only_variant_names() {
         let default = Arguments::try_parse_from(["agentctl", "apply"]).expect("default apply");

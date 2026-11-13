@@ -10,7 +10,8 @@ use agent::{
     sandbox::{Assignment, PlacedSkills, PlatformAdapter as _, ProviderId, platform::Linux},
 };
 use sandbox::{
-    EnsureSandboxRequest, Platform, SandboxPath, SandboxService,
+    EnsureSandboxRequest, LocalFuture, Platform, SandboxId, SandboxPath, SandboxService,
+    backend::SandboxBackend,
     execution::{ExecutionEvent, ExitStatus, Program},
     memory,
 };
@@ -1767,6 +1768,10 @@ async fn linux_setup_leaves_out_missing_optional_sources_until_they_exist() {
             "spec.skills[0].source skills/review",
         ]
     );
+    assert_eq!(
+        missing.post_create, None,
+        "an agent without postCreate steps reports none"
+    );
     let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
     assert!(
         instructions.ends_with("spec.instructions -->\nrequired\n"),
@@ -1933,4 +1938,675 @@ async fn linux_setup_commits_as_the_agents_account_unless_the_manifest_names_som
         ]
     );
     assert_eq!(git_settings_written(&[], &NO_ACCOUNTS).await, []);
+}
+
+/// A record in `directory` whose agent declares `steps` as its `postCreate` steps, each a name and its commands.
+fn post_create_record(directory: &std::path::Path, steps: &[(&str, &str)]) -> AgentRecord {
+    let mut record = optional_sources_record(directory, "personal.md", "skills/review");
+    record.agent.spec.instructions.truncate(1);
+    record.agent.spec.skills.clear();
+    record.agent.spec.post_create = steps
+        .iter()
+        .map(|(name, run)| agent::PostCreateStep {
+            name: (*name).into(),
+            run: (*run).into(),
+        })
+        .collect();
+    record
+}
+
+/// The commands of the `postCreate` steps `backend` ran since its first `executions` executions, with the log each
+/// wrote to. A step's commands are the last argument of the shell that runs it, and its log the one in the step folder.
+fn steps_run_since(backend: &memory::Provider, executions: usize) -> Vec<(String, String)> {
+    backend
+        .execution_specs()
+        .into_iter()
+        .skip(executions)
+        .filter_map(|spec| match spec.program() {
+            Program::Command { executable, args } if executable.as_str() == "/bin/sh" => Some((
+                args.last()?.clone(),
+                args.iter()
+                    .find(|arg| arg.starts_with("/var/lib/agent-post-create/"))?
+                    .clone(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+fn is_step(run: &'static str) -> impl Fn(&sandbox::execution::ExecutionSpec) -> bool {
+    move |spec| {
+        matches!(spec.program(), Program::Command { executable, args }
+            if executable.as_str() == "/bin/sh" && args.last().map(String::as_str) == Some(run))
+    }
+}
+
+/// Answers the next check for a record of the steps that ran, in a sandbox that has none yet, as a guest does.
+fn no_record_yet(backend: &memory::Provider) {
+    backend.queue_execution_events_matching(
+        |spec| is_presence_check(spec, "-e", "/var/lib/agent-post-create/state.json"),
+        completed(1),
+    );
+}
+
+fn is_boot_id_read(spec: &sandbox::execution::ExecutionSpec) -> bool {
+    matches!(spec.program(), Program::Command { executable, args }
+        if executable.as_str() == "/bin/cat" && args == &["/proc/sys/kernel/random/boot_id"])
+}
+
+fn printed(stdout: &str) -> Vec<ExecutionEvent> {
+    vec![
+        ExecutionEvent::Started { process_id: None },
+        ExecutionEvent::Stdout(stdout.to_owned().into()),
+        ExecutionEvent::Exited(ExitStatus { code: 0 }),
+    ]
+}
+
+/// The steps run in order, as the agent user in its home with their output in a log, and a later pass runs none of them
+/// again.
+#[tokio::test(flavor = "local")]
+async fn linux_setup_runs_post_create_steps_once_in_order() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(
+        directory.path(),
+        &[("dotfiles", "git clone dotfiles"), ("install", "./install")],
+    );
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 2).await;
+    let platform = Linux::new(PLATFORM_API_URL);
+    no_record_yet(&backend);
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("setup");
+
+    assert_eq!(set_up.post_create, Some(agent::sandbox::PostCreateOutcome::Completed));
+    assert_eq!(
+        steps_run_since(&backend, 0),
+        [
+            (
+                "git clone dotfiles".to_owned(),
+                "/var/lib/agent-post-create/dotfiles.log".to_owned()
+            ),
+            (
+                "./install".to_owned(),
+                "/var/lib/agent-post-create/install.log".to_owned()
+            ),
+        ]
+    );
+    let step = backend
+        .execution_specs()
+        .into_iter()
+        .find(is_step("./install"))
+        .expect("the install step");
+    assert_eq!(step.working_directory().map(SandboxPath::as_str), Some("/home/agent"));
+    assert_eq!(step.environment().get("HOME").map(String::as_str), Some("/home/agent"));
+
+    let executions = backend.execution_specs().len();
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a later pass");
+    assert_eq!(set_up.post_create, Some(agent::sandbox::PostCreateOutcome::Completed));
+    assert!(steps_run_since(&backend, executions).is_empty(), "no step runs twice");
+}
+
+/// A failed step stops the ones after it and is reported with the end of its output. Further passes in the same boot
+/// leave it alone, and once the guest has booted again it runs again, followed by the rest.
+#[tokio::test(flavor = "local")]
+async fn a_failed_post_create_step_stops_the_rest_and_runs_again_after_a_boot() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(
+        directory.path(),
+        &[("first", "true"), ("clone", "git clone private"), ("last", "./install")],
+    );
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 3).await;
+    let platform = Linux::new(PLATFORM_API_URL);
+    no_record_yet(&backend);
+    // The step prints the end of its log when it fails, here with a terminal escape the host must not pass on.
+    backend.queue_execution_events_matching(
+        is_step("git clone private"),
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stderr("Cloning into 'private'...\n\u{1b}[31mfatal: repository not found\n".into()),
+            ExecutionEvent::Exited(ExitStatus { code: 128 }),
+        ],
+    );
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a failed step fails no setup");
+
+    let Some(agent::sandbox::PostCreateOutcome::Failed(message)) = set_up.post_create else {
+        panic!("a failed step is reported: {:?}", set_up.post_create);
+    };
+    for part in [
+        "\"clone\"",
+        "code 128",
+        "Cloning into 'private'...",
+        "fatal: repository not found",
+        "/var/lib/agent-post-create/clone.log",
+    ] {
+        assert!(message.contains(part), "{part:?} in {message}");
+    }
+    assert!(!message.contains('\u{1b}'), "{message:?}");
+    let expected = agent::sandbox::PostCreateOutcome::Failed(message);
+    assert_eq!(
+        steps_run_since(&backend, 0)
+            .into_iter()
+            .map(|(run, _)| run)
+            .collect::<Vec<_>>(),
+        ["true", "git clone private"]
+    );
+
+    let executions = backend.execution_specs().len();
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a pass in the same boot");
+    assert_eq!(set_up.post_create, Some(expected), "the failure is still reported");
+    assert!(
+        steps_run_since(&backend, executions).is_empty(),
+        "a failed step does not run on every pass"
+    );
+
+    let executions = backend.execution_specs().len();
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-b\n"));
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a pass after a boot");
+    assert_eq!(set_up.post_create, Some(agent::sandbox::PostCreateOutcome::Completed));
+    assert_eq!(
+        steps_run_since(&backend, executions)
+            .into_iter()
+            .map(|(run, _)| run)
+            .collect::<Vec<_>>(),
+        ["git clone private", "./install"],
+        "the step that succeeded before does not run again"
+    );
+}
+
+/// The record of the steps that ran is in a folder the agent user owns, and is read on every pass of a ready agent. One
+/// that setup cannot read back, such as one cut short or changed in the guest, must not make the steps that succeeded
+/// run again under the agent's sessions.
+#[tokio::test(flavor = "local")]
+async fn a_post_create_record_setup_cannot_read_back_runs_no_step_that_succeeded_again() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(
+        directory.path(),
+        &[("dotfiles", "git clone dotfiles"), ("install", "./install")],
+    );
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 2).await;
+    let platform = Linux::new(PLATFORM_API_URL);
+    no_record_yet(&backend);
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("setup");
+    assert_eq!(set_up.post_create, Some(agent::sandbox::PostCreateOutcome::Completed));
+    let state = read_file(&sandbox, "/var/lib/agent-post-create/state.json").await;
+    assert!(!state.is_empty(), "the steps that ran are recorded");
+
+    // What a guest process can leave behind in a folder its user owns.
+    sandbox
+        .write_file(
+            &SandboxPath::new("/var/lib/agent-post-create/state.json"),
+            Box::pin(Cursor::new(state[..state.len() / 2].to_vec())),
+        )
+        .await
+        .expect("damage the record");
+    let executions = backend.execution_specs().len();
+    let later = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a damaged record fails no setup");
+    assert!(
+        matches!(&later.post_create, Some(agent::sandbox::PostCreateOutcome::Failed(message)) if message.contains("state.json")),
+        "the damaged record is reported: {:?}",
+        later.post_create
+    );
+
+    assert_eq!(
+        steps_run_since(&backend, executions),
+        [],
+        "a step that succeeded never runs again in that sandbox"
+    );
+}
+
+/// A step cut short while it runs, as when agentd restarts or the guest stops responding, counts as failed in that
+/// boot: the next pass reports it rather than running it again, and a pass after a boot runs it again.
+#[tokio::test(flavor = "local")]
+async fn a_post_create_step_cut_short_runs_again_only_after_a_boot() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(directory.path(), &[("install", "./install")]);
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 3).await;
+    let platform = Linux::new(PLATFORM_API_URL);
+    no_record_yet(&backend);
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    backend.queue_execution_events_matching(
+        is_step("./install"),
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Failed {
+                message: "the guest closed the connection".into(),
+            },
+        ],
+    );
+    platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect_err("a pass that loses its step fails");
+
+    let executions = backend.execution_specs().len();
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a pass in the same boot");
+    assert!(
+        matches!(&set_up.post_create, Some(agent::sandbox::PostCreateOutcome::Failed(message)) if message.contains("did not finish")),
+        "{:?}",
+        set_up.post_create
+    );
+    assert!(
+        steps_run_since(&backend, executions).is_empty(),
+        "a step runs at most once per boot"
+    );
+
+    let executions = backend.execution_specs().len();
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-b\n"));
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a pass after a boot");
+    assert_eq!(set_up.post_create, Some(agent::sandbox::PostCreateOutcome::Completed));
+    assert_eq!(steps_run_since(&backend, executions).len(), 1);
+}
+
+/// What the guest writes in the record reaches a terminal on the host only as one bounded line of printable text.
+#[tokio::test(flavor = "local")]
+async fn a_failure_the_guest_wrote_in_the_record_is_reported_printable_and_bounded() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(directory.path(), &[("install", "./install")]);
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 1).await;
+    let platform = Linux::new(PLATFORM_API_URL);
+    let forged = serde_json::json!({
+        "completed": [],
+        "failed": {
+            "step": "install",
+            "boot": "boot-a",
+            "message": format!("\u{1b}]52;c;aGk=\u{7}\u{1b}[2J\u{202e}\u{2028}{}", "x".repeat(60_000)),
+        },
+    });
+    sandbox
+        .write_file(
+            &SandboxPath::new("/var/lib/agent-post-create/state.json"),
+            Box::pin(Cursor::new(serde_json::to_vec(&forged).expect("JSON"))),
+        )
+        .await
+        .expect("a record the guest wrote");
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("setup");
+
+    let Some(agent::sandbox::PostCreateOutcome::Failed(message)) = set_up.post_create else {
+        panic!("the recorded failure is reported: {:?}", set_up.post_create);
+    };
+    assert!(
+        !message
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '\u{202e}' | '\u{2028}')),
+        "{message:?}"
+    );
+    assert!(
+        message.chars().count() <= 1025,
+        "{} characters",
+        message.chars().count()
+    );
+}
+
+/// A guest whose `postCreate` step's Execution starts and then never ends, as it does when a process the step left
+/// holds the Execution's output open, when the step's log is a FIFO its shell waits on before `timeout` starts, or when
+/// the guest replaced `timeout`. Everything else is the in-memory provider's.
+struct StepNeverEnds {
+    inner: Rc<memory::Provider>,
+    run: &'static str,
+}
+
+impl sandbox::provider::SandboxProvider for StepNeverEnds {
+    fn backend(&self) -> &dyn SandboxBackend {
+        self
+    }
+
+    fn image_backend(&self) -> &dyn sandbox::image::ImageBackend {
+        sandbox::provider::SandboxProvider::image_backend(&*self.inner)
+    }
+}
+
+impl SandboxBackend for StepNeverEnds {
+    fn capabilities<'a>(
+        &'a self,
+        platform: &'a Platform,
+    ) -> LocalFuture<'a, Result<sandbox::backend::SandboxBackendCapabilities, sandbox::Error>> {
+        SandboxBackend::capabilities(&*self.inner, platform)
+    }
+
+    fn create(
+        &self,
+        request: sandbox::backend::CreateSandboxRequest,
+    ) -> sandbox::PendingOperation<'_, sandbox::Sandbox> {
+        SandboxBackend::create(&*self.inner, request)
+    }
+
+    fn update_resources<'a>(
+        &'a self,
+        id: &'a SandboxId,
+        resources: sandbox::SandboxResources,
+    ) -> sandbox::PendingOperation<'a, sandbox::Sandbox> {
+        SandboxBackend::update_resources(&*self.inner, id, resources)
+    }
+
+    fn update_environment<'a>(
+        &'a self,
+        id: &'a SandboxId,
+        environment: std::collections::BTreeMap<String, String>,
+    ) -> sandbox::PendingOperation<'a, sandbox::Sandbox> {
+        SandboxBackend::update_environment(&*self.inner, id, environment)
+    }
+
+    fn find<'a>(&'a self, name: &'a sandbox::SandboxName) -> LocalFuture<'a, Result<sandbox::Sandbox, sandbox::Error>> {
+        SandboxBackend::find(&*self.inner, name)
+    }
+
+    fn inspect<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<sandbox::Sandbox, sandbox::Error>> {
+        SandboxBackend::inspect(&*self.inner, id)
+    }
+
+    fn start<'a>(&'a self, id: &'a SandboxId) -> sandbox::PendingOperation<'a, ()> {
+        SandboxBackend::start(&*self.inner, id)
+    }
+
+    fn stop<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), sandbox::Error>> {
+        SandboxBackend::stop(&*self.inner, id)
+    }
+
+    fn kill<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), sandbox::Error>> {
+        SandboxBackend::kill(&*self.inner, id)
+    }
+
+    fn delete<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), sandbox::Error>> {
+        SandboxBackend::delete(&*self.inner, id)
+    }
+
+    fn open_network_endpoint<'a>(
+        &'a self,
+        id: &'a SandboxId,
+    ) -> LocalFuture<'a, Result<sandbox::network::NetworkEndpoint, sandbox::Error>> {
+        SandboxBackend::open_network_endpoint(&*self.inner, id)
+    }
+
+    fn start_execution<'a>(
+        &'a self,
+        sandbox_id: &'a SandboxId,
+        request: sandbox::execution::StartExecutionRequest,
+    ) -> LocalFuture<'a, Result<sandbox::execution::StartedExecution, sandbox::Error>> {
+        if !is_step(self.run)(request.spec()) {
+            return SandboxBackend::start_execution(&*self.inner, sandbox_id, request);
+        }
+        let id = request.id().clone();
+        Box::pin(async move {
+            let started = futures_util::stream::iter([Ok(ExecutionEvent::Started { process_id: None })]);
+            Ok(sandbox::execution::StartedExecution {
+                id,
+                events: Box::pin(futures_util::StreamExt::chain(started, futures_util::stream::pending())),
+            })
+        })
+    }
+
+    fn start_terminal_execution<'a>(
+        &'a self,
+        sandbox_id: &'a SandboxId,
+        request: sandbox::terminal::StartTerminalExecutionRequest,
+    ) -> LocalFuture<'a, Result<sandbox::terminal::StartedTerminalExecution, sandbox::Error>> {
+        SandboxBackend::start_terminal_execution(&*self.inner, sandbox_id, request)
+    }
+
+    fn attach_terminal<'a>(
+        &'a self,
+        sandbox_id: &'a SandboxId,
+        request: sandbox::terminal::AttachTerminalRequest,
+    ) -> LocalFuture<'a, Result<sandbox::terminal::TerminalAttachOutcome, sandbox::Error>> {
+        SandboxBackend::attach_terminal(&*self.inner, sandbox_id, request)
+    }
+
+    fn terminate_execution<'a>(
+        &'a self,
+        _sandbox_id: &'a SandboxId,
+        _execution_id: &'a sandbox::execution::ExecutionId,
+    ) -> LocalFuture<'a, Result<(), sandbox::Error>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn kill_execution<'a>(
+        &'a self,
+        _sandbox_id: &'a SandboxId,
+        _execution_id: &'a sandbox::execution::ExecutionId,
+    ) -> LocalFuture<'a, Result<(), sandbox::Error>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn read_file<'a>(
+        &'a self,
+        sandbox_id: &'a SandboxId,
+        path: &'a SandboxPath,
+    ) -> LocalFuture<'a, Result<sandbox::file_transfer::ByteReader, sandbox::Error>> {
+        SandboxBackend::read_file(&*self.inner, sandbox_id, path)
+    }
+
+    fn write_file<'a>(
+        &'a self,
+        sandbox_id: &'a SandboxId,
+        path: &'a SandboxPath,
+        contents: sandbox::file_transfer::ByteReader,
+    ) -> LocalFuture<'a, Result<(), sandbox::Error>> {
+        SandboxBackend::write_file(&*self.inner, sandbox_id, path, contents)
+    }
+
+    fn ensure_volume(
+        &self,
+        request: sandbox::volume::EnsureVolumeRequest,
+    ) -> sandbox::PendingOperation<'_, sandbox::volume::Volume> {
+        SandboxBackend::ensure_volume(&*self.inner, request)
+    }
+
+    fn find_volume<'a>(
+        &'a self,
+        name: &'a sandbox::volume::VolumeName,
+    ) -> LocalFuture<'a, Result<sandbox::volume::Volume, sandbox::Error>> {
+        SandboxBackend::find_volume(&*self.inner, name)
+    }
+
+    fn delete_volume<'a>(&'a self, id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), sandbox::Error>> {
+        SandboxBackend::delete_volume(&*self.inner, id)
+    }
+}
+
+/// The guest is not trusted, so it cannot be what bounds a step. A step that never ends, by holding its Execution's
+/// output open from a process it left, by a FIFO at its log, or by a `timeout` the guest replaced, must not hold the
+/// agent's setup pass for longer than a step may run: while that pass runs, `exec`, a graceful `stop`, `restart`,
+/// `delete` and `apply --wait` all wait for it, and the agent takes one of the controller's concurrent passes.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_post_create_step_the_guest_never_ends_holds_setup_no_longer_than_a_step_may_run() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(directory.path(), &[("install", "./install")]);
+    let inner = Rc::new(memory::Provider::new());
+    inner.queue_execution_events_matching(
+        is_claude_version,
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
+            ExecutionEvent::Exited(ExitStatus { code: 0 }),
+        ],
+    );
+    inner.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    no_record_yet(&inner);
+    inner.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    let guest = Rc::new(StepNeverEnds {
+        inner: inner.clone(),
+        run: "./install",
+    });
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
+    let sandbox = SandboxService::new(guest)
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+
+    // The step's own limit, the grace `timeout` gives it after, and a minute to spare.
+    let bound =
+        std::time::Duration::from_secs(u64::from(agent::manifest::POST_CREATE_STEP_TIMEOUT_MINUTES) * 60 + 10 + 60);
+    let set_up = tokio::time::timeout(
+        bound,
+        Linux::new(PLATFORM_API_URL).setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase()),
+    )
+    .await;
+    assert!(
+        set_up.is_ok(),
+        "setup still waits on the step {bound:?} after it started, for as long as the guest keeps it running"
+    );
+}
+
+/// A step that fails is not shown as done in the progress the person watches, such as `apply --wait`'s, where the
+/// failure that follows would then contradict it.
+#[tokio::test(flavor = "local")]
+async fn a_failed_post_create_step_is_not_reported_as_completed_in_progress() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(directory.path(), &[("clone", "git clone private")]);
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 1).await;
+    no_record_yet(&backend);
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    backend.queue_execution_events_matching(
+        is_step("git clone private"),
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stderr("fatal: repository not found\n".into()),
+            ExecutionEvent::Exited(ExitStatus { code: 128 }),
+        ],
+    );
+    let events = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let progress = sandbox::ProgressReporter::from_callback({
+        let events = events.clone();
+        move |event| events.borrow_mut().push(event)
+    })
+    .steps();
+
+    let set_up = Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &progress)
+        .await
+        .expect("a failed step fails no setup");
+    assert!(
+        matches!(set_up.post_create, Some(agent::sandbox::PostCreateOutcome::Failed(_))),
+        "{:?}",
+        set_up.post_create
+    );
+
+    let events = events.borrow();
+    let step = events
+        .iter()
+        .find_map(|event| match event {
+            sandbox::ProgressEvent::StepStarted { id, name, .. } if name.contains("clone") => Some(id.clone()),
+            _ => None,
+        })
+        .expect("the step is shown");
+    let ended = events.iter().find_map(|event| match event {
+        sandbox::ProgressEvent::StepEnded { id, outcome, .. } if *id == step => Some(*outcome),
+        _ => None,
+    });
+    assert_ne!(
+        ended,
+        Some(sandbox::Outcome::Completed),
+        "the failed step is shown as done"
+    );
+}
+
+/// The message of a failed step says where its log is and quotes the end of its output, the line that most often says
+/// why, even when a line before it is long, as a command echoed by `set -x` or a response body on one line is.
+#[tokio::test(flavor = "local")]
+async fn a_failed_post_create_step_keeps_the_end_of_its_output_and_its_log_in_the_message() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(directory.path(), &[("clone", "git clone private")]);
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 1).await;
+    no_record_yet(&backend);
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    // Well within the 2 KiB of the log the step prints when it fails.
+    let output = format!("+ git clone {}\nfatal: repository not found\n", "x".repeat(1_200));
+    backend.queue_execution_events_matching(
+        is_step("git clone private"),
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stderr(output.into()),
+            ExecutionEvent::Exited(ExitStatus { code: 128 }),
+        ],
+    );
+
+    let set_up = Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a failed step fails no setup");
+
+    let Some(agent::sandbox::PostCreateOutcome::Failed(message)) = set_up.post_create else {
+        panic!("a failed step is reported: {:?}", set_up.post_create);
+    };
+    for part in ["fatal: repository not found", "/var/lib/agent-post-create/clone.log"] {
+        assert!(message.contains(part), "{part:?} is cut from {message}");
+    }
+}
+
+/// A step's own commands can exit with `timeout`'s code, as one that waits for a service with `timeout 30` does when the
+/// service never comes. Such a step ended on its own, at once, so it is not reported as having run out of its time.
+#[tokio::test(flavor = "local")]
+async fn a_post_create_step_that_exits_with_timeouts_code_at_once_is_not_reported_as_out_of_time() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(directory.path(), &[("database", "timeout 30 ./wait-for-database")]);
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 1).await;
+    no_record_yet(&backend);
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    backend.queue_execution_events_matching(is_step("timeout 30 ./wait-for-database"), completed(124));
+
+    let set_up = Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a failed step fails no setup");
+
+    let Some(agent::sandbox::PostCreateOutcome::Failed(message)) = set_up.post_create else {
+        panic!("a failed step is reported: {:?}", set_up.post_create);
+    };
+    assert!(
+        !message.contains("did not finish within"),
+        "a step that ended at once is blamed on its time limit: {message}"
+    );
 }

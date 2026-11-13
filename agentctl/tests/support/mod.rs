@@ -81,6 +81,7 @@ pub(crate) fn agent(name: &str) -> Agent {
                 allow: NetworkAllow::All,
                 deny: Vec::new(),
             },
+            post_create: Vec::new(),
         },
         status: Status::default(),
     }

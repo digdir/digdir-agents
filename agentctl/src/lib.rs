@@ -40,7 +40,7 @@ pub use harness::{Effort, Harness, HarnessAuthMode, HarnessSpec, Model, ModelSel
 pub use manifest::{
     API_VERSION, AccessSpec, AccountSpec, Agent, AgentVariant, AgentVariantName, Condition, ConditionStatus,
     EnvironmentSpec, HomeSpec, InstructionsSpec, KIND, Lifetime, Metadata, MountSpec, MountedVolume, NestedSandboxes,
-    NetworkAllow, NetworkMode, NetworkSpec, Origin, PlatformManifestSpec, Provenance, ResolvedManifest,
+    NetworkAllow, NetworkMode, NetworkSpec, Origin, PlatformManifestSpec, PostCreateStep, Provenance, ResolvedManifest,
     ResourcesManifestSpec, RunState, SandboxManifestSpec, SecretSpec, SkillSpec, Spec, Status, VARIANT_KIND,
 };
 pub use reference::DefinitionReference;

@@ -295,6 +295,8 @@ pub struct EnsureOutcome {
     pub missing_sources: Vec<String>,
     /// The skills setup placed in the harnesses' skill folders.
     pub skills: PlacedSkills,
+    /// How far the agent's `postCreate` steps got, when it declares any.
+    pub post_create: Option<PostCreateOutcome>,
 }
 
 /// What platform setup did in the sandbox.
@@ -305,6 +307,17 @@ pub struct PlatformSetup {
     /// The skills it placed in the harnesses' skill folders, having removed those an earlier pass
     /// placed that the agent no longer declares.
     pub skills: PlacedSkills,
+    /// How far the agent's `postCreate` steps got, when it declares any.
+    pub post_create: Option<PostCreateOutcome>,
+}
+
+/// How far an agent's `postCreate` steps got.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PostCreateOutcome {
+    /// Every step has run.
+    Completed,
+    /// A step failed, as the message says.
+    Failed(String),
 }
 
 /// Runtime-selectable setup for an operating system reported by a materialized sandbox.
@@ -435,6 +448,7 @@ impl Service {
             nested_sandboxes: outcome.nested_sandboxes,
             missing_sources: set_up.missing_sources,
             skills: set_up.skills,
+            post_create: set_up.post_create,
         })
     }
 

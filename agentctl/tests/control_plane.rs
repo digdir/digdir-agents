@@ -1547,6 +1547,75 @@ async fn missing_optional_sources_are_reported_in_a_condition_of_a_ready_agent()
     );
 }
 
+/// A failed `postCreate` step keeps the agent from becoming ready, and a wait for it ends at once with the step's
+/// reason. `exec` still reaches its sandbox, to find out why, and once the steps have all run the agent is ready.
+#[tokio::test(flavor = "local")]
+async fn a_failed_post_create_step_keeps_the_agent_from_becoming_ready_but_not_from_exec() {
+    let changes = Changes::new();
+    let store = Rc::new(memory::InMemoryAgentStore::with_changes(changes.clone()));
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    let provider: Rc<dyn Provider> = Rc::new(MemoryProvider::new(Rc::new(sandbox_memory::Provider::new())));
+    let platform = Rc::new(ReportingPlatform::default());
+    platform.set_up.borrow_mut().post_create = Some(agent::sandbox::PostCreateOutcome::Failed(
+        "postCreate step \"clone\" exited with code 128".into(),
+    ));
+    let service = Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service");
+    let reconciler = Rc::new(Reconciler::new(
+        store.clone(),
+        Rc::new(service),
+        ProvisioningState::new(changes.clone()),
+    ));
+    let (controller, wakeup) = Controller::new(store.clone(), reconciler, NO_BACKGROUND_PASSES, Rc::new(|_, _| {}));
+    let convergence = Convergence::new(wakeup, store.clone(), changes);
+    let execution = ExecutionService::new(store.clone(), convergence.clone());
+    let task = tokio::task::spawn_local(controller.run());
+    tokio::task::yield_now().await;
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(1),
+        convergence.converge("worker", WaitPolicy::UntilConverged),
+    )
+    .await
+    .expect("a failed step is not waited through")
+    .expect_err("a failed step ends the wait");
+    assert!(
+        matches!(&error, Error::Invalid(message) if message.contains("\"clone\"")),
+        "{error}"
+    );
+    let status = store.get_by_name("worker").await.expect("Agent").agent.status;
+    let ready = status.ready_condition().expect("Ready condition");
+    assert_eq!(
+        (ready.status, ready.reason.as_str()),
+        (ConditionStatus::False, Condition::REASON_POST_CREATE_FAILED)
+    );
+    assert_eq!(status.failure, Some(FailureKind::Invalid));
+    let post_create = status
+        .conditions
+        .iter()
+        .find(|condition| condition.kind == Condition::POST_CREATE)
+        .expect("PostCreate condition");
+    assert_eq!(post_create.status, ConditionStatus::False);
+
+    let target = tokio::time::timeout(
+        Duration::from_secs(1),
+        execution.ensure("worker", WaitPolicy::UntilConverged),
+    )
+    .await
+    .expect("exec is not waited through")
+    .expect("exec reaches the sandbox to find out why");
+    assert!(target.sandbox.id().is_some());
+
+    platform.set_up.borrow_mut().post_create = Some(agent::sandbox::PostCreateOutcome::Completed);
+    let record = convergence
+        .converge("worker", WaitPolicy::FirstPass)
+        .await
+        .expect("a pass once the steps have run");
+    assert!(record.agent.status.is_ready());
+    assert_eq!(record.agent.status.failure, None);
+    task.abort();
+}
+
 /// The skills setup placed are recorded with the sandbox they are in, for the next pass to remove those the agent no
 /// longer declares.
 #[tokio::test(flavor = "local")]
@@ -1596,6 +1665,26 @@ async fn releasing_a_deleted_agent_notifies_its_sessions() {
         notifications.0.get() > before,
         "Sessions must learn that their agent is gone, so they stop"
     );
+}
+
+/// Steps run once, when the agent is created, so an agent that ran others would not match its manifest.
+#[tokio::test(flavor = "local")]
+async fn post_create_steps_cannot_change_on_an_existing_agent() {
+    let fixture = fixture();
+    let request = apply_request("worker");
+    fixture.control_plane.apply(request.clone()).await.expect("first apply");
+
+    let mut changed = request;
+    changed.agent.spec.post_create.push(agent::PostCreateStep {
+        name: "dotfiles".into(),
+        run: "git clone dotfiles".into(),
+    });
+    let error = fixture
+        .control_plane
+        .apply(changed)
+        .await
+        .expect_err("added steps would never run");
+    assert!(matches!(error, Error::Immutable("spec.postCreate")));
 }
 
 #[tokio::test(flavor = "local")]
