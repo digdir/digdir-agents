@@ -35,27 +35,42 @@ impl MicrosandboxProvider {
         sandbox_id: &SandboxId,
         request: execution::StartExecutionRequest,
     ) -> Result<execution::StartedExecution, Error> {
+        let pipes_input = request.pipes_input();
         let (execution_id, spec) = request.into_parts();
         let sandbox = self.state.sandbox_by_id(sandbox_id).await?;
         let runtime = self.connect_running(&sandbox).await?;
-        let handle = start_runtime_execution(&runtime, &spec, execution_environment(&sandbox, &spec))
+        let mut handle = start_runtime_execution(&runtime, &spec, execution_environment(&sandbox, &spec), pipes_input)
             .await
             .map_err(error::microsandbox)?;
+        let runtime_control = handle.control();
+        let input = if pipes_input {
+            let input = handle
+                .take_stdin()
+                .ok_or_else(|| Error::Backend("Microsandbox Execution did not provide stdin".to_string()))?;
+            Some(Rc::new(MicrosandboxExecutionControl {
+                input,
+                runtime_control: runtime_control.clone(),
+            }) as Rc<dyn execution::ExecutionInput>)
+        } else {
+            None
+        };
         let key = (sandbox_id.clone(), execution_id.clone());
-        self.executions.borrow_mut().insert(key.clone(), handle.control());
+        self.executions.borrow_mut().insert(key.clone(), runtime_control);
         let guard = ExecutionGuard {
             controls: Rc::clone(&self.executions),
             key,
         };
         let events = stream::unfold((handle, guard), |(mut handle, guard)| async move {
-            handle.recv().await.map(|event| {
-                let event = map_event(event);
-                (event, (handle, guard))
-            })
+            loop {
+                if let Some(event) = map_event(handle.recv().await?) {
+                    return Some((event, (handle, guard)));
+                }
+            }
         });
 
         Ok(execution::StartedExecution {
             id: execution_id,
+            input,
             events: Box::pin(events),
         })
     }
@@ -93,7 +108,7 @@ impl MicrosandboxProvider {
 
         Ok(terminal::StartedTerminalExecution {
             id: execution_id,
-            control: Rc::new(MicrosandboxTerminalControl { input, runtime_control }),
+            control: Rc::new(MicrosandboxExecutionControl { input, runtime_control }),
             events: Box::pin(events),
         })
     }
@@ -205,20 +220,19 @@ async fn start_runtime_execution(
     runtime: &microsandbox::Sandbox,
     spec: &execution::ExecutionSpec,
     environment: BTreeMap<String, String>,
+    pipes_input: bool,
 ) -> microsandbox::MicrosandboxResult<microsandbox::ExecHandle> {
     let working_directory = spec.working_directory().map(|path| path.as_str().to_string());
+    let options_for = move |options: ExecOptionsBuilder| {
+        let options = if pipes_input { options.stdin_pipe() } else { options };
+        configure(options, working_directory, environment)
+    };
     match spec.program() {
-        execution::Program::ImageEntrypoint => {
-            runtime
-                .exec_default_stream_with(move |options| configure(options, working_directory, environment))
-                .await
-        }
+        execution::Program::ImageEntrypoint => runtime.exec_default_stream_with(options_for).await,
         execution::Program::Command { executable, args } => {
             let args = args.clone();
             runtime
-                .exec_stream_with(executable.as_str(), move |options| {
-                    configure(options.args(args), working_directory, environment)
-                })
+                .exec_stream_with(executable.as_str(), move |options| options_for(options.args(args)))
                 .await
         }
     }
@@ -276,8 +290,10 @@ fn configure(
     options.envs(environment)
 }
 
-fn map_event(event: ExecEvent) -> Result<execution::ExecutionEvent, Error> {
-    Ok(match event {
+/// Maps a Microsandbox event to an Execution event, or to none for one that does not end or
+/// report on the Execution.
+fn map_event(event: ExecEvent) -> Option<Result<execution::ExecutionEvent, Error>> {
+    Some(Ok(match event {
         ExecEvent::Started { pid } => execution::ExecutionEvent::Started { process_id: Some(pid) },
         ExecEvent::Stdout(bytes) => execution::ExecutionEvent::Stdout(bytes),
         ExecEvent::Stderr(bytes) => execution::ExecutionEvent::Stderr(bytes),
@@ -285,12 +301,13 @@ fn map_event(event: ExecEvent) -> Result<execution::ExecutionEvent, Error> {
         ExecEvent::Failed(failure) => execution::ExecutionEvent::Failed {
             message: failure.message,
         },
+        // The process stopped reading, as `head` does, which ends its input but not the process,
+        // as a closed pipe does on the host.
         ExecEvent::StdinError(failure) => {
-            return Err(Error::Backend(format!(
-                "Microsandbox Execution stdin failed: {failure:?}"
-            )));
+            tracing::debug!(?failure, "Execution stopped reading its standard input");
+            return None;
         }
-    })
+    }))
 }
 
 fn map_terminal_event(event: ExecEvent) -> Result<terminal::TerminalEvent, Error> {
@@ -309,12 +326,13 @@ fn map_terminal_event(event: ExecEvent) -> Result<terminal::TerminalEvent, Error
     })
 }
 
-struct MicrosandboxTerminalControl {
+/// Input to a live Execution, and terminal controls for a terminal one.
+struct MicrosandboxExecutionControl {
     input: microsandbox::sandbox::exec::ExecSink,
     runtime_control: ExecControl,
 }
 
-impl terminal::TerminalControl for MicrosandboxTerminalControl {
+impl execution::ExecutionInput for MicrosandboxExecutionControl {
     fn write_input(&self, bytes: bytes::Bytes) -> LocalFuture<'_, Result<(), Error>> {
         Box::pin(async move {
             if bytes.is_empty() {
@@ -327,7 +345,9 @@ impl terminal::TerminalControl for MicrosandboxTerminalControl {
     fn close_input(&self) -> LocalFuture<'_, Result<(), Error>> {
         Box::pin(async move { self.input.close().await.map_err(error::microsandbox) })
     }
+}
 
+impl terminal::TerminalControl for MicrosandboxExecutionControl {
     fn resize(&self, size: terminal::TerminalSize) -> LocalFuture<'_, Result<(), Error>> {
         Box::pin(async move {
             self.runtime_control

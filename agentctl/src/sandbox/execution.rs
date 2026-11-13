@@ -85,10 +85,10 @@ fn target(record: control_plane::AgentRecord, name: &str) -> Result<ExecutionTar
 pub async fn start_execution(
     home: &Path,
     target: &ExecutionTarget,
-    spec: execution::ExecutionSpec,
+    request: execution::StartExecutionRequest,
 ) -> Result<execution::StartedExecution, Error> {
     match target.sandbox.provider().as_str() {
-        super::microsandbox::PROVIDER_ID => super::microsandbox::start_execution(home, &target.sandbox, spec).await,
+        super::microsandbox::PROVIDER_ID => super::microsandbox::start_execution(home, &target.sandbox, request).await,
         provider => Err(Error::Invalid(format!(
             "command execution is not supported through sandbox provider {provider:?}"
         ))),

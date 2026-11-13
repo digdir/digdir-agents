@@ -221,10 +221,11 @@ enum Command {
     },
     /// Run a command in an agent.
     Exec {
-        /// Pass stdin to an allocated terminal.
-        #[arg(short = 'i', long, requires = "tty")]
+        /// Pass standard input to the command also when it is a terminal. It is passed without this
+        /// when it is a pipe or a file.
+        #[arg(short = 'i', long)]
         stdin: bool,
-        /// Allocate a terminal; currently used together with --stdin.
+        /// Allocate a terminal for the command, together with --stdin.
         #[arg(short = 't', long, requires = "stdin")]
         tty: bool,
         /// Agent resource or name; inferred from the current directory when omitted.
@@ -1286,7 +1287,7 @@ async fn exec_command(
         )
         .await?;
     let spec = agent::sandbox::platform::execution_spec(&target.operating_system, command, tty)?;
-    let status = if stdin && tty {
+    let status = if tty {
         match agent::sandbox::attach_terminal(
             home.path(),
             &target.sandbox,
@@ -1299,10 +1300,24 @@ async fn exec_command(
             _ => return Err(Error::Session("terminal execution returned an unsupported outcome".into()).into()),
         }
     } else {
-        let execution = agent::sandbox::start_execution(home.path(), &target, spec).await?;
-        stream_execution(execution).await?
+        // As `ssh` does, a pipe or a file reaches the command without asking, since nothing else
+        // would read it. A terminal does with `-i`, as with `kubectl exec`, so that a command does
+        // not wait for typed input that nobody means to give it.
+        let passes_input = stdin || !std::io::stdin().is_terminal();
+        let mut request = ::sandbox::execution::StartExecutionRequest::new(spec);
+        if passes_input {
+            request = request.with_input();
+        }
+        let execution = agent::sandbox::start_execution(home.path(), &target, request).await?;
+        let status = stream_execution(execution).await?;
+        if passes_input {
+            // A command can exit before reading all its input, and a read of standard input
+            // that is still blocked would keep the runtime from shutting down.
+            std::process::exit(exit_code(status.code).into());
+        }
+        status
     };
-    Ok(exit_code(status.code))
+    Ok(exit_code(status.code).into())
 }
 
 /// Splits a leading agent reference from the port mappings.
@@ -1514,7 +1529,7 @@ fn run_ssh_client(mut ssh: ProcessCommand) -> CommandResult<ExitCode> {
 #[cfg(not(unix))]
 fn run_ssh_client(mut ssh: ProcessCommand) -> CommandResult<ExitCode> {
     let status = ssh.status().map_err(|error| ssh_client_error(&error))?;
-    Ok(status.code().map_or(ExitCode::FAILURE, exit_code))
+    Ok(status.code().map_or(ExitCode::FAILURE, |code| exit_code(code).into()))
 }
 
 fn ssh_client_error(error: &std::io::Error) -> CommandError {
@@ -1881,37 +1896,78 @@ async fn resolve_execution_agent(
     require_name(name, "Agent").map_err(CommandError::from)
 }
 
+/// Writes an Execution's output to ours until it exits, while passing it our standard input when
+/// it takes input.
 async fn stream_execution(
-    mut execution: ::sandbox::execution::StartedExecution,
+    execution: ::sandbox::execution::StartedExecution,
 ) -> Result<::sandbox::execution::ExitStatus, Error> {
-    let id = execution.id.clone();
-    let mut stdout = tokio::io::stdout();
-    let mut stderr = tokio::io::stderr();
-    while let Some(event) = execution.events.next().await {
-        match event? {
-            ExecutionEvent::Started { .. } => {}
-            ExecutionEvent::Stdout(bytes) => stdout.write_all(&bytes).await?,
-            ExecutionEvent::Stderr(bytes) => stderr.write_all(&bytes).await?,
-            ExecutionEvent::Exited(status) => {
-                stdout.flush().await?;
-                stderr.flush().await?;
-                return Ok(status);
-            }
-            ExecutionEvent::Failed { message } => {
-                return Err(::sandbox::Error::ExecutionFailed { id, message }.into());
-            }
-            _ => {
-                return Err(Error::Sandbox(::sandbox::Error::Backend(
-                    "unsupported Execution event".into(),
-                )));
+    let ::sandbox::execution::StartedExecution { id, input, mut events } = execution;
+    let output = async {
+        let mut stdout = tokio::io::stdout();
+        let mut stderr = tokio::io::stderr();
+        while let Some(event) = events.next().await {
+            match event? {
+                ExecutionEvent::Started { .. } => {}
+                ExecutionEvent::Stdout(bytes) => stdout.write_all(&bytes).await?,
+                ExecutionEvent::Stderr(bytes) => stderr.write_all(&bytes).await?,
+                ExecutionEvent::Exited(status) => {
+                    stdout.flush().await?;
+                    stderr.flush().await?;
+                    return Ok(status);
+                }
+                ExecutionEvent::Failed { message } => {
+                    return Err(::sandbox::Error::ExecutionFailed { id, message }.into());
+                }
+                _ => {
+                    return Err(Error::Sandbox(::sandbox::Error::Backend(
+                        "unsupported Execution event".into(),
+                    )));
+                }
             }
         }
+        Err(::sandbox::Error::ExecutionStreamEnded { id }.into())
+    };
+    let Some(input) = input else {
+        return output.await;
+    };
+    let input = async {
+        pass_input(tokio::io::stdin(), input.as_ref()).await;
+        std::future::pending().await
+    };
+    tokio::select! {
+        status = output => status,
+        status = input => status,
     }
-    Err(::sandbox::Error::ExecutionStreamEnded { id }.into())
 }
 
-fn exit_code(code: i32) -> ExitCode {
-    u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
+/// Passes `source` to an Execution's standard input until end-of-file, which it then passes on.
+///
+/// It stops early when the Execution no longer takes input, as when the command exits before
+/// reading all of it, which is not an error, as writing to a pipe whose reader has gone is not.
+async fn pass_input(mut source: impl tokio::io::AsyncRead + Unpin, input: &dyn ::sandbox::execution::ExecutionInput) {
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let bytes = match tokio::io::AsyncReadExt::read(&mut source, &mut buffer).await {
+            Ok(0) => break,
+            Ok(read) => bytes::Bytes::copy_from_slice(&buffer[..read]),
+            Err(error) => {
+                tracing::debug!(%error, "could not read standard input; closing the command's");
+                break;
+            }
+        };
+        if let Err(error) = input.write_input(bytes).await {
+            tracing::debug!(%error, "the command no longer takes standard input");
+            return;
+        }
+    }
+    if let Err(error) = input.close_input().await {
+        tracing::debug!(%error, "could not close the command's standard input");
+    }
+}
+
+/// The exit code that reports a command's `code`: the same, or failure when it does not fit a byte.
+fn exit_code(code: i32) -> u8 {
+    u8::try_from(code).unwrap_or(1)
 }
 
 async fn describe(client: &Client, resource: &str, name: Option<String>, output: OutputFormat) -> CommandResult<()> {
@@ -2987,6 +3043,8 @@ fn absolute(current_dir: impl Fn() -> std::io::Result<PathBuf>, path: PathBuf) -
 mod tests {
     #![allow(clippy::expect_used)]
 
+    use std::cell::{Cell, RefCell};
+
     use super::*;
 
     /// A program built as Git for Windows' `ssh` is, started as `agentctl` starts `ssh`, gets each
@@ -3557,6 +3615,74 @@ mod tests {
         };
         assert!(resource.is_none());
         assert_eq!(command, ["pwd"]);
+    }
+
+    #[test]
+    fn exec_takes_standard_input_without_a_terminal() {
+        let parsed = Arguments::try_parse_from(["agentctl", "exec", "-i", "agent/worker", "--", "cat"])
+            .expect("exec arguments with -i alone");
+        let Command::Exec { stdin, tty, .. } = parsed.command else {
+            panic!("expected exec command");
+        };
+        assert!(stdin);
+        assert!(!tty);
+        assert!(Arguments::try_parse_from(["agentctl", "exec", "-t", "agent/worker", "--", "cat"]).is_err());
+    }
+
+    /// Records what [`pass_input`] passes on, and fails writes after `accepted` of them.
+    struct RecordedInput {
+        accepted: usize,
+        written: RefCell<Vec<u8>>,
+        writes: Cell<usize>,
+        closed: Cell<bool>,
+    }
+
+    impl RecordedInput {
+        fn accepting(accepted: usize) -> Self {
+            Self {
+                accepted,
+                written: RefCell::default(),
+                writes: Cell::default(),
+                closed: Cell::default(),
+            }
+        }
+    }
+
+    impl ::sandbox::execution::ExecutionInput for RecordedInput {
+        fn write_input(&self, bytes: bytes::Bytes) -> ::sandbox::LocalFuture<'_, Result<(), ::sandbox::Error>> {
+            Box::pin(async move {
+                if self.writes.get() == self.accepted {
+                    return Err(::sandbox::Error::Backend("the command exited".into()));
+                }
+                self.writes.set(self.writes.get() + 1);
+                self.written.borrow_mut().extend_from_slice(&bytes);
+                Ok(())
+            })
+        }
+
+        fn close_input(&self) -> ::sandbox::LocalFuture<'_, Result<(), ::sandbox::Error>> {
+            Box::pin(async move {
+                self.closed.set(true);
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn passed_input_reaches_the_command_and_then_ends() {
+        let source = vec![b'x'; 200 * 1024];
+        let input = RecordedInput::accepting(usize::MAX);
+        pass_input(source.as_slice(), &input).await;
+        assert_eq!(*input.written.borrow(), source);
+        assert!(input.closed.get(), "the command should read end-of-file");
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn passing_input_stops_when_the_command_takes_no_more() {
+        let source = vec![b'x'; 200 * 1024];
+        let input = RecordedInput::accepting(1);
+        pass_input(source.as_slice(), &input).await;
+        assert!(input.written.borrow().len() < source.len());
     }
 
     #[test]

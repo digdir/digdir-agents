@@ -164,13 +164,7 @@ pub enum TerminalAttachOutcome {
 }
 
 /// Input and terminal controls tied to one live addressable terminal Execution.
-pub trait TerminalControl {
-    /// Writes raw terminal input bytes, applying backend transport backpressure.
-    fn write_input(&self, bytes: Bytes) -> LocalFuture<'_, Result<(), Error>>;
-
-    /// Closes the input stream and sends end-of-file to the process.
-    fn close_input(&self) -> LocalFuture<'_, Result<(), Error>>;
-
+pub trait TerminalControl: execution::ExecutionInput {
     /// Changes the terminal's character-cell dimensions.
     fn resize(&self, size: TerminalSize) -> LocalFuture<'_, Result<(), Error>>;
 }
