@@ -13,6 +13,10 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ## [Unreleased]
 
+### Added
+
+- `postCreate` steps in an agent's manifest, or your own variant of it, run setup that needs the agent's accounts, secrets or network, such as cloning your dotfiles, once before the agent is first ready. Changing them takes a recreated agent. ([#509](https://github.com/digdir/digdir-agents/pull/509))
+
 ### Changed
 
 - The Agent sandbox section at the top of an agent's instructions now lists the folders mounted from your machine, and adds rules its own instructions can override, such as cleaning up after a task and noting system changes in `~/system-changes.md`. ([#505](https://github.com/digdir/digdir-agents/pull/505))
