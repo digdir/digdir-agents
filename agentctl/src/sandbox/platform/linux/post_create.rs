@@ -1,9 +1,10 @@
 //! An agent's `postCreate` steps, run once in its sandbox before the agent is first ready.
 //!
-//! The record of which steps have run is written in the sandbox as each step ends, rather than kept in the agent's
-//! status, which is stored only when a pass ends: a pass cut short by an agentd restart or a stop would otherwise run
-//! a finished step again. The guest's boot id, kept with a failure, is what tells a later pass that the sandbox has
-//! booted since.
+//! Each step runs at most once per boot of the sandbox. Before a step runs, the record in the sandbox says it failed in
+//! this boot, and only its end changes that, so a pass cut short while it runs, by an agentd restart or a guest that
+//! stopped responding, leaves it failed rather than running it again on every pass. The record is in the sandbox,
+//! rather than in the agent's status, which is stored only when a pass ends, so it is written as each step ends. The
+//! guest's boot id is what tells a later pass that the sandbox has booted since.
 
 use ::sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
 use serde::{Deserialize, Serialize};
@@ -23,12 +24,15 @@ use crate::{
 /// Holds each step's output and the record of the steps that ran. The sandbox user owns it, since the steps, which
 /// run as that user, write their output there.
 const DIRECTORY: &str = "/var/lib/agent-post-create";
-/// The record of the steps that ran. The sandbox user can change it, which changes only which steps run again.
+/// The record of the steps that ran. The sandbox user can change it, which changes which steps run again, so what it
+/// says is read as the guest's word, as the steps' output is.
 const STATE: &str = "/var/lib/agent-post-create/state.json";
 /// The most of [`STATE`] setup reads. Anything longer was not written by setup, and counts as no record.
 const MAX_STATE: usize = 64 * 1024;
 /// Changes on every boot of the guest.
 const BOOT_ID: &str = "/proc/sys/kernel/random/boot_id";
+/// The most of a failure's message the condition carries.
+const MAX_MESSAGE: usize = 1024;
 /// The exit code `timeout` returns when it stopped the step for running out of time.
 const TIMED_OUT: i32 = 124;
 /// The exit code when the step was killed: by `timeout`, when it ignored being stopped, or for want of memory.
@@ -91,11 +95,12 @@ pub(super) async fn run(
     let Some(first) = pending.first() else {
         return Ok(Some(PostCreateOutcome::Completed));
     };
+    let boot = boot_id(sandbox).await?;
     if let Some(failure) = &state.failed
         && failure.step == first.name
-        && failure.boot == boot_id(sandbox).await?
+        && failure.boot == boot
     {
-        return Ok(Some(PostCreateOutcome::Failed(failure.message.clone())));
+        return Ok(Some(failed(&failure.message)));
     }
     run_checked(
         sandbox,
@@ -117,6 +122,17 @@ pub(super) async fn run(
     for step in pending {
         let started = progress.start_step(format!("Run postCreate step {}", step.name)).await;
         let log = format!("{DIRECTORY}/{}.log", step.name);
+        state.failed = Some(Failure {
+            step: step.name.clone(),
+            boot: boot.clone(),
+            message: format!(
+                "postCreate step {:?} did not finish: setup stopped while it ran, as when agentd restarts or the guest \
+                 stops responding. {}",
+                step.name,
+                runs_again(&log)
+            ),
+        });
+        write_state(sandbox, &state).await?;
         let output = sandbox.run_execution(execution(step, &log)?).await?;
         if output.status.success() {
             state.completed.push(step.name.clone());
@@ -126,14 +142,12 @@ pub(super) async fn run(
             continue;
         }
         let message = failure_message(step, &log, output.status.code, &output.stderr);
-        state.failed = Some(Failure {
-            step: step.name.clone(),
-            boot: boot_id(sandbox).await?,
-            message: message.clone(),
-        });
+        if let Some(failure) = &mut state.failed {
+            failure.message.clone_from(&message);
+        }
         write_state(sandbox, &state).await?;
         started.complete().await;
-        return Ok(Some(PostCreateOutcome::Failed(message)));
+        return Ok(Some(failed(&message)));
     }
     Ok(Some(PostCreateOutcome::Completed))
 }
@@ -159,21 +173,34 @@ fn failure_message(step: &PostCreateStep, log: &str, code: i32, stderr: &[u8]) -
         KILLED => format!("was killed, after {POST_CREATE_STEP_TIMEOUT_MINUTES} minutes or for want of memory"),
         code => format!("exited with code {code}"),
     };
-    // The output comes from the guest and is shown in a terminal on the host, so it may carry no control characters.
-    let tail = last_lines(&String::from_utf8_lossy(stderr))
-        .chars()
-        .map(|character| if character.is_control() { ' ' } else { character })
-        .collect::<String>();
+    let tail = last_lines(&String::from_utf8_lossy(stderr));
     let tail = if tail.is_empty() {
         String::new()
     } else {
         format!(": {tail}")
     };
+    format!("postCreate step {:?} {what}{tail}. {}", step.name, runs_again(log))
+}
+
+fn runs_again(log: &str) -> String {
     format!(
-        "postCreate step {:?} {what}{tail}. Its output is in {log}. It runs again, with the steps after it, when the \
-         sandbox next boots, such as on `agentctl restart`.",
-        step.name
+        "Its output is in {log}. It runs again, with the steps after it, when the sandbox next boots, such as on \
+         `agentctl restart`."
     )
+}
+
+/// A failure, with its message as it may be shown in a terminal on the host. The message carries what the guest wrote,
+/// in a step's output or in the record, so it is kept to one line of printable characters and a bounded length.
+fn failed(message: &str) -> PostCreateOutcome {
+    let mut printable = message
+        .chars()
+        .map(|character| if character.is_control() { ' ' } else { character })
+        .collect::<String>();
+    if let Some((end, _)) = printable.char_indices().nth(MAX_MESSAGE) {
+        printable.truncate(end);
+        printable.push('…');
+    }
+    PostCreateOutcome::Failed(printable)
 }
 
 async fn boot_id(sandbox: &SandboxHandle) -> Result<String, Error> {

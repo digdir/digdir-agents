@@ -2014,6 +2014,7 @@ async fn linux_setup_runs_post_create_steps_once_in_order() {
     let sandbox = claude_sandbox_on(backend.clone(), &record, 2).await;
     let platform = Linux::new(PLATFORM_API_URL);
     no_record_yet(&backend);
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
 
     let set_up = platform
         .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
@@ -2145,6 +2146,7 @@ async fn a_post_create_record_setup_cannot_read_back_runs_no_step_that_succeeded
     let sandbox = claude_sandbox_on(backend.clone(), &record, 2).await;
     let platform = Linux::new(PLATFORM_API_URL);
     no_record_yet(&backend);
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
     let set_up = platform
         .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
@@ -2177,4 +2179,92 @@ async fn a_post_create_record_setup_cannot_read_back_runs_no_step_that_succeeded
         [],
         "a step that succeeded never runs again in that sandbox"
     );
+}
+
+/// A step cut short while it runs, as when agentd restarts or the guest stops responding, counts as failed in that
+/// boot: the next pass reports it rather than running it again, and a pass after a boot runs it again.
+#[tokio::test(flavor = "local")]
+async fn a_post_create_step_cut_short_runs_again_only_after_a_boot() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(directory.path(), &[("install", "./install")]);
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 3).await;
+    let platform = Linux::new(PLATFORM_API_URL);
+    no_record_yet(&backend);
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    backend.queue_execution_events_matching(
+        is_step("./install"),
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Failed {
+                message: "the guest closed the connection".into(),
+            },
+        ],
+    );
+    platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect_err("a pass that loses its step fails");
+
+    let executions = backend.execution_specs().len();
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a pass in the same boot");
+    assert!(
+        matches!(&set_up.post_create, Some(agent::sandbox::PostCreateOutcome::Failed(message)) if message.contains("did not finish")),
+        "{:?}",
+        set_up.post_create
+    );
+    assert!(
+        steps_run_since(&backend, executions).is_empty(),
+        "a step runs at most once per boot"
+    );
+
+    let executions = backend.execution_specs().len();
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-b\n"));
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a pass after a boot");
+    assert_eq!(set_up.post_create, Some(agent::sandbox::PostCreateOutcome::Completed));
+    assert_eq!(steps_run_since(&backend, executions).len(), 1);
+}
+
+/// What the guest writes in the record reaches a terminal on the host only as one bounded line of printable text.
+#[tokio::test(flavor = "local")]
+async fn a_failure_the_guest_wrote_in_the_record_is_reported_printable_and_bounded() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(directory.path(), &[("install", "./install")]);
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 1).await;
+    let platform = Linux::new(PLATFORM_API_URL);
+    let forged = serde_json::json!({
+        "completed": [],
+        "failed": {
+            "step": "install",
+            "boot": "boot-a",
+            "message": format!("\u{1b}]52;c;aGk=\u{7}\u{1b}[2J{}", "x".repeat(60_000)),
+        },
+    });
+    sandbox
+        .write_file(
+            &SandboxPath::new("/var/lib/agent-post-create/state.json"),
+            Box::pin(Cursor::new(serde_json::to_vec(&forged).expect("JSON"))),
+        )
+        .await
+        .expect("a record the guest wrote");
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+
+    let set_up = platform
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("setup");
+
+    let Some(agent::sandbox::PostCreateOutcome::Failed(message)) = set_up.post_create else {
+        panic!("the recorded failure is reported: {:?}", set_up.post_create);
+    };
+    assert!(!message.chars().any(char::is_control), "{message:?}");
+    assert!(message.chars().count() <= 1025, "{} characters", message.chars().count());
 }
