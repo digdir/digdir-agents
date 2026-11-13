@@ -43,6 +43,20 @@ while ! /usr/bin/getent ahosts github.com >/dev/null 2>&1; do
     /usr/bin/sleep 1
 done
 
+# Clones a public repository without the agent's token, for an agent whose GitHub login is not
+# kept: the network blocks every request that carries its placeholder token then, and `gh` sends it
+# even for a public repository. Without a credential helper and with prompts off, Git sends nothing
+# but asks for nothing either, so a private repository fails at once. `gh repo set-default` would
+# ask GitHub with the token, so the default it records is written directly.
+clone_anonymously() {
+    if ! GIT_TERMINAL_PROMPT=0 /usr/bin/git -c credential.helper= -c credential.https://github.com.helper= \
+        clone "https://github.com/$1.git" "$2" \
+        || ! /usr/bin/git -C "$2" config remote.origin.gh-resolved base; then
+        rm -rf "$2"
+        return 1
+    fi
+}
+
 # Clones one repository beside its destination and moves it into place only once it is complete,
 # so that an interrupted clone never leaves a destination with `.git`, which every later boot
 # would skip. A clone a session made at the destination in the meantime is kept instead.
@@ -56,7 +70,7 @@ clone() {
     if ! /usr/local/bin/gh repo clone "$repository" "$partial" \
         || ! (cd "$partial" && /usr/local/bin/gh repo set-default "$repository"); then
         rm -rf "$partial"
-        return 1
+        clone_anonymously "$repository" "$partial" || return 1
     fi
     mv -T "$partial" "$destination" 2>/dev/null && return 0
     rm -rf "$partial"

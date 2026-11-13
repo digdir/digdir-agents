@@ -21,6 +21,7 @@ use tokio::io::AsyncReadExt as _;
 static NO_ACCOUNTS: agent::sandbox::AccountSetup = agent::sandbox::AccountSetup {
     git_identity: None,
     instructions: Vec::new(),
+    missing_logins: Vec::new(),
 };
 
 const PLATFORM_API_URL: &str = "http://host.microsandbox.internal:4100";
@@ -1911,6 +1912,7 @@ async fn linux_setup_commits_as_the_agents_account_unless_the_manifest_names_som
             email: "1+digdir-bot@users.noreply.github.com".into(),
         }),
         instructions: Vec::new(),
+        missing_logins: Vec::new(),
     };
     let setting = |key: &str, value: &str| (key.to_owned(), value.to_owned());
 
@@ -1933,4 +1935,126 @@ async fn linux_setup_commits_as_the_agents_account_unless_the_manifest_names_som
         ]
     );
     assert_eq!(git_settings_written(&[], &NO_ACCOUNTS).await, []);
+}
+
+fn is_workspace_query(spec: &sandbox::execution::ExecutionSpec) -> bool {
+    matches!(
+        spec.program(),
+        Program::Command { executable, args }
+            if executable.as_str() == "/usr/bin/sudo"
+                && args.get(2).map(String::as_str) == Some("show")
+                && args.last().map(String::as_str) == Some("agent-workspace-init.service")
+    )
+}
+
+/// The `systemctl` actions setup took on the workspace clone, after a pass in which it had failed.
+async fn workspace_actions(accounts_reported: Option<agent::ConditionStatus>, missing_logins: &[&str]) -> Vec<String> {
+    let directory = TempDir::new().expect("temporary directory");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home = None;
+    resource.spec.instructions.clear();
+    resource.spec.harnesses.clear();
+    resource.spec.accounts.push(agent::AccountSpec::Github {
+        login: "default".into(),
+    });
+    resource
+        .status
+        .conditions
+        .extend(accounts_reported.map(|status| agent::Condition {
+            kind: agent::Condition::ACCOUNTS.into(),
+            status,
+            reason: String::new(),
+            message: String::new(),
+            last_transition_time: None,
+        }));
+    let record = AgentRecord {
+        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
+        volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
+        exposed_files: std::collections::BTreeSet::new(),
+    };
+    let backend = Rc::new(memory::Provider::new());
+    backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    backend.queue_execution_events_matching(
+        is_workspace_query,
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stdout(
+                "LoadState=loaded\nActiveState=failed\nResult=exit-code\nConditionResult=yes\n".into(),
+            ),
+            ExecutionEvent::Exited(ExitStatus { code: 0 }),
+        ],
+    );
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+    let accounts = agent::sandbox::AccountSetup {
+        missing_logins: missing_logins.iter().map(|&missing| missing.to_owned()).collect(),
+        ..agent::sandbox::AccountSetup::default()
+    };
+
+    let set_up = Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &[], &accounts, &setup_phase())
+        .await
+        .expect("setup");
+
+    let actions = backend
+        .execution_specs()
+        .iter()
+        .filter_map(|spec| match spec.program() {
+            Program::Command { executable, args }
+                if executable.as_str() == "/usr/bin/sudo"
+                    && args.last().map(String::as_str) == Some("agent-workspace-init.service")
+                    && !is_workspace_query(spec) =>
+            {
+                Some(args[2..args.len() - 1].join(" "))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let expected = if actions.is_empty() {
+        agent::sandbox::WorkspaceClone::Failed
+    } else {
+        agent::sandbox::WorkspaceClone::Cloning
+    };
+    assert_eq!(set_up.workspace, Some(expected));
+    actions
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_failed_workspace_clone_is_tried_again_once_the_login_arrives() {
+    assert_eq!(
+        workspace_actions(Some(agent::ConditionStatus::False), &[]).await,
+        ["reset-failed", "start --no-block"],
+        "the login arrived since the last pass"
+    );
+    assert_eq!(
+        workspace_actions(Some(agent::ConditionStatus::False), &["no login"]).await,
+        Vec::<String>::new(),
+        "the login is still missing"
+    );
+    assert_eq!(
+        workspace_actions(Some(agent::ConditionStatus::True), &[]).await,
+        Vec::<String>::new(),
+        "an earlier pass already had the login, so the clone failed for another reason"
+    );
 }
