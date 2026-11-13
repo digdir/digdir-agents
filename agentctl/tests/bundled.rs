@@ -228,6 +228,7 @@ fn apply(directory: &Path, agent: Agent) -> ApplyRequest {
         binds: Vec::new(),
         create_only: false,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        labels: agent::labels::Labels::new(),
         agent,
     }
 }

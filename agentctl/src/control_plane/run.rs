@@ -210,8 +210,10 @@ impl ControlPlane {
             prepared.agent.validate()?;
             // Another request that took the name first is found on the next pass: it may be an
             // agent of this definition on these folders, which this one is then refused for.
-            match Box::pin(self.create(&prepared, lifetime, allow_exposed_files)).await {
-                Ok(record) => break record,
+            // The labels its definition declares are stored as declared.
+            let labels = crate::labels::LabelChange::default();
+            match Box::pin(self.create(&prepared, lifetime, allow_exposed_files, labels)).await {
+                Ok((record, _)) => break record,
                 Err(Error::Conflict) => {}
                 Err(error) => return Err(error),
             }

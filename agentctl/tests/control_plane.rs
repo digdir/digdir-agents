@@ -524,6 +524,7 @@ fn apply_request_in(name: &str, source_directory: PathBuf) -> agent::control_pla
         source_directory,
         create_only: false,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        labels: agent::labels::Labels::new(),
         agent: agent(name),
     }
 }
@@ -2569,7 +2570,10 @@ async fn waiting(failures: impl IntoIterator<Item = PlannedFailure>, interval: D
     ));
     let task = tokio::task::spawn_local(controller.run());
     tokio::task::yield_now().await;
-    control_plane.apply(apply_request("worker")).await.expect("apply");
+    // Boxed, as an apply's future would otherwise make that of every test that awaits this fixture as large.
+    Box::pin(control_plane.apply(apply_request("worker")))
+        .await
+        .expect("apply");
     Waiting {
         store,
         backend,
@@ -3096,8 +3100,9 @@ async fn stalling(changes: Changes) -> Stalling {
     let sandboxes =
         Rc::new(Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service"));
     let reconciler = Rc::new(Reconciler::new(store.clone(), sandboxes, ProvisioningState::default()));
-    ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()))
-        .apply(apply_request("worker"))
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    // Boxed, as an apply's future would otherwise make that of every test that awaits this fixture as large.
+    Box::pin(control_plane.apply(apply_request("worker")))
         .await
         .expect("apply");
     let id = store.get_by_name("worker").await.expect("stored agent").id;
@@ -3460,7 +3465,10 @@ async fn immediate_stop_fixture() -> (
     let reconciler = Rc::new(reconciler(store.clone(), provider).with_immediate_stops(immediate_stops.clone()));
     let control_plane =
         ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default())).with_immediate_stops(immediate_stops);
-    control_plane.apply(apply_request("worker")).await.expect("apply");
+    // Boxed, as an apply's future would otherwise make that of every test that awaits this fixture as large.
+    Box::pin(control_plane.apply(apply_request("worker")))
+        .await
+        .expect("apply");
     let id = store.get_by_name("worker").await.expect("Agent").id;
     reconciler.reconcile(id).await.expect("materialize");
     (control_plane, reconciler, store, backend, id, kills, hanging, failing)
@@ -3805,8 +3813,13 @@ impl AgentStore for HeldStore {
         self.inner.list()
     }
 
-    fn put(&self, record: AgentRecord, expected_generation: u64) -> LocalFuture<'_, Result<(), Error>> {
-        self.inner.put(record, expected_generation)
+    fn put_with_labels(
+        &self,
+        record: AgentRecord,
+        expected_generation: u64,
+        labels: agent::labels::LabelChange,
+    ) -> LocalFuture<'_, Result<agent::labels::StoredLabels, Error>> {
+        self.inner.put_with_labels(record, expected_generation, labels)
     }
 
     fn update_status(&self, id: AgentId, generation: u64, status: Status) -> LocalFuture<'_, Result<Status, Error>> {
@@ -3827,6 +3840,14 @@ impl AgentStore for HeldStore {
         revisions: agent::volumes::VolumePins,
     ) -> LocalFuture<'_, Result<(), Error>> {
         self.inner.set_volume_revisions(id, revisions)
+    }
+
+    fn change_labels(
+        &self,
+        id: AgentId,
+        change: agent::labels::LabelChange,
+    ) -> LocalFuture<'_, Result<agent::labels::StoredLabels, Error>> {
+        self.inner.change_labels(id, change)
     }
 }
 
@@ -4446,8 +4467,13 @@ impl AgentStore for DeleteBeforeStarting {
     fn list(&self) -> LocalFuture<'_, Result<Vec<AgentRecord>, Error>> {
         self.inner.list()
     }
-    fn put(&self, record: AgentRecord, generation: u64) -> LocalFuture<'_, Result<(), Error>> {
-        self.inner.put(record, generation)
+    fn put_with_labels(
+        &self,
+        record: AgentRecord,
+        generation: u64,
+        labels: agent::labels::LabelChange,
+    ) -> LocalFuture<'_, Result<agent::labels::StoredLabels, Error>> {
+        self.inner.put_with_labels(record, generation, labels)
     }
     fn update_status(&self, id: AgentId, generation: u64, status: Status) -> LocalFuture<'_, Result<Status, Error>> {
         Box::pin(async move {
@@ -4475,6 +4501,14 @@ impl AgentStore for DeleteBeforeStarting {
         revisions: agent::volumes::VolumePins,
     ) -> LocalFuture<'_, Result<(), Error>> {
         self.inner.set_volume_revisions(id, revisions)
+    }
+
+    fn change_labels(
+        &self,
+        id: AgentId,
+        change: agent::labels::LabelChange,
+    ) -> LocalFuture<'_, Result<agent::labels::StoredLabels, Error>> {
+        self.inner.change_labels(id, change)
     }
 }
 
@@ -4509,4 +4543,82 @@ async fn a_delete_just_before_a_restart_starts_the_agent_keeps_it_from_booting_a
         sandbox::SandboxState::Stopped,
         "the Starting write fails, so the pass the delete woke releases it instead"
     );
+}
+
+fn labels(pairs: &[(&str, &str)]) -> agent::labels::Labels {
+    pairs
+        .iter()
+        .map(|&(key, value)| (key.to_owned(), value.to_owned()))
+        .collect()
+}
+
+/// `apply` replaces the labels its manifest declares and keeps those set from the host, and no label change is a new
+/// generation.
+#[tokio::test(flavor = "local")]
+async fn labels_from_the_manifest_follow_it_and_labels_from_the_host_stay() {
+    let fixture = fixture();
+    let mut request = apply_request("worker");
+    request.agent.metadata.labels = labels(&[("client", "jetbrains"), ("tier", "dev")]);
+    request.labels = labels(&[("managed-by", "t3code")]);
+    let created = fixture.control_plane.apply(request.clone()).await.expect("create");
+    assert_eq!(
+        created.metadata.labels,
+        labels(&[("client", "jetbrains"), ("managed-by", "t3code"), ("tier", "dev")])
+    );
+    assert_eq!(created.metadata.generation, 1);
+
+    // A person applies the same definition by hand, with their variant changed.
+    request.agent.metadata.labels = labels(&[("client", "t3code")]);
+    request.labels.clear();
+    let applied = fixture.control_plane.apply(request.clone()).await.expect("re-apply");
+    assert_eq!(
+        applied.metadata.labels,
+        labels(&[("client", "t3code"), ("managed-by", "t3code")]),
+        "the manifest's labels are replaced and the host's kept"
+    );
+    assert_eq!(applied.metadata.generation, 1, "a label is no change to the agent");
+
+    let labelled = fixture
+        .control_plane
+        .label(
+            "worker",
+            labels(&[("client", "rider")]),
+            ["managed-by".to_owned()].into(),
+        )
+        .await
+        .expect("label");
+    assert_eq!(labelled.metadata.labels, labels(&[("client", "rider")]));
+    assert_eq!(labelled.metadata.generation, 1);
+
+    request.agent.spec.harnesses[0].version = Some("2.1.240".into());
+    let updated = fixture.control_plane.apply(request).await.expect("update");
+    assert_eq!(updated.metadata.generation, 2);
+    assert_eq!(
+        updated.metadata.labels,
+        labels(&[("client", "rider")]),
+        "a label set from the host wins over the manifest's"
+    );
+    for listed in [
+        fixture.control_plane.get("worker").await.expect("get"),
+        fixture.control_plane.list().await.expect("list").remove(0),
+    ] {
+        assert_eq!(listed.metadata.labels, updated.metadata.labels);
+    }
+
+    let error = fixture
+        .control_plane
+        .label(
+            "worker",
+            labels(&[("client", "has space")]),
+            std::collections::BTreeSet::new(),
+        )
+        .await
+        .expect_err("an invalid value is refused");
+    assert!(matches!(error, Error::Invalid(_)), "{error}");
+    let mut invalid = apply_request("other");
+    invalid.labels = labels(&[("-client", "x")]);
+    assert!(matches!(
+        fixture.control_plane.apply(invalid).await,
+        Err(Error::Invalid(_))
+    ));
 }

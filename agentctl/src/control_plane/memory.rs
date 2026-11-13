@@ -22,6 +22,7 @@ pub struct InMemoryAgentStore {
 struct State {
     records: BTreeMap<AgentId, AgentRecord>,
     active_names: BTreeMap<String, AgentId>,
+    labels: BTreeMap<AgentId, crate::labels::StoredLabels>,
 }
 
 impl InMemoryAgentStore {
@@ -79,7 +80,12 @@ impl AgentStore for InMemoryAgentStore {
         })
     }
 
-    fn put(&self, mut record: AgentRecord, expected_generation: u64) -> LocalFuture<'_, Result<(), Error>> {
+    fn put_with_labels(
+        &self,
+        mut record: AgentRecord,
+        expected_generation: u64,
+        labels: crate::labels::LabelChange,
+    ) -> LocalFuture<'_, Result<crate::labels::StoredLabels, Error>> {
         Box::pin(async move {
             let result = (|| {
                 record.check_resolved()?;
@@ -87,20 +93,32 @@ impl AgentStore for InMemoryAgentStore {
                 let id = record.id;
                 let name = record.agent.metadata.name.clone();
                 let mut state = self.state.borrow_mut();
+                let State {
+                    records,
+                    active_names,
+                    labels: stored_labels,
+                } = &mut *state;
                 if expected_generation == 0 {
-                    if state.active_names.contains_key(&name) || state.records.contains_key(&id) {
+                    if active_names.contains_key(&name) || records.contains_key(&id) {
                         return Err(Error::Conflict);
                     }
-                    state.active_names.insert(name, id);
-                    state.records.insert(id, record);
-                    return Ok(());
+                    let mut stored = crate::labels::StoredLabels {
+                        declared: std::mem::take(&mut record.agent.metadata.labels),
+                        ..crate::labels::StoredLabels::default()
+                    };
+                    stored.apply(&labels);
+                    record.agent.metadata.labels = stored.effective();
+                    active_names.insert(name, id);
+                    stored_labels.insert(id, stored.clone());
+                    records.insert(id, record);
+                    return Ok(stored);
                 }
 
-                let active_id = state.active_names.get(&name).copied().ok_or(Error::Conflict)?;
+                let active_id = active_names.get(&name).copied().ok_or(Error::Conflict)?;
                 if active_id != id {
                     return Err(Error::Conflict);
                 }
-                let current = state.records.get_mut(&id).ok_or(Error::Conflict)?;
+                let current = records.get_mut(&id).ok_or(Error::Conflict)?;
                 if current.agent.metadata.generation != expected_generation
                     || current.agent.metadata.deletion_timestamp.is_some()
                 {
@@ -110,8 +128,11 @@ impl AgentStore for InMemoryAgentStore {
                 record.optional_mount_sources = std::mem::take(&mut current.optional_mount_sources);
                 // Only the reconciler pins volume revisions, as in the database.
                 record.volume_revisions = std::mem::take(&mut current.volume_revisions);
+                let stored = stored_labels.entry(id).or_default();
+                stored.apply(&labels);
+                record.agent.metadata.labels = stored.effective();
                 *current = record;
-                Ok(())
+                Ok(stored.clone())
             })();
             self.changed(result)
         })
@@ -194,6 +215,35 @@ impl AgentStore for InMemoryAgentStore {
                 let record = state.records.get_mut(&id).ok_or(Error::NotFound)?;
                 record.volume_revisions = revisions;
                 Ok(())
+            })();
+            self.changed(result)
+        })
+    }
+
+    fn change_labels(
+        &self,
+        id: AgentId,
+        change: crate::labels::LabelChange,
+    ) -> LocalFuture<'_, Result<crate::labels::StoredLabels, Error>> {
+        Box::pin(async move {
+            let result = (|| {
+                let mut state = self.state.borrow_mut();
+                let State {
+                    records,
+                    active_names,
+                    labels,
+                } = &mut *state;
+                let record = records.get_mut(&id).ok_or(Error::NotFound)?;
+                if active_names.get(&record.agent.metadata.name) != Some(&id) {
+                    return Err(Error::NotFound);
+                }
+                if record.agent.metadata.deletion_timestamp.is_some() {
+                    return Err(Error::Conflict);
+                }
+                let stored = labels.entry(id).or_default();
+                stored.apply(&change);
+                record.agent.metadata.labels = stored.effective();
+                Ok(stored.clone())
             })();
             self.changed(result)
         })

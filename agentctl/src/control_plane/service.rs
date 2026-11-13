@@ -37,6 +37,10 @@ pub struct ApplyRequest {
     /// other, also on an update, unless the agent was allowed to read it before.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub allow_exposed_files: BTreeSet<PathBuf>,
+    /// Labels set from the host, as `agentctl label` sets them, on top of those the manifest declares. A later
+    /// `apply` keeps them whether or not it repeats them.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub labels: crate::labels::Labels,
     /// Agent manifest to store.
     pub agent: Agent,
 }
@@ -163,10 +167,11 @@ impl ControlPlane {
     /// Returns an error when the request is invalid, changes an immutable field, conflicts with deletion,
     /// or cannot be stored.
     pub async fn apply(&self, request: ApplyRequest) -> Result<Agent, Error> {
+        crate::labels::validate_all(&request.labels)?;
         let given = self.validate_bind_sources(&request.binds).await?;
         // Boxed, as preparing reads the filesystem through several steps that would otherwise
         // make every caller's future as large.
-        let prepared = Box::pin(self.prepare_local(
+        let mut prepared = Box::pin(self.prepare_local(
             request.source_directory,
             request.manifest_path,
             request.env_file,
@@ -175,6 +180,12 @@ impl ControlPlane {
         .await?;
         let name = prepared.agent.metadata.name.clone();
         let run_state = prepared.agent.spec.run_state;
+        // The labels the manifest declares replace those the last apply declared, and those set from the host stay.
+        let labels = crate::labels::LabelChange {
+            declared: Some(std::mem::take(&mut prepared.agent.metadata.labels)),
+            set: request.labels.clone(),
+            ..crate::labels::LabelChange::default()
+        };
 
         loop {
             let result = match self.store.get_by_name(&name).await {
@@ -190,14 +201,7 @@ impl ControlPlane {
                     }
                     // An update that gives no folders keeps the agent's, as its mounts cannot change.
                     let given = if request.binds.is_empty() {
-                        current
-                            .bindings
-                            .iter()
-                            .map(|(target, source)| super::BindSource {
-                                source: source.clone(),
-                                target: Some(target.clone()),
-                            })
-                            .collect()
+                        bound_folders(&current)
                     } else {
                         given.clone()
                     };
@@ -227,14 +231,9 @@ impl ControlPlane {
                         .cloned()
                         .collect();
                     self.check_exposed_files(&mut record, &allowed).await?;
-                    // The folders it was given count too: `run` finds an agent by them.
-                    if current.agent.spec == record.agent.spec
-                        && current.source_directory == record.source_directory
-                        && current.manifest_path == record.manifest_path
-                        && current.env_file == record.env_file
-                        && current.bindings == record.bindings
-                        && current.exposed_files == record.exposed_files
-                    {
+                    if unchanged(&current, &record) {
+                        let mut current = current;
+                        current.agent.metadata.labels = self.store.change_labels(current.id, labels).await?.effective();
                         self.notifier.notify(current.id);
                         return Ok(self.resource(current));
                     }
@@ -244,15 +243,21 @@ impl ControlPlane {
                     record.agent.metadata.restart_timestamp = current.agent.metadata.restart_timestamp;
                     record.agent.status = current.agent.status.clone();
                     self.store
-                        .put(record.clone(), expected_generation)
+                        .put_with_labels(record.clone(), expected_generation, labels.clone())
                         .await
-                        .map(|()| record)
+                        .map(|stored| (record, stored))
                 }
                 Err(Error::NotFound) => {
                     let mut new = prepared.clone();
                     Box::pin(new.bind(&given)).await?;
                     new.agent.spec.set_run_state(applied_run_state(run_state, None));
-                    Box::pin(self.create(&new, crate::Lifetime::UntilDeleted, &request.allow_exposed_files)).await
+                    Box::pin(self.create(
+                        &new,
+                        crate::Lifetime::UntilDeleted,
+                        &request.allow_exposed_files,
+                        labels.clone(),
+                    ))
+                    .await
                 }
                 Err(error) => return Err(error),
             };
@@ -260,9 +265,10 @@ impl ControlPlane {
             match result {
                 Err(Error::Conflict) => {}
                 Err(error) => return Err(error),
-                Ok(record) => {
+                Ok((record, stored)) => {
                     self.notifier.notify(record.id);
                     let mut agent = projected(record);
+                    agent.metadata.labels = stored.effective();
                     agent.status.phase = Some(agent.phase());
                     return Ok(agent);
                 }
@@ -587,6 +593,36 @@ impl ControlPlane {
         }
     }
 
+    /// Sets labels on an agent from the host and removes the `remove` keys, and returns the agent as stored. It changes
+    /// no generation, so the reconciler has nothing to do.
+    ///
+    /// Labels set here outlive an `apply` that does not repeat them. A removed key is gone until a manifest that
+    /// declares it is applied again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a label is invalid, the agent does not exist or is being deleted, or the change cannot
+    /// be stored.
+    pub async fn label(
+        &self,
+        name: &str,
+        set: crate::labels::Labels,
+        remove: std::collections::BTreeSet<String>,
+    ) -> Result<Agent, Error> {
+        crate::labels::validate_all(&set)?;
+        if let Some(key) = remove.iter().find(|key| set.contains_key(*key)) {
+            return Err(Error::Invalid(format!("label {key:?} is both set and removed")));
+        }
+        let mut record = self.store.get_by_name(name).await?;
+        let change = crate::labels::LabelChange {
+            set,
+            remove,
+            ..crate::labels::LabelChange::default()
+        };
+        record.agent.metadata.labels = self.store.change_labels(record.id, change).await?.effective();
+        Ok(self.resource(record))
+    }
+
     /// Marks an agent for asynchronous release. Repeated deletion is safe.
     ///
     /// # Errors
@@ -716,6 +752,29 @@ pub(super) fn validate_immutable_fields(current: &AgentRecord, desired: &Agent) 
         return Err(Error::Immutable("spec.harnesses.auth"));
     }
     Ok(())
+}
+
+/// The folders the agent `current` was given, by the target each is mounted at, for an update that gives none.
+fn bound_folders(current: &AgentRecord) -> Vec<super::BindSource> {
+    current
+        .bindings
+        .iter()
+        .map(|(target, source)| super::BindSource {
+            source: source.clone(),
+            target: Some(target.clone()),
+        })
+        .collect()
+}
+
+/// Whether applying `record` changes nothing stored for `current`. The folders it was given count too: `run` finds an
+/// agent by them.
+fn unchanged(current: &AgentRecord, record: &AgentRecord) -> bool {
+    current.agent.spec == record.agent.spec
+        && current.source_directory == record.source_directory
+        && current.manifest_path == record.manifest_path
+        && current.env_file == record.env_file
+        && current.bindings == record.bindings
+        && current.exposed_files == record.exposed_files
 }
 
 /// Another definition's agent has the name: nothing about this agent changed, so it is not an immutable field.

@@ -10,7 +10,7 @@ pub(super) fn get(connection: &Connection, id: AgentId) -> Result<AgentRecord, E
     connection
         .query_row(
             "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
-                    optional_mount_sources_json, volume_revisions_json, origin_json
+                    optional_mount_sources_json, volume_revisions_json, origin_json, labels_json
              FROM agents WHERE id = ?1 AND active_name IS NOT NULL",
             [id.to_string()],
             decode_row,
@@ -24,7 +24,7 @@ pub(super) fn get_by_name(connection: &Connection, name: &str) -> Result<AgentRe
     let record = connection
         .query_row(
             "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
-                    optional_mount_sources_json, volume_revisions_json, origin_json
+                    optional_mount_sources_json, volume_revisions_json, origin_json, labels_json
              FROM agents WHERE active_name = ?1",
             [name],
             decode_row,
@@ -45,7 +45,7 @@ pub(super) fn list(connection: &Connection) -> Result<Vec<AgentRecord>, Error> {
     let mut statement = connection
         .prepare(
             "SELECT id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
-                    optional_mount_sources_json, volume_revisions_json, origin_json
+                    optional_mount_sources_json, volume_revisions_json, origin_json, labels_json
              FROM agents WHERE active_name IS NOT NULL ORDER BY active_name",
         )
         .map_err(database_error)?;
@@ -56,7 +56,12 @@ pub(super) fn list(connection: &Connection) -> Result<Vec<AgentRecord>, Error> {
         .collect()
 }
 
-pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_generation: u64) -> Result<(), Error> {
+pub(super) fn put(
+    connection: &mut Connection,
+    record: &AgentRecord,
+    expected_generation: u64,
+    labels: &crate::labels::LabelChange,
+) -> Result<crate::labels::StoredLabels, Error> {
     record.check_resolved()?;
     let id = record.id;
     let name = &record.agent.metadata.name;
@@ -73,13 +78,18 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
         exposed_files: record.exposed_files.clone(),
     })?;
     let transaction = connection.transaction().map_err(database_error)?;
-    let changed = if expected_generation == 0 {
-        transaction
+    let (changed, stored) = if expected_generation == 0 {
+        let mut stored = crate::labels::StoredLabels {
+            declared: record.agent.metadata.labels.clone(),
+            ..crate::labels::StoredLabels::default()
+        };
+        stored.apply(labels);
+        let changed = transaction
             .execute(
                 "INSERT OR IGNORE INTO agents
                  (id, active_name, source_directory, desired_json, deletion_timestamp, status_json,
-                  optional_mount_sources_json, volume_revisions_json, origin_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                  optional_mount_sources_json, volume_revisions_json, origin_json, labels_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     id.to_string(),
                     name,
@@ -89,10 +99,12 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
                     encode_status(&record.agent.status)?,
                     serde_json::to_string(&record.optional_mount_sources)?,
                     serde_json::to_string(&record.volume_revisions)?,
-                    origin
+                    origin,
+                    serde_json::to_string(&stored)?
                 ],
             )
-            .map_err(database_error)?
+            .map_err(database_error)?;
+        (changed, stored)
     } else {
         let current = get(&transaction, id)?;
         if current.agent.metadata.generation != expected_generation
@@ -101,18 +113,66 @@ pub(super) fn put(connection: &mut Connection, record: &AgentRecord, expected_ge
         {
             return Err(Error::Conflict);
         }
-        transaction
-            .execute(
-                "UPDATE agents SET source_directory = ?1, desired_json = ?2, origin_json = ?5
-                 WHERE id = ?3 AND active_name = ?4 AND deletion_timestamp IS NULL",
-                params![source, desired, id.to_string(), name, origin],
+        let stored = transaction
+            .query_row(
+                "SELECT labels_json FROM agents WHERE id = ?1",
+                [id.to_string()],
+                |row| row.get::<_, String>(0),
             )
-            .map_err(database_error)?
+            .map_err(database_error)?;
+        let mut stored = serde_json::from_str::<crate::labels::StoredLabels>(&stored)?;
+        stored.apply(labels);
+        let changed = transaction
+            .execute(
+                "UPDATE agents SET source_directory = ?1, desired_json = ?2, labels_json = ?3, origin_json = ?6
+                 WHERE id = ?4 AND active_name = ?5 AND deletion_timestamp IS NULL",
+                params![
+                    source,
+                    desired,
+                    serde_json::to_string(&stored)?,
+                    id.to_string(),
+                    name,
+                    origin
+                ],
+            )
+            .map_err(database_error)?;
+        (changed, stored)
     };
     if changed != 1 {
         return Err(Error::Conflict);
     }
-    transaction.commit().map_err(database_error)
+    transaction.commit().map_err(database_error)?;
+    Ok(stored)
+}
+
+pub(super) fn change_labels(
+    connection: &mut Connection,
+    id: AgentId,
+    change: &crate::labels::LabelChange,
+) -> Result<crate::labels::StoredLabels, Error> {
+    let transaction = connection.transaction().map_err(database_error)?;
+    let (labels, deleting) = transaction
+        .query_row(
+            "SELECT labels_json, deletion_timestamp FROM agents WHERE id = ?1 AND active_name IS NOT NULL",
+            [id.to_string()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .optional()
+        .map_err(database_error)?
+        .ok_or(Error::NotFound)?;
+    if deleting.is_some() {
+        return Err(Error::Conflict);
+    }
+    let mut labels = serde_json::from_str::<crate::labels::StoredLabels>(&labels)?;
+    labels.apply(change);
+    transaction
+        .execute(
+            "UPDATE agents SET labels_json = ?1 WHERE id = ?2",
+            params![serde_json::to_string(&labels)?, id.to_string()],
+        )
+        .map_err(database_error)?;
+    transaction.commit().map_err(database_error)?;
+    Ok(labels)
 }
 
 pub(super) fn update_status(
@@ -201,6 +261,8 @@ pub(super) fn finalize_deletion(connection: &mut Connection, id: AgentId, genera
 fn encode_desired(agent: &Agent) -> Result<String, Error> {
     let mut desired = agent.clone();
     desired.metadata.deletion_timestamp = None;
+    // Kept in their own column, as declared and set from the host.
+    desired.metadata.labels.clear();
     desired.status = Status::default();
     serde_json::to_string(&desired).map_err(Error::from)
 }
@@ -261,6 +323,7 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
     let optional_mount_sources = row.get::<_, String>(6)?;
     let volume_revisions = row.get::<_, String>(7)?;
     let origin = super::decode_json::<StoredOrigin>(&row.get::<_, String>(8)?).map_err(conversion_error)?;
+    let labels = row.get::<_, String>(9)?;
     let id = id.parse::<AgentId>().map_err(conversion_error)?;
     let (source_directory, manifest_path, env_file) = match super::decode_json(&source).map_err(conversion_error)? {
         StoredSource::Provenance(provenance) => (
@@ -279,6 +342,9 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
         .transpose()
         .map_err(conversion_error)?;
     agent.status = super::decode_json(&status).map_err(conversion_error)?;
+    agent.metadata.labels = super::decode_json::<crate::labels::StoredLabels>(&labels)
+        .map_err(conversion_error)?
+        .effective();
     Ok(AgentRecord {
         id,
         source_directory,
