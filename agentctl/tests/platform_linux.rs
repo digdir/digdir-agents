@@ -2266,5 +2266,9 @@ async fn a_failure_the_guest_wrote_in_the_record_is_reported_printable_and_bound
         panic!("the recorded failure is reported: {:?}", set_up.post_create);
     };
     assert!(!message.chars().any(char::is_control), "{message:?}");
-    assert!(message.chars().count() <= 1025, "{} characters", message.chars().count());
+    assert!(
+        message.chars().count() <= 1025,
+        "{} characters",
+        message.chars().count()
+    );
 }
