@@ -202,7 +202,8 @@ fn step_limit() -> Duration {
 async fn run_step(sandbox: &SandboxHandle, spec: ExecutionSpec) -> Result<StepEnd, Error> {
     let started_at = tokio::time::Instant::now();
     let deadline = started_at + step_limit() + Duration::from_secs(40);
-    let Ok(started) = tokio::time::timeout_at(deadline, sandbox.start_execution(StartExecutionRequest::new(spec))).await
+    let Ok(started) =
+        tokio::time::timeout_at(deadline, sandbox.start_execution(StartExecutionRequest::new(spec))).await
     else {
         return Ok(StepEnd::OutOfTime);
     };
@@ -225,7 +226,9 @@ async fn run_step(sandbox: &SandboxHandle, spec: ExecutionSpec) -> Result<StepEn
                 });
             }
             Some(ExecutionEvent::Failed { message }) => {
-                return Err(Error::SandboxSetup(format!("a postCreate step could not run: {message}")));
+                return Err(Error::SandboxSetup(format!(
+                    "a postCreate step could not run: {message}"
+                )));
             }
             // The step's own output goes to its log, and a start or an event a later backend adds says nothing of its end.
             Some(_) => {}
@@ -258,7 +261,10 @@ fn failure_message(step: &PostCreateStep, log: &str, end: &StepEnd) -> String {
         } if *elapsed >= step_limit() => (out_of_time, stderr.as_slice()),
         StepEnd::Exited {
             code: KILLED, stderr, ..
-        } => ("was killed, as when it runs out of memory".to_owned(), stderr.as_slice()),
+        } => (
+            "was killed, as when it runs out of memory".to_owned(),
+            stderr.as_slice(),
+        ),
         StepEnd::Exited { code, stderr, .. } => (format!("exited with code {code}"), stderr.as_slice()),
     };
     let tail = last_lines(&String::from_utf8_lossy(stderr));
@@ -438,14 +444,24 @@ mod shell_tests {
             (3, "no input\n".into(), "no input\n".into()),
             "a step has nothing to read, and keeps its exit code"
         );
-        assert_eq!(step("-x", "10m").0, 127, "a command that starts with - is a command, not an option");
+        assert_eq!(
+            step("-x", "10m").0,
+            127,
+            "a command that starts with - is a command, not an option"
+        );
         let started = std::time::Instant::now();
         let (code, ..) = step("sleep 30", "1s");
         assert_eq!(code, super::TIMED_OUT);
-        assert!(started.elapsed() < std::time::Duration::from_secs(10), "a step is stopped at its limit");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "a step is stopped at its limit"
+        );
         let started = std::time::Instant::now();
         let (code, ..) = step("trap '' TERM; sleep 60", "1s");
         assert_eq!(code, super::KILLED);
-        assert!(started.elapsed() < std::time::Duration::from_secs(20), "a step that ignores being stopped is killed");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "a step that ignores being stopped is killed"
+        );
     }
 }
