@@ -34,6 +34,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 - On Windows, when the path to your agent home contains `*`, `?`, `[` or `{`, `agentctl ssh` from Git Bash reaches the agent, and the TUI tells whether SSH is set up, instead of Git's `ssh` reading another configuration. ([#476](https://github.com/digdir/digdir-agents/issues/476))
 - On Windows, `agentctl ssh NAME COMMAND` from Git Bash runs the command in the agent as you wrote it. Git's `ssh` expanded `*`, `?`, `[...]`, `{...}` and `~` in it against your own folders first, and read a word starting with `@` as a file of arguments. ([#476](https://github.com/digdir/digdir-agents/issues/476))
 - Agents with mediated network reach hosts that also have IPv6 addresses, such as `index.crates.io`, over IPv4 at once, instead of hanging until the client gives up. They no longer reach internet addresses over IPv6. To fix an existing agent, delete it and apply again. ([#452](https://github.com/digdir/digdir-agents/issues/452))
+- On the base images, Firefox no longer crashes at start once Chromium has run. Existing agents get the fix once recreated from an updated image. Chromium from a repository's own Playwright 1.63 or 1.64 still causes it. Run `find ~/.cache/fontconfig -type l -delete` afterwards. ([#394](https://github.com/digdir/digdir-agents/issues/394))
 
 ## [0.1.0-preview.14] - 2026-11-11
 
