@@ -13,6 +13,10 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ## [Unreleased]
 
+### Added
+
+- `agentctl get agents -o json` gives each agent a `metadata.uid` that stays the same until the agent is deleted, so a tool that remembers an agent can tell when one with the same name is a new agent. ([#301](https://github.com/digdir/digdir-agents/issues/301))
+
 ### Changed
 
 - The Agent sandbox section at the top of an agent's instructions now lists the folders mounted from your machine, and adds rules its own instructions can override, such as cleaning up after a task and noting system changes in `~/system-changes.md`. ([#505](https://github.com/digdir/digdir-agents/pull/505))

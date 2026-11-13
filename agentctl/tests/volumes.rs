@@ -85,6 +85,7 @@ pub(crate) fn volume_request(name: &str, source: PathBuf) -> ApplyVolumeRequest 
             kind: agent::volumes::KIND.into(),
             metadata: agent::Metadata {
                 name: name.into(),
+                uid: None,
                 generation: 0,
                 deletion_timestamp: None,
                 restart_timestamp: None,
