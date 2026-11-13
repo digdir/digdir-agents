@@ -2491,3 +2491,57 @@ async fn a_post_create_step_the_guest_never_ends_holds_setup_no_longer_than_a_st
         "setup still waits on the step {bound:?} after it started, for as long as the guest keeps it running"
     );
 }
+
+/// A step that fails is not shown as done in the progress the person watches, such as `apply --wait`'s, where the
+/// failure that follows would then contradict it.
+#[tokio::test(flavor = "local")]
+async fn a_failed_post_create_step_is_not_reported_as_completed_in_progress() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(directory.path(), &[("clone", "git clone private")]);
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 1).await;
+    no_record_yet(&backend);
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    backend.queue_execution_events_matching(
+        is_step("git clone private"),
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stderr("fatal: repository not found\n".into()),
+            ExecutionEvent::Exited(ExitStatus { code: 128 }),
+        ],
+    );
+    let events = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let progress = sandbox::ProgressReporter::from_callback({
+        let events = events.clone();
+        move |event| events.borrow_mut().push(event)
+    })
+    .steps();
+
+    let set_up = Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &progress)
+        .await
+        .expect("a failed step fails no setup");
+    assert!(
+        matches!(set_up.post_create, Some(agent::sandbox::PostCreateOutcome::Failed(_))),
+        "{:?}",
+        set_up.post_create
+    );
+
+    let events = events.borrow();
+    let step = events
+        .iter()
+        .find_map(|event| match event {
+            sandbox::ProgressEvent::StepStarted { id, name, .. } if name.contains("clone") => Some(id.clone()),
+            _ => None,
+        })
+        .expect("the step is shown");
+    let ended = events.iter().find_map(|event| match event {
+        sandbox::ProgressEvent::StepEnded { id, outcome, .. } if *id == step => Some(*outcome),
+        _ => None,
+    });
+    assert_ne!(
+        ended,
+        Some(sandbox::Outcome::Completed),
+        "the failed step is shown as done"
+    );
+}
