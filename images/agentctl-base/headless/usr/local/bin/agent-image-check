@@ -50,7 +50,7 @@ closed="$(find /home/agent -type d ! -perm -u=rwx -print 2>/dev/null | head -5)"
 # What agentd executes in the guest by absolute path, and the harnesses and hook runtime it finds on PATH.
 for path in /usr/bin/env /usr/bin/sudo /usr/bin/tmux /usr/bin/tar /usr/bin/install /usr/bin/mkdir /usr/bin/chown \
     /usr/bin/chmod /usr/bin/test /usr/bin/find /usr/bin/grep /usr/bin/stat /usr/bin/date /usr/bin/tail /bin/sh \
-    /bin/sleep /bin/rm /bin/cat /bin/chmod /bin/chown; do
+    /usr/bin/timeout /bin/sleep /bin/rm /bin/cat /bin/chmod /bin/chown; do
     [ -x "$path" ] || fail "$path is missing"
 done
 [ -f /etc/ssl/certs/ca-certificates.crt ] || fail "/etc/ssl/certs/ca-certificates.crt is missing; install ca-certificates"
