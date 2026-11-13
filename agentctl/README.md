@@ -115,7 +115,7 @@ in an agent can apply what it writes as a nested agent and try it before you do.
 
 ## Documentation
 
-- [docs/](docs/README.md): agentctl's own docs, such as what an agent image must provide
+- [docs/](docs/README.md): how-tos and references, such as labelling agents and the agent fields clients read
 - [architecture.md](../docs/architecture.md): the principles and diagrams
 - [GLOSSARY.md](../GLOSSARY.md): the terms used here
 - [CHANGELOG.md](CHANGELOG.md): release notes

@@ -12,9 +12,10 @@ How to name, place and write the docs in this repository.
 - A README says what the component is, how to install or start it, and links onward.
 - `AGENTS.md` holds only what is specific to agents. A rule that applies to people as well goes in the docs everyone
   reads, so that it is said once.
-- Give each doc one job: a reference to look things up, steps towards a goal, or an explanation of why something is
-  the way it is. None of them describe the implementation. The code is the source for how things work, and
-  [architecture.md](architecture.md) keeps a short overview and diagrams.
+- Give each doc one of the four jobs [Diátaxis](https://diataxis.fr/) names: a tutorial that teaches by doing, a
+  how-to with the steps towards one goal, a reference to look things up, or an explanation of why something is the
+  way it is. Name the kind in the `docs/` README. None of them describe the implementation. The code is the source
+  for how things work, and [architecture.md](architecture.md) keeps a short overview and diagrams.
 - Name what acts: "`agentd` refuses the change", not "the change is refused".
 
 ## Diagrams
