@@ -278,6 +278,11 @@ impl Reconciler {
         conditions.extend(environment_file_condition(record));
         conditions.extend(exposed_files_condition(record));
         conditions.extend(post_create_condition(ensured.post_create.as_ref()));
+        if let Some(crate::sandbox::PostCreateOutcome::Failed(message)) = &ensured.post_create {
+            return self
+                .record_post_create_failure(record, assignment, conditions, observer, message)
+                .await;
+        }
         conditions.push(condition(Condition::READY, ConditionStatus::True, "SandboxReady", ""));
         let status = Status::observed(record.agent.metadata.generation, Some(assignment), conditions);
         // As on failure, readiness is stored before followers see the pass end.
@@ -367,6 +372,32 @@ impl Reconciler {
                 Err(error)
             }
         }
+    }
+
+    /// Records a failed `postCreate` step as the agent's `Ready=False` and returns it as an error. The agent is not as its
+    /// manifest describes it, and only a restart, which runs the step again, or a changed step in a recreated agent can
+    /// change that, so the failure is one that waits for a change. Its sandbox runs on, for `exec` to find out why.
+    async fn record_post_create_failure(
+        &self,
+        record: &AgentRecord,
+        assignment: crate::sandbox::Assignment,
+        mut conditions: Vec<Condition>,
+        observer: &SandboxObserver,
+        message: &str,
+    ) -> Result<(), Error> {
+        conditions.push(condition(
+            Condition::READY,
+            ConditionStatus::False,
+            Condition::REASON_POST_CREATE_FAILED,
+            message,
+        ));
+        let error = Error::Invalid(message.to_owned());
+        let failure = ReconcileFailure::classify(&error);
+        let status = Status::observed(record.agent.metadata.generation, Some(assignment), conditions);
+        let stored = self.update_status(record, status, Some(failure.kind)).await;
+        observer.failed(&failure);
+        stored?;
+        Err(error)
     }
 
     /// Records a failed sandbox ensure or setup as the agent's `Ready=False` and returns `error`.

@@ -32,7 +32,8 @@ impl ExecutionService {
         Self { agents, convergence }
     }
 
-    /// Wakes agent convergence and returns its exact ready sandbox assignment.
+    /// Wakes agent convergence and returns its exact ready sandbox assignment, or the running sandbox of an agent that
+    /// is not ready only because a `postCreate` step failed, so the command can find out why.
     ///
     /// # Errors
     ///
@@ -46,7 +47,16 @@ impl ExecutionService {
             return Err(Error::Conflict);
         }
         record.reject_stopped()?;
-        let record = self.convergence.converge(name, wait).await?;
+        let record = match self.convergence.converge(name, wait).await {
+            Ok(record) => record,
+            Err(error) => {
+                let record = self.agents.get_by_name(name).await?;
+                if !record.agent.status.post_create_failed() {
+                    return Err(error);
+                }
+                record
+            }
+        };
         record.reject_stopped()?;
         target(record, name)
     }
@@ -54,7 +64,7 @@ impl ExecutionService {
 
 fn target(record: control_plane::AgentRecord, name: &str) -> Result<ExecutionTarget, Error> {
     let ready = record.agent.status.ready_condition();
-    if !record.agent.status.is_ready() {
+    if !record.agent.status.is_ready() && !record.agent.status.post_create_failed() {
         let detail = ready.map_or_else(
             || "no Ready condition was reported".to_owned(),
             crate::Condition::summary,

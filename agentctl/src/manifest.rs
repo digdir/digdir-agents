@@ -1102,8 +1102,9 @@ impl SkillSpec {
 /// One step of an agent's `postCreate` setup.
 ///
 /// It runs `run` with `sh -e` as the sandbox user, in its home and with the environment `agentctl exec` gets, for at
-/// most [`POST_CREATE_STEP_TIMEOUT_MINUTES`]. A step that fails stops the steps after it, and the agent is ready
-/// without them. They run again from the failed step once the sandbox boots again, such as on `agentctl restart`.
+/// most [`POST_CREATE_STEP_TIMEOUT_MINUTES`]. A step that fails stops the steps after it, and the agent is not ready
+/// until they have all run, though `agentctl exec` still reaches it to find out why. They run again from the failed
+/// step once the sandbox boots again, such as on `agentctl restart`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PostCreateStep {
@@ -1117,8 +1118,8 @@ pub struct PostCreateStep {
 /// How long one `postCreate` step may run before it is stopped and counted as failed.
 ///
 /// A step runs once, so it may take as long as cloning a large repository. The bound keeps one that hangs from holding
-/// its agent out of `Ready`, and is short enough that the warning for it shows within `apply --wait`'s default wait,
-/// which also covers the image and the boot.
+/// its agent out of `Ready` for long, and is short enough that `apply --wait` reports it within its default wait, which
+/// also covers the image and the boot.
 pub const POST_CREATE_STEP_TIMEOUT_MINUTES: u32 = 5;
 
 /// The longest `run` a `postCreate` step may have, well within the longest argument Linux passes to a program.
@@ -1449,6 +1450,15 @@ impl Status {
         Condition::any_ready(&self.conditions)
     }
 
+    /// Returns whether the agent is not ready only because a `postCreate` step failed, which leaves its sandbox running
+    /// for `exec` to find out why.
+    #[must_use]
+    pub fn post_create_failed(&self) -> bool {
+        self.ready_condition().is_some_and(|ready| {
+            ready.status == ConditionStatus::False && ready.reason == Condition::REASON_POST_CREATE_FAILED
+        })
+    }
+
     /// Returns whether a pass recorded the agent's sandbox as stopped.
     #[must_use]
     pub fn is_stopped(&self) -> bool {
@@ -1509,6 +1519,8 @@ impl Condition {
     pub const REASON_STOPPED: &'static str = "Stopped";
     /// `Ready` reason while a pass starts a stopped sandbox.
     pub const REASON_STARTING: &'static str = "Starting";
+    /// `Ready` reason when one of the agent's `postCreate` steps failed. Its sandbox runs, so `exec` reaches it.
+    pub const REASON_POST_CREATE_FAILED: &'static str = "PostCreateFailed";
     /// `Ready` reason while an agent waits for the volumes it mounts.
     pub const REASON_WAITING_FOR_VOLUMES: &'static str = "WaitingForVolumes";
 
