@@ -580,7 +580,7 @@ impl Client {
         .await
     }
 
-    /// Delivers a prompt to a running session's harness. With `wait`, waits for
+    /// Delivers a prompt to a session's harness, resuming an Idle one first. With `wait`, waits for
     /// its completed-turn counter to advance with identical waiting activity in
     /// two consecutive polls, 250 ms apart.
     /// Work observed during settling requires another completion.
@@ -589,7 +589,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns an error when the session is not running or the input cannot be delivered.
+    /// Returns an error when the session cannot be resumed or the input cannot be delivered.
     pub async fn prompt_session(
         &self,
         agent: &str,
