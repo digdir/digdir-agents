@@ -1579,7 +1579,10 @@ async fn a_failed_post_create_step_keeps_the_agent_from_becoming_ready_but_not_f
     .await
     .expect("a failed step is not waited through")
     .expect_err("a failed step ends the wait");
-    assert!(matches!(&error, Error::Invalid(message) if message.contains("\"clone\"")), "{error}");
+    assert!(
+        matches!(&error, Error::Invalid(message) if message.contains("\"clone\"")),
+        "{error}"
+    );
     let status = store.get_by_name("worker").await.expect("Agent").agent.status;
     let ready = status.ready_condition().expect("Ready condition");
     assert_eq!(
