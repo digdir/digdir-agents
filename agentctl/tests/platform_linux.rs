@@ -10,7 +10,8 @@ use agent::{
     sandbox::{Assignment, PlacedSkills, PlatformAdapter as _, ProviderId, platform::Linux},
 };
 use sandbox::{
-    EnsureSandboxRequest, Platform, SandboxPath, SandboxService,
+    EnsureSandboxRequest, LocalFuture, Platform, SandboxId, SandboxPath, SandboxService,
+    backend::SandboxBackend,
     execution::{ExecutionEvent, ExitStatus, Program},
     memory,
 };
@@ -2270,5 +2271,223 @@ async fn a_failure_the_guest_wrote_in_the_record_is_reported_printable_and_bound
         message.chars().count() <= 1025,
         "{} characters",
         message.chars().count()
+    );
+}
+
+/// A guest whose `postCreate` step's Execution starts and then never ends, as it does when a process the step left
+/// holds the Execution's output open, when the step's log is a FIFO its shell waits on before `timeout` starts, or when
+/// the guest replaced `timeout`. Everything else is the in-memory provider's.
+struct StepNeverEnds {
+    inner: Rc<memory::Provider>,
+    run: &'static str,
+}
+
+impl sandbox::provider::SandboxProvider for StepNeverEnds {
+    fn backend(&self) -> &dyn SandboxBackend {
+        self
+    }
+
+    fn image_backend(&self) -> &dyn sandbox::image::ImageBackend {
+        sandbox::provider::SandboxProvider::image_backend(&*self.inner)
+    }
+}
+
+impl SandboxBackend for StepNeverEnds {
+    fn capabilities<'a>(
+        &'a self,
+        platform: &'a Platform,
+    ) -> LocalFuture<'a, Result<sandbox::backend::SandboxBackendCapabilities, sandbox::Error>> {
+        SandboxBackend::capabilities(&*self.inner, platform)
+    }
+
+    fn create(
+        &self,
+        request: sandbox::backend::CreateSandboxRequest,
+    ) -> sandbox::PendingOperation<'_, sandbox::Sandbox> {
+        SandboxBackend::create(&*self.inner, request)
+    }
+
+    fn update_resources<'a>(
+        &'a self,
+        id: &'a SandboxId,
+        resources: sandbox::SandboxResources,
+    ) -> sandbox::PendingOperation<'a, sandbox::Sandbox> {
+        SandboxBackend::update_resources(&*self.inner, id, resources)
+    }
+
+    fn update_environment<'a>(
+        &'a self,
+        id: &'a SandboxId,
+        environment: std::collections::BTreeMap<String, String>,
+    ) -> sandbox::PendingOperation<'a, sandbox::Sandbox> {
+        SandboxBackend::update_environment(&*self.inner, id, environment)
+    }
+
+    fn find<'a>(&'a self, name: &'a sandbox::SandboxName) -> LocalFuture<'a, Result<sandbox::Sandbox, sandbox::Error>> {
+        SandboxBackend::find(&*self.inner, name)
+    }
+
+    fn inspect<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<sandbox::Sandbox, sandbox::Error>> {
+        SandboxBackend::inspect(&*self.inner, id)
+    }
+
+    fn start<'a>(&'a self, id: &'a SandboxId) -> sandbox::PendingOperation<'a, ()> {
+        SandboxBackend::start(&*self.inner, id)
+    }
+
+    fn stop<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), sandbox::Error>> {
+        SandboxBackend::stop(&*self.inner, id)
+    }
+
+    fn kill<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), sandbox::Error>> {
+        SandboxBackend::kill(&*self.inner, id)
+    }
+
+    fn delete<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<(), sandbox::Error>> {
+        SandboxBackend::delete(&*self.inner, id)
+    }
+
+    fn open_network_endpoint<'a>(
+        &'a self,
+        id: &'a SandboxId,
+    ) -> LocalFuture<'a, Result<sandbox::network::NetworkEndpoint, sandbox::Error>> {
+        SandboxBackend::open_network_endpoint(&*self.inner, id)
+    }
+
+    fn start_execution<'a>(
+        &'a self,
+        sandbox_id: &'a SandboxId,
+        request: sandbox::execution::StartExecutionRequest,
+    ) -> LocalFuture<'a, Result<sandbox::execution::StartedExecution, sandbox::Error>> {
+        if !is_step(self.run)(request.spec()) {
+            return SandboxBackend::start_execution(&*self.inner, sandbox_id, request);
+        }
+        let id = request.id().clone();
+        Box::pin(async move {
+            let started = futures_util::stream::iter([Ok(ExecutionEvent::Started { process_id: None })]);
+            Ok(sandbox::execution::StartedExecution {
+                id,
+                events: Box::pin(futures_util::StreamExt::chain(started, futures_util::stream::pending())),
+            })
+        })
+    }
+
+    fn start_terminal_execution<'a>(
+        &'a self,
+        sandbox_id: &'a SandboxId,
+        request: sandbox::terminal::StartTerminalExecutionRequest,
+    ) -> LocalFuture<'a, Result<sandbox::terminal::StartedTerminalExecution, sandbox::Error>> {
+        SandboxBackend::start_terminal_execution(&*self.inner, sandbox_id, request)
+    }
+
+    fn attach_terminal<'a>(
+        &'a self,
+        sandbox_id: &'a SandboxId,
+        request: sandbox::terminal::AttachTerminalRequest,
+    ) -> LocalFuture<'a, Result<sandbox::terminal::TerminalAttachOutcome, sandbox::Error>> {
+        SandboxBackend::attach_terminal(&*self.inner, sandbox_id, request)
+    }
+
+    fn terminate_execution<'a>(
+        &'a self,
+        _sandbox_id: &'a SandboxId,
+        _execution_id: &'a sandbox::execution::ExecutionId,
+    ) -> LocalFuture<'a, Result<(), sandbox::Error>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn kill_execution<'a>(
+        &'a self,
+        _sandbox_id: &'a SandboxId,
+        _execution_id: &'a sandbox::execution::ExecutionId,
+    ) -> LocalFuture<'a, Result<(), sandbox::Error>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn read_file<'a>(
+        &'a self,
+        sandbox_id: &'a SandboxId,
+        path: &'a SandboxPath,
+    ) -> LocalFuture<'a, Result<sandbox::file_transfer::ByteReader, sandbox::Error>> {
+        SandboxBackend::read_file(&*self.inner, sandbox_id, path)
+    }
+
+    fn write_file<'a>(
+        &'a self,
+        sandbox_id: &'a SandboxId,
+        path: &'a SandboxPath,
+        contents: sandbox::file_transfer::ByteReader,
+    ) -> LocalFuture<'a, Result<(), sandbox::Error>> {
+        SandboxBackend::write_file(&*self.inner, sandbox_id, path, contents)
+    }
+
+    fn ensure_volume(
+        &self,
+        request: sandbox::volume::EnsureVolumeRequest,
+    ) -> sandbox::PendingOperation<'_, sandbox::volume::Volume> {
+        SandboxBackend::ensure_volume(&*self.inner, request)
+    }
+
+    fn find_volume<'a>(
+        &'a self,
+        name: &'a sandbox::volume::VolumeName,
+    ) -> LocalFuture<'a, Result<sandbox::volume::Volume, sandbox::Error>> {
+        SandboxBackend::find_volume(&*self.inner, name)
+    }
+
+    fn delete_volume<'a>(&'a self, id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), sandbox::Error>> {
+        SandboxBackend::delete_volume(&*self.inner, id)
+    }
+}
+
+/// The guest is not trusted, so it cannot be what bounds a step. A step that never ends, by holding its Execution's
+/// output open from a process it left, by a FIFO at its log, or by a `timeout` the guest replaced, must not hold the
+/// agent's setup pass for longer than a step may run: while that pass runs, `exec`, a graceful `stop`, `restart`,
+/// `delete` and `apply --wait` all wait for it, and the agent takes one of the controller's concurrent passes.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_post_create_step_the_guest_never_ends_holds_setup_no_longer_than_a_step_may_run() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(directory.path(), &[("install", "./install")]);
+    let inner = Rc::new(memory::Provider::new());
+    inner.queue_execution_events_matching(
+        is_claude_version,
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stdout("2.1.266 (Claude Code)\n".into()),
+            ExecutionEvent::Exited(ExitStatus { code: 0 }),
+        ],
+    );
+    inner.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    no_record_yet(&inner);
+    inner.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    let guest = Rc::new(StepNeverEnds {
+        inner: inner.clone(),
+        run: "./install",
+    });
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
+    let sandbox = SandboxService::new(guest)
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+
+    // The step's own limit, the grace `timeout` gives it after, and a minute to spare.
+    let bound =
+        std::time::Duration::from_secs(u64::from(agent::manifest::POST_CREATE_STEP_TIMEOUT_MINUTES) * 60 + 10 + 60);
+    let set_up = tokio::time::timeout(
+        bound,
+        Linux::new(PLATFORM_API_URL).setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase()),
+    )
+    .await;
+    assert!(
+        set_up.is_ok(),
+        "setup still waits on the step {bound:?} after it started, for as long as the guest keeps it running"
     );
 }
