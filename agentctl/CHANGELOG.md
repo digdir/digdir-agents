@@ -15,7 +15,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ### Added
 
-- `postCreate` steps in an agent's manifest run setup that needs the agent's accounts, secrets or network, such as cloning your dotfiles, once before it is first ready. A failed step keeps it from becoming ready, though `agentctl exec` reaches it. Changing steps takes a recreated agent. ([#509](https://github.com/digdir/digdir-agents/pull/509))
+- `postCreate` steps in an agent's manifest run setup that needs the agent's accounts, secrets or network, such as cloning your dotfiles, once before it is first ready. A failed step keeps it from becoming ready, though `agentctl exec` reaches it. Changing steps takes a recreated agent. ([#322](https://github.com/digdir/digdir-agents/issues/322))
 
 ### Changed
 
