@@ -2579,3 +2579,29 @@ async fn a_failed_post_create_step_keeps_the_end_of_its_output_and_its_log_in_th
         assert!(message.contains(part), "{part:?} is cut from {message}");
     }
 }
+
+/// A step's own commands can exit with `timeout`'s code, as one that waits for a service with `timeout 30` does when the
+/// service never comes. Such a step ended on its own, at once, so it is not reported as having run out of its time.
+#[tokio::test(flavor = "local")]
+async fn a_post_create_step_that_exits_with_timeouts_code_at_once_is_not_reported_as_out_of_time() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = post_create_record(directory.path(), &[("database", "timeout 30 ./wait-for-database")]);
+    let backend = Rc::new(memory::Provider::new());
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 1).await;
+    no_record_yet(&backend);
+    backend.queue_execution_events_matching(is_boot_id_read, printed("boot-a\n"));
+    backend.queue_execution_events_matching(is_step("timeout 30 ./wait-for-database"), completed(124));
+
+    let set_up = Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("a failed step fails no setup");
+
+    let Some(agent::sandbox::PostCreateOutcome::Failed(message)) = set_up.post_create else {
+        panic!("a failed step is reported: {:?}", set_up.post_create);
+    };
+    assert!(
+        !message.contains("did not finish within"),
+        "a step that ended at once is blamed on its time limit: {message}"
+    );
+}
