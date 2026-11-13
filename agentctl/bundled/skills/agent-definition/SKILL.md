@@ -111,8 +111,9 @@ the tests start with Compose, `browser` for browser tests, `desktop` for the des
   only the login stored without a name. An owner who keeps a login the agent must not use, such as a private
   subscription beside work's, names the one it may use in their variant, as in `login: work`.
 - **Setup that runs once per agent**, such as someone's own configuration cloned and installed, goes in `postCreate`
-  steps, each a `name` and the shell it will `run`. They run in order before the agent is first ready, so changing them
-  takes a recreated agent. A person's own steps go in their variant. A step clones what it needs itself, since the
+  steps, each a `name` and the shell it will `run`. They run in order before the agent is first ready, and one that
+  fails keeps it from becoming ready, though `agentctl exec` reaches it to read the step's log. Changing them takes a
+  recreated agent. A person's own steps go in their variant. A step clones what it needs itself, since the
   workspace clone runs in the background at boot. Setup on every boot stays in a unit, as above.
 - **Volumes:** when agents need a large host directory they only read, a `kind: Volume` manifest copies it once for
   all of them, and each mounts it with `type: volume`. Keep a team's volume manifests in `agents/_volumes/`, where
