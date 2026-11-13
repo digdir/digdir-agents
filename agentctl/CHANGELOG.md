@@ -15,7 +15,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ### Added
 
-- The new session form in `agentctl tui` (`n`) suggests a name, such as `wobbly-walrus`, in the empty Name field, and Enter creates the session by that name unless you type your own. ([#PR](https://github.com/digdir/digdir-agents/pull/PR))
+- The new session form in `agentctl tui` (`n`) suggests a name, such as `wobbly-walrus`, in the empty Name field, and Enter creates the session by that name unless you type your own. ([#508](https://github.com/digdir/digdir-agents/pull/508))
 
 ### Changed
 
