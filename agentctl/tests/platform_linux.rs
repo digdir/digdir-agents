@@ -170,7 +170,14 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         source: None,
         value: None,
     }];
-    resource.spec.access = vec![agent::AccessSpec::Ssh {}];
+    resource.spec.access = vec![
+        agent::AccessSpec::Ssh {},
+        agent::AccessSpec::Web {
+            name: "t3code".into(),
+            port: 3773,
+            path: "/".into(),
+        },
+    ];
     resource.spec.network.deny = vec!["metadata.google.internal".into()];
     let bind = |target: &str, read_only: bool, optional: bool| agent::MountSpec::Bind {
         source: Some(directory.path().to_path_buf()),
@@ -280,7 +287,8 @@ persist real values.
 - **Plain environment:** `GIT_USER_NAME`.
 - **Network:** all traffic passes through the host, which intercepts TLS with a CA that the system store and \
 `NODE_EXTRA_CA_CERTS` trust. Denied: `metadata.google.internal`.
-- **Access:** people on the host reach this computer with `agentctl ssh worker`.
+- **Access:** people on the host reach this computer with `agentctl ssh worker`. They can open the web views you \
+serve in their browser: `t3code` on port 3773 at `/`.
 - **Nested agents:** available (`/dev/kvm`, no Podman, so only manifests with an image `reference`); see the \
 `agentctl` skill.
 - **Changes:** inside this VM, apart from the person's folders, act freely, such as installing the tools a task \

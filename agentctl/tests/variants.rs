@@ -237,6 +237,68 @@ fn a_patch_delete_entry_removes_the_inherited_one_and_null_removes_them_all() {
     );
 }
 
+/// An agent serves several web views, so a variant addresses one by its `type` and `name`.
+#[test]
+fn web_views_merge_by_type_and_name() {
+    let directory = agent_directory();
+    write(
+        directory.path(),
+        "agent.team.yaml",
+        &variant(
+            "agent.yaml",
+            "team",
+            "spec:
+  access:
+    - type: ssh
+    - type: web
+      name: t3code
+      port: 3773
+    - type: web
+      name: docs
+      port: 8080
+",
+        ),
+    );
+    write(
+        directory.path(),
+        "agent.mine.yaml",
+        &variant(
+            "agent.team.yaml",
+            "mine",
+            "spec:
+  access:
+    - type: web
+      name: t3code
+      port: 3774
+    - type: web
+      name: docs
+      $patch: delete
+    - type: web
+      name: novnc
+      port: 6080
+      path: /vnc.html
+",
+        ),
+    );
+
+    let agent = manifest::resolve(&directory.path().join("agent.mine.yaml"))
+        .expect("web view variant")
+        .agent;
+    let web = |name: &str, port: u16, path: &str| agent::manifest::AccessSpec::Web {
+        name: name.into(),
+        port,
+        path: path.into(),
+    };
+    assert_eq!(
+        agent.spec.access,
+        [
+            agent::manifest::AccessSpec::Ssh {},
+            web("t3code", 3774, "/"),
+            web("novnc", 6080, "/vnc.html"),
+        ]
+    );
+}
+
 #[test]
 fn a_patch_replace_entry_of_its_own_replaces_the_inherited_list() {
     let directory = agent_directory();
@@ -412,6 +474,12 @@ fn refuses_patches_a_variant_cannot_apply_unambiguously() {
             "nameless",
             "spec:\n  environment:\n    - $patch: delete\n",
             "spec.environment: an entry with $patch: delete must name the entry it removes by its name",
+        ),
+        (
+            "unnamed-view",
+            "spec:\n  access:\n    - type: web\n      $patch: delete\n",
+            "spec.access: an entry with $patch: delete must name the entry it removes by its type, and name for a web \
+             view",
         ),
         (
             "empty",

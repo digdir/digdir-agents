@@ -626,6 +626,31 @@ fn decodes_each_part_of_a_manifest_and_serializes_only_what_it_sets() {
 }
 
 #[test]
+fn web_views_are_decoded_and_open_at_the_root_unless_they_name_a_path() {
+    let agent = manifest::decode(&manifest_with_access(
+        "  access:\n    - type: web\n      name: t3code\n      port: 3773\n    - type: web\n      name: \
+         docs\n      port: 8080\n      path: /docs/\n",
+    ))
+    .expect("web views");
+    assert_eq!(
+        agent.spec.access[0],
+        agent::AccessSpec::Web {
+            name: "t3code".into(),
+            port: 3773,
+            path: "/".into()
+        }
+    );
+    assert!(!agent.spec.ssh_access(), "a web view is not SSH access");
+    assert_eq!(
+        serde_json::to_value(&agent).expect("Agent JSON")["spec"]["access"],
+        serde_json::json!([
+            {"type": "web", "name": "t3code", "port": 3773},
+            {"type": "web", "name": "docs", "port": 8080, "path": "/docs/"}
+        ])
+    );
+}
+
+#[test]
 fn optional_instructions_and_skills_are_decoded_and_serialized_only_when_set() {
     let bytes = manifest_with(&[(
         NETWORK,
@@ -852,6 +877,60 @@ fn rejects_unknown_duplicate_and_configured_access_capabilities() {
             Err(agent::Error::Yaml(_) | agent::Error::Invalid(_))
         ),
         "SSH access exposes no tunables"
+    );
+    for (view, what) in [
+        (
+            "name: t3code\n      port: 3773\n    - type: web\n      name: t3code\n      port: 3774",
+            "web view \"t3code\" twice",
+        ),
+        ("name: T3 Code\n      port: 3773", "spec.access[0].name"),
+        ("name: t3code\n      port: 0", "spec.access[0].port"),
+        (
+            "name: t3code\n      port: 3773\n      path: docs",
+            "spec.access[0].path",
+        ),
+        (
+            "name: t3code\n      port: 3773\n      path: \"/docs page\"",
+            "must be a URL path",
+        ),
+        (
+            "name: t3code\n      port: 3773\n      path: \"/docs?tab=1\"",
+            "must be a URL path",
+        ),
+        (
+            "name: t3code\n      port: 3773\n      path: \"/#top\"",
+            "must be a URL path",
+        ),
+        ("name: t3code\n      port: 3773\n      path: /%zz", "must be a URL path"),
+        ("name: t3code\n      port: 3773\n      path: /%2", "must be a URL path"),
+        ("name: t3code\n      port: 3773\n      path: /ø", "must be a URL path"),
+    ] {
+        let bytes = manifest_with_access(&format!("  access:\n    - type: web\n      {view}\n"));
+        assert!(
+            matches!(manifest::decode(&bytes), Err(agent::Error::Invalid(ref message)) if message.contains(what)),
+            "{what}: {:?}",
+            manifest::decode(&bytes)
+        );
+    }
+    assert!(
+        matches!(
+            manifest::decode(&manifest_with_access("  access:\n    - type: web\n      port: 3773\n")),
+            Err(agent::Error::Yaml(_) | agent::Error::Invalid(_))
+        ),
+        "a web view has a name"
+    );
+    manifest::decode(&manifest_with_access(
+        "  access:\n    - type: web\n      name: t3code\n      port: 3773\n      path: \"/a-b_c.d~e/%20x;v=1,@:\"\n",
+    ))
+    .expect("a path with escapes and the characters a URL path allows");
+    assert!(
+        matches!(
+            manifest::decode(&manifest_with_access(
+                "  access:\n    - type: web\n      name: t3code\n      port: 3773\n      login: none\n"
+            )),
+            Err(agent::Error::Yaml(_) | agent::Error::Invalid(_))
+        ),
+        "a web view takes no sign-in settings yet"
     );
     // `access` belongs to the agent, not the sandbox.
     let nested = manifest_with(&[(
