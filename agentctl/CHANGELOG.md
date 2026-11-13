@@ -13,6 +13,10 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ## [Unreleased]
 
+### Added
+
+- The new session form in `agentctl tui` (`n`) suggests a name, such as `wobbly-walrus`, in the empty Name field, and Enter creates the session by that name unless you type your own. ([#PR](https://github.com/digdir/digdir-agents/pull/PR))
+
 ### Changed
 
 - The Agent sandbox section at the top of an agent's instructions now lists the folders mounted from your machine, and adds rules its own instructions can override, such as cleaning up after a task and noting system changes in `~/system-changes.md`. ([#505](https://github.com/digdir/digdir-agents/pull/505))
