@@ -46,5 +46,36 @@ pub enum Part {
         /// Whether the recorded result was an error.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         failed: bool,
+        /// What the call asks the operator, when the tool puts questions to them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        questions: Vec<Question>,
     },
+}
+
+/// A question a tool call puts to the operator, to answer with a prompt.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Question {
+    /// The question's text.
+    pub question: String,
+    /// A short label for the question, when the harness gives one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub header: String,
+    /// Whether the operator may pick more than one option.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi_select: bool,
+    /// The answers offered. The operator may also answer in their own words.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<QuestionOption>,
+}
+
+/// One answer offered for a [`Question`].
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionOption {
+    /// The answer as the operator would pick it.
+    pub label: String,
+    /// What picking it means, when the harness says.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }

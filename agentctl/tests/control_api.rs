@@ -130,6 +130,7 @@ fn answered_turn(prompt: &str, answer: &str) -> agent::sessions::Turn {
                     agent::sessions::Part::ToolCall {
                         name: "Bash".into(),
                         failed: true,
+                        questions: Vec::new(),
                     },
                     agent::sessions::Part::Text { text: answer.into() },
                 ],

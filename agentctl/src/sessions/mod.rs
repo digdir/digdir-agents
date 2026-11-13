@@ -21,7 +21,7 @@ pub use reconciler::Reconciler;
 pub use runtime::{LaunchContext, Observation, SessionRuntime, Tmux};
 pub use sandboxes::AgentSandboxes;
 pub use service::{Service, UpgradeReadiness};
-pub use transcript::{Message, Part, Role, Turn};
+pub use transcript::{Message, Part, Question, QuestionOption, Role, Turn};
 
 /// Immutable identity of one session incarnation.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
