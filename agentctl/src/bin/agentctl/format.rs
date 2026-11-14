@@ -166,6 +166,70 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
     lines
 }
 
+/// The agents table `agentctl get agents` prints, with the `-o wide` columns when `wide`.
+pub(crate) fn agents_table(agents: &[Agent], wide: bool) -> Vec<String> {
+    let _ = wide;
+    let rows = agents
+        .iter()
+        .map(|agent| {
+            let ready = agent.status.ready_condition();
+            let ready_value = ready.map_or("Unknown", |condition| condition_status(condition.status));
+            let status = if agent.metadata.deletion_timestamp.is_some() {
+                "Terminating"
+            } else {
+                ready.map_or("Pending", |condition| condition.reason.as_str())
+            };
+            let harnesses = format_harnesses(&agent.spec);
+            let provider = agent
+                .status
+                .sandbox
+                .as_ref()
+                .map_or("-", |assignment| assignment.provider().as_str());
+            vec![
+                agent.metadata.name.clone(),
+                ready_value.into(),
+                status.into(),
+                harnesses,
+                provider.into(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    // Ephemeral agents are listed only when asked for, and then said to be.
+    if agents.iter().any(|agent| agent.status.is_ephemeral()) {
+        let rows = agents
+            .iter()
+            .zip(rows)
+            .map(|(agent, mut row)| {
+                let lifetime = if agent.status.is_ephemeral() { "ephemeral" } else { "-" };
+                row.insert(1, lifetime.into());
+                row
+            })
+            .collect::<Vec<_>>();
+        return with_host_disk_warning(
+            agents,
+            table_lines(&["NAME", "LIFETIME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows),
+        );
+    }
+    with_host_disk_warning(
+        agents,
+        table_lines(&["NAME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows),
+    )
+}
+
+/// Says once under the table that the host's disk is low, which every agent on it reports alike.
+fn with_host_disk_warning(agents: &[Agent], mut lines: Vec<String>) -> Vec<String> {
+    let low = agents.iter().find_map(|agent| {
+        agent.status.conditions.iter().find(|condition| {
+            condition.kind == agent::Condition::HOST_DISK_LOW && condition.status == ConditionStatus::True
+        })
+    });
+    if let Some(low) = low {
+        lines.push(String::new());
+        lines.push(format!("Warning: host disk low: {}", low.message));
+    }
+    lines
+}
+
 /// An agent's readiness and, after a failed pass, whether it is retried.
 pub(crate) fn readiness_lines(status: &agent::Status) -> Vec<String> {
     let ready = status.ready_condition().map_or_else(
@@ -646,6 +710,35 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("SandboxReconcileFailed") && line.contains(" 3m "))
         );
+    }
+
+    /// `-o wide` adds the host storage each agent's root filesystem takes out of its capacity, and a
+    /// `-` for an agent that has not measured any, such as one without a sandbox yet.
+    #[test]
+    fn wide_agents_table_shows_root_filesystem_usage() {
+        const GIBIBYTE: u64 = 1024 * 1024 * 1024;
+        let fixture: Agent =
+            serde_yaml_ng::from_str(include_str!("../../../tests/fixtures/agent.yaml")).expect("fixture manifest");
+        let mut measured = fixture.clone();
+        measured.metadata.name = "measured".into();
+        measured.status.root_filesystem = Some(sandbox::RootFilesystemUsage::new(
+            12 * GIBIBYTE + 100 * 1024 * 1024,
+            100 * GIBIBYTE,
+        ));
+        let mut small = fixture.clone();
+        small.metadata.name = "small".into();
+        small.status.root_filesystem = Some(sandbox::RootFilesystemUsage::new(1536 * 1024 * 1024, 4 * GIBIBYTE));
+        let mut unmeasured = fixture;
+        unmeasured.metadata.name = "unmeasured".into();
+        let agents = [measured, small, unmeasured];
+
+        let wide = agents_table(&agents, true);
+        let cells = |line: &str| line.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(cells(&wide[0]).last().map(String::as_str), Some("DISK"));
+        assert_eq!(cells(&wide[1]).last().map(String::as_str), Some("12Gi/100Gi"));
+        assert_eq!(cells(&wide[2]).last().map(String::as_str), Some("1.5Gi/4Gi"));
+        assert_eq!(cells(&wide[3]).last().map(String::as_str), Some("-"));
+        assert!(!agents_table(&agents, false)[0].contains("DISK"));
     }
 
     /// A definition below the current folder is written with `/` alone, also where the host uses `\`.

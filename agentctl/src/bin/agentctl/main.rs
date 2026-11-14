@@ -35,7 +35,7 @@ mod tui;
 mod update;
 mod watch;
 
-use format::{condition_status, format_age, format_harnesses, session_state};
+use format::{format_age, session_state};
 use futures_util::StreamExt as _;
 use sandbox::{execution::ExecutionEvent, terminal::TerminalAttachOutcome};
 use tokio::io::AsyncWriteExt as _;
@@ -1086,7 +1086,7 @@ async fn get_agents(
             |resources| {
                 let mut agents = resources.agents;
                 agents.retain(|agent| name.as_ref().is_none_or(|name| agent.metadata.name == *name));
-                render_watched(output, &agents, agents_table)
+                render_watched(output, &agents, |agents| format::agents_table(agents, false))
             },
             &mut std::io::stdout(),
         )
@@ -1094,7 +1094,7 @@ async fn get_agents(
     }
     match output {
         OutputFormat::Json => print_json(&agents)?,
-        OutputFormat::Table => print_table(&agents_table(&agents)),
+        OutputFormat::Table => print_table(&format::agents_table(&agents, false)),
     }
     Ok(())
 }
@@ -2319,68 +2319,6 @@ fn parse_effort(value: &str) -> Result<agent::Effort, String> {
 
 fn parse_variant_name(value: &str) -> Result<AgentVariantName, String> {
     value.parse().map_err(|error: Error| error.to_string())
-}
-
-fn agents_table(agents: &[Agent]) -> Vec<String> {
-    let rows = agents
-        .iter()
-        .map(|agent| {
-            let ready = agent.status.ready_condition();
-            let ready_value = ready.map_or("Unknown", |condition| condition_status(condition.status));
-            let status = if agent.metadata.deletion_timestamp.is_some() {
-                "Terminating"
-            } else {
-                ready.map_or("Pending", |condition| condition.reason.as_str())
-            };
-            let harnesses = format_harnesses(&agent.spec);
-            let provider = agent
-                .status
-                .sandbox
-                .as_ref()
-                .map_or("-", |assignment| assignment.provider().as_str());
-            vec![
-                agent.metadata.name.clone(),
-                ready_value.into(),
-                status.into(),
-                harnesses,
-                provider.into(),
-            ]
-        })
-        .collect::<Vec<_>>();
-    // Ephemeral agents are listed only when asked for, and then said to be.
-    if agents.iter().any(|agent| agent.status.is_ephemeral()) {
-        let rows = agents
-            .iter()
-            .zip(rows)
-            .map(|(agent, mut row)| {
-                let lifetime = if agent.status.is_ephemeral() { "ephemeral" } else { "-" };
-                row.insert(1, lifetime.into());
-                row
-            })
-            .collect::<Vec<_>>();
-        return with_host_disk_warning(
-            agents,
-            table_lines(&["NAME", "LIFETIME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows),
-        );
-    }
-    with_host_disk_warning(
-        agents,
-        table_lines(&["NAME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows),
-    )
-}
-
-/// Says once under the table that the host's disk is low, which every agent on it reports alike.
-fn with_host_disk_warning(agents: &[Agent], mut lines: Vec<String>) -> Vec<String> {
-    let low = agents.iter().find_map(|agent| {
-        agent.status.conditions.iter().find(|condition| {
-            condition.kind == agent::Condition::HOST_DISK_LOW && condition.status == agent::ConditionStatus::True
-        })
-    });
-    if let Some(low) = low {
-        lines.push(String::new());
-        lines.push(format!("Warning: host disk low: {}", low.message));
-    }
-    lines
 }
 
 fn print_agent_description(agent: &Agent) {
