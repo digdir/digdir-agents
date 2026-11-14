@@ -252,6 +252,37 @@ pub(crate) fn folder(directory: Option<PathBuf>) -> CommandResult<PathBuf> {
         })
 }
 
+/// Says up front when Git cannot work in the builder on `checkout`, and tells the builder in `task`,
+/// so that neither the person nor the builder expects it to. That is when the checkout keeps its Git
+/// metadata outside it, as a linked worktree does in the clone it was made from, since the builder
+/// is given only the checkout.
+pub(crate) fn note_git_outside(checkout: &Path, task: &mut Task) {
+    let Some(git_directory) = git_directory_outside(checkout) else {
+        return;
+    };
+    eprintln!(
+        "{} keeps its Git metadata outside it, in {}, as a linked worktree does. The agent builder is given only \
+         the checkout, so Git does not work there: review what it writes with `git status` and `git diff` here. To \
+         have Git work in the builder, run this in a clone instead.",
+        checkout.display(),
+        git_directory.display()
+    );
+    task.prompt.push_str(
+        "\n\nThe checkout keeps its Git metadata outside it, as a linked worktree does, and you are not given it, so Git \
+         does not work in it. Don't try to make it work: name the files you write and change, for the person to review \
+         with Git on their machine.",
+    );
+}
+
+/// The Git directory that the `.git` file of `checkout` names, which is outside it, or none when
+/// `.git` is the folder itself or missing.
+fn git_directory_outside(checkout: &Path) -> Option<PathBuf> {
+    let git = std::fs::read_to_string(checkout.join(".git")).ok()?;
+    let named = git.lines().next()?.strip_prefix("gitdir:")?.trim();
+    // Git reads a relative path, as `git worktree add --relative-paths` writes, from the checkout.
+    Some(checkout.join(named))
+}
+
 /// Where the builder's definition mounts the folders it is given: the checkout in its working
 /// directory, and the person's folder of personal agents.
 #[derive(Debug)]
@@ -324,7 +355,47 @@ async fn open_session(wait: &progress::Wait, client: &Client, name: &str, task: 
 mod tests {
     use std::path::Path;
 
-    use super::{Builder, DEFINITION, builds_on};
+    use super::{Builder, DEFINITION, Task, builds_on, note_git_outside};
+
+    fn task() -> Task {
+        Task {
+            session: "new-agent",
+            prompt: "Make an agent.".into(),
+            moves_off: false,
+        }
+    }
+
+    #[test]
+    fn the_builder_is_told_when_git_metadata_is_outside_the_checkout() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let clone = temporary.path().join("clone");
+        std::fs::create_dir_all(clone.join(".git")).expect("a clone");
+        let mut told = task();
+        note_git_outside(&clone, &mut told);
+        assert_eq!(told.prompt, task().prompt, "a clone keeps its Git metadata in it");
+
+        let linked = temporary.path().join("linked");
+        std::fs::create_dir_all(&linked).expect("a linked worktree");
+        std::fs::write(
+            linked.join(".git"),
+            format!("gitdir: {}\n", clone.join(".git/worktrees/linked").display()),
+        )
+        .expect("its .git file");
+        let mut told = task();
+        note_git_outside(&linked, &mut told);
+        assert!(told.prompt.starts_with(&task().prompt));
+        assert!(told.prompt.contains("Git does not work"));
+    }
+
+    #[test]
+    fn a_relative_git_directory_is_read_from_the_checkout() {
+        let checkout = tempfile::TempDir::new().expect("temporary directory");
+        std::fs::write(checkout.path().join(".git"), "gitdir: ../clone/.git/worktrees/linked\n").expect(".git file");
+        assert_eq!(
+            super::git_directory_outside(checkout.path()),
+            Some(checkout.path().join("../clone/.git/worktrees/linked"))
+        );
+    }
 
     #[test]
     fn the_builder_leaves_the_checkout_and_the_personal_agents() {
