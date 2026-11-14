@@ -20,3 +20,7 @@ the contract and explains each check in its
 `agentd` writes the harnesses' configuration, instructions and skills, and its own setup, each time it reconciles the
 agent, and removes the skills it placed that the agent no longer declares. It leaves other files alone, so an image may
 ship skills of its own.
+
+`agentd` runs `fstrim /` as root in an agent with a `direct` root filesystem now and then, so the host gets back the
+disk space the agent frees. An image without `fstrim` still works, but its disk file on the host only grows. Ubuntu's
+`util-linux`, and so the base images, ship it.
