@@ -1425,6 +1425,9 @@ impl Condition {
     pub const SSH_READY: &'static str = "SshReady";
     /// VNC access is reconciled and the bridge to the desktop is listening.
     pub const VNC_READY: &'static str = "VncReady";
+    /// Condition type for whether the drive holding agentd's home, and with it the agent's disk, is
+    /// low on space. Its message says how much is free and the threshold.
+    pub const HOST_DISK_LOW: &'static str = "HostDiskLow";
 
     /// `Ready` reason while a pass stops the agent's sandbox, and after a stop failed.
     pub const REASON_STOPPING: &'static str = "Stopping";
@@ -1437,6 +1440,8 @@ impl Condition {
     /// `Ready` reason, and that of the condition for what failed, when a pass failed while the host
     /// filesystem holding the agent's sandbox was full. Its message says how much is free.
     pub const REASON_HOST_DISK_FULL: &'static str = "HostDiskFull";
+    /// `HostDiskLow` reason while the drive has less free space than agentd's threshold.
+    pub const REASON_BELOW_THRESHOLD: &'static str = "BelowThreshold";
 
     /// Finds the `Ready` condition in a condition list.
     #[must_use]

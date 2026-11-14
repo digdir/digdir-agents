@@ -14,9 +14,10 @@ use agent::{
     AgentId, Condition, ConditionStatus, EnvironmentSpec, Error, FailureKind, MountSpec, NestedSandboxes, SecretSpec,
     Status,
     control_plane::{
-        AgentRecord, AgentStore, ControlPlane, Controller, Convergence, Notifier, Reconciler, WaitPolicy, memory,
+        AgentRecord, AgentStore, ControlPlane, Controller, Convergence, HostDisk, Notifier, Reconciler, WaitPolicy,
+        memory,
     },
-    local::disk::DiskSpace,
+    local::disk::{DiskSpace, LowDiskThreshold},
     progress::{OutputPosition, ProvisioningState, SandboxObserver},
     resources::Changes,
     sandbox::{
@@ -606,6 +607,77 @@ async fn apply_stores_desired_state_without_running_inline() {
     );
     assert_eq!(fixture.backend.count(), 0);
     assert_eq!(applied.status.conditions, []);
+}
+
+#[tokio::test(flavor = "local")]
+async fn every_agent_reports_a_low_host_disk_until_space_returns() {
+    const GIB: u64 = 1 << 30;
+    let changes = Changes::new();
+    let mut fixture = fixture();
+    // The Provider reports the filesystem holding its sandboxes' disks, which need not be agentd's
+    // home, so the warning follows what it reports.
+    let provider = Rc::new(PlannedProvider::new(fixture.backend.clone(), []));
+    let host_disk = HostDisk::new(sandbox_service(provider.clone()), changes.clone());
+    fixture.control_plane = ControlPlane::new(fixture.store.clone(), Rc::new(NotificationCounter::default()))
+        .with_host_disk(host_disk.clone());
+    for name in ["running", "pending"] {
+        fixture.control_plane.apply(apply_request(name)).await.expect("apply");
+    }
+    reconcile(&fixture, "running").await;
+    let threshold = LowDiskThreshold::Share(500);
+    let host_disk_low = |agent: &agent::Agent| {
+        agent
+            .status
+            .conditions
+            .iter()
+            .find(|condition| condition.kind == Condition::HOST_DISK_LOW)
+            .cloned()
+    };
+    let reports = |available: u64| {
+        provider.disk.set(Some(DiskSpace {
+            available,
+            total: 1_000 * GIB,
+        }));
+    };
+
+    reports(100 * GIB);
+    host_disk.measure(threshold).await;
+    let before = changes.revision();
+    reports(GIB);
+    host_disk.measure(threshold).await;
+    assert_ne!(changes.revision(), before, "watchers learn that the filesystem is low");
+    let listed = fixture.control_plane.list().await.expect("list agents");
+    assert_eq!(listed.len(), 2);
+    for agent in &listed {
+        let low = host_disk_low(agent).unwrap_or_else(|| panic!("{} reports the low filesystem", agent.metadata.name));
+        assert_eq!(low.status, ConditionStatus::True);
+        assert!(
+            low.message.contains("1.0 GiB") && low.message.contains("5%"),
+            "says what is free and the threshold: {}",
+            low.message
+        );
+        assert!(low.last_transition_time.is_some());
+    }
+    let running = fixture.control_plane.get("running").await.expect("get agent");
+    assert!(
+        Condition::any_ready(&running.status.conditions),
+        "a low filesystem does not stop an agent"
+    );
+    assert!(host_disk_low(&running).is_some());
+
+    reconcile(&fixture, "running").await;
+    assert!(
+        host_disk_low(&stored(&fixture, "running").await.agent).is_none(),
+        "the warning is worked out when read, not stored"
+    );
+
+    reports(100 * GIB);
+    host_disk.measure(threshold).await;
+    let listed = fixture.control_plane.list().await.expect("list agents");
+    assert!(
+        listed.iter().all(|agent| host_disk_low(agent).is_none()),
+        "the warning clears"
+    );
 }
 
 #[tokio::test(flavor = "local")]

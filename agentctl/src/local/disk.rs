@@ -1,6 +1,10 @@
-//! Free space on the host's filesystems.
+//! Free space on the host's filesystems, and when it is too little.
 
-use std::{fmt, io, path::Path};
+use std::{fmt, io, path::Path, str::FromStr};
+
+use ::sandbox::ByteQuantity;
+
+use crate::Error;
 
 /// Below this many bytes free a filesystem is full, however small it is.
 const FULL_BELOW_BYTES: u64 = 1 << 30;
@@ -53,6 +57,53 @@ impl fmt::Display for DiskSpace {
     }
 }
 
+/// How little free space agentd warns about on the drive that holds its home: a share of the
+/// drive, such as `5%`, or a size, such as `20Gi`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LowDiskThreshold {
+    /// Hundredths of a percent of the drive's size, more than none and less than all of it.
+    Share(u16),
+    /// A size, in the quantities manifests use.
+    Size(ByteQuantity),
+}
+
+impl LowDiskThreshold {
+    /// The free space, in bytes, below which a drive of `total` bytes is low.
+    #[must_use]
+    pub fn bytes(self, total: u64) -> u64 {
+        let _ = (self, total);
+        0
+    }
+
+    /// Whether `space` has less free than this threshold allows.
+    #[must_use]
+    pub fn is_low(self, space: DiskSpace) -> bool {
+        let _ = (self, space);
+        false
+    }
+}
+
+impl Default for LowDiskThreshold {
+    fn default() -> Self {
+        Self::Share(500)
+    }
+}
+
+impl FromStr for LowDiskThreshold {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Err(Error::Invalid(format!("{value:?} is not a threshold")))
+    }
+}
+
+impl fmt::Display for LowDiskThreshold {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let _ = self;
+        write!(formatter, "")
+    }
+}
+
 #[cfg(unix)]
 fn query(path: &Path) -> io::Result<DiskSpace> {
     let stat = rustix::fs::statvfs(path)?;
@@ -96,9 +147,50 @@ fn query(_path: &Path) -> io::Result<DiskSpace> {
 
 #[cfg(test)]
 mod tests {
-    use super::DiskSpace;
+    use super::{DiskSpace, LowDiskThreshold};
 
     const GIB: u64 = 1 << 30;
+
+    fn threshold(value: &str) -> LowDiskThreshold {
+        value.parse().unwrap_or_else(|error| panic!("{value:?}: {error}"))
+    }
+
+    #[test]
+    fn a_threshold_is_a_share_of_the_drive_or_a_size() {
+        let drive = 1_000 * GIB;
+        assert_eq!(threshold("5%").bytes(drive), 50 * GIB);
+        assert_eq!(threshold("2.5%").bytes(drive), 25 * GIB);
+        assert_eq!(threshold("0.25%").bytes(drive), 5 * GIB / 2);
+        assert_eq!(threshold("20Gi").bytes(drive), 20 * GIB);
+        assert_eq!(threshold("20G").bytes(drive), 20_000_000_000);
+        assert_eq!(LowDiskThreshold::default(), threshold("5%"));
+        for written in ["5%", "2.5%", "0.25%", "20Gi"] {
+            assert_eq!(threshold(written).to_string(), written);
+        }
+    }
+
+    #[test]
+    fn a_threshold_that_is_no_share_below_all_of_the_drive_or_no_size_is_refused() {
+        for invalid in [
+            "", "%", "0%", "100%", "150%", "-5%", "5.%", ".5%", "1.255%", "5 %", "five", "0", "-1Gi",
+        ] {
+            assert!(
+                invalid.parse::<LowDiskThreshold>().is_err(),
+                "{invalid:?} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drive_is_low_below_the_threshold() {
+        let five_percent = threshold("5%");
+        let space = |available| DiskSpace {
+            available,
+            total: 100 * GIB,
+        };
+        assert!(five_percent.is_low(space(5 * GIB - 1)));
+        assert!(!five_percent.is_low(space(5 * GIB)));
+    }
 
     #[test]
     fn a_disk_is_full_under_one_gibibyte_or_one_percent_free() {
