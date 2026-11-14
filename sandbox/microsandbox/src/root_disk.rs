@@ -1,22 +1,50 @@
 //! Host storage taken by a sandbox's root disk.
 //!
 //! Microsandbox keeps a sandbox's writable root filesystem as one sparse disk file in the
-//! sandbox's runtime directory, so a single `stat` measures it, however many files the guest
+//! sandbox's runtime directory, so measuring that one file measures it, however many files the guest
 //! holds and whether or not the sandbox runs.
 
-use std::{io, path::Path};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
-use sandbox::{ByteQuantity, RootFilesystemUsage};
+use sandbox::{ByteQuantity, RootFilesystemMode, RootFilesystemUsage};
+
+/// The disk holding a whole direct root filesystem, cloned from the Image's flat root.
+const DIRECT_DISK: &str = "rootfs.raw";
+/// The disk holding a layered root filesystem's writable upper layer.
+const LAYERED_DISK: &str = "upper.ext4";
+
+/// The root disk Microsandbox keeps in a sandbox's runtime directory for a root filesystem of
+/// `mode`. Microsandbox names them without exporting the names.
+pub(crate) fn path(runtime_directory: &Path, mode: RootFilesystemMode) -> Option<PathBuf> {
+    match mode {
+        RootFilesystemMode::Direct => Some(runtime_directory.join(DIRECT_DISK)),
+        RootFilesystemMode::Layered => Some(runtime_directory.join(LAYERED_DISK)),
+        _ => None,
+    }
+}
 
 /// Measures the root disk at `path`, whose capacity is `recorded_capacity` until Microsandbox
 /// creates it at the first start, when it takes no host storage yet.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the Backend measures with it in the next commit")
-)]
 pub(crate) async fn usage(path: &Path, recorded_capacity: ByteQuantity) -> io::Result<RootFilesystemUsage> {
-    let _ = path;
-    Ok(RootFilesystemUsage::new(0, recorded_capacity.bytes()))
+    let path = path.to_owned();
+    common::blocking::run("measuring a root disk", move || {
+        let capacity = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(RootFilesystemUsage::new(0, recorded_capacity.bytes()));
+            }
+            Err(error) => return Err(error),
+        };
+        // Measured as Microsandbox measures its own disks, so that both count the same bytes on
+        // every host. For a sparse file this leaves out the holes.
+        let allocated = microsandbox_utils::extent::allocated_file_bytes(&path)?;
+        Ok(RootFilesystemUsage::new(allocated, capacity))
+    })
+    .await
+    .map_err(io::Error::other)?
 }
 
 #[cfg(test)]

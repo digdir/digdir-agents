@@ -345,7 +345,7 @@ enum Command {
         watch: bool,
         /// Output format.
         #[arg(short = 'o', long, default_value = "table", value_enum)]
-        output: OutputFormat,
+        output: GetFormat,
     },
     /// Show detailed state and conditions for one resource.
     Describe {
@@ -592,6 +592,24 @@ struct PromptInput {
 enum OutputFormat {
     Table,
     Json,
+}
+
+/// What `get` prints: [`OutputFormat`], or a table with more columns where a resource has them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum GetFormat {
+    Table,
+    /// A table with more columns, such as the host storage each agent's root filesystem takes.
+    Wide,
+    Json,
+}
+
+impl From<GetFormat> for OutputFormat {
+    fn from(format: GetFormat) -> Self {
+        match format {
+            GetFormat::Table | GetFormat::Wide => Self::Table,
+            GetFormat::Json => Self::Json,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1071,8 +1089,10 @@ async fn get_agents(
     name: Option<String>,
     ephemeral: bool,
     watch: bool,
-    output: OutputFormat,
+    output: GetFormat,
 ) -> CommandResult<()> {
+    let wide = output == GetFormat::Wide;
+    let output = OutputFormat::from(output);
     let agents = if let Some(name) = &name {
         vec![client.get(name).await?]
     } else {
@@ -1086,7 +1106,7 @@ async fn get_agents(
             |resources| {
                 let mut agents = resources.agents;
                 agents.retain(|agent| name.as_ref().is_none_or(|name| agent.metadata.name == *name));
-                render_watched(output, &agents, |agents| format::agents_table(agents, false))
+                render_watched(output, &agents, |agents| format::agents_table(agents, wide))
             },
             &mut std::io::stdout(),
         )
@@ -1094,7 +1114,7 @@ async fn get_agents(
     }
     match output {
         OutputFormat::Json => print_json(&agents)?,
-        OutputFormat::Table => print_table(&format::agents_table(&agents, false)),
+        OutputFormat::Table => print_table(&format::agents_table(&agents, wide)),
     }
     Ok(())
 }
@@ -1105,14 +1125,15 @@ async fn get_resources(
     name: Option<String>,
     scope: SessionScope,
     watch: bool,
-    output: OutputFormat,
+    format: GetFormat,
 ) -> CommandResult<()> {
+    let output = OutputFormat::from(format);
     let (resource, name) = resource_reference(resource, name)?;
     // A watch first reads as `get` does, so that it fails the same way, such as on a misspelled name.
     match resource {
         Resource::Agent => {
             reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
-            return get_agents(client, name, scope.ephemeral, watch, output).await;
+            return get_agents(client, name, scope.ephemeral, watch, format).await;
         }
         Resource::Definition => {
             reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;

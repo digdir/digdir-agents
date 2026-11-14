@@ -168,7 +168,16 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
 
 /// The agents table `agentctl get agents` prints, with the `-o wide` columns when `wide`.
 pub(crate) fn agents_table(agents: &[Agent], wide: bool) -> Vec<String> {
-    let _ = wide;
+    // Ephemeral agents are listed only when asked for, and then said to be.
+    let lifetimes = agents.iter().any(|agent| agent.status.is_ephemeral());
+    let mut headers = vec!["NAME"];
+    if lifetimes {
+        headers.push("LIFETIME");
+    }
+    headers.extend(["READY", "STATUS", "HARNESSES", "PROVIDER"]);
+    if wide {
+        headers.push("DISK");
+    }
     let rows = agents
         .iter()
         .map(|agent| {
@@ -179,41 +188,38 @@ pub(crate) fn agents_table(agents: &[Agent], wide: bool) -> Vec<String> {
             } else {
                 ready.map_or("Pending", |condition| condition.reason.as_str())
             };
-            let harnesses = format_harnesses(&agent.spec);
             let provider = agent
                 .status
                 .sandbox
                 .as_ref()
                 .map_or("-", |assignment| assignment.provider().as_str());
-            vec![
-                agent.metadata.name.clone(),
+            let mut row = vec![agent.metadata.name.clone()];
+            if lifetimes {
+                let lifetime = if agent.status.is_ephemeral() { "ephemeral" } else { "-" };
+                row.push(lifetime.into());
+            }
+            row.extend([
                 ready_value.into(),
                 status.into(),
-                harnesses,
+                format_harnesses(&agent.spec),
                 provider.into(),
-            ]
+            ]);
+            if wide {
+                row.push(agent.status.root_filesystem.map_or_else(
+                    || "-".to_owned(),
+                    |usage| {
+                        format!(
+                            "{}/{}",
+                            approximate_bytes(usage.allocated_bytes()),
+                            approximate_bytes(usage.capacity_bytes())
+                        )
+                    },
+                ));
+            }
+            row
         })
         .collect::<Vec<_>>();
-    // Ephemeral agents are listed only when asked for, and then said to be.
-    if agents.iter().any(|agent| agent.status.is_ephemeral()) {
-        let rows = agents
-            .iter()
-            .zip(rows)
-            .map(|(agent, mut row)| {
-                let lifetime = if agent.status.is_ephemeral() { "ephemeral" } else { "-" };
-                row.insert(1, lifetime.into());
-                row
-            })
-            .collect::<Vec<_>>();
-        return with_host_disk_warning(
-            agents,
-            table_lines(&["NAME", "LIFETIME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows),
-        );
-    }
-    with_host_disk_warning(
-        agents,
-        table_lines(&["NAME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows),
-    )
+    with_host_disk_warning(agents, table_lines(&headers, &rows))
 }
 
 /// Says once under the table that the host's disk is low, which every agent on it reports alike.
@@ -228,6 +234,21 @@ fn with_host_disk_warning(agents: &[Agent], mut lines: Vec<String>) -> Vec<Strin
         lines.push(format!("Warning: host disk low: {}", low.message));
     }
     lines
+}
+
+/// `bytes` in the largest binary unit it fills, such as `12Gi`, with one decimal below ten of it.
+fn approximate_bytes(bytes: u64) -> String {
+    const UNITS: [(u64, &str); 4] = [(1 << 40, "Ti"), (1 << 30, "Gi"), (1 << 20, "Mi"), (1 << 10, "Ki")];
+    let Some((size, suffix)) = UNITS.into_iter().find(|(size, _)| bytes >= *size) else {
+        return bytes.to_string();
+    };
+    // In tenths of the unit, rounded, so that 1.96Gi shows as 2Gi rather than 2.0Gi.
+    let tenths = (u128::from(bytes) * 10 + u128::from(size) / 2) / u128::from(size);
+    if tenths < 100 && tenths % 10 != 0 {
+        format!("{}.{}{suffix}", tenths / 10, tenths % 10)
+    } else {
+        format!("{}{suffix}", (tenths + 5) / 10)
+    }
 }
 
 /// An agent's readiness and, after a failed pass, whether it is retried.

@@ -438,6 +438,20 @@ impl SandboxBackend for Provider {
         })
     }
 
+    /// An in-memory root filesystem takes no host storage.
+    fn root_filesystem_usage<'a>(
+        &'a self,
+        id: &'a SandboxId,
+    ) -> LocalFuture<'a, Result<crate::RootFilesystemUsage, Error>> {
+        Box::pin(async move {
+            let sandbox = self.inspect(id).await?;
+            Ok(crate::RootFilesystemUsage::new(
+                0,
+                sandbox.resources.root_filesystem().capacity().bytes(),
+            ))
+        })
+    }
+
     fn start<'a>(&'a self, id: &'a SandboxId) -> PendingOperation<'a, ()> {
         PendingOperation::run(move |_progress| Box::pin(async move { self.set_state(id, SandboxState::Running) }))
     }

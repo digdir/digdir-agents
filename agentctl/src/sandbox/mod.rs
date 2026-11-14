@@ -6,7 +6,7 @@ use std::{
     rc::Rc,
 };
 
-use ::sandbox::{LocalFuture, Platform, SandboxHandle, SandboxId};
+use ::sandbox::{LocalFuture, Platform, RootFilesystemUsage, SandboxHandle, SandboxId};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, control_plane::AgentRecord};
@@ -191,6 +191,10 @@ pub trait Provider {
 
     /// Opens the exact already-materialized sandbox without lifecycle effects.
     fn open<'a>(&'a self, record: &'a AgentRecord, id: &'a SandboxId) -> LocalFuture<'a, Result<SandboxHandle, Error>>;
+
+    /// Measures the host storage the root filesystem of the materialized sandbox `id` takes,
+    /// whether it runs or not.
+    fn root_filesystem_usage<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<RootFilesystemUsage, Error>>;
 
     /// Idempotently releases the sandbox and its Provider-specific host integration.
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>>;
@@ -505,6 +509,19 @@ impl Service {
         self.responsiveness
             .observe(sandbox.snapshot(), tokio::time::Instant::now());
         Ok(sandbox)
+    }
+
+    /// Measures the host storage the agent's sandbox root filesystem takes, or none before the
+    /// sandbox exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the assigned Provider is unavailable or cannot measure it.
+    pub async fn root_filesystem_usage(&self, record: &AgentRecord) -> Result<Option<RootFilesystemUsage>, Error> {
+        let Some(Assignment::Materialized { provider, id, .. }) = &record.agent.status.sandbox else {
+            return Ok(None);
+        };
+        self.provider(provider)?.root_filesystem_usage(id).await.map(Some)
     }
 
     /// Whether the sandbox's guest reported a heartbeat when last inspected.

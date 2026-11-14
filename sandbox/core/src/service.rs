@@ -908,6 +908,19 @@ impl SandboxService {
             .map_err(|error| Error::component("find sandbox", error))
     }
 
+    /// Measures the host storage the root filesystem of the sandbox `id` takes; see
+    /// [`SandboxBackend::root_filesystem_usage`](crate::backend::SandboxBackend::root_filesystem_usage).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the sandbox does not exist or the Backend cannot measure it.
+    pub async fn root_filesystem_usage(&self, id: &crate::SandboxId) -> Result<crate::RootFilesystemUsage, Error> {
+        self.backend()
+            .root_filesystem_usage(id)
+            .await
+            .map_err(|error| Error::component("measure sandbox root filesystem", error))
+    }
+
     /// Opens an effect-free Handle for an already materialized sandbox.
     ///
     /// This never creates, starts, updates, or reconnects the sandbox. Callers

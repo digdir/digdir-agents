@@ -60,6 +60,7 @@ pub struct ControlPlane {
     provisioning: ProvisioningState,
     immediate_stops: ImmediateStops,
     volumes: Rc<dyn crate::volumes::VolumeStore>,
+    sandboxes: Option<Rc<crate::sandbox::Service>>,
     pub(super) bundled: Option<super::bundled::Bundled>,
     host_disk: Option<super::HostDisk>,
 }
@@ -123,6 +124,7 @@ impl ControlPlane {
             provisioning: ProvisioningState::default(),
             immediate_stops: ImmediateStops::default(),
             volumes: Rc::new(crate::volumes::memory::InMemoryVolumeStore::new()),
+            sandboxes: None,
             bundled: None,
             host_disk: None,
         }
@@ -155,6 +157,13 @@ impl ControlPlane {
     #[must_use]
     pub fn with_immediate_stops(mut self, immediate_stops: ImmediateStops) -> Self {
         self.immediate_stops = immediate_stops;
+        self
+    }
+
+    /// Measures the root filesystem of each agent it gets or lists through `sandboxes`.
+    #[must_use]
+    pub fn with_sandboxes(mut self, sandboxes: Rc<crate::sandbox::Service>) -> Self {
+        self.sandboxes = Some(sandboxes);
         self
     }
 
@@ -367,7 +376,8 @@ impl ControlPlane {
     ///
     /// Returns an error when the agent does not exist or storage fails.
     pub async fn get(&self, name: &str) -> Result<Agent, Error> {
-        self.store.get_by_name(name).await.map(|record| self.resource(record))
+        let record = self.store.get_by_name(name).await?;
+        Ok(self.measured(record).await)
     }
 
     /// Lists every active agent ordered by name.
@@ -376,10 +386,8 @@ impl ControlPlane {
     ///
     /// Returns an error when storage cannot be read.
     pub async fn list(&self) -> Result<Vec<Agent>, Error> {
-        self.store
-            .list()
-            .await
-            .map(|records| records.into_iter().map(|record| self.resource(record)).collect())
+        let records = self.store.list().await?;
+        Ok(futures_util::future::join_all(records.into_iter().map(|record| self.measured(record))).await)
     }
 
     /// Reads an agent's stored status and the complete progress of its latest
@@ -612,6 +620,24 @@ impl ControlPlane {
 }
 
 impl ControlPlane {
+    /// Like [`Self::resource`], and with the host storage the agent's root filesystem takes.
+    ///
+    /// It is measured for each request rather than kept in status, since measuring one file per agent is
+    /// cheaper than keeping a stored copy current, also for a stopped agent no reconciler visits.
+    /// An agent whose sandbox cannot be measured is returned without it.
+    async fn measured(&self, record: AgentRecord) -> Agent {
+        let usage = match &self.sandboxes {
+            Some(sandboxes) => sandboxes.root_filesystem_usage(&record).await.unwrap_or_else(|error| {
+                tracing::debug!(agent = %record.agent.metadata.name, %error, "could not measure root filesystem");
+                None
+            }),
+            None => None,
+        };
+        let mut agent = self.resource(record);
+        agent.status.root_filesystem = usage;
+        agent
+    }
+
     /// Converts a stored record to its API representation, projecting
     /// provisioning progress, provenance and volume revisions into status.
     pub(super) fn resource(&self, record: AgentRecord) -> Agent {
