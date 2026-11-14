@@ -60,6 +60,8 @@ pub struct Adapter {
     preparation: Preparation,
     default_architecture: String,
     platform_port: u16,
+    /// The folder holding the Provider's state, sandbox disks among it.
+    home: std::path::PathBuf,
 }
 
 impl Adapter {
@@ -76,8 +78,9 @@ impl Adapter {
         platform_port: u16,
     ) -> Result<Self, Error> {
         let network = Rc::new(MicrosandboxNetworkBackend::new(policy.clone()).with_secret_store(credentials.clone()));
+        let home = home.join("microsandbox");
         let provider = Rc::new(
-            MicrosandboxProvider::builder(home.join("microsandbox"))
+            MicrosandboxProvider::builder(home.clone())
                 .remove_unused_images_after(UNUSED_IMAGE_RETENTION)
                 .remove_unclaimed_volume_copies()
                 .open()
@@ -93,6 +96,7 @@ impl Adapter {
             preparation: Preparation::new(database, credentials, policy, network),
             default_architecture: Platform::native("linux").architecture,
             platform_port,
+            home,
         })
     }
 
@@ -255,7 +259,14 @@ impl Provider for Adapter {
     }
 
     fn host_disk(&self) -> LocalFuture<'_, Result<Option<crate::local::disk::DiskSpace>, Error>> {
-        Box::pin(async { Ok(None) })
+        let home = self.home.clone();
+        Box::pin(async move {
+            let space = common::blocking::run("reading the host's free space", move || {
+                crate::local::disk::DiskSpace::of(&home)
+            })
+            .await??;
+            Ok(Some(space))
+        })
     }
 
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {

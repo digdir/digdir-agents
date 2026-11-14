@@ -595,6 +595,16 @@ impl Service {
         Ok(())
     }
 
+    /// Reports the space on the host filesystem holding the agent's sandbox, or `None` when its
+    /// Provider keeps it elsewhere.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the agent has no Provider yet or the space cannot be read.
+    pub async fn host_disk(&self, record: &AgentRecord) -> Result<Option<crate::local::disk::DiskSpace>, Error> {
+        self.assigned_provider(record)?.host_disk().await
+    }
+
     fn assigned_provider(&self, record: &AgentRecord) -> Result<&dyn Provider, Error> {
         let assignment = record
             .agent
