@@ -4509,3 +4509,148 @@ async fn a_delete_just_before_a_restart_starts_the_agent_keeps_it_from_booting_a
         "the Starting write fails, so the pass the delete woke releases it instead"
     );
 }
+
+fn with_direct_root(mut request: agent::control_plane::ApplyRequest) -> agent::control_plane::ApplyRequest {
+    request.agent.spec.sandbox.resources.root_filesystem =
+        RootFilesystem::direct("4Gi".parse().expect("test root filesystem"));
+    request
+}
+
+fn is_trim(spec: &sandbox::execution::ExecutionSpec) -> bool {
+    *spec
+        == sandbox::execution::ExecutionSpec::command(
+            SandboxPath::new("/bin/sh"),
+            ["-c".to_owned(), "exec fstrim /".to_owned()],
+        )
+}
+
+fn trims(backend: &sandbox_memory::Provider) -> usize {
+    backend.execution_specs().iter().filter(|spec| is_trim(spec)).count()
+}
+
+/// A store and sandboxes with a trimmer running over them.
+fn trimming() -> (Fixture, tokio::task::JoinHandle<()>) {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let backend = Rc::new(sandbox_memory::Provider::new());
+    let sandboxes = sandbox_service(Rc::new(MemoryProvider::new(backend.clone())));
+    let fixture = Fixture {
+        control_plane: ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default())),
+        reconciler: Reconciler::new(store.clone(), sandboxes.clone(), ProvisioningState::default()),
+        store: store.clone(),
+        backend,
+    };
+    let trimmer = tokio::task::spawn_local(agent::sandbox::Trimmer::new(store, sandboxes).run());
+    (fixture, trimmer)
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_running_agent_with_a_direct_root_has_it_trimmed_periodically() {
+    let (fixture, trimmer) = trimming();
+    for name in ["running", "stopped"] {
+        fixture
+            .control_plane
+            .apply(with_direct_root(apply_request(name)))
+            .await
+            .expect("apply");
+        reconcile(&fixture, name).await;
+    }
+    fixture
+        .control_plane
+        .apply(apply_request("layered"))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "layered").await;
+    fixture
+        .control_plane
+        .set_run_state("stopped", agent::RunState::Stopped)
+        .await
+        .expect("stop");
+    reconcile(&fixture, "stopped").await;
+
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL.saturating_sub(Duration::from_secs(1))).await;
+    assert_eq!(trims(&fixture.backend), 0, "nothing is trimmed before the interval");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        trims(&fixture.backend),
+        1,
+        "only the running agent with a direct root is trimmed"
+    );
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL).await;
+    assert_eq!(trims(&fixture.backend), 2, "and again after each interval");
+    trimmer.abort();
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_guest_without_discard_is_not_trimmed_again() {
+    let (fixture, trimmer) = trimming();
+    fixture
+        .control_plane
+        .apply(with_direct_root(apply_request("worker")))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "worker").await;
+    fixture.backend.queue_execution_events_matching(
+        is_trim,
+        vec![
+            sandbox::execution::ExecutionEvent::Started { process_id: None },
+            sandbox::execution::ExecutionEvent::Stderr("fstrim: /: the discard operation is not supported\n".into()),
+            sandbox::execution::ExecutionEvent::Exited(sandbox::execution::ExitStatus { code: 1 }),
+        ],
+    );
+
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL * 3 + Duration::from_secs(1)).await;
+
+    assert_eq!(trims(&fixture.backend), 1, "the guest is asked once");
+    assert!(
+        stored(&fixture, "worker").await.agent.status.is_ready(),
+        "the agent works without trimming"
+    );
+    trimmer.abort();
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_guest_that_beats_is_trimmed_long_after_its_last_reconcile() {
+    let (fixture, trimmer) = trimming();
+    fixture
+        .control_plane
+        .apply(with_direct_root(apply_request("worker")))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "worker").await;
+    let sandbox = stored(&fixture, "worker")
+        .await
+        .agent
+        .status
+        .sandbox
+        .and_then(|assignment| assignment.id().cloned())
+        .expect("materialized sandbox");
+    fixture
+        .backend
+        .set_guest_heartbeat(&sandbox, Some(GuestHeartbeat::new(1)))
+        .expect("heartbeat should be set");
+    // The last pass records the heartbeat, long before the trim.
+    reconcile(&fixture, "worker").await;
+    let beating = tokio::task::spawn_local({
+        let backend = fixture.backend.clone();
+        async move {
+            let mut sequence = 1;
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                sequence += 1;
+                backend
+                    .set_guest_heartbeat(&sandbox, Some(GuestHeartbeat::new(sequence)))
+                    .expect("heartbeat should be set");
+            }
+        }
+    });
+
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL + Duration::from_secs(1)).await;
+
+    assert_eq!(
+        trims(&fixture.backend),
+        1,
+        "a guest whose heartbeat advances is trimmed, however old the last pass is"
+    );
+    beating.abort();
+    trimmer.abort();
+}
