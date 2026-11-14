@@ -31,6 +31,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ### Fixed
 
+- When the drive holding your agents is full, an agent that fails says so, as `HostDiskFull` in `agentctl get` and with the free space in `agentctl describe` and `agentctl tui`, instead of only an I/O error such as `os error 5` or `os error 112`. ([#415](https://github.com/digdir/digdir-agents/issues/415))
 - An agent running without its GitHub login, or without the repositories its image clones, says so: `agentctl apply --wait` warns, `agentctl describe` shows `Accounts` and `Workspace` conditions, and `agentctl tui` shows a yellow `Ready`, naming `agentctl github login NAME`. Images on the next base image clone public repositories without a login. ([#481](https://github.com/digdir/digdir-agents/issues/481))
 - `agentctl turns`, and the recent turns in `agentctl tui`, show the questions and options a Claude Code session asks with `AskUserQuestion`, instead of only the tool's name, and `-o json` carries them as `questions` on the tool call. ([#484](https://github.com/digdir/digdir-agents/issues/484))
 - `agentctl prompt`, and `p` in `agentctl tui`, resume an Idle session and deliver the prompt, instead of failing with `its lifecycle is idle` until you attach to it. ([#483](https://github.com/digdir/digdir-agents/issues/483))
