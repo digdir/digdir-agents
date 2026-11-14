@@ -237,6 +237,9 @@ pub struct AccountSetup {
     pub git_identity: Option<GitIdentity>,
     /// Lines for the agent's instructions, each with its label, such as `GitHub`.
     pub instructions: Vec<(&'static str, String)>,
+    /// For each account whose login is not kept, what the agent lacks and the command that keeps
+    /// the login.
+    pub missing_logins: Vec<String>,
 }
 
 /// A name and email Git commits as.
@@ -255,6 +258,17 @@ pub enum NestedSandboxesOutcome {
     Available,
     /// The agent prefers them, but the host cannot provide them, for the reason given.
     Unavailable(String),
+}
+
+/// How far the image's clone of the repositories it lists into the workspace got.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceClone {
+    /// The clone is running.
+    Cloning,
+    /// Every listed repository has a checkout.
+    Cloned,
+    /// A listed repository could not be cloned.
+    Failed,
 }
 
 /// Decides whether an agent's sandbox runs sandboxes of its own.
@@ -295,6 +309,10 @@ pub struct EnsureOutcome {
     pub missing_sources: Vec<String>,
     /// The skills setup placed in the harnesses' skill folders.
     pub skills: PlacedSkills,
+    /// See [`AccountSetup::missing_logins`].
+    pub missing_logins: Vec<String>,
+    /// How far the image's workspace clone got, when the image clones one.
+    pub workspace: Option<WorkspaceClone>,
 }
 
 /// What platform setup did in the sandbox.
@@ -305,6 +323,8 @@ pub struct PlatformSetup {
     /// The skills it placed in the harnesses' skill folders, having removed those an earlier pass
     /// placed that the agent no longer declares.
     pub skills: PlacedSkills,
+    /// How far the image's workspace clone got, when the image clones one.
+    pub workspace: Option<WorkspaceClone>,
 }
 
 /// Runtime-selectable setup for an operating system reported by a materialized sandbox.
@@ -435,6 +455,8 @@ impl Service {
             nested_sandboxes: outcome.nested_sandboxes,
             missing_sources: set_up.missing_sources,
             skills: set_up.skills,
+            missing_logins: outcome.accounts.missing_logins,
+            workspace: set_up.workspace,
         })
     }
 

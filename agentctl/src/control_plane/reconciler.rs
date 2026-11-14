@@ -275,6 +275,8 @@ impl Reconciler {
         );
         conditions.extend(nested_sandboxes_condition(ensured.nested_sandboxes.as_ref()));
         conditions.extend(optional_sources_condition(record, &ensured.missing_sources));
+        conditions.extend(accounts_condition(record, &ensured.missing_logins));
+        conditions.extend(ensured.workspace.map(workspace_condition));
         conditions.extend(environment_file_condition(record));
         conditions.extend(exposed_files_condition(record));
         conditions.push(condition(Condition::READY, ConditionStatus::True, "SandboxReady", ""));
@@ -722,6 +724,45 @@ fn optional_sources_condition(record: &AgentRecord, missing_files: &[String]) ->
             &format!("left out {}", missing.join(", ")),
         )
     })
+}
+
+/// Reports whether every account the agent asks for has its login kept, naming the command that
+/// keeps each missing one; nothing when it asks for none.
+fn accounts_condition(record: &AgentRecord, missing_logins: &[String]) -> Option<Condition> {
+    if record.agent.spec.accounts.is_empty() {
+        return None;
+    }
+    Some(if missing_logins.is_empty() {
+        condition(Condition::ACCOUNTS, ConditionStatus::True, "LoggedIn", "")
+    } else {
+        condition(
+            Condition::ACCOUNTS,
+            ConditionStatus::False,
+            "NotLoggedIn",
+            &missing_logins.join(". "),
+        )
+    })
+}
+
+/// Reports how far the image's clone of the repositories it lists into the workspace got, so a
+/// person who finds no checkout learns why. The agent is ready without it.
+fn workspace_condition(clone: crate::sandbox::WorkspaceClone) -> Condition {
+    match clone {
+        crate::sandbox::WorkspaceClone::Cloning => condition(
+            Condition::WORKSPACE,
+            ConditionStatus::Unknown,
+            "Cloning",
+            "the image is cloning the repositories it lists",
+        ),
+        crate::sandbox::WorkspaceClone::Cloned => condition(Condition::WORKSPACE, ConditionStatus::True, "Cloned", ""),
+        crate::sandbox::WorkspaceClone::Failed => condition(
+            Condition::WORKSPACE,
+            ConditionStatus::False,
+            "CloneFailed",
+            "the image could not clone every repository it lists. `sudo journalctl -u agent-workspace-init` in the \
+             agent says why",
+        ),
+    }
 }
 
 /// Names the values an agent still reads from its environment file, so every client shows what to

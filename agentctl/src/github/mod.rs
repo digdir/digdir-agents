@@ -294,8 +294,9 @@ pub(crate) async fn stored(database: &persistence::Database, name: &str) -> Resu
 
 /// What setup configures for an agent asking for the token `name`, kept as `account` or not yet.
 ///
-/// That is the account's identity for commits and a line in the agent's instructions. Git reaches
-/// GitHub with the mediated token through the image's credential helper, `gh`.
+/// That is the account's identity for commits, a line in the agent's instructions and, until the
+/// login is kept, what the person runs to keep it. Git reaches GitHub with the mediated token
+/// through the image's credential helper, `gh`.
 #[must_use]
 pub fn setup(name: &str, account: Option<&Account>) -> AccountSetup {
     AccountSetup {
@@ -304,6 +305,16 @@ pub fn setup(name: &str, account: Option<&Account>) -> AccountSetup {
             email: account.identity.email.clone(),
         }),
         instructions: vec![("GitHub", instructions(name, account))],
+        missing_logins: account
+            .is_none()
+            .then(|| {
+                format!(
+                    "the agent runs without GitHub, as no login named `{name}` is kept. Run `agentctl github login \
+                     {name}` to keep it"
+                )
+            })
+            .into_iter()
+            .collect(),
     }
 }
 
@@ -907,6 +918,11 @@ mod tests {
             };
             assert!(text.starts_with(expected), "{expected} in {text}");
             assert_eq!(text.contains("403 or 404"), account.is_some(), "{text}");
+            match (account.is_some(), setup.missing_logins.as_slice()) {
+                (true, []) => {}
+                (false, [missing]) => assert!(missing.contains("`agentctl github login altinn-studio`"), "{missing}"),
+                (kept, missing) => panic!("missing logins {missing:?} with the login kept: {kept}"),
+            }
             assert_eq!(
                 setup.git_identity.map(|identity| identity.email),
                 account.map(|account| account.identity.email)
