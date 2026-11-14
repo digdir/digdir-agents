@@ -103,6 +103,8 @@ pub(crate) struct MemoryProvider {
     hanging_stops: Rc<Cell<bool>>,
     /// Whether nested sandboxes are offered, or why not.
     nested_sandboxes_offered: Rc<RefCell<Result<(), String>>>,
+    /// What preparation says of the logins it found missing.
+    missing_logins: Rc<RefCell<Vec<String>>>,
     /// Runs after each directory copy is taken, as a change to the source while it is copied would.
     pub(crate) while_copying: Rc<RefCell<Option<SourceChange>>>,
     /// Volume deletions that fail, as a Provider that cannot be reached does.
@@ -127,6 +129,7 @@ impl MemoryProvider {
             kills: Rc::new(Cell::new(0)),
             hanging_stops: Rc::new(Cell::new(false)),
             nested_sandboxes_offered: Rc::new(RefCell::new(Err("the memory backend cannot nest".into()))),
+            missing_logins: Rc::new(RefCell::new(Vec::new())),
             while_copying: Rc::new(RefCell::new(None)),
             failing_volume_deletes: Rc::new(Cell::new(0)),
         }
@@ -209,7 +212,10 @@ impl Provider for MemoryProvider {
                     .iter()
                     .map(|installation| installation.kind)
                     .collect(),
-                accounts: agent::sandbox::AccountSetup::default(),
+                accounts: agent::sandbox::AccountSetup {
+                    missing_logins: self.missing_logins.borrow().clone(),
+                    ..agent::sandbox::AccountSetup::default()
+                },
             })
         })
     }
@@ -1544,6 +1550,69 @@ async fn missing_optional_sources_are_reported_in_a_condition_of_a_ready_agent()
     assert_eq!(
         optional_sources("reviewer").await,
         Some((ConditionStatus::True, "Found".into(), String::new()))
+    );
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_ready_agent_reports_a_missing_login_and_a_failed_workspace_clone_in_conditions() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let provider = MemoryProvider::new(Rc::new(sandbox_memory::Provider::new()));
+    let missing_logins = provider.missing_logins.clone();
+    let provider: Rc<dyn Provider> = Rc::new(provider);
+    let platform = Rc::new(ReportingPlatform::default());
+    let service = Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service");
+    let reconciler = Reconciler::new(store.clone(), Rc::new(service), ProvisioningState::default());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    let observe = async |name: &str| {
+        let id = store.get_by_name(name).await.expect("Agent").id;
+        reconciler.reconcile(id).await.expect("reconcile");
+        let status = store.get_by_name(name).await.expect("Agent").agent.status;
+        assert!(status.is_ready(), "the agent runs without its account and checkout");
+        [Condition::ACCOUNTS, Condition::WORKSPACE].map(|kind| {
+            status
+                .conditions
+                .iter()
+                .find(|condition| condition.kind == kind)
+                .map(|condition| (condition.status, condition.reason.clone()))
+        })
+    };
+
+    control_plane.apply(apply_request("plain")).await.expect("apply");
+    assert_eq!(
+        observe("plain").await,
+        [None, None],
+        "an agent that asks for no account in an image that clones nothing reports neither"
+    );
+
+    let mut request = apply_request("worker");
+    request.agent.spec.accounts.push(agent::AccountSpec::Github {
+        login: "default".into(),
+    });
+    control_plane.apply(request).await.expect("apply");
+    *missing_logins.borrow_mut() = vec!["run `agentctl github login default`".into()];
+    platform.set_up.borrow_mut().workspace = Some(agent::sandbox::WorkspaceClone::Failed);
+    assert_eq!(
+        observe("worker").await,
+        [
+            Some((ConditionStatus::False, "NotLoggedIn".into())),
+            Some((ConditionStatus::False, "CloneFailed".into())),
+        ]
+    );
+    let status = store.get_by_name("worker").await.expect("Agent").agent.status;
+    assert_eq!(
+        Condition::shortfalls(&status.conditions).count(),
+        2,
+        "clients show both beside readiness"
+    );
+
+    missing_logins.borrow_mut().clear();
+    platform.set_up.borrow_mut().workspace = Some(agent::sandbox::WorkspaceClone::Cloned);
+    assert_eq!(
+        observe("worker").await,
+        [
+            Some((ConditionStatus::True, "LoggedIn".into())),
+            Some((ConditionStatus::True, "Cloned".into())),
+        ]
     );
 }
 
