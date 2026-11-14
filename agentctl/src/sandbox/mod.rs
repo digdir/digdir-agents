@@ -211,6 +211,10 @@ pub trait Provider {
 
     /// Deletes a Volume, failing as in use while a sandbox mounts it.
     fn delete_volume<'a>(&'a self, id: &'a ::sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>>;
+
+    /// Reports the space on the host filesystem that holds this Provider's sandbox disks, or `None`
+    /// when it keeps them elsewhere.
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<crate::local::disk::DiskSpace>, Error>>;
 }
 
 /// Provider result retaining lifecycle information needed by dependent sessions.

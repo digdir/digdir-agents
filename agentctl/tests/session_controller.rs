@@ -227,6 +227,10 @@ impl Provider for MemoryProvider {
     fn delete_volume<'a>(&'a self, id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async move { Ok(self.service.delete_volume(id).await?) })
     }
+
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<agent::local::disk::DiskSpace>, Error>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 impl Reconcile<SessionId> for BlockingReconcile {

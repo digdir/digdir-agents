@@ -16,6 +16,7 @@ use agent::{
     control_plane::{
         AgentRecord, AgentStore, ControlPlane, Controller, Convergence, Notifier, Reconciler, WaitPolicy, memory,
     },
+    local::disk::DiskSpace,
     progress::{OutputPosition, ProvisioningState, SandboxObserver},
     resources::Changes,
     sandbox::{
@@ -290,6 +291,10 @@ impl Provider for MemoryProvider {
             Ok(self.service.delete_volume(id).await?)
         })
     }
+
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<DiskSpace>, Error>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 struct UnsupportedProvider {
@@ -321,6 +326,8 @@ const TELEMETRY_FLOOD: usize = 4_096;
 struct PlannedProvider {
     inner: MemoryProvider,
     failures: RefCell<VecDeque<PlannedFailure>>,
+    /// The space it reports on the host filesystem holding its sandboxes.
+    disk: Cell<Option<DiskSpace>>,
 }
 
 impl PlannedProvider {
@@ -328,7 +335,13 @@ impl PlannedProvider {
         Self {
             inner: MemoryProvider::new(backend),
             failures: RefCell::new(failures.into_iter().collect()),
+            disk: Cell::new(None),
         }
+    }
+
+    fn with_host_disk(self, disk: DiskSpace) -> Self {
+        self.disk.set(Some(disk));
+        self
     }
 }
 
@@ -423,6 +436,11 @@ impl Provider for PlannedProvider {
     fn delete_volume<'a>(&'a self, id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
         self.inner.delete_volume(id)
     }
+
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<DiskSpace>, Error>> {
+        let disk = self.disk.get();
+        Box::pin(async move { Ok(disk) })
+    }
 }
 
 impl UnsupportedProvider {
@@ -488,6 +506,10 @@ impl Provider for UnsupportedProvider {
 
     fn delete_volume<'a>(&'a self, _id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
+    }
+
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<DiskSpace>, Error>> {
+        Box::pin(async { Ok(None) })
     }
 }
 
@@ -2569,6 +2591,72 @@ async fn execution_target_waits_for_agent_convergence() {
     assert!(target.sandbox.id().is_some());
     assert_eq!(fixture.backend.count(), 1);
     fixture.task.abort();
+}
+
+/// The `Ready` and `SandboxReady` conditions after one pass whose sandbox fails with a guest I/O
+/// error while the host filesystem holding it has `disk`.
+async fn conditions_after_an_io_error(disk: DiskSpace) -> Vec<(String, String, String)> {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    let provider = PlannedProvider::new(
+        Rc::new(sandbox_memory::Provider::new()),
+        [PlannedFailure::Transient(
+            "sandbox fs error: open: I/O error (os error 5)".into(),
+        )],
+    )
+    .with_host_disk(disk);
+    let reconciler = reconciler(store.clone(), Rc::new(provider));
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let id = store.get_by_name("worker").await.expect("stored agent").id;
+    reconciler.reconcile(id).await.expect_err("the sandbox fails");
+    store
+        .get(id)
+        .await
+        .expect("stored agent")
+        .agent
+        .status
+        .conditions
+        .into_iter()
+        .filter(|condition| [Condition::READY, Condition::SANDBOX_READY].contains(&condition.kind.as_str()))
+        .map(|condition| (condition.kind, condition.reason, condition.message))
+        .collect()
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_failure_while_the_host_disk_is_full_names_the_full_disk() {
+    const GIB: u64 = 1 << 30;
+    let error = "sandbox fs error: open: I/O error (os error 5)";
+
+    let full = conditions_after_an_io_error(DiskSpace {
+        available: 512 << 20,
+        total: 934 * GIB,
+    })
+    .await;
+    assert_eq!(full.len(), 2, "{full:?}");
+    for (kind, reason, message) in &full {
+        assert_eq!(reason, Condition::REASON_HOST_DISK_FULL, "{kind}");
+        assert!(message.contains("512.0 MiB of 934.0 GiB free"), "{kind}: {message}");
+        assert!(message.ends_with(error), "{kind} keeps the original error: {message}");
+    }
+
+    let ample = conditions_after_an_io_error(DiskSpace {
+        available: 200 * GIB,
+        total: 934 * GIB,
+    })
+    .await;
+    let reasons = ample
+        .iter()
+        .map(|(kind, reason, _)| (kind.as_str(), reason.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reasons,
+        [("Ready", "SandboxReconcileFailed"), ("SandboxReady", "ReconcileFailed")],
+        "an I/O error alone does not mean the disk is full"
+    );
+    for (kind, _, message) in &ample {
+        assert!(!message.contains("full"), "{kind}: {message}");
+        assert!(message.ends_with(error), "{kind}: {message}");
+    }
 }
 
 #[tokio::test(flavor = "local")]

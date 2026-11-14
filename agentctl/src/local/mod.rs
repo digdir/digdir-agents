@@ -1,5 +1,6 @@
 //! Local daemon infrastructure and host integration.
 
+pub mod disk;
 pub(crate) mod files;
 pub mod home;
 pub mod process;

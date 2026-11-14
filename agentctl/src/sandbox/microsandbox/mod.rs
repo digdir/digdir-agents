@@ -254,6 +254,10 @@ impl Provider for Adapter {
         Box::pin(async move { Ok(self.service.delete_volume(id).await?) })
     }
 
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<crate::local::disk::DiskSpace>, Error>> {
+        Box::pin(async { Ok(None) })
+    }
+
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             let name = record.sandbox_name()?;
