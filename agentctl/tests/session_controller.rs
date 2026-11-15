@@ -975,6 +975,16 @@ impl ServiceHarness {
     }
 
     async fn start_with_report(directory: &TempDir, token: &str, started: bool) -> Self {
+        Self::start_with(directory, token, started, false).await
+    }
+
+    /// Starts with the real session reconciler, which launches and resumes harnesses through the
+    /// fake runtime, instead of one that only marks the session running.
+    async fn start_reconciled(directory: &TempDir, token: &str) -> Self {
+        Self::start_with(directory, token, true, true).await
+    }
+
+    async fn start_with(directory: &TempDir, token: &str, started: bool, reconciled: bool) -> Self {
         let (database, sandboxes, session) = running_session(directory, token, started).await;
         let session_store: Rc<dyn agent::sessions::SessionStore> = Rc::new(database.clone());
         let agent_store: Rc<dyn agent::control_plane::AgentStore> = Rc::new(database.clone());
@@ -985,9 +995,22 @@ impl ServiceHarness {
             Duration::from_mins(1),
             Rc::new(|_, error| panic!("unexpected agent reconciliation error: {error}")),
         );
+        let session_reconciler: Rc<dyn Reconcile<SessionId>> = if reconciled {
+            Rc::new(agent::sessions::Reconciler::new(
+                session_store.clone(),
+                Rc::new(agent::sessions::AgentSandboxes::new(
+                    agent_store.clone(),
+                    sandboxes.clone(),
+                )),
+                runtime.clone(),
+                "http://platform-api".into(),
+            ))
+        } else {
+            Rc::new(MarkSessionReady(database.clone()))
+        };
         let (session_controller, session_wakeup) = agent::sessions::Controller::new(
             session_store.clone(),
-            Rc::new(MarkSessionReady(database.clone())),
+            session_reconciler,
             Duration::from_mins(1),
             Rc::new(|_, error| panic!("unexpected session reconciliation error: {error}")),
         );
@@ -3210,6 +3233,47 @@ async fn a_prompt_wait_outlasts_an_archive_that_has_not_stopped_the_harness() {
         .await
         .expect("turn completed");
     waiting.await.expect("task").expect("the wait ends with the turn");
+    harness.finish();
+}
+
+/// A client without a terminal can go on with a conversation after a pause: a prompt to an Idle
+/// session resumes its harness, as an attach does, and then delivers.
+#[tokio::test(flavor = "local")]
+async fn a_prompt_resumes_an_idle_session_and_delivers() {
+    let directory = TempDir::new().expect("directory");
+    let harness = ServiceHarness::start_reconciled(&directory, "a3a3a3a3-a3a3-4a3a-8a3a-a3a3a3a3a3a3").await;
+    harness.report(agent::sessions::ActivityEvent::TurnCompleted).await;
+    let generation = harness
+        .database
+        .activate_session(harness.session.id)
+        .await
+        .expect("activation");
+    harness
+        .database
+        .update_session_lifecycle(harness.session.id, agent::sessions::Lifecycle::idle(), generation)
+        .await
+        .expect("Idle session");
+    // An idle stop leaves no relaunch backoff behind.
+    harness
+        .database
+        .reset_session_launch_attempts(harness.session.id)
+        .await
+        .expect("launch attempts");
+    harness.runtime.present.set(false);
+    harness.runtime.ready_without_report.set(true);
+
+    harness
+        .service
+        .prompt("worker", &harness.session.name, "go on", false, None)
+        .await
+        .expect("the prompt resumes the session");
+
+    assert_eq!(
+        harness.runtime.launches.borrow().as_slice(),
+        [(Some("native-0".to_owned()), None)],
+        "the harness resumes its conversation"
+    );
+    assert_eq!(harness.runtime.sent.borrow().as_slice(), ["go on"]);
     harness.finish();
 }
 
