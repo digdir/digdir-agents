@@ -485,6 +485,9 @@ impl Service {
 
     /// Opens the persisted materialized sandbox without lifecycle or setup effects.
     ///
+    /// It records the heartbeat it sees, so that [`Self::guard_guest`] judges the guest by the
+    /// snapshot the caller holds rather than by an older inspection.
+    ///
     /// # Errors
     ///
     /// Returns an error unless the assignment is materialized through a configured Provider.
@@ -492,7 +495,10 @@ impl Service {
         let Some(Assignment::Materialized { provider, id, .. }) = &record.agent.status.sandbox else {
             return Err(Error::Invalid("Agent has no materialized sandbox assignment".into()));
         };
-        self.provider(provider)?.open(record, id).await
+        let sandbox = self.provider(provider)?.open(record, id).await?;
+        self.responsiveness
+            .observe(sandbox.snapshot(), tokio::time::Instant::now());
+        Ok(sandbox)
     }
 
     /// Whether the sandbox's guest reported a heartbeat when last inspected.

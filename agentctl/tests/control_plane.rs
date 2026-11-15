@@ -3051,6 +3051,7 @@ struct Stalling {
     store: Rc<memory::InMemoryAgentStore>,
     backend: Rc<sandbox_memory::Provider>,
     platform: Rc<StallingPlatform>,
+    sandboxes: Rc<Service>,
     reconciler: Rc<Reconciler>,
     id: AgentId,
 }
@@ -3062,7 +3063,11 @@ async fn stalling(changes: Changes) -> Stalling {
     let platform = Rc::new(StallingPlatform::default());
     let sandboxes =
         Rc::new(Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service"));
-    let reconciler = Rc::new(Reconciler::new(store.clone(), sandboxes, ProvisioningState::default()));
+    let reconciler = Rc::new(Reconciler::new(
+        store.clone(),
+        sandboxes.clone(),
+        ProvisioningState::default(),
+    ));
     ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()))
         .apply(apply_request("worker"))
         .await
@@ -3072,6 +3077,7 @@ async fn stalling(changes: Changes) -> Stalling {
         store,
         backend,
         platform,
+        sandboxes,
         reconciler,
         id,
     }
@@ -3168,6 +3174,32 @@ async fn a_stalled_guest_ends_setup_and_its_agent_reports_it_unresponsive() {
     assert_eq!(
         (responsive.status, responsive.reason.as_str()),
         (ConditionStatus::True, "HeartbeatAdvancing")
+    );
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn work_on_an_opened_sandbox_runs_long_after_the_last_pass_while_the_guest_beats() {
+    let fixture = stalling(Changes::new()).await;
+    fixture.reconciler.reconcile(fixture.id).await.expect("first pass");
+    fixture.beat(1).await;
+    fixture
+        .reconciler
+        .reconcile(fixture.id)
+        .await
+        .expect("pass that sees the heartbeat");
+    tokio::time::advance(UNRESPONSIVE_AFTER * 4).await;
+    fixture.beat(2).await;
+
+    let record = fixture.record().await;
+    let sandbox = fixture.sandboxes.open(&record).await.expect("open");
+    let result = fixture
+        .sandboxes
+        .guard_guest(&record, &sandbox.snapshot().id, async { Ok(()) })
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "the heartbeat open saw has advanced, so the guest is not stalled: {result:?}"
     );
 }
 
