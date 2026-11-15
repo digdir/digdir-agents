@@ -16,10 +16,12 @@ pub mod forward;
 pub mod microsandbox;
 pub mod platform;
 pub mod responsiveness;
+mod trim;
 
 pub use execution::{ExecutionService, ExecutionTarget, start_execution};
 pub use microsandbox::{GuestConnection, GuestDialer};
 pub use responsiveness::UNRESPONSIVE_AFTER;
+pub use trim::{TRIM_INTERVAL, Trimmer};
 
 /// What watching a guest's heartbeat found.
 enum Heartbeat {
