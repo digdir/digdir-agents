@@ -242,4 +242,20 @@ mod tests {
         assert!(space.total > 0);
         assert!(space.available <= space.total);
     }
+
+    /// A home where no sandbox has been created yet has no sandboxes folder, and its filesystem
+    /// must still be measured.
+    #[test]
+    fn a_folder_not_created_yet_is_measured_on_the_filesystem_it_would_be_created_on() {
+        let home = tempfile::TempDir::new().expect("temporary home");
+        let sandboxes = home.path().join("microsandbox").join("runtime").join("sandboxes");
+
+        let existing = DiskSpace::of(home.path()).expect("free space of the home");
+
+        let space = DiskSpace::of(&sandboxes);
+        assert!(
+            matches!(space, Ok(space) if space.total == existing.total),
+            "the home's filesystem, {existing}, should be measured, not {space:?}"
+        );
+    }
 }
