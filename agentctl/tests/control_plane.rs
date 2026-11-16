@@ -1588,11 +1588,8 @@ async fn a_failed_post_create_step_keeps_the_agent_from_becoming_ready_but_not_f
         "postCreate step \"clone\" exited with code 128".into(),
     ));
     let service = Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service");
-    let reconciler = Rc::new(Reconciler::new(
-        store.clone(),
-        Rc::new(service),
-        ProvisioningState::new(changes.clone()),
-    ));
+    let provisioning = ProvisioningState::new(changes.clone());
+    let reconciler = Rc::new(Reconciler::new(store.clone(), Rc::new(service), provisioning.clone()));
     let (controller, wakeup) = Controller::new(store.clone(), reconciler, NO_BACKGROUND_PASSES, Rc::new(|_, _| {}));
     let convergence = Convergence::new(wakeup, store.clone(), changes);
     let execution = ExecutionService::new(store.clone(), convergence.clone());
@@ -1610,6 +1607,15 @@ async fn a_failed_post_create_step_keeps_the_agent_from_becoming_ready_but_not_f
     assert!(
         matches!(&error, Error::Invalid(message) if message.contains("\"clone\"")),
         "{error}"
+    );
+    let id = store.get_by_name("worker").await.expect("Agent").id;
+    let pass = provisioning.get(id).expect("the failed pass");
+    assert!(
+        pass.progress
+            .finished()
+            .iter()
+            .any(|phase| phase.phase == agent::progress::SETUP && phase.outcome == sandbox::Outcome::Failed),
+        "progress shows setup as where the agent stopped, not a pass that failed after every phase completed"
     );
     let status = store.get_by_name("worker").await.expect("Agent").agent.status;
     let ready = status.ready_condition().expect("Ready condition");

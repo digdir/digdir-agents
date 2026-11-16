@@ -464,7 +464,13 @@ impl Service {
                 ),
             )
             .await?;
-        phase.complete().await;
+        // A failed `postCreate` step leaves the agent short of ready, so progress shows setup as where it stopped.
+        let ended = if matches!(set_up.post_create, Some(PostCreateOutcome::Failed(_))) {
+            ::sandbox::Outcome::Failed
+        } else {
+            ::sandbox::Outcome::Completed
+        };
+        phase.end(ended).await;
         Ok(EnsureOutcome {
             id: sandbox.snapshot().id.clone(),
             runtime_restarted: outcome.runtime_restarted,
