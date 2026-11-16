@@ -46,6 +46,13 @@ impl ControlPlaneHome {
         self.0.join("run").join("agentd.sock")
     }
 
+    /// Returns the path of agentd's settings, which it reads with
+    /// [`DaemonConfig::load`](super::config::DaemonConfig::load).
+    #[must_use]
+    pub fn config_path(&self) -> PathBuf {
+        self.0.join("agentd.toml")
+    }
+
     /// Returns the daemon diagnostic log path used by automatic startup.
     #[must_use]
     pub fn daemon_log_path(&self) -> PathBuf {

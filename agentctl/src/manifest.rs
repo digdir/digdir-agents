@@ -1320,6 +1320,8 @@ impl Status {
         self.lifetime = None;
         self.bindings.clear();
         self.volumes.clear();
+        self.conditions
+            .retain(|condition| condition.kind != Condition::HOST_DISK_LOW);
     }
 
     fn is_empty(&self) -> bool {
@@ -1425,8 +1427,8 @@ impl Condition {
     pub const SSH_READY: &'static str = "SshReady";
     /// VNC access is reconciled and the bridge to the desktop is listening.
     pub const VNC_READY: &'static str = "VncReady";
-    /// Condition type for whether the drive holding agentd's home, and with it the agent's disk, is
-    /// low on space. Its message says how much is free and the threshold.
+    /// Condition type for whether the host filesystem holding the sandboxes' disks, the agent's
+    /// among them, is low on space. Its message says how much is free and the threshold.
     pub const HOST_DISK_LOW: &'static str = "HostDiskLow";
 
     /// `Ready` reason while a pass stops the agent's sandbox, and after a stop failed.
@@ -1440,7 +1442,7 @@ impl Condition {
     /// `Ready` reason, and that of the condition for what failed, when a pass failed while the host
     /// filesystem holding the agent's sandbox was full. Its message says how much is free.
     pub const REASON_HOST_DISK_FULL: &'static str = "HostDiskFull";
-    /// `HostDiskLow` reason while the drive has less free space than agentd's threshold.
+    /// `HostDiskLow` reason while the filesystem has less free space than agentd's threshold.
     pub const REASON_BELOW_THRESHOLD: &'static str = "BelowThreshold";
 
     /// Finds the `Ready` condition in a condition list.
@@ -1456,12 +1458,14 @@ impl Condition {
     }
 
     /// The conditions saying that a ready agent works without something it needs, such as its
-    /// GitHub account or its checkout. Readiness does not wait for them, so clients show them beside
-    /// it, or the person finds out only once the agent fails at its work.
+    /// GitHub account, its checkout or free space for its disk to grow. Readiness does not wait for
+    /// them, so clients show them beside it, or the person finds out only once the agent fails at
+    /// its work.
     pub fn shortfalls(conditions: &[Self]) -> impl Iterator<Item = &Self> {
-        conditions.iter().filter(|condition| {
-            [Self::ACCOUNTS, Self::WORKSPACE].contains(&condition.kind.as_str())
-                && condition.status == ConditionStatus::False
+        conditions.iter().filter(|condition| match condition.kind.as_str() {
+            Self::ACCOUNTS | Self::WORKSPACE => condition.status == ConditionStatus::False,
+            Self::HOST_DISK_LOW => condition.status == ConditionStatus::True,
+            _ => false,
         })
     }
 

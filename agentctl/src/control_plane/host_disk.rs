@@ -7,7 +7,16 @@
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Duration};
 
-use crate::{Condition, local::disk::LowDiskThreshold, resources::Changes, sandbox::Service};
+use crate::{
+    Condition, ConditionStatus,
+    local::{
+        config::DaemonConfig,
+        disk::{DiskSpace, LowDiskThreshold},
+    },
+    progress::bytes,
+    resources::Changes,
+    sandbox::Service,
+};
 
 /// How often agentd measures the filesystem. A build can write gigabytes in a minute.
 const CHECK_INTERVAL: Duration = Duration::from_secs(30);
@@ -32,20 +41,71 @@ impl HostDisk {
         }
     }
 
-    /// Measures the free space where the sandboxes' disks are, against `threshold`.
+    /// Measures the free space where the sandboxes' disks are, against `threshold`. A measurement
+    /// that fails keeps what agents show.
     pub async fn measure(&self, threshold: LowDiskThreshold) {
-        let _ = (threshold, &self.sandboxes, &self.low, &self.changes);
+        match self.sandboxes.host_disks().await {
+            Ok(spaces) => self.observe(spaces.into_iter().find(|space| threshold.is_low(*space)), threshold),
+            Err(error) => tracing::warn!(%error, "free space measurement failed"),
+        }
+    }
+
+    /// Records `low`, the filesystem below `threshold`, or `None` when none is.
+    fn observe(&self, low: Option<DiskSpace>, threshold: LowDiskThreshold) {
+        let condition = low.map(|space| {
+            let message = format!(
+                "{} free on the filesystem holding the sandboxes' disks, below lowDiskThreshold {}{}",
+                bytes(space.available),
+                threshold,
+                match threshold {
+                    LowDiskThreshold::Share(_) => format!(" ({})", bytes(threshold.bytes(space.total))),
+                    LowDiskThreshold::Size(_) => String::new(),
+                },
+            );
+            let since = self
+                .low
+                .borrow()
+                .as_ref()
+                .and_then(|low| low.last_transition_time)
+                .unwrap_or_else(time::OffsetDateTime::now_utc);
+            Condition {
+                kind: Condition::HOST_DISK_LOW.into(),
+                status: ConditionStatus::True,
+                reason: Condition::REASON_BELOW_THRESHOLD.into(),
+                message,
+                last_transition_time: Some(since),
+            }
+        });
+        if *self.low.borrow() != condition {
+            self.low.replace(condition);
+            self.changes.bump();
+        }
     }
 
     /// The condition every agent shows while the filesystem is low.
     #[must_use]
     pub fn condition(&self) -> Option<Condition> {
-        None
+        self.low.borrow().clone()
     }
 
-    /// Measures the filesystem now and then, against the threshold in `config`.
-    pub async fn run(self, config: PathBuf, threshold: LowDiskThreshold) {
-        let _ = (config, threshold, CHECK_INTERVAL);
-        std::future::pending::<()>().await;
+    /// Measures the filesystem now and then, against the threshold in `config`, which it reads
+    /// again each time so that a change applies without restarting agentd. A setting it cannot
+    /// read keeps the last one it could.
+    pub async fn run(self, config: PathBuf, mut threshold: LowDiskThreshold) {
+        let mut ticker = tokio::time::interval(CHECK_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            let path = config.clone();
+            let loaded = common::blocking::run("reading agentd.toml", move || DaemonConfig::load(&path))
+                .await
+                .map_err(crate::Error::from)
+                .and_then(|loaded| loaded);
+            match loaded {
+                Ok(loaded) => threshold = loaded.low_disk_threshold,
+                Err(error) => tracing::warn!(%error, "keeping the last low disk threshold"),
+            }
+            self.measure(threshold).await;
+        }
     }
 }

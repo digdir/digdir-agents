@@ -2358,9 +2358,29 @@ fn agents_table(agents: &[Agent]) -> Vec<String> {
                 row
             })
             .collect::<Vec<_>>();
-        return table_lines(&["NAME", "LIFETIME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows);
+        return with_host_disk_warning(
+            agents,
+            table_lines(&["NAME", "LIFETIME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows),
+        );
     }
-    table_lines(&["NAME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows)
+    with_host_disk_warning(
+        agents,
+        table_lines(&["NAME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows),
+    )
+}
+
+/// Says once under the table that the host's disk is low, which every agent on it reports alike.
+fn with_host_disk_warning(agents: &[Agent], mut lines: Vec<String>) -> Vec<String> {
+    let low = agents.iter().find_map(|agent| {
+        agent.status.conditions.iter().find(|condition| {
+            condition.kind == agent::Condition::HOST_DISK_LOW && condition.status == agent::ConditionStatus::True
+        })
+    });
+    if let Some(low) = low {
+        lines.push(String::new());
+        lines.push(format!("Warning: host disk low: {}", low.message));
+    }
+    lines
 }
 
 fn print_agent_description(agent: &Agent) {

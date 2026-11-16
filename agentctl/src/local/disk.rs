@@ -57,8 +57,8 @@ impl fmt::Display for DiskSpace {
     }
 }
 
-/// How little free space agentd warns about on the drive that holds its home: a share of the
-/// drive, such as `5%`, or a size, such as `20Gi`.
+/// How little free space agentd warns about on the filesystem holding the sandboxes' disks: a
+/// share of the filesystem, such as `5%`, or a size, such as `20Gi`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LowDiskThreshold {
     /// Hundredths of a percent of the drive's size, more than none and less than all of it.
@@ -71,15 +71,19 @@ impl LowDiskThreshold {
     /// The free space, in bytes, below which a drive of `total` bytes is low.
     #[must_use]
     pub fn bytes(self, total: u64) -> u64 {
-        let _ = (self, total);
-        0
+        match self {
+            Self::Share(hundredths) => {
+                let bytes = u128::from(total) * u128::from(hundredths) / 10_000;
+                u64::try_from(bytes).unwrap_or(u64::MAX)
+            }
+            Self::Size(size) => size.bytes(),
+        }
     }
 
     /// Whether `space` has less free than this threshold allows.
     #[must_use]
     pub fn is_low(self, space: DiskSpace) -> bool {
-        let _ = (self, space);
-        false
+        space.available < self.bytes(space.total)
     }
 }
 
@@ -93,14 +97,42 @@ impl FromStr for LowDiskThreshold {
     type Err = Error;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Err(Error::Invalid(format!("{value:?} is not a threshold")))
+        let invalid = || {
+            Error::Invalid(format!(
+                "{value:?} is not a share of the drive below 100%, such as 5% or 2.5%, or a size, such as 20Gi"
+            ))
+        };
+        let Some(percent) = value.strip_suffix('%') else {
+            return value.parse().map(Self::Size).map_err(|_| invalid());
+        };
+        let (whole, fraction) = match percent.split_once('.') {
+            Some((_, "")) => return Err(invalid()),
+            Some(parts) => parts,
+            None => (percent, ""),
+        };
+        let digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
+        if whole.is_empty() || whole.len() > 2 || fraction.len() > 2 || !digits(whole) || !digits(fraction) {
+            return Err(invalid());
+        }
+        let whole = whole.parse::<u16>().map_err(|_| invalid())?;
+        let fraction = format!("{fraction:0<2}").parse::<u16>().map_err(|_| invalid())?;
+        match whole * 100 + fraction {
+            0 => Err(invalid()),
+            hundredths => Ok(Self::Share(hundredths)),
+        }
     }
 }
 
 impl fmt::Display for LowDiskThreshold {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = self;
-        write!(formatter, "")
+        match self {
+            Self::Share(hundredths) if hundredths % 100 == 0 => write!(formatter, "{}%", hundredths / 100),
+            Self::Share(hundredths) => {
+                let fraction = format!("{:02}", hundredths % 100);
+                write!(formatter, "{}.{}%", hundredths / 100, fraction.trim_end_matches('0'))
+            }
+            Self::Size(size) => write!(formatter, "{size}"),
+        }
     }
 }
 

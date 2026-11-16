@@ -10,7 +10,7 @@ use super::disk::LowDiskThreshold;
 /// agentd's settings. A missing file, or a setting it leaves out, means the default.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DaemonConfig {
-    /// How little free space agentd warns about on the drive that holds its home.
+    /// How little free space agentd warns about on the filesystem holding the sandboxes' disks.
     pub low_disk_threshold: LowDiskThreshold,
 }
 
@@ -22,8 +22,13 @@ impl DaemonConfig {
     /// Returns an error naming `path` when it cannot be read, is not TOML, or holds a setting
     /// agentd does not have or a value the setting does not take.
     pub fn load(path: &Path) -> Result<Self, Error> {
-        let _ = path;
-        Ok(Self::default())
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(Error::Invalid(format!("cannot read {}: {error}", path.display()))),
+        };
+        text.parse()
+            .map_err(|error| Error::Invalid(format!("invalid {}: {error}", path.display())))
     }
 }
 
@@ -31,8 +36,22 @@ impl std::str::FromStr for DaemonConfig {
     type Err = Error;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        let _ = text;
-        Ok(Self::default())
+        let document = toml_edit::Document::parse(text).map_err(|error| Error::Invalid(error.to_string()))?;
+        let mut config = Self::default();
+        for (key, item) in document.as_table() {
+            match key {
+                "lowDiskThreshold" => {
+                    let value = item
+                        .as_str()
+                        .ok_or_else(|| Error::Invalid("lowDiskThreshold must be a string, such as \"5%\"".into()))?;
+                    config.low_disk_threshold = value
+                        .parse()
+                        .map_err(|error| Error::Invalid(format!("lowDiskThreshold: {error}")))?;
+                }
+                other => return Err(Error::Invalid(format!("unknown setting {other:?}"))),
+            }
+        }
+        Ok(config)
     }
 }
 
