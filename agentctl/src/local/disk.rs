@@ -21,13 +21,24 @@ pub struct DiskSpace {
 }
 
 impl DiskSpace {
-    /// Reads the space on the filesystem holding `path`, which must exist. Blocks.
+    /// Reads the space on the filesystem holding `path`. A folder that is not created yet, such as
+    /// the sandboxes folder before the first sandbox, is measured on the filesystem it would be
+    /// created on, that of its nearest existing parent. Blocks.
     ///
     /// # Errors
     ///
     /// Returns the operating system's error when it cannot tell.
     pub fn of(path: &Path) -> io::Result<Self> {
-        query(path)
+        let mut missing = None;
+        for folder in path.ancestors().filter(|folder| !folder.as_os_str().is_empty()) {
+            match query(folder) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    missing.get_or_insert(error);
+                }
+                result => return result,
+            }
+        }
+        Err(missing.unwrap_or_else(|| io::Error::from(io::ErrorKind::NotFound)))
     }
 
     /// Whether so little is free that writes to the filesystem fail: under 1 GiB, or under 1% of
