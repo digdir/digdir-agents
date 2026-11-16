@@ -25,6 +25,7 @@ dependencies = [
  "ratatui",
  "reqwest",
  "rusqlite",
+ "rustix",
  "sandbox",
  "sandbox-authorization",
  "sandbox-microsandbox",
@@ -46,6 +47,7 @@ dependencies = [
  "vt100",
  "whoami",
  "win_uds",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

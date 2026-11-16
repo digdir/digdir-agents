@@ -1434,6 +1434,9 @@ impl Condition {
     pub const REASON_STARTING: &'static str = "Starting";
     /// `Ready` reason while an agent waits for the volumes it mounts.
     pub const REASON_WAITING_FOR_VOLUMES: &'static str = "WaitingForVolumes";
+    /// `Ready` reason, and that of the condition for what failed, when a pass failed while the host
+    /// filesystem holding the agent's sandbox was full. Its message says how much is free.
+    pub const REASON_HOST_DISK_FULL: &'static str = "HostDiskFull";
 
     /// Finds the `Ready` condition in a condition list.
     #[must_use]

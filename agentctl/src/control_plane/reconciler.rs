@@ -344,17 +344,22 @@ impl Reconciler {
                     .await
             }
             Err(error) => {
-                let failure = ReconcileFailure::classify(&error);
+                let mut failure = ReconcileFailure::classify(&error);
+                let (reason, ready_reason) = if self.blame_full_disk(record, &mut failure).await {
+                    (Condition::REASON_HOST_DISK_FULL, Condition::REASON_HOST_DISK_FULL)
+                } else {
+                    ("ReconcileFailed", kind.failed_reason)
+                };
                 conditions.push(condition(
                     kind.condition,
                     ConditionStatus::False,
-                    "ReconcileFailed",
+                    reason,
                     &failure.message,
                 ));
                 conditions.push(condition(
                     Condition::READY,
                     ConditionStatus::False,
-                    kind.failed_reason,
+                    ready_reason,
                     &failure.message,
                 ));
                 let status = Status::observed(
@@ -377,23 +382,22 @@ impl Reconciler {
         observer: &SandboxObserver,
         error: Error,
     ) -> Result<(), Error> {
-        let failure = ReconcileFailure::classify(&error);
-        let message = error.to_string();
+        let mut failure = ReconcileFailure::classify(&error);
+        let (ready_reason, reason) = if self.blame_full_disk(record, &mut failure).await {
+            (Condition::REASON_HOST_DISK_FULL, Condition::REASON_HOST_DISK_FULL)
+        } else {
+            ("SandboxReconcileFailed", "ReconcileFailed")
+        };
         let status = Status::observed(
             record.agent.metadata.generation,
             record.agent.status.sandbox.clone(),
             vec![
-                condition(
-                    Condition::READY,
-                    ConditionStatus::False,
-                    "SandboxReconcileFailed",
-                    &message,
-                ),
+                condition(Condition::READY, ConditionStatus::False, ready_reason, &failure.message),
                 condition(
                     Condition::SANDBOX_READY,
                     ConditionStatus::False,
-                    "ReconcileFailed",
-                    &message,
+                    reason,
+                    &failure.message,
                 ),
             ],
         );
@@ -402,6 +406,28 @@ impl Reconciler {
         observer.failed(&failure);
         stored?;
         Err(error)
+    }
+
+    /// Puts a full host disk ahead of `failure`'s message, and returns whether it did, when the
+    /// filesystem holding the agent's sandbox is full.
+    ///
+    /// The guest sees a full host disk as an I/O error, and the host as an error of its own on each
+    /// operating system, so only the free space tells it from another failure.
+    async fn blame_full_disk(&self, record: &AgentRecord, failure: &mut ReconcileFailure) -> bool {
+        match self.sandboxes.host_disk(record).await {
+            Ok(Some(space)) if space.is_full() => {
+                failure.message = format!(
+                    "the host disk holding the sandbox is full, {space}: {}",
+                    failure.message
+                );
+                true
+            }
+            Ok(_) => false,
+            Err(error) => {
+                tracing::debug!(%error, "could not read the free space under the failed sandbox");
+                false
+            }
+        }
     }
 
     /// Records that the sandbox's guest stopped responding and returns `error`.

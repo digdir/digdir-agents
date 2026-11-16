@@ -51,7 +51,11 @@ whoami.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
 win_uds = { version = "0.2.4", features = ["async"] }
 
