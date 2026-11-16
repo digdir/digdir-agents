@@ -19,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) use agent::progress::bytes;
 use agent::{
     FailureKind,
     control_api::Client,
@@ -587,27 +588,6 @@ pub(crate) fn format_measurement(Measurement { unit, completed, total }: Measure
         (ProgressUnit::Items, Some(total)) => format!("{completed} / {total}"),
         _ => completed.to_string(),
     }
-}
-
-pub(crate) fn bytes(value: u64) -> String {
-    const KIB: u64 = 1_024;
-    const MIB: u64 = KIB * 1_024;
-    const GIB: u64 = MIB * 1_024;
-    if value >= GIB {
-        scaled(value, GIB, "GiB")
-    } else if value >= MIB {
-        scaled(value, MIB, "MiB")
-    } else if value >= KIB {
-        scaled(value, KIB, "KiB")
-    } else {
-        format!("{value} B")
-    }
-}
-
-fn scaled(value: u64, unit: u64, suffix: &str) -> String {
-    let whole = value / unit;
-    let decimal = (value % unit).saturating_mul(10) / unit;
-    format!("{whole}.{decimal} {suffix}")
 }
 
 pub(crate) fn duration(milliseconds: u64) -> String {

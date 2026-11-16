@@ -275,6 +275,8 @@ impl Reconciler {
         );
         conditions.extend(nested_sandboxes_condition(ensured.nested_sandboxes.as_ref()));
         conditions.extend(optional_sources_condition(record, &ensured.missing_sources));
+        conditions.extend(accounts_condition(record, &ensured.missing_logins));
+        conditions.extend(ensured.workspace.map(workspace_condition));
         conditions.extend(environment_file_condition(record));
         conditions.extend(exposed_files_condition(record));
         conditions.extend(post_create_condition(ensured.post_create.as_ref()));
@@ -348,17 +350,22 @@ impl Reconciler {
                     .await
             }
             Err(error) => {
-                let failure = ReconcileFailure::classify(&error);
+                let mut failure = ReconcileFailure::classify(&error);
+                let (reason, ready_reason) = if self.blame_full_disk(record, &mut failure).await {
+                    (Condition::REASON_HOST_DISK_FULL, Condition::REASON_HOST_DISK_FULL)
+                } else {
+                    ("ReconcileFailed", kind.failed_reason)
+                };
                 conditions.push(condition(
                     kind.condition,
                     ConditionStatus::False,
-                    "ReconcileFailed",
+                    reason,
                     &failure.message,
                 ));
                 conditions.push(condition(
                     Condition::READY,
                     ConditionStatus::False,
-                    kind.failed_reason,
+                    ready_reason,
                     &failure.message,
                 ));
                 let status = Status::observed(
@@ -407,23 +414,22 @@ impl Reconciler {
         observer: &SandboxObserver,
         error: Error,
     ) -> Result<(), Error> {
-        let failure = ReconcileFailure::classify(&error);
-        let message = error.to_string();
+        let mut failure = ReconcileFailure::classify(&error);
+        let (ready_reason, reason) = if self.blame_full_disk(record, &mut failure).await {
+            (Condition::REASON_HOST_DISK_FULL, Condition::REASON_HOST_DISK_FULL)
+        } else {
+            ("SandboxReconcileFailed", "ReconcileFailed")
+        };
         let status = Status::observed(
             record.agent.metadata.generation,
             record.agent.status.sandbox.clone(),
             vec![
-                condition(
-                    Condition::READY,
-                    ConditionStatus::False,
-                    "SandboxReconcileFailed",
-                    &message,
-                ),
+                condition(Condition::READY, ConditionStatus::False, ready_reason, &failure.message),
                 condition(
                     Condition::SANDBOX_READY,
                     ConditionStatus::False,
-                    "ReconcileFailed",
-                    &message,
+                    reason,
+                    &failure.message,
                 ),
             ],
         );
@@ -432,6 +438,28 @@ impl Reconciler {
         observer.failed(&failure);
         stored?;
         Err(error)
+    }
+
+    /// Puts a full host disk ahead of `failure`'s message, and returns whether it did, when the
+    /// filesystem holding the agent's sandbox is full.
+    ///
+    /// The guest sees a full host disk as an I/O error, and the host as an error of its own on each
+    /// operating system, so only the free space tells it from another failure.
+    async fn blame_full_disk(&self, record: &AgentRecord, failure: &mut ReconcileFailure) -> bool {
+        match self.sandboxes.host_disk(record).await {
+            Ok(Some(space)) if space.is_full() => {
+                failure.message = format!(
+                    "the host disk holding the sandbox is full, {space}: {}",
+                    failure.message
+                );
+                true
+            }
+            Ok(_) => false,
+            Err(error) => {
+                tracing::debug!(%error, "could not read the free space under the failed sandbox");
+                false
+            }
+        }
     }
 
     /// Records that the sandbox's guest stopped responding and returns `error`.
@@ -754,6 +782,45 @@ fn optional_sources_condition(record: &AgentRecord, missing_files: &[String]) ->
             &format!("left out {}", missing.join(", ")),
         )
     })
+}
+
+/// Reports whether every account the agent asks for has its login kept, naming the command that
+/// keeps each missing one; nothing when it asks for none.
+fn accounts_condition(record: &AgentRecord, missing_logins: &[String]) -> Option<Condition> {
+    if record.agent.spec.accounts.is_empty() {
+        return None;
+    }
+    Some(if missing_logins.is_empty() {
+        condition(Condition::ACCOUNTS, ConditionStatus::True, "LoggedIn", "")
+    } else {
+        condition(
+            Condition::ACCOUNTS,
+            ConditionStatus::False,
+            "NotLoggedIn",
+            &missing_logins.join(". "),
+        )
+    })
+}
+
+/// Reports how far the image's clone of the repositories it lists into the workspace got, so a
+/// person who finds no checkout learns why. The agent is ready without it.
+fn workspace_condition(clone: crate::sandbox::WorkspaceClone) -> Condition {
+    match clone {
+        crate::sandbox::WorkspaceClone::Cloning => condition(
+            Condition::WORKSPACE,
+            ConditionStatus::Unknown,
+            "Cloning",
+            "the image is cloning the repositories it lists",
+        ),
+        crate::sandbox::WorkspaceClone::Cloned => condition(Condition::WORKSPACE, ConditionStatus::True, "Cloned", ""),
+        crate::sandbox::WorkspaceClone::Failed => condition(
+            Condition::WORKSPACE,
+            ConditionStatus::False,
+            "CloneFailed",
+            "the image could not clone every repository it lists. `sudo journalctl -u agent-workspace-init` in the \
+             agent says why",
+        ),
+    }
 }
 
 /// Names the values an agent still reads from its environment file, so every client shows what to

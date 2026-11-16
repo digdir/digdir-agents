@@ -15,10 +15,12 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ### Added
 
+- The new session form in `agentctl tui` (`n`) suggests a name, such as `wobbly-walrus`, in the empty Name field, and Enter creates the session by that name unless you type your own. ([#508](https://github.com/digdir/digdir-agents/pull/508))
 - `postCreate` steps in an agent's manifest run setup that needs the agent's accounts, secrets or network, such as cloning your dotfiles, once before it is first ready. A failed step keeps it from becoming ready, though `agentctl exec` reaches it. Changing steps takes a recreated agent. ([#322](https://github.com/digdir/digdir-agents/issues/322))
 
 ### Changed
 
+- On macOS and Windows, the disk file of an agent with a `direct` root filesystem shrinks periodically after the agent frees space. ([image contract](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/image-contract.md), [#502](https://github.com/digdir/digdir-agents/issues/502))
 - The Agent sandbox section at the top of an agent's instructions now lists the folders mounted from your machine, and adds rules its own instructions can override, such as cleaning up after a task and noting system changes in `~/system-changes.md`. ([#505](https://github.com/digdir/digdir-agents/pull/505))
 - Breaking: `spec.instructions` in a variant, such as `agent.mine.yaml`, merges with the base's list by `source` instead of replacing it. List only the files to add, which follow the base's, or to change, and remove a base file with `$patch: delete`. A manifest may not repeat a `source`. ([#477](https://github.com/digdir/digdir-agents/issues/477))
 - Breaking: agent variants merge as Kustomize patches do: ([agent variants](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/variants.md), [#504](https://github.com/digdir/digdir-agents/pull/504))
@@ -26,9 +28,14 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
   - `[]` on a list of entries is refused. Write `null` instead
   - a key named twice in one list is refused. Merge the two entries
   - `null` on a field the base doesn't set is no longer an error
+- `agentctl new` and `agentctl update` on a linked Git worktree say before the agent builder starts that Git does not work in it, so review what it writes with `git status` and `git diff` on your machine, or run them in a clone. ([#486](https://github.com/digdir/digdir-agents/issues/486))
 
 ### Fixed
 
+- When the drive holding your agents is full, an agent that fails says so, as `HostDiskFull` in `agentctl get` and with the free space in `agentctl describe` and `agentctl tui`, instead of only an I/O error such as `os error 5` or `os error 112`. ([#415](https://github.com/digdir/digdir-agents/issues/415))
+- An agent running without its GitHub login, or without the repositories its image clones, says so: `agentctl apply --wait` warns, `agentctl describe` shows `Accounts` and `Workspace` conditions, and `agentctl tui` shows a yellow `Ready`, naming `agentctl github login NAME`. Images on the next base image clone public repositories without a login. ([#481](https://github.com/digdir/digdir-agents/issues/481))
+- `agentctl turns`, and the recent turns in `agentctl tui`, show the questions and options a Claude Code session asks with `AskUserQuestion`, instead of only the tool's name, and `-o json` carries them as `questions` on the tool call. ([#484](https://github.com/digdir/digdir-agents/issues/484))
+- `agentctl prompt`, and `p` in `agentctl tui`, resume an Idle session and deliver the prompt, instead of failing with `its lifecycle is idle` until you attach to it. ([#483](https://github.com/digdir/digdir-agents/issues/483))
 - SSH connections to an agent, such as `ssh agentctl-NAME` or T3 Code's environments, and commands such as `agentctl exec` wait while Microsandbox is being installed or updated instead of failing, and the SSH client says what it waits for. ([#456](https://github.com/digdir/digdir-agents/issues/456))
 - On Windows, `agentctl get definitions` writes paths below the current folder with `/` alone, such as `./agents/desktop`, instead of `./agents\desktop`. ([#453](https://github.com/digdir/digdir-agents/issues/453))
 - On Windows, with `AGENT_HOME` outside your user folder, `ssh agentctl-NAME` from Git Bash, or VS Code started there, reaches the agent instead of failing with `Could not resolve hostname`. Run `agentctl ssh-config install` again to get this. ([#455](https://github.com/digdir/digdir-agents/issues/455))
@@ -36,8 +43,9 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 - When the path to your agent home contains `[`, `]`, `*`, `?`, `%`, `{` or `\`, `ssh agentctl-NAME` reaches the agent with every OpenSSH client, instead of reading another configuration or none. Run `agentctl ssh-config install` again to get this. It replaces the `Include` line an earlier version added to `~/.ssh/config`. ([#476](https://github.com/digdir/digdir-agents/issues/476))
 - When the path to your agent home contains `${`, an agent with SSH access now fails with the reason, instead of every `ssh agentctl-NAME` failing with `invalid environment variable expansion`. OpenSSH reads `${NAME}` in a path as an environment variable and cannot be given a literal one, so use an agent home without it. ([#476](https://github.com/digdir/digdir-agents/issues/476))
 - On Windows, when the path to your agent home contains `*`, `?`, `[` or `{`, `agentctl ssh` from Git Bash reaches the agent, and the TUI tells whether SSH is set up, instead of Git's `ssh` reading another configuration. ([#476](https://github.com/digdir/digdir-agents/issues/476))
-- On Windows, `agentctl ssh NAME COMMAND` from Git Bash runs the command in the agent as you wrote it. Git's `ssh` expanded `*`, `?`, `[...]`, `{...}` and `~` in it against your own folders first, and read a word starting with `@` as a file of arguments. ([#476](https://github.com/digdir/digdir-agents/issues/476))
+- On Windows, `agentctl ssh NAME -- COMMAND` from Git Bash runs the command in the agent as you wrote it. Git's `ssh` expanded `*`, `?`, `[...]`, `{...}` and `~` in it against your own folders first, and read a word starting with `@` as a file of arguments. ([#476](https://github.com/digdir/digdir-agents/issues/476))
 - Agents with mediated network reach hosts that also have IPv6 addresses, such as `index.crates.io`, over IPv4 at once, instead of hanging until the client gives up. They no longer reach internet addresses over IPv6. To fix an existing agent, delete it and apply again. ([#452](https://github.com/digdir/digdir-agents/issues/452))
+- On the base images, Firefox no longer crashes at start once Chromium has run. Existing agents get the fix once recreated from an updated image. Chromium from a repository's own Playwright 1.63 or 1.64 still causes it. Run `find ~/.cache/fontconfig -type l -delete` afterwards. ([#394](https://github.com/digdir/digdir-agents/issues/394))
 
 ## [0.1.0-preview.14] - 2026-11-11
 

@@ -11,6 +11,7 @@ pub(crate) mod ssh;
 mod systemd;
 pub(crate) mod vnc;
 mod volumes;
+mod workspace;
 
 use std::collections::BTreeSet;
 
@@ -248,11 +249,13 @@ impl Linux {
             harness::bootstrap_linux(installation.kind, sandbox, HOME, start, &instructions, &skills).await?;
             step.complete().await;
         }
+        let workspace = workspace::observe(sandbox).await?;
         // Last, so the steps find the agent as its sessions will.
         let post_create = post_create::run(record, sandbox, steps).await?;
         Ok(PlatformSetup {
             missing_sources: missing,
             skills: placed,
+            workspace,
             post_create,
         })
     }

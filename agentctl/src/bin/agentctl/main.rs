@@ -301,7 +301,7 @@ enum Command {
         #[command(flatten)]
         input: PromptInput,
     },
-    /// Deliver a prompt to a running session's harness.
+    /// Deliver a prompt to a session's harness, resuming an Idle session first.
     Prompt {
         #[command(flatten)]
         target: SessionTarget,
@@ -847,12 +847,11 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                     "ready"
                 };
                 println!("agent/{name} {outcome}");
-                if let Some(condition) = converged
-                    .status
-                    .conditions
+                let conditions = &converged.status.conditions;
+                let deprecated = conditions
                     .iter()
-                    .find(|condition| condition.kind == agent::Condition::ENVIRONMENT_FILE)
-                {
+                    .filter(|condition| condition.kind == agent::Condition::ENVIRONMENT_FILE);
+                for condition in deprecated.chain(agent::Condition::shortfalls(conditions)) {
                     eprintln!("Warning: {}", condition.message);
                 }
             }

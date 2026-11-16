@@ -6,7 +6,7 @@ use agent::{
     control_plane::{ControlPlane, Controller, Reconciler},
     local::home::ControlPlaneHome,
     persistence,
-    sandbox::ExecutionService,
+    sandbox::{ExecutionService, Trimmer},
     sessions::Service as SessionService,
 };
 use clap::Parser;
@@ -276,6 +276,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     let mut session_controller_task = tokio::task::spawn_local(session_controller.run());
     let mut volume_controller_task = tokio::task::spawn_local(volume_controller.run());
     let mut platform_api_task = tokio::task::spawn_local(platform_api_server.serve(platform_api_listener));
+    let trimmer_task = tokio::task::spawn_local(Trimmer::new(store.clone(), sandboxes.clone()).run());
     let socket_path = home.socket_path();
 
     let result = tokio::select! {
@@ -303,6 +304,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     session_controller_task.abort();
     volume_controller_task.abort();
     platform_api_task.abort();
+    trimmer_task.abort();
     let _ = controller_task.await;
     let _ = session_controller_task.await;
     let _ = volume_controller_task.await;

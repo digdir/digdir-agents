@@ -16,6 +16,7 @@ use agent::{
     control_plane::{
         AgentRecord, AgentStore, ControlPlane, Controller, Convergence, Notifier, Reconciler, WaitPolicy, memory,
     },
+    local::disk::DiskSpace,
     progress::{OutputPosition, ProvisioningState, SandboxObserver},
     resources::Changes,
     sandbox::{
@@ -103,6 +104,8 @@ pub(crate) struct MemoryProvider {
     hanging_stops: Rc<Cell<bool>>,
     /// Whether nested sandboxes are offered, or why not.
     nested_sandboxes_offered: Rc<RefCell<Result<(), String>>>,
+    /// What preparation says of the logins it found missing.
+    missing_logins: Rc<RefCell<Vec<String>>>,
     /// Runs after each directory copy is taken, as a change to the source while it is copied would.
     pub(crate) while_copying: Rc<RefCell<Option<SourceChange>>>,
     /// Volume deletions that fail, as a Provider that cannot be reached does.
@@ -127,6 +130,7 @@ impl MemoryProvider {
             kills: Rc::new(Cell::new(0)),
             hanging_stops: Rc::new(Cell::new(false)),
             nested_sandboxes_offered: Rc::new(RefCell::new(Err("the memory backend cannot nest".into()))),
+            missing_logins: Rc::new(RefCell::new(Vec::new())),
             while_copying: Rc::new(RefCell::new(None)),
             failing_volume_deletes: Rc::new(Cell::new(0)),
         }
@@ -209,7 +213,10 @@ impl Provider for MemoryProvider {
                     .iter()
                     .map(|installation| installation.kind)
                     .collect(),
-                accounts: agent::sandbox::AccountSetup::default(),
+                accounts: agent::sandbox::AccountSetup {
+                    missing_logins: self.missing_logins.borrow().clone(),
+                    ..agent::sandbox::AccountSetup::default()
+                },
             })
         })
     }
@@ -284,6 +291,10 @@ impl Provider for MemoryProvider {
             Ok(self.service.delete_volume(id).await?)
         })
     }
+
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<DiskSpace>, Error>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 struct UnsupportedProvider {
@@ -315,6 +326,8 @@ const TELEMETRY_FLOOD: usize = 4_096;
 struct PlannedProvider {
     inner: MemoryProvider,
     failures: RefCell<VecDeque<PlannedFailure>>,
+    /// The space it reports on the host filesystem holding its sandboxes.
+    disk: Cell<Option<DiskSpace>>,
 }
 
 impl PlannedProvider {
@@ -322,7 +335,13 @@ impl PlannedProvider {
         Self {
             inner: MemoryProvider::new(backend),
             failures: RefCell::new(failures.into_iter().collect()),
+            disk: Cell::new(None),
         }
+    }
+
+    fn with_host_disk(self, disk: DiskSpace) -> Self {
+        self.disk.set(Some(disk));
+        self
     }
 }
 
@@ -417,6 +436,11 @@ impl Provider for PlannedProvider {
     fn delete_volume<'a>(&'a self, id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
         self.inner.delete_volume(id)
     }
+
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<DiskSpace>, Error>> {
+        let disk = self.disk.get();
+        Box::pin(async move { Ok(disk) })
+    }
 }
 
 impl UnsupportedProvider {
@@ -482,6 +506,10 @@ impl Provider for UnsupportedProvider {
 
     fn delete_volume<'a>(&'a self, _id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
+    }
+
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<DiskSpace>, Error>> {
+        Box::pin(async { Ok(None) })
     }
 }
 
@@ -1616,6 +1644,69 @@ async fn a_failed_post_create_step_keeps_the_agent_from_becoming_ready_but_not_f
     task.abort();
 }
 
+#[tokio::test(flavor = "local")]
+async fn a_ready_agent_reports_a_missing_login_and_a_failed_workspace_clone_in_conditions() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let provider = MemoryProvider::new(Rc::new(sandbox_memory::Provider::new()));
+    let missing_logins = provider.missing_logins.clone();
+    let provider: Rc<dyn Provider> = Rc::new(provider);
+    let platform = Rc::new(ReportingPlatform::default());
+    let service = Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service");
+    let reconciler = Reconciler::new(store.clone(), Rc::new(service), ProvisioningState::default());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    let observe = async |name: &str| {
+        let id = store.get_by_name(name).await.expect("Agent").id;
+        reconciler.reconcile(id).await.expect("reconcile");
+        let status = store.get_by_name(name).await.expect("Agent").agent.status;
+        assert!(status.is_ready(), "the agent runs without its account and checkout");
+        [Condition::ACCOUNTS, Condition::WORKSPACE].map(|kind| {
+            status
+                .conditions
+                .iter()
+                .find(|condition| condition.kind == kind)
+                .map(|condition| (condition.status, condition.reason.clone()))
+        })
+    };
+
+    control_plane.apply(apply_request("plain")).await.expect("apply");
+    assert_eq!(
+        observe("plain").await,
+        [None, None],
+        "an agent that asks for no account in an image that clones nothing reports neither"
+    );
+
+    let mut request = apply_request("worker");
+    request.agent.spec.accounts.push(agent::AccountSpec::Github {
+        login: "default".into(),
+    });
+    control_plane.apply(request).await.expect("apply");
+    *missing_logins.borrow_mut() = vec!["run `agentctl github login default`".into()];
+    platform.set_up.borrow_mut().workspace = Some(agent::sandbox::WorkspaceClone::Failed);
+    assert_eq!(
+        observe("worker").await,
+        [
+            Some((ConditionStatus::False, "NotLoggedIn".into())),
+            Some((ConditionStatus::False, "CloneFailed".into())),
+        ]
+    );
+    let status = store.get_by_name("worker").await.expect("Agent").agent.status;
+    assert_eq!(
+        Condition::shortfalls(&status.conditions).count(),
+        2,
+        "clients show both beside readiness"
+    );
+
+    missing_logins.borrow_mut().clear();
+    platform.set_up.borrow_mut().workspace = Some(agent::sandbox::WorkspaceClone::Cloned);
+    assert_eq!(
+        observe("worker").await,
+        [
+            Some((ConditionStatus::True, "LoggedIn".into())),
+            Some((ConditionStatus::True, "Cloned".into())),
+        ]
+    );
+}
+
 /// The skills setup placed are recorded with the sandbox they are in, for the next pass to remove those the agent no
 /// longer declares.
 #[tokio::test(flavor = "local")]
@@ -2591,6 +2682,72 @@ async fn execution_target_waits_for_agent_convergence() {
     fixture.task.abort();
 }
 
+/// The `Ready` and `SandboxReady` conditions after one pass whose sandbox fails with a guest I/O
+/// error while the host filesystem holding it has `disk`.
+async fn conditions_after_an_io_error(disk: DiskSpace) -> Vec<(String, String, String)> {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    let provider = PlannedProvider::new(
+        Rc::new(sandbox_memory::Provider::new()),
+        [PlannedFailure::Transient(
+            "sandbox fs error: open: I/O error (os error 5)".into(),
+        )],
+    )
+    .with_host_disk(disk);
+    let reconciler = reconciler(store.clone(), Rc::new(provider));
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let id = store.get_by_name("worker").await.expect("stored agent").id;
+    reconciler.reconcile(id).await.expect_err("the sandbox fails");
+    store
+        .get(id)
+        .await
+        .expect("stored agent")
+        .agent
+        .status
+        .conditions
+        .into_iter()
+        .filter(|condition| [Condition::READY, Condition::SANDBOX_READY].contains(&condition.kind.as_str()))
+        .map(|condition| (condition.kind, condition.reason, condition.message))
+        .collect()
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_failure_while_the_host_disk_is_full_names_the_full_disk() {
+    const GIB: u64 = 1 << 30;
+    let error = "sandbox fs error: open: I/O error (os error 5)";
+
+    let full = conditions_after_an_io_error(DiskSpace {
+        available: 512 << 20,
+        total: 934 * GIB,
+    })
+    .await;
+    assert_eq!(full.len(), 2, "{full:?}");
+    for (kind, reason, message) in &full {
+        assert_eq!(reason, Condition::REASON_HOST_DISK_FULL, "{kind}");
+        assert!(message.contains("512.0 MiB of 934.0 GiB free"), "{kind}: {message}");
+        assert!(message.ends_with(error), "{kind} keeps the original error: {message}");
+    }
+
+    let ample = conditions_after_an_io_error(DiskSpace {
+        available: 200 * GIB,
+        total: 934 * GIB,
+    })
+    .await;
+    let reasons = ample
+        .iter()
+        .map(|(kind, reason, _)| (kind.as_str(), reason.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reasons,
+        [("Ready", "SandboxReconcileFailed"), ("SandboxReady", "ReconcileFailed")],
+        "an I/O error alone does not mean the disk is full"
+    );
+    for (kind, _, message) in &ample {
+        assert!(!message.contains("full"), "{kind}: {message}");
+        assert!(message.ends_with(error), "{kind}: {message}");
+    }
+}
+
 #[tokio::test(flavor = "local")]
 async fn an_invalid_failure_fails_the_wait_immediately() {
     let fixture = waiting(
@@ -3071,6 +3228,7 @@ struct Stalling {
     store: Rc<memory::InMemoryAgentStore>,
     backend: Rc<sandbox_memory::Provider>,
     platform: Rc<StallingPlatform>,
+    sandboxes: Rc<Service>,
     reconciler: Rc<Reconciler>,
     id: AgentId,
 }
@@ -3082,7 +3240,11 @@ async fn stalling(changes: Changes) -> Stalling {
     let platform = Rc::new(StallingPlatform::default());
     let sandboxes =
         Rc::new(Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service"));
-    let reconciler = Rc::new(Reconciler::new(store.clone(), sandboxes, ProvisioningState::default()));
+    let reconciler = Rc::new(Reconciler::new(
+        store.clone(),
+        sandboxes.clone(),
+        ProvisioningState::default(),
+    ));
     ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()))
         .apply(apply_request("worker"))
         .await
@@ -3092,6 +3254,7 @@ async fn stalling(changes: Changes) -> Stalling {
         store,
         backend,
         platform,
+        sandboxes,
         reconciler,
         id,
     }
@@ -3188,6 +3351,32 @@ async fn a_stalled_guest_ends_setup_and_its_agent_reports_it_unresponsive() {
     assert_eq!(
         (responsive.status, responsive.reason.as_str()),
         (ConditionStatus::True, "HeartbeatAdvancing")
+    );
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn work_on_an_opened_sandbox_runs_long_after_the_last_pass_while_the_guest_beats() {
+    let fixture = stalling(Changes::new()).await;
+    fixture.reconciler.reconcile(fixture.id).await.expect("first pass");
+    fixture.beat(1).await;
+    fixture
+        .reconciler
+        .reconcile(fixture.id)
+        .await
+        .expect("pass that sees the heartbeat");
+    tokio::time::advance(UNRESPONSIVE_AFTER * 4).await;
+    fixture.beat(2).await;
+
+    let record = fixture.record().await;
+    let sandbox = fixture.sandboxes.open(&record).await.expect("open");
+    let result = fixture
+        .sandboxes
+        .guard_guest(&record, &sandbox.snapshot().id, async { Ok(()) })
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "the heartbeat open saw has advanced, so the guest is not stalled: {result:?}"
     );
 }
 
@@ -4496,4 +4685,149 @@ async fn a_delete_just_before_a_restart_starts_the_agent_keeps_it_from_booting_a
         sandbox::SandboxState::Stopped,
         "the Starting write fails, so the pass the delete woke releases it instead"
     );
+}
+
+fn with_direct_root(mut request: agent::control_plane::ApplyRequest) -> agent::control_plane::ApplyRequest {
+    request.agent.spec.sandbox.resources.root_filesystem =
+        RootFilesystem::direct("4Gi".parse().expect("test root filesystem"));
+    request
+}
+
+fn is_trim(spec: &sandbox::execution::ExecutionSpec) -> bool {
+    *spec
+        == sandbox::execution::ExecutionSpec::command(
+            SandboxPath::new("/bin/sh"),
+            ["-c".to_owned(), "exec fstrim /".to_owned()],
+        )
+}
+
+fn trims(backend: &sandbox_memory::Provider) -> usize {
+    backend.execution_specs().iter().filter(|spec| is_trim(spec)).count()
+}
+
+/// A store and sandboxes with a trimmer running over them.
+fn trimming() -> (Fixture, tokio::task::JoinHandle<()>) {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let backend = Rc::new(sandbox_memory::Provider::new());
+    let sandboxes = sandbox_service(Rc::new(MemoryProvider::new(backend.clone())));
+    let fixture = Fixture {
+        control_plane: ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default())),
+        reconciler: Reconciler::new(store.clone(), sandboxes.clone(), ProvisioningState::default()),
+        store: store.clone(),
+        backend,
+    };
+    let trimmer = tokio::task::spawn_local(agent::sandbox::Trimmer::new(store, sandboxes).run());
+    (fixture, trimmer)
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_running_agent_with_a_direct_root_has_it_trimmed_periodically() {
+    let (fixture, trimmer) = trimming();
+    for name in ["running", "stopped"] {
+        fixture
+            .control_plane
+            .apply(with_direct_root(apply_request(name)))
+            .await
+            .expect("apply");
+        reconcile(&fixture, name).await;
+    }
+    fixture
+        .control_plane
+        .apply(apply_request("layered"))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "layered").await;
+    fixture
+        .control_plane
+        .set_run_state("stopped", agent::RunState::Stopped)
+        .await
+        .expect("stop");
+    reconcile(&fixture, "stopped").await;
+
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL.saturating_sub(Duration::from_secs(1))).await;
+    assert_eq!(trims(&fixture.backend), 0, "nothing is trimmed before the interval");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        trims(&fixture.backend),
+        1,
+        "only the running agent with a direct root is trimmed"
+    );
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL).await;
+    assert_eq!(trims(&fixture.backend), 2, "and again after each interval");
+    trimmer.abort();
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_guest_without_discard_is_not_trimmed_again() {
+    let (fixture, trimmer) = trimming();
+    fixture
+        .control_plane
+        .apply(with_direct_root(apply_request("worker")))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "worker").await;
+    fixture.backend.queue_execution_events_matching(
+        is_trim,
+        vec![
+            sandbox::execution::ExecutionEvent::Started { process_id: None },
+            sandbox::execution::ExecutionEvent::Stderr("fstrim: /: the discard operation is not supported\n".into()),
+            sandbox::execution::ExecutionEvent::Exited(sandbox::execution::ExitStatus { code: 1 }),
+        ],
+    );
+
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL * 3 + Duration::from_secs(1)).await;
+
+    assert_eq!(trims(&fixture.backend), 1, "the guest is asked once");
+    assert!(
+        stored(&fixture, "worker").await.agent.status.is_ready(),
+        "the agent works without trimming"
+    );
+    trimmer.abort();
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_guest_that_beats_is_trimmed_long_after_its_last_reconcile() {
+    let (fixture, trimmer) = trimming();
+    fixture
+        .control_plane
+        .apply(with_direct_root(apply_request("worker")))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "worker").await;
+    let sandbox = stored(&fixture, "worker")
+        .await
+        .agent
+        .status
+        .sandbox
+        .and_then(|assignment| assignment.id().cloned())
+        .expect("materialized sandbox");
+    fixture
+        .backend
+        .set_guest_heartbeat(&sandbox, Some(GuestHeartbeat::new(1)))
+        .expect("heartbeat should be set");
+    // The last pass records the heartbeat, long before the trim.
+    reconcile(&fixture, "worker").await;
+    let beating = tokio::task::spawn_local({
+        let backend = fixture.backend.clone();
+        async move {
+            let mut sequence = 1;
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                sequence += 1;
+                backend
+                    .set_guest_heartbeat(&sandbox, Some(GuestHeartbeat::new(sequence)))
+                    .expect("heartbeat should be set");
+            }
+        }
+    });
+
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL + Duration::from_secs(1)).await;
+
+    assert_eq!(
+        trims(&fixture.backend),
+        1,
+        "a guest whose heartbeat advances is trimmed, however old the last pass is"
+    );
+    beating.abort();
+    trimmer.abort();
 }

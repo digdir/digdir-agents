@@ -22,6 +22,29 @@ pub const SANDBOX_STOP: ::sandbox::Phase = ::sandbox::Phase::new("sandboxStop", 
 /// Declared VNC access to the agent's desktop.
 pub const VNC_ACCESS: ::sandbox::Phase = ::sandbox::Phase::new("vncAccess", "Configure VNC access");
 
+/// Formats a byte count for people, such as `1.4 GiB`.
+#[must_use]
+pub fn bytes(value: u64) -> String {
+    const KIB: u64 = 1_024;
+    const MIB: u64 = KIB * 1_024;
+    const GIB: u64 = MIB * 1_024;
+    if value >= GIB {
+        scaled(value, GIB, "GiB")
+    } else if value >= MIB {
+        scaled(value, MIB, "MiB")
+    } else if value >= KIB {
+        scaled(value, KIB, "KiB")
+    } else {
+        format!("{value} B")
+    }
+}
+
+fn scaled(value: u64, unit: u64, suffix: &str) -> String {
+    let whole = value / unit;
+    let decimal = (value % unit).saturating_mul(10) / unit;
+    format!("{whole}.{decimal} {suffix}")
+}
+
 /// One agent's stored status and the progress of its latest pass, as of one
 /// revision, returned by `agents.v1.progress`.
 #[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]

@@ -1506,6 +1506,11 @@ impl Condition {
     /// Condition type for an agent the person agreed could read files that may hold real keys, such
     /// as a checkout's `.env`. Its message names them.
     pub const EXPOSED_FILES: &'static str = "ExposedFiles";
+    /// Condition type for whether every account the agent asks for has a login kept, without which
+    /// the agent runs without it. Its message names the command that keeps a missing one.
+    pub const ACCOUNTS: &'static str = "Accounts";
+    /// Condition type for whether the image cloned the repositories it lists into the workspace.
+    pub const WORKSPACE: &'static str = "Workspace";
     /// Condition type for whether the agent's `postCreate` steps have all run. Its message names a step that failed.
     pub const POST_CREATE: &'static str = "PostCreate";
     /// Condition type for declared SSH access underneath `Ready`.
@@ -1523,6 +1528,9 @@ impl Condition {
     pub const REASON_POST_CREATE_FAILED: &'static str = "PostCreateFailed";
     /// `Ready` reason while an agent waits for the volumes it mounts.
     pub const REASON_WAITING_FOR_VOLUMES: &'static str = "WaitingForVolumes";
+    /// `Ready` reason, and that of the condition for what failed, when a pass failed while the host
+    /// filesystem holding the agent's sandbox was full. Its message says how much is free.
+    pub const REASON_HOST_DISK_FULL: &'static str = "HostDiskFull";
 
     /// Finds the `Ready` condition in a condition list.
     #[must_use]
@@ -1534,6 +1542,16 @@ impl Condition {
     #[must_use]
     pub fn any_ready(conditions: &[Self]) -> bool {
         Self::find_ready(conditions).is_some_and(|condition| condition.status == ConditionStatus::True)
+    }
+
+    /// The conditions saying that a ready agent works without something it needs, such as its
+    /// GitHub account or its checkout. Readiness does not wait for them, so clients show them beside
+    /// it, or the person finds out only once the agent fails at its work.
+    pub fn shortfalls(conditions: &[Self]) -> impl Iterator<Item = &Self> {
+        conditions.iter().filter(|condition| {
+            [Self::ACCOUNTS, Self::WORKSPACE].contains(&condition.kind.as_str())
+                && condition.status == ConditionStatus::False
+        })
     }
 
     /// Returns `reason: message`, or whichever of the two is present, or `Unknown`.

@@ -5,7 +5,8 @@
 set -eu
 
 feature=$(dirname "$0")
-PLAYWRIGHT_CLI_VERSION=${PLAYWRIGHT_CLI_VERSION:-0.1.22}
+# At least 0.1.23: the Chromium that older versions bring rewrites the user's font cache in a way that crashes Firefox.
+PLAYWRIGHT_CLI_VERSION=${PLAYWRIGHT_CLI_VERSION:-0.1.24}
 
 export NODE_PATH=/usr/local/lib/node_modules
 export PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright

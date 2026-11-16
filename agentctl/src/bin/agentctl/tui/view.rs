@@ -1137,7 +1137,11 @@ fn render_new_session(frame: &mut Frame, area: Rect, form: &super::app::SessionF
         .row(labeled(
             "Name",
             form.field == SessionField::Name,
-            text_input(&form.name, form.field == SessionField::Name, ""),
+            text_input(
+                &form.name,
+                form.field == SessionField::Name,
+                form.generated.as_ref().map_or("", agent::sessions::SessionName::as_str),
+            ),
         ))
         .row(labeled(
             "Model",
@@ -2485,6 +2489,24 @@ mod tests {
         draw(&mut terminal, &app);
         assert!(buffer_text(&terminal).contains("session name is invalid"));
         assert_eq!(modal_border(&terminal), valid);
+    }
+
+    #[test]
+    fn new_session_form_shows_the_generated_name_while_the_name_is_empty() {
+        let mut app = tree_app(1);
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('n'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let Some(Modal::NewSession(form)) = &app.modal else {
+            panic!("expected the NewSession modal");
+        };
+        let generated = form.generated.clone().expect("a generated name");
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).expect("test terminal");
+        draw(&mut terminal, &app);
+        let text = buffer_text(&terminal);
+        let name_line = text.lines().find(|line| line.contains("│ Name")).expect("Name row");
+        assert!(name_line.contains(generated.as_str()), "{text}");
     }
 
     #[test]

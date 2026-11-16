@@ -16,10 +16,12 @@ pub mod forward;
 pub mod microsandbox;
 pub mod platform;
 pub mod responsiveness;
+mod trim;
 
 pub use execution::{ExecutionService, ExecutionTarget, start_execution};
 pub use microsandbox::{GuestConnection, GuestDialer};
 pub use responsiveness::UNRESPONSIVE_AFTER;
+pub use trim::{TRIM_INTERVAL, Trimmer};
 
 /// What watching a guest's heartbeat found.
 enum Heartbeat {
@@ -209,6 +211,10 @@ pub trait Provider {
 
     /// Deletes a Volume, failing as in use while a sandbox mounts it.
     fn delete_volume<'a>(&'a self, id: &'a ::sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>>;
+
+    /// Reports the space on the host filesystem that holds this Provider's sandbox disks, or `None`
+    /// when it keeps them elsewhere.
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<crate::local::disk::DiskSpace>, Error>>;
 }
 
 /// Provider result retaining lifecycle information needed by dependent sessions.
@@ -237,6 +243,9 @@ pub struct AccountSetup {
     pub git_identity: Option<GitIdentity>,
     /// Lines for the agent's instructions, each with its label, such as `GitHub`.
     pub instructions: Vec<(&'static str, String)>,
+    /// For each account whose login is not kept, what the agent lacks and the command that keeps
+    /// the login.
+    pub missing_logins: Vec<String>,
 }
 
 /// A name and email Git commits as.
@@ -255,6 +264,17 @@ pub enum NestedSandboxesOutcome {
     Available,
     /// The agent prefers them, but the host cannot provide them, for the reason given.
     Unavailable(String),
+}
+
+/// How far the image's clone of the repositories it lists into the workspace got.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceClone {
+    /// The clone is running.
+    Cloning,
+    /// Every listed repository has a checkout.
+    Cloned,
+    /// A listed repository could not be cloned.
+    Failed,
 }
 
 /// Decides whether an agent's sandbox runs sandboxes of its own.
@@ -295,6 +315,10 @@ pub struct EnsureOutcome {
     pub missing_sources: Vec<String>,
     /// The skills setup placed in the harnesses' skill folders.
     pub skills: PlacedSkills,
+    /// See [`AccountSetup::missing_logins`].
+    pub missing_logins: Vec<String>,
+    /// How far the image's workspace clone got, when the image clones one.
+    pub workspace: Option<WorkspaceClone>,
     /// How far the agent's `postCreate` steps got, when it declares any.
     pub post_create: Option<PostCreateOutcome>,
 }
@@ -307,6 +331,8 @@ pub struct PlatformSetup {
     /// The skills it placed in the harnesses' skill folders, having removed those an earlier pass
     /// placed that the agent no longer declares.
     pub skills: PlacedSkills,
+    /// How far the image's workspace clone got, when the image clones one.
+    pub workspace: Option<WorkspaceClone>,
     /// How far the agent's `postCreate` steps got, when it declares any.
     pub post_create: Option<PostCreateOutcome>,
 }
@@ -448,6 +474,8 @@ impl Service {
             nested_sandboxes: outcome.nested_sandboxes,
             missing_sources: set_up.missing_sources,
             skills: set_up.skills,
+            missing_logins: outcome.accounts.missing_logins,
+            workspace: set_up.workspace,
             post_create: set_up.post_create,
         })
     }
@@ -477,6 +505,9 @@ impl Service {
 
     /// Opens the persisted materialized sandbox without lifecycle or setup effects.
     ///
+    /// It records the heartbeat it sees, so that [`Self::guard_guest`] judges the guest by the
+    /// snapshot the caller holds rather than by an older inspection.
+    ///
     /// # Errors
     ///
     /// Returns an error unless the assignment is materialized through a configured Provider.
@@ -484,7 +515,10 @@ impl Service {
         let Some(Assignment::Materialized { provider, id, .. }) = &record.agent.status.sandbox else {
             return Err(Error::Invalid("Agent has no materialized sandbox assignment".into()));
         };
-        self.provider(provider)?.open(record, id).await
+        let sandbox = self.provider(provider)?.open(record, id).await?;
+        self.responsiveness
+            .observe(sandbox.snapshot(), tokio::time::Instant::now());
+        Ok(sandbox)
     }
 
     /// Whether the sandbox's guest reported a heartbeat when last inspected.
@@ -573,6 +607,16 @@ impl Service {
             self.responsiveness.forget(id);
         }
         Ok(())
+    }
+
+    /// Reports the space on the host filesystem holding the agent's sandbox, or `None` when its
+    /// Provider keeps it elsewhere.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the agent has no Provider yet or the space cannot be read.
+    pub async fn host_disk(&self, record: &AgentRecord) -> Result<Option<crate::local::disk::DiskSpace>, Error> {
+        self.assigned_provider(record)?.host_disk().await
     }
 
     fn assigned_provider(&self, record: &AgentRecord) -> Result<&dyn Provider, Error> {
