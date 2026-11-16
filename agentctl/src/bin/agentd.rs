@@ -4,7 +4,7 @@ use agent::{
     Error,
     control_api::Server,
     control_plane::{ControlPlane, Controller, Reconciler},
-    local::home::ControlPlaneHome,
+    local::{config::DaemonConfig, home::ControlPlaneHome},
     persistence,
     sandbox::{ExecutionService, Trimmer},
     sessions::Service as SessionService,
@@ -69,10 +69,11 @@ fn run() -> Result<(), Error> {
         .with_ansi(std::io::stderr().is_terminal())
         .init();
     let home = ControlPlaneHome::resolve(arguments.home.as_deref())?;
+    let config = DaemonConfig::load(&home.config_path())?;
     let _lock = acquire_home_lock(&home)?;
     let database = persistence::Database::open(&home.path().join("agent.db"))?;
     let runtime = LocalRuntime::new()?;
-    let result = runtime.block_on(run_control_plane(home, database));
+    let result = runtime.block_on(run_control_plane(home, config, database));
     // `agentctl update` waits for agentd to exit, which waits for its blocking threads. Stopping
     // their work lets a long copy end at its next step, and work that still runs after the timeout
     // ends with the process.
@@ -161,7 +162,11 @@ async fn open_sandboxes(
     clippy::too_many_lines,
     reason = "wires every daemon subsystem explicitly, as the Control API server's dependencies are"
 )]
-async fn run_control_plane(home: ControlPlaneHome, database: persistence::Database) -> Result<(), Error> {
+async fn run_control_plane(
+    home: ControlPlaneHome,
+    config: DaemonConfig,
+    database: persistence::Database,
+) -> Result<(), Error> {
     let store = Rc::new(database.clone());
     let credentials = Rc::new(agent::harness::AuthenticationManager::new(database.clone()));
     let policy = Rc::new(agent::authorization::AgentPolicyEngine::new().with_stored_secrets(database.clone()));
@@ -178,6 +183,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     let agent_sandboxes = Rc::new(agent::sessions::AgentSandboxes::new(store.clone(), sandboxes.clone()));
     let changes = database.changes();
     let provisioning = agent::progress::ProvisioningState::new(changes.clone());
+    let host_disk = agent::control_plane::HostDisk::new(sandboxes.clone(), changes.clone());
 
     let platform_api_server = Rc::new(agent::platform_api::Server::new(
         session_reports,
@@ -225,6 +231,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
         ControlPlane::new(store.clone(), Rc::new(wakeup.clone()))
             .with_volumes(store.clone())
             .with_provisioning(provisioning)
+            .with_host_disk(host_disk.clone())
             .with_immediate_stops(immediate_stops)
             .with_bundled(definitions, home.path().to_path_buf()),
     );
@@ -277,6 +284,7 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     let mut volume_controller_task = tokio::task::spawn_local(volume_controller.run());
     let mut platform_api_task = tokio::task::spawn_local(platform_api_server.serve(platform_api_listener));
     let trimmer_task = tokio::task::spawn_local(Trimmer::new(store.clone(), sandboxes.clone()).run());
+    let host_disk_task = tokio::task::spawn_local(host_disk.run(home.config_path(), config.low_disk_threshold));
     let socket_path = home.socket_path();
 
     let result = tokio::select! {
@@ -305,9 +313,11 @@ async fn run_control_plane(home: ControlPlaneHome, database: persistence::Databa
     volume_controller_task.abort();
     platform_api_task.abort();
     trimmer_task.abort();
+    host_disk_task.abort();
     let _ = controller_task.await;
     let _ = session_controller_task.await;
     let _ = volume_controller_task.await;
     let _ = platform_api_task.await;
+    let _ = host_disk_task.await;
     result
 }

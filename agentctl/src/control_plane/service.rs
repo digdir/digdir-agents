@@ -61,6 +61,7 @@ pub struct ControlPlane {
     immediate_stops: ImmediateStops,
     volumes: Rc<dyn crate::volumes::VolumeStore>,
     pub(super) bundled: Option<super::bundled::Bundled>,
+    host_disk: Option<super::HostDisk>,
 }
 
 /// Agents whose stop ends their sandbox at once, without letting the guest shut down.
@@ -123,7 +124,15 @@ impl ControlPlane {
             immediate_stops: ImmediateStops::default(),
             volumes: Rc::new(crate::volumes::memory::InMemoryVolumeStore::new()),
             bundled: None,
+            host_disk: None,
         }
+    }
+
+    /// Shows on every agent whether the filesystem holding its disk is low on space.
+    #[must_use]
+    pub fn with_host_disk(mut self, host_disk: super::HostDisk) -> Self {
+        self.host_disk = Some(host_disk);
+        self
     }
 
     /// Runs agents from `definitions`, keeping its copies of them in `home`, agentd's home, which
@@ -609,6 +618,10 @@ impl ControlPlane {
         let progress = self.provisioning.summary(record.id);
         let mut agent = projected(record);
         agent.status.progress = progress;
+        agent
+            .status
+            .conditions
+            .extend(self.host_disk.as_ref().and_then(super::HostDisk::condition));
         agent
     }
 }

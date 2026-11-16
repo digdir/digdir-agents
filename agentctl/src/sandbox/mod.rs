@@ -605,6 +605,20 @@ impl Service {
         self.assigned_provider(record)?.host_disk().await
     }
 
+    /// Reports the space on each host filesystem holding sandbox disks, from every Provider that
+    /// keeps them on this host.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a Provider cannot read the space.
+    pub async fn host_disks(&self) -> Result<Vec<crate::local::disk::DiskSpace>, Error> {
+        let mut spaces = Vec::new();
+        for provider in &self.providers {
+            spaces.extend(provider.host_disk().await?);
+        }
+        Ok(spaces)
+    }
+
     fn assigned_provider(&self, record: &AgentRecord) -> Result<&dyn Provider, Error> {
         let assignment = record
             .agent
