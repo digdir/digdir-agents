@@ -94,11 +94,11 @@ impl MicrosandboxProvider {
         Self::builder(home.as_ref().to_path_buf()).open().await
     }
 
-    /// The folder holding the sandboxes' disks. Microsandbox's `config.json` can move it off the
-    /// Provider's home with `paths.sandboxes`, so free space is read here.
+    /// The folder holding the sandboxes' disks. It is under the Provider's home unless
+    /// Microsandbox's `config.json` moves it elsewhere with `paths.sandboxes`.
     #[must_use]
     pub fn sandboxes_directory(&self) -> PathBuf {
-        self.client.local().config().home().join("sandboxes")
+        self.client.local().sandboxes_dir()
     }
 
     /// Checks whether this host can let a sandbox run sandboxes of its own.
