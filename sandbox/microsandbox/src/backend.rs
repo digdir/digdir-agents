@@ -94,6 +94,13 @@ impl MicrosandboxProvider {
         Self::builder(home.as_ref().to_path_buf()).open().await
     }
 
+    /// The folder holding the sandboxes' disks. Microsandbox's `config.json` can move it off the
+    /// Provider's home with `paths.sandboxes`, so free space is read here.
+    #[must_use]
+    pub fn sandboxes_directory(&self) -> PathBuf {
+        self.client.local().config().home().join("sandboxes")
+    }
+
     /// Checks whether this host can let a sandbox run sandboxes of its own.
     ///
     /// [`SandboxFeature::NestedSandboxes`](sandbox::SandboxFeature) reports the same. A Microsandbox
@@ -1225,6 +1232,27 @@ mod tests {
             "no rule may allow, or a name could resolve to the gateway: {:?}",
             policy.rules
         );
+    }
+
+    // `paths.sandboxes` can move the sandboxes' disks off the Provider's home, and free space must
+    // be read where they are.
+    #[tokio::test(flavor = "local")]
+    async fn the_sandboxes_directory_follows_the_configured_path() {
+        let home = tempfile::tempdir().expect("temporary home should be created");
+        let provider_home = PathBuf::from(home.path()).join("microsandbox");
+        let elsewhere = PathBuf::from(home.path()).join("elsewhere");
+        std::fs::create_dir_all(provider_home.join("runtime")).expect("runtime home should be created");
+        std::fs::write(
+            provider_home.join("runtime/config.json"),
+            serde_json::json!({"paths": {"sandboxes": elsewhere}}).to_string(),
+        )
+        .expect("config.json should be written");
+
+        let provider = MicrosandboxProvider::open(&provider_home)
+            .await
+            .expect("Provider should open without starting a VM");
+
+        assert_eq!(provider.sandboxes_directory(), elsewhere);
     }
 
     // A persisted attachment that this build cannot enforce must never reach
