@@ -50,21 +50,21 @@ pub(crate) async fn usage(path: &Path, recorded_capacity: ByteQuantity) -> io::R
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use std::io::{Seek as _, SeekFrom, Write as _};
-
     use super::*;
-
-    const MEBIBYTE: u64 = 1024 * 1024;
 
     /// A sparse disk reports the bytes written into it as allocated, and its length as capacity.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_sparse_disk_reports_its_allocated_bytes_and_length() {
+        use std::io::Write as _;
+
+        const MEBIBYTE: u64 = 1024 * 1024;
+
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("rootfs.raw");
         let mut disk = std::fs::File::create(&path).expect("disk");
         disk.set_len(64 * MEBIBYTE).expect("sparse length");
-        disk.seek(SeekFrom::Start(8 * MEBIBYTE)).expect("seek");
+        // Written at the start, since APFS also allocates a hole before the data.
         disk.write_all(&vec![1; usize::try_from(MEBIBYTE).expect("size")])
             .expect("write");
         disk.sync_all().expect("sync");
@@ -75,7 +75,7 @@ mod tests {
 
         assert_eq!(usage.capacity_bytes(), 64 * MEBIBYTE);
         assert!(
-            (MEBIBYTE..8 * MEBIBYTE).contains(&usage.allocated_bytes()),
+            (MEBIBYTE..32 * MEBIBYTE).contains(&usage.allocated_bytes()),
             "allocated {} bytes",
             usage.allocated_bytes()
         );
