@@ -802,6 +802,14 @@ fn extract_archive(archive: &Path, destination: &Path) -> Result<(), Error> {
         let name = name
             .to_str()
             .ok_or_else(|| Error::Invalid("Agent archive contains a non-UTF-8 path".into()))?;
+        // macOS tar stores a file's extended attributes as a `._<name>` entry. Refuse it like any
+        // other entry, so an archive holds exactly the two binaries, but name the cause and the fix.
+        if name.strip_prefix("._").is_some_and(|binary| expected.contains(binary)) {
+            return Err(Error::Invalid(format!(
+                "agentctl archive entry {name:?} is macOS metadata that tar adds for extended attributes. \
+                 Pack the archive with COPYFILE_DISABLE=1 set, so tar leaves it out"
+            )));
+        }
         if !expected.contains(name) || !found.insert(name.to_owned()) || !entry.header().entry_type().is_file() {
             return Err(Error::Invalid(format!("unexpected agentctl archive entry {name:?}")));
         }
@@ -1377,6 +1385,35 @@ mod tests {
         assert!(error.to_string().contains("checksum mismatch"));
         assert!(!paths.current().exists());
         assert!(!paths.releases().exists());
+    }
+
+    #[test]
+    fn archive_with_macos_metadata_says_how_to_pack_without_it() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let mut package = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
+        let [agentctl, agentd] = binary_names();
+        for name in [format!("._{agentctl}"), agentctl, agentd] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(0);
+            header.set_mode(0o755);
+            header.set_cksum();
+            package.append_data(&mut header, name, std::io::empty()).expect("entry");
+        }
+        let archive = temporary.path().join("agent.tar.gz");
+        fs::write(
+            &archive,
+            package
+                .into_inner()
+                .and_then(flate2::write::GzEncoder::finish)
+                .expect("archive"),
+        )
+        .expect("write archive");
+        let destination = temporary.path().join("release");
+        fs::create_dir(&destination).expect("destination");
+
+        let error = extract_archive(&archive, &destination).expect_err("metadata entry");
+
+        assert!(error.to_string().contains("COPYFILE_DISABLE=1"), "{error}");
     }
 
     #[cfg(unix)]
