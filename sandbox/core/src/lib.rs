@@ -34,7 +34,7 @@ pub use progress::{
     ProgressEvent, ProgressReporter, ProgressStep, ProgressUnit, SandboxPhase, SandboxProgress, StepId,
 };
 pub use resource::{ByteQuantity, CpuQuantity, ParseQuantityError};
-pub use root_filesystem::{RootFilesystem, RootFilesystemMode, RootFilesystemModeSet};
+pub use root_filesystem::{RootFilesystem, RootFilesystemMode, RootFilesystemModeSet, RootFilesystemUsage};
 pub use service::{
     EnsureSandboxRequest, Error, ErrorKind, ResourceKind, RetentionPolicy, SandboxHandle, SandboxService, SandboxSpec,
 };

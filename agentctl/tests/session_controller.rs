@@ -189,6 +189,13 @@ impl Provider for MemoryProvider {
         })
     }
 
+    fn root_filesystem_usage<'a>(
+        &'a self,
+        id: &'a sandbox::SandboxId,
+    ) -> LocalFuture<'a, Result<sandbox::RootFilesystemUsage, Error>> {
+        Box::pin(async move { self.service.root_filesystem_usage(id).await.map_err(Error::from) })
+    }
+
     fn stop<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async move { self.service.stop(&record.sandbox_name()?).await.map_err(Error::from) })
     }

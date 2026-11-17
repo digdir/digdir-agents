@@ -235,6 +235,13 @@ impl Provider for MemoryProvider {
         })
     }
 
+    fn root_filesystem_usage<'a>(
+        &'a self,
+        id: &'a sandbox::SandboxId,
+    ) -> LocalFuture<'a, Result<sandbox::RootFilesystemUsage, Error>> {
+        Box::pin(async move { self.service.root_filesystem_usage(id).await.map_err(Error::from) })
+    }
+
     fn stop<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
         self.stops.set(self.stops.get() + 1);
         Box::pin(async move {
@@ -407,6 +414,13 @@ impl Provider for PlannedProvider {
         self.inner.open(record, id)
     }
 
+    fn root_filesystem_usage<'a>(
+        &'a self,
+        id: &'a sandbox::SandboxId,
+    ) -> LocalFuture<'a, Result<sandbox::RootFilesystemUsage, Error>> {
+        self.inner.root_filesystem_usage(id)
+    }
+
     fn stop<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
         self.inner.stop(record)
     }
@@ -475,6 +489,13 @@ impl Provider for UnsupportedProvider {
         _record: &'a AgentRecord,
         _id: &'a sandbox::SandboxId,
     ) -> LocalFuture<'a, Result<SandboxHandle, Error>> {
+        Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
+    }
+
+    fn root_filesystem_usage<'a>(
+        &'a self,
+        _id: &'a sandbox::SandboxId,
+    ) -> LocalFuture<'a, Result<sandbox::RootFilesystemUsage, Error>> {
         Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
     }
 

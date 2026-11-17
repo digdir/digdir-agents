@@ -8,8 +8,9 @@ use std::{
 use microsandbox::sandbox::{PullPolicy, SandboxModificationBuilder, SandboxStatus};
 use sandbox::progress::SandboxProgress;
 use sandbox::{
-    Error, LocalFuture, PendingOperation, Platform, ResourceKind, RootFilesystemMode, RootFilesystemModeSet, Sandbox,
-    SandboxFeature, SandboxFeatureSet, SandboxId, SandboxName, SandboxResources, SandboxState,
+    Error, LocalFuture, PendingOperation, Platform, ResourceKind, RootFilesystemMode, RootFilesystemModeSet,
+    RootFilesystemUsage, Sandbox, SandboxFeature, SandboxFeatureSet, SandboxId, SandboxName, SandboxResources,
+    SandboxState,
     backend::{CreateSandboxRequest, SandboxBackend, SandboxBackendCapabilities},
     execution, file_transfer,
     mount::{Mount, MountKind, MountKindSet},
@@ -25,7 +26,7 @@ use crate::{
     heartbeat,
     image::MicrosandboxImageBackend,
     image_cache::ImageCache,
-    network_endpoint, platform,
+    network_endpoint, platform, root_disk,
     state::{SandboxRecord, StateStore},
 };
 
@@ -306,13 +307,14 @@ impl MicrosandboxProvider {
         })
     }
 
+    /// Host-side directory the runtime keeps a sandbox's disks, logs and guest state in.
+    fn runtime_directory(&self, runtime_name: &str) -> PathBuf {
+        self.client.local().sandboxes_dir().join(runtime_name)
+    }
+
     /// Host-side directory the runtime shares with its guest as `/.msb`.
     fn guest_directory(&self, runtime_name: &str) -> PathBuf {
-        self.client
-            .local()
-            .sandboxes_dir()
-            .join(runtime_name)
-            .join("guest-state")
+        self.runtime_directory(runtime_name).join("guest-state")
     }
 
     async fn update_sandbox_resources(
@@ -796,6 +798,20 @@ impl SandboxBackend for MicrosandboxProvider {
         Box::pin(async move {
             let record = self.state.sandbox_by_id(id).await?;
             self.inspect_record(&record).await
+        })
+    }
+
+    fn root_filesystem_usage<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<RootFilesystemUsage, Error>> {
+        Box::pin(async move {
+            let record = self.state.sandbox_by_id(id).await?;
+            let root_filesystem = record.resources.root_filesystem();
+            let directory = self.runtime_directory(&record.runtime_name);
+            let path = root_disk::path(&directory, root_filesystem.mode()).ok_or_else(|| {
+                error::backend(format!("unsupported root filesystem mode {:?}", root_filesystem.mode()))
+            })?;
+            root_disk::usage(&path, root_filesystem.capacity())
+                .await
+                .map_err(|source| error::io("measure Microsandbox root disk", source))
         })
     }
 

@@ -19,6 +19,7 @@ mod install_lease;
 mod network_backend;
 mod network_endpoint;
 mod platform;
+mod root_disk;
 mod state;
 mod volumes;
 

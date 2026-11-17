@@ -1266,6 +1266,11 @@ pub struct Status {
     /// onto API responses from the stored agent record; stores scrub it, so it is never persisted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<MountedVolume>,
+    /// The host storage the sandbox's root filesystem takes, measured for each API response that
+    /// lists or gets the agent, so it is current for a stopped agent too. Stores scrub it, so it
+    /// is never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_filesystem: Option<::sandbox::RootFilesystemUsage>,
 }
 
 /// The revision of a volume an agent mounts, chosen when its sandbox is created.
@@ -1282,7 +1287,8 @@ pub struct MountedVolume {
 }
 
 impl Status {
-    /// Creates reconciler-observed state; progress, provenance and volumes stay API-projected.
+    /// Creates reconciler-observed state; progress, provenance, volumes and root filesystem usage stay
+    /// API-projected.
     #[must_use]
     pub const fn observed(
         observed_generation: u64,
@@ -1301,6 +1307,7 @@ impl Status {
             lifetime: None,
             bindings: BTreeMap::new(),
             volumes: Vec::new(),
+            root_filesystem: None,
         }
     }
 
@@ -1320,6 +1327,7 @@ impl Status {
         self.lifetime = None;
         self.bindings.clear();
         self.volumes.clear();
+        self.root_filesystem = None;
         self.conditions
             .retain(|condition| condition.kind != Condition::HOST_DISK_LOW);
     }
@@ -1336,6 +1344,7 @@ impl Status {
             && self.lifetime.is_none()
             && self.bindings.is_empty()
             && self.volumes.is_empty()
+            && self.root_filesystem.is_none()
     }
 
     /// Carries each condition's transition time forward from `previous`, the

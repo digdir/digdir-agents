@@ -11,8 +11,8 @@ use uuid::Uuid;
 pub use crate::feature::SandboxBackendCapabilities;
 
 use crate::{
-    Error, Hostname, PendingOperation, Platform, RootFilesystem, SandboxName, SandboxPath, execution, file_transfer,
-    image,
+    Error, Hostname, PendingOperation, Platform, RootFilesystem, RootFilesystemUsage, SandboxName, SandboxPath,
+    execution, file_transfer, image,
     init::InitSystem,
     mount::Mount,
     network,
@@ -234,6 +234,10 @@ pub trait SandboxBackend {
 
     /// Inspects a sandbox by identifier.
     fn inspect<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<Sandbox, Error>>;
+
+    /// Measures the host storage a sandbox's writable root filesystem takes, whether it runs or
+    /// not. Measuring is cheap enough to do for each request, so callers need not keep the result.
+    fn root_filesystem_usage<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<RootFilesystemUsage, Error>>;
 
     /// Starts a sandbox.
     fn start<'a>(&'a self, id: &'a SandboxId) -> PendingOperation<'a, ()>;

@@ -91,3 +91,38 @@ impl RootFilesystem {
         self.mode
     }
 }
+
+/// Host storage taken by a sandbox's writable root filesystem, as its Backend measured it.
+///
+/// Allocated bytes are what the host filesystem charges to the root filesystem's files. Some of
+/// them may be shared with other files, such as the Image a root filesystem was cloned from
+/// through a reflink, so deleting the sandbox can free less than this.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RootFilesystemUsage {
+    allocated_bytes: u64,
+    capacity_bytes: u64,
+}
+
+impl RootFilesystemUsage {
+    /// Creates a measurement of `allocated_bytes` on the host out of `capacity_bytes`.
+    #[must_use]
+    pub const fn new(allocated_bytes: u64, capacity_bytes: u64) -> Self {
+        Self {
+            allocated_bytes,
+            capacity_bytes,
+        }
+    }
+
+    /// Returns the bytes the host has allocated to the root filesystem.
+    #[must_use]
+    pub const fn allocated_bytes(self) -> u64 {
+        self.allocated_bytes
+    }
+
+    /// Returns the bytes the root filesystem can grow to.
+    #[must_use]
+    pub const fn capacity_bytes(self) -> u64 {
+        self.capacity_bytes
+    }
+}
