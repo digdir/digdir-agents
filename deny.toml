@@ -37,6 +37,11 @@ ignore = [
   # microsandbox/ in agentd's home. rusqlite stays on the libsqlite3-sys the Microsandbox fork resolves, so the fixed
   # 0.39 waits for the fork to move. Moving both removes this entry.
   { id = "RUSTSEC-2026-0459", reason = "SQLite -wal page size; agentd and Microsandbox open only their own databases in agentd's home" },
+  # chrono is unmaintained. Its maintainer recommends jiff. Microsandbox keeps its timestamps in it and enables it in
+  # sea-orm and sqlx, and oci-client requires it for the image config; the advisory reports no vulnerability. Microsandbox
+  # and oci-client moving to jiff or time removes this entry, tracked in
+  # https://github.com/digdir/digdir-agents/issues/541.
+  { id = "RUSTSEC-2026-0543", reason = "unmaintained chrono used by Microsandbox and oci-client; no known vulnerability or safe upgrade" },
 ]
 
 [sources]
