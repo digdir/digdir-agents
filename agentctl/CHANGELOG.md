@@ -32,6 +32,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ### Fixed
 
+- On macOS, running the install command again repairs an agentctl that macOS kills on every command, printing only `killed` with exit status 137. ([install](https://github.com/digdir/digdir-agents/tree/main/agentctl#install), [#537](https://github.com/digdir/digdir-agents/issues/537))
 - When the drive holding your agents is full, an agent that fails says so, as `HostDiskFull` in `agentctl get` and with the free space in `agentctl describe` and `agentctl tui`, instead of only an I/O error such as `os error 5` or `os error 112`. ([#415](https://github.com/digdir/digdir-agents/issues/415))
 - An agent running without its GitHub login, or without the repositories its image clones, says so: `agentctl apply --wait` warns, `agentctl describe` shows `Accounts` and `Workspace` conditions, and `agentctl tui` shows a yellow `Ready`, naming `agentctl github login NAME`. Images on the next base image clone public repositories without a login. ([#481](https://github.com/digdir/digdir-agents/issues/481))
 - `agentctl turns`, and the recent turns in `agentctl tui`, show the questions and options a Claude Code session asks with `AskUserQuestion`, instead of only the tool's name, and `-o json` carries them as `questions` on the tool call. ([#484](https://github.com/digdir/digdir-agents/issues/484))

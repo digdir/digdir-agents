@@ -279,8 +279,7 @@ pub async fn stage_release(paths: &InstallPaths, release: Release) -> Result<Sta
     let final_path = paths.releases().join(release.directory_name());
     {
         let _lock = paths.lock().await?;
-        if final_path.exists() {
-            validate_release_directory(&final_path, &release.version)?;
+        if final_path.exists() && validate_release_directory(&final_path, &release.version).is_ok() {
             return Ok(StagedRelease {
                 release,
                 path: final_path,
@@ -320,6 +319,11 @@ pub async fn stage_release(paths: &InstallPaths, release: Release) -> Result<Sta
 
 /// Validates and publishes an extracted package while serializing release ownership.
 ///
+/// A release that is already published is kept while it runs. One that does not run gets its binaries
+/// replaced by new files. macOS can refuse to run a file whose contents were written in place while a
+/// process had it open, even with the same bytes, until every such process exits. A new file is a
+/// different file to the kernel, so it runs while those processes keep the old one.
+///
 /// # Errors
 ///
 /// Returns an error when the package is invalid or another update holds the install lock.
@@ -329,8 +333,8 @@ pub async fn publish_release(paths: &InstallPaths, source: &Path, version: &str)
     fs::create_dir_all(paths.releases())?;
     crate::local::home::secure_directory(&paths.releases())?;
     let final_path = paths.releases().join(format!("{version}-{}", package_target()));
-    if final_path.exists() {
-        validate_release_directory(&final_path, version)?;
+    let published = final_path.exists();
+    if published && validate_release_directory(&final_path, version).is_ok() {
         return Ok(final_path);
     }
     let staging = tempfile::Builder::new()
@@ -340,6 +344,16 @@ pub async fn publish_release(paths: &InstallPaths, source: &Path, version: &str)
         fs::copy(source.join(&binary), staging.path().join(binary))?;
     }
     validate_release_directory(staging.path(), version)?;
+    if published {
+        // Each rename swaps in a new file, so a launch sees either the old or the new binary.
+        for binary in binary_names() {
+            fs::rename(staging.path().join(&binary), final_path.join(&binary))?;
+        }
+        #[cfg(unix)]
+        sync_directory(&final_path)?;
+        validate_release_directory(&final_path, version)?;
+        return Ok(final_path);
+    }
     #[cfg(windows)]
     let published = rename_release(staging.path(), &final_path).await;
     #[cfg(not(windows))]
@@ -1431,5 +1445,66 @@ mod tests {
             managed_release_version(&release).expect("managed version"),
             "v2.3.4-preview.1"
         );
+    }
+
+    #[cfg(unix)]
+    fn write_binary(path: &Path, script: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::write(path, format!("#!/bin/sh\n{script}\n")).expect("binary");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("executable");
+    }
+
+    #[cfg(unix)]
+    fn write_release(path: &Path, version: &str) {
+        fs::create_dir_all(path).expect("release directory");
+        for name in BINARY_STEMS {
+            write_binary(&path.join(name), &format!("echo {name} {version}"));
+        }
+    }
+
+    #[cfg(unix)]
+    fn inode(path: &Path) -> u64 {
+        use std::os::unix::fs::MetadataExt as _;
+        fs::metadata(path).expect("metadata").ino()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "local")]
+    async fn publishing_replaces_a_published_release_that_does_not_run() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let paths = InstallPaths::new(temporary.path().join("install"), temporary.path().join("bin")).expect("paths");
+        let source = temporary.path().join("source");
+        write_release(&source, "v1.0.0");
+        let published = paths.releases().join(format!("v1.0.0-{}", package_target()));
+        write_release(&published, "v1.0.0");
+        // As macOS does with a file it refuses to run.
+        write_binary(&published.join("agentctl"), "kill -KILL $$");
+        let refused = inode(&published.join("agentctl"));
+
+        let path = publish_release(&paths, &source, "v1.0.0").await.expect("published");
+
+        assert_eq!(path, published);
+        validate_release_directory(&published, "v1.0.0").expect("the release runs");
+        assert_ne!(
+            inode(&published.join("agentctl")),
+            refused,
+            "a new file, not new contents"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "local")]
+    async fn publishing_keeps_a_published_release_that_runs() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let paths = InstallPaths::new(temporary.path().join("install"), temporary.path().join("bin")).expect("paths");
+        let source = temporary.path().join("source");
+        write_release(&source, "v1.0.0");
+        let published = paths.releases().join(format!("v1.0.0-{}", package_target()));
+        write_release(&published, "v1.0.0");
+        let files = BINARY_STEMS.map(|name| inode(&published.join(name)));
+
+        publish_release(&paths, &source, "v1.0.0").await.expect("published");
+
+        assert_eq!(BINARY_STEMS.map(|name| inode(&published.join(name))), files);
     }
 }

@@ -235,4 +235,14 @@ EOF
   grep -q '^  "phase": "complete"$' "${AGENT_INSTALL_ROOT}/update.json"
   grep -q '^  "previousRelease": null,$' "${AGENT_INSTALL_ROOT}/update.json"
   "${agentctl}" --home "${AGENT_HOME}" get agents
+
+  # The installer installs a release again when it is installed but does not start, as
+  # happens when macOS refuses to run the file.
+  release="$(readlink "${AGENT_INSTALL_ROOT}/current")"
+  rm "${release}/agentctl"
+  printf '#!/bin/sh\nkill -KILL $$\n' > "${release}/agentctl"
+  chmod 0755 "${release}/agentctl"
+  ./agentctl/install.sh
+  test "$("${agentctl}" --version)" = "agentctl ${old_version}"
+  "${agentctl}" --home "${AGENT_HOME}" get agents
 fi
