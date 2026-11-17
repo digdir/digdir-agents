@@ -1379,6 +1379,41 @@ mod tests {
         assert!(!paths.releases().exists());
     }
 
+    #[test]
+    fn archive_with_macos_metadata_is_refused_by_name() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let archive = temporary.path().join("agent.tar.gz");
+        let metadata = format!("._{}", binary_names()[0]);
+        let mut package = tar::Builder::new(flate2::write::GzEncoder::new(
+            File::create(&archive).expect("archive"),
+            flate2::Compression::fast(),
+        ));
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o755);
+        header.set_cksum();
+        package
+            .append_data(&mut header, &metadata, std::io::empty())
+            .expect("entry");
+        package
+            .into_inner()
+            .expect("archive")
+            .finish()
+            .expect("compressed archive");
+        let destination = temporary.path().join("release");
+        fs::create_dir(&destination).expect("destination");
+
+        let error = extract_archive(&archive, &destination)
+            .expect_err("macOS metadata")
+            .to_string();
+
+        // The error leads to the cause and the remedy: which entry, what it is and how to pack without it.
+        assert!(error.contains(&format!("{metadata:?}")), "names the entry: {error}");
+        assert!(error.contains("macOS metadata"), "says it is macOS metadata: {error}");
+        assert!(error.contains("COPYFILE_DISABLE=1"), "names the remedy: {error}");
+        assert!(!destination.join(&metadata).exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn activation_and_pruning_use_canonical_release_paths() {
