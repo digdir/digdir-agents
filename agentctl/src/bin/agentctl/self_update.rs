@@ -291,11 +291,14 @@ async fn complete(completion: Completion, home: &ControlPlaneHome) -> CommandRes
     drop(home_lock);
 
     println!("Start and verify target daemon");
-    let start_target = || start_daemon(&target_release, home);
     if !target_ready(&client, home, &target_version).await {
-        start_target()?;
+        start_daemon(&target_release, home)?;
     }
-    verify_target(&client, home, &target_version, start_target).await?;
+    verify_target(&client, home, &target_version, |free_home| {
+        drop(free_home);
+        start_daemon(&target_release, home)
+    })
+    .await?;
     journal.advance(&paths, UpdatePhase::Complete)?;
     upgrade::prune_releases(&paths, previous_release.as_deref())?;
     println!("Agent updated to {target_version}");
@@ -415,11 +418,16 @@ fn start_daemon(release: &Path, home: &ControlPlaneHome) -> Result<(), Error> {
 /// An agentd that a command started from the replaced release can take the home before the
 /// target does, so that the target gives up. That agentd exits once it reads the session relaunch
 /// marker, which names the target, so the target is started again whenever nothing holds the home.
+///
+/// `start_target` gets the lock that found the home free, so a target that takes the home in this
+/// process keeps that lock rather than locking it again. A child that another thread is starting
+/// holds the files this process has open until it runs its program, so a lock dropped meanwhile
+/// stays held.
 async fn verify_target(
     client: &Client,
     home: &ControlPlaneHome,
     target_version: &str,
-    start_target: impl Fn() -> Result<(), Error>,
+    start_target: impl Fn(Lock) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let deadline = tokio::time::Instant::now() + TARGET_VERIFY_TIMEOUT;
     let mut next_start = tokio::time::Instant::now() + TARGET_RESTART_INTERVAL;
@@ -429,9 +437,8 @@ async fn verify_target(
         }
         if tokio::time::Instant::now() >= next_start {
             next_start = tokio::time::Instant::now() + TARGET_RESTART_INTERVAL;
-            let home_free = home.acquire_lock().is_ok();
-            if home_free {
-                start_target()?;
+            if let Ok(free_home) = home.acquire_lock() {
+                start_target(free_home)?;
             }
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -640,9 +647,9 @@ mod tests {
         let client = Client::new(std::rc::Rc::new(target));
         let starts = std::cell::Cell::new(0);
 
-        verify_target(&client, &home, "v2.0.0", || {
+        verify_target(&client, &home, "v2.0.0", |free_home| {
             starts.set(starts.get() + 1);
-            *target_home.borrow_mut() = Some(home.acquire_lock()?);
+            *target_home.borrow_mut() = Some(free_home);
             Ok(())
         })
         .await
