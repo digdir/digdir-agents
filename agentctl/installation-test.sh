@@ -69,6 +69,11 @@ if [ -f "${binary_directory}/agentctl.exe" ]; then
 fi
 mkdir "${target_binaries}"
 cp "${binary_directory}/agentctl${suffix}" "${binary_directory}/agentd${suffix}" "${target_binaries}/"
+# Binaries built on a developer's Mac carry extended attributes, which those built on a CI runner do not. tar on
+# macOS stores them as extra archive entries unless package.sh prevents it, and the updater refuses such an archive.
+if [ "$(uname -s)" = "Darwin" ]; then
+  xattr -w no.digdir.agentctl.installation-test 1 "${target_binaries}/agentctl" "${target_binaries}/agentd"
+fi
 ./agentctl/package.sh "${target_archive}" "${target_binaries}"
 
 if [ "${RUNNER_OS:-}" = "Windows" ]; then
