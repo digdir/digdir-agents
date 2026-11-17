@@ -5,6 +5,15 @@ Follow [CONTRIBUTING.md](CONTRIBUTING.md).
 - Read the code, not the docs, to learn how something works.
 - Run `make fmt lint build test` before reporting a change complete.
 - Before pushing to a pull request's branch, fetch its base branch and rebase on it.
+- Before you start on an issue, and again right before you open a pull request, look for pull requests already made
+  for it, so you build on or review them instead of opening a parallel one. Others may be on it in a draft. List the
+  pull requests linked to the issue, drafts included, with `gh issue view N --json closedByPullRequestsReferences`,
+  since `gh issue view --comments` does not show them. Then find the ones that only mention it with
+  `gh pr list --state open --search "N in:body,title"`.
+- In the description of a pull request for issue N, write `Closes #N`, or `Part of #N` when it solves only part of
+  the issue, so merging it does not close the issue. GitHub links a pull request to its issue only from a closing
+  keyword in the description, not from commit messages, and that link is how others find the pull request from the
+  issue. After `gh pr create` or `gh pr edit`, check the link with the first command above.
 
 ## Writing
 
