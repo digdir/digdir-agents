@@ -802,6 +802,13 @@ fn extract_archive(archive: &Path, destination: &Path) -> Result<(), Error> {
         let name = name
             .to_str()
             .ok_or_else(|| Error::Invalid("Agent archive contains a non-UTF-8 path".into()))?;
+        // Refused like any other extra entry, but named, since the generic message does not lead to the cause.
+        if name.strip_prefix("._").is_some_and(|binary| expected.contains(binary)) {
+            return Err(Error::Invalid(format!(
+                "agentctl archive entry {name:?} is macOS metadata (an AppleDouble entry), which tar adds for a file \
+                 with extended attributes. Pack the archive without it, such as with COPYFILE_DISABLE=1 set for tar"
+            )));
+        }
         if !expected.contains(name) || !found.insert(name.to_owned()) || !entry.header().entry_type().is_file() {
             return Err(Error::Invalid(format!("unexpected agentctl archive entry {name:?}")));
         }
