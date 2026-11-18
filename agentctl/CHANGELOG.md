@@ -13,6 +13,10 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ## [Unreleased]
 
+### Added
+
+- `agentctl tui` shows how much host disk each agent's root filesystem takes out of its capacity in the agent's status panel, such as `Disk: 12Gi/100Gi`, and the free space on the host's disk in the status line, in yellow while it is low. ([#228](https://github.com/digdir/digdir-agents/issues/228))
+
 ### Fixed
 
 - On macOS and Windows, the disk file of an agent with a `direct` root filesystem shrinks after the agent frees space also when its image runs as another user than root, with a `sudo` that asks for no password, as the base images do. In 0.1.0-preview.15 it never did, and `agentd.log` warned `FITRIM ioctl failed: Operation not permitted` every 15 minutes. ([#547](https://github.com/digdir/digdir-agents/pull/547))

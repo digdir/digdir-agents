@@ -15,7 +15,9 @@ How little free space on the host filesystem holding the agents' disks makes `ag
 there and grows as the agent writes, so they all fill it together. That filesystem is the one holding `agentd`'s home,
 unless Microsandbox's `config.json` in `microsandbox/runtime` in the home moves the disks elsewhere with
 `paths.sandboxes`. Below the threshold, every agent has the condition `HostDiskLow=True`, whose message says how much
-is free. `agentctl get`, `agentctl describe` and `agentctl tui` show it until there is enough space again.
+is free. `agentctl get`, `agentctl describe` and `agentctl tui` show it until there is enough space again. The status
+line of `agentctl tui` shows the free space there once `agentd` has measured it, and turns yellow below the
+threshold.
 
 Give a share of the filesystem, such as `"5%"` or `"2.5%"`, or a size, as a manifest gives one, such as `"20Gi"`. The
 default is `"5%"`.

@@ -14,6 +14,7 @@ use super::app::{
     harness_label,
 };
 use super::open::{MenuEntry, OpenMenu, OpenTarget};
+use crate::format;
 
 /// Background of the selected row; without color it is drawn reversed instead.
 const SELECTION: Color = Color::Rgb(52, 58, 70);
@@ -278,6 +279,23 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App, hit_map: &mut HitMap)
             format!(" · opening {} on {agent}…", target.name()),
             Style::new().fg(Color::Cyan),
         ));
+    }
+    // Last, so a narrow header cuts the reading rather than the feedback on an operation.
+    if let Some(space) = app.host_disk {
+        let free = format!(
+            "{} free of {}",
+            format::approximate_bytes(space.available),
+            format::approximate_bytes(space.total)
+        );
+        // agentd decides what is low, by the threshold it is configured with, and every agent says so.
+        spans.push(if format::host_disk_low(&app.agents).is_some() {
+            Span::styled(
+                format!(" · disk low: {free}"),
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(format!(" · disk {free}"), Style::new().fg(Color::DarkGray))
+        });
     }
     frame.render_widget(Line::from(spans), area);
 }
@@ -1696,6 +1714,58 @@ mod tests {
             "{}",
             buffer_text(&terminal)
         );
+    }
+
+    #[test]
+    fn the_status_line_shows_the_free_space_on_the_host_disk_and_when_it_is_low() {
+        const GIB: u64 = 1 << 30;
+        let mut app = tree_app(1);
+        let mut terminal = Terminal::new(TestBackend::new(120, 12)).expect("test terminal");
+        draw(&mut terminal, &app);
+        assert!(!buffer_text(&terminal).contains("disk"), "{}", buffer_text(&terminal));
+
+        app.host_disk = Some(agent::local::disk::DiskSpace {
+            available: 400 * GIB,
+            total: 1_000 * GIB,
+        });
+        draw(&mut terminal, &app);
+        let header = buffer_text(&terminal).lines().next().unwrap_or_default().to_owned();
+        assert!(header.contains("· disk 400Gi free of 1000Gi"), "{header}");
+
+        let mut agents = app.agents.clone();
+        for agent in &mut agents {
+            agent.status.conditions.push(agent::Condition {
+                kind: agent::Condition::HOST_DISK_LOW.into(),
+                status: agent::ConditionStatus::True,
+                reason: agent::Condition::REASON_BELOW_THRESHOLD.into(),
+                message: String::new(),
+                last_transition_time: None,
+            });
+        }
+        app.apply_snapshot(agents, Vec::new());
+        app.host_disk = Some(agent::local::disk::DiskSpace {
+            available: 20 * GIB,
+            total: 1_000 * GIB,
+        });
+        draw(&mut terminal, &app);
+        let header = buffer_text(&terminal).lines().next().unwrap_or_default().to_owned();
+        assert!(header.contains("· disk low: 20Gi free of 1000Gi"), "{header}");
+    }
+
+    #[test]
+    fn the_status_line_keeps_the_feedback_on_an_operation_ahead_of_the_disk_reading() {
+        const GIB: u64 = 1 << 30;
+        let mut app = tree_app(1);
+        app.host_disk = Some(agent::local::disk::DiskSpace {
+            available: 94 * GIB,
+            total: 157 * GIB,
+        });
+        app.prompting = 1;
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).expect("test terminal");
+        draw(&mut terminal, &app);
+        let header = buffer_text(&terminal).lines().next().unwrap_or_default().to_owned();
+        let prompt = header.find("sending prompt").unwrap_or_else(|| panic!("{header}"));
+        assert!(header.find("disk").is_none_or(|disk| disk > prompt), "{header}");
     }
 
     fn tree_app(count: usize) -> App {

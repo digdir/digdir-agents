@@ -12,7 +12,8 @@ const FULL_BELOW_BYTES: u64 = 1 << 30;
 const FULL_BELOW_PERCENT: u64 = 1;
 
 /// The space on one host filesystem, in bytes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiskSpace {
     /// What agentd may still write. Space the filesystem keeps for the system is not in it.
     pub available: u64,

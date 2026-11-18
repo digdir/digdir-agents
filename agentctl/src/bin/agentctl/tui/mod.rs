@@ -201,6 +201,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                 forwards.prune(&resources.agents);
                 app.set_volumes(resources.volumes);
                 app.ephemeral_agents = resources.ephemeral_agents;
+                app.host_disk = resources.host_disk;
                 app.apply_snapshot(resources.agents, resources.sessions);
                 continue;
             }
