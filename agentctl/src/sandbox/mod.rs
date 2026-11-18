@@ -636,6 +636,45 @@ impl Service {
         Ok(spaces)
     }
 
+    /// Reports, for each host filesystem holding sandbox disks, its space and the room the root
+    /// disks of `records` on it can still grow into: each one's capacity less what the host has
+    /// already allocated to it. An agent without a sandbox yet counts as the Provider it would get
+    /// and its whole manifest capacity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a Provider cannot read the space or a disk cannot be measured, since
+    /// counting that disk at its whole capacity could warn of growth it no longer has room for.
+    pub async fn root_disk_room(
+        &self,
+        records: &[AgentRecord],
+    ) -> Result<Vec<(crate::local::disk::DiskSpace, u64)>, Error> {
+        let mut rooms = Vec::new();
+        for provider in &self.providers {
+            let Some(space) = provider.host_disk().await? else {
+                continue;
+            };
+            let mut room = 0_u64;
+            for record in records {
+                // An agent no Provider supports never gets a disk.
+                let assigned = match &record.agent.status.sandbox {
+                    Some(assignment) => Some(assignment.provider().clone()),
+                    None => self.resolve(record).await.ok(),
+                };
+                if assigned.as_ref() != Some(provider.id()) {
+                    continue;
+                }
+                let usage = self.root_filesystem_usage(record).await?;
+                room = room.saturating_add(usage.map_or_else(
+                    || record.agent.spec.sandbox.resources.root_filesystem.capacity().bytes(),
+                    |usage| usage.capacity_bytes().saturating_sub(usage.allocated_bytes()),
+                ));
+            }
+            rooms.push((space, room));
+        }
+        Ok(rooms)
+    }
+
     fn assigned_provider(&self, record: &AgentRecord) -> Result<&dyn Provider, Error> {
         let assignment = record
             .agent

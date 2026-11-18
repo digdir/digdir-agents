@@ -129,3 +129,22 @@ impl HostDisk {
         }
     }
 }
+
+/// The warning `apply` gives when `room`, what the root disks on the filesystem with `space` can
+/// still grow into, is more than it has free. Disks may never fill to their capacity, so it is
+/// advice rather than a refusal, but if they do, every agent on the filesystem fails its writes.
+#[must_use]
+pub(super) fn overcommitted(space: DiskSpace, room: u64) -> Option<Condition> {
+    (room > space.available).then(|| Condition {
+        kind: Condition::HOST_DISK_OVERCOMMITTED.into(),
+        status: ConditionStatus::True,
+        reason: Condition::REASON_CAPACITY_OVER_FREE_SPACE.into(),
+        message: format!(
+            "the agents' root disks can grow by another {} up to their capacity, more than the {} free on the \
+             filesystem holding them",
+            bytes(room),
+            bytes(space.available),
+        ),
+        last_transition_time: None,
+    })
+}

@@ -336,6 +336,19 @@ struct PlannedProvider {
     failures: RefCell<VecDeque<PlannedFailure>>,
     /// The space it reports on the host filesystem holding its sandboxes.
     disk: Cell<Option<DiskSpace>>,
+    /// How it answers when asked to measure a root disk.
+    measurement: Cell<Measurement>,
+}
+
+/// How [`PlannedProvider`] answers when asked to measure a root disk.
+#[derive(Clone, Copy, Default)]
+enum Measurement {
+    /// As its backend measures it.
+    #[default]
+    Measured,
+    Failing,
+    /// Never, as a stalled filesystem would.
+    Hanging,
 }
 
 impl PlannedProvider {
@@ -344,6 +357,7 @@ impl PlannedProvider {
             inner: MemoryProvider::new(backend),
             failures: RefCell::new(failures.into_iter().collect()),
             disk: Cell::new(None),
+            measurement: Cell::new(Measurement::default()),
         }
     }
 
@@ -418,7 +432,13 @@ impl Provider for PlannedProvider {
         &'a self,
         id: &'a sandbox::SandboxId,
     ) -> LocalFuture<'a, Result<sandbox::RootFilesystemUsage, Error>> {
-        self.inner.root_filesystem_usage(id)
+        match self.measurement.get() {
+            Measurement::Measured => self.inner.root_filesystem_usage(id),
+            Measurement::Failing => {
+                Box::pin(async { Err(Error::Sandbox(sandbox::Error::Backend("cannot read the disk".into()))) })
+            }
+            Measurement::Hanging => Box::pin(std::future::pending()),
+        }
     }
 
     fn stop<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
@@ -628,6 +648,148 @@ async fn apply_stores_desired_state_without_running_inline() {
     );
     assert_eq!(fixture.backend.count(), 0);
     assert_eq!(applied.status.conditions, []);
+}
+
+/// `apply` warns once the room the agents' root disks can still grow into, their capacity less
+/// what the host already allocated to them, is more than the filesystem holding them has free.
+#[tokio::test(flavor = "local")]
+async fn apply_warns_when_the_root_disks_can_outgrow_the_free_space() {
+    const GIB: u64 = 1 << 30;
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let provider = Rc::new(PlannedProvider::new(Rc::new(sandbox_memory::Provider::new()), []));
+    let sandboxes = sandbox_service(provider.clone());
+    let control_plane =
+        ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default())).with_sandboxes(sandboxes.clone());
+    let reconciler = Reconciler::new(store.clone(), sandboxes, ProvisioningState::default());
+    let free = |available: u64| {
+        provider.disk.set(Some(DiskSpace {
+            available,
+            total: 100 * GIB,
+        }));
+    };
+    let overcommitted = |agent: &agent::Agent| {
+        agent
+            .status
+            .conditions
+            .iter()
+            .find(|condition| condition.kind == Condition::HOST_DISK_OVERCOMMITTED)
+            .cloned()
+    };
+
+    free(10 * GIB);
+    let first = control_plane
+        .apply(with_direct_root(apply_request("first")))
+        .await
+        .expect("apply");
+    assert_eq!(overcommitted(&first), None, "4 GiB can grow into 10 GiB free");
+    // Its sandbox exists now, so its disk is measured rather than taken from the manifest.
+    reconciler
+        .reconcile(store.get_by_name("first").await.expect("stored agent").id)
+        .await
+        .expect("reconcile");
+    let second = control_plane
+        .apply(with_direct_root(apply_request("second")))
+        .await
+        .expect("apply");
+    assert_eq!(overcommitted(&second), None, "8 GiB can grow into 10 GiB free");
+
+    free(6 * GIB);
+    let again = control_plane
+        .apply(with_direct_root(apply_request("second")))
+        .await
+        .expect("apply");
+    let warning = overcommitted(&again).expect("8 GiB cannot grow into 6 GiB free");
+    assert_eq!(warning.status, ConditionStatus::True);
+    assert!(
+        warning.message.contains("8.0 GiB") && warning.message.contains("6.0 GiB"),
+        "says how much the disks can grow and what is free: {}",
+        warning.message
+    );
+    assert!(
+        Condition::any_ready(&control_plane.get("first").await.expect("get agent").status.conditions),
+        "it is advice, and the agents run"
+    );
+    assert!(
+        overcommitted(&store.get_by_name("second").await.expect("stored agent").agent).is_none(),
+        "the warning is not stored"
+    );
+}
+
+/// Applies two agents of 4 GiB each, with sandboxes, beside 6 GiB free, so that `apply` warns
+/// while their disks can be measured, and returns what [`PlannedProvider`] measures them with.
+async fn overcommitted_fixture() -> (ControlPlane, Rc<PlannedProvider>) {
+    const GIB: u64 = 1 << 30;
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let provider = Rc::new(
+        PlannedProvider::new(Rc::new(sandbox_memory::Provider::new()), []).with_host_disk(DiskSpace {
+            available: 6 * GIB,
+            total: 100 * GIB,
+        }),
+    );
+    let sandboxes = sandbox_service(provider.clone());
+    let control_plane =
+        ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default())).with_sandboxes(sandboxes.clone());
+    let reconciler = Reconciler::new(store.clone(), sandboxes, ProvisioningState::default());
+    for name in ["first", "second"] {
+        control_plane
+            .apply(with_direct_root(apply_request(name)))
+            .await
+            .expect("apply");
+        reconciler
+            .reconcile(store.get_by_name(name).await.expect("stored agent").id)
+            .await
+            .expect("reconcile");
+    }
+    let measured = control_plane
+        .apply(with_direct_root(apply_request("second")))
+        .await
+        .expect("apply");
+    assert!(
+        overcommit_warning(&measured).is_some(),
+        "8 GiB cannot grow into 6 GiB free"
+    );
+    (control_plane, provider)
+}
+
+fn overcommit_warning(agent: &agent::Agent) -> Option<&Condition> {
+    agent
+        .status
+        .conditions
+        .iter()
+        .find(|condition| condition.kind == Condition::HOST_DISK_OVERCOMMITTED)
+}
+
+/// A disk `apply` cannot measure may have grown close to its capacity already, so counting it at
+/// its whole capacity could warn of growth there is no room for. `apply` leaves the warning out.
+#[tokio::test(flavor = "local")]
+async fn apply_leaves_the_overcommit_warning_out_when_a_disk_cannot_be_measured() {
+    let (control_plane, provider) = overcommitted_fixture().await;
+
+    provider.measurement.set(Measurement::Failing);
+    let applied = control_plane
+        .apply(with_direct_root(apply_request("second")))
+        .await
+        .expect("apply");
+
+    assert_eq!(overcommit_warning(&applied), None);
+}
+
+/// The agent is stored before its disks are measured, so a filesystem that stalls the measurement
+/// costs `apply` the warning rather than its response.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn apply_answers_without_the_overcommit_warning_when_measuring_stalls() {
+    let (control_plane, provider) = overcommitted_fixture().await;
+
+    provider.measurement.set(Measurement::Hanging);
+    let applied = tokio::time::timeout(
+        Duration::from_secs(60),
+        control_plane.apply(with_direct_root(apply_request("second"))),
+    )
+    .await
+    .expect("apply answers while the measurement stalls")
+    .expect("apply");
+
+    assert_eq!(overcommit_warning(&applied), None);
 }
 
 #[tokio::test(flavor = "local")]
