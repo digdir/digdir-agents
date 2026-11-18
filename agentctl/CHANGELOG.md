@@ -13,6 +13,10 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ## [Unreleased]
 
+### Fixed
+
+- The disk file of an agent with a `direct` root filesystem shrinks after the agent frees space when its image runs as another user than root, as the base images do. In 0.1.0-preview.15 it never did, and `agentd.log` warned `FITRIM ioctl failed: Operation not permitted` every 15 minutes. ([#547](https://github.com/digdir/digdir-agents/pull/547))
+
 ## [0.1.0-preview.15] - 2026-11-18
 
 ### Added
