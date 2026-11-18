@@ -236,10 +236,11 @@ enum Command {
     },
     /// Run a command in an agent.
     Exec {
-        /// Pass stdin to an allocated terminal.
-        #[arg(short = 'i', long, requires = "tty")]
+        /// Pass standard input to the command also when it is a terminal. It is passed without this
+        /// when it is a pipe or a file.
+        #[arg(short = 'i', long)]
         stdin: bool,
-        /// Allocate a terminal; currently used together with --stdin.
+        /// Allocate a terminal for the command, together with --stdin.
         #[arg(short = 't', long, requires = "stdin")]
         tty: bool,
         /// Agent resource or name; inferred from the current directory when omitted.
@@ -745,10 +746,15 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("agentctl: {error}");
+            report_error(&error, &mut std::io::stderr());
             ExitCode::FAILURE
         }
     }
+}
+
+fn report_error(error: &CommandError, stderr: &mut impl std::io::Write) {
+    // Nothing is left to tell when standard error cannot be written.
+    writeln!(stderr, "agentctl: {error}").ok();
 }
 
 fn run() -> CommandResult<ExitCode> {
@@ -1333,7 +1339,7 @@ async fn exec_command(
         )
         .await?;
     let spec = agent::sandbox::platform::execution_spec(&target.operating_system, command, tty)?;
-    let status = if stdin && tty {
+    let status = if tty {
         match agent::sandbox::attach_terminal(
             home.path(),
             &target.sandbox,
@@ -1346,10 +1352,24 @@ async fn exec_command(
             _ => return Err(Error::Session("terminal execution returned an unsupported outcome".into()).into()),
         }
     } else {
-        let execution = agent::sandbox::start_execution(home.path(), &target, spec).await?;
-        stream_execution(execution).await?
+        // As `ssh` does, a pipe or a file reaches the command without asking, since nothing else
+        // would read it. A terminal does with `-i`, as with `kubectl exec`, so that a command does
+        // not wait for typed input that nobody means to give it.
+        let passes_input = stdin || !std::io::stdin().is_terminal();
+        let mut request = ::sandbox::execution::StartExecutionRequest::new(spec);
+        if passes_input {
+            request = request.with_input();
+        }
+        let execution = agent::sandbox::start_execution(home.path(), &target, request).await?;
+        let result = stream_execution(execution).await;
+        if passes_input {
+            // A command can exit or fail before reading all its input, and a read of standard
+            // input that is still blocked would keep the runtime from shutting down.
+            std::process::exit(finish_passing_input(result, &mut std::io::stderr()).into());
+        }
+        result?
     };
-    Ok(exit_code(status.code))
+    Ok(exit_code(status.code).into())
 }
 
 /// Splits a leading agent reference from the port mappings.
@@ -1561,7 +1581,7 @@ fn run_ssh_client(mut ssh: ProcessCommand) -> CommandResult<ExitCode> {
 #[cfg(not(unix))]
 fn run_ssh_client(mut ssh: ProcessCommand) -> CommandResult<ExitCode> {
     let status = ssh.status().map_err(|error| ssh_client_error(&error))?;
-    Ok(status.code().map_or(ExitCode::FAILURE, exit_code))
+    Ok(status.code().map_or(ExitCode::FAILURE, |code| exit_code(code).into()))
 }
 
 fn ssh_client_error(error: &std::io::Error) -> CommandError {
@@ -1928,66 +1948,125 @@ async fn resolve_execution_agent(
     require_name(name, "Agent").map_err(CommandError::from)
 }
 
+/// Writes an Execution's output to ours until it exits, while passing it our standard input when
+/// it takes input.
 async fn stream_execution(
-    mut execution: ::sandbox::execution::StartedExecution,
+    execution: ::sandbox::execution::StartedExecution,
 ) -> Result<::sandbox::execution::ExitStatus, Error> {
-    let id = execution.id.clone();
-    let mut stdout = tokio::io::stdout();
-    let mut stderr = tokio::io::stderr();
-    while let Some(event) = execution.events.next().await {
-        match event? {
-            ExecutionEvent::Started { .. } => {}
-            ExecutionEvent::Stdout(bytes) => stdout.write_all(&bytes).await?,
-            ExecutionEvent::Stderr(bytes) => stderr.write_all(&bytes).await?,
-            ExecutionEvent::Exited(status) => {
-                stdout.flush().await?;
-                stderr.flush().await?;
-                return Ok(status);
-            }
-            ExecutionEvent::Failed { message } => {
-                return Err(::sandbox::Error::ExecutionFailed { id, message }.into());
-            }
-            _ => {
-                return Err(Error::Sandbox(::sandbox::Error::Backend(
-                    "unsupported Execution event".into(),
-                )));
-            }
-        }
-    }
-    Err(::sandbox::Error::ExecutionStreamEnded { id }.into())
+    stream_execution_with(execution, tokio::io::stdin(), tokio::io::stdout(), tokio::io::stderr()).await
 }
 
-/// Not implemented yet: writes nothing, and passes nothing on.
-#[allow(dead_code, clippy::unused_async, reason = "a stub for the tests, until the fix")]
+/// Writes an Execution's output to `stdout` and `stderr` until it exits, while passing it `source`
+/// when it takes input.
+///
+/// The output is flushed however the Execution ends, since `exec` may then leave with
+/// `std::process::exit`, which does not wait for a write still under way. When `source` cannot be
+/// read, the command still runs to its end, and that error is returned rather than its exit, so
+/// that a command given part of its input does not look as if it succeeded.
 async fn stream_execution_with(
     execution: ::sandbox::execution::StartedExecution,
-    _source: impl tokio::io::AsyncRead + Unpin,
-    _stdout: impl tokio::io::AsyncWrite + Unpin,
-    _stderr: impl tokio::io::AsyncWrite + Unpin,
+    source: impl tokio::io::AsyncRead + Unpin,
+    mut stdout: impl tokio::io::AsyncWrite + Unpin,
+    mut stderr: impl tokio::io::AsyncWrite + Unpin,
 ) -> Result<::sandbox::execution::ExitStatus, Error> {
-    Err(::sandbox::Error::ExecutionStreamEnded { id: execution.id }.into())
+    let ::sandbox::execution::StartedExecution { id, input, mut events } = execution;
+    let output = async {
+        let streamed = async {
+            while let Some(event) = events.next().await {
+                match event? {
+                    ExecutionEvent::Started { .. } => {}
+                    ExecutionEvent::Stdout(bytes) => stdout.write_all(&bytes).await?,
+                    ExecutionEvent::Stderr(bytes) => stderr.write_all(&bytes).await?,
+                    ExecutionEvent::Exited(status) => return Ok(status),
+                    ExecutionEvent::Failed { message } => {
+                        return Err(::sandbox::Error::ExecutionFailed { id, message }.into());
+                    }
+                    _ => {
+                        return Err(Error::Sandbox(::sandbox::Error::Backend(
+                            "unsupported Execution event".into(),
+                        )));
+                    }
+                }
+            }
+            Err(::sandbox::Error::ExecutionStreamEnded { id }.into())
+        }
+        .await;
+        let flushed_stdout = stdout.flush().await;
+        let flushed_stderr = stderr.flush().await;
+        let status = streamed?;
+        flushed_stdout?;
+        flushed_stderr?;
+        Ok(status)
+    };
+    let Some(input) = input else {
+        return output.await;
+    };
+    tokio::pin!(output);
+    let read_error = std::cell::Cell::new(None);
+    let status = tokio::select! {
+        status = &mut output => status,
+        () = pass_input(source, input.as_ref(), &read_error) => output.await,
+    };
+    match read_error.take() {
+        None => status,
+        Some(error) => {
+            status?;
+            Err(std::io::Error::new(error.kind(), format!("could not read standard input: {error}")).into())
+        }
+    }
 }
 
-/// Not implemented yet: passes nothing on.
-#[allow(dead_code, clippy::unused_async, reason = "a stub for the tests, until the fix")]
+/// Passes `source` to an Execution's standard input until end-of-file, which it then passes on.
+///
+/// It stops early when the Execution no longer takes input, as when the command exits before
+/// reading all of it, which is not an error, as writing to a pipe whose reader has gone is not.
+/// When `source` cannot be read, it sets `read_error` and closes the command's input as at
+/// end-of-file, so that the command can end. It sets the error first, since the command can end
+/// while the close is still under way, and the caller then stops waiting for it.
 async fn pass_input(
-    _source: impl tokio::io::AsyncRead + Unpin,
-    _input: &dyn ::sandbox::execution::ExecutionInput,
-    _read_error: &std::cell::Cell<Option<std::io::Error>>,
+    mut source: impl tokio::io::AsyncRead + Unpin,
+    input: &dyn ::sandbox::execution::ExecutionInput,
+    read_error: &std::cell::Cell<Option<std::io::Error>>,
 ) {
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let bytes = match tokio::io::AsyncReadExt::read(&mut source, &mut buffer).await {
+            Ok(0) => break,
+            Ok(read) => bytes::Bytes::copy_from_slice(&buffer[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                read_error.set(Some(error));
+                break;
+            }
+        };
+        if let Err(error) = input.write_input(bytes).await {
+            tracing::debug!(%error, "the command no longer takes standard input");
+            return;
+        }
+    }
+    if let Err(error) = input.close_input().await {
+        tracing::debug!(%error, "could not close the command's standard input");
+    }
 }
 
-/// Not implemented yet: `exec` returns a failure rather than reporting it here.
-#[allow(dead_code, reason = "a stub for the tests, until the fix")]
+/// Reports how an Execution that was passed input ended, as `main` would, and returns the exit
+/// code to leave with. `exec` leaves with it at once, whether the command exited or failed.
 fn finish_passing_input(
     result: Result<::sandbox::execution::ExitStatus, Error>,
-    _stderr: &mut impl std::io::Write,
+    stderr: &mut impl std::io::Write,
 ) -> u8 {
-    result.map_or(0, |status| u8::try_from(status.code).unwrap_or(1))
+    match result {
+        Ok(status) => exit_code(status.code),
+        Err(error) => {
+            report_error(&error.into(), stderr);
+            1
+        }
+    }
 }
 
-fn exit_code(code: i32) -> ExitCode {
-    u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
+/// The exit code that reports a command's `code`: the same, or failure when it does not fit a byte.
+fn exit_code(code: i32) -> u8 {
+    u8::try_from(code).unwrap_or(1)
 }
 
 async fn describe(client: &Client, resource: &str, name: Option<String>, output: OutputFormat) -> CommandResult<()> {

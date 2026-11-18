@@ -135,16 +135,33 @@ pub struct StartExecutionRequest {
     id: ExecutionId,
     /// Desired command and process environment.
     spec: ExecutionSpec,
+    /// Whether the caller writes the process's standard input.
+    pipes_input: bool,
 }
 
 impl StartExecutionRequest {
-    /// Creates a request with a freshly assigned Execution identifier.
+    /// Creates a request with a freshly assigned Execution identifier, whose process reads
+    /// end-of-file from standard input at once.
     #[must_use]
     pub fn new(spec: ExecutionSpec) -> Self {
         Self {
             id: ExecutionId::generate(),
             spec,
+            pipes_input: false,
         }
+    }
+
+    /// Lets the caller write the process's standard input, through [`StartedExecution::input`].
+    #[must_use]
+    pub const fn with_input(mut self) -> Self {
+        self.pipes_input = true;
+        self
+    }
+
+    /// Reports whether the caller writes the process's standard input.
+    #[must_use]
+    pub const fn pipes_input(&self) -> bool {
+        self.pipes_input
     }
 
     /// Returns the assigned Execution identifier.
@@ -220,7 +237,8 @@ pub type ExecutionEventStream = Pin<Box<dyn Stream<Item = Result<ExecutionEvent,
 pub struct StartedExecution {
     /// Identifier used for Execution control operations.
     pub id: ExecutionId,
-    /// The process's standard input. Not implemented yet: always `None`.
+    /// The process's standard input, when the request asked for it with
+    /// [`StartExecutionRequest::with_input`].
     pub input: Option<Rc<dyn ExecutionInput>>,
     /// Events emitted until the Execution exits or fails.
     pub events: ExecutionEventStream,
