@@ -13,6 +13,8 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ## [Unreleased]
 
+## [0.1.0-preview.15] - 2026-11-18
+
 ### Added
 
 - agentd warns while the host filesystem holding agents' disks is nearly full: every agent has the condition `HostDiskLow=True`, which `agentctl get`, `agentctl describe` and `agentctl tui` show until space returns. Set the threshold with `lowDiskThreshold` in `agentd.toml` in agentd's home, as a share such as `"5%"`, the default, or a size such as `"20Gi"`. ([agentd configuration](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/agentd-configuration.md), [#415](https://github.com/digdir/digdir-agents/issues/415))
@@ -21,14 +23,14 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ### Changed
 
-- On macOS and Windows, the disk file of an agent with a `direct` root filesystem shrinks periodically after the agent frees space. ([image contract](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/image-contract.md), [#502](https://github.com/digdir/digdir-agents/issues/502))
-- The Agent sandbox section at the top of an agent's instructions now lists the folders mounted from your machine, and adds rules its own instructions can override, such as cleaning up after a task and noting system changes in `~/system-changes.md`. ([#505](https://github.com/digdir/digdir-agents/pull/505))
-- Breaking: `spec.instructions` in a variant, such as `agent.mine.yaml`, merges with the base's list by `source` instead of replacing it. List only the files to add, which follow the base's, or to change, and remove a base file with `$patch: delete`. A manifest may not repeat a `source`. ([#477](https://github.com/digdir/digdir-agents/issues/477))
 - Breaking: agent variants merge as Kustomize patches do: ([agent variants](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/variants.md), [#504](https://github.com/digdir/digdir-agents/pull/504))
   - `$patch: replace` replaces a list or mapping, and `$patch: delete` removes a mapping
   - `[]` on a list of entries is refused. Write `null` instead
   - a key named twice in one list is refused. Merge the two entries
   - `null` on a field the base doesn't set is no longer an error
+- Breaking: `spec.instructions` in a variant, such as `agent.mine.yaml`, merges with the base's list by `source` instead of replacing it. List only the files to add, which follow the base's, or to change, and remove a base file with `$patch: delete`. A manifest may not repeat a `source`. ([#477](https://github.com/digdir/digdir-agents/issues/477))
+- On macOS and Windows, the disk file of an agent with a `direct` root filesystem shrinks periodically after the agent frees space. ([image contract](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/image-contract.md), [#502](https://github.com/digdir/digdir-agents/issues/502))
+- The Agent sandbox section at the top of an agent's instructions now lists the folders mounted from your machine, and adds rules its own instructions can override, such as cleaning up after a task and noting system changes in `~/system-changes.md`. ([#505](https://github.com/digdir/digdir-agents/pull/505))
 - `agentctl new` and `agentctl update` on a linked Git worktree say before the agent builder starts that Git does not work in it, so review what it writes with `git status` and `git diff` on your machine, or run them in a clone. ([#486](https://github.com/digdir/digdir-agents/issues/486))
 
 ### Fixed
