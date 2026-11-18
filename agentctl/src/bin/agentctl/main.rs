@@ -61,6 +61,9 @@ enum Command {
     /// Open the terminal UI with every agent and session.
     Tui,
     /// Create or update an agent, or a volume, from a manifest.
+    ///
+    /// Warns when the root disks of the agents on this host can together grow past the free space
+    /// on the filesystem holding them.
     Apply {
         /// Agent or volume manifest path; defaults to ./agent.yaml.
         #[arg(short = 'f', long = "filename", conflicts_with_all = ["variant", "from"])]
@@ -857,6 +860,14 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             .await?;
             let name = applied.metadata.name;
             println!("agent/{name} applied");
+            let overcommitted = applied
+                .status
+                .conditions
+                .iter()
+                .filter(|condition| condition.kind == agent::Condition::HOST_DISK_OVERCOMMITTED);
+            for condition in overcommitted {
+                eprintln!("Warning: {}", condition.message);
+            }
             if wait {
                 let converged = wait_until_converged(client, &name, timeout).await?;
                 let outcome = if converged.spec.is_stopped() {

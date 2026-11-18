@@ -12,6 +12,10 @@ use crate::{Agent, AgentId, Error, MountSpec, definitions::DefinitionSource, pro
 
 use super::{AgentRecord, SharedAgentStore, Wakeup};
 
+/// How long `apply` waits to measure the agents' disks for its overcommit warning. Each one is a
+/// `stat` and a read of its extents, so this only passes when the filesystem stalls.
+const OVERCOMMIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Desired state supplied by a local API client.
 #[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -188,6 +192,13 @@ impl ControlPlane {
     /// Returns an error when the request is invalid, changes an immutable field, conflicts with deletion,
     /// or cannot be stored.
     pub async fn apply(&self, request: ApplyRequest) -> Result<Agent, Error> {
+        // Boxed, as storing is a large future of its own.
+        let applied = Box::pin(self.store_applied(request)).await?;
+        Ok(self.with_overcommit(applied).await)
+    }
+
+    /// Stores the desired state `request` gives, as [`Self::apply`] does, without its warnings.
+    async fn store_applied(&self, request: ApplyRequest) -> Result<Agent, Error> {
         let given = self.validate_bind_sources(&request.binds).await?;
         // Boxed, as preparing reads the filesystem through several steps that would otherwise
         // make every caller's future as large.
@@ -291,6 +302,43 @@ impl ControlPlane {
                 }
             }
         }
+    }
+
+    /// Adds to `applied` the warning that the agents' root disks can grow past the free space on
+    /// a filesystem holding them, the applied agent's among them.
+    ///
+    /// It is worked out on apply, when the person chooses capacities, rather than on every read,
+    /// since it measures every agent's disk. The agent is stored by then, so a failure to work it
+    /// out, or a measurement that takes longer than [`OVERCOMMIT_DEADLINE`], only leaves it out.
+    async fn with_overcommit(&self, mut applied: Agent) -> Agent {
+        let Some(sandboxes) = &self.sandboxes else {
+            return applied;
+        };
+        match tokio::time::timeout(OVERCOMMIT_DEADLINE, self.overcommit(sandboxes)).await {
+            Ok(Ok(warning)) => applied.status.conditions.extend(warning),
+            Ok(Err(error)) => tracing::debug!(%error, "could not compare the agents' disks with free space"),
+            Err(_) => tracing::debug!(
+                deadline = ?OVERCOMMIT_DEADLINE,
+                "gave up comparing the agents' disks with free space"
+            ),
+        }
+        applied
+    }
+
+    /// Works out the warning [`Self::with_overcommit`] adds, if any.
+    async fn overcommit(&self, sandboxes: &crate::sandbox::Service) -> Result<Option<crate::Condition>, Error> {
+        let records = self
+            .store
+            .list()
+            .await?
+            .into_iter()
+            .filter(|record| record.agent.metadata.deletion_timestamp.is_none())
+            .collect::<Vec<_>>();
+        Ok(sandboxes
+            .root_disk_room(&records)
+            .await?
+            .into_iter()
+            .find_map(|(space, room)| super::host_disk::overcommitted(space, room)))
     }
 
     /// Records in `record` the files that may hold real keys in its bind mounts, once the person has

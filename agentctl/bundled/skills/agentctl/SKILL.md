@@ -48,7 +48,8 @@ Write that file outside every checkout, from this agent's variables, and pass it
 **Size** a nested agent to fit inside this sandbox beside your own work. Disk usually runs out first: the nested
 agent's disk can grow to its `rootFilesystem.capacity`, and every image built for one stays in Podman's storage. Check
 `df -h /`, `nproc` and `free -g`, and keep its `capacity`, `cpu` and `memory` well below them; agents often ship a
-`nested` variant sized for this.
+`nested` variant sized for this. `apply` warns when the agents' disks there can together grow by more than the free
+space, and `agentctl get agents -o wide` shows how much of its capacity each one takes.
 
 ## On a host: rules
 

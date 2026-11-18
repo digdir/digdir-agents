@@ -1457,6 +1457,8 @@ impl Condition {
     pub const REASON_HOST_DISK_FULL: &'static str = "HostDiskFull";
     /// `HostDiskLow` reason while the filesystem has less free space than agentd's threshold.
     pub const REASON_BELOW_THRESHOLD: &'static str = "BelowThreshold";
+    /// `HostDiskOvercommitted` reason while the root disks can grow by more than is free.
+    pub const REASON_CAPACITY_OVER_FREE_SPACE: &'static str = "CapacityOverFreeSpace";
 
     /// Finds the `Ready` condition in a condition list.
     #[must_use]
