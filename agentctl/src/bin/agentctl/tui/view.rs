@@ -265,6 +265,22 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App, hit_map: &mut HitMap)
             Style::new().fg(Color::Cyan),
         ));
     }
+    if app.creating > 0 {
+        spans.push(Span::styled(" · creating forward…", Style::new().fg(Color::Cyan)));
+    }
+    if app.prompting > 0 {
+        spans.push(Span::styled(" · sending prompt…", Style::new().fg(Color::Cyan)));
+    }
+    if app.discovering {
+        spans.push(Span::styled(" · scanning manifests…", Style::new().fg(Color::Cyan)));
+    }
+    if let Some((agent, target)) = app.opening.first() {
+        spans.push(Span::styled(
+            format!(" · opening {} on {agent}…", target.name()),
+            Style::new().fg(Color::Cyan),
+        ));
+    }
+    // Last, so a narrow header cuts the reading rather than the feedback on an operation.
     if let Some(space) = app.host_disk {
         let free = format!(
             "{} free of {}",
@@ -280,21 +296,6 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App, hit_map: &mut HitMap)
         } else {
             Span::styled(format!(" · disk {free}"), Style::new().fg(Color::DarkGray))
         });
-    }
-    if app.creating > 0 {
-        spans.push(Span::styled(" · creating forward…", Style::new().fg(Color::Cyan)));
-    }
-    if app.prompting > 0 {
-        spans.push(Span::styled(" · sending prompt…", Style::new().fg(Color::Cyan)));
-    }
-    if app.discovering {
-        spans.push(Span::styled(" · scanning manifests…", Style::new().fg(Color::Cyan)));
-    }
-    if let Some((agent, target)) = app.opening.first() {
-        spans.push(Span::styled(
-            format!(" · opening {} on {agent}…", target.name()),
-            Style::new().fg(Color::Cyan),
-        ));
     }
     frame.render_widget(Line::from(spans), area);
 }
@@ -1749,6 +1750,22 @@ mod tests {
         draw(&mut terminal, &app);
         let header = buffer_text(&terminal).lines().next().unwrap_or_default().to_owned();
         assert!(header.contains("· disk low: 20Gi free of 1000Gi"), "{header}");
+    }
+
+    #[test]
+    fn the_status_line_keeps_the_feedback_on_an_operation_ahead_of_the_disk_reading() {
+        const GIB: u64 = 1 << 30;
+        let mut app = tree_app(1);
+        app.host_disk = Some(agent::local::disk::DiskSpace {
+            available: 94 * GIB,
+            total: 157 * GIB,
+        });
+        app.prompting = 1;
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).expect("test terminal");
+        draw(&mut terminal, &app);
+        let header = buffer_text(&terminal).lines().next().unwrap_or_default().to_owned();
+        let prompt = header.find("sending prompt").unwrap_or_else(|| panic!("{header}"));
+        assert!(header.find("disk").is_none_or(|disk| disk > prompt), "{header}");
     }
 
     fn tree_app(count: usize) -> App {
