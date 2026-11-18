@@ -2451,6 +2451,9 @@ impl App {
             return Vec::new();
         };
         let mut lines = format::readiness_lines(&agent.status);
+        if let Some(usage) = agent.status.root_filesystem {
+            lines.push(format!("Disk:       {}", format::root_filesystem_usage(usage)));
+        }
         if let Some(provisioning) = &agent.status.progress {
             let progress = &provisioning.progress;
             lines.extend(format::provisioning_lines(

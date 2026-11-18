@@ -205,16 +205,12 @@ pub(crate) fn agents_table(agents: &[Agent], wide: bool) -> Vec<String> {
                 provider.into(),
             ]);
             if wide {
-                row.push(agent.status.root_filesystem.map_or_else(
-                    || "-".to_owned(),
-                    |usage| {
-                        format!(
-                            "{}/{}",
-                            approximate_bytes(usage.allocated_bytes()),
-                            approximate_bytes(usage.capacity_bytes())
-                        )
-                    },
-                ));
+                row.push(
+                    agent
+                        .status
+                        .root_filesystem
+                        .map_or_else(|| "-".to_owned(), root_filesystem_usage),
+                );
             }
             row
         })
@@ -222,14 +218,28 @@ pub(crate) fn agents_table(agents: &[Agent], wide: bool) -> Vec<String> {
     with_host_disk_warning(agents, table_lines(&headers, &rows))
 }
 
-/// Says once under the table that the host's disk is low, which every agent on it reports alike.
-fn with_host_disk_warning(agents: &[Agent], mut lines: Vec<String>) -> Vec<String> {
-    let low = agents.iter().find_map(|agent| {
+/// The host storage a root filesystem takes out of its capacity, such as `12Gi/100Gi`.
+pub(crate) fn root_filesystem_usage(usage: sandbox::RootFilesystemUsage) -> String {
+    format!(
+        "{}/{}",
+        approximate_bytes(usage.allocated_bytes()),
+        approximate_bytes(usage.capacity_bytes())
+    )
+}
+
+/// The `HostDiskLow` condition the agents report while the host's disk is low, which every agent on
+/// it reports alike.
+pub(crate) fn host_disk_low(agents: &[Agent]) -> Option<&agent::Condition> {
+    agents.iter().find_map(|agent| {
         agent.status.conditions.iter().find(|condition| {
             condition.kind == agent::Condition::HOST_DISK_LOW && condition.status == ConditionStatus::True
         })
-    });
-    if let Some(low) = low {
+    })
+}
+
+/// Says once under the table that the host's disk is low.
+fn with_host_disk_warning(agents: &[Agent], mut lines: Vec<String>) -> Vec<String> {
+    if let Some(low) = host_disk_low(agents) {
         lines.push(String::new());
         lines.push(format!("Warning: host disk low: {}", low.message));
     }
@@ -237,7 +247,7 @@ fn with_host_disk_warning(agents: &[Agent], mut lines: Vec<String>) -> Vec<Strin
 }
 
 /// `bytes` in the largest binary unit it fills, such as `12Gi`, with one decimal below ten of it.
-fn approximate_bytes(bytes: u64) -> String {
+pub(crate) fn approximate_bytes(bytes: u64) -> String {
     const UNITS: [(u64, &str); 4] = [(1 << 40, "Ti"), (1 << 30, "Gi"), (1 << 20, "Mi"), (1 << 10, "Ki")];
     let Some((size, suffix)) = UNITS.into_iter().find(|(size, _)| bytes >= *size) else {
         return bytes.to_string();

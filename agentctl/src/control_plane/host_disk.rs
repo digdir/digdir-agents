@@ -52,7 +52,13 @@ impl HostDisk {
     /// that fails keeps what agents show.
     pub async fn measure(&self, threshold: LowDiskThreshold) {
         match self.sandboxes.host_disks().await {
-            Ok(spaces) => self.observe(spaces.into_iter().find(|space| threshold.is_low(*space)), threshold),
+            Ok(spaces) => {
+                // A change in it alone wakes no watcher. Watches reply at least every 30 seconds
+                // anyway, and the free space changes with nearly every measurement.
+                self.fullest
+                    .set(spaces.iter().copied().min_by_key(|space| space.available));
+                self.observe(spaces.into_iter().find(|space| threshold.is_low(*space)), threshold);
+            }
             Err(error) => tracing::warn!(%error, "free space measurement failed"),
         }
     }

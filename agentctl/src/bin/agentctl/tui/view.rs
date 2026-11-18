@@ -14,6 +14,7 @@ use super::app::{
     harness_label,
 };
 use super::open::{MenuEntry, OpenMenu, OpenTarget};
+use crate::format;
 
 /// Background of the selected row; without color it is drawn reversed instead.
 const SELECTION: Color = Color::Rgb(52, 58, 70);
@@ -263,6 +264,22 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App, hit_map: &mut HitMap)
             format!(" · filter: {}", app.filter),
             Style::new().fg(Color::Cyan),
         ));
+    }
+    if let Some(space) = app.host_disk {
+        let free = format!(
+            "{} free of {}",
+            format::approximate_bytes(space.available),
+            format::approximate_bytes(space.total)
+        );
+        // agentd decides what is low, by the threshold it is configured with, and every agent says so.
+        spans.push(if format::host_disk_low(&app.agents).is_some() {
+            Span::styled(
+                format!(" · disk low: {free}"),
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(format!(" · disk {free}"), Style::new().fg(Color::DarkGray))
+        });
     }
     if app.creating > 0 {
         spans.push(Span::styled(" · creating forward…", Style::new().fg(Color::Cyan)));
