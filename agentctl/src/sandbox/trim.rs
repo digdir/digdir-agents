@@ -22,8 +22,12 @@ pub const TRIM_INTERVAL: Duration = Duration::from_mins(15);
 /// Exit status of [`TRIM_SCRIPT`] when `fstrim` is not in the guest.
 const NOT_FOUND: i32 = 127;
 
-/// Exit status of [`TRIM_SCRIPT`] when the guest's user is not root and cannot become it.
+/// Exit status of [`TRIM_SCRIPT`] when the guest's user is not root and cannot become it. The shell
+/// exits with it too when it may not run a program, so [`NOT_ROOT_MESSAGE`] tells the two apart.
 const NOT_ROOT: i32 = 126;
+
+/// What [`TRIM_SCRIPT`] says when the guest's user is not root and cannot become it.
+const NOT_ROOT_MESSAGE: &str = "cannot use sudo without a password";
 
 /// Trims the root filesystem as root.
 ///
@@ -123,7 +127,7 @@ impl Trimmer {
         Ok(Some(match output.status.code {
             0 => Trimmed::Trimmed,
             NOT_FOUND => Trimmed::Unable("the image has no `fstrim`".into()),
-            NOT_ROOT => Trimmed::Unable(stderr.to_owned()),
+            NOT_ROOT if stderr.contains(NOT_ROOT_MESSAGE) => Trimmed::Unable(stderr.to_owned()),
             // fstrim's message when the disk does not accept discards, as when the host turns them off.
             _ if stderr.contains("not supported") => Trimmed::Unable(stderr.to_owned()),
             code => {
@@ -132,5 +136,15 @@ impl Trimmer {
                 )));
             }
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_script_says_what_marks_a_user_that_cannot_become_root() {
+        assert!(TRIM_SCRIPT.contains(NOT_ROOT_MESSAGE));
     }
 }
