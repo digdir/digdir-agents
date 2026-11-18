@@ -68,8 +68,10 @@ impl HostDisk {
     /// Measures the free space against the current threshold, records what agents show, and
     /// returns the space of a filesystem below it, if any.
     async fn measure_now(&self) -> Result<Option<DiskSpace>, Error> {
-        let threshold = self.threshold.get();
         let spaces = self.sandboxes.host_disks().await?;
+        // Read after measuring, so a threshold changed meanwhile is the one the space is held to,
+        // and the one a refusal names.
+        let threshold = self.threshold.get();
         // A change in it alone wakes no watcher. Watches reply at least every 30 seconds anyway,
         // and the free space changes with nearly every measurement.
         self.fullest
