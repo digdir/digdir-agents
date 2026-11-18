@@ -12,6 +12,9 @@ const EVENTS: &[(&str, ActivityEvent)] = &[
     ("StopFailure", ActivityEvent::TurnCompleted),
     ("PermissionRequest", ActivityEvent::WaitingForInput),
     ("Notification", ActivityEvent::WaitingForInput),
+    // Fires once every tool call of a model step has resolved, so after the operator answers a
+    // question or approves a call, and not while another call in the same step still waits.
+    ("PostToolBatch", ActivityEvent::TurnStarted),
 ];
 
 /// `Notification` types that mean Claude Code is blocked on the operator;
