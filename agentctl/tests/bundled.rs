@@ -8,15 +8,18 @@ use std::{collections::BTreeMap, path::Path, rc::Rc, time::Duration};
 use agent::{
     Agent, Error, Lifetime, MountSpec, Origin, RunState,
     bundled::{Definition, DefinitionFile, Definitions, Folders},
+    control_plane::HostDisk,
     control_plane::{
         AgentStore, ApplyRequest, BindSource, ControlPlane, Ran, Reconciler, RunDefinition, RunRequest, memory,
     },
+    local::disk::{DiskSpace, LowDiskThreshold},
     progress::ProvisioningState,
+    resources::Changes,
 };
 use sandbox::{image::ImageSource, memory as sandbox_memory};
 
 use crate::{
-    control_plane::{MemoryProvider, sandbox_service},
+    control_plane::{MemoryProvider, PlannedProvider, sandbox_service},
     support::{IgnoreNotifications, TempDirectory, agent},
 };
 
@@ -204,6 +207,7 @@ pub(crate) fn request(definition: &str, workspace: Option<&Path>) -> RunRequest 
         lifetime: None,
         name: None,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        allow_low_disk: false,
     }
 }
 
@@ -228,8 +232,68 @@ fn apply(directory: &Path, agent: Agent) -> ApplyRequest {
         binds: Vec::new(),
         create_only: false,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        allow_low_disk: false,
         agent,
     }
+}
+
+/// Whether `result` is the refusal that says what is free and how to start the agent anyway.
+fn refused_for_low_disk<T>(result: &Result<T, Error>) -> bool {
+    matches!(result, Err(Error::Invalid(message)) if message.contains("1.0 GiB") && message.contains("--allow-low-disk"))
+}
+
+#[tokio::test(flavor = "local")]
+async fn making_an_agent_is_refused_while_the_host_disk_is_low_unless_allowed() {
+    const GIB: u64 = 1 << 30;
+    let fixture = Fixture::new();
+    let provider = Rc::new(PlannedProvider::new(Rc::new(sandbox_memory::Provider::new()), []));
+    provider.disk.set(Some(DiskSpace {
+        available: GIB,
+        total: 1_000 * GIB,
+    }));
+    let host_disk = HostDisk::new(sandbox_service(provider), LowDiskThreshold::Share(500), Changes::new());
+    host_disk.measure(LowDiskThreshold::Share(500)).await;
+    let control_plane = fixture.rebuilt([builder("one"), sign_in()]).with_host_disk(host_disk);
+    let workspace = fixture.workspace("checkout");
+    let source = TempDirectory::new("low-disk-local");
+
+    let refused = control_plane.run(request("builder", Some(&workspace))).await;
+    assert!(refused_for_low_disk(&refused), "{refused:?}");
+    control_plane
+        .run(RunRequest {
+            allow_low_disk: true,
+            ..request("builder", Some(&workspace))
+        })
+        .await
+        .expect("run allowed");
+
+    let refused = control_plane.apply(apply(source.path(), agent("worker"))).await;
+    assert!(refused_for_low_disk(&refused), "{refused:?}");
+    let mut stopped = agent("worker");
+    stopped.spec.run_state = Some(RunState::Stopped);
+    control_plane
+        .apply(apply(source.path(), stopped))
+        .await
+        .expect("an agent applied stopped makes no sandbox");
+    let mut running = agent("worker");
+    running.spec.run_state = Some(RunState::Running);
+    let refused = control_plane.apply(apply(source.path(), running.clone())).await;
+    assert!(
+        refused_for_low_disk(&refused),
+        "a stopped agent applied running is refused: {refused:?}"
+    );
+    let started = control_plane
+        .apply(ApplyRequest {
+            allow_low_disk: true,
+            ..apply(source.path(), running)
+        })
+        .await
+        .expect("apply allowed");
+    assert_eq!(started.spec.run_state(), RunState::Running);
+    control_plane
+        .apply(apply(source.path(), agent("worker")))
+        .await
+        .expect("an agent already running is not refused");
 }
 
 #[tokio::test(flavor = "local")]
@@ -523,6 +587,7 @@ async fn a_definition_on_disk_runs_like_a_bundled_one() {
         lifetime: None,
         name: name.map(str::to_owned),
         allow_exposed_files: std::collections::BTreeSet::new(),
+        allow_low_disk: false,
     };
 
     let (created, _) = fixture.control_plane.run(local(None)).await.expect("run");
@@ -799,6 +864,7 @@ async fn applying_a_manifest_that_now_names_the_given_folder_forgets_it_was_give
         lifetime: None,
         name: None,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        allow_low_disk: false,
     };
     let (given, _) = fixture
         .control_plane
@@ -883,6 +949,7 @@ async fn a_folder_given_for_a_bind_mount_replaces_the_manifests_and_makes_anothe
         lifetime: None,
         name: None,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        allow_low_disk: false,
     };
     let at = |folder: &Path| BindSource {
         source: folder.to_path_buf(),

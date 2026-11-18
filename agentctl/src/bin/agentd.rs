@@ -183,7 +183,7 @@ async fn run_control_plane(
     let agent_sandboxes = Rc::new(agent::sessions::AgentSandboxes::new(store.clone(), sandboxes.clone()));
     let changes = database.changes();
     let provisioning = agent::progress::ProvisioningState::new(changes.clone());
-    let host_disk = agent::control_plane::HostDisk::new(sandboxes.clone(), changes.clone());
+    let host_disk = agent::control_plane::HostDisk::new(sandboxes.clone(), config.low_disk_threshold, changes.clone());
 
     let platform_api_server = Rc::new(agent::platform_api::Server::new(
         session_reports,
@@ -285,7 +285,7 @@ async fn run_control_plane(
     let mut volume_controller_task = tokio::task::spawn_local(volume_controller.run());
     let mut platform_api_task = tokio::task::spawn_local(platform_api_server.serve(platform_api_listener));
     let trimmer_task = tokio::task::spawn_local(Trimmer::new(store.clone(), sandboxes.clone()).run());
-    let host_disk_task = tokio::task::spawn_local(host_disk.run(home.config_path(), config.low_disk_threshold));
+    let host_disk_task = tokio::task::spawn_local(host_disk.run(home.config_path()));
     let socket_path = home.socket_path();
 
     let result = tokio::select! {

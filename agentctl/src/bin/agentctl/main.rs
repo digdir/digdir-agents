@@ -91,6 +91,10 @@ enum Command {
         /// real keys, without asking. At a terminal agentctl asks, and otherwise refuses them.
         #[arg(long)]
         allow_env_files: bool,
+        /// Start the agent also while the host disk holding agents' disks is below agentd's
+        /// `lowDiskThreshold`, which agentd refuses otherwise.
+        #[arg(long)]
+        allow_low_disk: bool,
         /// Stay attached after applying and show provisioning progress until the agent is Ready.
         #[arg(long)]
         wait: bool,
@@ -134,6 +138,10 @@ enum Command {
         /// real keys, without asking. At a terminal agentctl asks, and otherwise refuses them.
         #[arg(long)]
         allow_env_files: bool,
+        /// Start the agent also while the host disk holding agents' disks is below agentd's
+        /// `lowDiskThreshold`, which agentd refuses otherwise.
+        #[arg(long)]
+        allow_low_disk: bool,
         #[command(flatten)]
         selection: SessionSelection,
     },
@@ -164,6 +172,10 @@ enum Command {
     Start {
         #[command(flatten)]
         target: RunStateTarget,
+        /// Start it also while the host disk holding agents' disks is below agentd's
+        /// `lowDiskThreshold`, which agentd refuses otherwise.
+        #[arg(long)]
+        allow_low_disk: bool,
     },
     /// Stop an agent's sandbox VM, start it on its kept disk and wait until the agent is Ready.
     ///
@@ -820,6 +832,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             name,
             env_file,
             allow_env_files,
+            allow_low_disk,
             wait,
             timeout,
         } => {
@@ -845,6 +858,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 request.agent.metadata.name = name;
             }
             request.binds = absolute_binds(mounts)?;
+            request.allow_low_disk = allow_low_disk;
             let reader = format!("agent/{}", request.agent.metadata.name);
             let ask = consent::Ask {
                 reader: &reader,
@@ -956,7 +970,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         }
         Command::Stop { target } => stop(client, target).await?,
         Command::Kill { target } => stop(client, target.into()).await?,
-        Command::Start { target } => set_run_state(client, target, RunState::Running).await?,
+        Command::Start { target, allow_low_disk } => start(client, target, allow_low_disk).await?,
         Command::Restart { target, now } => restart(client, target, now).await?,
         Command::Archive { target } => set_archived(client, target, true).await?,
         Command::Unarchive { target } => set_archived(client, target, false).await?,
@@ -977,6 +991,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             session,
             env_file,
             allow_env_files,
+            allow_low_disk,
             selection,
         } => {
             let mut binds = mounts;
@@ -988,6 +1003,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 name,
                 env_file,
                 allow_env_files,
+                allow_low_disk,
             };
             let session = (!detach).then(|| SessionName::new(session)).transpose()?;
             run_agent(home, client, run, session, selection).await?;
@@ -2246,20 +2262,17 @@ async fn agents_to_stop(client: &Client, target: &StopTarget) -> CommandResult<O
     Ok(prompt::confirm_lines(&[&running_line, &question])?.then_some(names))
 }
 
-/// Stops or starts an agent and waits until it is stopped or Ready.
-async fn set_run_state(client: &Client, target: RunStateTarget, state: RunState) -> CommandResult<()> {
+/// Starts an agent and waits until it is Ready.
+async fn start(client: &Client, target: RunStateTarget, allow_low_disk: bool) -> CommandResult<()> {
     let name = agent_reference(&target.resource, target.name)?;
-    client.set_run_state(&name, state).await?;
+    client.start(&name, allow_low_disk).await?;
     let converged = wait_until_converged(client, &name, target.timeout).await?;
-    match (state, converged.spec.run_state()) {
-        (RunState::Stopped, RunState::Stopped) => println!("agent/{name} stopped"),
-        (RunState::Running, RunState::Running) => println!("agent/{name} started"),
-        (_, current) => {
-            return Err(CommandError::Message(format!(
-                "Agent {name:?} was set to {current:?} again before it finished"
-            )));
-        }
+    if converged.spec.is_stopped() {
+        return Err(CommandError::Message(format!(
+            "Agent {name:?} was set to Stopped again before it finished"
+        )));
     }
+    println!("agent/{name} started");
     Ok(())
 }
 
@@ -2648,6 +2661,7 @@ fn read_apply_request_in(
         binds: Vec::new(),
         create_only: false,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        allow_low_disk: false,
         agent,
     })
 }
@@ -2682,6 +2696,8 @@ struct Run {
     env_file: Option<PathBuf>,
     /// Whether `--allow-env-files` lets the agent read the `.env` files in its folders.
     allow_env_files: bool,
+    /// Whether `--allow-low-disk` lets agentd make the agent while the host disk is low.
+    allow_low_disk: bool,
 }
 
 impl Run {
@@ -2731,6 +2747,7 @@ impl Run {
             lifetime: self.lifetime,
             name: self.name.clone(),
             allow_exposed_files: std::collections::BTreeSet::new(),
+            allow_low_disk: self.allow_low_disk,
         })
     }
 }

@@ -315,7 +315,7 @@ struct UnsupportedProvider {
 /// manifest or `.env` changes. A transient failure fails only the pass that
 /// takes it.
 #[derive(Clone)]
-enum PlannedFailure {
+pub(crate) enum PlannedFailure {
     Invalid(String),
     /// The sandbox provider rejects the request itself (an SDK `InvalidRequest`).
     Rejected,
@@ -331,16 +331,18 @@ enum PlannedFailure {
 
 const TELEMETRY_FLOOD: usize = 4_096;
 
-struct PlannedProvider {
+pub(crate) struct PlannedProvider {
     inner: MemoryProvider,
     failures: RefCell<VecDeque<PlannedFailure>>,
     /// The space it reports on the host filesystem holding its sandboxes.
-    disk: Cell<Option<DiskSpace>>,
+    pub(crate) disk: Cell<Option<DiskSpace>>,
+    /// How it answers when asked for [`Self::disk`].
+    disk_measurement: Cell<Measurement>,
     /// How it answers when asked to measure a root disk.
     measurement: Cell<Measurement>,
 }
 
-/// How [`PlannedProvider`] answers when asked to measure a root disk.
+/// How [`PlannedProvider`] answers when asked to measure a disk.
 #[derive(Clone, Copy, Default)]
 enum Measurement {
     /// As its backend measures it.
@@ -352,11 +354,15 @@ enum Measurement {
 }
 
 impl PlannedProvider {
-    fn new(backend: Rc<sandbox_memory::Provider>, failures: impl IntoIterator<Item = PlannedFailure>) -> Self {
+    pub(crate) fn new(
+        backend: Rc<sandbox_memory::Provider>,
+        failures: impl IntoIterator<Item = PlannedFailure>,
+    ) -> Self {
         Self {
             inner: MemoryProvider::new(backend),
             failures: RefCell::new(failures.into_iter().collect()),
             disk: Cell::new(None),
+            disk_measurement: Cell::new(Measurement::default()),
             measurement: Cell::new(Measurement::default()),
         }
     }
@@ -474,7 +480,13 @@ impl Provider for PlannedProvider {
 
     fn host_disk(&self) -> LocalFuture<'_, Result<Option<DiskSpace>, Error>> {
         let disk = self.disk.get();
-        Box::pin(async move { Ok(disk) })
+        match self.disk_measurement.get() {
+            Measurement::Measured => Box::pin(async move { Ok(disk) }),
+            Measurement::Failing => {
+                Box::pin(async { Err(Error::Sandbox(sandbox::Error::Backend("cannot read the disk".into()))) })
+            }
+            Measurement::Hanging => Box::pin(std::future::pending()),
+        }
     }
 }
 
@@ -594,6 +606,7 @@ fn apply_request_in(name: &str, source_directory: PathBuf) -> agent::control_pla
         source_directory,
         create_only: false,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        allow_low_disk: false,
         agent: agent(name),
     }
 }
@@ -800,7 +813,11 @@ async fn every_agent_reports_a_low_host_disk_until_space_returns() {
     // The Provider reports the filesystem holding its sandboxes' disks, which need not be agentd's
     // home, so the warning follows what it reports.
     let provider = Rc::new(PlannedProvider::new(fixture.backend.clone(), []));
-    let host_disk = HostDisk::new(sandbox_service(provider.clone()), changes.clone());
+    let host_disk = HostDisk::new(
+        sandbox_service(provider.clone()),
+        LowDiskThreshold::Share(500),
+        changes.clone(),
+    );
     fixture.control_plane = ControlPlane::new(fixture.store.clone(), Rc::new(NotificationCounter::default()))
         .with_host_disk(host_disk.clone());
     for name in ["running", "pending"] {
@@ -863,13 +880,128 @@ async fn every_agent_reports_a_low_host_disk_until_space_returns() {
     );
 }
 
+/// A control plane with one stopped agent, `worker`, beside a filesystem of 1,000 GiB with
+/// `available` free, which the returned Provider reports and agentd has not measured yet. Below
+/// 50 GiB it is low.
+async fn stopped_beside_host_disk(available: u64) -> (ControlPlane, HostDisk, Rc<PlannedProvider>) {
+    let fixture = fixture();
+    let provider = Rc::new(PlannedProvider::new(fixture.backend.clone(), []));
+    provider.disk.set(Some(DiskSpace {
+        available,
+        total: 1_000 * GIB,
+    }));
+    let host_disk = HostDisk::new(
+        sandbox_service(provider.clone()),
+        LowDiskThreshold::Share(500),
+        Changes::new(),
+    );
+    let control_plane = ControlPlane::new(fixture.store.clone(), Rc::new(NotificationCounter::default()))
+        .with_host_disk(host_disk.clone());
+    control_plane
+        .apply(agent::control_plane::ApplyRequest {
+            allow_low_disk: true,
+            ..apply_request("worker")
+        })
+        .await
+        .expect("apply");
+    control_plane
+        .set_run_state("worker", agent::RunState::Stopped)
+        .await
+        .expect("stop");
+    (control_plane, host_disk, provider)
+}
+
+const GIB: u64 = 1 << 30;
+
+/// The periodic measurement can be up to 30 seconds old, and a build writes gigabytes in that
+/// time, so a start is checked against the free space when it is asked for.
+#[tokio::test(flavor = "local")]
+async fn a_start_is_checked_against_the_free_space_when_it_is_asked_for() {
+    let (control_plane, host_disk, provider) = stopped_beside_host_disk(100 * GIB).await;
+    let reports = |available: u64| {
+        provider.disk.set(Some(DiskSpace {
+            available,
+            total: 1_000 * GIB,
+        }));
+    };
+    host_disk.measure(LowDiskThreshold::Share(500)).await;
+
+    reports(GIB);
+    let refused = control_plane.start("worker", false).await;
+    assert!(
+        matches!(&refused, Err(Error::Invalid(message)) if message.contains("1.0 GiB")),
+        "the disk went low after the last measurement: {refused:?}"
+    );
+    let worker = control_plane.get("worker").await.expect("get agent");
+    assert!(
+        worker
+            .status
+            .conditions
+            .iter()
+            .any(|condition| condition.kind == Condition::HOST_DISK_LOW),
+        "agents show what the start was refused for"
+    );
+
+    reports(100 * GIB);
+    control_plane
+        .start("worker", false)
+        .await
+        .expect("space came back after the last measurement");
+}
+
+/// agentd serves requests before its first measurement, which must not let a start through
+/// unchecked.
+#[tokio::test(flavor = "local")]
+async fn a_start_before_the_first_measurement_is_checked() {
+    let (control_plane, _host_disk, _provider) = stopped_beside_host_disk(GIB).await;
+
+    let refused = control_plane.start("worker", false).await;
+    assert!(
+        matches!(&refused, Err(Error::Invalid(message)) if message.contains("1.0 GiB")),
+        "{refused:?}"
+    );
+}
+
+/// A fault in measuring the free space would otherwise keep every agent from starting, and an
+/// earlier measurement says nothing about the space now.
+#[tokio::test(flavor = "local")]
+async fn a_start_goes_ahead_when_the_free_space_cannot_be_measured() {
+    let (control_plane, host_disk, provider) = stopped_beside_host_disk(GIB).await;
+    host_disk.measure(LowDiskThreshold::Share(500)).await;
+
+    provider.disk_measurement.set(Measurement::Failing);
+    let started = control_plane
+        .start("worker", false)
+        .await
+        .expect("started without knowing the free space");
+    assert_eq!(started.spec.run_state(), agent::RunState::Running);
+}
+
+/// A filesystem that stalls costs the start its check rather than its answer.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_start_goes_ahead_when_measuring_the_free_space_stalls() {
+    let (control_plane, host_disk, provider) = stopped_beside_host_disk(GIB).await;
+    host_disk.measure(LowDiskThreshold::Share(500)).await;
+
+    provider.disk_measurement.set(Measurement::Hanging);
+    let started = tokio::time::timeout(Duration::from_secs(60), control_plane.start("worker", false))
+        .await
+        .expect("start answers while the measurement stalls")
+        .expect("started without knowing the free space");
+    assert_eq!(started.spec.run_state(), agent::RunState::Running);
+}
+
 /// Clients show how much the host has left for the agents' disks, also while it is not low.
 #[tokio::test(flavor = "local")]
 async fn the_host_disk_reports_the_space_last_measured() {
     const GIB: u64 = 1 << 30;
     let fixture = fixture();
     let provider = Rc::new(PlannedProvider::new(fixture.backend.clone(), []));
-    let host_disk = HostDisk::new(sandbox_service(provider.clone()), Changes::new());
+    let host_disk = HostDisk::new(
+        sandbox_service(provider.clone()),
+        LowDiskThreshold::Share(500),
+        Changes::new(),
+    );
     let control_plane = ControlPlane::new(fixture.store.clone(), Rc::new(NotificationCounter::default()))
         .with_host_disk(host_disk.clone());
     assert_eq!(control_plane.host_disk(), None, "nothing is measured yet");

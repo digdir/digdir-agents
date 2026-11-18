@@ -32,6 +32,10 @@ pub struct RunRequest {
     /// other.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub allow_exposed_files: std::collections::BTreeSet<PathBuf>,
+    /// Make the agent also while the filesystem holding the sandboxes' disks is below
+    /// `lowDiskThreshold`, which agentd refuses otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_low_disk: bool,
 }
 
 /// A host folder given for a bind mount when an agent is applied or run, as with
@@ -130,9 +134,11 @@ impl ControlPlane {
     /// # Errors
     ///
     /// Returns an error when the definition is invalid or unknown, a folder is refused, the name
-    /// belongs to another agent, an agent of the definition already works on the folders, or the
+    /// belongs to another agent, an agent of the definition already works on the folders, the
+    /// filesystem holding the sandboxes' disks is low and the request does not allow it, or the
     /// agent cannot be stored.
     pub async fn run(&self, request: RunRequest) -> Result<(Ran, AgentId), Error> {
+        self.admit(request.allow_low_disk).await?;
         let binds = self.validate_bind_sources(&request.binds).await?;
         let prepared = match request.definition {
             RunDefinition::Reference { reference } => self.prepare_reference(&reference).await?,
@@ -161,6 +167,8 @@ impl ControlPlane {
     /// internal definition named `definition`, such as `sign-in-github`, and
     /// starts it. It is ephemeral, so each request makes its own, which agentd deletes once the
     /// client that asked for it is gone.
+    /// It is made also while the filesystem holding the sandboxes' disks is low, as a sign-in
+    /// cannot allow that, and its agent lives only while the sign-in does.
     ///
     /// # Errors
     ///

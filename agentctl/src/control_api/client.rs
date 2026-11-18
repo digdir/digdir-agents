@@ -20,7 +20,7 @@ use super::protocol::{
     METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, ProgressParams, ReadMessage, Request,
     ResourcesWatchParams, Response, RestartParams, SecretRemoveResult, SecretSetParams, SessionEnsureParams,
     SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult,
-    SignInAgentParams, read_message,
+    SignInAgentParams, StartParams, read_message,
 };
 
 /// A byte stream usable by the Control API client.
@@ -383,11 +383,27 @@ impl Client {
     ///
     /// Returns an error when transport, protocol validation, or the control-plane operation fails.
     pub async fn set_run_state(&self, name: &str, state: crate::RunState) -> Result<Agent, Error> {
-        let method = match state {
-            crate::RunState::Running => METHOD_START,
-            crate::RunState::Stopped => METHOD_STOP,
-        };
-        self.call(method, NameParams { name: name.into() }).await
+        match state {
+            crate::RunState::Running => self.start(name, false).await,
+            crate::RunState::Stopped => self.call(METHOD_STOP, NameParams { name: name.into() }).await,
+        }
+    }
+
+    /// Records an agent as running and returns the agent as stored; the reconciler starts it. With
+    /// `allow_low_disk`, agentd starts a stopped agent also while the host disk is low.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the control-plane operation fails.
+    pub async fn start(&self, name: &str, allow_low_disk: bool) -> Result<Agent, Error> {
+        self.call(
+            METHOD_START,
+            StartParams {
+                name: name.into(),
+                allow_low_disk,
+            },
+        )
+        .await
     }
 
     /// Records an agent as stopped and has its sandbox ended at once, without letting the guest
