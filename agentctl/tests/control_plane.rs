@@ -4701,7 +4701,7 @@ fn is_trim(spec: &sandbox::execution::ExecutionSpec) -> bool {
     *spec
         == sandbox::execution::ExecutionSpec::command(
             SandboxPath::new("/bin/sh"),
-            ["-c".to_owned(), "exec fstrim /".to_owned()],
+            ["-c".to_owned(), agent::sandbox::TRIM_SCRIPT.to_owned()],
         )
 }
 
@@ -4787,6 +4787,111 @@ async fn a_guest_without_discard_is_not_trimmed_again() {
         "the agent works without trimming"
     );
     trimmer.abort();
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_guest_whose_user_cannot_become_root_is_not_trimmed_again() {
+    let (fixture, trimmer) = trimming();
+    fixture
+        .control_plane
+        .apply(with_direct_root(apply_request("worker")))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "worker").await;
+    fixture.backend.queue_execution_events_matching(
+        is_trim,
+        vec![
+            sandbox::execution::ExecutionEvent::Started { process_id: None },
+            sandbox::execution::ExecutionEvent::Stderr(
+                "the guest's user is not root and cannot use sudo without a password\n".into(),
+            ),
+            sandbox::execution::ExecutionEvent::Exited(sandbox::execution::ExitStatus { code: 126 }),
+        ],
+    );
+
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL * 3 + Duration::from_secs(1)).await;
+
+    assert_eq!(trims(&fixture.backend), 1, "the guest is asked once");
+    trimmer.abort();
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_trim_the_guest_may_not_run_for_another_reason_is_tried_again() {
+    let (fixture, trimmer) = trimming();
+    fixture
+        .control_plane
+        .apply(with_direct_root(apply_request("worker")))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "worker").await;
+    // The shell's own exit status when it may not run a program, as on a `noexec` mount.
+    fixture.backend.queue_execution_events_matching(
+        is_trim,
+        vec![
+            sandbox::execution::ExecutionEvent::Started { process_id: None },
+            sandbox::execution::ExecutionEvent::Stderr(
+                "/bin/sh: 3: exec: /usr/sbin/fstrim: Permission denied\n".into(),
+            ),
+            sandbox::execution::ExecutionEvent::Exited(sandbox::execution::ExitStatus { code: 126 }),
+        ],
+    );
+
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL * 3 + Duration::from_secs(1)).await;
+
+    assert_eq!(trims(&fixture.backend), 3, "the guest is asked at every interval");
+    trimmer.abort();
+}
+
+/// Runs the trim script with `id`, `fstrim` and `sudo` replaced by stand-ins, as the user `uid`
+/// whose `sudo -n true` exits with `sudo_status`. Returns the exit status, the error output and the
+/// commands the stand-ins were run as.
+#[cfg(unix)]
+fn run_trim_script(uid: u32, sudo_status: i32) -> (Option<i32>, String, String) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let log = directory.path().join("log");
+    for (name, body) in [
+        ("id", "echo \"$STUB_UID\""),
+        ("fstrim", "echo \"fstrim $*\" >> \"$STUB_LOG\""),
+        (
+            "sudo",
+            "if [ \"$2\" = true ]; then exit \"$STUB_SUDO_STATUS\"; fi\necho \"sudo $1 ${2##*/} $3\" >> \"$STUB_LOG\"",
+        ),
+    ] {
+        let path = directory.path().join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("stand-in");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("executable stand-in");
+    }
+    let output = std::process::Command::new("/bin/sh")
+        .args(["-c", agent::sandbox::TRIM_SCRIPT])
+        .env_clear()
+        .env("PATH", directory.path())
+        .env("STUB_UID", uid.to_string())
+        .env("STUB_SUDO_STATUS", sudo_status.to_string())
+        .env("STUB_LOG", &log)
+        .output()
+        .expect("shell");
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        std::fs::read_to_string(&log).unwrap_or_default(),
+    )
+}
+
+/// An execution runs as the image's user, and only root may trim.
+#[cfg(unix)]
+#[test]
+fn a_trim_goes_through_sudo_unless_the_guest_user_is_root() {
+    assert_eq!(run_trim_script(0, 1), (Some(0), String::new(), "fstrim /\n".to_owned()));
+    assert_eq!(
+        run_trim_script(1000, 0),
+        (Some(0), String::new(), "sudo -n fstrim /\n".to_owned())
+    );
+    let (status, stderr, ran) = run_trim_script(1000, 1);
+    assert_eq!(status, Some(126));
+    assert!(stderr.contains("cannot use sudo without a password"), "{stderr}");
+    assert_eq!(ran, "", "nothing is trimmed");
 }
 
 #[tokio::test(flavor = "local", start_paused = true)]

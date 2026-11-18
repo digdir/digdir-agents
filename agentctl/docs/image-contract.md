@@ -22,5 +22,7 @@ agent, and removes the skills it placed that the agent no longer declares. It le
 ship skills of its own.
 
 `agentd` runs `fstrim /` as root in an agent with a `direct` root filesystem at the interval
-[`TRIM_INTERVAL`](../src/sandbox/trim.rs) sets, so the host gets back the disk space the agent frees. An image without
-`fstrim` still works, but its disk file on the host only grows. Ubuntu's `util-linux`, and so the base images, ship it.
+[`TRIM_INTERVAL`](../src/sandbox/trim.rs) sets, so the host gets back the disk space the agent frees. When the image's
+user is not root, it runs it through `sudo -n`. An image without `fstrim`, or whose user can't use `sudo` without a
+password, still works, but its disk file on the host only grows. Ubuntu's `util-linux`, and so the base images, ship
+`fstrim`, and their user has `sudo`.
