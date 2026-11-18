@@ -802,6 +802,13 @@ fn extract_archive(archive: &Path, destination: &Path) -> Result<(), Error> {
         let name = name
             .to_str()
             .ok_or_else(|| Error::Invalid("Agent archive contains a non-UTF-8 path".into()))?;
+        // Refused like any other extra entry, but named, since the generic message does not lead to the cause.
+        if name.strip_prefix("._").is_some_and(|binary| expected.contains(binary)) {
+            return Err(Error::Invalid(format!(
+                "agentctl archive entry {name:?} is macOS metadata (an AppleDouble entry), which tar adds for a file \
+                 with extended attributes. Pack the archive without it, such as with COPYFILE_DISABLE=1 set for tar"
+            )));
+        }
         if !expected.contains(name) || !found.insert(name.to_owned()) || !entry.header().entry_type().is_file() {
             return Err(Error::Invalid(format!("unexpected agentctl archive entry {name:?}")));
         }
@@ -1377,6 +1384,41 @@ mod tests {
         assert!(error.to_string().contains("checksum mismatch"));
         assert!(!paths.current().exists());
         assert!(!paths.releases().exists());
+    }
+
+    #[test]
+    fn archive_with_macos_metadata_is_refused_by_name() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let archive = temporary.path().join("agent.tar.gz");
+        let metadata = format!("._{}", binary_names()[0]);
+        let mut package = tar::Builder::new(flate2::write::GzEncoder::new(
+            File::create(&archive).expect("archive"),
+            flate2::Compression::fast(),
+        ));
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o755);
+        header.set_cksum();
+        package
+            .append_data(&mut header, &metadata, std::io::empty())
+            .expect("entry");
+        package
+            .into_inner()
+            .expect("archive")
+            .finish()
+            .expect("compressed archive");
+        let destination = temporary.path().join("release");
+        fs::create_dir(&destination).expect("destination");
+
+        let error = extract_archive(&archive, &destination)
+            .expect_err("macOS metadata")
+            .to_string();
+
+        // The error leads to the cause and the remedy: which entry, what it is and how to pack without it.
+        assert!(error.contains(&format!("{metadata:?}")), "names the entry: {error}");
+        assert!(error.contains("macOS metadata"), "says it is macOS metadata: {error}");
+        assert!(error.contains("COPYFILE_DISABLE=1"), "names the remedy: {error}");
+        assert!(!destination.join(&metadata).exists());
     }
 
     #[cfg(unix)]
