@@ -315,7 +315,7 @@ struct UnsupportedProvider {
 /// manifest or `.env` changes. A transient failure fails only the pass that
 /// takes it.
 #[derive(Clone)]
-enum PlannedFailure {
+pub(crate) enum PlannedFailure {
     Invalid(String),
     /// The sandbox provider rejects the request itself (an SDK `InvalidRequest`).
     Rejected,
@@ -331,11 +331,11 @@ enum PlannedFailure {
 
 const TELEMETRY_FLOOD: usize = 4_096;
 
-struct PlannedProvider {
+pub(crate) struct PlannedProvider {
     inner: MemoryProvider,
     failures: RefCell<VecDeque<PlannedFailure>>,
     /// The space it reports on the host filesystem holding its sandboxes.
-    disk: Cell<Option<DiskSpace>>,
+    pub(crate) disk: Cell<Option<DiskSpace>>,
     /// How it answers when asked to measure a root disk.
     measurement: Cell<Measurement>,
 }
@@ -352,7 +352,10 @@ enum Measurement {
 }
 
 impl PlannedProvider {
-    fn new(backend: Rc<sandbox_memory::Provider>, failures: impl IntoIterator<Item = PlannedFailure>) -> Self {
+    pub(crate) fn new(
+        backend: Rc<sandbox_memory::Provider>,
+        failures: impl IntoIterator<Item = PlannedFailure>,
+    ) -> Self {
         Self {
             inner: MemoryProvider::new(backend),
             failures: RefCell::new(failures.into_iter().collect()),
@@ -800,7 +803,11 @@ async fn every_agent_reports_a_low_host_disk_until_space_returns() {
     // The Provider reports the filesystem holding its sandboxes' disks, which need not be agentd's
     // home, so the warning follows what it reports.
     let provider = Rc::new(PlannedProvider::new(fixture.backend.clone(), []));
-    let host_disk = HostDisk::new(sandbox_service(provider.clone()), changes.clone());
+    let host_disk = HostDisk::new(
+        sandbox_service(provider.clone()),
+        LowDiskThreshold::Share(500),
+        changes.clone(),
+    );
     fixture.control_plane = ControlPlane::new(fixture.store.clone(), Rc::new(NotificationCounter::default()))
         .with_host_disk(host_disk.clone());
     for name in ["running", "pending"] {
@@ -869,7 +876,11 @@ async fn the_host_disk_reports_the_space_last_measured() {
     const GIB: u64 = 1 << 30;
     let fixture = fixture();
     let provider = Rc::new(PlannedProvider::new(fixture.backend.clone(), []));
-    let host_disk = HostDisk::new(sandbox_service(provider.clone()), Changes::new());
+    let host_disk = HostDisk::new(
+        sandbox_service(provider.clone()),
+        LowDiskThreshold::Share(500),
+        Changes::new(),
+    );
     let control_plane = ControlPlane::new(fixture.store.clone(), Rc::new(NotificationCounter::default()))
         .with_host_disk(host_disk.clone());
     assert_eq!(control_plane.host_disk(), None, "nothing is measured yet");

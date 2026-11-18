@@ -390,6 +390,17 @@ impl Client {
         self.call(method, NameParams { name: name.into() }).await
     }
 
+    /// Records an agent as running and returns the agent as stored; the reconciler starts it. With
+    /// `allow_low_disk`, agentd starts a stopped agent also while the host disk is low.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, protocol validation, or the control-plane operation fails.
+    pub async fn start(&self, name: &str, allow_low_disk: bool) -> Result<Agent, Error> {
+        let _ = allow_low_disk;
+        self.call(METHOD_START, NameParams { name: name.into() }).await
+    }
+
     /// Records an agent as stopped and has its sandbox ended at once, without letting the guest
     /// shut down; returns the agent as stored.
     ///

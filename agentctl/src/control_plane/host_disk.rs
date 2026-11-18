@@ -30,18 +30,21 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(30);
 #[derive(Clone)]
 pub struct HostDisk {
     sandboxes: Rc<Service>,
+    threshold: Rc<Cell<LowDiskThreshold>>,
     low: Rc<RefCell<Option<Condition>>>,
     fullest: Rc<Cell<Option<DiskSpace>>>,
     changes: Changes,
 }
 
 impl HostDisk {
-    /// Starts with nothing measured where the Providers in `sandboxes` keep the sandboxes' disks.
-    /// Every change to what agents show advances `changes`.
+    /// Starts with nothing measured where the Providers in `sandboxes` keep the sandboxes' disks,
+    /// and `threshold` as the free space below which they are low. Every change to what agents
+    /// show advances `changes`.
     #[must_use]
-    pub fn new(sandboxes: Rc<Service>, changes: Changes) -> Self {
+    pub fn new(sandboxes: Rc<Service>, threshold: LowDiskThreshold, changes: Changes) -> Self {
         Self {
             sandboxes,
+            threshold: Rc::new(Cell::new(threshold)),
             low: Rc::default(),
             fullest: Rc::default(),
             changes,
@@ -111,7 +114,8 @@ impl HostDisk {
     /// Measures the filesystem now and then, against the threshold in `config`, which it reads
     /// again each time so that a change applies without restarting agentd. A setting it cannot
     /// read keeps the last one it could.
-    pub async fn run(self, config: PathBuf, mut threshold: LowDiskThreshold) {
+    pub async fn run(self, config: PathBuf) {
+        let mut threshold = self.threshold.get();
         let mut ticker = tokio::time::interval(CHECK_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
