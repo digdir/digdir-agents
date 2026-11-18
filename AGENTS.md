@@ -14,15 +14,24 @@ Follow [CONTRIBUTING.md](CONTRIBUTING.md).
   the issue, so merging it does not close the issue. GitHub links a pull request to its issue only from a closing
   keyword in the description, not from commit messages, and that link is how others find the pull request from the
   issue. After `gh pr create` or `gh pr edit`, check the link with the first command above.
-- When you start on an issue, assign it to yourself with `gh issue edit N --add-assignee @me`, and assign each pull
-  request you open for it, drafts included, with
-  `gh api -X POST repos/{owner}/{repo}/issues/PR/assignees -f "assignees[]=$(gh api user --jq .login)"`. Use the API
-  for the pull request because `gh pr edit` also needs the `read:org` scope. Then set the issue's Status to
-  In Progress in the projects it is on. That shows others someone is on it, even before a pull request exists.
-  Setting the status needs a token with the `project` scope, and you need access to the project, since GitHub hides
-  a private project from accounts without it. Set it with the `updateProjectV2ItemFieldValue` mutation through
-  `gh api graphql`, because `gh project` also needs `read:org`. If you can't set it, tell the person and carry on
-  with the work, and set the status once they have fixed the access.
+- When you start on an issue, assign it to yourself with `gh issue edit N --add-assignee @me`, and each pull request
+  you open for it, drafts included, with `gh pr edit --add-assignee @me`. That shows others someone is on it.
+- The [digdir-agents project](https://github.com/orgs/digdir/projects/74) shows people where each issue and pull
+  request stands, without reading every thread. GitHub adds them to it and sets Status to Done when they close. You
+  keep the rest current on the issue and on its pull requests, in the same step as the change it describes, since a
+  board that lags is read as the truth anyway:
+  - Status is In Progress from when you start on the issue.
+  - Agent State says where the work is: Analyzing while you read and plan, Coding while you write the change, QA while
+    it is reviewed, and Blocked: Human needed while it waits on a person. Clear it when the work is merged or closed.
+  - Blocked: Human needed also stops you. A person sets it to pause your work, so check it before every action others
+    will see. While it is set, do nothing others will see except to say what you wait for, and resume when a person
+    changes it.
+
+  Get an item's id with `gh project item-add 74 --owner digdir --url URL --format json`, which returns the existing
+  item, and the field and option ids with `gh project field-list 74 --owner digdir --format json`. Then set the field
+  with `gh project item-edit`. This needs the `project` and `read:org` scopes and access to the project, which GitHub
+  hides from accounts without it. If you can't set a field, tell the person and carry on, and set it once they have
+  fixed the access.
 
 ## Writing
 
