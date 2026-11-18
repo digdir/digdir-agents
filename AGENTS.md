@@ -14,6 +14,13 @@ Follow [CONTRIBUTING.md](CONTRIBUTING.md).
   the issue, so merging it does not close the issue. GitHub links a pull request to its issue only from a closing
   keyword in the description, not from commit messages, and that link is how others find the pull request from the
   issue. After `gh pr create` or `gh pr edit`, check the link with the first command above.
+- When you start on an issue, assign it to yourself with `gh issue edit N --add-assignee @me`, and assign each pull
+  request you open for it, drafts included, with
+  `gh api -X POST repos/{owner}/{repo}/issues/PR/assignees -f "assignees[]=$(gh api user --jq .login)"`. Use the API
+  for the pull request because `gh pr edit` also needs the `read:org` scope. Then set the issue's Status to
+  In progress in the projects it is on, with `gh project item-edit`. That shows others someone is on it, even before
+  a pull request exists. Setting the status needs a token with the `project` scope. If yours lacks it, tell the
+  person and carry on with the work, and set the status once they have fixed the token.
 
 ## Writing
 
