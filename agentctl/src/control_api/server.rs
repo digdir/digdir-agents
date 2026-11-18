@@ -134,6 +134,11 @@ pub trait AgentApi {
     /// Lists every active agent.
     fn list(&self) -> LocalFuture<'_, Result<Vec<Agent>, Error>>;
 
+    /// The space on the host filesystem holding the agents' disks, as last measured.
+    fn host_disk(&self) -> Option<crate::local::disk::DiskSpace> {
+        None
+    }
+
     /// Resolves an agent from its persisted source directory.
     fn resolve_directory<'a>(
         &'a self,
@@ -207,6 +212,10 @@ impl AgentApi for control_plane::ControlPlane {
 
     fn list(&self) -> LocalFuture<'_, Result<Vec<Agent>, Error>> {
         Box::pin(async move { Self::list(self).await })
+    }
+
+    fn host_disk(&self) -> Option<crate::local::disk::DiskSpace> {
+        Self::host_disk(self)
     }
 
     fn resolve_directory<'a>(
@@ -1121,6 +1130,7 @@ impl Server {
                 agents,
                 ephemeral_agents: ephemeral.len(),
                 sessions,
+                host_disk: self.agents.host_disk(),
                 volumes: match &self.volumes {
                     Some(volumes) => volumes.list().await?,
                     None => Vec::new(),

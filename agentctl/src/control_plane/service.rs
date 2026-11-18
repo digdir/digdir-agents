@@ -160,6 +160,13 @@ impl ControlPlane {
         self
     }
 
+    /// The space on the host filesystem holding the sandboxes' disks, as last measured, or `None`
+    /// when nothing measures it.
+    #[must_use]
+    pub fn host_disk(&self) -> Option<crate::local::disk::DiskSpace> {
+        self.host_disk.as_ref().and_then(super::HostDisk::space)
+    }
+
     /// Measures the root filesystem of each agent it gets or lists through `sandboxes`.
     #[must_use]
     pub fn with_sandboxes(mut self, sandboxes: Rc<crate::sandbox::Service>) -> Self {

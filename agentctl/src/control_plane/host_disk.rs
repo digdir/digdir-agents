@@ -5,7 +5,12 @@
 //! risk, and each one says so with `HostDiskLow=True`. agentd measures the filesystem itself, so
 //! the condition is worked out when an agent is read, not stored.
 
-use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    path::PathBuf,
+    rc::Rc,
+    time::Duration,
+};
 
 use crate::{
     Condition, ConditionStatus,
@@ -26,6 +31,7 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(30);
 pub struct HostDisk {
     sandboxes: Rc<Service>,
     low: Rc<RefCell<Option<Condition>>>,
+    fullest: Rc<Cell<Option<DiskSpace>>>,
     changes: Changes,
 }
 
@@ -37,6 +43,7 @@ impl HostDisk {
         Self {
             sandboxes,
             low: Rc::default(),
+            fullest: Rc::default(),
             changes,
         }
     }
@@ -80,6 +87,13 @@ impl HostDisk {
             self.low.replace(condition);
             self.changes.bump();
         }
+    }
+
+    /// The space on the filesystem with the least free space where the sandboxes' disks are, as
+    /// last measured, or `None` before the first measurement.
+    #[must_use]
+    pub fn space(&self) -> Option<DiskSpace> {
+        self.fullest.get()
     }
 
     /// The condition every agent shows while the filesystem is low.

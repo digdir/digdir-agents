@@ -1698,6 +1698,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_status_line_shows_the_free_space_on_the_host_disk_and_when_it_is_low() {
+        const GIB: u64 = 1 << 30;
+        let mut app = tree_app(1);
+        let mut terminal = Terminal::new(TestBackend::new(120, 12)).expect("test terminal");
+        draw(&mut terminal, &app);
+        assert!(!buffer_text(&terminal).contains("disk"), "{}", buffer_text(&terminal));
+
+        app.host_disk = Some(agent::local::disk::DiskSpace {
+            available: 400 * GIB,
+            total: 1_000 * GIB,
+        });
+        draw(&mut terminal, &app);
+        let header = buffer_text(&terminal).lines().next().unwrap_or_default().to_owned();
+        assert!(header.contains("· disk 400Gi free of 1000Gi"), "{header}");
+
+        let mut agents = app.agents.clone();
+        for agent in &mut agents {
+            agent.status.conditions.push(agent::Condition {
+                kind: agent::Condition::HOST_DISK_LOW.into(),
+                status: agent::ConditionStatus::True,
+                reason: agent::Condition::REASON_BELOW_THRESHOLD.into(),
+                message: String::new(),
+                last_transition_time: None,
+            });
+        }
+        app.apply_snapshot(agents, Vec::new());
+        app.host_disk = Some(agent::local::disk::DiskSpace {
+            available: 20 * GIB,
+            total: 1_000 * GIB,
+        });
+        draw(&mut terminal, &app);
+        let header = buffer_text(&terminal).lines().next().unwrap_or_default().to_owned();
+        assert!(header.contains("· disk low: 20Gi free of 1000Gi"), "{header}");
+    }
+
     fn tree_app(count: usize) -> App {
         let agents = (0..count)
             .map(|index| {

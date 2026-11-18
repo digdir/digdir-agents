@@ -701,6 +701,26 @@ async fn every_agent_reports_a_low_host_disk_until_space_returns() {
     );
 }
 
+/// Clients show how much the host has left for the agents' disks, also while it is not low.
+#[tokio::test(flavor = "local")]
+async fn the_host_disk_reports_the_space_last_measured() {
+    const GIB: u64 = 1 << 30;
+    let fixture = fixture();
+    let provider = Rc::new(PlannedProvider::new(fixture.backend.clone(), []));
+    let host_disk = HostDisk::new(sandbox_service(provider.clone()), Changes::new());
+    let control_plane = ControlPlane::new(fixture.store.clone(), Rc::new(NotificationCounter::default()))
+        .with_host_disk(host_disk.clone());
+    assert_eq!(control_plane.host_disk(), None, "nothing is measured yet");
+
+    let space = DiskSpace {
+        available: 400 * GIB,
+        total: 1_000 * GIB,
+    };
+    provider.disk.set(Some(space));
+    host_disk.measure(LowDiskThreshold::Share(500)).await;
+    assert_eq!(control_plane.host_disk(), Some(space));
+}
+
 #[tokio::test(flavor = "local")]
 async fn lists_agents_and_resolves_the_nearest_unique_source_directory() {
     let fixture = fixture();
