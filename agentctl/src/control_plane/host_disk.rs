@@ -3,7 +3,8 @@
 //! Each agent's root disk grows as its guest writes, up to its capacity, and they all share the
 //! filesystem their Provider keeps them on. So while that filesystem is low, every agent is at
 //! risk, and each one says so with `HostDiskLow=True`. agentd measures the filesystem itself, so
-//! the condition is worked out when an agent is read, not stored.
+//! the condition is worked out when an agent is read, not stored. A request that would make or
+//! start a sandbox measures it again, so that it is refused on the free space it would take.
 
 use std::{
     cell::{Cell, RefCell},
@@ -13,7 +14,7 @@ use std::{
 };
 
 use crate::{
-    Condition, ConditionStatus,
+    Condition, ConditionStatus, Error,
     local::{
         config::DaemonConfig,
         disk::{DiskSpace, LowDiskThreshold},
@@ -25,6 +26,10 @@ use crate::{
 
 /// How often agentd measures the filesystem. A build can write gigabytes in a minute.
 const CHECK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How long a request that would make or start a sandbox waits for the free space before it goes
+/// ahead without it, so that a filesystem that stalls costs the check rather than the request.
+const ADMIT_DEADLINE: Duration = Duration::from_secs(5);
 
 /// The free space where the Providers in `sandboxes` keep the sandboxes' disks, as last measured.
 #[derive(Clone)]
@@ -51,33 +56,33 @@ impl HostDisk {
         }
     }
 
-    /// Measures the free space where the sandboxes' disks are, against `threshold`. A measurement
-    /// that fails keeps what agents show.
+    /// Measures the free space where the sandboxes' disks are, against `threshold`, which requests
+    /// are checked against from then on. A measurement that fails keeps what agents show.
     pub async fn measure(&self, threshold: LowDiskThreshold) {
-        match self.sandboxes.host_disks().await {
-            Ok(spaces) => {
-                // A change in it alone wakes no watcher. Watches reply at least every 30 seconds
-                // anyway, and the free space changes with nearly every measurement.
-                self.fullest
-                    .set(spaces.iter().copied().min_by_key(|space| space.available));
-                self.observe(spaces.into_iter().find(|space| threshold.is_low(*space)), threshold);
-            }
-            Err(error) => tracing::warn!(%error, "free space measurement failed"),
+        self.threshold.set(threshold);
+        if let Err(error) = self.measure_now().await {
+            tracing::warn!(%error, "free space measurement failed");
         }
+    }
+
+    /// Measures the free space against the current threshold, records what agents show, and
+    /// returns the space of a filesystem below it, if any.
+    async fn measure_now(&self) -> Result<Option<DiskSpace>, Error> {
+        let threshold = self.threshold.get();
+        let spaces = self.sandboxes.host_disks().await?;
+        // A change in it alone wakes no watcher. Watches reply at least every 30 seconds anyway,
+        // and the free space changes with nearly every measurement.
+        self.fullest
+            .set(spaces.iter().copied().min_by_key(|space| space.available));
+        let low = spaces.into_iter().find(|space| threshold.is_low(*space));
+        self.observe(low, threshold);
+        Ok(low)
     }
 
     /// Records `low`, the filesystem below `threshold`, or `None` when none is.
     fn observe(&self, low: Option<DiskSpace>, threshold: LowDiskThreshold) {
         let condition = low.map(|space| {
-            let message = format!(
-                "{} free on the filesystem holding the sandboxes' disks, below lowDiskThreshold {}{}",
-                bytes(space.available),
-                threshold,
-                match threshold {
-                    LowDiskThreshold::Share(_) => format!(" ({})", bytes(threshold.bytes(space.total))),
-                    LowDiskThreshold::Size(_) => String::new(),
-                },
-            );
+            let message = low_message(space, threshold);
             let since = self
                 .low
                 .borrow()
@@ -103,6 +108,43 @@ impl HostDisk {
     #[must_use]
     pub fn space(&self) -> Option<DiskSpace> {
         self.fullest.get()
+    }
+
+    /// Refuses a request that would make or start a sandbox while the filesystem is low, unless
+    /// `allowed`. A new sandbox's disk grows into the space the agents already running need, so
+    /// the person decides whether it may. An agent already running keeps its space and is not
+    /// refused.
+    ///
+    /// It measures the filesystem again rather than trusting the last measurement, which can be
+    /// up to [`CHECK_INTERVAL`] old, or missing before the first one. When that measurement fails
+    /// or stalls, it lets the request through and logs why, since a fault in measuring should not
+    /// keep every agent from starting.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Invalid`] saying how much is free, and how to start the agent anyway.
+    pub async fn admit(&self, allowed: bool) -> Result<(), Error> {
+        if allowed {
+            return Ok(());
+        }
+        match tokio::time::timeout(ADMIT_DEADLINE, self.measure_now()).await {
+            Ok(Ok(None)) => Ok(()),
+            Ok(Ok(Some(low))) => Err(Error::Invalid(format!(
+                "Not starting the agent: {}. Free space there, or pass --allow-low-disk to start it anyway",
+                low_message(low, self.threshold.get())
+            ))),
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "starting an agent without knowing the free space, as measuring it failed");
+                Ok(())
+            }
+            Err(_) => {
+                tracing::warn!(
+                    deadline = ?ADMIT_DEADLINE,
+                    "starting an agent without knowing the free space, as measuring it stalled"
+                );
+                Ok(())
+            }
+        }
     }
 
     /// The condition every agent shows while the filesystem is low.
@@ -132,6 +174,19 @@ impl HostDisk {
             self.measure(threshold).await;
         }
     }
+}
+
+/// What is free on the filesystem with `space`, below `threshold`.
+fn low_message(space: DiskSpace, threshold: LowDiskThreshold) -> String {
+    format!(
+        "{} free on the filesystem holding the sandboxes' disks, below lowDiskThreshold {}{}",
+        bytes(space.available),
+        threshold,
+        match threshold {
+            LowDiskThreshold::Share(_) => format!(" ({})", bytes(threshold.bytes(space.total))),
+            LowDiskThreshold::Size(_) => String::new(),
+        },
+    )
 }
 
 /// The warning `apply` gives when `room`, what the root disks on the filesystem with `space` can

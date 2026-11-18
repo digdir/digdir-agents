@@ -1248,6 +1248,7 @@ fn request(name: &str) -> ApplyRequest {
         binds: Vec::new(),
         create_only: false,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        allow_low_disk: false,
         agent: agent(name),
     }
 }

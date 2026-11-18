@@ -17,6 +17,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 - `agentctl tui` shows how much host disk each agent's root filesystem takes out of its capacity in the agent's status panel, such as `Disk: 12Gi/100Gi`, and the free space on the host's disk in the status line, in yellow while it is low. ([#228](https://github.com/digdir/digdir-agents/issues/228))
 - `agentctl apply` warns when the agents' root disks can together grow past the free space on the filesystem holding them: each one's `rootFilesystem.capacity`, less what the host has already allocated to it, added up over every agent. The agent is applied either way. ([#228](https://github.com/digdir/digdir-agents/issues/228))
+- agentd refuses to make or start an agent while the host filesystem holding agents' disks is below `lowDiskThreshold`, and says how much is free: `agentctl apply` of a new agent or of a stopped one set to `runState: Running`, `agentctl start` and `agentctl run`. Pass `--allow-low-disk` to start that agent anyway. An agent already running keeps running. ([agentd configuration](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/agentd-configuration.md), [#415](https://github.com/digdir/digdir-agents/issues/415))
 
 ### Fixed
 

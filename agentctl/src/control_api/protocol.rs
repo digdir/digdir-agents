@@ -124,6 +124,15 @@ pub(crate) struct NameParams {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct StartParams {
+    pub name: String,
+    /// Starts a stopped agent also while the host disk is low.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub allow_low_disk: bool,
+}
+
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RestartParams {
     pub name: String,

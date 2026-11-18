@@ -19,6 +19,17 @@ is free. `agentctl get`, `agentctl describe` and `agentctl tui` show it until th
 line of `agentctl tui` shows the free space there once `agentd` has measured it, and turns yellow below the
 threshold.
 
+While the filesystem is below the threshold, `agentd` also refuses to make or start an agent, since a new agent's disk
+grows into the space the running ones need. That is `agentctl apply` of a new agent, or of a stopped one whose manifest
+sets `runState: Running`, `agentctl start` and `agentctl run`, and the error says how much is free. Pass
+`--allow-low-disk` to one of them to start that agent anyway. Applying a stopped agent without `runState` keeps it
+stopped, so it is not refused. `agentd` still restarts an agent that is already running, since its disk already holds
+its space.
+
+`agentd` measures the free space again for each of these requests, so the answer does not wait for the next regular
+check. When it cannot measure it within a few seconds, it starts the agent anyway and says why in `agentd.log`, so that
+a fault in measuring does not keep every agent from starting.
+
 Give a share of the filesystem, such as `"5%"` or `"2.5%"`, or a size, as a manifest gives one, such as `"20Gi"`. The
 default is `"5%"`.
 
