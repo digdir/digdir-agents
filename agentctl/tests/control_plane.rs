@@ -4701,7 +4701,7 @@ fn is_trim(spec: &sandbox::execution::ExecutionSpec) -> bool {
     *spec
         == sandbox::execution::ExecutionSpec::command(
             SandboxPath::new("/bin/sh"),
-            ["-c".to_owned(), "exec fstrim /".to_owned()],
+            ["-c".to_owned(), agent::sandbox::TRIM_SCRIPT.to_owned()],
         )
 }
 
@@ -4787,6 +4787,47 @@ async fn a_guest_without_discard_is_not_trimmed_again() {
         "the agent works without trimming"
     );
     trimmer.abort();
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_guest_whose_user_cannot_become_root_is_not_trimmed_again() {
+    let (fixture, trimmer) = trimming();
+    fixture
+        .control_plane
+        .apply(with_direct_root(apply_request("worker")))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "worker").await;
+    fixture.backend.queue_execution_events_matching(
+        is_trim,
+        vec![
+            sandbox::execution::ExecutionEvent::Started { process_id: None },
+            sandbox::execution::ExecutionEvent::Stderr(
+                "the guest's user is not root and cannot use sudo without a password
+"
+                .into(),
+            ),
+            sandbox::execution::ExecutionEvent::Exited(sandbox::execution::ExitStatus { code: 126 }),
+        ],
+    );
+
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL * 3 + Duration::from_secs(1)).await;
+
+    assert_eq!(trims(&fixture.backend), 1, "the guest is asked once");
+    trimmer.abort();
+}
+
+/// An execution runs as the image's user, and only root may trim.
+#[test]
+fn a_trim_goes_through_sudo_unless_the_guest_user_is_root() {
+    let script = agent::sandbox::TRIM_SCRIPT;
+    let as_root = script
+        .find(r#"[ "$(id -u)" = 0 ] && exec "$fstrim" /"#)
+        .expect("root trims directly");
+    let through_sudo = script
+        .find(r#"exec sudo -n "$fstrim" /"#)
+        .expect("another user uses sudo");
+    assert!(as_root < through_sudo);
 }
 
 #[tokio::test(flavor = "local", start_paused = true)]

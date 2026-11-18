@@ -21,7 +21,7 @@ mod trim;
 pub use execution::{ExecutionService, ExecutionTarget, start_execution};
 pub use microsandbox::{GuestConnection, GuestDialer};
 pub use responsiveness::UNRESPONSIVE_AFTER;
-pub use trim::{TRIM_INTERVAL, Trimmer};
+pub use trim::{TRIM_INTERVAL, TRIM_SCRIPT, Trimmer};
 
 /// What watching a guest's heartbeat found.
 enum Heartbeat {

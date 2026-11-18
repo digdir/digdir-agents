@@ -19,8 +19,22 @@ use super::Service;
 /// How often each running agent with a direct root filesystem has it trimmed.
 pub const TRIM_INTERVAL: Duration = Duration::from_mins(15);
 
-/// Exit status of the shell when `fstrim` is not in the guest.
+/// Exit status of [`TRIM_SCRIPT`] when `fstrim` is not in the guest.
 const NOT_FOUND: i32 = 127;
+
+/// Exit status of [`TRIM_SCRIPT`] when the guest's user is not root and cannot become it.
+const NOT_ROOT: i32 = 126;
+
+/// Trims the root filesystem as root.
+///
+/// An execution runs as the image's user, which the kernel lets trim only when it is root, so any
+/// other user goes through `sudo`, as the rest of the agent's setup does. That user's `PATH` may
+/// leave out the directories that hold `fstrim`.
+pub const TRIM_SCRIPT: &str = r#"PATH="$PATH:/usr/sbin:/sbin"
+fstrim=$(command -v fstrim) || exit 127
+[ "$(id -u)" = 0 ] && exec "$fstrim" /
+sudo -n true 2>/dev/null || { echo "the guest's user is not root and cannot use sudo without a password" >&2; exit 126; }
+exec sudo -n "$fstrim" /"#;
 
 /// Trims the root filesystem of each running agent every [`TRIM_INTERVAL`].
 pub struct Trimmer {
@@ -99,11 +113,7 @@ impl Trimmer {
         {
             return Ok(None);
         }
-        // Executions run as root. The shell finds `fstrim` wherever the image keeps it.
-        let spec = ExecutionSpec::command(
-            SandboxPath::new("/bin/sh"),
-            ["-c".to_owned(), "exec fstrim /".to_owned()],
-        );
+        let spec = ExecutionSpec::command(SandboxPath::new("/bin/sh"), ["-c".to_owned(), TRIM_SCRIPT.to_owned()]);
         let output = self
             .sandboxes
             .guard_guest(record, id, async { Ok(sandbox.run_execution(spec).await?) })
@@ -113,6 +123,7 @@ impl Trimmer {
         Ok(Some(match output.status.code {
             0 => Trimmed::Trimmed,
             NOT_FOUND => Trimmed::Unable("the image has no `fstrim`".into()),
+            NOT_ROOT => Trimmed::Unable(stderr.to_owned()),
             // fstrim's message when the disk does not accept discards, as when the host turns them off.
             _ if stderr.contains("not supported") => Trimmed::Unable(stderr.to_owned()),
             code => {
