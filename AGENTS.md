@@ -18,9 +18,11 @@ Follow [CONTRIBUTING.md](CONTRIBUTING.md).
   request you open for it, drafts included, with
   `gh api -X POST repos/{owner}/{repo}/issues/PR/assignees -f "assignees[]=$(gh api user --jq .login)"`. Use the API
   for the pull request because `gh pr edit` also needs the `read:org` scope. Then set the issue's Status to
-  In progress in the projects it is on, with `gh project item-edit`. That shows others someone is on it, even before
-  a pull request exists. Setting the status needs a token with the `project` scope. If yours lacks it, tell the
-  person and carry on with the work, and set the status once they have fixed the token.
+  In Progress in the projects it is on. That shows others someone is on it, even before a pull request exists.
+  Setting the status needs a token with the `project` scope, and you need access to the project, since GitHub hides
+  a private project from accounts without it. Set it with the `updateProjectV2ItemFieldValue` mutation through
+  `gh api graphql`, because `gh project` also needs `read:org`. If you can't set it, tell the person and carry on
+  with the work, and set the status once they have fixed the access.
 
 ## Writing
 
