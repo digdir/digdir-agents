@@ -1439,6 +1439,10 @@ impl Condition {
     /// Condition type for whether the host filesystem holding the sandboxes' disks, the agent's
     /// among them, is low on space. Its message says how much is free and the threshold.
     pub const HOST_DISK_LOW: &'static str = "HostDiskLow";
+    /// Condition type in `apply`'s response for whether the agents' root disks on one host
+    /// filesystem can together grow past the space free on it. Its message says by how much they
+    /// can grow and what is free. It is advice: the agents run either way.
+    pub const HOST_DISK_OVERCOMMITTED: &'static str = "HostDiskOvercommitted";
 
     /// `Ready` reason while a pass stops the agent's sandbox, and after a stop failed.
     pub const REASON_STOPPING: &'static str = "Stopping";
