@@ -546,6 +546,7 @@ impl SandboxBackend for Provider {
 
             Ok(execution::StartedExecution {
                 id,
+                input: None,
                 events: Box::pin(MemoryExecutionEventStream {
                     events: events.into(),
                     execution: Some(execution_key),

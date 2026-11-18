@@ -1,13 +1,13 @@
 //! Streaming command execution inside a running sandbox.
 
-use std::{collections::BTreeMap, future::poll_fn, pin::Pin};
+use std::{collections::BTreeMap, future::poll_fn, pin::Pin, rc::Rc};
 
 use bytes::{Bytes, BytesMut};
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{Error, SandboxPath};
+use crate::{Error, LocalFuture, SandboxPath};
 
 /// Identifies a live Execution within a sandbox.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -204,6 +204,15 @@ pub enum ExecutionEvent {
     },
 }
 
+/// Writes the standard input of one live Execution.
+pub trait ExecutionInput {
+    /// Writes raw input bytes, applying backend transport backpressure.
+    fn write_input(&self, bytes: Bytes) -> LocalFuture<'_, Result<(), Error>>;
+
+    /// Closes the input stream and sends end-of-file to the process.
+    fn close_input(&self) -> LocalFuture<'_, Result<(), Error>>;
+}
+
 /// A non-`Send` stream of events from one live Execution.
 pub type ExecutionEventStream = Pin<Box<dyn Stream<Item = Result<ExecutionEvent, Error>>>>;
 
@@ -211,6 +220,8 @@ pub type ExecutionEventStream = Pin<Box<dyn Stream<Item = Result<ExecutionEvent,
 pub struct StartedExecution {
     /// Identifier used for Execution control operations.
     pub id: ExecutionId,
+    /// The process's standard input. Not implemented yet: always `None`.
+    pub input: Option<Rc<dyn ExecutionInput>>,
     /// Events emitted until the Execution exits or fails.
     pub events: ExecutionEventStream,
 }

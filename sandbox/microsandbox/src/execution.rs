@@ -56,6 +56,7 @@ impl MicrosandboxProvider {
 
         Ok(execution::StartedExecution {
             id: execution_id,
+            input: None,
             events: Box::pin(events),
         })
     }

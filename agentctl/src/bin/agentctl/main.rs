@@ -1957,6 +1957,35 @@ async fn stream_execution(
     Err(::sandbox::Error::ExecutionStreamEnded { id }.into())
 }
 
+/// Not implemented yet: writes nothing, and passes nothing on.
+#[allow(dead_code, clippy::unused_async, reason = "a stub for the tests, until the fix")]
+async fn stream_execution_with(
+    execution: ::sandbox::execution::StartedExecution,
+    _source: impl tokio::io::AsyncRead + Unpin,
+    _stdout: impl tokio::io::AsyncWrite + Unpin,
+    _stderr: impl tokio::io::AsyncWrite + Unpin,
+) -> Result<::sandbox::execution::ExitStatus, Error> {
+    Err(::sandbox::Error::ExecutionStreamEnded { id: execution.id }.into())
+}
+
+/// Not implemented yet: passes nothing on.
+#[allow(dead_code, clippy::unused_async, reason = "a stub for the tests, until the fix")]
+async fn pass_input(
+    _source: impl tokio::io::AsyncRead + Unpin,
+    _input: &dyn ::sandbox::execution::ExecutionInput,
+    _read_error: &std::cell::Cell<Option<std::io::Error>>,
+) {
+}
+
+/// Not implemented yet: `exec` returns a failure rather than reporting it here.
+#[allow(dead_code, reason = "a stub for the tests, until the fix")]
+fn finish_passing_input(
+    result: Result<::sandbox::execution::ExitStatus, Error>,
+    _stderr: &mut impl std::io::Write,
+) -> u8 {
+    result.map_or(0, |status| u8::try_from(status.code).unwrap_or(1))
+}
+
 fn exit_code(code: i32) -> ExitCode {
     u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
 }
@@ -2993,6 +3022,8 @@ fn absolute(current_dir: impl Fn() -> std::io::Result<PathBuf>, path: PathBuf) -
 mod tests {
     #![allow(clippy::expect_used)]
 
+    use std::cell::{Cell, RefCell};
+
     use super::*;
 
     /// A program built as Git for Windows' `ssh` is, started as `agentctl` starts `ssh`, gets each
@@ -3563,6 +3594,244 @@ mod tests {
         };
         assert!(resource.is_none());
         assert_eq!(command, ["pwd"]);
+    }
+
+    #[test]
+    fn exec_takes_standard_input_without_a_terminal() {
+        let parsed = Arguments::try_parse_from(["agentctl", "exec", "-i", "agent/worker", "--", "cat"])
+            .expect("exec arguments with -i alone");
+        let Command::Exec { stdin, tty, .. } = parsed.command else {
+            panic!("expected exec command");
+        };
+        assert!(stdin);
+        assert!(!tty);
+        assert!(Arguments::try_parse_from(["agentctl", "exec", "-t", "agent/worker", "--", "cat"]).is_err());
+    }
+
+    /// Records what [`pass_input`] passes on, and fails writes after `accepted` of them.
+    struct RecordedInput {
+        accepted: usize,
+        written: RefCell<Vec<u8>>,
+        writes: Cell<usize>,
+        attempts: Cell<usize>,
+        closed: Cell<bool>,
+        on_close: RefCell<Option<tokio::sync::oneshot::Sender<()>>>,
+        /// Keeps closing pending after end-of-file is signalled, as Microsandbox's close does
+        /// while it waits for the frame it queued to be written.
+        close_stays_pending: bool,
+    }
+
+    impl RecordedInput {
+        fn accepting(accepted: usize) -> Self {
+            Self {
+                accepted,
+                written: RefCell::default(),
+                writes: Cell::default(),
+                attempts: Cell::default(),
+                closed: Cell::default(),
+                on_close: RefCell::default(),
+                close_stays_pending: false,
+            }
+        }
+    }
+
+    impl ::sandbox::execution::ExecutionInput for RecordedInput {
+        fn write_input(&self, bytes: bytes::Bytes) -> ::sandbox::LocalFuture<'_, Result<(), ::sandbox::Error>> {
+            Box::pin(async move {
+                self.attempts.set(self.attempts.get() + 1);
+                if self.writes.get() == self.accepted {
+                    return Err(::sandbox::Error::Backend("the command exited".into()));
+                }
+                self.writes.set(self.writes.get() + 1);
+                self.written.borrow_mut().extend_from_slice(&bytes);
+                Ok(())
+            })
+        }
+
+        fn close_input(&self) -> ::sandbox::LocalFuture<'_, Result<(), ::sandbox::Error>> {
+            Box::pin(async move {
+                self.closed.set(true);
+                if let Some(closed) = self.on_close.borrow_mut().take() {
+                    let _ = closed.send(());
+                }
+                if self.close_stays_pending {
+                    std::future::pending::<()>().await;
+                }
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn passed_input_reaches_the_command_and_then_ends() {
+        let source = vec![b'x'; 200 * 1024];
+        let input = RecordedInput::accepting(usize::MAX);
+        let read_error = Cell::new(None);
+        pass_input(source.as_slice(), &input, &read_error).await;
+        assert!(read_error.take().is_none(), "no read error should be reported");
+        let written = input.written.borrow();
+        assert!(
+            *written == source,
+            "the command should get all the input: got {} of {} bytes",
+            written.len(),
+            source.len()
+        );
+        assert!(input.closed.get(), "the command should read end-of-file");
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn passing_input_stops_when_the_command_takes_no_more() {
+        let source = vec![b'x'; 200 * 1024];
+        let input = RecordedInput::accepting(1);
+        let read_error = Cell::new(None);
+        pass_input(source.as_slice(), &input, &read_error).await;
+        assert!(read_error.take().is_none(), "no read error should be reported");
+        assert_eq!(
+            input.attempts.get(),
+            2,
+            "nothing should be written after the write that failed"
+        );
+        assert!(
+            !input.closed.get(),
+            "input the command no longer takes should not be closed"
+        );
+    }
+
+    /// A source whose every read fails.
+    struct FailingRead;
+
+    impl tokio::io::AsyncRead for FailingRead {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+            _buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("the disk went away")))
+        }
+    }
+
+    fn started_execution(
+        input: Option<std::rc::Rc<dyn ::sandbox::execution::ExecutionInput>>,
+        events: ::sandbox::execution::ExecutionEventStream,
+    ) -> ::sandbox::execution::StartedExecution {
+        ::sandbox::execution::StartedExecution {
+            id: "00000000-0000-0000-0000-000000000000".parse().expect("an Execution id"),
+            input,
+            events,
+        }
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn exec_flushes_output_written_before_the_execution_fails() {
+        let endings: [Option<ExecutionEvent>; 2] = [None, Some(ExecutionEvent::Failed { message: "lost".into() })];
+        for ending in endings {
+            let events = [
+                ExecutionEvent::Stdout("out".into()),
+                ExecutionEvent::Stderr("err".into()),
+            ]
+            .into_iter()
+            .chain(ending)
+            .map(Ok);
+            let execution = started_execution(None, Box::pin(futures_util::stream::iter(events)));
+            let mut stdout = tokio::io::BufWriter::new(Vec::new());
+            let mut stderr = tokio::io::BufWriter::new(Vec::new());
+            let result = stream_execution_with(execution, tokio::io::empty(), &mut stdout, &mut stderr).await;
+            assert!(
+                matches!(
+                    result,
+                    Err(Error::Sandbox(
+                        ::sandbox::Error::ExecutionStreamEnded { .. } | ::sandbox::Error::ExecutionFailed { .. }
+                    ))
+                ),
+                "the execution's own error should be returned: {result:?}"
+            );
+            assert_eq!(stdout.get_ref().as_slice(), b"out", "standard output should be flushed");
+            assert_eq!(stderr.get_ref().as_slice(), b"err", "standard error should be flushed");
+        }
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn passing_input_closes_it_and_reports_a_read_error() {
+        let input = RecordedInput::accepting(usize::MAX);
+        let source = tokio::io::AsyncReadExt::chain(&b"prefix"[..], FailingRead);
+        let read_error = Cell::new(None);
+        pass_input(source, &input, &read_error).await;
+        assert!(read_error.take().is_some(), "the read error should be reported");
+        assert_eq!(input.written.borrow().as_slice(), b"prefix");
+        assert!(
+            input.closed.get(),
+            "the command should read end-of-file, so that it ends"
+        );
+    }
+
+    /// Streams an Execution that exits with 0 once its input is closed, as `cat` does.
+    async fn exec_reading_until_end_of_file(source: impl tokio::io::AsyncRead + Unpin, input: RecordedInput) -> u8 {
+        let (closed, on_closed) = tokio::sync::oneshot::channel();
+        *input.on_close.borrow_mut() = Some(closed);
+        let exited = futures_util::stream::once(async move {
+            let _ = on_closed.await;
+            Ok(ExecutionEvent::Exited(::sandbox::execution::ExitStatus { code: 0 }))
+        });
+        let execution = started_execution(Some(std::rc::Rc::new(input)), Box::pin(exited));
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            stream_execution_with(execution, source, tokio::io::sink(), tokio::io::sink()),
+        )
+        .await
+        .expect("the execution should end once its input is closed");
+        let mut stderr = Vec::new();
+        let code = finish_passing_input(result, &mut stderr);
+        if code != 0 {
+            let printed = String::from_utf8_lossy(&stderr);
+            assert!(
+                printed.contains("could not read standard input") && printed.contains("the disk went away"),
+                "the read error should be printed: {printed:?}"
+            );
+        }
+        code
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn exec_fails_when_its_standard_input_cannot_be_read() {
+        let input = || RecordedInput::accepting(usize::MAX);
+        assert_eq!(exec_reading_until_end_of_file(&b"all of it"[..], input()).await, 0);
+        let failing = tokio::io::AsyncReadExt::chain(&b"prefix"[..], FailingRead);
+        assert_eq!(
+            exec_reading_until_end_of_file(failing, input()).await,
+            1,
+            "a command given part of its input should not look as if it succeeded"
+        );
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn exec_fails_on_a_read_error_when_the_command_exits_before_its_input_is_closed() {
+        let input = || RecordedInput {
+            close_stays_pending: true,
+            ..RecordedInput::accepting(usize::MAX)
+        };
+        assert_eq!(exec_reading_until_end_of_file(&b"all of it"[..], input()).await, 0);
+        let failing = tokio::io::AsyncReadExt::chain(&b"prefix"[..], FailingRead);
+        assert_eq!(
+            exec_reading_until_end_of_file(failing, input()).await,
+            1,
+            "the read error should not be lost when the command exits while its input is being closed"
+        );
+    }
+
+    #[test]
+    fn exec_passing_input_reports_a_failed_command_before_it_leaves() {
+        let mut stderr = Vec::new();
+        let failed = Err(Error::Sandbox(::sandbox::Error::Backend("spawn failed".into())));
+        assert_eq!(finish_passing_input(failed, &mut stderr), 1);
+        let printed = String::from_utf8_lossy(&stderr);
+        assert!(
+            printed.starts_with("agentctl: ") && printed.contains("spawn failed"),
+            "the error should be printed: {printed:?}"
+        );
+        let exited = Ok(::sandbox::execution::ExitStatus { code: 7 });
+        let mut stderr = Vec::new();
+        assert_eq!(finish_passing_input(exited, &mut stderr), 7);
+        assert_eq!(String::from_utf8_lossy(&stderr), "", "an exit should print nothing");
     }
 
     #[test]
