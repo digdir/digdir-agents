@@ -5368,6 +5368,7 @@ dependencies = [
  "microsandbox",
  "microsandbox-image",
  "microsandbox-network",
+ "microsandbox-utils",
  "sandbox",
  "sandbox-authorization",
  "serde",

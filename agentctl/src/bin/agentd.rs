@@ -229,6 +229,7 @@ async fn run_control_plane(
     );
     let control_plane = Rc::new(
         ControlPlane::new(store.clone(), Rc::new(wakeup.clone()))
+            .with_sandboxes(sandboxes.clone())
             .with_volumes(store.clone())
             .with_provisioning(provisioning)
             .with_host_disk(host_disk.clone())

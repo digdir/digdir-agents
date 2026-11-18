@@ -235,6 +235,13 @@ impl Provider for Adapter {
         })
     }
 
+    fn root_filesystem_usage<'a>(
+        &'a self,
+        id: &'a ::sandbox::SandboxId,
+    ) -> LocalFuture<'a, Result<::sandbox::RootFilesystemUsage, Error>> {
+        Box::pin(async move { self.service.root_filesystem_usage(id).await.map_err(Error::from) })
+    }
+
     fn ensure_volume(
         &self,
         request: ::sandbox::volume::EnsureVolumeRequest,
