@@ -12,6 +12,7 @@ use agent::{
 use sandbox::{
     EnsureSandboxRequest, Platform, SandboxPath, SandboxService,
     execution::{ExecutionEvent, ExitStatus, Program},
+    init::InitSystem,
     memory,
 };
 use tempfile::TempDir;
@@ -1310,6 +1311,92 @@ async fn linux_setup_enables_huge_pages_only_for_nested_sandboxes() {
             "nested huge pages: {enabled}, /dev/kvm: {kvm}, huge pages in the kernel: {huge_pages}"
         );
     }
+}
+
+fn is_sudo(spec: &sandbox::execution::ExecutionSpec, expected: &[&str]) -> bool {
+    matches!(
+        spec.program(),
+        Program::Command { executable, args }
+            if executable.as_str() == "/usr/bin/sudo" && args.iter().map(String::as_str).eq(expected.iter().copied())
+    )
+}
+
+/// Setup on a guest whose image's init has not started systemd yet, with no Podman whose setup
+/// waits for it first, still waits for systemd before it grants `/dev/kvm`, so that an image's
+/// rule for the device cannot undo the grant, and before it reads the workspace clone.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn linux_setup_waits_for_a_booting_systemd_without_podman() {
+    let directory = TempDir::new().expect("temporary directory");
+    let home = directory.path().join("home");
+    std::fs::create_dir_all(&home).expect("home directory");
+    std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home = Some(HomeSpec { source: home });
+    resource.spec.sandbox.init_system = InitSystem::Image;
+    let record = AgentRecord {
+        id: "8d1b0d3e-3c55-4a8f-9e0a-2f3f1f6c9b21".parse().expect("Agent ID"),
+        source_directory: PathBuf::from(directory.path()),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
+        volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
+        exposed_files: std::collections::BTreeSet::new(),
+    };
+    let backend = Rc::new(memory::Provider::new());
+    for _ in 0..2 {
+        backend.queue_execution_events_matching(
+            |spec| is_presence_check(spec, "-d", "/run/systemd/system"),
+            completed(1),
+        );
+    }
+    backend.queue_execution_events_matching(
+        |spec| {
+            is_sudo(
+                spec,
+                &[
+                    "-n",
+                    "/usr/bin/systemctl",
+                    "show",
+                    "-p",
+                    "LoadState,ActiveState,Result,ConditionResult",
+                    "agent-workspace-init.service",
+                ],
+            )
+        },
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stdout(
+                "LoadState=loaded\nActiveState=active\nResult=success\nConditionResult=yes\n".into(),
+            ),
+            ExecutionEvent::Exited(ExitStatus { code: 0 }),
+        ],
+    );
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 1).await;
+
+    let setup = Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("setup");
+
+    let specs = backend.execution_specs();
+    let waited = specs.iter().position(is_systemd_readiness_check);
+    let granted = specs
+        .iter()
+        .position(|spec| is_sudo(spec, &["-n", "/bin/chown", "root:agent", "/dev/kvm"]));
+    assert!(
+        matches!((waited, granted), (Some(waited), Some(granted)) if waited < granted),
+        "/dev/kvm is granted after systemd has booted: waited at {waited:?}, granted at {granted:?}"
+    );
+    assert_eq!(
+        setup.workspace,
+        Some(agent::sandbox::WorkspaceClone::Cloning),
+        "the workspace clone is reported"
+    );
 }
 
 /// A restarted `agentd` listens on a new port; its first setup pass moves harnesses that kept

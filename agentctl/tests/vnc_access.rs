@@ -316,6 +316,41 @@ async fn an_image_whose_init_never_becomes_systemd_fails_permanently() {
     assert_no_systemd(&error);
 }
 
+fn is_disable(spec: &ExecutionSpec) -> bool {
+    is_command(
+        spec,
+        "/usr/bin/sudo",
+        &["-n", "/usr/bin/systemctl", "disable", "--now", UNITS[0], UNITS[1]],
+    )
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn withdrawal_from_a_guest_still_starting_systemd_disables_the_units() {
+    let fixture = Fixture::new();
+    let mut withdrawn = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", false);
+    withdrawn.agent.spec.sandbox.init_system = InitSystem::Image;
+    fixture.store(&withdrawn, 0).await;
+    let sandbox = fixture.sandbox(&withdrawn).await;
+    // Units an earlier pass enabled start once systemd runs, so a withdrawal that skips this
+    // early moment leaves them listening.
+    fixture
+        .backend
+        .queue_execution_events_matching(is_test("/run/systemd/system", "-d"), exited(1));
+    queue_withdrawable_image(&fixture.backend);
+
+    assert!(
+        !fixture
+            .access
+            .reconcile(&withdrawn, &sandbox)
+            .await
+            .expect("withdrawal")
+    );
+    assert!(
+        fixture.backend.execution_specs().iter().any(is_disable),
+        "the units are disabled once systemd runs"
+    );
+}
+
 #[tokio::test(flavor = "local")]
 async fn a_unit_still_active_after_withdrawal_is_reported() {
     let fixture = Fixture::new();
