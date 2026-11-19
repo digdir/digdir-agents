@@ -1,6 +1,6 @@
 //! Waiting for and probing the guest's systemd.
 
-use ::sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
+use ::sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec, init::InitSystem};
 
 use crate::Error;
 
@@ -8,10 +8,14 @@ use super::path_exists;
 
 const SYSTEMD_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 const SYSTEMD_READY_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+/// How long an image's init may take to start systemd. systemd marks itself as the init early in
+/// its startup, so this only bounds how long an image whose init is something else waits to be told.
+const SYSTEMD_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const SYSTEMD_INIT_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 /// `systemctl`, the only supported guest service manager today.
 pub(super) const SYSTEMCTL: &str = "/usr/bin/systemctl";
 /// Present exactly when systemd is the running init; the marker systemd documents for this purpose.
-pub(super) const SYSTEMD_RUNNING: &str = "/run/systemd/system";
+const SYSTEMD_RUNNING: &str = "/run/systemd/system";
 
 /// Waits until systemd is PID 1 and has finished booting the guest.
 ///
@@ -72,4 +76,27 @@ pub(super) async fn wait_for_systemd(sandbox: &SandboxHandle) -> Result<(), Erro
 /// Returns an error when either presence check cannot run.
 pub(super) async fn systemd_available(sandbox: &SandboxHandle) -> Result<bool, Error> {
     Ok(path_exists(sandbox, "-x", SYSTEMCTL).await? && path_exists(sandbox, "-d", SYSTEMD_RUNNING).await?)
+}
+
+/// Whether systemd is the guest's init, giving an image's init time to start it.
+///
+/// Setup can start before the image's init has started systemd, and a guest without
+/// [`SYSTEMD_RUNNING`] then looks like one whose image has no systemd. So on a sandbox the image
+/// initializes, a missing marker counts only after [`SYSTEMD_INIT_TIMEOUT`]. The backend's own
+/// init never starts systemd, so there the first answer holds.
+///
+/// # Errors
+///
+/// Returns an error when the presence check cannot run.
+pub(super) async fn systemd_is_init(sandbox: &SandboxHandle) -> Result<bool, Error> {
+    let deadline = tokio::time::Instant::now() + SYSTEMD_INIT_TIMEOUT;
+    loop {
+        if path_exists(sandbox, "-d", SYSTEMD_RUNNING).await? {
+            return Ok(true);
+        }
+        if sandbox.snapshot().init_system != InitSystem::Image || tokio::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        tokio::time::sleep(SYSTEMD_INIT_POLL).await;
+    }
 }

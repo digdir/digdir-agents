@@ -7,7 +7,7 @@ use ::sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
 
 use crate::Error;
 
-use super::{SYSTEMCTL, SYSTEMD_RUNNING, path_exists, run_checked, systemd_available, wait_for_systemd};
+use super::{SYSTEMCTL, path_exists, run_checked, systemd_available, systemd_is_init, wait_for_systemd};
 
 /// The image contract: what this image provides for `access: [{type: vnc}]`.
 pub(crate) const DESCRIPTOR: &str = "/etc/agent-access.d/vnc.conf";
@@ -41,15 +41,11 @@ impl Capability {
 }
 
 /// Confirms the image declares VNC access and returns what it declares. A missing piece is
-/// `Error::Invalid`, since retrying cannot change the image.
+/// `Error::Invalid`, since retrying cannot change the image. A guest still starting systemd is
+/// given the time [`systemd_is_init`] allows before it counts as one without systemd.
 async fn verify_capability(sandbox: &SandboxHandle) -> Result<Capability, Error> {
     let contract = [
         ("-x", SYSTEMCTL, "systemctl is missing"),
-        (
-            "-d",
-            SYSTEMD_RUNNING,
-            "systemd is not the running init, and the access units need it",
-        ),
         ("-x", SS, "ss is missing, so a grant could not be verified"),
         ("-f", DESCRIPTOR, "/etc/agent-access.d/vnc.conf is missing"),
     ];
@@ -57,6 +53,11 @@ async fn verify_capability(sandbox: &SandboxHandle) -> Result<Capability, Error>
         if !path_exists(sandbox, test, path).await? {
             return Err(Error::Invalid(crate::vnc::image_contract_missing(what)));
         }
+    }
+    if !systemd_is_init(sandbox).await? {
+        return Err(Error::Invalid(crate::vnc::image_contract_missing(
+            "systemd is not the running init, and the access units need it",
+        )));
     }
     parse_descriptor(&read_descriptor(sandbox).await?)
 }
