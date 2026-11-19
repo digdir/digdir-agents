@@ -16,9 +16,9 @@ version to find them.
 Test with `agentctl` and the dev agent's image both built from the branch: run `make user-install`, then apply the
 dev agent's `nested-build` variant on base images built from the branch, as
 [their README](../../images/agentctl-base/README.md#changing-them) describes. `make user-install` restarts `agentd` and
-refuses while a session is `Working`, so archive or delete earlier test sessions first. Use fresh sessions and check
-`claude --version`, `codex --version` and `pi --version` in the sandbox. An existing sandbox does not prove the
-rebuilt image works.
+refuses while a session is `Working` and its terminal moved in the last minute, so archive or delete earlier test
+sessions first. Use fresh sessions and check `claude --version`, `codex --version` and `pi --version` in the sandbox.
+An existing sandbox does not prove the rebuilt image works.
 
 Run each check against Claude Code and Codex ("Both") unless the table names one, and against Pi as [below](#pi). A
 low-cost model is enough, but sessions on each installation's manifest `defaults` must work at least once. Before
