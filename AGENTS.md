@@ -61,7 +61,8 @@ the truth anyway.
   every pull request, so archive the ones linked to an issue. Otherwise the same work shows twice, in different states.
 - Status says how far the work has come. Set Analyzing when you start to read and plan, Building when you write the
   change, Testing when it is ready for review, and Waiting to be merged when the review has passed and something else
-  holds the merge. GitHub sets Waiting to be released when the work is merged or closed.
+  holds the merge. GitHub sets Waiting to be released when the work is merged or closed. That includes work closed
+  without a merge, so archive it then, since no release will ship it.
 - WIP State says whether the work is moving right now, which Status can't show. It is Working while a session is on
   it. Before your session leaves the work, set what it now waits for, since a Working that no session stands behind
   keeps others off it:
