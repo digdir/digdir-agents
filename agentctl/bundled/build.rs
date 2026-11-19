@@ -13,7 +13,10 @@ use std::{
 };
 
 fn main() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("bundled/definitions");
+    // Read when the script runs rather than with `env!`, since Cargo can reuse this script compiled in another
+    // checkout that shares the target dir, and would then embed that checkout's definitions, or none once it is gone.
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR");
+    let root = Path::new(&manifest_dir).join("bundled/definitions");
     println!("cargo::rerun-if-changed={}", root.display());
     let mut generated = String::from("&[\n");
     for definition in sorted_entries(&root).into_iter().filter(|path| path.is_dir()) {
