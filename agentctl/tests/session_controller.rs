@@ -10,7 +10,7 @@ use std::{
 };
 
 use agent::{
-    AgentId, Condition, ConditionStatus, Error, Status,
+    AgentId, Condition, ConditionStatus, Error, Recheck, Status,
     control_plane::{AgentRecord, AgentStore as _, Convergence, WaitPolicy},
     local::home::ControlPlaneHome,
     persistence,
@@ -53,7 +53,7 @@ struct BlockingAgentReady {
 }
 
 impl Reconcile<AgentId> for BlockingAgentReady {
-    fn reconcile(&self, id: AgentId) -> LocalFuture<'_, Result<(), Error>> {
+    fn reconcile(&self, id: AgentId) -> LocalFuture<'_, Result<Recheck, Error>> {
         Box::pin(async move {
             self.started.notify_one();
             self.release.notified().await;
@@ -83,7 +83,7 @@ impl Reconcile<AgentId> for BlockingAgentReady {
                     ),
                 )
                 .await
-                .map(drop)
+                .map(|_| Recheck::Periodically)
         })
     }
 }
@@ -93,17 +93,18 @@ struct MarkSessionReady(persistence::Database);
 struct NoopAgentReconcile;
 
 impl Reconcile<AgentId> for NoopAgentReconcile {
-    fn reconcile(&self, _id: AgentId) -> LocalFuture<'_, Result<(), Error>> {
-        Box::pin(async { Ok(()) })
+    fn reconcile(&self, _id: AgentId) -> LocalFuture<'_, Result<Recheck, Error>> {
+        Box::pin(async { Ok(Recheck::Periodically) })
     }
 }
 
 impl Reconcile<SessionId> for MarkSessionReady {
-    fn reconcile(&self, id: SessionId) -> LocalFuture<'_, Result<(), Error>> {
+    fn reconcile(&self, id: SessionId) -> LocalFuture<'_, Result<Recheck, Error>> {
         Box::pin(async move {
             self.0
                 .update_session_lifecycle(id, agent::sessions::Lifecycle::running(), 0)
                 .await
+                .map(|()| Recheck::Periodically)
         })
     }
 }
@@ -241,7 +242,7 @@ impl Provider for MemoryProvider {
 }
 
 impl Reconcile<SessionId> for BlockingReconcile {
-    fn reconcile(&self, id: SessionId) -> LocalFuture<'_, Result<(), Error>> {
+    fn reconcile(&self, id: SessionId) -> LocalFuture<'_, Result<Recheck, Error>> {
         Box::pin(async move {
             if id == self.slow {
                 assert_eq!(self.active_slow.replace(self.active_slow.get() + 1), 0);
@@ -253,7 +254,7 @@ impl Reconcile<SessionId> for BlockingReconcile {
                 }
                 self.active_slow.set(0);
             }
-            Ok(())
+            Ok(Recheck::Periodically)
         })
     }
 }
