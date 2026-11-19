@@ -54,8 +54,9 @@ for people. If you are asked to work on one, say that it carries the label.
   Start the branch with `gh issue develop N --name BRANCH --checkout`, and GitHub links the pull request you open from
   it. In the description, write `Closes #N` when the pull request finishes the issue and `Part of #N` when it does
   not, which tells whoever merges it whether the issue is done. `Closes #N` there also makes the link, but not in a
-  commit message. GitHub links a pull request only while it targets `main`, so one stacked on another branch is linked
-  once it is retargeted. After `gh pr create` or `gh pr edit`, check the link with the first command above.
+  commit message. Both ways link a pull request only while it targets `main`. One stacked on another branch is linked
+  once it is retargeted, or before that by a person, in the issue's Development field. After `gh pr create` or
+  `gh pr edit`, check the link with the first command above.
 - Closing the issue is part of the merge. The repository does not close issues when a linked pull request merges, so
   that several pull requests can be linked to one issue. When you merge the last one, close the issue if what is
   merged does what the issue asks. If you can't tell, leave it open and say on the issue what is unsettled.
