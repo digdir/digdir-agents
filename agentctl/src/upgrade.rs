@@ -1523,6 +1523,30 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn validation_runs_a_binary_once_it_is_no_longer_open_for_writing() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let release = temporary.path().join("release");
+        write_release(&release, "v1.0.0");
+        // As a child that another thread forks keeps the descriptor a binary was written with,
+        // until it execs.
+        let writer = OpenOptions::new()
+            .write(true)
+            .open(release.join("agentctl"))
+            .expect("open for writing");
+
+        let validated = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                drop(writer);
+            });
+            validate_release_directory(&release, "v1.0.0")
+        });
+
+        validated.expect("the release runs");
+    }
+
+    #[cfg(unix)]
     #[tokio::test(flavor = "local")]
     async fn publishing_replaces_a_published_release_that_does_not_run() {
         let temporary = tempfile::TempDir::new().expect("temporary directory");
