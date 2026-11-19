@@ -1052,6 +1052,26 @@ impl ServiceHarness {
         }
     }
 
+    /// Stops the harness after inactivity, as the session reconciler does, leaving the session Idle.
+    async fn stop_idle(&self) {
+        self.report(agent::sessions::ActivityEvent::TurnCompleted).await;
+        let generation = self
+            .database
+            .activate_session(self.session.id)
+            .await
+            .expect("activation");
+        self.database
+            .update_session_lifecycle(self.session.id, agent::sessions::Lifecycle::idle(), generation)
+            .await
+            .expect("Idle session");
+        // An idle stop leaves no relaunch backoff behind.
+        self.database
+            .reset_session_launch_attempts(self.session.id)
+            .await
+            .expect("launch attempts");
+        self.runtime.present.set(false);
+    }
+
     /// Reports one activity event for the current launch, as the Platform API would.
     async fn report(&self, event: agent::sessions::ActivityEvent) {
         self.database
@@ -3253,24 +3273,7 @@ async fn a_prompt_wait_outlasts_an_archive_that_has_not_stopped_the_harness() {
 async fn a_prompt_resumes_an_idle_session_and_delivers() {
     let directory = TempDir::new().expect("directory");
     let harness = ServiceHarness::start_reconciled(&directory, "a3a3a3a3-a3a3-4a3a-8a3a-a3a3a3a3a3a3").await;
-    harness.report(agent::sessions::ActivityEvent::TurnCompleted).await;
-    let generation = harness
-        .database
-        .activate_session(harness.session.id)
-        .await
-        .expect("activation");
-    harness
-        .database
-        .update_session_lifecycle(harness.session.id, agent::sessions::Lifecycle::idle(), generation)
-        .await
-        .expect("Idle session");
-    // An idle stop leaves no relaunch backoff behind.
-    harness
-        .database
-        .reset_session_launch_attempts(harness.session.id)
-        .await
-        .expect("launch attempts");
-    harness.runtime.present.set(false);
+    harness.stop_idle().await;
     harness.runtime.ready_without_report.set(true);
 
     harness
@@ -3285,6 +3288,41 @@ async fn a_prompt_resumes_an_idle_session_and_delivers() {
         "the harness resumes its conversation"
     );
     assert_eq!(harness.runtime.sent.borrow().as_slice(), ["go on"]);
+    harness.finish();
+}
+
+/// A second prompt that arrives while the first one resumes the session waits for the resume
+/// instead of failing, since the harness takes input moments later.
+#[tokio::test(flavor = "local")]
+async fn a_prompt_to_a_resuming_session_waits_for_the_resume_and_delivers() {
+    let directory = TempDir::new().expect("directory");
+    let harness = ServiceHarness::start_reconciled(&directory, "a4a4a4a4-a4a4-4a4a-8a4a-a4a4a4a4a4a4").await;
+    harness.stop_idle().await;
+    let prompt = |text: &'static str| {
+        let service = harness.service.clone();
+        let name = harness.session.name.clone();
+        tokio::task::spawn_local(async move { service.prompt("worker", &name, text, false, None).await })
+    };
+
+    let first = prompt("first");
+    harness.runtime.launch_started.notified().await;
+    let second = prompt("second");
+    // Let the second prompt see the session Resuming before the harness takes input.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    harness.runtime.ready_without_report.set(true);
+
+    first
+        .await
+        .expect("task")
+        .expect("the first prompt resumes the session");
+    second
+        .await
+        .expect("task")
+        .expect("the second prompt waits for the resume");
+    assert_eq!(harness.runtime.launches.borrow().len(), 1, "the session resumes once");
+    let mut sent = harness.runtime.sent.borrow().clone();
+    sent.sort();
+    assert_eq!(sent, ["first", "second"]);
     harness.finish();
 }
 
