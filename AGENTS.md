@@ -45,8 +45,11 @@ for people. If you are asked to work on one, say that it carries the label.
   its sub-issue with `gh issue edit N --parent M`. When an issue can't go on before another is done, say so with
   `gh issue edit N --add-blocked-by M`, which takes a URL for an issue in another repository. Remove a relation when it
   no longer holds.
+- Open every pull request as a draft, and mark it ready when the work is done and checked. A pull request that is
+  ready asks people to review it.
 - When you start on an issue, assign it to yourself with `gh issue edit N --add-assignee @me`, and each pull request
-  you open for it, drafts included, with `gh pr edit --add-assignee @me`. That shows others someone is on it.
+  you open for it with `gh pr edit --add-assignee @me`. That shows others someone is on it. Assign yourself as well
+  to work you follow up while another agent does it, so that agent and others know who to ask.
 - A bug or an enhancement you find while working on something else can go straight to its own pull request, without
   an issue first, since the pull request can say all that an issue would. Say in its description what you were working
   on when you found it. A feature you find becomes an issue, since a person decides on it before anyone builds it.
