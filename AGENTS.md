@@ -6,6 +6,82 @@ Follow [CONTRIBUTING.md](CONTRIBUTING.md).
 - Run `make fmt lint build test` before reporting a change complete.
 - Before pushing to a pull request's branch, fetch its base branch and rebase on it.
 
+## Working on issues
+
+### What you decide yourself
+
+Checks show that a change works, not that the project should have it. That question weighs more the more of the change
+users will meet, so the issue's type sets how far you take it on your own:
+
+- A **Feature** changes what users see or build on, such as a new command or anything breaking. A person decides
+  whether it should be done, even when it is easy to build. Analyze it, write what you would build and what there is to
+  decide as a comment on the issue, and set Blocked: Human needed before you build. Go on without that only when a
+  person has already made the decision on the issue.
+- A **Bug** you can reproduce is yours to take from Inbox to merged without asking, and so is an **Enhancement**,
+  which improves what is there without changing what users see or call, such as its performance. The review and the
+  approvals a pull request needs still apply. A bug you can't reproduce is not yours to fix alone, since nothing shows
+  that the fix fixed it. Say on the issue what you tried, and ask.
+
+Set the type when you open an issue, and on an issue without one before you start on it, with
+`gh issue edit N --type Bug`. When the type doesn't settle it, or the work turns out to change more than the type
+says, such as an enhancement that needs a new flag, ask what users will notice. Set the type that fits and follow it.
+
+Leave an issue labelled `no-agent` alone, and stop if the label is added while you work, since a person has kept it
+for people. If you are asked to work on one, say that it carries the label.
+
+### Finding and linking work
+
+- Before you start on an issue, and again right before you open a pull request, look for pull requests already made
+  for it, so you build on or review them instead of opening a parallel one. Others may be on it in a draft. List the
+  pull requests linked to the issue, drafts included, with `gh issue view N --json closedByPullRequestsReferences`,
+  since `gh issue view --comments` does not show them. Then find the ones that only mention it with
+  `gh pr list --state open --search "N in:body,title"`.
+- In the description of a pull request for issue N, write `Closes #N`, or `Part of #N` when it solves only part of
+  the issue, so merging it does not close the issue. GitHub links a pull request to its issue only from a closing
+  keyword in the description, not from commit messages, and that link is how others find the pull request from the
+  issue. After `gh pr create` or `gh pr edit`, check the link with the first command above.
+- Record how issues relate as relations, in addition to saying it in the text. Everyone sees a relation on the issue
+  and in the project, while a mention reaches only those who read that text. Make an issue that is part of a larger one
+  its sub-issue with `gh issue edit N --parent M`. When an issue can't go on before another is done, say so with
+  `gh issue edit N --add-blocked-by M`, which takes a URL for an issue in another repository. Remove a relation when it
+  no longer holds.
+- When you start on an issue, assign it to yourself with `gh issue edit N --add-assignee @me`, and each pull request
+  you open for it, drafts included, with `gh pr edit --add-assignee @me`. That shows others someone is on it.
+- A bug or an enhancement you find while working on something else can go straight to its own pull request, without
+  an issue first, since the pull request can say all that an issue would. Say in its description what you were working
+  on when you found it. A feature you find becomes an issue, since a person decides on it before anyone builds it.
+
+### The project board
+
+The [digdir-agents project](https://github.com/orgs/digdir/projects/74) shows people where the work stands, without
+reading every thread. Keep it current in the same step as the change it describes, since a board that lags is read as
+the truth anyway.
+
+- Each piece of work is on the board once: as its issue, or as its pull request when it has no issue. GitHub adds
+  every pull request, so archive the ones linked to an issue. Otherwise the same work shows twice, in different states.
+- Status says how far the work has come. Set Analyzing when you start to read and plan, Building when you write the
+  change, Testing when it is ready for review, and Waiting to be merged when the review has passed and something else
+  holds the merge. GitHub sets Waiting to be released when the work is merged or closed.
+- WIP State says whether the work is moving right now, which Status can't show. It is Working while a session is on
+  it. Before your session leaves the work, set what it now waits for, since a Working that no session stands behind
+  keeps others off it:
+  - Up-for-grabs when it is free for the next session or person to pick up, such as a pull request ready for review.
+  - The Waiting state that fits when it waits on another issue or on something outside the repository. Name what it
+    waits on with a blocked-by relation.
+  - Blocked: Human needed when it waits on a person.
+  - Other/Limbo when none of these fit, with a comment that says what is going on.
+
+  Clear the field when the work is merged.
+- Blocked: Human needed also stops you. A person sets it to pause your work, so check it before every action others
+  will see. While it is set, do nothing others will see except to say what you wait for, and resume when a person
+  changes it.
+
+Set a field with `gh project item-edit 74 --owner digdir --url URL --field "WIP State" --value Working`, where URL is
+the issue's or the pull request's, and clear it with `--clear` in place of `--value`. The command prints the item's
+id with `--format json`, which `gh project item-archive 74 --owner digdir --id ID` takes. This needs the `project` and
+`read:org` scopes and access to the project, which GitHub hides from accounts without it. If you can't set a field,
+tell the person and carry on, and set it once they have fixed the access.
+
 ## Writing
 
 This applies to what you write for others to read, such as:

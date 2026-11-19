@@ -54,6 +54,9 @@ To release:
 2. Merge it once its "Assemble release" check has passed. The release workflow then publishes exactly what the pull
    request built, and creates the tag `agentctl/vX.Y.Z` as it does. Nothing is built after the merge, so a failure
    there spends no version, since a tag can never be moved or reused. Never push the tag yourself.
+3. Once the release is published, archive the items in Waiting to be released in the
+   [digdir-agents project](https://github.com/orgs/digdir/projects/74) that closed before the release pull request
+   merged. The release has shipped them, and the column then holds only what the next release will ship.
 
 If the release fails, it has created no git tag or GitHub release, and the version is still free:
 
