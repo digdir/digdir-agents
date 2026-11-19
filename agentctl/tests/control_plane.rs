@@ -1905,10 +1905,11 @@ async fn nested_sandboxes_are_reported_in_a_condition_and_an_unmet_requirement_f
     assert_eq!(nested(&status), None, "an agent that asks for none reports none");
 }
 
-/// Reports `set_up` as what platform setup did.
+/// Reports `set_up` as what platform setup did, and counts its passes.
 #[derive(Default)]
 struct ReportingPlatform {
     set_up: RefCell<PlatformSetup>,
+    passes: Cell<usize>,
 }
 
 impl PlatformAdapter for ReportingPlatform {
@@ -1924,7 +1925,10 @@ impl PlatformAdapter for ReportingPlatform {
         _accounts: &'a agent::sandbox::AccountSetup,
         _steps: &'a sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<PlatformSetup, Error>> {
-        Box::pin(async { Ok(self.set_up.borrow().clone()) })
+        Box::pin(async {
+            self.passes.set(self.passes.get() + 1);
+            Ok(self.set_up.borrow().clone())
+        })
     }
 }
 
@@ -2043,6 +2047,64 @@ async fn a_ready_agent_reports_a_missing_login_and_a_failed_workspace_clone_in_c
             Some((ConditionStatus::True, "Cloned".into())),
         ]
     );
+}
+
+/// The image clones its repositories after boot, so the pass that finds the agent ready often finds the clone still
+/// running, and nothing wakes the agent when it ends. Its outcome shows within seconds rather than at the next
+/// periodic pass, which is what `apply --wait` and the TUI read.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_running_workspace_clone_is_looked_at_again_before_the_next_periodic_pass() {
+    use agent::sandbox::WorkspaceClone;
+
+    let changes = Changes::new();
+    let store = Rc::new(memory::InMemoryAgentStore::with_changes(changes.clone()));
+    let provider: Rc<dyn Provider> = Rc::new(MemoryProvider::new(Rc::new(sandbox_memory::Provider::new())));
+    let platform = Rc::new(ReportingPlatform::default());
+    let service = Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service");
+    let reconciler = Rc::new(Reconciler::new(
+        store.clone(),
+        Rc::new(service),
+        ProvisioningState::new(changes.clone()),
+    ));
+    let (controller, wakeup) = Controller::new(store.clone(), reconciler, NO_BACKGROUND_PASSES, Rc::new(|_, _| {}));
+    let task = tokio::task::spawn_local(controller.run());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let workspace = async || {
+        let status = store.get_by_name("worker").await.expect("Agent").agent.status;
+        status
+            .conditions
+            .iter()
+            .find(|condition| condition.kind == Condition::WORKSPACE)
+            .map(|condition| (condition.status, condition.reason.clone()))
+    };
+
+    // Held to the end, since the controller stops once no one can wake it.
+    let convergence = Convergence::new(wakeup, store.clone(), changes);
+    platform.set_up.borrow_mut().workspace = Some(WorkspaceClone::Cloning);
+    convergence
+        .converge("worker", WaitPolicy::UntilConverged)
+        .await
+        .expect("the agent is ready while it clones");
+    assert_eq!(workspace().await, Some((ConditionStatus::Unknown, "Cloning".into())));
+
+    platform.set_up.borrow_mut().workspace = Some(WorkspaceClone::Failed);
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert_eq!(
+        workspace().await,
+        Some((ConditionStatus::False, "CloneFailed".into())),
+        "the failed clone shows before the periodic pass, {NO_BACKGROUND_PASSES:?} after the last"
+    );
+
+    let passes = platform.passes.get();
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert_eq!(
+        platform.passes.get(),
+        passes,
+        "an agent whose clone has ended waits for the periodic pass again"
+    );
+    assert!(!task.is_finished(), "the controller still runs");
+    task.abort();
 }
 
 /// The skills setup placed are recorded with the sandbox they are in, for the next pass to remove those the agent no
