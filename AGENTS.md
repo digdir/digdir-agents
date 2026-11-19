@@ -50,10 +50,15 @@ for people. If you are asked to work on one, say that it carries the label.
   pull requests linked to the issue, drafts included, with `gh issue view N --json closedByPullRequestsReferences`,
   since `gh issue view --comments` does not show them. Then find the ones that only mention it with
   `gh pr list --state open --search "N in:body,title"`.
-- In the description of a pull request for issue N, write `Closes #N`, or `Part of #N` when it solves only part of
-  the issue, so merging it does not close the issue. GitHub links a pull request to its issue only from a closing
-  keyword in the description, not from commit messages, and that link is how others find the pull request from the
-  issue. After `gh pr create` or `gh pr edit`, check the link with the first command above.
+- Link every pull request for issue N to the issue, since that link is how others find the pull request from it.
+  Start the branch with `gh issue develop N --name BRANCH --checkout`, and GitHub links the pull request you open from
+  it. In the description, write `Closes #N` when the pull request finishes the issue and `Part of #N` when it does
+  not, which tells whoever merges it whether the issue is done. `Closes #N` there also makes the link, but not in a
+  commit message. GitHub links a pull request only while it targets `main`, so one stacked on another branch is linked
+  once it is retargeted. After `gh pr create` or `gh pr edit`, check the link with the first command above.
+- Closing the issue is part of the merge. The repository does not close issues when a linked pull request merges, so
+  that several pull requests can be linked to one issue. When you merge the last one, close the issue if what is
+  merged does what the issue asks. If you can't tell, leave it open and say on the issue what is unsettled.
 - Record how issues relate as relations, in addition to saying it in the text. Everyone sees a relation on the issue
   and in the project, while a mention reaches only those who read that text. Make an issue that is part of a larger one
   its sub-issue with `gh issue edit N --parent M`. When an issue can't go on before another is done, say so with
