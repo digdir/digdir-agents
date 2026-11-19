@@ -35,7 +35,8 @@ try {
   }
   assert.equal(tmux("list-buffers"), "");
 
-  const observe = (transcript) => execFileSync("/bin/sh", ["-c", observationScript, "observe", "input", transcript], { env, encoding: "utf8" }).trim();
+  const observe = (transcript, session = "input") =>
+    execFileSync("/bin/sh", ["-c", observationScript, "observe", session, transcript], { env, encoding: "utf8" }).trim();
   const transcript = join(directory, "transcript with spaces.jsonl");
   await setTimeout(1200);
   const baseline = observe("");
@@ -48,6 +49,14 @@ try {
   const future = Date.now() / 1000 + 60;
   await utimes(transcript, future, future);
   assert.equal(observe(transcript), "0 0", "recent transcript keeps a quiet terminal active");
+  // A harness prints while it works, such as a spinner during a long tool call, and nobody types. Someone may have
+  // left a quiet window of their own current, such as a shell, which must not hide the harness's output.
+  tmux("new-session", "-d", "-s", "printing", "while :; do echo working; sleep 0.2; done");
+  tmux("new-window", "-t", "=printing:", "sleep 3600");
+  await setTimeout(2200);
+  const printing = observe("", "printing");
+  assert.ok(Number(printing.split(" ")[1]) <= 1, `output keeps an unattached terminal active: ${printing}`);
+  tmux("kill-session", "-t", "=printing");
 
   const stop = (target, environment = env) =>
     spawn("/bin/sh", ["-c", stopScript, "stop", target], { env: environment, stdio: "inherit" });
@@ -58,7 +67,7 @@ try {
   assert.equal(await exited(stop("=stoppable")), 0, "an already stopped session is stopped");
   const noServer = { ...process.env, TMUX: `${join(directory, "no-server")},0,0` };
   assert.equal(await exited(stop("=stoppable", noServer)), 0, "a stopped server has no session left");
-  console.log("tmux: submissions stay separate, cleanup succeeds, transcript freshness counts as activity, and stopping is idempotent");
+  console.log("tmux: submissions stay separate, cleanup succeeds, output and transcript freshness count as activity, and stopping is idempotent");
 } finally {
   tmux("kill-server");
   await rm(directory, { recursive: true, force: true });
