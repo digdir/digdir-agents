@@ -3,6 +3,7 @@
 
 mod support;
 
+mod agentd;
 mod architecture;
 mod bundled;
 mod control_api;
