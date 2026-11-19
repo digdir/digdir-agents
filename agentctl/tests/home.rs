@@ -18,6 +18,27 @@ fn configured_home_is_absolute_and_uses_fixed_socket_path() {
     assert_eq!(home.socket_path().file_name(), Some("agentd.sock".as_ref()));
 }
 
+/// The longest socket path the check accepts is the longest a socket can listen on.
+#[cfg(unix)]
+#[test]
+fn socket_path_check_matches_what_a_socket_accepts() {
+    let temporary = TempDirectory::new("socket-limit");
+    let home = |length: usize| {
+        ControlPlaneHome::resolve(Some(&temporary.path().join("a".repeat(length)))).expect("home should resolve")
+    };
+    let longest = (1..200)
+        .map(home)
+        .take_while(|home| home.check_socket_path().is_ok())
+        .last()
+        .expect("a short home passes the check");
+    let too_long = home(longest.path().file_name().expect("home name").len() + 1);
+    too_long.check_socket_path().expect_err("one byte more fails the check");
+
+    std::fs::create_dir_all(longest.socket_path().parent().expect("socket directory")).expect("socket directory");
+    std::os::unix::net::UnixListener::bind(longest.socket_path()).expect("the longest accepted path can listen");
+    std::os::unix::net::UnixListener::bind(too_long.socket_path()).expect_err("one byte more cannot");
+}
+
 #[test]
 fn only_one_daemon_can_lock_a_home() {
     let temporary = TempDirectory::new("home-lock");

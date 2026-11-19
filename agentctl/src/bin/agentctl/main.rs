@@ -2594,6 +2594,7 @@ fn daemon_startup_diagnostics(home: &ControlPlaneHome) -> String {
 }
 
 fn spawn_daemon(home: &ControlPlaneHome) -> Result<Child, Error> {
+    home.check_socket_path()?;
     home.prepare()?;
     let log = home.open_daemon_log()?;
     let executable = daemon_executable(&std::env::current_exe()?);
