@@ -60,16 +60,18 @@ the truth anyway.
 - Each piece of work is on the board once: as its issue, or as its pull request when it has no issue. GitHub adds
   every pull request, so archive the ones linked to an issue. Otherwise the same work shows twice, in different states.
 - Status says how far the work has come. Set Analyzing when you start to read and plan, Building when you write the
-  change, Testing when it is ready for review, and Waiting to be merged when the review has passed and something else
-  holds the merge. GitHub sets Waiting to be released when the work is merged or closed. That includes work closed
-  without a merge, so archive it then, since no release will ship it.
+  change, Testing when it is ready for review, and Waiting to be merged when all that is left is something that
+  holds the merge, such as a code owner's approval. GitHub sets Waiting to be released when the work is merged or
+  closed. That includes work closed without a merge, so archive it then, since no release will ship it.
 - WIP State says whether the work is moving right now, which Status can't show. It is Working while a session is on
   it. Before your session leaves the work, set what it now waits for, since a Working that no session stands behind
   keeps others off it:
-  - Up-for-grabs when it is free for the next session or person to pick up, such as a pull request ready for review.
+  - Up-for-grabs when anyone can pick it up, such as a pull request ready for review.
   - The Waiting state that fits when it waits on another issue or on something outside the repository. Name what it
     waits on with a blocked-by relation.
-  - Blocked: Human needed when it waits on a person.
+  - Blocked: Human needed when only a person can move it on, such as a pull request that lacks only a code owner's
+    approval. Say on the issue or pull request what you need from them, since a flag that doesn't say what it asks
+    for is left unanswered.
   - Other/Limbo when none of these fit, with a comment that says what is going on.
 
   Clear the field when the work is merged.
