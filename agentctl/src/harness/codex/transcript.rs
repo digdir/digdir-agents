@@ -295,6 +295,8 @@ mod tests {
     use super::*;
 
     const FIXTURE: &str = include_str!("../../../tests/fixtures/codex-rollout.jsonl");
+    /// Recorded from Codex 0.167.0, whose messages say where each content item came from.
+    const LABELLED_FIXTURE: &str = include_str!("../../../tests/fixtures/codex-0.167-rollout.jsonl");
 
     #[test]
     fn a_bounded_suffix_discards_a_partial_turn() {
@@ -336,6 +338,34 @@ mod tests {
                 .flat_map(|message| &message.parts)
                 .all(|part| !matches!(part, Part::Text { text } if text.contains("AGENTS.md"))),
             "AGENTS.md context is not conversation"
+        );
+    }
+
+    fn user_messages(turn: &Turn) -> Vec<&str> {
+        turn.messages
+            .iter()
+            .filter(|message| message.role == Role::User)
+            .flat_map(|message| &message.parts)
+            .map(|part| match part {
+                Part::Text { text } => text.as_str(),
+                Part::ToolCall { .. } => panic!("a user message holds text"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn labelled_rollout_shows_every_operator_prompt_and_nothing_codex_inserts() {
+        let turns = parse(LABELLED_FIXTURE.as_bytes()).expect("parse");
+        assert_eq!(
+            turns.iter().map(user_messages).collect::<Vec<_>>(),
+            [
+                // Both prompts were sent before the model's first output.
+                vec!["Write a story about a lighthouse keeper.", "Then add one final line: THE-END"],
+                // Interrupted: Codex adds a `<turn_aborted>` note as a user message.
+                vec!["Run the LONG job."],
+                // The second prompt was steered in after the model's first output.
+                vec!["Run the LONG job again.", "Also say bye."],
+            ]
         );
     }
 
