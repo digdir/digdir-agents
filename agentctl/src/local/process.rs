@@ -48,24 +48,30 @@ fn runnable(candidate: &std::path::Path) -> bool {
 
 /// Starts a daemon that runs on after the process starting it has exited.
 ///
+/// The daemon gets only the standard input and output `command` names. Whatever reads this
+/// process's output reads to its end, which a daemon holding that output open would delay until
+/// the daemon exits.
+///
 /// # Errors
 ///
 /// Returns the error from starting `command`.
 pub fn spawn_detached(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
     configure_detached(command);
+    #[cfg(windows)]
+    windows::keep_standard_handles();
     command.spawn()
 }
 
 /// Configures a child daemon to run independently of the invoking terminal.
 #[cfg(windows)]
-pub fn configure_detached(command: &mut std::process::Command) {
+fn configure_detached(command: &mut std::process::Command) {
     use std::os::windows::process::CommandExt as _;
 
     command.creation_flags(windows::CREATE_NEW_PROCESS_GROUP | windows::CREATE_NO_WINDOW);
 }
 
 #[cfg(unix)]
-pub fn configure_detached(command: &mut std::process::Command) {
+fn configure_detached(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt as _;
 
     command.process_group(0);
@@ -82,6 +88,31 @@ pub(super) fn configure_hidden(command: &mut std::process::Command) {
 mod windows {
     pub(super) const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     pub(super) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    /// Keeps this process's standard handles from the children it starts.
+    ///
+    /// Windows gives a child every handle its parent marked inheritable, not only those it is
+    /// given, and the standard handles a process gets from its caller are marked so. A child that
+    /// [`std::process::Stdio::inherit`] gives them still gets them, since Rust passes it copies.
+    #[expect(
+        unsafe_code,
+        reason = "Windows marks a handle inheritable only through SetHandleInformation, which has no safe wrapper"
+    )]
+    pub(super) fn keep_standard_handles() {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+
+        for handle in [
+            std::io::stdin().as_raw_handle(),
+            std::io::stdout().as_raw_handle(),
+            std::io::stderr().as_raw_handle(),
+        ] {
+            // SAFETY: SetHandleInformation only changes the flags of `handle`, and fails on a null
+            // or invalid one. A standard handle that cannot change has nothing for a child to keep
+            // open, such as a console, so failure is ignored.
+            unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+        }
+    }
 }
 
 #[cfg(test)]

@@ -407,9 +407,8 @@ fn start_daemon(release: &Path, home: &ControlPlaneHome) -> Result<(), Error> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log);
-    agent::local::process::configure_detached(&mut command);
     agent::local::process::configure_logging(&mut command);
-    command.spawn()?;
+    agent::local::process::spawn_detached(&mut command)?;
     Ok(())
 }
 
