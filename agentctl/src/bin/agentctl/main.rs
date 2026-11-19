@@ -761,7 +761,7 @@ fn run() -> CommandResult<ExitCode> {
     let arguments = Arguments::parse();
     let home = ControlPlaneHome::resolve(arguments.home.as_deref())?;
     let client = Client::for_path(home.socket_path());
-    LocalRuntime::new().map_err(Error::from)?.block_on(async move {
+    run_command(async move {
         if !matches!(arguments.command, Command::Self_ { .. }) {
             self_update::resume_pending_before_command(&home)?;
         }
@@ -777,6 +777,11 @@ fn run() -> CommandResult<ExitCode> {
         }
         Box::pin(execute(arguments.command, &home, &client)).await
     })
+}
+
+/// Runs a command on a runtime of its own, and leaves once the command has ended.
+fn run_command<T>(command: impl Future<Output = CommandResult<T>>) -> CommandResult<T> {
+    LocalRuntime::new().map_err(Error::from)?.block_on(command)
 }
 
 #[allow(
@@ -3312,6 +3317,63 @@ mod tests {
         ] {
             assert!(parse(arguments).is_err(), "{arguments:?}");
         }
+    }
+
+    /// A blocking task that waits until the test lets it go stands in for a read of standard
+    /// input that stays open, as `ssh` keeps the input of `ssh-proxy`.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "tokio reads standard input on a blocking thread, and the command runs on a thread the test can give up on"
+    )]
+    fn a_command_leaves_with_its_error_while_a_read_of_standard_input_is_blocked() {
+        let (let_go, held) = std::sync::mpsc::channel::<()>();
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = run_command(async move {
+                let (reading, read_started) = tokio::sync::oneshot::channel();
+                drop(tokio::task::spawn_blocking(move || {
+                    reading.send(()).ok();
+                    held.recv().ok();
+                }));
+                read_started.await.ok();
+                Err::<(), _>(CommandError::Message("the relay failed".into()))
+            });
+            ended.send(result.map_err(|error| error.to_string())).ok();
+        });
+        let result = end.recv_timeout(Duration::from_secs(10));
+        let_go.send(()).ok();
+        assert_eq!(
+            result,
+            Ok(Err("the relay failed".into())),
+            "the command should leave with its error without waiting for the read"
+        );
+    }
+
+    /// A blocking task that takes a moment stands in for a write of output still under way.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "tokio writes standard output on a blocking thread"
+    )]
+    fn a_command_leaves_once_output_still_being_written_is_written() {
+        let written = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writing = std::sync::Arc::clone(&written);
+        let result = run_command(async move {
+            let (started, write_started) = tokio::sync::oneshot::channel();
+            drop(tokio::task::spawn_blocking(move || {
+                started.send(()).ok();
+                std::thread::sleep(Duration::from_millis(100));
+                writing.store(true, std::sync::atomic::Ordering::SeqCst);
+            }));
+            write_started.await.ok();
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert!(
+            written.load(std::sync::atomic::Ordering::SeqCst),
+            "output still being written when the command ends should be written before it leaves"
+        );
     }
 
     #[test]
