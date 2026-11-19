@@ -12,6 +12,7 @@ use agent::{
 use sandbox::{
     EnsureSandboxRequest, Platform, SandboxHandle, SandboxService,
     execution::{ExecutionEvent, ExecutionSpec, ExitStatus, Program},
+    init::InitSystem,
     memory,
 };
 
@@ -240,6 +241,29 @@ async fn a_grant_that_leaves_a_declared_port_silent_is_a_failure() {
 fn queue_withdrawable_image(backend: &memory::Provider) {
     queue_desktop_image(backend);
     backend.queue_execution_events_matching(is_active_check, output(b"inactive\ninactive\n"));
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_guest_still_starting_systemd_gets_access_once_systemd_runs() {
+    let fixture = Fixture::new();
+    let mut record = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", true);
+    record.agent.spec.sandbox.init_system = InitSystem::Image;
+    fixture.store(&record, 0).await;
+    let sandbox = fixture.sandbox(&record).await;
+    // Setup can run after the image's init has become PID 1 but before systemd marks itself running.
+    fixture
+        .backend
+        .queue_execution_events_matching(is_test("/run/systemd/system", "-d"), exited(1));
+    queue_desktop_image(&fixture.backend);
+    queue_listening(&fixture.backend, true);
+
+    assert!(
+        fixture
+            .access
+            .reconcile(&record, &sandbox)
+            .await
+            .expect("access once systemd runs")
+    );
 }
 
 #[tokio::test(flavor = "local")]
