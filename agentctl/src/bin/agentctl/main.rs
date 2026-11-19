@@ -3467,6 +3467,24 @@ mod tests {
         assert!(!home.daemon_log_path().exists(), "no second daemon was spawned");
     }
 
+    #[tokio::test(flavor = "local")]
+    async fn home_too_long_for_its_socket_is_reported_without_starting_agentd() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let home = ControlPlaneHome::resolve(Some(&directory.path().join("a".repeat(120)))).expect("home");
+        let client = Client::for_path(home.socket_path());
+
+        let error = ensure_daemon(&home, &client)
+            .await
+            .expect_err("no agentd can listen on a socket path this long");
+
+        let message = error.to_string();
+        assert!(
+            message.contains(&home.socket_path().display().to_string()) && message.contains("too long"),
+            "the error names the socket path and the problem: {message}"
+        );
+        assert!(!home.daemon_log_path().exists(), "no agentd was started");
+    }
+
     #[test]
     fn startup_diagnostics_identify_a_pending_session_relaunch() {
         let directory = tempfile::TempDir::new().expect("temporary home");
