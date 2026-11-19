@@ -22,8 +22,9 @@ const MAX_BACKOFF_SECONDS: i64 = 600;
 const IDLE_AFTER_SECONDS: u64 = 30 * 60;
 
 /// A turn whose terminal and transcript stay quiet this long is not waited for
-/// when archiving: the harness is stuck, gone, or was never prompted.
-const ARCHIVE_TURN_QUIET_SECONDS: u64 = 60;
+/// when archiving or upgrading: the harness is stuck, gone, or was never
+/// prompted. A working harness redraws its terminal every second or so.
+const TURN_QUIET_SECONDS: u64 = 60;
 
 /// Maximum time for a resumed harness to reach its empty input prompt.
 const RESUME_READY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -131,8 +132,7 @@ impl Reconciler {
         let Observation::Alive { idle_seconds, .. } = self.runtime.observe(session, sandbox).await? else {
             return Ok(false);
         };
-        let now = time::OffsetDateTime::now_utc().unix_timestamp();
-        Ok(effective_idle_seconds(&session.status.reported.activity, idle_seconds, now) < ARCHIVE_TURN_QUIET_SECONDS)
+        Ok(moved_recently(&session.status.reported.activity, idle_seconds))
     }
 
     /// Settles a session unarchived before its archive could stop the harness:
@@ -388,6 +388,13 @@ impl Reconciler {
             }
         }
     }
+}
+
+/// Whether a running harness's terminal, transcript or reports moved recently
+/// enough that a turn it reports may still be in progress.
+pub(super) fn moved_recently(activity: &Activity, runtime_idle_seconds: u64) -> bool {
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    effective_idle_seconds(activity, runtime_idle_seconds, now) < TURN_QUIET_SECONDS
 }
 
 /// Seconds a session has been inactive, taking the smaller of runtime
