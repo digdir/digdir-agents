@@ -77,6 +77,53 @@ fi
 ./agentctl/package.sh "${target_archive}" "${target_binaries}"
 
 if [ "${RUNNER_OS:-}" = "Windows" ]; then
+  # EXPERIMENT for #536: homes under %LOCALAPPDATA%\Temp, by their long and short spellings.
+  export AGENT_SMOKE_BINARIES="$(cygpath -w "${target_binaries}")"
+  # shellcheck disable=SC2016 # PowerShell expands its own environment variables.
+  pwsh -NoProfile -Command '
+    $agentctl = Join-Path $env:AGENT_SMOKE_BINARIES "agentctl.exe"
+    Write-Host "AGENT_HOME=$env:AGENT_HOME TEMP=$env:TEMP TMP=$env:TMP LOCALAPPDATA=$env:LOCALAPPDATA USERPROFILE=$env:USERPROFILE"
+    Get-CimInstance Win32_Volume | Select-Object DriveLetter, FileSystem | Format-Table | Out-String | Write-Host
+    & fsutil 8dot3name query C: | Write-Host
+    $temp = Join-Path $env:LOCALAPPDATA "Temp"
+    $fso = New-Object -ComObject Scripting.FileSystemObject
+    $homes = [ordered]@{}
+    $long = Join-Path $temp "h-$env:AGENT_SMOKE_ID-long"
+    New-Item -ItemType Directory -Path $long | Out-Null
+    $homes["long"] = $long
+    $short = Join-Path $temp "h-$env:AGENT_SMOKE_ID-short"
+    New-Item -ItemType Directory -Path $short | Out-Null
+    $homes["short"] = $fso.GetFolder($short).ShortPath
+    $guid = Join-Path $temp "agentctl-$env:AGENT_SMOKE_ID-$([guid]::NewGuid())"
+    New-Item -ItemType Directory -Path $guid | Out-Null
+    $homes["guid"] = $guid
+    $homes["envtemp"] = Join-Path $env:TEMP "h-$env:AGENT_SMOKE_ID-envtemp"
+    $homes["nonexisting-long"] = Join-Path $temp "h-$env:AGENT_SMOKE_ID-new"
+    $failed = @()
+    foreach ($name in $homes.Keys) {
+      $home_ = $homes[$name]
+      Write-Host "=== $name : $home_ (socket path length $((Join-Path $home_ "run\agentd.sock").Length))"
+      foreach ($attempt in 1, 2) {
+        $started = Get-Date
+        & $agentctl --home $home_ get agents
+        $code = $LASTEXITCODE
+        Write-Host "--- $name attempt $attempt exit $code after $(((Get-Date) - $started).TotalSeconds)s"
+        if ($code -ne 0) { $failed += "$name/$attempt" }
+      }
+      Get-CimInstance Win32_Process |
+        Where-Object { $_.Name -eq "agentd.exe" -and $_.CommandLine -like "*$env:AGENT_SMOKE_ID*" } |
+        ForEach-Object { Write-Host "agentd $($_.ProcessId): $($_.CommandLine)" }
+      $log = Join-Path $home_ "agentd.log"
+      if (Test-Path $log) { Write-Host "agentd.log:"; Get-Content $log -Tail 30 | Write-Host }
+      Get-ChildItem -Force -Recurse (Join-Path $home_ "run") -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "run: $($_.FullName) $($_.Attributes)" }
+    }
+    Get-CimInstance Win32_Process |
+      Where-Object { $_.Name -eq "agentd.exe" -and $_.CommandLine -like "*$env:AGENT_SMOKE_ID*" } |
+      ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+    if ($failed.Count -gt 0) { throw "EXPERIMENT: failed: $($failed -join ", ")" }
+    Write-Host "EXPERIMENT: all passed"
+  '
+
   # Standalone installation
 
   standalone_root="${files_root}/standalone"
