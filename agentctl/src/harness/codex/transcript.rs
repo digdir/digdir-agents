@@ -2,10 +2,10 @@
 //!
 //! A rollout records `event_msg` lines that delimit turns (`task_started`,
 //! `task_complete`, `turn_aborted`) and `response_item` lines with the model
-//! conversation. Codex injects context as `user`-role messages ahead of the
-//! operator's prompt (AGENTS.md, environment details), so a user message is
-//! never a turn boundary here: the turn markers are, and within a turn the last
-//! user message before the model's first output is the operator's prompt.
+//! conversation. Codex also writes text of its own as `user`-role messages, such
+//! as AGENTS.md and environment context ahead of the prompt, or a note after an
+//! interruption, so a user message is never a turn boundary here: the turn
+//! markers are. See [`UserContent`] for how operator input is told apart.
 
 use std::collections::HashMap;
 
@@ -18,6 +18,59 @@ use crate::{
 
 /// Codex prefixes a bundled context-and-request user message with this marker.
 const REQUEST_MARKER: &str = "## My request for Codex:";
+
+/// A `user`-role message, by who wrote it.
+///
+/// Codex 0.162 and later label each content item with where it came from, in
+/// `content_item_kinds`: a `user.` kind for what the operator sent, and kinds
+/// such as `agents_md.instructions` or `generic.turn_aborted` for what Codex
+/// wrote. Older rollouts have no labels, so their operator input is told apart
+/// by position: within a turn, the last user message before the model's first
+/// output is the prompt, and earlier ones are context.
+enum UserContent {
+    /// Labelled operator input.
+    Operator(String),
+    /// Labelled text that Codex wrote itself.
+    Inserted,
+    /// A message without labels.
+    Unlabelled(String),
+}
+
+impl UserContent {
+    fn of(payload: &Value) -> Self {
+        let parts = content(payload);
+        let Some(kinds) = payload
+            .pointer("/internal_chat_message_metadata_passthrough/content_item_kinds")
+            .and_then(Value::as_array)
+        else {
+            return Self::Unlabelled(text(parts.iter()));
+        };
+        let operator = parts
+            .iter()
+            .zip(kinds)
+            .filter(|(_, kind)| kind.as_str().is_some_and(|kind| kind.starts_with("user.")))
+            .map(|(part, _)| part)
+            .collect::<Vec<_>>();
+        if operator.is_empty() {
+            Self::Inserted
+        } else {
+            Self::Operator(text(operator.into_iter()))
+        }
+    }
+}
+
+fn content(message: &Value) -> &[Value] {
+    message
+        .get("content")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
+}
+
+fn text<'a>(parts: impl Iterator<Item = &'a Value>) -> String {
+    parts
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect()
+}
 
 // Codex 0.153 keeps success as internal metadata. Command results persist their
 // exit code in the tool's output header instead (core/src/tools/{mod,context}.rs).
@@ -89,9 +142,8 @@ pub(crate) fn trim_partial(bytes: &[u8]) -> &[u8] {
 #[derive(Default)]
 struct Builder {
     turns: Vec<Turn>,
-    /// Candidate prompt: the latest user message seen before the model's first
-    /// output in the current turn. Earlier candidates were injected context.
-    pending_prompt: Option<String>,
+    /// The operator's prompts in the current turn, until the model's first output.
+    pending_prompts: Vec<String>,
     /// Whether the current turn has recorded model output yet.
     answered: bool,
     /// Location of each recorded tool call by `call_id`.
@@ -145,29 +197,20 @@ impl Builder {
 
     fn push_item(&mut self, payload: &Value) {
         match payload.get("type").and_then(Value::as_str) {
-            Some("message") => {
-                let text = payload
-                    .get("content")
-                    .and_then(Value::as_array)
-                    .map(|parts| {
-                        parts
-                            .iter()
-                            .filter_map(|part| part.get("text").and_then(Value::as_str))
-                            .collect::<String>()
-                    })
-                    .unwrap_or_default();
-                match payload.get("role").and_then(Value::as_str) {
-                    Some("user") => self.push_user(text),
-                    Some("assistant") if !text.is_empty() => {
+            Some("message") => match payload.get("role").and_then(Value::as_str) {
+                Some("user") => self.push_user(UserContent::of(payload)),
+                Some("assistant") => {
+                    let text = text(content(payload).iter());
+                    if !text.is_empty() {
                         self.push_output(Message {
                             role: Role::Assistant,
                             parts: vec![Part::Text { text }],
                         });
                     }
-                    // Developer and system messages are harness context, not conversation.
-                    _ => {}
                 }
-            }
+                // Developer and system messages are harness context, not conversation.
+                _ => {}
+            },
             Some("function_call" | "custom_tool_call") => {
                 let Some(name) = payload.get("name").and_then(Value::as_str) else {
                     return;
@@ -237,13 +280,24 @@ impl Builder {
         }
     }
 
-    fn push_user(&mut self, text: String) {
-        let request = text
-            .strip_prefix("<environment_context>")
-            .and_then(|context| context.split_once("</environment_context>"))
-            .and_then(|(_, suffix)| suffix.trim_start().strip_prefix(REQUEST_MARKER))
-            .map(|request| request.trim().to_owned());
-        let text = request.unwrap_or(text);
+    fn push_user(&mut self, content: UserContent) {
+        let text = match content {
+            UserContent::Operator(text) => text,
+            UserContent::Inserted => return,
+            UserContent::Unlabelled(text) => {
+                let request = text
+                    .strip_prefix("<environment_context>")
+                    .and_then(|context| context.split_once("</environment_context>"))
+                    .and_then(|(_, suffix)| suffix.trim_start().strip_prefix(REQUEST_MARKER))
+                    .map(|request| request.trim().to_owned());
+                let text = request.unwrap_or(text);
+                if !self.answered {
+                    // Without labels, only the last message before output is the prompt.
+                    self.pending_prompts.clear();
+                }
+                text
+            }
+        };
         if self.answered {
             // Operator input injected mid-turn (steering) is conversation.
             self.current_turn().messages.push(Message {
@@ -251,7 +305,7 @@ impl Builder {
                 parts: vec![Part::Text { text }],
             });
         } else {
-            self.pending_prompt = Some(text);
+            self.pending_prompts.push(text);
         }
     }
 
@@ -265,14 +319,18 @@ impl Builder {
         (turn_index, message_index, turn.messages[message_index].parts.len() - 1)
     }
 
-    /// Commits the surviving prompt candidate as the turn's operator message.
+    /// Commits the pending prompts as the turn's operator messages.
     fn flush_prompt(&mut self) {
-        if let Some(text) = self.pending_prompt.take() {
-            self.current_turn().messages.push(Message {
+        if self.pending_prompts.is_empty() {
+            return;
+        }
+        let prompts = std::mem::take(&mut self.pending_prompts);
+        self.current_turn()
+            .messages
+            .extend(prompts.into_iter().map(|text| Message {
                 role: Role::User,
                 parts: vec![Part::Text { text }],
-            });
-        }
+            }));
     }
 
     fn current_turn(&mut self) -> &mut Turn {
@@ -360,7 +418,10 @@ mod tests {
             turns.iter().map(user_messages).collect::<Vec<_>>(),
             [
                 // Both prompts were sent before the model's first output.
-                vec!["Write a story about a lighthouse keeper.", "Then add one final line: THE-END"],
+                vec![
+                    "Write a story about a lighthouse keeper.",
+                    "Then add one final line: THE-END"
+                ],
                 // Interrupted: Codex adds a `<turn_aborted>` note as a user message.
                 vec!["Run the LONG job."],
                 // The second prompt was steered in after the model's first output.
