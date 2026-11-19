@@ -40,7 +40,7 @@ rand_core = { version = "0.6.4", features = ["getrandom"] }
 # the SQLite the fork tests it with, and agentd and the msb runtime open the Microsandbox database with the same
 # SQLite. Move it only after the fork has.
 rusqlite = "0.32.1"
-rustix = { version = "1.1.6", features = ["fs"] }
+rustix = { version = "1.1.6", features = ["fs", "process"] }
 sandbox = { path = "sandbox/core" }
 sandbox-microsandbox = { path = "sandbox/microsandbox" }
 serde = { version = "1.0.229", features = ["derive"] }
