@@ -1,0 +1,52 @@
+#!/bin/bash
+# Starts T3 Code's server and web client on 127.0.0.1:3773, reached from the host with
+# `agentctl port-forward t3-master 3773:3773`.
+set -euo pipefail
+
+# T3 Code and the agents it starts need the environment a Session gets: the mediated CA bundle and the Agent's
+# variables. agentd writes it for SSH logins once Agent setup has run, which can be after boot. After a restart the
+# previous boot's file is still there, without secrets added since, so wait for one written during this boot.
+environment=/home/agent/.ssh/environment
+boot=$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) ))
+for _ in $(seq 180); do
+  [[ -s "${environment}" ]] && (( $(stat -c %Y "${environment}") >= boot )) && break
+  sleep 1
+done
+if [[ -s "${environment}" ]]; then
+  while IFS= read -r line; do
+    case "${line}" in
+      ''|'#'*) ;;
+      *=*) export "${line?}" ;;
+    esac
+  done <"${environment}"
+fi
+
+# The nested agentd passes this agent's logins on to the workers: Claude Code's, and the GitHub account when this
+# agent has one. Both hold this agent's placeholders, which the host replaces in requests. Neither stops T3 Code.
+agentctl claude login || echo "t3-server: no Claude Code login to pass on to workers" >&2
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  printf '%s' "${GITHUB_TOKEN}" | agentctl github login default --from-stdin     || echo "t3-server: no GitHub login to pass on to workers" >&2
+fi
+
+# First boot only: T3 Code keeps its own state in these files, so a later boot or a home sync must not overwrite them.
+# Linked environments must be on here for delegate_task, and the worker manifests are offered from ~/workers.
+userdata=/home/agent/.t3/userdata
+mkdir -p "${userdata}"
+[[ -e "${userdata}/settings.json" ]] || printf '{\n  "linkedEnvironmentsEnabled": true\n}\n' >"${userdata}/settings.json"
+[[ -e "${userdata}/agentctl-sandboxes.json" ]] \
+  || printf '{\n  "settings": {\n    "manifestRoots": ["/home/agent/workers"]\n  }\n}\n' >"${userdata}/agentctl-sandboxes.json"
+
+# Install the T3 Code build the home brings, once per version.
+build=t3-0.1.6-preview.20261102.3-linux-x64
+sha256=07f38a4c0ab4d51da9801b002d5d6b82621af738336843e5660c92c7a095622d
+archive=/home/agent/.local/share/t3-build/${build}.tar.gz
+install=/home/agent/.local/opt/t3
+if [[ ! -x "${install}/${build}/t3" ]]; then
+  echo "${sha256}  ${archive}" | sha256sum -c -
+  mkdir -p "${install}"
+  tar -xzf "${archive}" -C "${install}"
+fi
+
+# This build is not published, so workers get the published server instead of trying to download this version.
+export T3CODE_REMOTE_SERVER_VERSION=0.1.6-preview.20261101.39
+exec "${install}/${build}/t3" serve --host 127.0.0.1 --port 3773 --base-dir /home/agent/.t3
