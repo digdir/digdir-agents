@@ -46,6 +46,16 @@ fn runnable(candidate: &std::path::Path) -> bool {
     candidate.is_file()
 }
 
+/// Starts a daemon that runs on after the process starting it has exited.
+///
+/// # Errors
+///
+/// Returns the error from starting `command`.
+pub fn spawn_detached(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    configure_detached(command);
+    command.spawn()
+}
+
 /// Configures a child daemon to run independently of the invoking terminal.
 #[cfg(windows)]
 pub fn configure_detached(command: &mut std::process::Command) {
@@ -74,8 +84,19 @@ mod windows {
     pub(super) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    /// Which part of [`detached_child_leaves_the_callers_output`] a run of the test binary plays.
+    const ROLE: &str = "AGENT_TEST_DETACHED_ROLE";
+    /// The file the detached child runs while it exists. The test removes it with its temporary
+    /// directory, so the child stops when the test ends, also when the test fails.
+    const RUNNING: &str = "AGENT_TEST_DETACHED_RUNNING";
+
+    #[cfg(unix)]
     #[test]
     fn detached_child_owns_its_process_group() {
         let mut command = std::process::Command::new("/bin/sh");
@@ -95,5 +116,75 @@ mod tests {
                 .expect("process group"),
             pid
         );
+    }
+
+    /// Scripts and coding agents read agentctl's output to its end, so the agentd it starts must
+    /// not hold that output open. The test binary plays agentctl and agentd here, in the ignored
+    /// tests below, so that the caller's pipes reach agentctl as they do from a shell.
+    #[tokio::test]
+    async fn detached_child_leaves_the_callers_output() {
+        let directory = tempfile::tempdir().expect("directory");
+        let running = directory.path().join("running");
+        std::fs::write(&running, "").expect("running file");
+        let starter = tokio::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "local::process::tests::start_detached",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(ROLE, "start")
+            .env(RUNNING, &running)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("starter");
+        let output = tokio::time::timeout(Duration::from_secs(30), starter.wait_with_output())
+            .await
+            .expect("the detached child held the caller's output open")
+            .expect("starter output");
+        assert!(
+            output.status.success(),
+            "starter failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
+    #[test]
+    #[ignore = "run by detached_child_leaves_the_callers_output"]
+    #[expect(
+        clippy::zombie_processes,
+        reason = "the child outlives this process, as agentd outlives agentctl"
+    )]
+    fn start_detached() {
+        if std::env::var_os(ROLE).is_none_or(|role| role != "start") {
+            return;
+        }
+        let mut command = std::process::Command::new(std::env::current_exe().expect("test binary"));
+        command
+            .args(["local::process::tests::run_detached", "--exact", "--ignored"])
+            .env(ROLE, "run")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        super::spawn_detached(&mut command).expect("detached child");
+    }
+
+    #[test]
+    #[ignore = "run by detached_child_leaves_the_callers_output"]
+    fn run_detached() {
+        if std::env::var_os(ROLE).is_none_or(|role| role != "run") {
+            return;
+        }
+        let running = PathBuf::from(std::env::var_os(RUNNING).expect("running file"));
+        for _ in 0..600 {
+            if !running.exists() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 }
