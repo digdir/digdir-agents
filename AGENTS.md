@@ -8,6 +8,20 @@ Follow [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Working on issues
 
+### What to take first
+
+When you choose what to work on, take what is closest to merged first, which is from right to left on the
+[board](#the-project-board). Finishing a review or getting a pull request merged delivers something, while starting
+on a new issue only adds to what is under way.
+
+Analyze an issue together with the rest of the board, since a choice that is right for one issue can pull against
+another. Read the other issues that touch the same area or the same kind of problem, those in Inbox as well as those
+under way, and then:
+
+- Split the work into parts that can each land without waiting for other issues.
+- Don't solve alone a problem that another issue shares. The two need not be solved together, but your choice should
+  fit what we know we will do later. Say on the issue how they relate.
+
 ### What you decide yourself
 
 Checks show that a change works, not that the project should have it. That question weighs more the more of the change
@@ -45,8 +59,9 @@ for people. If you are asked to work on one, say that it carries the label.
   its sub-issue with `gh issue edit N --parent M`. When an issue can't go on before another is done, say so with
   `gh issue edit N --add-blocked-by M`, which takes a URL for an issue in another repository. Remove a relation when it
   no longer holds.
-- Open every pull request as a draft, and mark it ready when the work is done and checked. A pull request that is
-  ready asks people to review it.
+- Open every pull request as a draft, and mark it ready when the work is done and checked. A ready pull request
+  brings in reviewers, and tells others that it is stable enough to build on and will rarely be rewritten. A draft
+  says it may still change under them.
 - When you start on an issue, assign it to yourself with `gh issue edit N --add-assignee @me`, and each pull request
   you open for it with `gh pr edit --add-assignee @me`. That shows others someone is on it. Assign yourself as well
   to work you follow up while another agent does it, so that agent and others know who to ask.
@@ -60,8 +75,11 @@ The [digdir-agents project](https://github.com/orgs/digdir/projects/74) shows pe
 reading every thread. Keep it current in the same step as the change it describes, since a board that lags is read as
 the truth anyway.
 
-- Each piece of work is on the board once: as its issue, or as its pull request when it has no issue. GitHub adds
-  every pull request, so archive the ones linked to an issue. Otherwise the same work shows twice, in different states.
+- The board shows one item for what lands together, and one for each thing that can land on its own. An issue stands
+  for the pull requests linked to it, whether one or several that merge together. GitHub adds every pull request, so
+  archive those. Otherwise the same work shows twice, in different states. A sub-issue that can land without its
+  siblings, or in another release, stays beside its parent. So does a pull request that is not linked to an issue,
+  since nothing else on the board shows it.
 - Status says how far the work has come. Set Analyzing when you start to read and plan, Building when you write the
   change, Testing when it is ready for review, and Waiting to be merged when all that is left is something that
   holds the merge, such as a code owner's approval. GitHub sets Waiting to be released when the work is merged or
