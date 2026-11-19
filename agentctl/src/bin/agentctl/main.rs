@@ -779,9 +779,23 @@ fn run() -> CommandResult<ExitCode> {
     })
 }
 
-/// Runs a command on a runtime of its own, and leaves once the command has ended.
+/// How long a command's blocking work, such as a write of its output, gets to finish once the
+/// command has ended.
+const BLOCKING_WORK_GRACE: Duration = Duration::from_secs(1);
+
+/// Runs a command on a runtime of its own, and leaves once the command has ended, without waiting
+/// for blocking work that may never end.
+///
+/// A read of standard input runs on the runtime's blocking threads, and stays blocked for as long
+/// as the input stays open, as `ssh` keeps the input of `ssh-proxy`. Dropping the runtime would
+/// wait for it, and the command's error with it. Nothing can use what it reads once the command
+/// has ended, so it ends with the process. Work that does end, such as a write of output still
+/// under way, gets [`BLOCKING_WORK_GRACE`] to finish.
 fn run_command<T>(command: impl Future<Output = CommandResult<T>>) -> CommandResult<T> {
-    LocalRuntime::new().map_err(Error::from)?.block_on(command)
+    let runtime = LocalRuntime::new().map_err(Error::from)?;
+    let result = runtime.block_on(command);
+    runtime.shutdown_timeout(BLOCKING_WORK_GRACE);
+    result
 }
 
 #[allow(
@@ -1625,9 +1639,7 @@ async fn ssh_proxy(home: &ControlPlaneHome, client: &Client, resource: String) -
         tokio::io::stdout(),
     )
     .await?;
-    // A blocked standard-input read would keep the runtime from shutting down;
-    // the relay is finished, so leave immediately.
-    std::process::exit(0)
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Shows warnings on standard error, such as why connecting waits, for a relay whose standard
@@ -1786,9 +1798,7 @@ async fn vnc_proxy(home: &ControlPlaneHome, client: &Client, resource: String) -
         tokio::io::stdout(),
     )
     .await?;
-    // A blocked standard-input read would keep the runtime from shutting down;
-    // the relay is finished, so leave immediately.
-    std::process::exit(0)
+    Ok(ExitCode::SUCCESS)
 }
 
 async fn vnc_info(
