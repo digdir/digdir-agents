@@ -331,7 +331,8 @@ pub(crate) async fn remove_server_state(sandbox: &SandboxHandle) -> Result<(), E
     if !state_exists && !environment_exists {
         return Ok(());
     }
-    if state_exists && systemd_available(sandbox).await? {
+    let systemd = state_exists && systemd_available(sandbox).await?;
+    if systemd {
         wait_for_systemd(sandbox).await?;
         let args = ["-n", SYSTEMCTL, "disable", "--now", UNIT];
         let output = sandbox
@@ -359,7 +360,7 @@ pub(crate) async fn remove_server_state(sandbox: &SandboxHandle) -> Result<(), E
         )
         .await?;
         run_checked(sandbox, "/usr/bin/sudo", ["-n", "/bin/rm", "-rf", STATE_DIRECTORY]).await?;
-        if systemd_available(sandbox).await? {
+        if systemd {
             run_checked(sandbox, "/usr/bin/sudo", ["-n", SYSTEMCTL, "daemon-reload"]).await?;
         }
     }

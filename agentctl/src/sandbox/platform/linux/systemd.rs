@@ -69,13 +69,16 @@ pub(super) async fn wait_for_systemd(sandbox: &SandboxHandle) -> Result<(), Erro
     }
 }
 
-/// Whether the guest has `systemctl` and runs systemd as its init.
+/// Whether the guest has `systemctl` and runs systemd as its init, giving an image's init the
+/// time [`systemd_is_init`] allows to start it. Without that time, a step that skips its work on a
+/// guest without systemd would skip it on a booting one too, and systemd could then start what
+/// the step was to stop.
 ///
 /// # Errors
 ///
 /// Returns an error when either presence check cannot run.
 pub(super) async fn systemd_available(sandbox: &SandboxHandle) -> Result<bool, Error> {
-    Ok(path_exists(sandbox, "-x", SYSTEMCTL).await? && path_exists(sandbox, "-d", SYSTEMD_RUNNING).await?)
+    Ok(path_exists(sandbox, "-x", SYSTEMCTL).await? && systemd_is_init(sandbox).await?)
 }
 
 /// Whether systemd is the guest's init, giving an image's init time to start it.
