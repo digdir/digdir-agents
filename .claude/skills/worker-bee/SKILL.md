@@ -216,11 +216,15 @@ merged.
 
 Open the pull request as a draft, [linked to the issue](references/linking.md#linking-a-pull-request), and assign it
 to yourself. [CONTRIBUTING.md](../../../CONTRIBUTING.md#pull-requests) says what a pull request here needs, and how
-to have CI run on a draft. See CI through before you go on. When a check fails, read the failing step's log and
-find out whether it fails without your change. "Probably flaky" is not a diagnosis.
+to have CI run on a draft. The label it names also starts CI when you set it as you create the pull request.
 
-Then write one comment on the pull request that mentions the person who started you. It is their list of what to
-look at, so it holds only what needs them:
+See CI through before you go on. When a check fails, read the failing step's log and find out whether it fails
+without your change. "Probably flaky" is not a diagnosis. A session that can't wait for CI hands over anyway, and
+says in the comment below that the checks had not finished. Such a pull request is never merged by you.
+
+Then write one comment on the pull request that mentions the person who started you. When you post as that
+person's own account, the mention notifies nobody, and your report to them is the notice. The comment is their
+list of what to look at, so it holds only what needs them:
 
 - Each thing you decided on their behalf, and what would change if you were wrong.
 - Each finding that waits for them, and why you did not settle it.
