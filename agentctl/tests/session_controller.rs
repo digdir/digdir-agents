@@ -2607,7 +2607,7 @@ async fn prompt_wait_does_not_follow_a_replacement_session_with_the_same_name() 
     harness.await_delivery(&mut waiting).await;
     // Ensure the waiter will reread on its next activity poll.
     harness.report(agent::sessions::ActivityEvent::TurnCompleted).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
     harness.database.mark_deleting("worker").await.expect("delete");
     harness
         .database
