@@ -9,7 +9,9 @@ if [ "$#" -ne 1 ] || ! [[ "$1" =~ ^[0-9]+$ ]]; then
     exit 64
 fi
 
-if ! gh project item-edit --help 2>/dev/null | grep -q -- '--url'; then
+# Read the help into a variable first. Piped into `grep -q`, which stops at the first match, gh can die of SIGPIPE
+# while it still writes, and pipefail then fails the check at random.
+if ! [[ "$(gh project item-edit --help 2>/dev/null)" == *--url* ]]; then
     echo "This gh has no 'project item-edit --url', which keeping the board current needs. Update gh. Stop here." >&2
     exit 2
 fi
