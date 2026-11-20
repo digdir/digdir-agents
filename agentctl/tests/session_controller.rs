@@ -338,6 +338,8 @@ struct FakeRuntime {
     observe_started: Notify,
     release_observe: Notify,
     conversation: RefCell<Vec<agent::sessions::Turn>>,
+    /// What the conversation shows that no report says.
+    conversation_signals: Cell<agent::sessions::TurnSignals>,
     sent: RefCell<Vec<String>>,
     launches: RefCell<Vec<(Option<String>, Option<String>)>>,
     launch_tokens: RefCell<Vec<agent::sessions::LaunchToken>>,
@@ -366,6 +368,7 @@ impl Default for FakeRuntime {
             observe_started: Notify::new(),
             release_observe: Notify::new(),
             conversation: RefCell::default(),
+            conversation_signals: Cell::default(),
             sent: RefCell::default(),
             launches: RefCell::default(),
             launch_tokens: RefCell::default(),
@@ -499,6 +502,28 @@ impl agent::sessions::SessionRuntime for FakeRuntime {
                 return Err(Error::Session("transcript unavailable".into()));
             }
             Ok(turns)
+        })
+    }
+
+    fn mark_conversation<'a>(
+        &'a self,
+        _session: &'a agent::sessions::Session,
+        _sandbox: &'a SandboxHandle,
+    ) -> LocalFuture<'a, Result<agent::sessions::ConversationMark, Error>> {
+        Box::pin(async { Ok(agent::sessions::ConversationMark::default()) })
+    }
+
+    fn follow_conversation<'a>(
+        &'a self,
+        _session: &'a agent::sessions::Session,
+        _sandbox: &'a SandboxHandle,
+        _mark: &'a mut agent::sessions::ConversationMark,
+    ) -> LocalFuture<'a, Result<agent::sessions::TurnSignals, Error>> {
+        Box::pin(async move {
+            if self.fail_transcript.get() {
+                return Err(Error::Session("transcript unavailable".into()));
+            }
+            Ok(self.conversation_signals.get())
         })
     }
 
@@ -1344,6 +1369,43 @@ async fn prompt_waits_for_a_turn_that_started_before_delivery_finished() {
         .expect("task")
         .expect("prompt");
     harness.finish();
+}
+
+#[tokio::test(flavor = "local")]
+async fn prompt_wait_ends_when_the_conversation_shows_the_turn_was_interrupted() {
+    // Claude Code reports nothing when the operator presses Esc, or refuses a tool call at the
+    // permission prompt. Only its conversation shows that the turn ended.
+    for reports in [
+        &[agent::sessions::ActivityEvent::TurnStarted][..],
+        &[
+            agent::sessions::ActivityEvent::TurnStarted,
+            agent::sessions::ActivityEvent::WaitingForInput,
+        ],
+    ] {
+        let directory = TempDir::new().expect("directory");
+        let harness = ServiceHarness::start(&directory, "33333333-3333-4333-8333-333333333333").await;
+        let mut waiting = harness.prompt("run the slow command");
+        harness.await_delivery(&mut waiting).await;
+        for event in reports {
+            harness.report(*event).await;
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1500), &mut waiting)
+                .await
+                .is_err(),
+            "the turn is not over after {reports:?}"
+        );
+        harness
+            .runtime
+            .conversation_signals
+            .set(agent::sessions::TurnSignals { interrupted: true });
+        tokio::time::timeout(Duration::from_secs(3), waiting)
+            .await
+            .expect("the interruption ends the wait")
+            .expect("task")
+            .expect("prompt");
+        harness.finish();
+    }
 }
 
 #[tokio::test(flavor = "local")]

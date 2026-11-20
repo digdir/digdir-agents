@@ -79,3 +79,10 @@ pub struct QuestionOption {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
 }
+
+/// What a session's conversation shows about its turns that the harness does not report.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TurnSignals {
+    /// A turn ended because the operator interrupted it or refused a tool call.
+    pub interrupted: bool,
+}
