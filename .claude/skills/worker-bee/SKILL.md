@@ -209,7 +209,11 @@ set Status to Building.
 
 - Keep the change to what the analysis says. A problem you find beside it gets an issue of its own, with what you
   were working on when you found it and with its type and labels set as for any issue. A diff that grows to cover
-  everything you noticed is one nobody can review.
+  everything you noticed is one nobody can review. A failure you can't tell from your own environment, such as
+  tests that fail while your own runs load the machine, is not an issue yet. Put it in your report instead.
+- For a failure you had to force, keep the forcing on the branch as commits of its own: one that adds it and shows
+  the failure, then the fix, then one that removes it. The branch then shows the failure and the fix under the same
+  condition, and the squash merge leaves the forcing out of `main`.
 - For a bug, commit the failing test before the fix, so the branch shows it failing for the reason the issue gives.
   It has to fail on what it asserts, not on a compile error or in its setup. When the fix adds something the test
   calls, add only its signature in the test's commit, with a body that leaves the behaviour as it is.
@@ -231,8 +235,9 @@ Run everything `AGENTS.md` at the root asks for before a change is reported comp
 change the way its user will, in the running product wherever you can run it, once for each acceptance criterion. Tests
 that build their own data can't catch a broken contract between two parts. Keep what shows each criterion holding: the
 output, a recording or a measurement. Note with each result the commit it came from, since a result that can't be tied
-to a commit shows nothing about the code that will merge. In the pull request, name a commit by its subject, which a
-later rebase leaves alone.
+to a commit shows nothing about the code that will merge. That holds for what you change to get a result too, such as
+breaking the code a test guards: commit it, or keep its exact diff beside the result. In the pull request, name a commit
+by its subject, which a later rebase leaves alone.
 
 Then have the testing [challenged](#the-checks). QA of the testing comes after the pull request is open, in
 [step 5](#5-hand-it-over), since it reviews what will merge.
@@ -265,6 +270,10 @@ Start each check as a subagent with a fresh context, never as a copy of your own
 - Give it a worktree of its own on the head commit, and a build directory of its own when it builds.
 - Give it a time limit. A check that nothing stops can run for hours.
 - For QA of the test phase, say whether the person asked for `close` in this run. That line is what lets it merge.
+  Link the comments on the issue and the pull request that are yours. Agents often post from one account, and QA
+  can't otherwise tell your comments from a person's.
+
+Run nothing heavy of your own while a check measures time or runs under load. Your load becomes its result.
 
 ### What you do with a finding
 
@@ -298,25 +307,27 @@ Open the pull request as a draft, [linked to the issue](references/linking.md#li
 to yourself. [CONTRIBUTING.md](../../../CONTRIBUTING.md#pull-requests) says what a pull request here needs, and how
 to have CI run on a draft. The label it names also starts CI when you set it as you create the pull request.
 
-See CI through. When a check fails, read the failing step's log and find out whether it fails without your change.
-"Probably flaky" is not a diagnosis. Confirm that the jobs for the area you changed ran. The required check also
-passes when an area was skipped, and a change that CI maps to no area has been tested by nobody, which is something
-to tell the person. A session that can't wait for CI goes on anyway and says in its report that the checks had not
-finished. Such a pull request is never merged.
-
-Then start [QA](#the-checks) of the test phase on the pull request. It tests the change in use, reviews the pull
-request against [step 6](#6-merge-it), and gives its verdict for the head commit. What it sends back, you fix, and
-it reviews again. The `process/agent-says-merge` label is QA's to set, never yours, and whoever pushes removes it.
-
-Then write one comment on the pull request that mentions the person who started you. Start it with
+Write one comment on the pull request that mentions the person who started you. Start it with
 `<!-- agent-report -->` and name the commit it applies to. Edit it when things change, as with the analysis. When
 you post as that person's own account, the mention notifies nobody, and your report to them is the notice. The
 comment is their list of what to look at, so it holds only what needs them:
 
 - Each thing you decided on their behalf, and what would change if you were wrong.
 - Each finding that waits for them, and why it was not settled.
-- QA's verdict, and each condition for merging that does not hold.
+- QA's verdict once you have it, and each condition for merging that does not hold.
 - The checks that did not run, and the ones nobody could run locally.
+
+Then start [QA](#the-checks) of the test phase on the pull request, without waiting for CI. QA reads CI itself, and
+your report has to be there before it starts, since it may merge in the same turn. It tests the change in use,
+reviews the pull request against [step 6](#6-merge-it), and gives its verdict for the head commit. What it sends
+back, you fix, and it reviews again. The `process/agent-says-merge` label is QA's to set, never yours, and whoever
+pushes removes it.
+
+Meanwhile, see CI through. When a check fails, read the failing step's log and find out whether it fails without your change.
+"Probably flaky" is not a diagnosis. Confirm that the jobs for the area you changed ran. The required check also
+passes when an area was skipped, and a change that CI maps to no area has been tested by nobody, which is something
+to tell the person. A session that can't wait for CI goes on anyway and says in its report that the checks had not
+finished. Such a pull request is never merged.
 
 When the pull request is not merged in this run, this is where the issue rests. Set Status to Waiting to be merged
 and WIP State to Blocked: Human needed, since only a person can take it further. They mark it ready and merge it.
@@ -340,14 +351,16 @@ run and all of this holds:
 - `main` has not moved in a way that touches the same code since CI ran. CI tested the merge with `main` as it was
   then, so the author rebases and CI runs again otherwise.
 - The review bot has reviewed the commit, and none of its threads is open. QA asks for it last, with
-  `@coderabbitai full review`, so that it reads the code that will merge. QA declines what is wrong, with the
+  `@coderabbitai full review`, so that it reads the code that will merge, and waits for the CodeRabbit check on
+  that commit, not for a review. The bot posts no review when it has nothing to say. QA declines what is wrong, with the
   reason in terms of the code, and resolves the thread. What is right goes back to you, which starts the checks
   again. A thread about correctness or security that QA is not sure of stays open, and the pull request waits for a
   person.
 - No review asks for changes.
 - GitHub lets the pull request merge as it is. When [CODEOWNERS](../../../.github/CODEOWNERS) asks for a person's
   approval, it waits for that. Nobody uses administrator rights or any other way around a requirement.
-- Nobody has commented on the pull request or the issue since the last push without getting an answer.
+- Nobody has commented on the pull request or the issue since the last push without getting an answer. The
+  author's own analysis and report comments are not such comments.
 
 QA then marks it ready, waits for CI on that commit, and merges it with
 `gh pr merge N --squash --match-head-commit SHA`, where SHA is the commit it accepted. When it reports back, check
