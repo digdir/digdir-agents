@@ -2605,8 +2605,7 @@ async fn prompt_wait_does_not_follow_a_replacement_session_with_the_same_name() 
     let harness = ServiceHarness::start(&directory, "44444444-4444-4444-8444-444444444444").await;
     let mut waiting = harness.prompt("continue");
     harness.await_delivery(&mut waiting).await;
-    // No turn completes, so the wait can only end by finding the session gone. A completion reported before the
-    // deletion would let the wait settle on it first whenever the deletion is slow.
+    // No turn completes, so the wait can only end by finding the session gone.
     harness.database.mark_deleting("worker").await.expect("delete");
     harness
         .database
