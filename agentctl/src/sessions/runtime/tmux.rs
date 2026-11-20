@@ -17,8 +17,8 @@ use crate::{
     sandbox::platform::{PORTABLE_TERMINAL, UTF8_LOCALE},
 };
 
-use super::{LaunchContext, Observation};
-use crate::sessions::{Activity, AttachTarget, LaunchToken, LifecycleState, Phase, Session, Turn};
+use super::{ConversationMark, LaunchContext, Observation};
+use crate::sessions::{Activity, AttachTarget, LaunchToken, LifecycleState, Phase, Session, Turn, TurnSignals};
 
 /// Quiet period after the latest hook event before input is pasted into a
 /// harness that is not waiting for input. The start hook fires before the
@@ -530,6 +530,23 @@ impl super::SessionRuntime for Tmux {
         Box::pin(turns(session, sandbox, last))
     }
 
+    fn mark_conversation<'a>(
+        &'a self,
+        session: &'a Session,
+        sandbox: &'a SandboxHandle,
+    ) -> ::sandbox::LocalFuture<'a, Result<ConversationMark, Error>> {
+        Box::pin(mark_conversation(session, sandbox))
+    }
+
+    fn follow_conversation<'a>(
+        &'a self,
+        session: &'a Session,
+        sandbox: &'a SandboxHandle,
+        mark: &'a mut ConversationMark,
+    ) -> ::sandbox::LocalFuture<'a, Result<TurnSignals, Error>> {
+        Box::pin(follow_conversation(session, sandbox, mark))
+    }
+
     fn attach<'a>(
         &'a self,
         home: &'a std::path::Path,
@@ -671,6 +688,112 @@ async fn turns(session: &Session, sandbox: &SandboxHandle, last: Option<usize>) 
         )));
     }
     parse_transcript_suffix(session.harness, &read.stdout, last, MAX_TRANSCRIPT_BYTES)
+}
+
+/// Most of the conversation one follow reads; the next follow reads on from there.
+const FOLLOW_READ_BYTES: usize = 4 * 1024 * 1024;
+
+/// Marks the end of the transcript the session reported. A transcript the harness has not
+/// created yet ends at its start.
+async fn mark_conversation(session: &Session, sandbox: &SandboxHandle) -> Result<ConversationMark, Error> {
+    const SCRIPT: &str = "[ -f \"$1\" ] || { echo 0; exit 0; }; exec /usr/bin/stat -c %s -- \"$1\"";
+    let Some(tracker) = harness::TurnTracker::new(session.harness) else {
+        return Ok(ConversationMark::default());
+    };
+    let path = session.status.reported.harness_transcript_path.clone();
+    let offset = match path.as_deref() {
+        Some(path) => {
+            let size = run_lifecycle_execution(
+                sandbox,
+                ExecutionSpec::command(
+                    SandboxPath::new("/bin/sh"),
+                    [
+                        "-c".into(),
+                        SCRIPT.into(),
+                        "agent-session-transcript-size".into(),
+                        path.into(),
+                    ],
+                ),
+                "marking the session conversation",
+            )
+            .await?;
+            if !size.status.success() {
+                return Err(Error::Session(format!(
+                    "marking the conversation of session {} failed with exit code {}",
+                    session.id, size.status.code
+                )));
+            }
+            std::str::from_utf8(&size.stdout)
+                .ok()
+                .and_then(|size| size.trim().parse().ok())
+                .ok_or_else(|| Error::Session("the transcript size is not a number".into()))?
+        }
+        None => 0,
+    };
+    Ok(ConversationMark {
+        path,
+        offset,
+        tracker: Some(tracker),
+    })
+}
+
+/// Reads the transcript from `mark` on, at most [`FOLLOW_READ_BYTES`], and folds its complete
+/// lines. A line still being written is read again next time.
+async fn follow_conversation(
+    session: &Session,
+    sandbox: &SandboxHandle,
+    mark: &mut ConversationMark,
+) -> Result<TurnSignals, Error> {
+    const SCRIPT: &str = "[ -f \"$1\" ] || exit 0; /usr/bin/tail -c +\"$2\" -- \"$1\" | /usr/bin/head -c \"$3\"";
+    let Some(tracker) = mark.tracker.as_mut() else {
+        return Ok(TurnSignals::default());
+    };
+    let path = session.status.reported.harness_transcript_path.as_deref();
+    if path != mark.path.as_deref() {
+        // The harness reported its transcript after the mark, or started another one. All of it
+        // came after the mark.
+        mark.path = path.map(str::to_owned);
+        mark.offset = 0;
+    }
+    let Some(path) = path else {
+        return Ok(tracker.signals());
+    };
+    let read = run_lifecycle_execution(
+        sandbox,
+        ExecutionSpec::command(
+            SandboxPath::new("/bin/sh"),
+            [
+                "-c".into(),
+                SCRIPT.into(),
+                "agent-session-transcript-follow".into(),
+                path.into(),
+                (mark.offset + 1).to_string(),
+                FOLLOW_READ_BYTES.to_string(),
+            ],
+        ),
+        "following the session conversation",
+    )
+    .await?;
+    if !read.status.success() {
+        return Err(Error::Session(format!(
+            "following the conversation of session {} failed with exit code {}",
+            session.id, read.status.code
+        )));
+    }
+    let complete = complete_lines(&read.stdout, FOLLOW_READ_BYTES);
+    tracker.push(&read.stdout[..complete]);
+    mark.offset += complete as u64;
+    Ok(tracker.signals())
+}
+
+/// The length of the complete lines at the start of `read`. A read of `limit` bytes without a
+/// line end holds part of one longer line, which is passed over whole.
+fn complete_lines(read: &[u8], limit: usize) -> usize {
+    match read.iter().rposition(|byte| *byte == b'\n') {
+        Some(end) => end + 1,
+        None if read.len() >= limit => read.len(),
+        None => 0,
+    }
 }
 
 fn parse_transcript_suffix(
