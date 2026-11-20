@@ -799,61 +799,26 @@ async fn prompt_waits_for_completion_and_turns_are_read_separately() {
 
 #[tokio::test(flavor = "local")]
 async fn prompt_wait_reports_a_failed_session_instead_of_hanging() {
-    const TOKEN: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     let directory = TempDir::new().expect("temporary directory");
-    let (database, sandboxes, session) = running_session(&directory, TOKEN, true).await;
-    let session_store: Rc<dyn agent::sessions::SessionStore> = Rc::new(database.clone());
-    let agent_store: Rc<dyn agent::control_plane::AgentStore> = Rc::new(database.clone());
-    let (agent_controller, agent_wakeup) = agent::control_plane::Controller::new(
-        agent_store.clone(),
-        Rc::new(NoopAgentReconcile),
-        Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected agent reconciliation error: {error}")),
-    );
-    let (session_controller, session_wakeup) = agent::sessions::Controller::new(
-        session_store.clone(),
-        Rc::new(MarkSessionReady(database.clone())),
-        Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected session reconciliation error: {error}")),
-    );
-    let agent_task = tokio::task::spawn_local(agent_controller.run());
-    let session_task = tokio::task::spawn_local(session_controller.run());
-    let service = Rc::new(agent::sessions::Service::new(
-        session_store.clone(),
-        Rc::new(agent::sessions::AgentSandboxes::new(agent_store.clone(), sandboxes)),
-        Rc::new(FakeRuntime::default()),
-        Convergence::new(agent_wakeup, agent_store, Changes::new()),
-        session_wakeup,
-    ));
-    let name = SessionName::new("s1").expect("name");
-
-    let sending_service = service.clone();
-    let sending_name = name.clone();
-    let send = tokio::task::spawn_local(async move {
-        sending_service
-            .prompt(
-                "worker",
-                &sending_name,
-                "do the thing",
-                true,
-                Some(Duration::from_mins(1)),
-            )
-            .await
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(!send.is_finished());
-    // No activity report arrives; the lifecycle write itself wakes the wait.
-    session_store
-        .update_session_lifecycle(session.id, agent::sessions::Lifecycle::failed("harness exited"), 1)
+    let harness = ServiceHarness::start(&directory, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee").await;
+    let mut waiting = harness.prompt("do the thing");
+    harness.await_delivery(&mut waiting).await;
+    // No activity report arrives. The wait finds the failure on its next poll.
+    harness
+        .database
+        .update_session_lifecycle(
+            harness.session.id,
+            agent::sessions::Lifecycle::failed("harness exited"),
+            1,
+        )
         .await
         .expect("failed");
-    let error = send
+    let error = waiting
         .await
         .expect("send task")
         .expect_err("a failed session ends the wait");
     assert!(error.to_string().contains("harness exited"), "{error}");
-    agent_task.abort();
-    session_task.abort();
+    harness.finish();
 }
 
 #[tokio::test(flavor = "local")]
