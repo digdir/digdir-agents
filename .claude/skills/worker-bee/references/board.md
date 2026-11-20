@@ -18,14 +18,13 @@ Status says how far the work has come:
 
 - **Analyzing** when you start to read and plan.
 - **Building** when you write the change.
-- **Testing** when it is ready for a person to read.
-- **Waiting to be merged** when all that is left is something that holds the merge, such as a code owner's
-  approval.
+- **Testing** while the change is checked, by the checks you start and by CI.
+- **Waiting to be merged** when all that is left is something that holds the merge, such as a person reading the
+  draft or a code owner's approval.
 
 GitHub sets **Waiting to be released** when the work is merged or closed. That includes work closed without a
-merge, so archive it then, since no release will ship it. After a release, the items that closed before its pull
-request merged have shipped, and whoever released archives them. The column then holds only what the next release
-will ship.
+merge, so archive it then, since no release will ship it. The [`release` skill](../../release/SKILL.md) archives
+what a release has shipped.
 
 ## WIP State
 

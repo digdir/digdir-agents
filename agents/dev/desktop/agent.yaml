@@ -28,7 +28,6 @@ spec:
   skills:
     - source: ../skills/pr-evidence
     - source: ../skills/changelog
-    - source: ../skills/worker-bee
     # The image ships the computer-use and recording skills.
   harnesses:
     - type: claudeCode
