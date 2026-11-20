@@ -54,37 +54,23 @@ fn starts_turn(entry: &Value) -> bool {
     if flag(entry, "isSidechain") || flag(entry, "isMeta") || flag(entry, "isCompactSummary") {
         return false;
     }
-    if entry.get("type").and_then(Value::as_str) != Some("user") {
-        return false;
-    }
-    let Some(message) = entry.get("message") else {
-        return false;
-    };
-    match message.get("content") {
-        Some(Value::String(text)) => !is_injected(text),
-        Some(Value::Array(blocks)) => {
+    entry.get("type").and_then(Value::as_str) == Some("user")
+        && user_text(entry).is_some_and(|text| !is_injected(&text))
+}
+
+/// The text of a `user` entry's message, without its tool results. An entry that holds only tool
+/// results has none.
+fn user_text(entry: &Value) -> Option<String> {
+    match entry.get("message")?.get("content")? {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(blocks) => {
             let text = blocks
                 .iter()
                 .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
                 .filter_map(|block| block.get("text").and_then(Value::as_str))
                 .collect::<String>();
-            !text.is_empty() && !is_injected(&text)
+            (!text.is_empty()).then_some(text)
         }
-        _ => false,
-    }
-}
-
-/// The text of a `user` entry's message, without its tool results.
-fn user_text(entry: &Value) -> Option<String> {
-    match entry.get("message")?.get("content")? {
-        Value::String(text) => Some(text.clone()),
-        Value::Array(blocks) => Some(
-            blocks
-                .iter()
-                .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-                .filter_map(|block| block.get("text").and_then(Value::as_str))
-                .collect(),
-        ),
         _ => None,
     }
 }
