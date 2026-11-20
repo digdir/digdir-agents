@@ -358,10 +358,11 @@ A pull request that fails any of these rests as [step 5](#5-hand-it-over) descri
 
 ## Leaving the work
 
-Before your session leaves an issue, at any step, set what it now waits for in
-[WIP State](references/board.md#wip-state). A Working that no session stands behind keeps others off it. When you
-are told to stop, finish the step in hand, commit and push it, and say on the issue where it stands. Start nothing
-new, and leave nothing that only you could pick up.
+Before your session leaves an issue, at any step, set what it now waits for in [WIP
+State](references/board.md#wip-state). A Working that no session stands behind keeps others off it, and so does an
+assignee on an issue that is up for grabs, so that state means you also remove yourself. When you are told to stop,
+finish the step in hand, commit and push it, and say on the issue where it stands. Start nothing new, and leave nothing
+that only you could pick up.
 
 ## After the run
 
