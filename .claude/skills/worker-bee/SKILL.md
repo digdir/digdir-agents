@@ -189,12 +189,27 @@ challenger argues that the work is wrong. QA finds out whether it does what it s
 | Phase | The challenger argues that | QA finds out whether |
 | --- | --- | --- |
 | Analysis | The issue should not be done, or not this way: the behaviour is intended, it is a symptom, planned work replaces it, something simpler would do | Each claim in the analysis holds when checked against the code, and each acceptance criterion is something a person can check |
-| Build | The change breaks. This is the red team, and it returns each problem as a failing test, or as steps that reproduce it when no test can reach it | The change is what the analysis said and no more, each criterion has a test, and each of those tests fails without the change |
+| Build | The solution is the wrong one: more complicated, more scattered or harder to follow than the problem needs, when another way would do, a compromise included | The change is what the analysis said and no more, each criterion has a test, and each of those tests fails without the change |
 | Test | The tests and the evidence don't show what they claim: a test that passes with the code broken, a criterion nobody exercised, evidence from another commit | Each acceptance criterion holds when you use the change as a user would |
 
-The build phase has a third check, "could this be better", which asks whether the change will age well and fits
-the code around it. It returns changes that leave the behaviour as it is, and it runs after the red team, whose
-tests then pin that behaviour.
+The build's challenger reads the change as the person who has to maintain it in a year, without anyone to ask.
+Have it look for:
+
+- Other ways to solve the problem, and what each would take away from this one. A compromise that solves most of
+  it with much less counts.
+- Cases the change handles that will not happen in practice, and what leaving them out would remove. A theoretical
+  case that drags in a new concept or a new code path costs every later reader.
+- Whether the change can be understood again later: one place that holds the idea rather than pieces in several,
+  names that say what things do, and no step that needs the author's explanation.
+- Whether it fits how the code around it already does the same kind of thing.
+
+It returns each objection with the alternative it would build and what that removes, and says which of two sizes it
+is. A small one leaves the behaviour as it is, and you take it into the change. A large one means the solution
+goes [back to the analysis](#what-you-do-with-a-finding).
+
+The build phase has a third check, the red team, which argues that the change breaks. It returns each problem as a
+failing test, or as steps that reproduce it when no test can reach it. Run it when the challenger's objections are
+settled, so that it attacks the solution that will stand, and before QA.
 
 - **Give each check to a subagent with a fresh context.** Hand it the issue, the analysis, the base and head
   commits and a worktree of its own, but not your reasoning. A reviewer that has read why you did something tends
@@ -214,8 +229,11 @@ tests then pin that behaviour.
 - When a finding is real but may not be worth handling, or when you and the check still disagree after one more
   round, neither of you decides. It goes in the [hand-over comment](#5-hand-it-over), and the pull request waits for
   a person.
-- A "could this be better" change that would alter the behaviour, or that reaches outside what the pull request
-  touches, becomes an issue of its own.
+- When the build's challenger shows a simpler solution and you can't show why yours is needed, the solution goes
+  back to the analysis. Having built it is not a reason to keep it. Rewrite the analysis comment to the solution
+  you now mean to build, pass [the gate](#who-decides-whether-to-build) again, and build that. Leaving out a case
+  that users could meet, or settling for a compromise, changes what they get, so a person decides it.
+- An improvement that reaches outside what the pull request touches becomes an issue of its own.
 - A fix that changes what an earlier phase settled sends you back to that phase and its checks.
 
 A text-only change or a fix of a few lines can skip checks when it ends as a draft. Say in the hand-over comment
