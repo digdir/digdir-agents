@@ -124,6 +124,12 @@ Set the type on an issue that has none with `gh issue edit N --type Bug`. A Feat
 on. An Enhancement improves what is there without changing that. Work that is neither a fault nor a change to the
 product, such as documentation, is a Task.
 
+Label it for the operating systems it is about, when it is not about all of them. `platform/mac`, `platform/linux`
+and `platform/win` say who can reproduce and test an issue, so one that holds on one or two of them gets those
+labels. Most issues hold everywhere and get none. When the work has to be done once per operating system, give each
+its own sub-issue with its label, and leave the parent without one. An issue for a platform you don't run on is one
+you can't reproduce, which [the gate](#who-decides-whether-to-build) asks for.
+
 Then have the analysis [checked](#the-checks), before the gate below. A wrong premise is cheapest to find before
 anything is built on it.
 
