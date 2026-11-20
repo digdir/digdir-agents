@@ -151,6 +151,13 @@ Go on to build without waiting only when all of this holds:
 The type does not settle this, since you may have set it yourself. A bug you can't reproduce fails it, because
 nothing would show that the fix fixed it.
 
+A failure that comes and goes, such as a test that races, is reproduced when you can force it: find the condition
+it depends on and make it hold, such as a delay that makes the test fail every time. When the change is to a test,
+the proof also has to show that the test still does its job, so break the code it guards and see it fail.
+
+When the gate passes and you go on, say so in a line on the issue, with what the proof was. Otherwise the analysis
+reads as a proposal that nobody has acted on.
+
 In every other case a person decides before you build, and a Feature always waits. Set WIP State to Blocked: Human
 needed, say in the comment what you need from them, and go on to the next issue. Building while you wait is not a
 head start. It spends the reviewer's attention on something nobody has asked for yet.
@@ -171,8 +178,11 @@ Start the branch with `gh issue develop`, as [linking](references/linking.md#lin
 set Status to Building.
 
 - Keep the change to what the analysis says. A problem you find beside it gets an issue of its own, with what you
-  were working on when you found it. A diff that grows to cover everything you noticed is one nobody can review.
+  were working on when you found it and with its type and labels set as for any issue. A diff that grows to cover
+  everything you noticed is one nobody can review.
 - For a bug, commit the failing test before the fix, so the branch shows it failing for the reason the issue gives.
+  CI fails on that commit alone, so say in the hand-over comment that it does so on purpose, and that the squash
+  merge is what keeps it out of `main`.
 - Write tests that would fail if the change were wrong, and show it for the ones that matter: break the code the
   way the test exists to catch, see it fail, and restore it. A test that asserts on what it just built passes
   whatever the code does.
@@ -182,10 +192,13 @@ When the change is built, have the build [checked](#the-checks).
 
 ## 4. Test it
 
-Set Status to Testing. Run everything `AGENTS.md` at the root asks for before a change is reported complete, and
-read the result. Then use the change the way its user will, in the running product wherever you can run it, once
+Set Status to Testing. Bring the branch up to date with its base first. A rebase after you have tested gives every
+commit a new name, and the evidence then points at commits that no longer exist.
+
+Run everything `AGENTS.md` at the root asks for before a change is reported complete, and read the result. Then use the change the way its user will, in the running product wherever you can run it, once
 for each acceptance criterion. Tests that build their own data can't catch a broken contract between two parts.
-Keep what shows each criterion holding: the output, a recording or a measurement.
+Keep what shows each criterion holding: the output, a recording or a measurement. Note with each result the commit
+it came from, since a result that can't be tied to a commit shows nothing about the code that will merge.
 
 Then have the testing [checked](#the-checks). These checks come last, so they see what the earlier ones changed.
 
@@ -222,7 +235,8 @@ settled, so that it attacks the solution that will stand, and before QA.
 
 - **Give each check to a subagent with a fresh context.** Hand it the issue, the analysis, the base and head
   commits and a worktree of its own, but not your reasoning. A reviewer that has read why you did something tends
-  to agree with it. The two checks of a phase can run at the same time.
+  to agree with it. The two checks of a phase can run at the same time. When both build, give each a build
+  directory of its own or run them one after the other, or one check ends up running the other's build.
 - **Tell each which side it argues**, and that finding nothing is a valid answer. A check that must find something
   produces noise.
 - **Give each one a time limit**, and say what to report when it runs out. A check that nothing stops can run for
@@ -307,6 +321,7 @@ new, and leave nothing that only you could pick up.
 ## After the run
 
 Tell the person prompting you what the run showed about this skill: where they corrected you, which premise turned
-out wrong, and which check found nothing or cost more than it gave. Propose the change to this skill that would
+out wrong, and which check found nothing or cost more than it gave. Take the time each check took from the clock,
+not from memory. Propose the change to this skill that would
 have avoided it, as a pull request of its own. That is how the skill earns more room, or loses a step that never
 changes anything.

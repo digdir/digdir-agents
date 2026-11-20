@@ -18,7 +18,7 @@ Status says how far the work has come:
 
 - **Analyzing** when you start to read and plan.
 - **Building** when you write the change.
-- **Testing** while the change is checked, by the checks you start and by CI.
+- **Testing** when the change is built and its checks have passed, while you test it and CI runs.
 - **Waiting to be merged** when all that is left is something that holds the merge, such as a person reading the
   draft or a code owner's approval.
 
