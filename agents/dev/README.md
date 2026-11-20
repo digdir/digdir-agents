@@ -87,6 +87,8 @@ levels it rejects onto ones it accepts with `thinkingLevelMap`, and leave out a 
 ## Inside the agent
 
 [`instructions.md`](instructions.md), its stage's `environment.md` and [`improving.md`](improving.md) are the agent's
-own instructions, with [`worktree.md`](worktree.md) on the `worktree` variant. Its skills are [`pr-evidence`](skills/pr-evidence/SKILL.md), for showing a change to reviewers, and
-[`changelog`](skills/changelog/SKILL.md), for changelog entries. The images add the base image's `recording` skill,
-and on `desktop` its `computer-use` skill for the desktop.
+own instructions, with [`worktree.md`](worktree.md) on the `worktree` variant. Its skills are
+[`pr-evidence`](skills/pr-evidence/SKILL.md), for showing a change to reviewers,
+[`changelog`](skills/changelog/SKILL.md), for changelog entries, and [`worker-bee`](skills/worker-bee/SKILL.md), for
+taking an issue from the project board to a draft pull request when a person asks for it. The images add the base
+image's `recording` skill, and on `desktop` its `computer-use` skill for the desktop.

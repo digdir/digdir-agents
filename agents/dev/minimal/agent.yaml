@@ -28,6 +28,7 @@ spec:
   skills:
     - source: ../skills/pr-evidence
     - source: ../skills/changelog
+    - source: ../skills/worker-bee
   harnesses:
     - type: claudeCode
       auth: mediated
