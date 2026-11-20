@@ -74,6 +74,29 @@ fn starts_turn(entry: &Value) -> bool {
     }
 }
 
+/// The text of a `user` entry's message, without its tool results.
+fn user_text(entry: &Value) -> Option<String> {
+    match entry.get("message")?.get("content")? {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(blocks) => Some(
+            blocks
+                .iter()
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// Whether `entry` is the [marker](is_interruption_marker) Claude Code writes where the operator
+/// stopped a turn. The turn ends there, and no hook says so.
+fn is_interruption(entry: &Value) -> bool {
+    !flag(entry, "isSidechain")
+        && entry.get("type").and_then(Value::as_str) == Some("user")
+        && user_text(entry).is_some_and(|text| is_interruption_marker(&text))
+}
+
 /// Follows a transcript as it grows, for the turn endings Claude Code fires no hook for.
 #[derive(Debug, Default)]
 pub(crate) struct TurnTracker {
@@ -82,13 +105,15 @@ pub(crate) struct TurnTracker {
 
 impl TurnTracker {
     /// Folds complete transcript lines. Lines that are not JSON objects are skipped.
-    #[expect(
-        clippy::unused_self,
-        clippy::needless_pass_by_ref_mut,
-        clippy::missing_const_for_fn,
-        reason = "the tracker does not read the lines yet"
-    )]
-    pub(crate) fn push(&mut self, _lines: &[u8]) {}
+    pub(crate) fn push(&mut self, lines: &[u8]) {
+        for line in lines.split(|byte| *byte == b'\n') {
+            if let Ok(entry) = serde_json::from_slice::<Value>(line)
+                && is_interruption(&entry)
+            {
+                self.interrupted = true;
+            }
+        }
+    }
 
     pub(crate) const fn signals(&self) -> TurnSignals {
         TurnSignals {

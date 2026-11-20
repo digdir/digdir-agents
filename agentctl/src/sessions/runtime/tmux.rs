@@ -842,7 +842,7 @@ mod tests {
         sessions::{Activity, Part, Phase},
     };
 
-    use super::{Observation, input_ready_in, parse_transcript_suffix};
+    use super::{Observation, complete_lines, input_ready_in, parse_transcript_suffix};
 
     fn named_session() -> crate::sessions::Session {
         crate::sessions::Session {
@@ -935,6 +935,18 @@ mod tests {
         assert_eq!(options[position - 1], "-sq", "{options:?}");
         // No other option may use the quiet form: an unknown one elsewhere should still fail loudly.
         assert_eq!(options.iter().filter(|argument| *argument == "-sq").count(), 1);
+    }
+
+    #[test]
+    fn following_reads_complete_lines_and_passes_over_a_line_longer_than_a_read() {
+        assert_eq!(
+            complete_lines(b"{\"a\":1}\n{\"b\":", 64),
+            8,
+            "a line still being written"
+        );
+        assert_eq!(complete_lines(b"{\"b\":", 64), 0);
+        assert_eq!(complete_lines(b"", 64), 0);
+        assert_eq!(complete_lines(&[b'x'; 64], 64), 64, "part of a longer line");
     }
 
     #[test]
