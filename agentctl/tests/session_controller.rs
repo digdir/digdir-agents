@@ -2605,9 +2605,7 @@ async fn prompt_wait_does_not_follow_a_replacement_session_with_the_same_name() 
     let harness = ServiceHarness::start(&directory, "44444444-4444-4444-8444-444444444444").await;
     let mut waiting = harness.prompt("continue");
     harness.await_delivery(&mut waiting).await;
-    // Ensure the waiter will reread on its next activity poll.
-    harness.report(agent::sessions::ActivityEvent::TurnCompleted).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // No turn completes, so the wait can only end by finding the session gone.
     harness.database.mark_deleting("worker").await.expect("delete");
     harness
         .database
