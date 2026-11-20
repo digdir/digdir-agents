@@ -124,6 +124,9 @@ Set the type on an issue that has none with `gh issue edit N --type Bug`. A Feat
 on. An Enhancement improves what is there without changing that. Work that is neither a fault nor a change to the
 product, such as documentation, is a Task.
 
+Then have the analysis [checked](#the-checks), before the gate below. A wrong premise is cheapest to find before
+anything is built on it.
+
 ## Who decides whether to build
 
 Go on to build without waiting only when all of this holds:
@@ -133,8 +136,8 @@ Go on to build without waiting only when all of this holds:
 - You can write a test that fails on `main` and passes with the change.
 - There is one obvious right result. Nothing in it depends on what someone prefers, and users see nothing new
   besides the problem being gone.
-- Your analysis left none of its questions open, and the [challenger](#the-four-checks) found nothing you could
-  not answer with evidence.
+- Your analysis left none of its questions open, and its [checks](#the-checks) found nothing you could not answer
+  with evidence.
 
 The type does not settle this, since you may have set it yourself. A bug you can't reproduce fails it, because
 nothing would show that the fix fixed it.
@@ -166,31 +169,38 @@ set Status to Building.
   whatever the code does.
 - A claim is something you checked. "The tests pass" means you ran all of them and read the result.
 
-## 4. Have it checked
+When the change is built, have the build [checked](#the-checks).
 
-### The four checks
+## 4. Test it
 
-You wrote the analysis and the change, and know why they look the way they do. That makes you the worst placed to
-see where they are wrong. Four checks each ask a question you can't answer about your own work. Set Status to
-Testing when the change is built and the checks on it start.
+Set Status to Testing. Run everything `AGENTS.md` at the root asks for before a change is reported complete, and
+read the result. Then use the change the way its user will, in the running product wherever you can run it, once
+for each acceptance criterion. Tests that build their own data can't catch a broken contract between two parts.
+Keep what shows each criterion holding: the output, a recording or a measurement.
 
-| Check | When | Its question | What it returns |
-| --- | --- | --- | --- |
-| Challenger | After the analysis, before you build | Should this be done, and this way? | Objections, each with what in the code or the issues supports it |
-| Red team | When the change is built | Where does it break? | Each problem as a failing test, or as steps that reproduce it when no test can reach it |
-| Could this be better | After the red team | Will it age well, and does it fit the code around it? | Changes that leave the behaviour as it is |
-| QA | Last, on the code as it will merge | Does each acceptance criterion hold when you use it as a user would? | Each criterion as holds, fails or can't be checked, with what shows it |
+Then have the testing [checked](#the-checks). These checks come last, so they see what the earlier ones changed.
 
-The challenger comes first because a wrong premise is cheapest to find before anything is built on it. QA comes
-last so that it sees what the other checks changed.
+## The checks
+
+You wrote the analysis, the change and the tests, and know why they look the way they do. That makes you the worst
+placed to see where they are wrong. So each phase ends with two checks by agents that did not do the work. A
+challenger argues that the work is wrong. QA finds out whether it does what it set out to do.
+
+| Phase | The challenger argues that | QA finds out whether |
+| --- | --- | --- |
+| Analysis | The issue should not be done, or not this way: the behaviour is intended, it is a symptom, planned work replaces it, something simpler would do | Each claim in the analysis holds when checked against the code, and each acceptance criterion is something a person can check |
+| Build | The change breaks. This is the red team, and it returns each problem as a failing test, or as steps that reproduce it when no test can reach it | The change is what the analysis said and no more, each criterion has a test, and each of those tests fails without the change |
+| Test | The tests and the evidence don't show what they claim: a test that passes with the code broken, a criterion nobody exercised, evidence from another commit | Each acceptance criterion holds when you use the change as a user would |
+
+The build phase has a third check, "could this be better", which asks whether the change will age well and fits
+the code around it. It returns changes that leave the behaviour as it is, and it runs after the red team, whose
+tests then pin that behaviour.
 
 - **Give each check to a subagent with a fresh context.** Hand it the issue, the analysis, the base and head
   commits and a worktree of its own, but not your reasoning. A reviewer that has read why you did something tends
-  to agree with it.
-- **Give each one its side to argue.** The challenger argues that the issue should not be done, or not like this:
-  that the behaviour is intended, that it is a symptom, that planned work replaces it, that something simpler would
-  do. The red team tries to break the change. Tell each that finding nothing is a valid answer, since a check that
-  must find something produces noise.
+  to agree with it. The two checks of a phase can run at the same time.
+- **Tell each which side it argues**, and that finding nothing is a valid answer. A check that must find something
+  produces noise.
 - **Give each one a time limit**, and say what to report when it runs out. A check that nothing stops can run for
   hours.
 - **Ask what it checked and found sound**, so you know what it covered.
@@ -198,8 +208,7 @@ last so that it sees what the other checks changed.
 ### What you do with a finding
 
 - Read the code a finding rests on before you act on it. A subagent's report is a lead, not evidence.
-- A problem with a reproduction is real. Fix it and keep the test. The red team's tests then pin the behaviour
-  while the "could this be better" changes go in, so those changes never touch what the tests assert.
+- A problem with a reproduction is real. Fix it and keep the test.
 - When you think a finding is wrong, answer with evidence. A reproduction settles whether something is broken, not
   the better argument.
 - When a finding is real but may not be worth handling, or when you and the check still disagree after one more
@@ -207,6 +216,7 @@ last so that it sees what the other checks changed.
   a person.
 - A "could this be better" change that would alter the behaviour, or that reaches outside what the pull request
   touches, becomes an issue of its own.
+- A fix that changes what an earlier phase settled sends you back to that phase and its checks.
 
 A text-only change or a fix of a few lines can skip checks when it ends as a draft. Say in the hand-over comment
 which ones it skipped, and likewise when your harness can't start a subagent. Nothing that skipped a check is
@@ -244,7 +254,8 @@ Merge only when the person asked for `close` in this run, and all of this holds:
 
 - The issue passed [the gate](#who-decides-whether-to-build) on what you could prove. A go-ahead from a person lets
   you build, but what they decided to build they also read before it merges.
-- All four checks ran, and nothing they found is open. The hand-over comment lists nothing that waits for a person.
+- Every check of every phase ran, and nothing they found is open. The hand-over comment lists nothing that waits
+  for a person.
 - The change is what the analysis said, and no more.
 - Every CI check has passed on the commit you merge.
 - GitHub lets you merge it as you are. When [CODEOWNERS](../../../.github/CODEOWNERS) asks for a person's approval,
