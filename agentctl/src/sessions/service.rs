@@ -134,7 +134,8 @@ impl Service {
         self.store.session_attach_target(session.id).await
     }
 
-    /// Delivers a prompt to a session's harness, resuming it first when the session is Idle.
+    /// Delivers a prompt to a session's harness, resuming it first when the session is Idle, and
+    /// waiting for the resume when it is Resuming.
     ///
     /// With `wait`, snapshots the completed-turn counter before delivery and
     /// waits for it to advance with identical waiting activity in two consecutive
@@ -278,7 +279,9 @@ impl Service {
     }
 
     /// Opens a session's sandbox to take input. An Idle session's harness is resumed first, as an
-    /// attach resumes it, so a client without a terminal can go on with the conversation.
+    /// attach resumes it, so a client without a terminal can go on with the conversation. A
+    /// session already resuming is waited for: the controller runs one pass at a time per session,
+    /// so the pass asked for here follows the one resuming the harness, whoever started it.
     async fn open_running(&self, agent: &str, name: &SessionName) -> Result<(Session, SandboxHandle), Error> {
         let mut session = self.visible(agent, name).await?;
         if session.is_archived() {
@@ -286,8 +289,11 @@ impl Service {
         }
         let owner = self.sandboxes.agent(session.agent_id).await?;
         owner.reject_stopped()?;
-        if session.status.lifecycle.state == LifecycleState::Idle {
+        let state = session.status.lifecycle.state;
+        if state == LifecycleState::Idle {
             self.store.activate_session(session.id).await?;
+        }
+        if matches!(state, LifecycleState::Idle | LifecycleState::Resuming) {
             self.wakeup.reconcile(session.id).await?;
             session = self.store.get_session(session.id).await?;
         }
