@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Prints what decides whether an agent may act on an issue or a pull request: its labels, its assignees and its
-# fields in the digdir-agents project. Exits with 2 when the project or the item can't be read, so that a caller
-# that can't see a pause stops instead of carrying on.
+# fields in the digdir-agents project. Exits with 2 when the project or the item can't be read, or when gh is too
+# old to keep the board current, so that a caller that can't see or show a pause stops instead of carrying on.
 set -euo pipefail
 
 if [ "$#" -ne 1 ] || ! [[ "$1" =~ ^[0-9]+$ ]]; then
     echo "usage: work-state.sh <issue or pull request number>" >&2
     exit 64
+fi
+
+if ! gh project item-edit --help 2>/dev/null | grep -q -- '--url'; then
+    echo "This gh has no 'project item-edit --url', which keeping the board current needs. Update gh. Stop here." >&2
+    exit 2
 fi
 
 fields='

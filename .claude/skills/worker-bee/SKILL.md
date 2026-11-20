@@ -40,9 +40,9 @@ before you comment, push, open a pull request, merge or change the board. It pri
 the project fields.
 
 - **If it fails, stop the whole run.** It fails when you can't read the project, which needs the `project` and
-  `read:org` scopes and access to the project itself. The board is where a person pauses you and where others see
-  what you are on. Without it you can't tell whether you were told to stop. Tell the person prompting you what is
-  missing, and do no more until they have fixed it.
+  `read:org` scopes and access to the project itself, and when your `gh` is too old to keep the board current. The
+  board is where a person pauses you and where others see what you are on. Without it you can't tell whether you
+  were told to stop. Tell the person prompting you what is missing, and do no more until they have fixed it.
 - **If the issue is labelled `no-agent`, leave it alone.** A person has kept it for people. That also holds when
   the label is added while you work. If you were asked to work on it, say that it carries the label.
 - **If WIP State is Blocked: Human needed, the work waits for a person.** Either you set it when you asked for a
@@ -68,7 +68,8 @@ You can still analyze it.
 Work on one issue at a time, through the steps below, and start on the next when this one is merged or waits for
 something. An issue that ends up waiting for a person's decision does not count towards the number you were asked
 for, since nothing was delivered. Stop when you reach the number, when no issue is left that you can take, or when
-you are told to.
+you are told to. Stop as well when three issues in a row ended up waiting for a person. Each of them got an analysis
+that someone now has to read, and a run that only produces those is asking for more attention than it saves.
 
 Keep notes for each issue in a file outside the checkout: the analysis, each finding from the checks and what
 happened to it. A long run outlives your memory of its first issue, and the report at the end is written from
@@ -120,7 +121,8 @@ Write the analysis as one comment on the issue, for a person who has to decide f
   can't judge, such as whether the design is good enough or whether the bug is worth a fix.
 
 Set the type on an issue that has none with `gh issue edit N --type Bug`. A Feature changes what users see or build
-on. An Enhancement improves what is there without changing that.
+on. An Enhancement improves what is there without changing that. Work that is neither a fault nor a change to the
+product, such as documentation, is a Task.
 
 ## Who decides whether to build
 
@@ -140,6 +142,13 @@ nothing would show that the fix fixed it.
 In every other case a person decides before you build, and a Feature always waits. Set WIP State to Blocked: Human
 needed, say in the comment what you need from them, and go on to the next issue. Building while you wait is not a
 head start. It spends the reviewer's attention on something nobody has asked for yet.
+
+A person has decided when the issue itself is theirs and says what to build, or when they said so in its thread.
+That decision covers what they wrote and no more. When the challenger finds something in it that you can't answer,
+such as a proposal that goes against a rule elsewhere in the repository, put that to them before you build.
+
+A change that no test can show, such as one to text alone, never passes this gate on proof. It is built when a
+person has asked for it, and it always ends as a draft.
 
 Go back to this gate when the work turns out to change more than the analysis said, such as a fix that needs a new
 flag.
@@ -182,6 +191,8 @@ last so that it sees what the other checks changed.
   that the behaviour is intended, that it is a symptom, that planned work replaces it, that something simpler would
   do. The red team tries to break the change. Tell each that finding nothing is a valid answer, since a check that
   must find something produces noise.
+- **Give each one a time limit**, and say what to report when it runs out. A check that nothing stops can run for
+  hours.
 - **Ask what it checked and found sound**, so you know what it covered.
 
 ### What you do with a finding

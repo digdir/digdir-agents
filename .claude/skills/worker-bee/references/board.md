@@ -51,3 +51,6 @@ gh project item-edit 74 --owner digdir --url URL --field "WIP State" --value Wor
 
 URL is the issue's or the pull request's. Use `--clear` in place of `--value` to clear the field. With
 `--format json` the command prints the item's id, which `gh project item-archive 74 --owner digdir --id ID` takes.
+
+An older `gh` has no `--url` on this command, and no `--type`, `--parent` or `--add-blocked-by` on `gh issue edit`.
+`work-state.sh` fails when that is the case, and updating `gh` fixes it.
