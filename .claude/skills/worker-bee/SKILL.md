@@ -323,8 +323,8 @@ reviews the pull request against [step 6](#6-merge-it), and gives its verdict fo
 back, you fix, and it reviews again. The `process/agent-says-merge` label is QA's to set, never yours, and whoever
 pushes removes it.
 
-Meanwhile, see CI through. When a check fails, read the failing step's log and find out whether it fails without your change.
-"Probably flaky" is not a diagnosis. Confirm that the jobs for the area you changed ran. The required check also
+Meanwhile, see CI through. When a check fails, read the failing step's log and find out whether it fails without your
+change. "Probably flaky" is not a diagnosis. Confirm that the jobs for the area you changed ran. The required check also
 passes when an area was skipped, and a change that CI maps to no area has been tested by nobody, which is something
 to tell the person. A session that can't wait for CI goes on anyway and says in its report that the checks had not
 finished. Such a pull request is never merged.
