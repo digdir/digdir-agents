@@ -415,6 +415,42 @@ fn rejects_skills_without_a_directory_name_or_with_duplicate_names() {
 }
 
 #[test]
+fn rejects_post_create_steps_with_an_unusable_or_repeated_name_or_no_commands() {
+    let step = |name: &str, run: &str| agent::PostCreateStep {
+        name: name.into(),
+        run: run.into(),
+    };
+    let rejected = |steps: Vec<agent::PostCreateStep>| {
+        let mut agent = support::agent("worker");
+        agent.spec.post_create = steps;
+        match agent.validate().expect_err("an unusable step") {
+            agent::Error::Invalid(message) => message,
+            error => panic!("{error}"),
+        }
+    };
+
+    // A name becomes a file name in the sandbox.
+    for name in ["", ".hidden", "../escape", "a/../../x", "has space", &"x".repeat(65)] {
+        assert!(
+            rejected(vec![step(name, "true")]).starts_with("spec.postCreate[0].name"),
+            "{name:?}"
+        );
+    }
+    assert_eq!(
+        rejected(vec![step("dotfiles", "true"), step("dotfiles", "false")]),
+        "spec.postCreate[1] duplicates step \"dotfiles\""
+    );
+    assert_eq!(
+        rejected(vec![step("dotfiles", " \n")]),
+        "spec.postCreate[0].run must not be empty"
+    );
+
+    let mut agent = support::agent("worker");
+    agent.spec.post_create = vec![step("dotfiles", "git clone x"), step("tools_1.2-x", "./install")];
+    agent.validate().expect("named steps with commands are valid");
+}
+
+#[test]
 fn rejects_instructions_that_repeat_a_source() {
     let mut agent = support::agent("worker");
     agent.spec.instructions.push(agent.spec.instructions[0].clone());
@@ -1021,4 +1057,20 @@ fn a_secret_may_take_its_value_from_a_stored_secret_instead_of_a_source() {
             "{secret}"
         );
     }
+}
+
+/// `run` is handed to the guest as one argument, which cannot hold a NUL byte, so a step with one could never start:
+/// every setup pass would fail and the agent would never become ready. Environment values are refused for the same
+/// reason.
+#[test]
+fn rejects_post_create_commands_with_a_nul_byte() {
+    let mut agent = support::agent("worker");
+    agent.spec.post_create = vec![agent::PostCreateStep {
+        name: "dotfiles".into(),
+        run: "git clone dotfiles\0".into(),
+    }];
+    assert!(
+        matches!(agent.validate(), Err(agent::Error::Invalid(_))),
+        "a step whose command cannot reach the guest is refused when applied"
+    );
 }

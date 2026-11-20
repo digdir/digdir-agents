@@ -30,6 +30,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 - agentd warns while the host filesystem holding agents' disks is nearly full: every agent has the condition `HostDiskLow=True`, which `agentctl get`, `agentctl describe` and `agentctl tui` show until space returns. Set the threshold with `lowDiskThreshold` in `agentd.toml` in agentd's home, as a share such as `"5%"`, the default, or a size such as `"20Gi"`. ([agentd configuration](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/agentd-configuration.md), [#415](https://github.com/digdir/digdir-agents/issues/415))
 - `agentctl get agents -o wide` adds a DISK column with the host disk space each agent's root filesystem takes out of its capacity, such as `12Gi/100Gi`, also for stopped agents. ([#228](https://github.com/digdir/digdir-agents/issues/228))
 - The new session form in `agentctl tui` (`n`) suggests a name, such as `wobbly-walrus`, in the empty Name field, and Enter creates the session by that name unless you type your own. ([#508](https://github.com/digdir/digdir-agents/pull/508))
+- `postCreate` steps in an agent's manifest run setup that needs the agent's accounts, secrets or network, such as cloning your dotfiles, once before it is first ready. A failed step keeps it from becoming ready, though `agentctl exec` reaches it. Changing steps takes a recreated agent. ([#322](https://github.com/digdir/digdir-agents/issues/322))
 
 ### Changed
 

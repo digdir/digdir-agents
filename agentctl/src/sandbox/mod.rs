@@ -323,6 +323,8 @@ pub struct EnsureOutcome {
     pub missing_logins: Vec<String>,
     /// How far the image's workspace clone got, when the image clones one.
     pub workspace: Option<WorkspaceClone>,
+    /// How far the agent's `postCreate` steps got, when it declares any.
+    pub post_create: Option<PostCreateOutcome>,
 }
 
 /// What platform setup did in the sandbox.
@@ -335,6 +337,17 @@ pub struct PlatformSetup {
     pub skills: PlacedSkills,
     /// How far the image's workspace clone got, when the image clones one.
     pub workspace: Option<WorkspaceClone>,
+    /// How far the agent's `postCreate` steps got, when it declares any.
+    pub post_create: Option<PostCreateOutcome>,
+}
+
+/// How far an agent's `postCreate` steps got.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PostCreateOutcome {
+    /// Every step has run.
+    Completed,
+    /// A step failed, as the message says.
+    Failed(String),
 }
 
 /// Runtime-selectable setup for an operating system reported by a materialized sandbox.
@@ -455,7 +468,13 @@ impl Service {
                 ),
             )
             .await?;
-        phase.complete().await;
+        // A failed `postCreate` step leaves the agent short of ready, so progress shows setup as where it stopped.
+        let ended = if matches!(set_up.post_create, Some(PostCreateOutcome::Failed(_))) {
+            ::sandbox::Outcome::Failed
+        } else {
+            ::sandbox::Outcome::Completed
+        };
+        phase.end(ended).await;
         Ok(EnsureOutcome {
             id: sandbox.snapshot().id.clone(),
             runtime_restarted: outcome.runtime_restarted,
@@ -467,6 +486,7 @@ impl Service {
             skills: set_up.skills,
             missing_logins: outcome.accounts.missing_logins,
             workspace: set_up.workspace,
+            post_create: set_up.post_create,
         })
     }
 

@@ -4,7 +4,8 @@ use ::sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
 
 use crate::Error;
 
-const SETUP_STDERR_LINES: usize = 3;
+/// How many of the last lines of a failed command's output its error quotes.
+const QUOTED_LINES: usize = 3;
 
 /// Runs one setup command in the sandbox and fails with what it ran and what it printed.
 ///
@@ -53,20 +54,10 @@ pub(super) fn checked_output(
     if output.status.success() {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stderr = stderr.trim();
-    let detail = if stderr.is_empty() {
+    let tail = last_lines(&String::from_utf8_lossy(&output.stderr));
+    let detail = if tail.is_empty() {
         String::new()
     } else {
-        let tail = stderr
-            .lines()
-            .rev()
-            .take(SETUP_STDERR_LINES)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join(" | ");
         format!(": {tail}")
     };
     Err(Error::SandboxSetup(format!(
@@ -74,4 +65,18 @@ pub(super) fn checked_output(
         args.iter().map(AsRef::as_ref).collect::<Vec<_>>().join(" "),
         output.status.code
     )))
+}
+
+/// The last few lines of a command's output, on one line, to say why it failed.
+pub(super) fn last_lines(output: &str) -> String {
+    output
+        .trim()
+        .lines()
+        .rev()
+        .take(QUOTED_LINES)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join(" | ")
 }

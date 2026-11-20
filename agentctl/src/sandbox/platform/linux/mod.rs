@@ -4,6 +4,7 @@ mod command;
 mod home;
 mod kvm;
 mod podman;
+mod post_create;
 mod preamble;
 mod sources;
 pub(crate) mod ssh;
@@ -248,10 +249,14 @@ impl Linux {
             harness::bootstrap_linux(installation.kind, sandbox, HOME, start, &instructions, &skills).await?;
             step.complete().await;
         }
+        let workspace = workspace::observe(sandbox).await?;
+        // Last, so the steps find the agent as its sessions will.
+        let post_create = post_create::run(record, sandbox, steps).await?;
         Ok(PlatformSetup {
             missing_sources: missing,
             skills: placed,
-            workspace: workspace::observe(sandbox).await?,
+            workspace,
+            post_create,
         })
     }
 }

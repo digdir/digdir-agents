@@ -89,6 +89,11 @@ const TEAM_SPEC: &str = "spec:
       - type: tmpfs
         target: /tmp
         capacity: 1Gi
+  postCreate:
+    - name: tools
+      run: ./install-tools
+    - name: login
+      run: ./login
 ";
 
 #[test]
@@ -135,6 +140,11 @@ fn keyed_lists_merge_by_key_while_other_lists_replace() {
       - type: tmpfs
         target: /tmp
         capacity: 2Gi
+  postCreate:
+    - name: dotfiles
+      run: ./dotfiles
+    - name: tools
+      run: ./install-tools --mine
 ",
         ),
     );
@@ -169,6 +179,15 @@ fn keyed_lists_merge_by_key_while_other_lists_replace() {
     assert_eq!(
         spec["accounts"],
         serde_json::json!([{"type": "github", "login": "mine"}])
+    );
+    // Steps run in this order, so the variant's own follow those it extends, and one it changes keeps its place.
+    assert_eq!(
+        spec["postCreate"],
+        serde_json::json!([
+            {"name": "tools", "run": "./install-tools --mine"},
+            {"name": "login", "run": "./login"},
+            {"name": "dotfiles", "run": "./dotfiles"},
+        ])
     );
     // Instruction files are concatenated in this order, so the variant's file follows those it extends.
     assert_eq!(
