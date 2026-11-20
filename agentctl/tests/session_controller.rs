@@ -101,6 +101,9 @@ impl Reconcile<AgentId> for NoopAgentReconcile {
 impl Reconcile<SessionId> for MarkSessionReady {
     fn reconcile(&self, id: SessionId) -> LocalFuture<'_, Result<(), Error>> {
         Box::pin(async move {
+            // Forces the race of #595 for this commit only: the startup pass lands
+            // after the test's Failed write and before the wait's next poll.
+            tokio::time::sleep(Duration::from_millis(100)).await;
             self.0
                 .update_session_lifecycle(id, agent::sessions::Lifecycle::running(), 0)
                 .await
