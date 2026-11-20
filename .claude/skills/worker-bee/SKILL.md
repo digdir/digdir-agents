@@ -260,6 +260,9 @@ settled, so that it attacks the solution that will stand, and before QA.
 - An improvement that reaches outside what the pull request touches becomes an issue of its own.
 - A fix that changes what an earlier phase settled sends you back to that phase and its checks.
 
+A change to tests alone has no test QA. Nobody uses a test the way they use the product, and the build's QA has
+already run it with and without the change. The test phase's challenger still runs.
+
 A text-only change or a fix of a few lines can skip checks when it ends as a draft. Say in the hand-over comment
 which ones it skipped, and likewise when your harness can't start a subagent. Nothing that skipped a check is
 merged.
@@ -296,7 +299,7 @@ Merge only when the person asked for `close` in this run, and all of this holds:
 
 - The issue passed [the gate](#who-decides-whether-to-build) on what you could prove. A go-ahead from a person lets
   you build, but what they decided to build they also read before it merges.
-- Every check of every phase ran, and nothing they found is open. The hand-over comment lists nothing that waits
+- Every check the change calls for ran, and nothing they found is open. The hand-over comment lists nothing that waits
   for a person.
 - The change is what the analysis said, and no more.
 - Every CI check has passed on the commit you merge.
