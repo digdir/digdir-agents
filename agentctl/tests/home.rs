@@ -34,9 +34,16 @@ fn socket_path_check_matches_what_a_socket_accepts() {
     let too_long = home(longest.path().file_name().expect("home name").len() + 1);
     too_long.check_socket_path().expect_err("one byte more fails the check");
 
-    std::fs::create_dir_all(longest.socket_path().parent().expect("socket directory")).expect("socket directory");
+    for home in [&longest, &too_long] {
+        std::fs::create_dir_all(home.socket_path().parent().expect("socket directory")).expect("socket directory");
+    }
     std::os::unix::net::UnixListener::bind(longest.socket_path()).expect("the longest accepted path can listen");
-    std::os::unix::net::UnixListener::bind(too_long.socket_path()).expect_err("one byte more cannot");
+    let error = std::os::unix::net::UnixListener::bind(too_long.socket_path()).expect_err("one byte more cannot");
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::InvalidInput,
+        "only the length fails the bind: {error}"
+    );
 }
 
 #[test]
