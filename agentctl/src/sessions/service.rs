@@ -8,8 +8,8 @@ use tokio::sync::Notify;
 use crate::{Error, control_plane, control_plane::WaitPolicy};
 
 use super::{
-    AgentSandboxes, AttachTarget, LifecycleState, NewSession, Session, SessionId, SessionName, SessionRequest,
-    SessionRuntime, SharedStore, State, Turn, Wakeup,
+    AgentSandboxes, AttachTarget, ConversationMark, LifecycleState, NewSession, Session, SessionId, SessionName,
+    SessionRequest, SessionRuntime, SharedStore, State, Turn, Wakeup,
 };
 
 /// Ceiling for completion waiting after prompt submission.
@@ -17,6 +17,10 @@ const PROMPT_TIMEOUT_MAX: Duration = Duration::from_mins(30);
 
 /// Polls durable activity while a caller waits for completion.
 const ACTIVITY_POLL: Duration = Duration::from_millis(250);
+
+/// Reads what the conversation gained while a caller waits for completion, for a turn ending the
+/// harness does not report.
+const CONVERSATION_POLL: Duration = Duration::from_secs(1);
 
 /// Maximum time to wait for a newly launched harness to accept input.
 const INPUT_READY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -141,7 +145,9 @@ impl Service {
     /// waits for it to advance with identical waiting activity in two consecutive
     /// polls, 250 ms apart. Work observed during settling requires another
     /// completion. This is a timing heuristic, not identification of an answer
-    /// to this prompt.
+    /// to this prompt. A turn the operator interrupted, which some harnesses do
+    /// not report, also ends the wait once what the conversation gained since
+    /// delivery shows it, within about a second.
     /// Read the conversation separately with [`Self::turns`].
     ///
     /// In both modes delivery waits for input readiness. The runtime may establish
@@ -173,6 +179,19 @@ impl Service {
         let delivering = Delivering::acquire(&self.deliveries, id).await;
         let session = self.ready_to_prompt(id, name, &sandbox).await?;
         let completed_before = session.status.reported.activity.turns;
+        // Marked before delivery, so that the wait reads all the prompt adds and nothing before it.
+        // Without a mark the wait still follows the harness's reports.
+        let mark = if wait {
+            self.runtime
+                .mark_conversation(&session, &sandbox)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::debug!(%error, session = %id, "could not mark the conversation to follow");
+                    ConversationMark::default()
+                })
+        } else {
+            ConversationMark::default()
+        };
         self.runtime.prompt(&session, &sandbox, prompt).await?;
         drop(delivering);
         if !wait {
@@ -180,7 +199,7 @@ impl Service {
         }
         tokio::time::timeout(
             timeout.unwrap_or(PROMPT_TIMEOUT_MAX),
-            self.wait_for_completion(id, name, completed_before),
+            self.wait_for_completion(id, name, &sandbox, completed_before, mark),
         ).await.map_err(|_| Error::Session(format!(
             "timed out waiting for session \"{name}\" to complete; the prompt was submitted; inspect turns before retrying"
         )))?
@@ -190,9 +209,12 @@ impl Service {
         &self,
         id: SessionId,
         name: &SessionName,
+        sandbox: &SandboxHandle,
         mut completed_before: u64,
+        mut mark: ConversationMark,
     ) -> Result<(), Error> {
         let mut settling = None;
+        let mut follow_at = tokio::time::Instant::now() + CONVERSATION_POLL;
         loop {
             let current = self.store.get_session(id).await?;
             let activity = &current.status.reported.activity;
@@ -228,8 +250,26 @@ impl Service {
                 // is observed. Its permission waits must not satisfy this wait.
                 completed_before = completed_before.max(activity.turns);
                 settling = None;
+                if tokio::time::Instant::now() >= follow_at {
+                    follow_at = tokio::time::Instant::now() + CONVERSATION_POLL;
+                    if self.interrupted(&current, sandbox, &mut mark).await {
+                        return Ok(());
+                    }
+                }
             }
             tokio::time::sleep(ACTIVITY_POLL).await;
+        }
+    }
+
+    /// Whether the conversation shows that the turn ended by interruption, which the harness may not
+    /// report. A conversation that cannot be read leaves the wait to the harness's reports.
+    async fn interrupted(&self, session: &Session, sandbox: &SandboxHandle, mark: &mut ConversationMark) -> bool {
+        match self.runtime.follow_conversation(session, sandbox, mark).await {
+            Ok(signals) => signals.interrupted,
+            Err(error) => {
+                tracing::debug!(%error, session = %session.id, "could not follow the conversation");
+                false
+            }
         }
     }
 
