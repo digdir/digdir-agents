@@ -42,7 +42,7 @@ const PICKED: [(Way, &str); 3] = [
     ),
     (
         Way::Paste,
-        "Paste a token you have: fine-grained, classic, or from `gh auth token`.",
+        "Paste a token you have: fine-grained, classic, a GitHub App user's, or from `gh auth token`.",
     ),
 ];
 
