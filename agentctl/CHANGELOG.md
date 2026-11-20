@@ -23,6 +23,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 - `agentctl prompt`, and `p` in `agentctl tui`, wait for a session that is still resuming and then deliver the prompt, instead of failing with `its harness is resuming`. ([#518](https://github.com/digdir/digdir-agents/issues/518))
 - On macOS and Windows, the disk file of an agent with a `direct` root filesystem shrinks after the agent frees space also when its image runs as another user than root, with a `sudo` that asks for no password, as the base images do. In 0.1.0-preview.15 it never did, and `agentd.log` warned `FITRIM ioctl failed: Operation not permitted` every 15 minutes. ([#547](https://github.com/digdir/digdir-agents/pull/547))
+- Agents that could not clone their repositories for want of a GitHub login clone them once `agentctl github login NAME` keeps it, without a restart. ([#482](https://github.com/digdir/digdir-agents/issues/482))
 
 ## [0.1.0-preview.15] - 2026-11-18
 
