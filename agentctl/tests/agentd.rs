@@ -60,4 +60,9 @@ fn agentd_shares_readable_folders_under_a_strict_umask() {
         "agentd under umask 077 created {} as {mode:o}, which others cannot read and search",
         microsandbox.display()
     );
+    assert!(
+        mode & 0o022 == 0,
+        "agentd under umask 077 created {} as {mode:o}, which others can write",
+        microsandbox.display()
+    );
 }
