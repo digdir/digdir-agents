@@ -195,10 +195,11 @@ When the change is built, have the build [checked](#the-checks).
 Set Status to Testing. Bring the branch up to date with its base first. A rebase after you have tested gives every
 commit a new name, and the evidence then points at commits that no longer exist.
 
-Run everything `AGENTS.md` at the root asks for before a change is reported complete, and read the result. Then use the change the way its user will, in the running product wherever you can run it, once
-for each acceptance criterion. Tests that build their own data can't catch a broken contract between two parts.
-Keep what shows each criterion holding: the output, a recording or a measurement. Note with each result the commit
-it came from, since a result that can't be tied to a commit shows nothing about the code that will merge.
+Run everything `AGENTS.md` at the root asks for before a change is reported complete, and read the result. Then use the
+change the way its user will, in the running product wherever you can run it, once for each acceptance criterion. Tests
+that build their own data can't catch a broken contract between two parts. Keep what shows each criterion holding: the
+output, a recording or a measurement. Note with each result the commit it came from, since a result that can't be tied
+to a commit shows nothing about the code that will merge.
 
 Then have the testing [checked](#the-checks). These checks come last, so they see what the earlier ones changed.
 
