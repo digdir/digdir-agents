@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::{
     Error,
-    sessions::{Message, Part, Question, QuestionOption, Role, Turn},
+    sessions::{Message, Part, Question, QuestionOption, Role, Turn, TurnSignals},
 };
 
 /// Parses Claude Code JSONL into ordered turns.
@@ -71,6 +71,29 @@ fn starts_turn(entry: &Value) -> bool {
             !text.is_empty() && !is_injected(&text)
         }
         _ => false,
+    }
+}
+
+/// Follows a transcript as it grows, for the turn endings Claude Code fires no hook for.
+#[derive(Debug, Default)]
+pub(crate) struct TurnTracker {
+    interrupted: bool,
+}
+
+impl TurnTracker {
+    /// Folds complete transcript lines. Lines that are not JSON objects are skipped.
+    #[expect(
+        clippy::unused_self,
+        clippy::needless_pass_by_ref_mut,
+        clippy::missing_const_for_fn,
+        reason = "the tracker does not read the lines yet"
+    )]
+    pub(crate) fn push(&mut self, _lines: &[u8]) {}
+
+    pub(crate) const fn signals(&self) -> TurnSignals {
+        TurnSignals {
+            interrupted: self.interrupted,
+        }
     }
 }
 
@@ -442,6 +465,47 @@ mod tests {
         ] {
             assert_eq!(question(unknown.clone()), [], "{unknown}");
         }
+    }
+
+    /// Turns recorded with Claude Code 2.1.321, separated by a blank line: one the operator
+    /// refused a tool call in, one interrupted while a tool ran, one interrupted while the answer
+    /// was written, and one answered.
+    const INTERRUPTIONS: &str = include_str!("../../../tests/fixtures/claude-code-interruptions.jsonl");
+
+    fn signals(lines: &str) -> TurnSignals {
+        let mut tracker = TurnTracker::default();
+        tracker.push(lines.as_bytes());
+        tracker.signals()
+    }
+
+    #[test]
+    fn a_refused_or_interrupted_turn_has_ended() {
+        let turns = INTERRUPTIONS.split("\n\n").collect::<Vec<_>>();
+        let [refused, during_tool, during_answer, answered] = turns[..] else {
+            panic!("four recorded turns");
+        };
+        for (case, turn) in [
+            ("refused", refused),
+            ("interrupted during a tool call", during_tool),
+            ("interrupted during the answer", during_answer),
+        ] {
+            assert!(signals(turn).interrupted, "{case}");
+        }
+        assert!(!signals(answered).interrupted, "answered");
+    }
+
+    #[test]
+    fn only_claude_codes_own_marker_is_an_interruption() {
+        for entry in [
+            serde_json::json!({"type": "user", "message": {"content": "[Request interrupted by user] Go on."}}),
+            serde_json::json!({"type": "user", "message": {"content": "Why did it say [Request interrupted by user]?"}}),
+            serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "[Request interrupted by user]"}]}}),
+            serde_json::json!({"type": "user", "isSidechain": true, "message": {"content": [{"type": "text", "text": "[Request interrupted by user for tool use]"}]}}),
+        ] {
+            assert!(!signals(&entry.to_string()).interrupted, "{entry}");
+        }
+        let marker = serde_json::json!({"type": "user", "message": {"content": "[Request interrupted by user]"}});
+        assert!(signals(&marker.to_string()).interrupted, "{marker}");
     }
 
     #[test]

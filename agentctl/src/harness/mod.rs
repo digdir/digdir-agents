@@ -924,6 +924,37 @@ pub(crate) fn trim_partial_transcript(harness: Harness, bytes: &[u8]) -> &[u8] {
     }
 }
 
+/// Follows a harness's transcript as it grows, for what it shows about turns that the harness does
+/// not report.
+#[derive(Debug)]
+pub(crate) enum TurnTracker {
+    ClaudeCode(claude_code::transcript::TurnTracker),
+}
+
+impl TurnTracker {
+    /// A tracker for `harness`, or `None` when its reports already say all its transcript would.
+    pub(crate) fn new(harness: Harness) -> Option<Self> {
+        match harness {
+            Harness::ClaudeCode => Some(Self::ClaudeCode(claude_code::transcript::TurnTracker::default())),
+            Harness::Codex | Harness::Pi => None,
+        }
+    }
+
+    /// Folds complete lines appended to the transcript.
+    pub(crate) fn push(&mut self, lines: &[u8]) {
+        match self {
+            Self::ClaudeCode(tracker) => tracker.push(lines),
+        }
+    }
+
+    /// What everything folded so far shows.
+    pub(crate) const fn signals(&self) -> crate::sessions::TurnSignals {
+        match self {
+            Self::ClaudeCode(tracker) => tracker.signals(),
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) const fn test_harness() -> Harness {
     Harness::ClaudeCode
