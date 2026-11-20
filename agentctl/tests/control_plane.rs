@@ -2050,8 +2050,8 @@ async fn a_ready_agent_reports_a_missing_login_and_a_failed_workspace_clone_in_c
 }
 
 /// The image clones its repositories after boot, so the pass that finds the agent ready often finds the clone still
-/// running, and nothing wakes the agent when it ends. Its outcome shows within seconds rather than at the next
-/// periodic pass, which is what `apply --wait` and the TUI read.
+/// running, and nothing wakes the agent when it ends. Its outcome shows before the next periodic pass, in what
+/// `describe` and the TUI read.
 #[tokio::test(flavor = "local", start_paused = true)]
 async fn a_running_workspace_clone_is_looked_at_again_before_the_next_periodic_pass() {
     use agent::sandbox::WorkspaceClone;
@@ -2104,6 +2104,48 @@ async fn a_running_workspace_clone_is_looked_at_again_before_the_next_periodic_p
         "an agent whose clone has ended waits for the periodic pass again"
     );
     assert!(!task.is_finished(), "the controller still runs");
+    task.abort();
+}
+
+/// A pass that starts before a recheck is due, such as the one `agentctl github login` wakes, replaces it, so an
+/// agent whose clone that pass saw end is not set up once more for nothing.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_pass_that_starts_before_a_workspace_recheck_replaces_it() {
+    use agent::sandbox::WorkspaceClone;
+
+    let changes = Changes::new();
+    let store = Rc::new(memory::InMemoryAgentStore::with_changes(changes.clone()));
+    let provider: Rc<dyn Provider> = Rc::new(MemoryProvider::new(Rc::new(sandbox_memory::Provider::new())));
+    let platform = Rc::new(ReportingPlatform::default());
+    let service = Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service");
+    let reconciler = Rc::new(Reconciler::new(
+        store.clone(),
+        Rc::new(service),
+        ProvisioningState::new(changes.clone()),
+    ));
+    let (controller, wakeup) = Controller::new(store.clone(), reconciler, NO_BACKGROUND_PASSES, Rc::new(|_, _| {}));
+    let task = tokio::task::spawn_local(controller.run());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let convergence = Convergence::new(wakeup, store.clone(), changes);
+    platform.set_up.borrow_mut().workspace = Some(WorkspaceClone::Cloning);
+    convergence
+        .converge("worker", WaitPolicy::UntilConverged)
+        .await
+        .expect("the agent is ready while it clones");
+
+    platform.set_up.borrow_mut().workspace = Some(WorkspaceClone::Cloned);
+    convergence
+        .converge("worker", WaitPolicy::FirstPass)
+        .await
+        .expect("a pass before the recheck is due");
+    let passes = platform.passes.get();
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert_eq!(
+        platform.passes.get(),
+        passes,
+        "the recheck the earlier pass asked for was replaced"
+    );
     task.abort();
 }
 
