@@ -130,6 +130,9 @@ labels. Most issues hold everywhere and get none. When the work has to be done o
 its own sub-issue with its label, and leave the parent without one. An issue for a platform you don't run on is one
 you can't reproduce, which [the gate](#who-decides-whether-to-build) asks for.
 
+A pull request whose change is about one or two operating systems gets the same labels. That matters most for one
+without an issue, such as a fix made along the way, since nothing else says where it applies.
+
 Then have the analysis [checked](#the-checks), before the gate below. A wrong premise is cheapest to find before
 anything is built on it.
 
