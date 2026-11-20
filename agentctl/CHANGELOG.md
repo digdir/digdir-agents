@@ -26,6 +26,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 - A Claude Code session that asked you a question or for permission goes back to `Working` once you answer, instead of staying `WaitingForInput`, or "Needs you" in `agentctl tui`, until its turn ends. A session already running gets this when its harness next starts. ([#485](https://github.com/digdir/digdir-agents/issues/485))
 - On macOS and Windows, the disk file of an agent with a `direct` root filesystem shrinks after the agent frees space also when its image runs as another user than root, with a `sudo` that asks for no password, as the base images do. In 0.1.0-preview.15 it never did, and `agentd.log` warned `FITRIM ioctl failed: Operation not permitted` every 15 minutes. ([#547](https://github.com/digdir/digdir-agents/pull/547))
 - Agents that could not clone their repositories for want of a GitHub login clone them once `agentctl github login NAME` keeps it, without a restart. ([#482](https://github.com/digdir/digdir-agents/issues/482))
+- On macOS, or when your user's uid is not 1000, the user an agent runs as can read `/.msb`, where agentd shares files such as the mediated network's CA certificate with the agent, also after `install.sh` installed or updated agentctl. An agent made before this release keeps the folder readable only by root until it is made again. ([#239](https://github.com/digdir/digdir-agents/issues/239))
 
 ## [0.1.0-preview.15] - 2026-11-18
 

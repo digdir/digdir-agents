@@ -43,6 +43,8 @@ const CONTROL_PLANE_STACK_SIZE: usize = 8 * 1024 * 1024;
     reason = "this thread is the process's one runtime thread, not blocking work to hand to `common::blocking`"
 )]
 fn main() -> ExitCode {
+    #[cfg(unix)]
+    agent::local::process::share_with_sandboxes();
     let result = std::thread::Builder::new()
         .name("control-plane".into())
         .stack_size(CONTROL_PLANE_STACK_SIZE)

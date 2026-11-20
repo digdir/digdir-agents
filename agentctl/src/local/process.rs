@@ -16,6 +16,21 @@ pub fn configure_logging(command: &mut std::process::Command) {
     }
 }
 
+/// Lets the users of agentd's sandboxes read what agentd and the runtimes it starts share with them.
+///
+/// A sandbox sees the files of its runtime share and volumes with the host user's uid and modes, and its users need
+/// not have that uid, as on macOS, where it is never theirs. A umask that takes read or search from others, such as
+/// the `umask 077` `install.sh` runs under, would make those files private to the host user, so this clears those bits
+/// and leaves the rest of the mask as the user set it. What must stay private on the host gets its mode explicitly, as
+/// the home does.
+#[cfg(unix)]
+pub fn share_with_sandboxes() {
+    use rustix::fs::Mode;
+
+    let mask = rustix::process::umask(Mode::empty());
+    rustix::process::umask(mask - (Mode::RGRP | Mode::XGRP | Mode::ROTH | Mode::XOTH));
+}
+
 /// Finds the first of `names` in `path`, a `PATH`-style variable, trying every
 /// absolute directory for one name before the next. On Unix, as a shell does, a file only counts
 /// when it may be run.
