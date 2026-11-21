@@ -7,7 +7,9 @@ FROM ghcr.io/digdir/agentctl-base:ubuntu-26.04-desktop@sha256:ec5ce4ba36f5f8a710
 # The base image ends as the agent user. Install as root, then switch back at the end.
 USER root
 
-# Ubuntu's .NET SDK, which Ubuntu's security updates keep patched. Add your other tools to this list.
+# Ubuntu's .NET SDK, which Ubuntu's security updates keep patched. Add your other tools to this list. The package also
+# brings ICU, which the base image does not have and .NET aborts without. If you install .NET another way, such as a
+# newer SDK from Microsoft, add libicu78 to this list.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends dotnet-sdk-10.0 \
     && rm -rf /var/lib/apt/lists/*
