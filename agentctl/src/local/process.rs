@@ -121,7 +121,7 @@ mod tests {
     use std::process::Stdio;
     use std::time::Duration;
 
-    /// Which part of [`detached_child_leaves_the_callers_output`] a run of the test binary plays.
+    /// Which part of [`read_to_end`] a run of the test binary plays.
     const ROLE: &str = "AGENT_TEST_DETACHED_ROLE";
     /// The file the detached child runs while it exists. The test removes it with its temporary
     /// directory, so the child stops when the test ends, also when the test fails.
@@ -154,30 +154,44 @@ mod tests {
     /// tests below, so that the caller's pipes reach agentctl as they do from a shell.
     #[tokio::test]
     async fn detached_child_leaves_the_callers_output() {
+        read_to_end("start", "start_detached").await;
+    }
+
+    /// A shell that captures agentctl's output, such as PowerShell running `agentctl get agents |
+    /// Out-String`, gives agentctl a pipe of its own, and whatever runs the shell reads the shell's
+    /// output to its end. The agentd that agentctl starts must not hold the shell's output open
+    /// either, which agentctl inherits besides the standard handles it is given.
+    #[tokio::test]
+    async fn detached_child_leaves_the_output_of_the_shell_that_runs_the_caller() {
+        read_to_end("shell", "capture_starter").await;
+    }
+
+    /// Runs the ignored test `name` of this binary as `role`, and reads its output to its end.
+    async fn read_to_end(role: &str, name: &str) {
         let directory = tempfile::tempdir().expect("directory");
         let running = directory.path().join("running");
         std::fs::write(&running, "").expect("running file");
-        let starter = tokio::process::Command::new(std::env::current_exe().expect("test binary"))
+        let caller = tokio::process::Command::new(std::env::current_exe().expect("test binary"))
             .args([
-                "local::process::tests::start_detached",
+                &format!("local::process::tests::{name}"),
                 "--exact",
                 "--ignored",
                 "--nocapture",
             ])
-            .env(ROLE, "start")
+            .env(ROLE, role)
             .env(RUNNING, &running)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("starter");
-        let output = tokio::time::timeout(Duration::from_secs(30), starter.wait_with_output())
+            .expect("caller");
+        let output = tokio::time::timeout(Duration::from_secs(30), caller.wait_with_output())
             .await
             .expect("the detached child held the caller's output open")
-            .expect("starter output");
+            .expect("caller output");
         assert!(
             output.status.success(),
-            "starter failed: {}{}",
+            "caller failed: {}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
@@ -185,7 +199,31 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "run by detached_child_leaves_the_callers_output"]
+    #[ignore = "run by detached_child_leaves_the_output_of_the_shell_that_runs_the_caller"]
+    fn capture_starter() {
+        if std::env::var_os(ROLE).is_none_or(|role| role != "shell") {
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "local::process::tests::start_detached",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(ROLE, "start")
+            .output()
+            .expect("starter");
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "starter failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    #[ignore = "run by read_to_end"]
     #[expect(
         clippy::zombie_processes,
         reason = "the child outlives this process, as agentd outlives agentctl"
@@ -205,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "run by detached_child_leaves_the_callers_output"]
+    #[ignore = "run by read_to_end"]
     fn run_detached() {
         if std::env::var_os(ROLE).is_none_or(|role| role != "run") {
             return;
