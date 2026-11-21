@@ -505,6 +505,8 @@ mod tests {
         assert!(!signals(answered).interrupted, "answered");
     }
 
+    const INTERRUPTED_THEN_PROMPTED: &str = r#"{"type":"api-request-blob","sessionId":"484733e9-d6e4-4788-a6a8-496b294e8969","hash":"5f805a933bb67ac44d78e1bb00fb8470f737f3d02d3e10c10827277839977be4","message":{"role":"user","content":[{"type":"tool_result","content":"The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.","is_error":true,"tool_use_id":"toolu_01JT6UL3E2BqrvKB7LnXA4Uv"},{"type":"text","text":"[Request interrupted by user for tool use]\n"},{"type":"text","text":"Write a 2000-word story about a harbour pilot, as plain text, without using any tools."}]}}"#;
+
     #[test]
     fn only_claude_codes_own_marker_is_an_interruption() {
         for entry in [
@@ -512,6 +514,9 @@ mod tests {
             serde_json::json!({"type": "user", "message": {"content": "Why did it say [Request interrupted by user]?"}}),
             serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "[Request interrupted by user]"}]}}),
             serde_json::json!({"type": "user", "isSidechain": true, "message": {"content": [{"type": "text", "text": "[Request interrupted by user for tool use]"}]}}),
+            // Claude Code 2.1.321 writes this after the prompt that follows an interruption, past the
+            // mark that prompt's wait took.
+            serde_json::from_str(INTERRUPTED_THEN_PROMPTED).expect("JSON"),
         ] {
             assert!(!signals(&entry.to_string()).interrupted, "{entry}");
         }

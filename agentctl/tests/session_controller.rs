@@ -340,6 +340,9 @@ struct FakeRuntime {
     conversation: RefCell<Vec<agent::sessions::Turn>>,
     /// What the conversation shows that no report says.
     conversation_signals: Cell<agent::sessions::TurnSignals>,
+    /// How often the conversation was marked, and how often by the time of the last delivery.
+    marks: Cell<usize>,
+    marks_at_delivery: Cell<Option<usize>>,
     sent: RefCell<Vec<String>>,
     launches: RefCell<Vec<(Option<String>, Option<String>)>>,
     launch_tokens: RefCell<Vec<agent::sessions::LaunchToken>>,
@@ -369,6 +372,8 @@ impl Default for FakeRuntime {
             release_observe: Notify::new(),
             conversation: RefCell::default(),
             conversation_signals: Cell::default(),
+            marks: Cell::new(0),
+            marks_at_delivery: Cell::new(None),
             sent: RefCell::default(),
             launches: RefCell::default(),
             launch_tokens: RefCell::default(),
@@ -475,6 +480,7 @@ impl agent::sessions::SessionRuntime for FakeRuntime {
     ) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             tokio::time::sleep(self.delivery_delay.get()).await;
+            self.marks_at_delivery.set(Some(self.marks.get()));
             self.sent.borrow_mut().push(prompt.to_owned());
             self.conversation.borrow_mut().push(user_turn(prompt));
             self.delivered.notify_one();
@@ -510,6 +516,7 @@ impl agent::sessions::SessionRuntime for FakeRuntime {
         _session: &'a agent::sessions::Session,
         _sandbox: &'a SandboxHandle,
     ) -> LocalFuture<'a, Result<agent::sessions::ConversationMark, Error>> {
+        self.marks.set(self.marks.get() + 1);
         Box::pin(async { Ok(agent::sessions::ConversationMark::default()) })
     }
 
@@ -1386,6 +1393,11 @@ async fn prompt_wait_ends_when_the_conversation_shows_the_turn_was_interrupted()
         let harness = ServiceHarness::start(&directory, "33333333-3333-4333-8333-333333333333").await;
         let mut waiting = harness.prompt("run the slow command");
         harness.await_delivery(&mut waiting).await;
+        assert_eq!(
+            harness.runtime.marks_at_delivery.get(),
+            Some(1),
+            "the wait marks where the conversation ends once, before delivery"
+        );
         for event in reports {
             harness.report(*event).await;
         }
