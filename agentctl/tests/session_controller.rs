@@ -1407,13 +1407,65 @@ async fn prompt_wait_ends_when_the_conversation_shows_the_turn_was_interrupted()
                 .is_err(),
             "the turn is not over after {reports:?}"
         );
-        harness
-            .runtime
-            .conversation_signals
-            .set(agent::sessions::TurnSignals { interrupted: true });
+        harness.runtime.conversation_signals.set(agent::sessions::TurnSignals {
+            interrupted: true,
+            ..agent::sessions::TurnSignals::default()
+        });
         tokio::time::timeout(Duration::from_secs(3), waiting)
             .await
             .expect("the interruption ends the wait")
+            .expect("task")
+            .expect("prompt");
+        harness.finish();
+    }
+}
+
+#[tokio::test(flavor = "local")]
+async fn prompt_wait_follows_a_prompt_queued_behind_the_running_turn() {
+    // Claude Code reports a prompt it queues behind the running turn as submitted at once, and
+    // reports nothing when the queued prompt's turn starts. Only its conversation shows the queue.
+    for further_completion in [true, false] {
+        let directory = TempDir::new().expect("directory");
+        let harness = ServiceHarness::start(&directory, "55555555-5555-4555-8555-555555555555").await;
+        harness.report(agent::sessions::ActivityEvent::TurnStarted).await;
+        let mut waiting = harness.prompt("reply with exactly SECOND");
+        harness.await_delivery(&mut waiting).await;
+        harness.report(agent::sessions::ActivityEvent::TurnStarted).await;
+        // The operator interrupts the running turn, which reports nothing, and the queued prompt's
+        // turn follows.
+        harness.runtime.conversation_signals.set(agent::sessions::TurnSignals {
+            interrupted: true,
+            queued: true,
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1500), &mut waiting)
+                .await
+                .is_err(),
+            "the running turn was interrupted, and the queued prompt's turn follows"
+        );
+        harness.runtime.conversation_signals.set(agent::sessions::TurnSignals {
+            queued: true,
+            ..agent::sessions::TurnSignals::default()
+        });
+        harness.report(agent::sessions::ActivityEvent::TurnCompleted).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(2500), &mut waiting)
+                .await
+                .is_err(),
+            "the running turn ended, and the queued prompt's turn follows"
+        );
+        harness
+            .runtime
+            .conversation_signals
+            .set(agent::sessions::TurnSignals::default());
+        if further_completion {
+            harness.report(agent::sessions::ActivityEvent::TurnCompleted).await;
+        }
+        // Without a further report, the conversation shows the end the hook's report arrived
+        // before.
+        tokio::time::timeout(Duration::from_secs(3), waiting)
+            .await
+            .expect("the queued prompt's turn ends the wait")
             .expect("task")
             .expect("prompt");
         harness.finish();

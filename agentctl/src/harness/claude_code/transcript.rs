@@ -104,6 +104,7 @@ impl TurnTracker {
     pub(crate) const fn signals(&self) -> TurnSignals {
         TurnSignals {
             interrupted: self.interrupted,
+            queued: false,
         }
     }
 }
@@ -506,6 +507,226 @@ mod tests {
     }
 
     const INTERRUPTED_THEN_PROMPTED: &str = r#"{"type":"api-request-blob","sessionId":"484733e9-d6e4-4788-a6a8-496b294e8969","hash":"5f805a933bb67ac44d78e1bb00fb8470f737f3d02d3e10c10827277839977be4","message":{"role":"user","content":[{"type":"tool_result","content":"The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.","is_error":true,"tool_use_id":"toolu_01JT6UL3E2BqrvKB7LnXA4Uv"},{"type":"text","text":"[Request interrupted by user for tool use]\n"},{"type":"text","text":"Write a 2000-word story about a harbour pilot, as plain text, without using any tools."}]}}"#;
+
+    /// Turns recorded with Claude Code 2.1.321, separated by a blank line: a prompt queued behind
+    /// an answer being written, one absorbed while a tool ran, and one queued behind an answer the
+    /// operator then interrupted. Each turn is followed by the one its input started, if any.
+    const QUEUED: &str = include_str!("../../../tests/fixtures/claude-code-queued.jsonl");
+
+    #[test]
+    fn a_prompt_queued_behind_the_running_turn_starts_a_turn_of_its_own() {
+        let sections = QUEUED.split("\n\n").collect::<Vec<_>>();
+        let [queued, absorbed, queued_then_interrupted] = sections[..] else {
+            panic!("three recorded sections");
+        };
+        // What the signals are once each line is written, in the order the file holds them.
+        for (case, section, expected) in [
+            // The prompt is queued while the essay is written. The essay's turn ends, and the
+            // queued prompt's turn starts and ends.
+            ("queued behind the essay", queued, "-qqqqqqq--"),
+            ("absorbed during a tool call", absorbed, "--q------"),
+            // The operator interrupts the essay, and the queued prompt's turn follows.
+            (
+                "queued behind an interrupted essay",
+                queued_then_interrupted,
+                "-qqqIII--",
+            ),
+        ] {
+            let mut tracker = TurnTracker::default();
+            let seen = section
+                .lines()
+                .map(|line| {
+                    tracker.push(format!("{line}\n").as_bytes());
+                    match tracker.signals() {
+                        TurnSignals {
+                            interrupted: false,
+                            queued: false,
+                        } => '-',
+                        TurnSignals {
+                            interrupted: false,
+                            queued: true,
+                        } => 'q',
+                        TurnSignals {
+                            interrupted: true,
+                            queued: true,
+                        } => 'I',
+                        TurnSignals {
+                            interrupted: true,
+                            queued: false,
+                        } => 'i',
+                    }
+                })
+                .collect::<String>();
+            assert_eq!(seen, expected, "{case}");
+        }
+    }
+
+    #[test]
+    fn input_claude_code_queues_itself_starts_no_turn_to_follow() {
+        // Claude Code 2.1.321 queues the notification that a background task finished, and takes
+        // it into a turn of its own.
+        let notification =
+            "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>";
+        let turn = [
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": notification}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+            serde_json::json!({"type": "user", "promptSource": "system", "turnOrigin": "task_notification", "message": {"role": "user", "content": notification}}),
+        ]
+        .map(|entry| format!("{entry}\n"))
+        .concat();
+        assert_eq!(signals(&turn), TurnSignals::default());
+
+        // A notification taken into the running turn does not take the operator's input with it.
+        let queued = [
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly SECOND."}),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": notification}),
+            serde_json::json!({"type": "queue-operation", "operation": "remove", "reason": "absorbed_mid_turn", "content": notification}),
+        ]
+        .map(|entry| format!("{entry}\n"))
+        .concat();
+        assert!(signals(&queued).queued);
+
+        // Nor does a notification's turn that runs first. Claude Code 2.1.321 takes its own input
+        // and the operator's in the order they were queued.
+        let ended = serde_json::json!({"type": "system", "subtype": "stop_hook_summary"});
+        let took = serde_json::json!({"type": "system", "subtype": "turn_duration"});
+        let dequeued = serde_json::json!({"type": "queue-operation", "operation": "dequeue"});
+        let answer = |text: &str| serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}});
+        let lines = [
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": notification}),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly THIRD."}),
+            dequeued.clone(),
+            answer("Volcanoes are openings in the crust."),
+            ended.clone(),
+            took.clone(),
+            serde_json::json!({"type": "user", "promptSource": "system", "turnOrigin": "task_notification", "message": {"role": "user", "content": notification}}),
+            dequeued,
+            answer("The background `sleep 3` finished."),
+            ended.clone(),
+            took,
+            serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly THIRD."}}),
+            answer("THIRD"),
+            ended,
+        ];
+        let mut tracker = TurnTracker::default();
+        let seen = lines
+            .iter()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().queued { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        assert_eq!(seen, "-qqqqqqqqqqqq-");
+    }
+
+    /// The transcript lines that hold `entries`.
+    fn jsonl(entries: &[Value]) -> String {
+        entries
+            .iter()
+            .map(|entry| format!("{entry}\n"))
+            .collect::<Vec<_>>()
+            .concat()
+    }
+
+    #[test]
+    fn the_turn_queued_input_starts_ends_as_any_turn_does() {
+        let running = [
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "/hello"}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+        ];
+        let ended = serde_json::json!({"type": "system", "subtype": "stop_hook_summary"});
+        let queued = jsonl(&[running[0].clone(), running[1].clone(), ended.clone()]);
+        // Claude Code 2.1.321 starts the turn of a queued prompt with the prompt, and the turn of a
+        // queued slash command with the command's echo, which has no `promptSource`.
+        let prompt = serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}});
+        let command = serde_json::json!({"type": "user", "turnOrigin": "human", "message": {"role": "user", "content": "<command-message>hello</command-message>\n<command-name>/hello</command-name>"}});
+        for start in [prompt.clone(), command] {
+            let started = format!("{queued}{}", jsonl(std::slice::from_ref(&start)));
+            assert!(signals(&started).queued, "{start}");
+            for (end, expected) in [
+                (ended.clone(), TurnSignals::default()),
+                (
+                    serde_json::json!({"type": "assistant", "isApiErrorMessage": true, "message": {"role": "assistant", "content": [{"type": "text", "text": "API Error: 529"}]}}),
+                    TurnSignals::default(),
+                ),
+                (
+                    serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "[Request interrupted by user]"}]}}),
+                    TurnSignals {
+                        interrupted: true,
+                        queued: false,
+                    },
+                ),
+            ] {
+                let lines = format!("{started}{}", jsonl(std::slice::from_ref(&end)));
+                assert_eq!(signals(&lines), expected, "{start} {end}");
+            }
+        }
+
+        // A subagent's lines neither start nor end the main conversation's turns.
+        let subagent_started = serde_json::json!({"type": "user", "isSidechain": true, "turnOrigin": "human", "message": {"role": "user", "content": "Explore the repository."}});
+        let subagent_ended = serde_json::json!({"type": "system", "isSidechain": true, "subtype": "stop_hook_summary"});
+        let lines = jsonl(&[
+            running[0].clone(),
+            subagent_started.clone(),
+            subagent_ended.clone(),
+            ended,
+        ]);
+        assert!(signals(&lines).queued, "a subagent's turn in the running turn");
+        let lines = format!("{queued}{}", jsonl(&[prompt, subagent_started, subagent_ended]));
+        assert!(signals(&lines).queued, "a subagent's turn in the queued turn");
+    }
+
+    #[test]
+    fn queued_input_that_starts_no_turn_is_not_followed() {
+        // Recorded with Claude Code 2.1.321: a slash command it doesn't know, queued behind an
+        // essay. It is taken from the queue, and Claude Code warns about it instead of starting a
+        // turn.
+        let enqueued = serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "/otters"});
+        let dequeued = serde_json::json!({"type": "queue-operation", "operation": "dequeue"});
+        let essay = serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Ocean tides are the regular rising and falling of sea levels."}]}});
+        let ended = serde_json::json!({"type": "system", "subtype": "stop_hook_summary"});
+        let took = serde_json::json!({"type": "system", "subtype": "turn_duration", "durationMs": 5102});
+        let warned = serde_json::json!({"type": "system", "subtype": "informational", "content": "Unknown command: /otters", "level": "warning"});
+        let prompt = serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}});
+
+        let lines = [&enqueued, &dequeued, &essay, &ended, &took];
+        for count in 1..=lines.len() {
+            let lines = lines[..count].iter().copied().cloned().collect::<Vec<_>>();
+            assert!(
+                signals(&jsonl(&lines)).queued,
+                "until the essay's turn has ended: {lines:?}"
+            );
+        }
+        let lines = [&enqueued, &dequeued, &essay, &ended, &took, &warned].map(Clone::clone);
+        assert_eq!(signals(&jsonl(&lines)), TurnSignals::default(), "the warning");
+
+        // Input that arrives as the turn ends is queued and taken below its end.
+        let lines = [&essay, &ended, &took, &enqueued, &dequeued].map(Clone::clone);
+        assert!(signals(&jsonl(&lines)).queued, "taken after the end");
+        let lines = [&essay, &ended, &took, &enqueued, &dequeued, &warned].map(Clone::clone);
+        assert_eq!(
+            signals(&jsonl(&lines)),
+            TurnSignals::default(),
+            "taken after the end, then the warning"
+        );
+        let lines = [&essay, &ended, &took, &enqueued, &dequeued, &prompt].map(Clone::clone);
+        assert!(signals(&jsonl(&lines)).queued, "taken after the end, then its turn");
+    }
+
+    #[test]
+    fn queued_input_taken_back_starts_no_turn() {
+        // Claude Code 2.1.321 moves queued input back to the prompt for editing, all of it or the
+        // latest.
+        for operation in ["popAll", "popOne"] {
+            let lines = [
+                serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly SECOND."}),
+                serde_json::json!({"type": "queue-operation", "operation": operation, "content": "Reply with exactly SECOND."}),
+            ]
+            .map(|entry| format!("{entry}\n"))
+            .concat();
+            assert_eq!(signals(&lines), TurnSignals::default(), "{operation}");
+        }
+    }
 
     #[test]
     fn only_claude_codes_own_marker_is_an_interruption() {
