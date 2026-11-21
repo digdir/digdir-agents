@@ -13,8 +13,10 @@ use std::{
 };
 
 fn main() {
-    // Read when the script runs rather than with `env!`, since Cargo can reuse this script compiled in another
-    // checkout that shares the target dir, and would then embed that checkout's definitions, or none once it is gone.
+    // Another checkout that shares the target dir can have compiled and last run this script. So read the folder when
+    // the script runs, rather than with `env!`, and print it absolute: Cargo then runs the script again here, since the
+    // path printed last time is outside this package. Otherwise this build would embed the other checkout's files, or
+    // fail once that checkout is gone.
     let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR");
     let root = Path::new(&manifest_dir).join("bundled/definitions");
     println!("cargo::rerun-if-changed={}", root.display());
