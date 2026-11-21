@@ -430,17 +430,88 @@ mod tests {
     }
 
     #[test]
+    fn an_interruption_marker_does_not_start_a_turn() {
+        let fixture = include_str!("../../../tests/fixtures/claude-code-interrupted.jsonl");
+        let turns = parse(fixture.as_bytes()).expect("parse");
+        let users = turns
+            .iter()
+            .map(|turn| {
+                turn.messages
+                    .iter()
+                    .filter(|message| message.role == Role::User)
+                    .map(|message| match &message.parts[0] {
+                        Part::Text { text } => text.as_str(),
+                        Part::ToolCall { .. } => panic!("user text"),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let story = "Write a 700-word story about a lighthouse keeper, as plain text, without using any tools.";
+        assert_eq!(
+            users,
+            [
+                vec!["Run the shell command `timeout 90 tail -f /dev/null` in the foreground with the Bash tool."],
+                vec![story],
+                vec!["Reply with the word ok."],
+            ]
+        );
+        let last_part = |turn: &Turn| turn.messages.last().and_then(|message| message.parts.last()).cloned();
+        assert!(
+            matches!(last_part(&turns[0]), Some(Part::ToolCall { name, failed: true, .. }) if name == "Bash"),
+            "Esc during a tool call ends the turn at the stopped call"
+        );
+        assert!(
+            matches!(last_part(&turns[1]), Some(Part::Text { text }) if text.starts_with("The lamp had not gone dark")),
+            "Esc during the answer ends the turn at the text written so far"
+        );
+
+        let markers = fixture
+            .match_indices("[Request interrupted")
+            .map(|(offset, _)| offset)
+            .collect::<Vec<_>>();
+        assert_eq!(markers.len(), 2, "both forms of the marker");
+        for (marker, next) in markers.into_iter().zip([story, "Reply with the word ok."]) {
+            let from_marker = &fixture[fixture[..marker].rfind('\n').map_or(0, |newline| newline + 1)..];
+            let kept = std::str::from_utf8(trim_partial(from_marker.as_bytes())).expect("UTF-8");
+            let first = kept
+                .lines()
+                .next()
+                .and_then(|line| serde_json::from_str::<Value>(line).ok());
+            assert_eq!(
+                first.as_ref().and_then(|entry| entry["message"]["content"].as_str()),
+                Some(next),
+                "a bounded read from the marker starts at the next prompt"
+            );
+        }
+        let prompt = r#"{"type":"user","message":{"role":"user","content":"next"}}"#;
+        let marker = r#"{"type":"user","message":{"role":"user","content":"[Request interrupted by user]"}}"#;
+        let suffix = format!("{marker}\n{prompt}\n");
+        assert_eq!(
+            std::str::from_utf8(trim_partial(suffix.as_bytes())),
+            Ok(format!("{prompt}\n").as_str()),
+            "a marker written as plain string content does not start a bounded read either"
+        );
+    }
+
+    #[test]
     fn injected_markup_is_not_a_prompt() {
         for injected in [
             "<command-name>/clear</command-name>\n<command-message>clear</command-message>",
             "<task-notification>\n<task-id>x</task-id>\n</task-notification>",
             "<system-reminder>\nnote\n</system-reminder>",
+            "[Request interrupted by user]",
+            "[Request interrupted by user for tool use]",
+            "[Request interrupted: the session ended before this agent finished. Nobody asked it to stop.]",
         ] {
             assert!(is_injected(injected), "{injected}");
         }
         assert!(!is_injected("<div>hi"));
         assert!(!is_injected("Compare <a> and <b>"));
         assert!(!is_injected("plain prompt"));
+        assert!(!is_injected("[WIP] fix the build"));
+        assert!(!is_injected(
+            "[Request interrupted by user] Go on from where you stopped."
+        ));
     }
 }
 
