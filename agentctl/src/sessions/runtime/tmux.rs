@@ -17,8 +17,8 @@ use crate::{
     sandbox::platform::{PORTABLE_TERMINAL, UTF8_LOCALE},
 };
 
-use super::{LaunchContext, Observation};
-use crate::sessions::{Activity, AttachTarget, LaunchToken, LifecycleState, Phase, Session, Turn};
+use super::{ConversationMark, LaunchContext, Observation};
+use crate::sessions::{Activity, AttachTarget, LaunchToken, LifecycleState, Phase, Session, Turn, TurnSignals};
 
 /// Quiet period after the latest hook event before input is pasted into a
 /// harness that is not waiting for input. The start hook fires before the
@@ -530,6 +530,23 @@ impl super::SessionRuntime for Tmux {
         Box::pin(turns(session, sandbox, last))
     }
 
+    fn mark_conversation<'a>(
+        &'a self,
+        session: &'a Session,
+        sandbox: &'a SandboxHandle,
+    ) -> ::sandbox::LocalFuture<'a, Result<ConversationMark, Error>> {
+        Box::pin(mark_conversation(session, sandbox))
+    }
+
+    fn follow_conversation<'a>(
+        &'a self,
+        session: &'a Session,
+        sandbox: &'a SandboxHandle,
+        mark: &'a mut ConversationMark,
+    ) -> ::sandbox::LocalFuture<'a, Result<TurnSignals, Error>> {
+        Box::pin(follow_conversation(session, sandbox, mark))
+    }
+
     fn attach<'a>(
         &'a self,
         home: &'a std::path::Path,
@@ -673,6 +690,112 @@ async fn turns(session: &Session, sandbox: &SandboxHandle, last: Option<usize>) 
     parse_transcript_suffix(session.harness, &read.stdout, last, MAX_TRANSCRIPT_BYTES)
 }
 
+/// Most of the conversation one follow reads; the next follow reads on from there.
+const FOLLOW_READ_BYTES: usize = 4 * 1024 * 1024;
+
+/// Marks the end of the transcript the session reported. A transcript the harness has not
+/// created yet ends at its start.
+async fn mark_conversation(session: &Session, sandbox: &SandboxHandle) -> Result<ConversationMark, Error> {
+    const SCRIPT: &str = "[ -f \"$1\" ] || { echo 0; exit 0; }; exec /usr/bin/stat -c %s -- \"$1\"";
+    let Some(tracker) = harness::TurnTracker::new(session.harness) else {
+        return Ok(ConversationMark::default());
+    };
+    let path = session.status.reported.harness_transcript_path.clone();
+    let offset = match path.as_deref() {
+        Some(path) => {
+            let size = run_lifecycle_execution(
+                sandbox,
+                ExecutionSpec::command(
+                    SandboxPath::new("/bin/sh"),
+                    [
+                        "-c".into(),
+                        SCRIPT.into(),
+                        "agent-session-transcript-size".into(),
+                        path.into(),
+                    ],
+                ),
+                "marking the session conversation",
+            )
+            .await?;
+            if !size.status.success() {
+                return Err(Error::Session(format!(
+                    "marking the conversation of session {} failed with exit code {}",
+                    session.id, size.status.code
+                )));
+            }
+            std::str::from_utf8(&size.stdout)
+                .ok()
+                .and_then(|size| size.trim().parse().ok())
+                .ok_or_else(|| Error::Session("the transcript size is not a number".into()))?
+        }
+        None => 0,
+    };
+    Ok(ConversationMark {
+        path,
+        offset,
+        tracker: Some(tracker),
+    })
+}
+
+/// Reads the transcript from `mark` on, at most [`FOLLOW_READ_BYTES`], and folds its complete
+/// lines. A line still being written is read again next time.
+async fn follow_conversation(
+    session: &Session,
+    sandbox: &SandboxHandle,
+    mark: &mut ConversationMark,
+) -> Result<TurnSignals, Error> {
+    const SCRIPT: &str = "[ -f \"$1\" ] || exit 0; /usr/bin/tail -c +\"$2\" -- \"$1\" | /usr/bin/head -c \"$3\"";
+    let Some(tracker) = mark.tracker.as_mut() else {
+        return Ok(TurnSignals::default());
+    };
+    let path = session.status.reported.harness_transcript_path.as_deref();
+    if path != mark.path.as_deref() {
+        // The harness reported its transcript after the mark, or started another one. All of it
+        // came after the mark.
+        mark.path = path.map(str::to_owned);
+        mark.offset = 0;
+    }
+    let Some(path) = path else {
+        return Ok(tracker.signals());
+    };
+    let read = run_lifecycle_execution(
+        sandbox,
+        ExecutionSpec::command(
+            SandboxPath::new("/bin/sh"),
+            [
+                "-c".into(),
+                SCRIPT.into(),
+                "agent-session-transcript-follow".into(),
+                path.into(),
+                (mark.offset + 1).to_string(),
+                FOLLOW_READ_BYTES.to_string(),
+            ],
+        ),
+        "following the session conversation",
+    )
+    .await?;
+    if !read.status.success() {
+        return Err(Error::Session(format!(
+            "following the conversation of session {} failed with exit code {}",
+            session.id, read.status.code
+        )));
+    }
+    let complete = complete_lines(&read.stdout, FOLLOW_READ_BYTES);
+    tracker.push(&read.stdout[..complete]);
+    mark.offset += complete as u64;
+    Ok(tracker.signals())
+}
+
+/// The length of the complete lines at the start of `read`. A read of `limit` bytes without a
+/// line end holds part of one longer line, which is passed over whole.
+fn complete_lines(read: &[u8], limit: usize) -> usize {
+    match read.iter().rposition(|byte| *byte == b'\n') {
+        Some(end) => end + 1,
+        None if read.len() >= limit => read.len(),
+        None => 0,
+    }
+}
+
 fn parse_transcript_suffix(
     kind: crate::Harness,
     bytes: &[u8],
@@ -712,14 +835,23 @@ fn parse_transcript_suffix(
 
 #[cfg(test)]
 mod tests {
-    use sandbox::execution::ExitStatus;
+    use std::rc::Rc;
+
+    use sandbox::{
+        EnsureSandboxRequest, Platform, RetentionPolicy, RootFilesystem, SandboxHandle, SandboxName, SandboxResources,
+        SandboxService, SandboxSpec,
+        execution::{ExecutionEvent, ExecutionSpec, ExitStatus, Program},
+        image::ImageSource,
+        init::InitSystem,
+        memory,
+    };
 
     use crate::{
         harness,
         sessions::{Activity, Part, Phase},
     };
 
-    use super::{Observation, input_ready_in, parse_transcript_suffix};
+    use super::{Observation, complete_lines, input_ready_in, parse_transcript_suffix};
 
     fn named_session() -> crate::sessions::Session {
         crate::sessions::Session {
@@ -812,6 +944,136 @@ mod tests {
         assert_eq!(options[position - 1], "-sq", "{options:?}");
         // No other option may use the quiet form: an unknown one elsewhere should still fail loudly.
         assert_eq!(options.iter().filter(|argument| *argument == "-sq").count(), 1);
+    }
+
+    async fn memory_sandbox() -> (Rc<memory::Provider>, SandboxHandle) {
+        let backend = Rc::new(memory::Provider::new());
+        let spec = SandboxSpec {
+            image: ImageSource::Build {
+                context: std::path::PathBuf::from("."),
+                dockerfile: std::path::PathBuf::from("Dockerfile"),
+                target: None,
+            },
+            platform: Platform::native("linux"),
+            resources: SandboxResources::new(
+                "1".parse().expect("CPU"),
+                "512Mi".parse().expect("memory"),
+                RootFilesystem::layered("1Gi".parse().expect("root filesystem")),
+            ),
+            init_system: InitSystem::Backend,
+            retention_policy: RetentionPolicy::Retain,
+        };
+        let sandbox = SandboxService::new(backend.clone())
+            .ensure(&EnsureSandboxRequest::new(
+                SandboxName::new("conversation").expect("Sandbox name"),
+                spec,
+            ))
+            .await
+            .expect("Sandbox");
+        (backend, sandbox)
+    }
+
+    /// Matches the execution that runs the script named `name` with `arguments` after it.
+    fn runs(name: &'static str, arguments: Vec<String>) -> impl Fn(&ExecutionSpec) -> bool {
+        move |spec| match spec.program() {
+            Program::Command { args, .. } => args.get(2).is_some_and(|script| script == name) && args[3..] == arguments,
+            Program::ImageEntrypoint => false,
+        }
+    }
+
+    fn printed(stdout: &[u8]) -> Vec<ExecutionEvent> {
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stdout(stdout.to_vec().into()),
+            ExecutionEvent::Exited(ExitStatus { code: 0 }),
+        ]
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn following_the_conversation_reads_what_was_added_after_the_mark() {
+        const FIRST: &str = "/home/agent/conversations/first.jsonl";
+        const CLEARED: &str = "/home/agent/conversations/cleared.jsonl";
+        const MARKER: &[u8] = b"{\"type\":\"user\",\"message\":{\"content\":\"[Request interrupted by user]\"}}\n";
+        const ANSWER: &[u8] = b"{\"type\":\"assistant\",\"message\":{\"content\":[]}}\n";
+        let follows = |path: &str, from: usize| {
+            runs(
+                "agent-session-transcript-follow",
+                vec![path.into(), from.to_string(), super::FOLLOW_READ_BYTES.to_string()],
+            )
+        };
+        let (backend, sandbox) = memory_sandbox().await;
+        let mut session = named_session();
+        assert!(
+            harness::TurnTracker::new(session.harness).is_some(),
+            "the test harness has a tracker"
+        );
+        session.status.reported.harness_transcript_path = Some(FIRST.into());
+
+        // The conversation is 120 bytes long when the prompt is delivered, older markers included.
+        backend.queue_execution_events_matching(
+            runs("agent-session-transcript-size", vec![FIRST.into()]),
+            printed(b"120\n"),
+        );
+        let mut mark = super::mark_conversation(&session, &sandbox).await.expect("mark");
+
+        // The answer so far, and a marker still being written.
+        backend.queue_execution_events_matching(follows(FIRST, 121), printed(&[ANSWER, &MARKER[..10]].concat()));
+        let signals = super::follow_conversation(&session, &sandbox, &mut mark)
+            .await
+            .expect("follow");
+        assert!(!signals.interrupted, "a marker still being written");
+
+        backend.queue_execution_events_matching(follows(FIRST, 121 + ANSWER.len()), printed(MARKER));
+        let signals = super::follow_conversation(&session, &sandbox, &mut mark)
+            .await
+            .expect("follow");
+        assert!(signals.interrupted, "the marker, read again once it is complete");
+
+        // `/clear` starts another conversation, all of which came after the mark.
+        backend.queue_execution_events_matching(
+            runs("agent-session-transcript-size", vec![FIRST.into()]),
+            printed(b"200\n"),
+        );
+        let mut mark = super::mark_conversation(&session, &sandbox).await.expect("mark");
+        session.status.reported.harness_transcript_path = Some(CLEARED.into());
+        backend.queue_execution_events_matching(follows(CLEARED, 1), printed(MARKER));
+        let signals = super::follow_conversation(&session, &sandbox, &mut mark)
+            .await
+            .expect("follow");
+        assert!(signals.interrupted, "a new conversation is read from its start");
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn a_harness_whose_reports_say_it_all_has_no_conversation_followed() {
+        let (backend, sandbox) = memory_sandbox().await;
+        let mut session = named_session();
+        session.status.reported.harness_transcript_path = Some("/home/agent/conversations/rollout.jsonl".into());
+        let untracked = crate::Harness::ALL
+            .into_iter()
+            .filter(|harness| harness::TurnTracker::new(*harness).is_none())
+            .collect::<Vec<_>>();
+        assert_ne!(untracked, []);
+        for harness in untracked {
+            session.harness = harness;
+            let mut mark = super::mark_conversation(&session, &sandbox).await.expect("mark");
+            let signals = super::follow_conversation(&session, &sandbox, &mut mark)
+                .await
+                .expect("follow");
+            assert!(!signals.interrupted);
+        }
+        assert!(backend.execution_specs().is_empty(), "{:?}", backend.execution_specs());
+    }
+
+    #[test]
+    fn following_reads_complete_lines_and_passes_over_a_line_longer_than_a_read() {
+        assert_eq!(
+            complete_lines(b"{\"a\":1}\n{\"b\":", 64),
+            8,
+            "a line still being written"
+        );
+        assert_eq!(complete_lines(b"{\"b\":", 64), 0);
+        assert_eq!(complete_lines(b"", 64), 0);
+        assert_eq!(complete_lines(&[b'x'; 64], 64), 64, "part of a longer line");
     }
 
     #[test]

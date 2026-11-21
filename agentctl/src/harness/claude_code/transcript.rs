@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::{
     Error,
-    sessions::{Message, Part, Question, QuestionOption, Role, Turn},
+    sessions::{Message, Part, Question, QuestionOption, Role, Turn, TurnSignals},
 };
 
 /// Parses Claude Code JSONL into ordered turns.
@@ -54,23 +54,57 @@ fn starts_turn(entry: &Value) -> bool {
     if flag(entry, "isSidechain") || flag(entry, "isMeta") || flag(entry, "isCompactSummary") {
         return false;
     }
-    if entry.get("type").and_then(Value::as_str) != Some("user") {
-        return false;
-    }
-    let Some(message) = entry.get("message") else {
-        return false;
-    };
-    match message.get("content") {
-        Some(Value::String(text)) => !is_injected(text),
-        Some(Value::Array(blocks)) => {
+    entry.get("type").and_then(Value::as_str) == Some("user")
+        && user_text(entry).is_some_and(|text| !is_injected(&text))
+}
+
+/// The text of a `user` entry's message, without its tool results. An entry that holds only tool
+/// results has none.
+fn user_text(entry: &Value) -> Option<String> {
+    match entry.get("message")?.get("content")? {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(blocks) => {
             let text = blocks
                 .iter()
                 .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
                 .filter_map(|block| block.get("text").and_then(Value::as_str))
                 .collect::<String>();
-            !text.is_empty() && !is_injected(&text)
+            (!text.is_empty()).then_some(text)
         }
-        _ => false,
+        _ => None,
+    }
+}
+
+/// Whether `entry` is the [marker](is_interruption_marker) Claude Code writes where the operator
+/// stopped a turn. The turn ends there, and no hook says so.
+fn is_interruption(entry: &Value) -> bool {
+    !flag(entry, "isSidechain")
+        && entry.get("type").and_then(Value::as_str) == Some("user")
+        && user_text(entry).is_some_and(|text| is_interruption_marker(&text))
+}
+
+/// Follows a transcript as it grows, for the turn endings Claude Code fires no hook for.
+#[derive(Debug, Default)]
+pub(crate) struct TurnTracker {
+    interrupted: bool,
+}
+
+impl TurnTracker {
+    /// Folds complete transcript lines. Lines that are not JSON objects are skipped.
+    pub(crate) fn push(&mut self, lines: &[u8]) {
+        for line in lines.split(|byte| *byte == b'\n') {
+            if let Ok(entry) = serde_json::from_slice::<Value>(line)
+                && is_interruption(&entry)
+            {
+                self.interrupted = true;
+            }
+        }
+    }
+
+    pub(crate) const fn signals(&self) -> TurnSignals {
+        TurnSignals {
+            interrupted: self.interrupted,
+        }
     }
 }
 
@@ -442,6 +476,52 @@ mod tests {
         ] {
             assert_eq!(question(unknown.clone()), [], "{unknown}");
         }
+    }
+
+    /// Turns recorded with Claude Code 2.1.321, separated by a blank line: one the operator
+    /// refused a tool call in, one interrupted while a tool ran, one interrupted while the answer
+    /// was written, and one answered.
+    const INTERRUPTIONS: &str = include_str!("../../../tests/fixtures/claude-code-interruptions.jsonl");
+
+    fn signals(lines: &str) -> TurnSignals {
+        let mut tracker = TurnTracker::default();
+        tracker.push(lines.as_bytes());
+        tracker.signals()
+    }
+
+    #[test]
+    fn a_refused_or_interrupted_turn_has_ended() {
+        let turns = INTERRUPTIONS.split("\n\n").collect::<Vec<_>>();
+        let [refused, during_tool, during_answer, answered] = turns[..] else {
+            panic!("four recorded turns");
+        };
+        for (case, turn) in [
+            ("refused", refused),
+            ("interrupted during a tool call", during_tool),
+            ("interrupted during the answer", during_answer),
+        ] {
+            assert!(signals(turn).interrupted, "{case}");
+        }
+        assert!(!signals(answered).interrupted, "answered");
+    }
+
+    const INTERRUPTED_THEN_PROMPTED: &str = r#"{"type":"api-request-blob","sessionId":"484733e9-d6e4-4788-a6a8-496b294e8969","hash":"5f805a933bb67ac44d78e1bb00fb8470f737f3d02d3e10c10827277839977be4","message":{"role":"user","content":[{"type":"tool_result","content":"The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.","is_error":true,"tool_use_id":"toolu_01JT6UL3E2BqrvKB7LnXA4Uv"},{"type":"text","text":"[Request interrupted by user for tool use]\n"},{"type":"text","text":"Write a 2000-word story about a harbour pilot, as plain text, without using any tools."}]}}"#;
+
+    #[test]
+    fn only_claude_codes_own_marker_is_an_interruption() {
+        for entry in [
+            serde_json::json!({"type": "user", "message": {"content": "[Request interrupted by user] Go on."}}),
+            serde_json::json!({"type": "user", "message": {"content": "Why did it say [Request interrupted by user]?"}}),
+            serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "[Request interrupted by user]"}]}}),
+            serde_json::json!({"type": "user", "isSidechain": true, "message": {"content": [{"type": "text", "text": "[Request interrupted by user for tool use]"}]}}),
+            // Claude Code 2.1.321 writes this after the prompt that follows an interruption, past the
+            // mark that prompt's wait took.
+            serde_json::from_str(INTERRUPTED_THEN_PROMPTED).expect("JSON"),
+        ] {
+            assert!(!signals(&entry.to_string()).interrupted, "{entry}");
+        }
+        let marker = serde_json::json!({"type": "user", "message": {"content": "[Request interrupted by user]"}});
+        assert!(signals(&marker.to_string()).interrupted, "{marker}");
     }
 
     #[test]
