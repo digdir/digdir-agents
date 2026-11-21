@@ -52,8 +52,8 @@ pub struct Identity {
 
 /// What kind of GitHub token a value is, by its documented prefix.
 ///
-/// Only kinds that work until they expire are taken. GitHub App user tokens expire within hours
-/// and need refreshing, and installation tokens act as no person.
+/// Only kinds that act as a person are taken, as an agent commits as one. Installation tokens act
+/// as no person.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TokenKind {
@@ -63,6 +63,10 @@ pub enum TokenKind {
     Classic,
     /// An OAuth token, such as the GitHub CLI's own login.
     Oauth,
+    /// A GitHub App's user access token, such as from the app's device flow: the user, limited to
+    /// what both the user and the app can reach. It expires after 8 hours unless the app opts out,
+    /// and nothing here refreshes it.
+    AppUser,
 }
 
 impl TokenKind {
@@ -76,6 +80,8 @@ impl TokenKind {
             Some(Self::Classic)
         } else if token.starts_with("gho_") {
             Some(Self::Oauth)
+        } else if token.starts_with("ghu_") {
+            Some(Self::AppUser)
         } else {
             None
         }
@@ -88,6 +94,7 @@ impl TokenKind {
             Self::FineGrained => "fine-grained",
             Self::Classic => "classic",
             Self::Oauth => "OAuth",
+            Self::AppUser => "GitHub App",
         }
     }
 
@@ -98,6 +105,7 @@ impl TokenKind {
             Self::FineGrained => "https://github.com/settings/personal-access-tokens",
             Self::Classic => "https://github.com/settings/tokens",
             Self::Oauth => "https://github.com/settings/applications",
+            Self::AppUser => "https://github.com/settings/apps/authorizations",
         }
     }
 
@@ -106,6 +114,13 @@ impl TokenKind {
     #[must_use]
     pub const fn single_owner(self) -> bool {
         matches!(self, Self::FineGrained)
+    }
+
+    /// Whether GitHub limits the token by OAuth scopes, so it can lack [`SCOPES`]. Fine-grained
+    /// and GitHub App tokens are limited by permissions instead.
+    #[must_use]
+    pub const fn scoped(self) -> bool {
+        matches!(self, Self::Classic | Self::Oauth)
     }
 
     /// What a token of this kind acting as `login` lets agents reach beyond the repositories it
@@ -119,13 +134,17 @@ impl TokenKind {
                 "this OAuth token, such as a GitHub CLI login, lets agents act as {login} in every repository \
                  and organization {login} can reach"
             )),
+            Self::AppUser => Some(format!(
+                "this GitHub App token reaches what both {login} and the app can, in every account the app is \
+                 installed in"
+            )),
         }
     }
 }
 
 /// What agents take, said when a token is of another kind, without repeating it.
-const KIND_RULE: &str = "agents take fine-grained (github_pat_), classic (ghp_) and GitHub CLI (gho_) tokens, \
-                         and this is none of them";
+const KIND_RULE: &str = "agents take fine-grained (github_pat_), classic (ghp_), GitHub CLI (gho_) and GitHub App \
+                         user (ghu_) tokens, and this is none of them";
 
 /// Whether `owner` can be a GitHub user or organization login: ASCII letters, digits and inner
 /// hyphens, at most 39 characters.
@@ -236,7 +255,8 @@ impl Record {
 pub struct Login {
     /// The account, as kept.
     pub account: Account,
-    /// Recommended [`SCOPES`] a classic or OAuth token lacks; fine-grained tokens report none.
+    /// Recommended [`SCOPES`] a classic or OAuth token lacks; tokens [`TokenKind::scoped`] says
+    /// are not limited by scopes report none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing_scopes: Vec<String>,
 }
@@ -329,10 +349,10 @@ fn instructions(name: &str, account: Option<&Account>) -> String {
         );
     };
     let login = &account.identity.login;
-    let reach = if account.kind.single_owner() {
-        "for the repositories its token was created for".to_owned()
-    } else {
-        format!("for whatever `{login}` can reach")
+    let reach = match account.kind {
+        TokenKind::FineGrained => "for the repositories its token was created for".to_owned(),
+        TokenKind::AppUser => format!("for what both `{login}` and its token's GitHub App can reach"),
+        TokenKind::Classic | TokenKind::Oauth => format!("for whatever `{login}` can reach"),
     };
     format!(
         "`gh` and `git` over HTTPS work as `{login}`, {reach}. When \
@@ -380,8 +400,12 @@ async fn check_at(api: &str, token: &str, name: &str) -> Result<Login, Error> {
         return Err(Error::Invalid("the GitHub token has already expired".into()));
     }
     Ok(Login {
+        missing_scopes: if account.kind.scoped() {
+            inspection.missing_scopes
+        } else {
+            Vec::new()
+        },
         account,
-        missing_scopes: inspection.missing_scopes,
     })
 }
 
@@ -721,7 +745,7 @@ mod tests {
             github.login("ghp_FAKE", name).await.expect_err("invalid name");
             assert_eq!(github.github.forget(name).await.expect("forget"), None);
         }
-        for token in ["ghu_FAKE_canary", "ghs_FAKE_canary", "ghr_FAKE_canary", "FAKE_canary"] {
+        for token in ["ghs_FAKE_canary", "ghr_FAKE_canary", "FAKE_canary"] {
             let error = github
                 .login(token, "digdir")
                 .await
@@ -775,6 +799,30 @@ mod tests {
             .await
             .expect("login");
         assert_eq!(fine_grained.missing_scopes, Vec::<String>::new());
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn a_github_app_user_token_is_kept_until_it_expires_and_lacks_no_scopes() {
+        // GitHub sends an empty scope list for a token that has none, which must not read as
+        // lacking every scope.
+        let github = fixture(Answer {
+            headers: "X-OAuth-Scopes: \r\nGitHub-Authentication-Token-Expiration: 2099-01-01 08:00:00 UTC\r\n",
+            ..BOT
+        })
+        .await;
+
+        let login = github.login("ghu_FAKE_digdir", "digdir").await.expect("login");
+
+        assert_eq!(login.account.kind, TokenKind::AppUser);
+        assert_eq!(login.missing_scopes, Vec::<String>::new());
+        assert_eq!(login.account.identity.login, "digdir-bot");
+        assert!(login.account.expires_at.is_some(), "the expiry is kept");
+        assert_eq!(github.stored("digdir").await.as_deref(), Some(&b"ghu_FAKE_digdir"[..]));
+        assert!(
+            github.requests.borrow()[0].contains("authorization: Bearer ghu_FAKE_digdir\r\n"),
+            "{:?}",
+            github.requests.borrow()
+        );
     }
 
     /// Stores `token` as `name` as a login would, expiring at `expires_at`.
@@ -867,11 +915,15 @@ mod tests {
         assert_eq!(TokenKind::of("github_pat_x"), Some(TokenKind::FineGrained));
         assert_eq!(TokenKind::of(" ghp_x\n"), Some(TokenKind::Classic));
         assert_eq!(TokenKind::of("gho_x"), Some(TokenKind::Oauth));
-        for token in ["ghu_x", "ghs_x", "ghr_x", "x"] {
+        assert_eq!(TokenKind::of("ghu_x"), Some(TokenKind::AppUser));
+        for token in ["ghs_x", "ghr_x", "x"] {
             assert_eq!(TokenKind::of(token), None, "{token}");
         }
         assert!(TokenKind::FineGrained.single_owner());
         assert!(!TokenKind::Oauth.single_owner());
+        assert!(!TokenKind::AppUser.single_owner());
+        assert!(TokenKind::Classic.scoped() && TokenKind::Oauth.scoped());
+        assert!(!TokenKind::FineGrained.scoped() && !TokenKind::AppUser.scoped());
     }
 
     #[test]
@@ -887,6 +939,8 @@ mod tests {
             oauth.contains("every repository and organization digdir-bot can reach"),
             "{oauth}"
         );
+        let app = TokenKind::AppUser.reach_warning("digdir-bot").expect("a warning");
+        assert!(app.contains("what both digdir-bot and the app can"), "{app}");
     }
 
     #[test]
@@ -906,11 +960,14 @@ mod tests {
         let repositories =
             "`gh` and `git` over HTTPS work as `digdir-agent`, for the repositories its token was created for.";
         let everywhere = "`gh` and `git` over HTTPS work as `digdir-agent`, for whatever `digdir-agent` can reach.";
+        let app = "`gh` and `git` over HTTPS work as `digdir-agent`, for what both `digdir-agent` and its token's \
+                   GitHub App can reach.";
         for (account, expected) in [
             (None, not_kept),
             (Some(account(TokenKind::FineGrained)), repositories),
             (Some(account(TokenKind::Oauth)), everywhere),
             (Some(account(TokenKind::Classic)), everywhere),
+            (Some(account(TokenKind::AppUser)), app),
         ] {
             let setup = setup("altinn-studio", account.as_ref());
             let [("GitHub", text)] = setup.instructions.as_slice() else {

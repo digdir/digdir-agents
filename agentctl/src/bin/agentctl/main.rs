@@ -720,8 +720,8 @@ enum GithubCommand {
         /// and paste it.
         #[arg(long, group = "way")]
         fine_grained: bool,
-        /// Read a token from standard input instead: fine-grained, classic or a GitHub CLI login's,
-        /// such as `gh auth token | agentctl github login NAME --from-stdin`.
+        /// Read a token from standard input instead: fine-grained, classic, a GitHub App user's or a
+        /// GitHub CLI login's, such as `gh auth token | agentctl github login NAME --from-stdin`.
         #[arg(long, group = "way")]
         from_stdin: bool,
         /// Keep the token only if it acts as this GitHub user, without asking.
