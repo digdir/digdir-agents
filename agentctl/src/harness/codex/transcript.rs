@@ -25,10 +25,11 @@ const REQUEST_MARKER: &str = "## My request for Codex:";
 /// `content_item_kinds`: a `user.` kind for what the operator sent,
 /// `shell.user_command` for a shell command they ran with `!`, and kinds such
 /// as `agents_md.instructions` or `generic.turn_aborted` for what Codex wrote.
-/// Messages from older Codex have no labels, and neither has the one Codex
-/// writes when a review ends. Their operator input is told apart by position:
-/// within a turn, the last user message before the model's first output is the
-/// prompt, and earlier ones are context.
+/// What Codex writes without a kind of its own, such as the results of a
+/// review, it labels `unknown`. Rollouts from older Codex have no labels, so
+/// their operator input is told apart by position: within a turn, the last
+/// user message before the model's first output is the prompt, and earlier ones
+/// are context.
 enum UserContent {
     /// Labelled operator input.
     Operator(String),
@@ -461,6 +462,29 @@ mod tests {
             turns.iter().map(user_messages).collect::<Vec<_>>(),
             [vec!["What is in this picture?"]]
         );
+    }
+
+    #[test]
+    fn review_results_codex_writes_are_dropped() {
+        // As Codex 0.167 writes them after `/review`, abridged.
+        let rollout = concat!(
+            r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":["#,
+            r#"{"type":"input_text","text":"<user_action>\n  <context>User initiated a review task.</context>\n  <action>review</action>\n</user_action>"}],"#,
+            r#""internal_chat_message_metadata_passthrough":{"content_item_kinds":["unknown"]}}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"No findings."}]}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
+            "\n",
+        );
+        let turns = parse(rollout.as_bytes()).expect("parse");
+        assert_eq!(
+            turns.iter().map(user_messages).collect::<Vec<_>>(),
+            [Vec::<&str>::new()]
+        );
+        assert_eq!(turns[0].messages.len(), 1, "the review's answer stays");
     }
 
     #[test]
