@@ -3483,7 +3483,10 @@ mod tests {
             message.contains(&home.socket_path().display().to_string()) && message.contains("too long"),
             "the error names the socket path and the problem: {message}"
         );
-        assert!(!home.daemon_log_path().exists(), "no agentd was started");
+        assert!(
+            !home.path().exists(),
+            "agentctl neither created the home nor started agentd, whose log is in it"
+        );
     }
 
     #[test]
