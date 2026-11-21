@@ -105,6 +105,9 @@ pub(crate) struct TurnTracker {
     idle: bool,
     /// The operator ended the latest turn that ended.
     interrupted: bool,
+    /// The prompt has started its turn or left the queue. Input queued after that is someone
+    /// else's, such as a prompt sent without waiting, and the prompt's turn does not wait for it.
+    resolved: bool,
 }
 
 /// What input taken from the queue started.
@@ -136,16 +139,17 @@ impl TurnTracker {
             self.fold_queue_operation(entry);
         } else if let Some(origin) = turn_origin(entry) {
             self.idle = false;
-            if origin == "task_notification" {
-                // Claude Code took its own input, such as a notification that a background task
-                // finished, and the operator's stays queued.
-                if matches!(self.taken, Taken::BeforeEnd | Taken::AfterEnd) {
-                    self.taken = Taken::Nothing;
+            if origin == "human" {
+                self.resolved = true;
+                if self.queued > 0 {
+                    // Claude Code may take all the queued input into the one turn.
+                    self.queued = 0;
+                    self.taken = Taken::Turn;
                 }
-            } else if self.queued > 0 {
-                // Claude Code may take all the queued input into the one turn.
-                self.queued = 0;
-                self.taken = Taken::Turn;
+            } else if matches!(self.taken, Taken::BeforeEnd | Taken::AfterEnd) {
+                // Claude Code took its own input, such as a notification that a background task
+                // finished or a scheduled prompt, and the operator's stays queued.
+                self.taken = Taken::Nothing;
             }
         } else if let Some(interrupted) = ends_turn(entry) {
             self.idle = true;
@@ -157,7 +161,7 @@ impl TurnTracker {
             self.interrupted = interrupted;
         } else if self.taken == Taken::AfterEnd && is_conversation(entry) {
             // The input started no turn, such as a slash command Claude Code warns it doesn't know.
-            self.queued = self.queued.saturating_sub(1);
+            self.leave_queue();
             self.taken = Taken::Nothing;
         }
     }
@@ -172,7 +176,7 @@ impl TurnTracker {
         match entry.get("operation").and_then(Value::as_str) {
             Some("enqueue") => {
                 // Claude Code leaves the text out at times, such as while it screens the input.
-                if content.is_some() {
+                if content.is_some() && !self.resolved {
                     self.queued = self.queued.saturating_add(1);
                 }
             }
@@ -181,8 +185,16 @@ impl TurnTracker {
                     self.taken = if self.idle { Taken::AfterEnd } else { Taken::BeforeEnd };
                 }
             }
-            // Input queued before the mark can be taken too, so the count stops at zero.
-            _ => self.queued = self.queued.saturating_sub(1),
+            _ => self.leave_queue(),
+        }
+    }
+
+    /// Operator input left the queue without a turn of its own.
+    const fn leave_queue(&mut self) {
+        // Input queued before the mark can be taken too, so the count stops at zero.
+        if self.queued > 0 {
+            self.queued -= 1;
+            self.resolved |= self.queued == 0;
         }
     }
 
@@ -195,8 +207,8 @@ impl TurnTracker {
 }
 
 /// Who started the turn of the main conversation that `entry` starts, if it starts one: `human`
-/// for the operator's prompt or slash command, or such as `task_notification` for Claude Code's
-/// own input.
+/// for the operator's prompt or slash command, or such as `task_notification` or `scheduled` for
+/// input Claude Code queued itself.
 fn turn_origin(entry: &Value) -> Option<&str> {
     if flag(entry, "isSidechain") || entry.get("type").and_then(Value::as_str) != Some("user") {
         return None;
@@ -204,13 +216,17 @@ fn turn_origin(entry: &Value) -> Option<&str> {
     entry.get("turnOrigin").and_then(Value::as_str)
 }
 
-/// Whether `entry` is a line of the main conversation, other than the record of how long a turn
-/// took that Claude Code writes after its end.
+/// Whether `entry` is a line of the main conversation that can show what queued input started.
+/// Claude Code writes how long a turn took after its end, and that a scheduled task fired before
+/// the scheduled prompt's turn, so neither shows it.
 fn is_conversation(entry: &Value) -> bool {
     !flag(entry, "isSidechain")
         && match entry.get("type").and_then(Value::as_str) {
             Some("user" | "assistant") => true,
-            Some("system") => entry.get("subtype").and_then(Value::as_str) != Some("turn_duration"),
+            Some("system") => !matches!(
+                entry.get("subtype").and_then(Value::as_str),
+                Some("turn_duration" | "scheduled_task_fire")
+            ),
             _ => false,
         }
 }
@@ -640,22 +656,24 @@ mod tests {
         let [queued, absorbed, queued_then_interrupted] = sections[..] else {
             panic!("three recorded sections");
         };
-        // What the signals are once each line is written, in the order the file holds them.
+        // What the signals are once each line is written, in the order the file holds them, from
+        // the mark that the wait sets before it sends the queued prompt.
         for (case, section, expected) in [
             // The prompt is queued while the essay is written. The essay's turn ends, and the
             // queued prompt's turn starts and ends.
-            ("queued behind the essay", queued, "-qqqqqqq--"),
-            ("absorbed during a tool call", absorbed, "--q------"),
+            ("queued behind the essay", queued, "qqqqqqq--"),
+            ("absorbed during a tool call", absorbed, "q------"),
             // The operator interrupts the essay, and the queued prompt's turn follows.
             (
                 "queued behind an interrupted essay",
                 queued_then_interrupted,
-                "-qqqIII--",
+                "qqqIII--",
             ),
         ] {
             let mut tracker = TurnTracker::default();
             let seen = section
                 .lines()
+                .skip_while(|line| !line.contains(r#""operation":"enqueue""#))
                 .map(|line| {
                     tracker.push(format!("{line}\n").as_bytes());
                     match tracker.signals() {
@@ -857,6 +875,62 @@ mod tests {
             })
             .collect::<String>();
         assert_eq!(seen, "-------");
+    }
+
+    #[test]
+    fn input_sent_after_the_prompt_was_absorbed_is_not_followed() {
+        // The waited prompt is absorbed into the running turn while a tool runs, and another prompt
+        // is queued behind that turn.
+        let lines = jsonl(&[
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Also tell me how many lines it printed."}),
+            serde_json::json!({"type": "queue-operation", "operation": "remove", "reason": "absorbed_mid_turn", "content": "Also tell me how many lines it printed."}),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly SECOND."}),
+        ]);
+        assert_eq!(signals(&lines), TurnSignals::default());
+    }
+
+    #[test]
+    fn a_scheduled_prompts_turn_does_not_take_the_operators_input() {
+        // A scheduled task fired while the essay was written, before the operator's prompt was
+        // queued, and Claude Code 2.1.321 takes it first. It writes that the task fired, then
+        // starts the scheduled prompt's turn.
+        let ended = serde_json::json!({"type": "system", "subtype": "stop_hook_summary"});
+        let took = serde_json::json!({"type": "system", "subtype": "turn_duration"});
+        let dequeued = serde_json::json!({"type": "queue-operation", "operation": "dequeue"});
+        let answer = |text: &str| serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}});
+        let lines = [
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly THIRD."}),
+            dequeued.clone(),
+            answer("Volcanoes are openings in the crust."),
+            ended.clone(),
+            took.clone(),
+            serde_json::json!({"type": "system", "subtype": "scheduled_task_fire", "content": "Running scheduled task"}),
+            serde_json::json!({"type": "user", "turnOrigin": "scheduled", "message": {"role": "user", "content": "Check the build."}}),
+            dequeued,
+            answer("The build passes."),
+            ended.clone(),
+            took,
+            serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly THIRD."}}),
+            answer("THIRD"),
+            ended,
+        ];
+        let mut tracker = TurnTracker::default();
+        let seen = lines
+            .iter()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().queued { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        assert_eq!(seen, "qqqqqqqqqqqqq-");
+    }
+
+    #[test]
+    fn an_enqueue_without_its_text_is_not_followed() {
+        // Without the text the tracker can't tell the operator's input from Claude Code's own, and
+        // following Claude Code's could hold the wait until its timeout.
+        let lines = jsonl(&[serde_json::json!({"type": "queue-operation", "operation": "enqueue"})]);
+        assert_eq!(signals(&lines), TurnSignals::default());
     }
 
     #[test]
