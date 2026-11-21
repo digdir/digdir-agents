@@ -152,7 +152,10 @@ impl TurnTracker {
         } else if let Some(origin) = turn_origin(entry) {
             self.idle = false;
             if origin == "human" {
-                if self.queued > 0 {
+                // A prompt typed when nothing ran was not taken from the queue, even when Claude
+                // Code writes it below input queued while its hooks ran.
+                let typed = entry.get("promptSource").and_then(Value::as_str) == Some("typed");
+                if self.queued > 0 && !typed {
                     // Claude Code may take all the queued input into the one turn.
                     self.queued = 0;
                     self.taken = Taken::Turn;
