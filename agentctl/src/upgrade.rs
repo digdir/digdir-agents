@@ -1554,6 +1554,25 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn validation_fails_for_a_binary_that_stays_open_for_writing() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let release = temporary.path().join("release");
+        write_release(&release, "v1.0.0");
+        let _writer = OpenOptions::new()
+            .write(true)
+            .open(release.join("agentctl"))
+            .expect("open for writing");
+
+        let error = validate_release_directory(&release, "v1.0.0").expect_err("a busy binary does not run");
+
+        assert!(
+            matches!(&error, Error::Io(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy),
+            "{error:?}"
+        );
+    }
+
+    #[cfg(unix)]
     #[tokio::test(flavor = "local")]
     async fn publishing_replaces_a_published_release_that_does_not_run() {
         let temporary = tempfile::TempDir::new().expect("temporary directory");
