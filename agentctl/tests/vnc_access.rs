@@ -366,6 +366,10 @@ async fn withdrawal_from_a_guest_still_starting_systemd_disables_the_units() {
     fixture
         .backend
         .queue_execution_events_matching(is_test("/run/systemd/system", "-d"), exited(1));
+    fixture.backend.queue_execution_events_matching(
+        |spec| is_command(spec, "/bin/cat", &["/proc/uptime"]),
+        output(b"2.00 1.00\n"),
+    );
     queue_withdrawable_image(&fixture.backend);
 
     assert!(

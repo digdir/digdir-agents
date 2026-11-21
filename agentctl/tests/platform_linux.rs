@@ -1345,19 +1345,34 @@ fn image_init_record(directory: &std::path::Path) -> AgentRecord {
     }
 }
 
-/// Setup on a guest whose image's init has not started systemd yet, with no Podman whose setup
-/// waits for it first, still waits for systemd before it grants `/dev/kvm`, so that an image's
-/// rule for the device cannot undo the grant, and before it reads the workspace clone.
-#[tokio::test(flavor = "local", start_paused = true)]
-async fn linux_setup_waits_for_a_booting_systemd_without_podman() {
-    let directory = TempDir::new().expect("temporary directory");
-    let record = image_init_record(directory.path());
-    let backend = Rc::new(memory::Provider::new());
-    for _ in 0..2 {
+fn is_uptime_read(spec: &sandbox::execution::ExecutionSpec) -> bool {
+    matches!(
+        spec.program(),
+        Program::Command { executable, args }
+            if executable.as_str() == "/bin/cat" && args == &["/proc/uptime"]
+    )
+}
+
+/// The guest's `/proc/uptime` for a guest that has run for `uptime`.
+fn uptime(uptime: &str) -> Vec<ExecutionEvent> {
+    vec![
+        ExecutionEvent::Started { process_id: None },
+        ExecutionEvent::Stdout(format!("{uptime} 1.00\n").into()),
+        ExecutionEvent::Exited(ExitStatus { code: 0 }),
+    ]
+}
+
+/// A guest two seconds after boot, whose image's init starts systemd after `probes` checks for
+/// it, and whose image is cloning its workspace.
+fn queue_booting_guest(backend: &memory::Provider, probes: usize) {
+    for _ in 0..probes {
         backend.queue_execution_events_matching(
             |spec| is_presence_check(spec, "-d", "/run/systemd/system"),
             completed(1),
         );
+    }
+    for _ in 0..probes {
+        backend.queue_execution_events_matching(is_uptime_read, uptime("2.00"));
     }
     backend.queue_execution_events_matching(
         |spec| {
@@ -1381,9 +1396,20 @@ async fn linux_setup_waits_for_a_booting_systemd_without_podman() {
             ExecutionEvent::Exited(ExitStatus { code: 0 }),
         ],
     );
+}
+
+/// Setup on a guest whose image's init has not started systemd yet, with no Podman whose setup
+/// waits for it first, still waits for systemd before it grants `/dev/kvm`, so that an image's
+/// rule for the device cannot undo the grant.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn linux_setup_waits_for_a_booting_systemd_without_podman() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = image_init_record(directory.path());
+    let backend = Rc::new(memory::Provider::new());
+    queue_booting_guest(&backend, 2);
     let sandbox = claude_sandbox_on(backend.clone(), &record, 1).await;
 
-    let setup = Linux::new(PLATFORM_API_URL)
+    Linux::new(PLATFORM_API_URL)
         .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
         .await
         .expect("setup");
@@ -1397,6 +1423,24 @@ async fn linux_setup_waits_for_a_booting_systemd_without_podman() {
         matches!((waited, granted), (Some(waited), Some(granted)) if waited < granted),
         "/dev/kvm is granted after systemd has booted: waited at {waited:?}, granted at {granted:?}"
     );
+}
+
+/// Setup on a guest whose image's init has not started systemd yet, and with nothing else that
+/// waits for it, still reports the workspace clone the image starts once systemd runs.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn linux_setup_reports_the_workspace_clone_of_a_booting_systemd() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = image_init_record(directory.path());
+    let backend = Rc::new(memory::Provider::new());
+    backend.queue_execution_events_matching(|spec| is_presence_check(spec, "-c", "/dev/kvm"), completed(1));
+    queue_booting_guest(&backend, 2);
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 1).await;
+
+    let setup = Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("setup");
+
     assert_eq!(
         setup.workspace,
         Some(agent::sandbox::WorkspaceClone::Cloning),
@@ -1420,20 +1464,7 @@ async fn linux_setup_long_after_boot_does_not_wait_for_a_systemd_the_image_lacks
         );
     }
     for _ in 0..10 {
-        backend.queue_execution_events_matching(
-            |spec| {
-                matches!(
-                    spec.program(),
-                    Program::Command { executable, args }
-                        if executable.as_str() == "/bin/cat" && args == &["/proc/uptime"]
-                )
-            },
-            vec![
-                ExecutionEvent::Started { process_id: None },
-                ExecutionEvent::Stdout("3600.25 7000.50\n".into()),
-                ExecutionEvent::Exited(ExitStatus { code: 0 }),
-            ],
-        );
+        backend.queue_execution_events_matching(is_uptime_read, uptime("3600.25"));
     }
     let sandbox = claude_sandbox_on(backend.clone(), &record, 1).await;
     let started = tokio::time::Instant::now();
