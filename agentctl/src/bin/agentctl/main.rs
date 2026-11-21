@@ -2604,9 +2604,8 @@ fn spawn_daemon(home: &ControlPlaneHome) -> Result<Child, Error> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log);
-    agent::local::process::configure_detached(&mut command);
     agent::local::process::configure_logging(&mut command);
-    command.spawn().map_err(Error::from)
+    agent::local::process::spawn_detached(&mut command).map_err(Error::from)
 }
 
 fn daemon_executable(agentctl: &Path) -> PathBuf {
