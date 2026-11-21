@@ -444,6 +444,26 @@ mod tests {
     }
 
     #[test]
+    fn text_codex_puts_into_an_operator_message_is_dropped() {
+        // Codex 0.167 puts this text in place of an image it can't process
+        // (core/src/image_preparation.rs).
+        let rollout = concat!(
+            r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":["#,
+            r#"{"type":"input_text","text":"What is in this picture?"},"#,
+            r#"{"type":"input_text","text":"image content omitted because it could not be processed"}],"#,
+            r#""internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text","images.preparation_error"]}}}"#,
+            "\n",
+        );
+        let turns = parse(rollout.as_bytes()).expect("parse");
+        assert_eq!(
+            turns.iter().map(user_messages).collect::<Vec<_>>(),
+            [vec!["What is in this picture?"]]
+        );
+    }
+
+    #[test]
     fn tool_calls_failures_and_final_message_are_recorded() {
         let turns = parse(FIXTURE.as_bytes()).expect("parse");
         let first = &turns[0];
