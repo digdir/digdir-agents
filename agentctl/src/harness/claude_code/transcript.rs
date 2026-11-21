@@ -108,8 +108,9 @@ pub(crate) struct TurnTracker {
     /// The prompt has started its turn or left the queue. Input queued after that is someone
     /// else's, such as a prompt sent without waiting, and the prompt's turn does not wait for it.
     resolved: bool,
-    /// The prompt, trimmed. A prompt sent just before it can start its turn below the mark, so a
-    /// turn that starts with nothing queued is the prompt's only when it holds the prompt.
+    /// The prompt as [`prompt_key`] compares it. A prompt sent just before it can start its turn
+    /// below the mark, so a turn that starts with nothing queued is the prompt's only when it holds
+    /// the prompt.
     prompt: String,
 }
 
@@ -131,7 +132,7 @@ impl TurnTracker {
     /// A tracker for what follows the mark set before `prompt` is sent.
     pub(crate) fn new(prompt: &str) -> Self {
         Self {
-            prompt: prompt.trim().to_owned(),
+            prompt: prompt_key(prompt),
             ..Self::default()
         }
     }
@@ -156,7 +157,7 @@ impl TurnTracker {
                     self.queued = 0;
                     self.taken = Taken::Turn;
                     self.resolved = true;
-                } else if user_text(entry).is_some_and(|text| text.trim() == self.prompt) {
+                } else if user_text(entry).is_some_and(|text| prompt_key(&text) == self.prompt) {
                     // The prompt was not queued and started its turn at once.
                     self.resolved = true;
                 }
@@ -218,6 +219,45 @@ impl TurnTracker {
             queued: self.queued > 0 || matches!(self.taken, Taken::Turn),
         }
     }
+}
+
+/// What [`TurnTracker`] compares of a prompt and of the line that starts a turn. Claude Code writes
+/// a pasted prompt of several lines wrapped in `<pasted_content>` tags, with its tabs and line
+/// breaks changed, and a slash command as its echo. A prompt that is not recognized only makes the
+/// wait follow input queued behind it, so this need not catch every change.
+fn prompt_key(text: &str) -> String {
+    let between = |open: &str, close: &str| {
+        let start = text.find(open)? + open.len();
+        text[start..].find(close).map(|end| &text[start..start + end])
+    };
+    let text = between("<command-name>", "</command-name>").map_or_else(
+        || without_tags(text, "pasted_content"),
+        |name| {
+            format!(
+                "{name}{}",
+                between("<command-args>", "</command-args>").unwrap_or_default()
+            )
+        },
+    );
+    text.chars()
+        .filter(|character| !character.is_whitespace() && *character != '\u{200b}')
+        .collect()
+}
+
+/// `text` without the opening and closing tags named `tag`, whatever their attributes.
+fn without_tags(text: &str, tag: &str) -> String {
+    let (open, close) = (format!("<{tag}"), format!("</{tag}"));
+    let mut rest = text;
+    let mut kept = String::with_capacity(text.len());
+    while let Some(start) = [rest.find(&open), rest.find(&close)].into_iter().flatten().min() {
+        let Some(end) = rest[start..].find('>') else {
+            break;
+        };
+        kept.push_str(&rest[..start]);
+        rest = &rest[start + end + 1..];
+    }
+    kept.push_str(rest);
+    kept
 }
 
 /// Who started the turn of the main conversation that `entry` starts, if it starts one: `human`
@@ -1010,6 +1050,30 @@ mod tests {
         // following Claude Code's could hold the wait until its timeout.
         let lines = jsonl(&[serde_json::json!({"type": "queue-operation", "operation": "enqueue"})]);
         assert_eq!(signals(&lines), TurnSignals::default());
+    }
+
+    #[test]
+    fn a_prompt_is_known_in_the_forms_claude_code_writes_it() {
+        // Recorded with Claude Code 2.1.321, pasted as agentctl delivers prompts.
+        for (sent, written) in [
+            ("Reply with exactly OK.", "Reply with exactly OK."),
+            ("a\tb", "a    b"),
+            ("a\r\nb", "a\n\nb"),
+            (
+                "Reply with exactly OK.\nLine two",
+                "\n\n<pasted_content id=\"344d\">\nReply with exactly OK.\nLine two\n</pasted_content id=\"344d\">\n",
+            ),
+            (
+                "/review src",
+                "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>src</command-args>",
+            ),
+        ] {
+            assert_eq!(prompt_key(written), prompt_key(sent), "{written:?}");
+        }
+        assert_ne!(
+            prompt_key("Reply with exactly SECOND."),
+            prompt_key("Write a 300-word essay about ocean tides.")
+        );
     }
 
     #[test]
