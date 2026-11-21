@@ -108,6 +108,9 @@ pub(crate) struct TurnTracker {
     /// The prompt has started its turn or left the queue. Input queued after that is someone
     /// else's, such as a prompt sent without waiting, and the prompt's turn does not wait for it.
     resolved: bool,
+    /// The prompt, trimmed. A prompt sent just before it can start its turn below the mark, so a
+    /// turn that starts with nothing queued is the prompt's only when it holds the prompt.
+    prompt: String,
 }
 
 /// What input taken from the queue started.
@@ -125,6 +128,14 @@ enum Taken {
 }
 
 impl TurnTracker {
+    /// A tracker for what follows the mark set before `prompt` is sent.
+    pub(crate) fn new(prompt: &str) -> Self {
+        Self {
+            prompt: prompt.trim().to_owned(),
+            ..Self::default()
+        }
+    }
+
     /// Folds complete transcript lines. Lines that are not JSON objects are skipped.
     pub(crate) fn push(&mut self, lines: &[u8]) {
         for line in lines.split(|byte| *byte == b'\n') {
@@ -140,11 +151,14 @@ impl TurnTracker {
         } else if let Some(origin) = turn_origin(entry) {
             self.idle = false;
             if origin == "human" {
-                self.resolved = true;
                 if self.queued > 0 {
                     // Claude Code may take all the queued input into the one turn.
                     self.queued = 0;
                     self.taken = Taken::Turn;
+                    self.resolved = true;
+                } else if user_text(entry).is_some_and(|text| text.trim() == self.prompt) {
+                    // The prompt was not queued and started its turn at once.
+                    self.resolved = true;
                 }
             } else if matches!(self.taken, Taken::BeforeEnd | Taken::AfterEnd) {
                 // Claude Code took its own input, such as a notification that a background task
@@ -656,24 +670,35 @@ mod tests {
         let [queued, absorbed, queued_then_interrupted] = sections[..] else {
             panic!("three recorded sections");
         };
-        // What the signals are once each line is written, in the order the file holds them, from
-        // the mark that the wait sets before it sends the queued prompt.
-        for (case, section, expected) in [
+        // What the signals are once each line is written, in the order the file holds them. Each
+        // section starts with the turn the prompt is queued behind, as when its line is written
+        // after the mark.
+        for (case, section, prompt, expected) in [
             // The prompt is queued while the essay is written. The essay's turn ends, and the
             // queued prompt's turn starts and ends.
-            ("queued behind the essay", queued, "qqqqqqq--"),
-            ("absorbed during a tool call", absorbed, "q------"),
+            (
+                "queued behind the essay",
+                queued,
+                "Reply with exactly SECOND.",
+                "-qqqqqqq--",
+            ),
+            (
+                "absorbed during a tool call",
+                absorbed,
+                "Also tell me how many lines it printed.",
+                "--q------",
+            ),
             // The operator interrupts the essay, and the queued prompt's turn follows.
             (
                 "queued behind an interrupted essay",
                 queued_then_interrupted,
-                "qqqIII--",
+                "Reply with exactly THIRD.",
+                "-qqqIII--",
             ),
         ] {
-            let mut tracker = TurnTracker::default();
+            let mut tracker = TurnTracker::new(prompt);
             let seen = section
                 .lines()
-                .skip_while(|line| !line.contains(r#""operation":"enqueue""#))
                 .map(|line| {
                     tracker.push(format!("{line}\n").as_bytes());
                     match tracker.signals() {
@@ -866,7 +891,7 @@ mod tests {
             serde_json::json!({"type": "system", "subtype": "turn_duration"}),
             serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}}),
         ]);
-        let mut tracker = TurnTracker::default();
+        let mut tracker = TurnTracker::new("Write a 300-word essay about ocean tides. Use no tools.");
         let seen = lines
             .lines()
             .map(|line| {
@@ -894,7 +919,7 @@ mod tests {
             serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "SECOND"}]}}),
             serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
         ]);
-        let mut tracker = TurnTracker::default();
+        let mut tracker = TurnTracker::new("Reply with exactly SECOND.");
         let seen = lines
             .lines()
             .map(|line| {

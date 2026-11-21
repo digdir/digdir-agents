@@ -340,8 +340,8 @@ struct FakeRuntime {
     conversation: RefCell<Vec<agent::sessions::Turn>>,
     /// What the conversation shows that no report says.
     conversation_signals: Cell<agent::sessions::TurnSignals>,
-    /// How often the conversation was marked, and how often by the time of the last delivery.
-    marks: Cell<usize>,
+    /// The prompts the conversation was marked for, and how many by the time of the last delivery.
+    marks: RefCell<Vec<String>>,
     marks_at_delivery: Cell<Option<usize>>,
     sent: RefCell<Vec<String>>,
     launches: RefCell<Vec<(Option<String>, Option<String>)>>,
@@ -372,7 +372,7 @@ impl Default for FakeRuntime {
             release_observe: Notify::new(),
             conversation: RefCell::default(),
             conversation_signals: Cell::default(),
-            marks: Cell::new(0),
+            marks: RefCell::new(Vec::new()),
             marks_at_delivery: Cell::new(None),
             sent: RefCell::default(),
             launches: RefCell::default(),
@@ -480,7 +480,7 @@ impl agent::sessions::SessionRuntime for FakeRuntime {
     ) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             tokio::time::sleep(self.delivery_delay.get()).await;
-            self.marks_at_delivery.set(Some(self.marks.get()));
+            self.marks_at_delivery.set(Some(self.marks.borrow().len()));
             self.sent.borrow_mut().push(prompt.to_owned());
             self.conversation.borrow_mut().push(user_turn(prompt));
             self.delivered.notify_one();
@@ -515,8 +515,9 @@ impl agent::sessions::SessionRuntime for FakeRuntime {
         &'a self,
         _session: &'a agent::sessions::Session,
         _sandbox: &'a SandboxHandle,
+        prompt: &'a str,
     ) -> LocalFuture<'a, Result<agent::sessions::ConversationMark, Error>> {
-        self.marks.set(self.marks.get() + 1);
+        self.marks.borrow_mut().push(prompt.to_owned());
         Box::pin(async { Ok(agent::sessions::ConversationMark::default()) })
     }
 
@@ -1461,6 +1462,11 @@ async fn prompt_wait_ends_when_the_conversation_shows_the_turn_was_interrupted()
             harness.runtime.marks_at_delivery.get(),
             Some(1),
             "the wait marks where the conversation ends once, before delivery"
+        );
+        assert_eq!(
+            *harness.runtime.marks.borrow(),
+            ["run the slow command"],
+            "the conversation is followed for the prompt"
         );
         for event in reports {
             harness.report(*event).await;

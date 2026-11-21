@@ -184,7 +184,7 @@ impl Service {
         // Without a mark the wait still follows the harness's reports.
         let mark = if wait {
             self.runtime
-                .mark_conversation(&session, &sandbox)
+                .mark_conversation(&session, &sandbox, prompt)
                 .await
                 .unwrap_or_else(|error| {
                     tracing::debug!(%error, session = %id, "could not mark the conversation to follow");

@@ -128,12 +128,13 @@ pub trait SessionRuntime {
         last: Option<usize>,
     ) -> ::sandbox::LocalFuture<'a, Result<Vec<Turn>, Error>>;
 
-    /// Marks where the session's conversation ends now, so that
+    /// Marks where the session's conversation ends now, before `prompt` is delivered, so that
     /// [`Self::follow_conversation`] reads only what is added after it.
     fn mark_conversation<'a>(
         &'a self,
         session: &'a Session,
         sandbox: &'a SandboxHandle,
+        prompt: &'a str,
     ) -> ::sandbox::LocalFuture<'a, Result<ConversationMark, Error>>;
 
     /// Reads what the session's conversation gained since `mark`, moves `mark` past it, and says
