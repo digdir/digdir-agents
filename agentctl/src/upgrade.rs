@@ -1343,36 +1343,6 @@ mod tests {
         drop(copy);
     }
 
-    // Forces a real child to sit between fork and exec while the lock is dropped. Removed again
-    // after the fix, since it sleeps.
-    #[cfg(unix)]
-    #[allow(unsafe_code, reason = "pre_exec holds the child between fork and exec")]
-    #[allow(clippy::disallowed_methods, reason = "the child is started from a thread of its own")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn forced_a_starting_child_does_not_keep_a_dropped_install_lock() {
-        use std::os::unix::process::CommandExt as _;
-
-        let temporary = tempfile::TempDir::new().expect("temporary directory");
-        let paths = InstallPaths::new(temporary.path().join("install"), temporary.path().join("bin")).expect("paths");
-        let lock = paths.lock().await.expect("lock");
-        let starter = std::thread::spawn(|| {
-            let mut command = std::process::Command::new("true");
-            // SAFETY: the closure only sleeps, which is safe between fork and exec.
-            unsafe {
-                command.pre_exec(|| {
-                    std::thread::sleep(Duration::from_millis(500));
-                    Ok(())
-                });
-            }
-            command.status().expect("child")
-        });
-        std::thread::sleep(Duration::from_millis(100));
-        drop(lock);
-        let running = paths.update_running().expect("released");
-        assert!(starter.join().expect("starter").success());
-        assert!(!running, "the starting child keeps the dropped lock");
-    }
-
     #[test]
     fn managed_executable_identifies_its_install_root() {
         let root = Path::new("managed/agent");
