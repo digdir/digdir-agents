@@ -25,10 +25,9 @@ pub(super) async fn prepare_nested_sandboxes(sandbox: &SandboxHandle, huge_pages
 
 /// Gives `/dev/kvm` to the `agent` group, as Podman's socket is, so the agent can run nested
 /// sandboxes without its image granting the device. The guest creates the device anew at every
-/// boot, and setup runs after every boot, so the grant is made on every pass. On a guest already
-/// running systemd it first waits for boot to finish, so that an image's own tmpfiles or udev
-/// rule for the device runs before the grant; setup that starts before the image's entrypoint
-/// has become systemd can still be undone by such a rule until the next pass.
+/// boot, and setup runs after every boot, so the grant is made on every pass. On a guest running
+/// systemd it first waits for boot to finish, so that an image's own tmpfiles or udev rule for
+/// the device runs before the grant.
 ///
 /// Reports whether the device is present.
 async fn grant_kvm(sandbox: &SandboxHandle) -> Result<bool, Error> {

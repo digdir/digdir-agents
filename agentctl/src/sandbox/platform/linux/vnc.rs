@@ -94,8 +94,9 @@ pub(crate) async fn grant(sandbox: &SandboxHandle) -> Result<Capability, Error> 
 ///
 /// Returns an error when the units cannot be disabled, or when one is still active afterwards.
 pub(crate) async fn withdraw(sandbox: &SandboxHandle) -> Result<(), Error> {
-    if !systemd_available(sandbox).await? || !path_exists(sandbox, "-f", DESCRIPTOR).await? {
-        // An image that declares no VNC access never had any units to turn off.
+    // An image that declares no VNC access never had any units to turn off. It is asked first, so
+    // that such an image does not wait for a systemd it may not have.
+    if !path_exists(sandbox, "-f", DESCRIPTOR).await? || !systemd_available(sandbox).await? {
         return Ok(());
     }
     let capability = parse_descriptor(&read_descriptor(sandbox).await?)?;

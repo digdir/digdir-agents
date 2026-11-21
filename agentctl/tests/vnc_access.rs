@@ -316,6 +316,75 @@ async fn an_image_whose_init_never_becomes_systemd_fails_permanently() {
     assert_no_systemd(&error);
 }
 
+/// The time an image's init has to start systemd counts from the guest's boot, so a pass in a
+/// guest that has run for 12 seconds waits only the 18 that are left.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn an_image_init_gets_what_is_left_of_its_time_since_boot() {
+    let fixture = Fixture::new();
+    let mut record = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", true);
+    record.agent.spec.sandbox.init_system = InitSystem::Image;
+    fixture.store(&record, 0).await;
+    let sandbox = fixture.sandbox(&record).await;
+    // More answers than any wait for systemd polls.
+    for _ in 0..1000 {
+        fixture
+            .backend
+            .queue_execution_events_matching(is_test("/run/systemd/system", "-d"), exited(1));
+    }
+    fixture.backend.queue_execution_events_matching(
+        |spec| is_command(spec, "/bin/cat", &["/proc/uptime"]),
+        output(b"12.00 20.00\n"),
+    );
+    let started = tokio::time::Instant::now();
+
+    let error = fixture
+        .access
+        .reconcile(&record, &sandbox)
+        .await
+        .expect_err("an init that is not systemd");
+    assert_no_systemd(&error);
+    assert_eq!(started.elapsed(), std::time::Duration::from_secs(18));
+}
+
+fn is_disable(spec: &ExecutionSpec) -> bool {
+    is_command(
+        spec,
+        "/usr/bin/sudo",
+        &["-n", "/usr/bin/systemctl", "disable", "--now", UNITS[0], UNITS[1]],
+    )
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn withdrawal_from_a_guest_still_starting_systemd_disables_the_units() {
+    let fixture = Fixture::new();
+    let mut withdrawn = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", false);
+    withdrawn.agent.spec.sandbox.init_system = InitSystem::Image;
+    fixture.store(&withdrawn, 0).await;
+    let sandbox = fixture.sandbox(&withdrawn).await;
+    // Units an earlier pass enabled start once systemd runs, so a withdrawal that skips this
+    // early moment leaves them listening.
+    fixture
+        .backend
+        .queue_execution_events_matching(is_test("/run/systemd/system", "-d"), exited(1));
+    fixture.backend.queue_execution_events_matching(
+        |spec| is_command(spec, "/bin/cat", &["/proc/uptime"]),
+        output(b"2.00 1.00\n"),
+    );
+    queue_withdrawable_image(&fixture.backend);
+
+    assert!(
+        !fixture
+            .access
+            .reconcile(&withdrawn, &sandbox)
+            .await
+            .expect("withdrawal")
+    );
+    assert!(
+        fixture.backend.execution_specs().iter().any(is_disable),
+        "the units are disabled once systemd runs"
+    );
+}
+
 #[tokio::test(flavor = "local")]
 async fn a_unit_still_active_after_withdrawal_is_reported() {
     let fixture = Fixture::new();
@@ -377,6 +446,34 @@ async fn an_image_without_the_descriptor_is_left_alone_when_no_access_is_declare
     assert!(
         !fixture.access.reconcile(&record, &sandbox).await.expect("pass"),
         "an image with no VNC access to withdraw is left alone"
+    );
+}
+
+/// An image without VNC access has no units to withdraw, so the withdrawal does not wait for a
+/// systemd that the image's init may never start.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn an_image_without_the_descriptor_is_left_alone_without_waiting_for_systemd() {
+    let fixture = Fixture::new();
+    let mut record = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", false);
+    record.agent.spec.sandbox.init_system = InitSystem::Image;
+    fixture.store(&record, 0).await;
+    let sandbox = fixture.sandbox(&record).await;
+    // More answers than any wait for systemd polls.
+    for _ in 0..1000 {
+        fixture
+            .backend
+            .queue_execution_events_matching(is_test("/run/systemd/system", "-d"), exited(1));
+    }
+    fixture
+        .backend
+        .queue_execution_events_matching(is_test(DESCRIPTOR, "-f"), exited(1));
+    let started = tokio::time::Instant::now();
+
+    assert!(!fixture.access.reconcile(&record, &sandbox).await.expect("pass"));
+    assert_eq!(
+        started.elapsed(),
+        std::time::Duration::ZERO,
+        "the withdrawal waited for systemd"
     );
 }
 
