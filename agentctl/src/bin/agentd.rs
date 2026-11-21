@@ -69,6 +69,7 @@ fn run() -> Result<(), Error> {
         .with_ansi(std::io::stderr().is_terminal())
         .init();
     let home = ControlPlaneHome::resolve(arguments.home.as_deref())?;
+    home.check_socket_path()?;
     let config = DaemonConfig::load(&home.config_path())?;
     let _lock = acquire_home_lock(&home)?;
     let database = persistence::Database::open(&home.path().join("agent.db"))?;

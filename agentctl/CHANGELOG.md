@@ -32,6 +32,7 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 - Agents that could not clone their repositories for want of a GitHub login clone them once `agentctl github login NAME` keeps it, without a restart. ([#482](https://github.com/digdir/digdir-agents/issues/482))
 - `agentctl ssh-proxy` and `agentctl vnc-proxy` print their error and exit when the relay fails while standard input stays open, such as when standard output closes, where they could hang without a word until standard input closed. ([#515](https://github.com/digdir/digdir-agents/issues/515))
 - `agentctl apply --wait`, `start` and `restart` of an agent with `ssh` or `vnc` access no longer fail at times with `systemd is not the running init` while the agent boots, as they did most often for an agent without harnesses. ([#465](https://github.com/digdir/digdir-agents/issues/465))
+- `agentctl` with a home whose path is too long for agentd's socket, such as one deep in a temporary folder, says so and how long the socket path may be, instead of only `automatic startup exited with exit status: 1`. ([#579](https://github.com/digdir/digdir-agents/issues/579))
 
 ## [0.1.0-preview.15] - 2026-11-18
 
