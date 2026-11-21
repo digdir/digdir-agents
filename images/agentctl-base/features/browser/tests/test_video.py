@@ -116,8 +116,6 @@ class FfmpegTest(unittest.TestCase):
 def running(pid):
     try:
         with open(f'/proc/{pid}/stat') as f:
-            # Forces #584: gives ffmpeg time to be reaped between opening the file and reading it.
-            time.sleep(0.1)
             return f.read().rsplit(')', 1)[1].split()[0] != 'Z'
     except (FileNotFoundError, ProcessLookupError):
         # The process has been reaped, before the file was opened or between opening and reading it.
