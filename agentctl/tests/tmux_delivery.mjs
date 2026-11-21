@@ -50,13 +50,17 @@ try {
   await utimes(transcript, future, future);
   assert.equal(observe(transcript), "0 0", "recent transcript keeps a quiet terminal active");
   // A harness prints while it works, such as a spinner during a long tool call, and nobody types. Someone may have
-  // opened a shell with Ctrl-b c and left it current. A quiet shell must not hide the harness's output, and a shell
-  // that prints, such as one running a dev server, must not make a quiet harness look busy.
-  tmux("new-session", "-d", "-s", "printing", "while :; do echo working; sleep 0.2; done");
+  // opened another window, such as a shell with Ctrl-b c, and left it current. A quiet one must not hide the harness's
+  // output, and one that prints, such as a dev server, must not make a quiet harness look busy. The launch marks the
+  // harness's window, as here.
+  const harness = (name, command) => {
+    tmux("new-session", "-d", "-s", name, command);
+    tmux("set-option", "-w", "-t", `=${name}:`, "@agent_harness", "1");
+  };
+  harness("printing", "while :; do echo working; sleep 0.2; done");
   tmux("new-window", "-t", "=printing:");
-  tmux("new-session", "-d", "-s", "quiet", "sleep 3600");
-  tmux("new-window", "-t", "=quiet:");
-  tmux("send-keys", "-t", "=quiet:", "while :; do echo serving; sleep 0.2; done", "Enter");
+  harness("quiet", "sleep 3600");
+  tmux("new-window", "-t", "=quiet:", "while :; do echo serving; sleep 0.2; done");
   await setTimeout(2200);
   const printing = observe("", "printing");
   assert.ok(Number(printing.split(" ")[1]) <= 1, `output keeps an unattached terminal active: ${printing}`);
