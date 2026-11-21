@@ -353,7 +353,8 @@ mod tests {
     use super::*;
 
     const FIXTURE: &str = include_str!("../../../tests/fixtures/codex-rollout.jsonl");
-    /// Recorded from Codex 0.167.0, whose messages say where each content item came from.
+    /// Cut from rollouts that Codex 0.167.0 recorded, whose messages say where each
+    /// content item came from. Its turns come from more than one rollout.
     const LABELLED_FIXTURE: &str = include_str!("../../../tests/fixtures/codex-0.167-rollout.jsonl");
 
     #[test]
@@ -426,6 +427,11 @@ mod tests {
                 vec!["Run the LONG job."],
                 // The second prompt was steered in after the model's first output.
                 vec!["Run the LONG job again.", "Also say bye."],
+                // A shell command the operator ran with `!` is a turn of its own.
+                vec![
+                    "<user_shell_command>\n<command>\necho bee180-shell\n</command>\n<result>\nExit code: 0\nDuration: \
+                     0.0880 seconds\nOutput:\nbee180-shell\n\n</result>\n</user_shell_command>"
+                ],
             ]
         );
     }
