@@ -2,7 +2,10 @@
 
 use crate::support;
 
-use std::path::Path;
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use agent::local::home::ControlPlaneHome;
 
@@ -88,7 +91,16 @@ fn only_one_daemon_can_lock_a_home() {
     assert!(second.to_string().contains("already locked"));
 
     drop(first);
-    home.acquire_lock().expect("lock should be released when dropped");
+    // A process that another test starts holds a copy of every descriptor, and so of the lock, until it runs its
+    // program. A lock that is never released still fails here once that has had time to happen.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while let Err(error) = home.acquire_lock() {
+        assert!(
+            Instant::now() < deadline,
+            "lock should be released when dropped: {error}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[cfg(unix)]
