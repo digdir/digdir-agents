@@ -835,6 +835,31 @@ mod tests {
     }
 
     #[test]
+    fn input_sent_after_the_prompts_turn_started_is_not_followed() {
+        // The waited prompt reaches an idle Claude Code and starts its turn at once. Another prompt,
+        // such as one sent without --wait or typed into the attached terminal, is queued behind it.
+        // The waited prompt's turn ends where its own answer ends, not where the later one's does.
+        let lines = jsonl(&[
+            serde_json::json!({"type": "user", "promptSource": "typed", "turnOrigin": "human", "message": {"role": "user", "content": "Write a 300-word essay about ocean tides. Use no tools."}}),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly SECOND."}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Ocean tides are the regular rising and falling of sea levels."}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+            serde_json::json!({"type": "system", "subtype": "turn_duration"}),
+            serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}}),
+        ]);
+        let mut tracker = TurnTracker::default();
+        let seen = lines
+            .lines()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().queued { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        assert_eq!(seen, "-------");
+    }
+
+    #[test]
     fn queued_input_taken_back_starts_no_turn() {
         // Claude Code 2.1.321 moves queued input back to the prompt for editing, all of it or the
         // latest.
