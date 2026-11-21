@@ -835,7 +835,16 @@ fn parse_transcript_suffix(
 
 #[cfg(test)]
 mod tests {
-    use sandbox::execution::ExitStatus;
+    use std::rc::Rc;
+
+    use sandbox::{
+        EnsureSandboxRequest, Platform, RetentionPolicy, RootFilesystem, SandboxHandle, SandboxName, SandboxResources,
+        SandboxService, SandboxSpec,
+        execution::{ExecutionEvent, ExecutionSpec, ExitStatus, Program},
+        image::ImageSource,
+        init::InitSystem,
+        memory,
+    };
 
     use crate::{
         harness,
@@ -935,6 +944,124 @@ mod tests {
         assert_eq!(options[position - 1], "-sq", "{options:?}");
         // No other option may use the quiet form: an unknown one elsewhere should still fail loudly.
         assert_eq!(options.iter().filter(|argument| *argument == "-sq").count(), 1);
+    }
+
+    async fn memory_sandbox() -> (Rc<memory::Provider>, SandboxHandle) {
+        let backend = Rc::new(memory::Provider::new());
+        let spec = SandboxSpec {
+            image: ImageSource::Build {
+                context: std::path::PathBuf::from("."),
+                dockerfile: std::path::PathBuf::from("Dockerfile"),
+                target: None,
+            },
+            platform: Platform::native("linux"),
+            resources: SandboxResources::new(
+                "1".parse().expect("CPU"),
+                "512Mi".parse().expect("memory"),
+                RootFilesystem::layered("1Gi".parse().expect("root filesystem")),
+            ),
+            init_system: InitSystem::Backend,
+            retention_policy: RetentionPolicy::Retain,
+        };
+        let sandbox = SandboxService::new(backend.clone())
+            .ensure(&EnsureSandboxRequest::new(
+                SandboxName::new("conversation").expect("Sandbox name"),
+                spec,
+            ))
+            .await
+            .expect("Sandbox");
+        (backend, sandbox)
+    }
+
+    /// Matches the execution that runs the script named `name` with `arguments` after it.
+    fn runs(name: &'static str, arguments: Vec<String>) -> impl Fn(&ExecutionSpec) -> bool {
+        move |spec| match spec.program() {
+            Program::Command { args, .. } => args.get(2).is_some_and(|script| script == name) && args[3..] == arguments,
+            Program::ImageEntrypoint => false,
+        }
+    }
+
+    fn printed(stdout: &[u8]) -> Vec<ExecutionEvent> {
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stdout(stdout.to_vec().into()),
+            ExecutionEvent::Exited(ExitStatus { code: 0 }),
+        ]
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn following_the_conversation_reads_what_was_added_after_the_mark() {
+        const FIRST: &str = "/home/agent/conversations/first.jsonl";
+        const CLEARED: &str = "/home/agent/conversations/cleared.jsonl";
+        const MARKER: &[u8] = b"{\"type\":\"user\",\"message\":{\"content\":\"[Request interrupted by user]\"}}\n";
+        const ANSWER: &[u8] = b"{\"type\":\"assistant\",\"message\":{\"content\":[]}}\n";
+        let follows = |path: &str, from: usize| {
+            runs(
+                "agent-session-transcript-follow",
+                vec![path.into(), from.to_string(), super::FOLLOW_READ_BYTES.to_string()],
+            )
+        };
+        let (backend, sandbox) = memory_sandbox().await;
+        let mut session = named_session();
+        assert!(
+            harness::TurnTracker::new(session.harness).is_some(),
+            "the test harness has a tracker"
+        );
+        session.status.reported.harness_transcript_path = Some(FIRST.into());
+
+        // The conversation is 120 bytes long when the prompt is delivered, older markers included.
+        backend.queue_execution_events_matching(
+            runs("agent-session-transcript-size", vec![FIRST.into()]),
+            printed(b"120\n"),
+        );
+        let mut mark = super::mark_conversation(&session, &sandbox).await.expect("mark");
+
+        // The answer so far, and a marker still being written.
+        backend.queue_execution_events_matching(follows(FIRST, 121), printed(&[ANSWER, &MARKER[..10]].concat()));
+        let signals = super::follow_conversation(&session, &sandbox, &mut mark)
+            .await
+            .expect("follow");
+        assert!(!signals.interrupted, "a marker still being written");
+
+        backend.queue_execution_events_matching(follows(FIRST, 121 + ANSWER.len()), printed(MARKER));
+        let signals = super::follow_conversation(&session, &sandbox, &mut mark)
+            .await
+            .expect("follow");
+        assert!(signals.interrupted, "the marker, read again once it is complete");
+
+        // `/clear` starts another conversation, all of which came after the mark.
+        backend.queue_execution_events_matching(
+            runs("agent-session-transcript-size", vec![FIRST.into()]),
+            printed(b"200\n"),
+        );
+        let mut mark = super::mark_conversation(&session, &sandbox).await.expect("mark");
+        session.status.reported.harness_transcript_path = Some(CLEARED.into());
+        backend.queue_execution_events_matching(follows(CLEARED, 1), printed(MARKER));
+        let signals = super::follow_conversation(&session, &sandbox, &mut mark)
+            .await
+            .expect("follow");
+        assert!(signals.interrupted, "a new conversation is read from its start");
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn a_harness_whose_reports_say_it_all_has_no_conversation_followed() {
+        let (backend, sandbox) = memory_sandbox().await;
+        let mut session = named_session();
+        session.status.reported.harness_transcript_path = Some("/home/agent/conversations/rollout.jsonl".into());
+        let untracked = crate::Harness::ALL
+            .into_iter()
+            .filter(|harness| harness::TurnTracker::new(*harness).is_none())
+            .collect::<Vec<_>>();
+        assert_ne!(untracked, []);
+        for harness in untracked {
+            session.harness = harness;
+            let mut mark = super::mark_conversation(&session, &sandbox).await.expect("mark");
+            let signals = super::follow_conversation(&session, &sandbox, &mut mark)
+                .await
+                .expect("follow");
+            assert!(!signals.interrupted);
+        }
+        assert!(backend.execution_specs().is_empty(), "{:?}", backend.execution_specs());
     }
 
     #[test]
