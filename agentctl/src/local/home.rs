@@ -250,3 +250,22 @@ fn secure_directory_for_host(_path: &Path) -> Result<(), Error> {
 fn secure_file_for_host(_path: &Path) -> Result<(), Error> {
     Err(Error::Invalid("unsupported host operating system".into()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dropped_lock_frees_the_home_while_a_copy_of_its_file_is_open() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let home = ControlPlaneHome::resolve(Some(temporary.path())).expect("home");
+        let lock = home.acquire_lock().expect("home lock");
+        // A child that another thread is starting holds such a copy until it runs its program.
+        let copy = lock._file.try_clone().expect("copy of the lock's file");
+
+        drop(lock);
+
+        home.acquire_lock().expect("the home is free once its lock is dropped");
+        drop(copy);
+    }
+}
