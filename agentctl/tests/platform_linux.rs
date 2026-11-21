@@ -1321,22 +1321,18 @@ fn is_sudo(spec: &sandbox::execution::ExecutionSpec, expected: &[&str]) -> bool 
     )
 }
 
-/// Setup on a guest whose image's init has not started systemd yet, with no Podman whose setup
-/// waits for it first, still waits for systemd before it grants `/dev/kvm`, so that an image's
-/// rule for the device cannot undo the grant, and before it reads the workspace clone.
-#[tokio::test(flavor = "local", start_paused = true)]
-async fn linux_setup_waits_for_a_booting_systemd_without_podman() {
-    let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
+/// An agent whose image initializes the sandbox, with its files in `directory`.
+fn image_init_record(directory: &std::path::Path) -> AgentRecord {
+    let home = directory.join("home");
     std::fs::create_dir_all(&home).expect("home directory");
-    std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
+    std::fs::write(directory.join("instructions.md"), "test instructions").expect("instruction file");
     let mut resource = support::agent("worker");
     resource.metadata.generation = 1;
     resource.spec.home = Some(HomeSpec { source: home });
     resource.spec.sandbox.init_system = InitSystem::Image;
-    let record = AgentRecord {
+    AgentRecord {
         id: "8d1b0d3e-3c55-4a8f-9e0a-2f3f1f6c9b21".parse().expect("Agent ID"),
-        source_directory: PathBuf::from(directory.path()),
+        source_directory: PathBuf::from(directory),
         manifest_path: None,
         env_file: None,
         agent: resource,
@@ -1346,7 +1342,16 @@ async fn linux_setup_waits_for_a_booting_systemd_without_podman() {
         lifetime: agent::Lifetime::UntilDeleted,
         bindings: std::collections::BTreeMap::new(),
         exposed_files: std::collections::BTreeSet::new(),
-    };
+    }
+}
+
+/// Setup on a guest whose image's init has not started systemd yet, with no Podman whose setup
+/// waits for it first, still waits for systemd before it grants `/dev/kvm`, so that an image's
+/// rule for the device cannot undo the grant, and before it reads the workspace clone.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn linux_setup_waits_for_a_booting_systemd_without_podman() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = image_init_record(directory.path());
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
         backend.queue_execution_events_matching(
@@ -1396,6 +1401,52 @@ async fn linux_setup_waits_for_a_booting_systemd_without_podman() {
         setup.workspace,
         Some(agent::sandbox::WorkspaceClone::Cloning),
         "the workspace clone is reported"
+    );
+}
+
+/// Setup on a guest that booted longer ago than an image's init has to start systemd answers at
+/// once that it has none, so an image whose init is something else, but that ships `systemctl`,
+/// does not wait on every pass.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn linux_setup_long_after_boot_does_not_wait_for_a_systemd_the_image_lacks() {
+    let directory = TempDir::new().expect("temporary directory");
+    let record = image_init_record(directory.path());
+    let backend = Rc::new(memory::Provider::new());
+    // More answers than any wait for systemd polls.
+    for _ in 0..1000 {
+        backend.queue_execution_events_matching(
+            |spec| is_presence_check(spec, "-d", "/run/systemd/system"),
+            completed(1),
+        );
+    }
+    for _ in 0..10 {
+        backend.queue_execution_events_matching(
+            |spec| {
+                matches!(
+                    spec.program(),
+                    Program::Command { executable, args }
+                        if executable.as_str() == "/bin/cat" && args == &["/proc/uptime"]
+                )
+            },
+            vec![
+                ExecutionEvent::Started { process_id: None },
+                ExecutionEvent::Stdout("3600.25 7000.50\n".into()),
+                ExecutionEvent::Exited(ExitStatus { code: 0 }),
+            ],
+        );
+    }
+    let sandbox = claude_sandbox_on(backend.clone(), &record, 1).await;
+    let started = tokio::time::Instant::now();
+
+    let setup = Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &declared(&record), &NO_ACCOUNTS, &setup_phase())
+        .await
+        .expect("setup");
+
+    assert_eq!(started.elapsed(), std::time::Duration::ZERO, "setup waited for systemd");
+    assert_eq!(
+        setup.workspace, None,
+        "a guest without systemd reports no workspace clone"
     );
 }
 

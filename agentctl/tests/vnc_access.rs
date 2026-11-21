@@ -415,6 +415,34 @@ async fn an_image_without_the_descriptor_is_left_alone_when_no_access_is_declare
     );
 }
 
+/// An image without VNC access has no units to withdraw, so the withdrawal does not wait for a
+/// systemd that the image's init may never start.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn an_image_without_the_descriptor_is_left_alone_without_waiting_for_systemd() {
+    let fixture = Fixture::new();
+    let mut record = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", false);
+    record.agent.spec.sandbox.init_system = InitSystem::Image;
+    fixture.store(&record, 0).await;
+    let sandbox = fixture.sandbox(&record).await;
+    // More answers than any wait for systemd polls.
+    for _ in 0..1000 {
+        fixture
+            .backend
+            .queue_execution_events_matching(is_test("/run/systemd/system", "-d"), exited(1));
+    }
+    fixture
+        .backend
+        .queue_execution_events_matching(is_test(DESCRIPTOR, "-f"), exited(1));
+    let started = tokio::time::Instant::now();
+
+    assert!(!fixture.access.reconcile(&record, &sandbox).await.expect("pass"));
+    assert_eq!(
+        started.elapsed(),
+        std::time::Duration::ZERO,
+        "the withdrawal waited for systemd"
+    );
+}
+
 #[tokio::test(flavor = "local")]
 async fn describing_an_agent_without_declared_access_names_the_remedy() {
     let fixture = Fixture::new();
