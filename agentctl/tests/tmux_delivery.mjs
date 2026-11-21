@@ -50,13 +50,20 @@ try {
   await utimes(transcript, future, future);
   assert.equal(observe(transcript), "0 0", "recent transcript keeps a quiet terminal active");
   // A harness prints while it works, such as a spinner during a long tool call, and nobody types. Someone may have
-  // left a quiet window of their own current, such as a shell, which must not hide the harness's output.
+  // opened a shell with Ctrl-b c and left it current. A quiet shell must not hide the harness's output, and a shell
+  // that prints, such as one running a dev server, must not make a quiet harness look busy.
   tmux("new-session", "-d", "-s", "printing", "while :; do echo working; sleep 0.2; done");
-  tmux("new-window", "-t", "=printing:", "sleep 3600");
+  tmux("new-window", "-t", "=printing:");
+  tmux("new-session", "-d", "-s", "quiet", "sleep 3600");
+  tmux("new-window", "-t", "=quiet:");
+  tmux("send-keys", "-t", "=quiet:", "while :; do echo serving; sleep 0.2; done", "Enter");
   await setTimeout(2200);
   const printing = observe("", "printing");
   assert.ok(Number(printing.split(" ")[1]) <= 1, `output keeps an unattached terminal active: ${printing}`);
+  const quiet = observe("", "quiet");
+  assert.ok(Number(quiet.split(" ")[1]) >= 2, `a shell's output does not keep a quiet harness active: ${quiet}`);
   tmux("kill-session", "-t", "=printing");
+  tmux("kill-session", "-t", "=quiet");
 
   const stop = (target, environment = env) =>
     spawn("/bin/sh", ["-c", stopScript, "stop", target], { env: environment, stdio: "inherit" });
