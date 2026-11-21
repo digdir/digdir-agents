@@ -8,8 +8,10 @@
 //! compaction summaries and text the client injects on the user's behalf
 //! (slash-command echoes, background task notifications, system reminders,
 //! interruption markers).
-//! Input the operator sends while a turn is running is not a `user` entry at
-//! all: it is an `attachment` of type `queued_command` absorbed into the turn.
+//! Input the operator sends while a turn is running is queued. During a tool
+//! call it is absorbed into the turn as an `attachment` of type
+//! `queued_command`. Otherwise it waits for the turn to end and starts a turn
+//! of its own as a `user` entry.
 
 use std::collections::HashMap;
 
@@ -83,29 +85,148 @@ fn is_interruption(entry: &Value) -> bool {
         && user_text(entry).is_some_and(|text| is_interruption_marker(&text))
 }
 
-/// Follows a transcript as it grows, for the turn endings Claude Code fires no hook for.
+/// Follows a transcript as it grows, for what Claude Code fires no hook for: a turn the operator
+/// ended, and operator input queued to start a turn of its own.
+///
+/// Claude Code writes `queue-operation` lines at once and conversation lines in batches, so the
+/// `dequeue` that takes queued input sits above the end of the turn before it. What it writes
+/// after that end shows whether the input started a turn.
 #[derive(Debug, Default)]
 pub(crate) struct TurnTracker {
+    /// Operator input queued and not yet seen to start a turn: `enqueue`s less the operations that
+    /// take it out of the queue without one, such as a `remove` when it is absorbed into the
+    /// running turn.
+    queued: u32,
+    /// What the input the latest `dequeue` took started. A `dequeue` doesn't say whose input it
+    /// takes, and Claude Code takes its own input and the operator's in the order they came.
+    taken: Taken,
+    /// The latest turn the conversation shows has ended. Input is queued only while a turn runs,
+    /// so a turn is taken to run at the mark.
+    idle: bool,
+    /// The operator ended the latest turn that ended.
     interrupted: bool,
+}
+
+/// What input taken from the queue started.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum Taken {
+    /// Nothing that has not ended, or a turn for Claude Code's own input.
+    #[default]
+    Nothing,
+    /// Not known yet, since the turn that ran when the input was taken has not ended.
+    BeforeEnd,
+    /// Not known yet. The turn before has ended, so the next line of the conversation shows it.
+    AfterEnd,
+    /// A turn that has not ended yet.
+    Turn,
 }
 
 impl TurnTracker {
     /// Folds complete transcript lines. Lines that are not JSON objects are skipped.
     pub(crate) fn push(&mut self, lines: &[u8]) {
         for line in lines.split(|byte| *byte == b'\n') {
-            if let Ok(entry) = serde_json::from_slice::<Value>(line)
-                && is_interruption(&entry)
-            {
-                self.interrupted = true;
+            if let Ok(entry) = serde_json::from_slice::<Value>(line) {
+                self.fold(&entry);
             }
+        }
+    }
+
+    fn fold(&mut self, entry: &Value) {
+        if entry.get("type").and_then(Value::as_str) == Some("queue-operation") {
+            self.fold_queue_operation(entry);
+        } else if let Some(origin) = turn_origin(entry) {
+            self.idle = false;
+            if origin == "task_notification" {
+                // Claude Code took its own input, such as a notification that a background task
+                // finished, and the operator's stays queued.
+                if matches!(self.taken, Taken::BeforeEnd | Taken::AfterEnd) {
+                    self.taken = Taken::Nothing;
+                }
+            } else if self.queued > 0 {
+                // Claude Code may take all the queued input into the one turn.
+                self.queued = 0;
+                self.taken = Taken::Turn;
+            }
+        } else if let Some(interrupted) = ends_turn(entry) {
+            self.idle = true;
+            self.taken = match self.taken {
+                Taken::BeforeEnd => Taken::AfterEnd,
+                Taken::Turn => Taken::Nothing,
+                taken => taken,
+            };
+            self.interrupted = interrupted;
+        } else if self.taken == Taken::AfterEnd && is_conversation(entry) {
+            // The input started no turn, such as a slash command Claude Code warns it doesn't know.
+            self.queued = self.queued.saturating_sub(1);
+            self.taken = Taken::Nothing;
+        }
+    }
+
+    fn fold_queue_operation(&mut self, entry: &Value) {
+        // Claude Code queues its own input too, and runs it in a turn of its own that the
+        // operator's wait should not follow.
+        let content = entry.get("content");
+        if content.and_then(Value::as_str).is_some_and(is_injected) {
+            return;
+        }
+        match entry.get("operation").and_then(Value::as_str) {
+            Some("enqueue") => {
+                // Claude Code leaves the text out at times, such as while it screens the input.
+                if content.is_some() {
+                    self.queued = self.queued.saturating_add(1);
+                }
+            }
+            Some("dequeue") => {
+                if self.queued > 0 {
+                    self.taken = if self.idle { Taken::AfterEnd } else { Taken::BeforeEnd };
+                }
+            }
+            // Input queued before the mark can be taken too, so the count stops at zero.
+            _ => self.queued = self.queued.saturating_sub(1),
         }
     }
 
     pub(crate) const fn signals(&self) -> TurnSignals {
         TurnSignals {
             interrupted: self.interrupted,
-            queued: false,
+            queued: self.queued > 0 || matches!(self.taken, Taken::Turn),
         }
+    }
+}
+
+/// Who started the turn of the main conversation that `entry` starts, if it starts one: `human`
+/// for the operator's prompt or slash command, or such as `task_notification` for Claude Code's
+/// own input.
+fn turn_origin(entry: &Value) -> Option<&str> {
+    if flag(entry, "isSidechain") || entry.get("type").and_then(Value::as_str) != Some("user") {
+        return None;
+    }
+    entry.get("turnOrigin").and_then(Value::as_str)
+}
+
+/// Whether `entry` is a line of the main conversation, other than the record of how long a turn
+/// took that Claude Code writes after its end.
+fn is_conversation(entry: &Value) -> bool {
+    !flag(entry, "isSidechain")
+        && match entry.get("type").and_then(Value::as_str) {
+            Some("user" | "assistant") => true,
+            Some("system") => entry.get("subtype").and_then(Value::as_str) != Some("turn_duration"),
+            _ => false,
+        }
+}
+
+/// Whether `entry` ends a turn of the main conversation, and if so whether the operator ended it.
+/// Claude Code writes `stop_hook_summary` after the `Stop` hooks, which agentctl always registers,
+/// an API error message when the turn fails, and the interruption marker when the operator ends it.
+fn ends_turn(entry: &Value) -> Option<bool> {
+    if flag(entry, "isSidechain") {
+        return None;
+    }
+    match entry.get("type").and_then(Value::as_str) {
+        Some("system") => (entry.get("subtype").and_then(Value::as_str) == Some("stop_hook_summary")).then_some(false),
+        Some("assistant") => flag(entry, "isApiErrorMessage").then_some(false),
+        Some("user") => is_interruption(entry).then_some(true),
+        _ => None,
     }
 }
 
