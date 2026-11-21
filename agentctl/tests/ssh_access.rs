@@ -13,6 +13,7 @@ use agent::{
 use sandbox::{
     EnsureSandboxRequest, Platform, SandboxHandle, SandboxPath, SandboxService,
     execution::{ExecutionEvent, ExecutionSpec, ExitStatus, Program},
+    init::InitSystem,
     memory,
 };
 use tempfile::TempDir;
@@ -378,6 +379,58 @@ async fn an_image_without_systemd_support_fails_permanently() {
         );
         assert!(!fixture.keys.contains(record.id));
     }
+}
+
+/// An agent whose image's init boots the guest, as an image providing systemd needs.
+const fn image_init(mut record: AgentRecord) -> AgentRecord {
+    record.agent.spec.sandbox.init_system = InitSystem::Image;
+    record
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_guest_still_starting_systemd_gets_access_once_systemd_runs() {
+    let fixture = Fixture::new();
+    let record = image_init(record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", true));
+    fixture.store(&record, 0).await;
+    let sandbox = fixture.sandbox(&record).await;
+    // Setup can run after the image's init has become PID 1 but before systemd marks itself running.
+    fixture
+        .backend
+        .queue_execution_events_matching(is_systemd_running_check, exited(1));
+    queue_valid_environment_policy(&fixture.backend);
+
+    assert!(
+        fixture
+            .access
+            .reconcile(&record, &sandbox)
+            .await
+            .expect("access once systemd runs")
+    );
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn an_image_whose_init_never_becomes_systemd_fails_permanently() {
+    let fixture = Fixture::new();
+    let record = image_init(record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", true));
+    fixture.store(&record, 0).await;
+    let sandbox = fixture.sandbox(&record).await;
+    // More answers than any wait for systemd polls.
+    for _ in 0..1000 {
+        fixture
+            .backend
+            .queue_execution_events_matching(is_systemd_running_check, exited(1));
+    }
+
+    let error = fixture
+        .access
+        .reconcile(&record, &sandbox)
+        .await
+        .expect_err("an init that is not systemd");
+    assert!(
+        matches!(&error, Error::Invalid(message) if message.contains("systemd is not the running init")),
+        "{error}"
+    );
+    assert!(!fixture.keys.contains(record.id));
 }
 
 #[tokio::test(flavor = "local")]

@@ -28,7 +28,7 @@ use home::{archive_home, sync_home};
 use kvm::prepare_nested_sandboxes;
 use podman::{configure_podman, point_podman_at_socket};
 use sources::{read_instructions, read_skills};
-use systemd::{SYSTEMCTL, SYSTEMD_RUNNING, systemd_available, wait_for_systemd};
+use systemd::{SYSTEMCTL, systemd_available, systemd_is_init, wait_for_systemd};
 use volumes::mount_writable_volumes;
 
 /// The platform-owned sandbox user every session, Execution and SSH login runs as.

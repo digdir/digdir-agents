@@ -13,7 +13,7 @@ use ::sandbox::{SandboxHandle, SandboxPath, execution::ExecutionSpec};
 use crate::{Error, ssh::GuestMaterial};
 
 use super::{
-    super::files::write_if_changed, SYSTEMCTL, SYSTEMD_RUNNING, path_exists, run_checked, systemd_available,
+    super::files::write_if_changed, SYSTEMCTL, path_exists, run_checked, systemd_available, systemd_is_init,
     wait_for_systemd,
 };
 
@@ -56,21 +56,23 @@ const MAX_ENVIRONMENT_ENTRIES: usize = 1000;
 /// # Errors
 ///
 /// Returns `Error::Invalid` naming the missing piece: the image is immutable for
-/// the incarnation, so retrying cannot change that.
+/// the incarnation, so retrying cannot change that. A guest still starting
+/// systemd is given the time [`systemd_is_init`] allows before it counts as one
+/// without systemd.
 pub(crate) async fn verify_server(sandbox: &SandboxHandle) -> Result<(), Error> {
     let contract = [
         ("-x", SERVER, "/usr/sbin/sshd is missing"),
         ("-x", SYSTEMCTL, "systemctl is missing"),
-        (
-            "-d",
-            SYSTEMD_RUNNING,
-            "systemd is not the running init, and the unit needs it",
-        ),
     ];
     for (test, path, what) in contract {
         if !path_exists(sandbox, test, path).await? {
             return Err(Error::Invalid(crate::ssh::image_contract_missing(what)));
         }
+    }
+    if !systemd_is_init(sandbox).await? {
+        return Err(Error::Invalid(crate::ssh::image_contract_missing(
+            "systemd is not the running init, and the unit needs it",
+        )));
     }
     Ok(())
 }
