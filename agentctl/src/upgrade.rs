@@ -129,7 +129,7 @@ impl InstallPaths {
                 Err(std::fs::TryLockError::Error(error)) => return Err(Error::Io(error)),
             }
         }
-        Ok(InstallLock { _file: file })
+        Ok(InstallLock { file })
     }
 
     /// Whether an installer or updater holds the lock that [`InstallPaths::lock`] takes. Creates
@@ -154,7 +154,16 @@ impl InstallPaths {
 
 #[derive(Debug)]
 pub struct InstallLock {
-    _file: File,
+    file: File,
+}
+
+impl Drop for InstallLock {
+    /// Unlocks the file before it is closed. The lock belongs to the open file, and a child that
+    /// another thread is starting holds a copy of it until it runs its program, so closing alone
+    /// would leave the lock held until then.
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 /// Non-secret facts about a managed installation.
@@ -1327,8 +1336,11 @@ mod tests {
 
         let lock = paths.lock().await.expect("lock");
         assert!(paths.update_running().expect("held"));
+        // A child that another thread is starting holds such a copy until it runs its program.
+        let copy = lock.file.try_clone().expect("copy of the lock's file");
         drop(lock);
         assert!(!paths.update_running().expect("released"));
+        drop(copy);
     }
 
     #[test]
