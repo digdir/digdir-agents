@@ -77,6 +77,69 @@ fi
 ./agentctl/package.sh "${target_archive}" "${target_binaries}"
 
 if [ "${RUNNER_OS:-}" = "Windows" ]; then
+  # EXPERIMENT 2 for #536: homes under %LOCALAPPDATA%\Temp with Defender real-time protection on.
+  export AGENT_SMOKE_BINARIES="$(cygpath -w "${target_binaries}")"
+  # shellcheck disable=SC2016 # PowerShell expands its own environment variables.
+  pwsh -NoProfile -Command '
+    $ErrorActionPreference = "Continue"
+    $agentctl = Join-Path $env:AGENT_SMOKE_BINARIES "agentctl.exe"
+    function Show-Defender {
+      try {
+        Get-MpComputerStatus | Select-Object AMRunningMode, AMServiceEnabled, AntivirusEnabled, RealTimeProtectionEnabled, OnAccessProtectionEnabled, BehaviorMonitorEnabled, IoavProtectionEnabled | Format-List | Out-String | Write-Host
+        $pref = Get-MpPreference
+        Write-Host "DisableRealtimeMonitoring=$($pref.DisableRealtimeMonitoring) ExclusionPath=$($pref.ExclusionPath -join ";") ExclusionProcess=$($pref.ExclusionProcess -join ";")"
+      } catch { Write-Host "Defender status unavailable: $_" }
+      & fltmc | Write-Host
+    }
+    function Stop-Agentd {
+      Get-CimInstance Win32_Process |
+        Where-Object { $_.Name -eq "agentd.exe" -and $_.CommandLine -like "*$env:AGENT_SMOKE_ID*" } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+      Start-Sleep -Seconds 1
+    }
+    $failed = @()
+    function Try-Homes($round) {
+      $temp = Join-Path $env:LOCALAPPDATA "Temp"
+      $homes = [ordered]@{
+        "temp" = Join-Path $temp "h-$env:AGENT_SMOKE_ID-$round"
+        "temp-space-nonascii" = Join-Path $temp "h $env:AGENT_SMOKE_ID $([char]0x00F8)-$round"
+        "profile" = Join-Path $env:USERPROFILE "h-$env:AGENT_SMOKE_ID-$round"
+      }
+      foreach ($name in $homes.Keys) {
+        $home_ = $homes[$name]
+        Write-Host "=== $round/$name : $home_"
+        foreach ($attempt in 1, 2) {
+          $started = Get-Date
+          & $agentctl --home $home_ get agents
+          $code = $LASTEXITCODE
+          Write-Host "--- $round/$name attempt $attempt exit $code after $(((Get-Date) - $started).TotalSeconds)s"
+          if ($code -ne 0) { $script:failed += "$round/$name/$attempt" }
+        }
+        $log = Join-Path $home_ "agentd.log"
+        if (Test-Path $log) { Get-Content $log | Where-Object { $_ -notmatch "sea_orm_migration" } | Select-Object -Last 15 | Write-Host }
+        Stop-Agentd
+        $socket = Join-Path $home_ "run\agentd.sock"
+        if (Test-Path $socket) {
+          try { Remove-Item -Force $socket -ErrorAction Stop; Write-Host "--- $round/$name socket deleted after kill" }
+          catch { Write-Host "--- $round/$name socket NOT deletable after kill: $_"; $script:failed += "$round/$name/delete" }
+        }
+      }
+    }
+    Show-Defender
+    Try-Homes "as-is"
+    try {
+      Set-MpPreference -DisableRealtimeMonitoring $false -DisableBehaviorMonitoring $false -DisableIOAVProtection $false -ErrorAction Stop
+      foreach ($path in (Get-MpPreference).ExclusionPath) { if ($path) { Remove-MpPreference -ExclusionPath $path } }
+      foreach ($process in (Get-MpPreference).ExclusionProcess) { if ($process) { Remove-MpPreference -ExclusionProcess $process } }
+      Start-Sleep -Seconds 5
+    } catch { Write-Host "could not turn on Defender: $_" }
+    Show-Defender
+    Try-Homes "realtime"
+    Stop-Agentd
+    if ($failed.Count -gt 0) { throw "EXPERIMENT: failed: $($failed -join ", ")" }
+    Write-Host "EXPERIMENT: all passed"
+  '
+
   # Standalone installation
 
   standalone_root="${files_root}/standalone"
