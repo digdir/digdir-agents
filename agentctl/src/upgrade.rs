@@ -1319,6 +1319,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::used_underscore_binding, reason = "the fix renames the field")]
     async fn update_running_reports_a_held_install_lock() {
         let temporary = tempfile::TempDir::new().expect("temporary directory");
         let paths = InstallPaths::new(temporary.path().join("install"), temporary.path().join("bin")).expect("paths");
@@ -1327,8 +1328,11 @@ mod tests {
 
         let lock = paths.lock().await.expect("lock");
         assert!(paths.update_running().expect("held"));
+        // A child that another thread is starting holds such a copy until it runs its program.
+        let copy = lock._file.try_clone().expect("copy of the lock's file");
         drop(lock);
         assert!(!paths.update_running().expect("released"));
+        drop(copy);
     }
 
     #[test]
