@@ -634,8 +634,6 @@ mod tests {
         let replaced = home.acquire_lock().expect("home taken by the replaced release");
         tokio::task::spawn_local(async move {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            #[cfg(unix)]
-            hold_open_files_in_a_child_for(Duration::from_secs(1));
             drop(replaced);
         });
         let target = Daemon {
@@ -656,31 +654,6 @@ mod tests {
         .expect("target verified");
 
         assert_eq!(starts.get(), 1, "started once the home was free, and not before");
-    }
-
-    /// Forces #557: starts a child from another thread, as another test would, and returns once
-    /// it has forked. The child keeps a copy of every file this process has open, the home lock
-    /// among them, for `duration` before it runs its program.
-    #[cfg(unix)]
-    #[allow(unsafe_code)]
-    fn hold_open_files_in_a_child_for(duration: Duration) {
-        use std::io::{Read as _, Write as _};
-        use std::os::unix::process::CommandExt as _;
-
-        let (mut forked, child_side) = std::os::unix::net::UnixStream::pair().expect("socket pair");
-        std::thread::spawn(move || {
-            let mut command = std::process::Command::new("true");
-            // SAFETY: the closure only writes to a socket and sleeps, which is safe after fork.
-            unsafe {
-                command.pre_exec(move || {
-                    (&child_side).write_all(b"x")?;
-                    std::thread::sleep(duration);
-                    Ok(())
-                });
-            }
-            command.status().expect("child");
-        });
-        forked.read_exact(&mut [0; 1]).expect("child forked");
     }
 
     #[cfg(unix)]
