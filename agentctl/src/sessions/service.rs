@@ -9,7 +9,7 @@ use crate::{Error, control_plane, control_plane::WaitPolicy};
 
 use super::{
     AgentSandboxes, AttachTarget, ConversationMark, LifecycleState, NewSession, Session, SessionId, SessionName,
-    SessionRequest, SessionRuntime, SharedStore, State, Turn, Wakeup,
+    SessionRequest, SessionRuntime, SharedStore, State, Turn, TurnSignals, Wakeup,
 };
 
 /// Ceiling for completion waiting after prompt submission.
@@ -145,9 +145,10 @@ impl Service {
     /// waits for it to advance with identical waiting activity in two consecutive
     /// polls, 250 ms apart. Work observed during settling requires another
     /// completion. This is a timing heuristic, not identification of an answer
-    /// to this prompt. A turn the operator interrupted, which some harnesses do
-    /// not report, also ends the wait once what the conversation gained since
-    /// delivery shows it, within about a second.
+    /// to this prompt. What the conversation gained since delivery adds what some
+    /// harnesses do not report: a turn the operator interrupted ends the wait,
+    /// and a completion settled while input waits to start a turn of its own does
+    /// not. It is read about once a second, and once more as a completion settles.
     /// Read the conversation separately with [`Self::turns`].
     ///
     /// In both modes delivery waits for input readiness. The runtime may establish
@@ -183,7 +184,7 @@ impl Service {
         // Without a mark the wait still follows the harness's reports.
         let mark = if wait {
             self.runtime
-                .mark_conversation(&session, &sandbox)
+                .mark_conversation(&session, &sandbox, prompt)
                 .await
                 .unwrap_or_else(|error| {
                     tracing::debug!(%error, session = %id, "could not mark the conversation to follow");
@@ -240,19 +241,31 @@ impl Service {
                 State::Archiving => activity.phase == super::Phase::WaitingForInput,
                 State::Starting | State::Working => false,
             };
+            let now = tokio::time::Instant::now();
             if activity.turns > completed_before && waiting {
-                if settling.as_ref() == Some(activity) {
-                    return Ok(());
+                if settling.as_ref() != Some(activity) {
+                    settling = Some(activity.clone());
+                    // Read again as soon as the completion has settled.
+                    follow_at = now;
+                } else if now >= follow_at {
+                    // A harness can report input it queued behind the running turn as submitted at
+                    // once, so the completion may be the running turn's. The conversation shows
+                    // whether the input's own turn follows, and then when it ends.
+                    follow_at = now + CONVERSATION_POLL;
+                    if !self.follow(&current, sandbox, &mut mark).await.queued {
+                        return Ok(());
+                    }
                 }
-                settling = Some(activity.clone());
             } else {
                 // A new turn can already be running when the previous completion
                 // is observed. Its permission waits must not satisfy this wait.
                 completed_before = completed_before.max(activity.turns);
                 settling = None;
-                if tokio::time::Instant::now() >= follow_at {
-                    follow_at = tokio::time::Instant::now() + CONVERSATION_POLL;
-                    if self.interrupted(&current, sandbox, &mut mark).await {
+                if now >= follow_at {
+                    follow_at = now + CONVERSATION_POLL;
+                    // An interrupted turn that queued input follows is not the end of the prompt's.
+                    let signals = self.follow(&current, sandbox, &mut mark).await;
+                    if signals.interrupted && !signals.queued {
                         return Ok(());
                     }
                 }
@@ -261,16 +274,16 @@ impl Service {
         }
     }
 
-    /// Whether the conversation shows that the turn ended by interruption, which the harness may not
-    /// report. A conversation that cannot be read leaves the wait to the harness's reports.
-    async fn interrupted(&self, session: &Session, sandbox: &SandboxHandle, mark: &mut ConversationMark) -> bool {
-        match self.runtime.follow_conversation(session, sandbox, mark).await {
-            Ok(signals) => signals.interrupted,
-            Err(error) => {
+    /// What the conversation shows about turns the harness may not report. A conversation that
+    /// cannot be read shows nothing, which leaves the wait to the harness's reports.
+    async fn follow(&self, session: &Session, sandbox: &SandboxHandle, mark: &mut ConversationMark) -> TurnSignals {
+        self.runtime
+            .follow_conversation(session, sandbox, mark)
+            .await
+            .unwrap_or_else(|error| {
                 tracing::debug!(%error, session = %session.id, "could not follow the conversation");
-                false
-            }
-        }
+                TurnSignals::default()
+            })
     }
 
     /// Waits for a report or runtime-observed input readiness. A harness may

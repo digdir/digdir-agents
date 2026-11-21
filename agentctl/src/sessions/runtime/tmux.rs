@@ -523,8 +523,9 @@ impl super::SessionRuntime for Tmux {
         &'a self,
         session: &'a Session,
         sandbox: &'a SandboxHandle,
+        prompt: &'a str,
     ) -> ::sandbox::LocalFuture<'a, Result<ConversationMark, Error>> {
-        Box::pin(mark_conversation(session, sandbox))
+        Box::pin(mark_conversation(session, sandbox, prompt))
     }
 
     fn follow_conversation<'a>(
@@ -684,9 +685,13 @@ const FOLLOW_READ_BYTES: usize = 4 * 1024 * 1024;
 
 /// Marks the end of the transcript the session reported. A transcript the harness has not
 /// created yet ends at its start.
-async fn mark_conversation(session: &Session, sandbox: &SandboxHandle) -> Result<ConversationMark, Error> {
+async fn mark_conversation(
+    session: &Session,
+    sandbox: &SandboxHandle,
+    prompt: &str,
+) -> Result<ConversationMark, Error> {
     const SCRIPT: &str = "[ -f \"$1\" ] || { echo 0; exit 0; }; exec /usr/bin/stat -c %s -- \"$1\"";
-    let Some(tracker) = harness::TurnTracker::new(session.harness) else {
+    let Some(tracker) = harness::TurnTracker::new(session.harness, prompt) else {
         return Ok(ConversationMark::default());
     };
     let path = session.status.reported.harness_transcript_path.clone();
@@ -973,6 +978,7 @@ mod tests {
         const CLEARED: &str = "/home/agent/conversations/cleared.jsonl";
         const MARKER: &[u8] = b"{\"type\":\"user\",\"message\":{\"content\":\"[Request interrupted by user]\"}}\n";
         const ANSWER: &[u8] = b"{\"type\":\"assistant\",\"message\":{\"content\":[]}}\n";
+        const STARTED_THEN_QUEUED: &[u8] = b"{\"type\":\"user\",\"turnOrigin\":\"human\",\"message\":{\"role\":\"user\",\"content\":\"Write a poem.\"}}\n{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"Now a limerick.\"}\n";
         let follows = |path: &str, from: usize| {
             runs(
                 "agent-session-transcript-follow",
@@ -982,7 +988,7 @@ mod tests {
         let (backend, sandbox) = memory_sandbox().await;
         let mut session = named_session();
         assert!(
-            harness::TurnTracker::new(session.harness).is_some(),
+            harness::TurnTracker::new(session.harness, "").is_some(),
             "the test harness has a tracker"
         );
         session.status.reported.harness_transcript_path = Some(FIRST.into());
@@ -992,7 +998,9 @@ mod tests {
             runs("agent-session-transcript-size", vec![FIRST.into()]),
             printed(b"120\n"),
         );
-        let mut mark = super::mark_conversation(&session, &sandbox).await.expect("mark");
+        let mut mark = super::mark_conversation(&session, &sandbox, "Write a poem.")
+            .await
+            .expect("mark");
 
         // The answer so far, and a marker still being written.
         backend.queue_execution_events_matching(follows(FIRST, 121), printed(&[ANSWER, &MARKER[..10]].concat()));
@@ -1012,13 +1020,30 @@ mod tests {
             runs("agent-session-transcript-size", vec![FIRST.into()]),
             printed(b"200\n"),
         );
-        let mut mark = super::mark_conversation(&session, &sandbox).await.expect("mark");
+        let mut mark = super::mark_conversation(&session, &sandbox, "Write a poem.")
+            .await
+            .expect("mark");
         session.status.reported.harness_transcript_path = Some(CLEARED.into());
         backend.queue_execution_events_matching(follows(CLEARED, 1), printed(MARKER));
         let signals = super::follow_conversation(&session, &sandbox, &mut mark)
             .await
             .expect("follow");
         assert!(signals.interrupted, "a new conversation is read from its start");
+
+        // The conversation is followed for the prompt: input queued once its turn has started is
+        // someone else's.
+        backend.queue_execution_events_matching(
+            runs("agent-session-transcript-size", vec![CLEARED.into()]),
+            printed(b"0\n"),
+        );
+        let mut mark = super::mark_conversation(&session, &sandbox, "Write a poem.")
+            .await
+            .expect("mark");
+        backend.queue_execution_events_matching(follows(CLEARED, 1), printed(STARTED_THEN_QUEUED));
+        let signals = super::follow_conversation(&session, &sandbox, &mut mark)
+            .await
+            .expect("follow");
+        assert!(!signals.queued, "input queued behind the prompt's turn");
     }
 
     #[tokio::test(flavor = "local")]
@@ -1028,12 +1053,14 @@ mod tests {
         session.status.reported.harness_transcript_path = Some("/home/agent/conversations/rollout.jsonl".into());
         let untracked = crate::Harness::ALL
             .into_iter()
-            .filter(|harness| harness::TurnTracker::new(*harness).is_none())
+            .filter(|harness| harness::TurnTracker::new(*harness, "").is_none())
             .collect::<Vec<_>>();
         assert_ne!(untracked, []);
         for harness in untracked {
             session.harness = harness;
-            let mut mark = super::mark_conversation(&session, &sandbox).await.expect("mark");
+            let mut mark = super::mark_conversation(&session, &sandbox, "Write a poem.")
+                .await
+                .expect("mark");
             let signals = super::follow_conversation(&session, &sandbox, &mut mark)
                 .await
                 .expect("follow");

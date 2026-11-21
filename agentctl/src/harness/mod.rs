@@ -932,10 +932,11 @@ pub(crate) enum TurnTracker {
 }
 
 impl TurnTracker {
-    /// A tracker for `harness`, or `None` when its reports already say all its transcript would.
-    pub(crate) fn new(harness: Harness) -> Option<Self> {
+    /// A tracker for `harness` that follows `prompt`, or `None` when its reports already say all its
+    /// transcript would.
+    pub(crate) fn new(harness: Harness, prompt: &str) -> Option<Self> {
         match harness {
-            Harness::ClaudeCode => Some(Self::ClaudeCode(claude_code::transcript::TurnTracker::default())),
+            Harness::ClaudeCode => Some(Self::ClaudeCode(claude_code::transcript::TurnTracker::new(prompt))),
             Harness::Codex | Harness::Pi => None,
         }
     }
