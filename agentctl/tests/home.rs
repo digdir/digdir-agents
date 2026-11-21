@@ -46,6 +46,27 @@ fn socket_path_check_matches_what_a_socket_accepts() {
     );
 }
 
+/// agentd started directly, not through agentctl, refuses such a home before it creates anything there.
+#[test]
+fn agentd_refuses_a_home_too_long_for_its_socket_before_creating_it() {
+    let temporary = TempDirectory::new("agentd-long-home");
+    let home = temporary.path().join("a".repeat(120));
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_agentd"))
+        .arg("--home")
+        .arg(&home)
+        .output()
+        .expect("agentd should run");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "agentd cannot run on this home: {stderr}");
+    assert!(
+        stderr.contains("too long"),
+        "agentd says the socket path is too long: {stderr}"
+    );
+    assert!(!home.exists(), "agentd created nothing in the home");
+}
+
 #[test]
 fn only_one_daemon_can_lock_a_home() {
     let temporary = TempDirectory::new("home-lock");
