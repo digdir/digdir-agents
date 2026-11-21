@@ -1,9 +1,9 @@
 transcript=$2
-# The session's activity moves only when an attached client types. A window's moves when what runs in it prints, as the
-# harness does while working. Only the harness's window counts, the one whose pane was started with a command. Someone
-# may open a shell with Ctrl-b c and leave it current, which must neither hide the harness's output nor make a quiet
-# harness look busy by printing, as a dev server does.
-values=$(/usr/bin/tmux list-sessions -F '#{session_attached} #{session_activity} #{W:#{P:#{?pane_start_command,#{window_activity} ,}}}' -f "#{==:#{session_name},$1}")
+# The session's activity moves when an attached client types. A window's moves when what runs in it prints, as the
+# harness does while working. Only the harness's window counts, which the launch marks with @agent_harness. Someone may
+# open another window, such as a shell with Ctrl-b c, and leave it current, which must neither hide the harness's output
+# nor make a quiet harness look busy when it prints, as a dev server does.
+values=$(/usr/bin/tmux list-sessions -F '#{session_attached} #{session_activity} #{W:#{?@agent_harness,#{window_activity} ,}}' -f "#{==:#{session_name},$1}")
 status=$?
 case $status in 0) ;; 1) exit 10 ;; *) exit 11 ;; esac
 set -- $values
