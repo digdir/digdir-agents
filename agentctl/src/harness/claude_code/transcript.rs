@@ -6,7 +6,8 @@
 //! its own `assistant` entry sharing one `message.id`. The file also records
 //! entries that are not conversation: subagent side chains, meta entries,
 //! compaction summaries and text the client injects on the user's behalf
-//! (slash-command echoes, background task notifications, system reminders).
+//! (slash-command echoes, background task notifications, system reminders,
+//! interruption markers).
 //! Input the operator sends while a turn is running is not a `user` entry at
 //! all: it is an `attachment` of type `queued_command` absorbed into the turn.
 
@@ -292,8 +293,10 @@ fn flag(entry: &Value, name: &str) -> bool {
     entry.get(name).and_then(Value::as_bool) == Some(true)
 }
 
-/// Recognizes the harness's local-command and notification envelopes. Ordinary
-/// XML is operator input; explicitly human queued attachments bypass this filter.
+/// Recognizes the harness's local-command and notification envelopes, and its
+/// [interruption marker](is_interruption_marker). Ordinary XML and bracketed
+/// text are operator input; explicitly human queued attachments bypass this
+/// filter.
 fn is_injected(text: &str) -> bool {
     let trimmed = text.trim();
     [
@@ -305,6 +308,18 @@ fn is_injected(text: &str) -> bool {
     ]
     .iter()
     .any(|tag| trimmed.starts_with(&format!("<{tag}>")) && trimmed.contains(&format!("</{tag}>")))
+        || is_interruption_marker(trimmed)
+}
+
+/// Whether `text` is the marker Claude Code writes where the operator stopped a
+/// turn, such as `[Request interrupted by user]` after Esc while it answers, or
+/// `[Request interrupted by user for tool use]` after Esc during a tool call or
+/// a refusal of one that says nothing more. Each such marker Claude Code writes
+/// as user text starts with this prefix. Text after the closing bracket makes it
+/// the operator's own prompt.
+fn is_interruption_marker(text: &str) -> bool {
+    let text = text.trim();
+    text.starts_with("[Request interrupted") && text.find(']') == Some(text.len() - 1)
 }
 
 #[cfg(test)]
