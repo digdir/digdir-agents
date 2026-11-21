@@ -111,7 +111,7 @@ impl ControlPlaneHome {
             }
             Err(std::fs::TryLockError::Error(error)) => return Err(Error::Io(error)),
         }
-        Ok(Lock { _file: file })
+        Ok(Lock { file })
     }
 
     /// Blocks until the daemon that owns this home lets it go, then takes it.
@@ -122,7 +122,7 @@ impl ControlPlaneHome {
     pub fn wait_for_lock(&self) -> Result<Lock, Error> {
         let file = self.lock_file()?;
         file.lock()?;
-        Ok(Lock { _file: file })
+        Ok(Lock { file })
     }
 
     fn lock_file(&self) -> Result<File, Error> {
@@ -156,7 +156,16 @@ const HOME_VARIABLE: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
 /// Held exclusive process lock for one local control-plane home.
 #[derive(Debug)]
 pub struct Lock {
-    _file: File,
+    file: File,
+}
+
+impl Drop for Lock {
+    /// Unlocks the file before it is closed. The lock belongs to the open file, and a child that
+    /// another thread is starting holds a copy of it until it runs its program, so closing alone
+    /// would leave the home locked until then.
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 fn absolute(path: &Path) -> Result<PathBuf, Error> {
@@ -261,7 +270,7 @@ mod tests {
         let home = ControlPlaneHome::resolve(Some(temporary.path())).expect("home");
         let lock = home.acquire_lock().expect("home lock");
         // A child that another thread is starting holds such a copy until it runs its program.
-        let copy = lock._file.try_clone().expect("copy of the lock's file");
+        let copy = lock.file.try_clone().expect("copy of the lock's file");
 
         drop(lock);
 
