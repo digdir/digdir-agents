@@ -1529,7 +1529,8 @@ mod tests {
         fs::metadata(path).expect("metadata").ino()
     }
 
-    #[cfg(unix)]
+    // macOS runs a binary that is open for writing, so it is never busy there.
+    #[cfg(target_os = "linux")]
     #[test]
     fn validation_runs_a_binary_once_it_is_no_longer_open_for_writing() {
         let temporary = tempfile::TempDir::new().expect("temporary directory");
@@ -1553,7 +1554,7 @@ mod tests {
         validated.expect("the release runs");
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn validation_fails_for_a_binary_that_stays_open_for_writing() {
         let temporary = tempfile::TempDir::new().expect("temporary directory");
