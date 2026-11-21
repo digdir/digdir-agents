@@ -1205,6 +1205,25 @@ async fn upgrade_preflight_waits_only_for_a_working_session_that_moves() {
         ["session/worker/s1 (working)"],
         "a harness whose terminal moved recently is"
     );
+
+    harness.runtime.idle_seconds.set(3_600);
+    harness
+        .database
+        .apply_session_activity_for_launch(
+            harness.session.id,
+            &harness.token,
+            uuid::Uuid::new_v4(),
+            agent::sessions::ActivityEvent::TurnStarted,
+            time::OffsetDateTime::now_utc(),
+        )
+        .await
+        .expect("fold")
+        .expect("current launch");
+    assert_eq!(
+        harness.service.upgrade_readiness().await.expect("reporting").blockers,
+        ["session/worker/s1 (working)"],
+        "a harness that reported a moment ago is, however quiet its terminal"
+    );
     harness.finish();
 }
 
