@@ -1,10 +1,14 @@
-use std::rc::Rc;
+use std::{rc::Rc, time::Duration};
 
-use crate::{Condition, ConditionStatus, Error, FailureKind, ReconcileFailure, Status};
+use crate::{Condition, ConditionStatus, Error, FailureKind, Recheck, ReconcileFailure, Status};
 
 use super::{AgentRecord, SharedAgentStore};
 use crate::progress::{ProvisioningState, SandboxObserver};
 use crate::sandbox::responsiveness::stall_detail;
+
+/// The soonest an agent whose image still clones its repositories is set up again, to see whether
+/// the clone has ended. See [`workspace_recheck`].
+const WORKSPACE_CLONE_RECHECK: Duration = Duration::from_secs(5);
 
 /// Receives low-latency hints when an agent transition affects its sessions.
 pub trait SessionNotifier {
@@ -84,15 +88,16 @@ impl Reconciler {
         self
     }
 
-    /// Converges the latest generation of one agent and records what it observed.
+    /// Converges the latest generation of one agent, records what it observed, and says when the
+    /// agent needs the next pass.
     ///
     /// # Errors
     ///
     /// Returns an error when storage or sandbox lifecycle convergence fails.
-    pub async fn reconcile(&self, id: crate::AgentId) -> Result<(), Error> {
+    pub async fn reconcile(&self, id: crate::AgentId) -> Result<Recheck, Error> {
         let mut record = match self.store.get(id).await {
             Ok(record) => record,
-            Err(Error::NotFound) => return Ok(()),
+            Err(Error::NotFound) => return Ok(Recheck::Periodically),
             Err(error) => return Err(error),
         };
         if record.agent.metadata.deletion_timestamp.is_some() {
@@ -103,7 +108,7 @@ impl Reconciler {
                 self.immediate_stops.request(id, generation);
                 return Err(error);
             }
-            return self.release(&record).await;
+            return self.release(&record).await.map(|()| Recheck::Periodically);
         }
         let stopped = record.agent.spec.is_stopped();
         // A restart stops the sandbox as a stop does, so its sessions go Idle, and then starts it
@@ -111,11 +116,11 @@ impl Reconciler {
         let mut restarting = None;
         if stopped || record.agent.restart_pending() {
             let Some((status, observer)) = self.stop(&record).await? else {
-                return Ok(());
+                return Ok(Recheck::Periodically);
             };
             if stopped {
                 observer.succeeded();
-                return Ok(());
+                return Ok(Recheck::Periodically);
             }
             // Its sessions have settled, so the restart is carried out; a crash before this
             // stops and settles again.
@@ -127,7 +132,7 @@ impl Reconciler {
                 // As in the stop, so a deleted agent does not boot again.
                 Err(Error::Conflict | Error::NotFound) => {
                     observer.succeeded();
-                    return Ok(());
+                    return Ok(Recheck::Periodically);
                 }
                 Err(error) => return Err(error),
             };
@@ -170,7 +175,7 @@ impl Reconciler {
             if let Some(observer) = restarting {
                 observer.succeeded();
             }
-            return Ok(());
+            return Ok(Recheck::Periodically);
         }
 
         let status = &record.agent.status;
@@ -188,7 +193,7 @@ impl Reconciler {
             set_up = self.set_up(&record, &observer) => set_up,
             generation = self.immediate_stops.requested(record.id) => {
                 self.abandon_setup(&observer, record.id, generation);
-                Ok(())
+                Ok(Recheck::Periodically)
             }
         }
     }
@@ -235,14 +240,24 @@ impl Reconciler {
     }
 
     /// Ensures the sandbox of a running agent, reconciles its declared access and records it Ready.
-    async fn set_up(&self, record: &AgentRecord, observer: &SandboxObserver) -> Result<(), Error> {
+    /// While the image still clones its repositories, the agent is set up again soon, since
+    /// nothing wakes it when the clone ends, and its outcome is what the person waits to see.
+    async fn set_up(&self, record: &AgentRecord, observer: &SandboxObserver) -> Result<Recheck, Error> {
         let ensured = match self.sandboxes.ensure(record, observer.reporter()).await {
             Ok(ensured) => ensured,
             Err(error @ Error::SandboxUnresponsive(_)) => {
                 let assignment = record.agent.status.sandbox.clone();
-                return self.record_unresponsive(record, assignment, observer, error).await;
+                return self
+                    .record_unresponsive(record, assignment, observer, error)
+                    .await
+                    .map(|()| Recheck::Periodically);
             }
-            Err(error) => return self.record_ensure_failure(record, observer, error).await,
+            Err(error) => {
+                return self
+                    .record_ensure_failure(record, observer, error)
+                    .await
+                    .map(|()| Recheck::Periodically);
+            }
         };
 
         let provider = record
@@ -282,12 +297,12 @@ impl Reconciler {
         conditions.push(condition(Condition::READY, ConditionStatus::True, "SandboxReady", ""));
         let status = Status::observed(record.agent.metadata.generation, Some(assignment), conditions);
         // As on failure, readiness is stored before followers see the pass end.
-        self.update_status(record, status, None).await?;
+        let stored = self.update_status(record, status, None).await?;
         observer.succeeded();
         if ensured.runtime_restarted {
             self.notify_sessions(record.id);
         }
-        Ok(())
+        Ok(workspace_recheck(&stored, time::OffsetDateTime::now_utc()))
     }
 
     /// Reconciles every access capability the platform offers, in order.
@@ -641,7 +656,7 @@ impl Reconciler {
 }
 
 impl crate::controller::Reconcile<crate::AgentId> for Reconciler {
-    fn reconcile(&self, id: crate::AgentId) -> ::sandbox::LocalFuture<'_, Result<(), Error>> {
+    fn reconcile(&self, id: crate::AgentId) -> ::sandbox::LocalFuture<'_, Result<Recheck, Error>> {
         Box::pin(async move { Self::reconcile(self, id).await })
     }
 }
@@ -791,6 +806,24 @@ fn workspace_condition(clone: crate::sandbox::WorkspaceClone) -> Condition {
     }
 }
 
+/// When to set up again an agent whose image is still cloning its repositories, as `status` says
+/// at `now`. Nothing wakes the agent when the clone ends, and a person who just started it waits to
+/// learn whether it worked, so it is soon, and later the longer the clone has run, so that a long
+/// clone is not set up again every few seconds. Once that is longer than the periodic pass, the
+/// periodic pass comes first.
+fn workspace_recheck(status: &Status, now: time::OffsetDateTime) -> Recheck {
+    let cloning_since = status
+        .conditions
+        .iter()
+        .find(|condition| condition.kind == Condition::WORKSPACE && condition.status == ConditionStatus::Unknown)
+        .map(|cloning| cloning.last_transition_time.unwrap_or(now));
+    let Some(since) = cloning_since else {
+        return Recheck::Periodically;
+    };
+    let cloning_for = Duration::try_from(now - since).unwrap_or_default();
+    Recheck::After((cloning_for / 4).max(WORKSPACE_CLONE_RECHECK))
+}
+
 /// Names the values an agent still reads from its environment file, so every client shows what to
 /// move before a later release stops reading it.
 fn environment_file_condition(record: &AgentRecord) -> Option<Condition> {
@@ -891,4 +924,34 @@ fn session_relevant_transition(previous: &Status, current: &Status) -> bool {
                 .sandbox
                 .as_ref()
                 .and_then(crate::sandbox::Assignment::installed_harnesses)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_running_clone_is_looked_at_again_later_the_longer_it_runs() {
+        let now = time::macros::datetime!(2026-11-19 12:00 UTC);
+        let after = |workspace: Option<crate::sandbox::WorkspaceClone>, cloning_for: i64| {
+            let mut status = Status::observed(1, None, workspace.map(workspace_condition).into_iter().collect());
+            for condition in &mut status.conditions {
+                condition.last_transition_time = Some(now - time::Duration::seconds(cloning_for));
+            }
+            workspace_recheck(&status, now)
+        };
+        let cloning = Some(crate::sandbox::WorkspaceClone::Cloning);
+        assert_eq!(after(cloning, 0), Recheck::After(WORKSPACE_CLONE_RECHECK));
+        assert_eq!(after(cloning, 8), Recheck::After(WORKSPACE_CLONE_RECHECK));
+        assert_eq!(after(cloning, 120), Recheck::After(Duration::from_secs(30)));
+        assert_eq!(
+            after(Some(crate::sandbox::WorkspaceClone::Failed), 0),
+            Recheck::Periodically
+        );
+        assert_eq!(
+            after(Some(crate::sandbox::WorkspaceClone::Cloned), 0),
+            Recheck::Periodically
+        );
+        assert_eq!(after(None, 0), Recheck::Periodically, "an image that clones nothing");
+    }
 }

@@ -340,44 +340,53 @@ impl Reconciler {
 }
 
 impl crate::controller::Reconcile<SessionId> for Reconciler {
-    fn reconcile(&self, id: SessionId) -> LocalFuture<'_, Result<(), Error>> {
+    fn reconcile(&self, id: SessionId) -> LocalFuture<'_, Result<crate::controller::Recheck, Error>> {
         Box::pin(async move {
-            let session = match self.sessions.get_session(id).await {
-                Ok(session) => session,
-                Err(Error::NotFound) => return Ok(()),
-                Err(error) => return Err(error),
-            };
-            if session.is_deleting() {
-                return self.release(&session).await;
-            }
-            let converged = if session.is_archived() {
-                self.converge_archive(&session).await
-            } else {
-                self.converge(&session).await
-            };
-            match converged {
-                Ok(lifecycle) => {
-                    self.sessions
-                        .update_session_lifecycle(session.id, lifecycle, session.activation_generation)
-                        .await
-                }
-                Err(error) => {
-                    let current = self.sessions.get_session(session.id).await?;
-                    let lifecycle = if current.is_archived() {
-                        // A failed archive stays archived, so unarchiving never relaunches the harness.
-                        Lifecycle::archived_with(error.to_string())
-                    } else if current.status.lifecycle.state == LifecycleState::Resuming {
-                        Lifecycle::resuming_with(error.to_string())
-                    } else {
-                        Lifecycle::failed(error.to_string())
-                    };
-                    self.sessions
-                        .update_session_lifecycle(session.id, lifecycle, session.activation_generation)
-                        .await?;
-                    Err(error)
-                }
-            }
+            self.reconcile_session(id)
+                .await
+                .map(|()| crate::controller::Recheck::Periodically)
         })
+    }
+}
+
+impl Reconciler {
+    /// Converges one session and records its lifecycle.
+    async fn reconcile_session(&self, id: SessionId) -> Result<(), Error> {
+        let session = match self.sessions.get_session(id).await {
+            Ok(session) => session,
+            Err(Error::NotFound) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if session.is_deleting() {
+            return self.release(&session).await;
+        }
+        let converged = if session.is_archived() {
+            self.converge_archive(&session).await
+        } else {
+            self.converge(&session).await
+        };
+        match converged {
+            Ok(lifecycle) => {
+                self.sessions
+                    .update_session_lifecycle(session.id, lifecycle, session.activation_generation)
+                    .await
+            }
+            Err(error) => {
+                let current = self.sessions.get_session(session.id).await?;
+                let lifecycle = if current.is_archived() {
+                    // A failed archive stays archived, so unarchiving never relaunches the harness.
+                    Lifecycle::archived_with(error.to_string())
+                } else if current.status.lifecycle.state == LifecycleState::Resuming {
+                    Lifecycle::resuming_with(error.to_string())
+                } else {
+                    Lifecycle::failed(error.to_string())
+                };
+                self.sessions
+                    .update_session_lifecycle(session.id, lifecycle, session.activation_generation)
+                    .await?;
+                Err(error)
+            }
+        }
     }
 }
 

@@ -4,7 +4,11 @@ use std::{collections::BTreeSet, rc::Rc};
 
 use ::sandbox::{LocalFuture, ProgressReporter};
 
-use crate::{Error, control_plane::AgentStore, controller::Reconcile};
+use crate::{
+    Error,
+    control_plane::AgentStore,
+    controller::{Recheck, Reconcile},
+};
 
 use super::{
     CHECK_SOURCE, COPY_SOURCE, CopyProgress, CopyStatus, Revision, RevisionStorage, VERIFY_SOURCE, VolumeId,
@@ -281,7 +285,7 @@ impl Reconciler {
 }
 
 impl Reconcile<VolumeId> for Reconciler {
-    fn reconcile(&self, key: VolumeId) -> LocalFuture<'_, Result<(), Error>> {
-        Box::pin(Self::reconcile(self, key))
+    fn reconcile(&self, key: VolumeId) -> LocalFuture<'_, Result<Recheck, Error>> {
+        Box::pin(async move { Self::reconcile(self, key).await.map(|()| Recheck::Periodically) })
     }
 }
