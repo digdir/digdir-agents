@@ -932,6 +932,31 @@ mod tests {
     }
 
     #[test]
+    fn input_sent_after_a_pasted_multiline_prompts_turn_started_is_not_followed() {
+        // Recorded with Claude Code 2.1.321: a prompt of several lines, pasted with bracketed paste
+        // as agentctl delivers it, is written wrapped in `<pasted_content>`.
+        let prompt = "Reply with exactly OK.\nLine two\n\nLine four";
+        let lines = jsonl(&[
+            serde_json::json!({"type": "user", "promptSource": "typed", "turnOrigin": "human", "message": {"role": "user", "content": "\n\n<pasted_content id=\"344d\">\nReply with exactly OK.\nLine two\n\nLine four\n</pasted_content id=\"344d\">\n"}}),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly SECOND."}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "OK"}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+            serde_json::json!({"type": "system", "subtype": "turn_duration"}),
+            serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}}),
+        ]);
+        let mut tracker = TurnTracker::new(prompt);
+        let seen = lines
+            .lines()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().queued { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        assert_eq!(seen, "-------");
+    }
+
+    #[test]
     fn input_sent_after_the_prompt_was_absorbed_is_not_followed() {
         // The waited prompt is absorbed into the running turn while a tool runs, and another prompt
         // is queued behind that turn.
