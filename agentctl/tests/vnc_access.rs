@@ -316,6 +316,36 @@ async fn an_image_whose_init_never_becomes_systemd_fails_permanently() {
     assert_no_systemd(&error);
 }
 
+/// The time an image's init has to start systemd counts from the guest's boot, so a pass in a
+/// guest that has run for 12 seconds waits only the 18 that are left.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn an_image_init_gets_what_is_left_of_its_time_since_boot() {
+    let fixture = Fixture::new();
+    let mut record = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", true);
+    record.agent.spec.sandbox.init_system = InitSystem::Image;
+    fixture.store(&record, 0).await;
+    let sandbox = fixture.sandbox(&record).await;
+    // More answers than any wait for systemd polls.
+    for _ in 0..1000 {
+        fixture
+            .backend
+            .queue_execution_events_matching(is_test("/run/systemd/system", "-d"), exited(1));
+    }
+    fixture.backend.queue_execution_events_matching(
+        |spec| is_command(spec, "/bin/cat", &["/proc/uptime"]),
+        output(b"12.00 20.00\n"),
+    );
+    let started = tokio::time::Instant::now();
+
+    let error = fixture
+        .access
+        .reconcile(&record, &sandbox)
+        .await
+        .expect_err("an init that is not systemd");
+    assert_no_systemd(&error);
+    assert_eq!(started.elapsed(), std::time::Duration::from_secs(18));
+}
+
 fn is_disable(spec: &ExecutionSpec) -> bool {
     is_command(
         spec,

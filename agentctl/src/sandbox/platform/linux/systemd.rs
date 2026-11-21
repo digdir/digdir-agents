@@ -8,8 +8,9 @@ use super::path_exists;
 
 const SYSTEMD_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 const SYSTEMD_READY_POLL: std::time::Duration = std::time::Duration::from_secs(1);
-/// How long an image's init may take to start systemd. systemd marks itself as the init early in
-/// its startup, so this only bounds how long an image whose init is something else waits to be told.
+/// How long after the guest boots an image's init may take to start systemd. systemd marks itself
+/// as the init early in its startup, so this only bounds how long an image whose init is something
+/// else waits to be told.
 const SYSTEMD_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const SYSTEMD_INIT_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 /// `systemctl`, the only supported guest service manager today.
@@ -85,21 +86,57 @@ pub(super) async fn systemd_available(sandbox: &SandboxHandle) -> Result<bool, E
 ///
 /// Setup can start before the image's init has started systemd, and a guest without
 /// [`SYSTEMD_RUNNING`] then looks like one whose image has no systemd. So on a sandbox the image
-/// initializes, a missing marker counts only after [`SYSTEMD_INIT_TIMEOUT`]. The backend's own
-/// init never starts systemd, so there the first answer holds.
+/// initializes, a missing marker counts only once the guest has run for [`SYSTEMD_INIT_TIMEOUT`].
+/// That time counts from boot rather than from the question, because setup asks on every resync:
+/// an image whose init is something else then waits on the passes during boot, not on every pass.
+/// The backend's own init never starts systemd, so there the first answer holds.
 ///
 /// # Errors
 ///
-/// Returns an error when the presence check cannot run.
+/// Returns an error when the presence check or the read of the guest's uptime cannot run.
 pub(super) async fn systemd_is_init(sandbox: &SandboxHandle) -> Result<bool, Error> {
-    let deadline = tokio::time::Instant::now() + SYSTEMD_INIT_TIMEOUT;
-    loop {
+    if path_exists(sandbox, "-d", SYSTEMD_RUNNING).await? {
+        return Ok(true);
+    }
+    if sandbox.snapshot().init_system != InitSystem::Image {
+        return Ok(false);
+    }
+    let deadline = tokio::time::Instant::now() + SYSTEMD_INIT_TIMEOUT.saturating_sub(uptime(sandbox).await?);
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(SYSTEMD_INIT_POLL).await;
         if path_exists(sandbox, "-d", SYSTEMD_RUNNING).await? {
             return Ok(true);
         }
-        if sandbox.snapshot().init_system != InitSystem::Image || tokio::time::Instant::now() >= deadline {
-            return Ok(false);
-        }
-        tokio::time::sleep(SYSTEMD_INIT_POLL).await;
     }
+    Ok(false)
+}
+
+/// How long the guest has run since it booted. A guest whose uptime can't be read counts as one
+/// that has just booted, so that its init still gets the whole time to start systemd.
+///
+/// # Errors
+///
+/// Returns an error when the read cannot run.
+async fn uptime(sandbox: &SandboxHandle) -> Result<std::time::Duration, Error> {
+    let output = sandbox
+        .run_execution(ExecutionSpec::command(
+            SandboxPath::new("/bin/cat"),
+            ["/proc/uptime".to_owned()],
+        ))
+        .await?;
+    let seconds = String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .next()
+        .and_then(|seconds| seconds.parse::<f64>().ok());
+    let uptime = seconds
+        .filter(|_| output.status.success())
+        .and_then(|seconds| std::time::Duration::try_from_secs_f64(seconds).ok());
+    if uptime.is_none() {
+        // Said, since such a guest waits for systemd on every pass.
+        tracing::warn!(
+            code = output.status.code,
+            "could not read the guest's uptime, so it gets the whole time to start systemd"
+        );
+    }
+    Ok(uptime.unwrap_or_default())
 }
