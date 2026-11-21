@@ -12,6 +12,7 @@ identifiers and code, such as `kind: Agent` or a Rust type.
 | `agentctl` | The command-line tool and TUI for agents. It talks to `agentd` and holds no state of its own. |
 | `agentd` | The daemon on the host that owns agents: it stores what each manifest declares and keeps the sandbox and sessions matching it. Not to be confused with Microsandbox's guest agent, which also runs as `agentd` inside the sandbox. |
 | Bundled definition | An agent definition `agentd` carries in its build, for an agent the platform runs for itself, such as the builder that writes definitions. `agentctl run` and `agentctl apply --from` take one by its definition reference, `bundled/<name>`, and `agentctl get definitions` lists them. |
+| Client | An application on the host that opens agents through an interface or drives them through the Control API, such as an editor, JetBrains Gateway, the Claude app, T3 Code or the TUI. A view shows one agent. An orchestrator creates and drives many. |
 | Control API | How `agentctl`, or any other client, talks to `agentd`. Local to the host. |
 | Definition reference | What names a definition for `agentd` to find, as a reference names an image: where it is, then its name. `bundled/agent-builder` is a bundled definition, and `agent-builder` is short for it. One that starts with a host, such as `kihub.digdir.no/dotnet-dev`, is not resolved yet. A definition on disk is written as a path instead, such as `./agents/reviewer`. An agent records the full reference it was run from in `status.origin`. |
 | Definition source | A folder that holds agent definitions, and volume manifests anywhere in its `agents/`: a Git repository, or a folder outside one that keeps them in `agents/<name>/`, such as the home directory. An agent is found from anywhere in its repository, or only from that folder itself. |
@@ -21,8 +22,10 @@ identifiers and code, such as `kind: Agent` or a Rust type.
 | Host | The machine `agentctl` and `agentd` run on. Trusted: it holds the real secrets and decides what the sandbox may reach. |
 | Image | The container image an agent's sandbox boots from. Usually built on the agentctl base images. |
 | Interface | How a person reaches an agent: `agentctl attach` or the TUI, SSH, VNC, an editor, or a desktop app connected over SSH. An interface talks to a harness, which talks to a model. |
+| Label | A key with a string value on an agent, set from the host, that says what the agent is for. Clients select the agents they touch by their labels. |
 | Mediated network | All sandbox traffic ends at the host, which applies the agent's policy and puts real secrets into requests to the hosts allowed for them. |
 | Nested agent | An agent started from inside another agent. |
+| Orchestrator | A client that creates agents from agent definitions and drives them, such as T3 Code delegating tasks to the sandboxes it creates. |
 | Placeholder | What the sandbox sees instead of a secret's real value. |
 | Platform API | The one host endpoint the sandbox may reach. The harnesses report activity through it. |
 | Provider | An implementation of the Sandbox SDK's contracts, such as Microsandbox. |
