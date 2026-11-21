@@ -22,11 +22,13 @@ const REQUEST_MARKER: &str = "## My request for Codex:";
 /// A `user`-role message, by who wrote it.
 ///
 /// Codex 0.162 and later label each content item with where it came from, in
-/// `content_item_kinds`: a `user.` kind for what the operator sent, and kinds
-/// such as `agents_md.instructions` or `generic.turn_aborted` for what Codex
-/// wrote. Older rollouts have no labels, so their operator input is told apart
-/// by position: within a turn, the last user message before the model's first
-/// output is the prompt, and earlier ones are context.
+/// `content_item_kinds`: a `user.` kind for what the operator sent,
+/// `shell.user_command` for a shell command they ran with `!`, and kinds such
+/// as `agents_md.instructions` or `generic.turn_aborted` for what Codex wrote.
+/// Messages from older Codex have no labels, and neither has the one Codex
+/// writes when a review ends. Their operator input is told apart by position:
+/// within a turn, the last user message before the model's first output is the
+/// prompt, and earlier ones are context.
 enum UserContent {
     /// Labelled operator input.
     Operator(String),
@@ -48,7 +50,7 @@ impl UserContent {
         let operator = parts
             .iter()
             .zip(kinds)
-            .filter(|(_, kind)| kind.as_str().is_some_and(|kind| kind.starts_with("user.")))
+            .filter(|(_, kind)| kind.as_str().is_some_and(is_operator_kind))
             .map(|(part, _)| part)
             .collect::<Vec<_>>();
         if operator.is_empty() {
@@ -57,6 +59,11 @@ impl UserContent {
             Self::Operator(text(operator.into_iter()))
         }
     }
+}
+
+/// Whether a content item kind marks what the operator sent or ran.
+fn is_operator_kind(kind: &str) -> bool {
+    kind.starts_with("user.") || kind == "shell.user_command"
 }
 
 fn content(message: &Value) -> &[Value] {
