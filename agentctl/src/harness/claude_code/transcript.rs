@@ -878,6 +878,35 @@ mod tests {
     }
 
     #[test]
+    fn a_prompt_queued_behind_a_turn_started_just_before_the_mark_is_followed() {
+        // A prompt sent without --wait reaches an idle Claude Code just before the waited one.
+        // `prompt` returns once it is typed, before Claude Code has run the UserPromptSubmit hooks
+        // and written the prompt, so its line comes after the waited prompt's mark. The waited
+        // prompt is pasted while that turn runs and is queued behind it.
+        let lines = jsonl(&[
+            serde_json::json!({"type": "user", "promptSource": "typed", "turnOrigin": "human", "message": {"role": "user", "content": "Write a 300-word essay about ocean tides. Use no tools."}}),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly SECOND."}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Ocean tides are the regular rising and falling of sea levels."}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+            serde_json::json!({"type": "system", "subtype": "turn_duration"}),
+            serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "SECOND"}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+        ]);
+        let mut tracker = TurnTracker::default();
+        let seen = lines
+            .lines()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().queued { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        // The waited prompt's own turn is followed to its end.
+        assert_eq!(seen, "-qqqqqqq-");
+    }
+
+    #[test]
     fn input_sent_after_the_prompt_was_absorbed_is_not_followed() {
         // The waited prompt is absorbed into the running turn while a tool runs, and another prompt
         // is queued behind that turn.
