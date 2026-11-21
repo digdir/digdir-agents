@@ -1163,6 +1163,70 @@ async fn upgrade_preflight_reports_work_and_terminal_attachments() {
     harness.finish();
 }
 
+/// A session can report Working long after its turn is over, such as a Claude Code session that was never prompted
+/// or a Codex turn that failed without saying so. Such a session holds back an upgrade only while its harness moves.
+#[tokio::test(flavor = "local")]
+async fn upgrade_preflight_waits_only_for_a_working_session_that_moves() {
+    let directory = TempDir::new().expect("directory");
+    let harness = ServiceHarness::start(&directory, "12121212-1212-4212-8212-121212121212").await;
+    harness
+        .database
+        .apply_session_activity_for_launch(
+            harness.session.id,
+            &harness.token,
+            uuid::Uuid::new_v4(),
+            agent::sessions::ActivityEvent::TurnStarted,
+            time::OffsetDateTime::now_utc() - time::Duration::hours(1),
+        )
+        .await
+        .expect("fold")
+        .expect("current launch");
+    assert_eq!(
+        harness
+            .database
+            .get_session(harness.session.id)
+            .await
+            .expect("session")
+            .status
+            .state,
+        agent::sessions::State::Working
+    );
+
+    harness.runtime.idle_seconds.set(3_600);
+    assert_eq!(
+        harness.service.upgrade_readiness().await.expect("quiet").blockers,
+        Vec::<String>::new(),
+        "a quiet harness is not working on a turn"
+    );
+
+    harness.runtime.idle_seconds.set(5);
+    assert_eq!(
+        harness.service.upgrade_readiness().await.expect("moving").blockers,
+        ["session/worker/s1 (working)"],
+        "a harness whose terminal moved recently is"
+    );
+
+    harness.runtime.idle_seconds.set(3_600);
+    harness
+        .database
+        .apply_session_activity_for_launch(
+            harness.session.id,
+            &harness.token,
+            uuid::Uuid::new_v4(),
+            agent::sessions::ActivityEvent::TurnStarted,
+            time::OffsetDateTime::now_utc(),
+        )
+        .await
+        .expect("fold")
+        .expect("current launch");
+    assert_eq!(
+        harness.service.upgrade_readiness().await.expect("reporting").blockers,
+        ["session/worker/s1 (working)"],
+        "a harness that reported a moment ago is, however quiet its terminal"
+    );
+    harness.finish();
+}
+
 #[tokio::test(flavor = "local")]
 async fn daemon_owned_relaunch_marker_is_retryable_and_removed_after_success() {
     let directory = TempDir::new().expect("directory");
