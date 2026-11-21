@@ -972,6 +972,35 @@ mod tests {
     }
 
     #[test]
+    fn a_prompt_queued_before_the_turn_ahead_of_it_is_written_is_followed() {
+        // A prompt sent without --wait reaches an idle Claude Code just before the waited one, and
+        // Claude Code is still running its UserPromptSubmit hooks when the waited prompt is pasted.
+        // The waited prompt is queued, and its `enqueue` is written at once, above the line of the
+        // turn ahead of it. That line was typed, not taken from the queue.
+        let lines = jsonl(&[
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly SECOND."}),
+            serde_json::json!({"type": "user", "promptSource": "typed", "turnOrigin": "human", "message": {"role": "user", "content": "Write a 300-word essay about ocean tides. Use no tools."}}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Ocean tides are the regular rising and falling of sea levels."}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+            serde_json::json!({"type": "system", "subtype": "turn_duration"}),
+            serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "SECOND"}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+        ]);
+        let mut tracker = TurnTracker::new("Reply with exactly SECOND.");
+        let seen = lines
+            .lines()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().queued { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        // The waited prompt's own turn is followed to its end.
+        assert_eq!(seen, "qqqqqqqq-");
+    }
+
+    #[test]
     fn input_sent_after_a_pasted_multiline_prompts_turn_started_is_not_followed() {
         // Recorded with Claude Code 2.1.321: a prompt of several lines, pasted with bracketed paste
         // as agentctl delivers it, is written wrapped in `<pasted_content>`.
