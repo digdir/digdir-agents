@@ -19,7 +19,6 @@ fn configured_home_is_absolute_and_uses_fixed_socket_path() {
 }
 
 /// The longest socket path the check accepts is the longest a socket can listen on.
-#[cfg(unix)]
 #[test]
 fn socket_path_check_matches_what_a_socket_accepts() {
     let temporary = TempDirectory::new("socket-limit");
@@ -37,13 +36,25 @@ fn socket_path_check_matches_what_a_socket_accepts() {
     for home in [&longest, &too_long] {
         std::fs::create_dir_all(home.socket_path().parent().expect("socket directory")).expect("socket directory");
     }
-    std::os::unix::net::UnixListener::bind(longest.socket_path()).expect("the longest accepted path can listen");
-    let error = std::os::unix::net::UnixListener::bind(too_long.socket_path()).expect_err("one byte more cannot");
+    listen(&longest.socket_path()).expect("the longest accepted path can listen");
+    let error = listen(&too_long.socket_path()).expect_err("one byte more cannot");
     assert_eq!(
         error.kind(),
         std::io::ErrorKind::InvalidInput,
         "only the length fails the bind: {error}"
     );
+}
+
+/// Listens on `path` with the socket address conversion agentd's listener goes through.
+#[cfg(unix)]
+fn listen(path: &Path) -> std::io::Result<std::os::unix::net::UnixListener> {
+    std::os::unix::net::UnixListener::bind(path)
+}
+
+/// Listens on `path` with the socket address conversion agentd's listener goes through.
+#[cfg(windows)]
+fn listen(path: &Path) -> std::io::Result<win_uds::net::UnixListener> {
+    win_uds::net::UnixListener::bind(path)
 }
 
 /// agentd started directly, not through agentctl, refuses such a home before it creates anything there.
