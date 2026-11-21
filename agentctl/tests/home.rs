@@ -40,7 +40,9 @@ fn socket_path_check_matches_what_a_socket_accepts() {
         std::fs::create_dir_all(home.socket_path().parent().expect("socket directory")).expect("socket directory");
     }
     listen(&longest.socket_path()).expect("the longest accepted path can listen");
-    let error = listen(&too_long.socket_path()).expect_err("one byte more cannot");
+    let Err(error) = listen(&too_long.socket_path()) else {
+        panic!("one byte more cannot");
+    };
     assert_eq!(
         error.kind(),
         std::io::ErrorKind::InvalidInput,
