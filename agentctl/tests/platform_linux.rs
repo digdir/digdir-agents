@@ -210,71 +210,6 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         },
     ];
 
-    // Temporary: the record this test built before.
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let agent_id: agent::AgentId = "5c0fd6ac-1d5a-4f8b-9f58-6b0f4de1f6c1".parse().expect("Agent ID");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.harnesses[0].default = true;
-    resource.spec.harnesses.push(agent::HarnessSpec {
-        kind: agent::Harness::Codex,
-        version: None,
-        login: agent::harness::LoginSet::default(),
-        auth: agent::HarnessAuthMode::Mediated,
-        optional: true,
-        default: false,
-        defaults: agent::ModelSelection::default(),
-    });
-    resource.spec.secrets = vec![
-        secret("GITHUB_TOKEN", &["github.com", "api.github.com"]),
-        secret("GATEWAY_KEY", &["gateway.example.com"]),
-    ];
-    resource.spec.environment = vec![agent::EnvironmentSpec {
-        name: "GIT_USER_NAME".into(),
-        source: None,
-        value: None,
-    }];
-    resource.spec.access = vec![agent::AccessSpec::Ssh {}];
-    resource.spec.network.deny = vec!["metadata.google.internal".into()];
-    let bind = |target: &str, read_only: bool, optional: bool| agent::MountSpec::Bind {
-        source: Some(directory.path().to_path_buf()),
-        target: SandboxPath::new(target),
-        read_only,
-        optional,
-    };
-    // Only the folders mounted from the host are listed: not the optional one whose source was missing when the
-    // agent was created, nor storage the sandbox owns.
-    resource.spec.sandbox.mounts = vec![
-        bind("/home/agent/code/app", false, false),
-        bind("/home/agent/code/reports", true, false),
-        bind("/home/agent/code/missing", false, true),
-        agent::MountSpec::Tmpfs {
-            target: SandboxPath::new("/scratch"),
-            capacity: "1Gi".parse().expect("capacity"),
-        },
-    ];
-    let literal = AgentRecord {
-        id: agent_id,
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
         is_claude_version,
@@ -386,38 +321,6 @@ async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns
         name: None,
         optional: false,
     }];
-    // Temporary: the record this test built before.
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.instructions = Vec::new();
-    resource.spec.skills = vec![agent::SkillSpec {
-        source: PathBuf::from("skills/agentctl"),
-        name: None,
-        optional: false,
-    }];
-    let literal = AgentRecord {
-        id: "0b6f3c7e-4a8d-4c55-9a3e-2f1d7c9b8e10".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
         backend.queue_execution_events_matching(
@@ -509,33 +412,6 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
     };
     let mut record = worker_record(directory.path());
     record.agent.spec.skills = vec![skill("skills/evidence", None), skill("skills/review", None)];
-    // Temporary: the record this test built before.
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.skills = vec![skill("skills/evidence", None), skill("skills/review", None)];
-    let literal = AgentRecord {
-        id: "7c2e9a41-5b3d-4f6e-8a1c-0d9b4e7f2a63".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..3 {
         backend.queue_execution_events_matching(
@@ -680,43 +556,6 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
         defaults: agent::ModelSelection::default(),
     });
     record.agent.spec.skills = vec![skill("evidence"), skill("review")];
-    // Temporary: the record this test built before.
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.harnesses[0].default = true;
-    resource.spec.harnesses.push(agent::HarnessSpec {
-        kind: agent::Harness::Codex,
-        version: None,
-        login: agent::harness::LoginSet::default(),
-        auth: agent::HarnessAuthMode::Mediated,
-        optional: true,
-        default: false,
-        defaults: agent::ModelSelection::default(),
-    });
-    resource.spec.skills = vec![skill("evidence"), skill("review")];
-    let literal = AgentRecord {
-        id: "0b6f3d52-8e1a-4c7b-9d24-5a3e8f1c6b90".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..4 {
         backend.queue_execution_events_matching(
@@ -890,33 +729,6 @@ async fn linux_setup_approves_claude_bash_requests_in_bypass_mode_for_every_clau
     let directory = TempDir::new().expect("temporary directory");
     let mut record = worker_record(directory.path());
     record.agent.spec.harnesses[0].version = None;
-    // Temporary: the record this test built before.
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.harnesses[0].version = None;
-    let literal = AgentRecord {
-        id: "5d0c2f7a-93b1-4e8e-8c4f-1a6b2e9d7f30".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
         backend.queue_execution_events_matching(
@@ -1002,30 +814,6 @@ async fn linux_setup_without_a_home_copies_nothing_into_the_guest_home() {
     let directory = TempDir::new().expect("temporary directory");
     let mut record = worker_record(directory.path());
     record.agent.spec.home = None;
-    // Temporary: the record this test built before.
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = None;
-    let literal = AgentRecord {
-        id: "0d9b5f5e-8a8f-4d0e-9a51-5b1f6f0c2a37".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
         is_claude_version,
@@ -1105,52 +893,6 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
         defaults: agent::ModelSelection::default(),
     });
 
-    // Temporary: the record this test built before.
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let agent_id: agent::AgentId = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.skills = vec![agent::SkillSpec {
-        source: PathBuf::from("skills/evidence"),
-        name: None,
-        optional: false,
-    }];
-    resource.spec.instructions.push(agent::InstructionsSpec {
-        source: PathBuf::from("environment.md"),
-        optional: false,
-    });
-    resource.spec.harnesses[0].default = true;
-    resource.spec.harnesses.push(agent::HarnessSpec {
-        kind: agent::Harness::Codex,
-        version: Some("0.149.1".into()),
-        login: agent::harness::LoginSet::default(),
-        auth: agent::HarnessAuthMode::Mediated,
-        optional: false,
-        default: false,
-        defaults: agent::ModelSelection::default(),
-    });
-    let literal = AgentRecord {
-        id: agent_id,
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
         backend.queue_execution_events_matching(
@@ -1248,33 +990,6 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
 async fn linux_setup_waits_for_systemd_and_restores_managed_podman_configuration() {
     let directory = TempDir::new().expect("temporary directory");
     let record = worker_record(directory.path());
-    // Temporary: the record this test built before.
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let agent_id: agent::AgentId = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    let literal = AgentRecord {
-        id: agent_id,
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
         backend.queue_execution_events_matching(
@@ -1348,34 +1063,6 @@ async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
     let directory = TempDir::new().expect("temporary directory");
     let mut record = worker_record(directory.path());
     record.agent.spec.harnesses[0].version = None;
-    // Temporary: the record this test built before.
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let agent_id: agent::AgentId = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.harnesses[0].version = None;
-    let literal = AgentRecord {
-        id: agent_id,
-        source_directory: PathBuf::from(directory.path()),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
         is_claude_version,
@@ -1439,32 +1126,6 @@ async fn linux_setup_enables_huge_pages_only_for_nested_sandboxes() {
     ] {
         let directory = TempDir::new().expect("temporary directory");
         let record = worker_record(directory.path());
-        // Temporary: the record this test built before.
-        let home = directory.path().join("home");
-        std::fs::create_dir_all(&home).expect("home directory");
-        let mut resource = support::agent("worker");
-        resource.metadata.generation = 1;
-        resource.spec.home = Some(HomeSpec { source: home });
-        let literal = AgentRecord {
-            id: "8d1b0d3e-3c55-4a8f-9e0a-2f3f1f6c9b21".parse().expect("Agent ID"),
-            source_directory: PathBuf::from(directory.path()),
-            manifest_path: None,
-            env_file: None,
-            agent: resource,
-            optional_mount_sources: std::collections::BTreeMap::new(),
-            volume_revisions: std::collections::BTreeMap::new(),
-            origin: agent::Origin::Local,
-            lifetime: agent::Lifetime::UntilDeleted,
-            bindings: std::collections::BTreeMap::new(),
-            exposed_files: std::collections::BTreeSet::new(),
-        };
-        assert_eq!(
-            record,
-            AgentRecord {
-                id: record.id,
-                ..literal
-            }
-        );
         let backend = Rc::new(memory::Provider::new());
         if !kvm {
             backend.queue_execution_events_matching(|spec| is_presence_check(spec, "-c", "/dev/kvm"), completed(1));
@@ -1506,33 +1167,6 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
     let directory = TempDir::new().expect("temporary directory");
     let mut record = worker_record(directory.path());
     record.agent.spec.harnesses[0].version = None;
-    // Temporary: the record this test built before.
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.harnesses[0].version = None;
-    let literal = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: PathBuf::from(directory.path()),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
         backend.queue_execution_events_matching(
@@ -1596,33 +1230,6 @@ async fn linux_setup_rejects_partial_git_identity() {
     let directory = TempDir::new().expect("temporary directory");
     let mut record = worker_record(directory.path());
     record.agent.spec.instructions.clear();
-    // Temporary: the record this test built before.
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.instructions.clear();
-    let literal = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
         is_claude_version,
@@ -1660,33 +1267,6 @@ async fn linux_setup_rejects_partial_git_identity() {
 async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injection() {
     let directory = TempDir::new().expect("temporary directory");
     let record = worker_record(directory.path());
-    // Temporary: the record this test built before.
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let agent_id: agent::AgentId = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    let literal = AgentRecord {
-        id: agent_id,
-        source_directory: PathBuf::from(directory.path()),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
         is_claude_version,
@@ -1757,43 +1337,6 @@ async fn linux_setup_reads_home_instructions_and_skills_below_the_home_directory
         optional: false,
     }];
     record.source_directory = directory.path().join("manifest");
-    // Temporary: the record this test built before.
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec {
-        source: support::via_home(&home),
-    });
-    resource.spec.instructions = vec![agent::InstructionsSpec {
-        source: support::via_home(&directory.path().join("instructions.md")),
-        optional: false,
-    }];
-    resource.spec.skills = vec![agent::SkillSpec {
-        source: support::via_home(&skill),
-        name: None,
-        optional: false,
-    }];
-    let literal = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: directory.path().join("manifest"),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
         is_claude_version,
@@ -1862,38 +1405,6 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
         name: None,
         optional: false,
     }];
-    // Temporary: the record this test built before.
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.instructions.clear();
-    resource.spec.skills = vec![agent::SkillSpec {
-        source: PathBuf::from("skills/evidence"),
-        name: None,
-        optional: false,
-    }];
-    let literal = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
         is_claude_version,
@@ -1980,40 +1491,6 @@ fn optional_sources_record(directory: &std::path::Path, instructions: &str, skil
         name: None,
         optional: true,
     }];
-    // Temporary: the record this function built before.
-    let home = directory.join("home");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.instructions.push(agent::InstructionsSpec {
-        source: PathBuf::from(instructions),
-        optional: true,
-    });
-    resource.spec.skills = vec![agent::SkillSpec {
-        source: PathBuf::from(skill),
-        name: None,
-        optional: true,
-    }];
-    let literal = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: directory.to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     record
 }
 
@@ -2120,33 +1597,6 @@ async fn git_settings_written(
     record.agent.spec.instructions.clear();
     // Without harnesses, setup writes no instruction file, which this sandbox has none of.
     record.agent.spec.harnesses.clear();
-    // Temporary: the record this test built before.
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = None;
-    resource.spec.instructions.clear();
-    // Without harnesses, setup writes no instruction file, which this sandbox has none of.
-    resource.spec.harnesses.clear();
-    let literal = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
     let service = SandboxService::new(backend.clone());
@@ -2269,45 +1719,6 @@ async fn workspace_actions(
             message: String::new(),
             last_transition_time: None,
         }));
-    // Temporary: the record this test built before.
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = None;
-    resource.spec.instructions.clear();
-    resource.spec.harnesses.clear();
-    resource.spec.accounts.push(agent::AccountSpec::Github {
-        login: "default".into(),
-    });
-    resource
-        .status
-        .conditions
-        .extend(accounts_reported.map(|status| agent::Condition {
-            kind: agent::Condition::ACCOUNTS.into(),
-            status,
-            reason: String::new(),
-            message: String::new(),
-            last_transition_time: None,
-        }));
-    let literal = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
-    assert_eq!(
-        record,
-        AgentRecord {
-            id: record.id,
-            ..literal
-        }
-    );
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
     backend.queue_execution_events_matching(
