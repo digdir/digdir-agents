@@ -8,6 +8,19 @@ local checks.
 `make user-install` builds, packages and installs `agentctl` and `agentd` for the current user. On Windows without
 Make, run `.\agentctl\make-user-install.ps1`.
 
+To try a branch without replacing what you have installed, run its `agentctl` from the build directory with
+`--home DIR`. It starts the `agentd` built beside it for that home, so the installed `agentd`, and the agents it
+runs, are left alone.
+
+Code for one platform, such as under `#[cfg(windows)]`, is compiled only on that platform. Before you push a change
+to it from another, run the `cargo clippy` command that `make check-platforms` runs with `--target` added, such as
+`--target x86_64-pc-windows-gnu`. That needs the Rust target and its linker installed. CI would otherwise be the
+first to compile it.
+
+Cargo decides what to rebuild from file times, and it has missed a file that was broken on purpose and restored, so
+a later run tested the broken code. When you break code to see a test fail, do it in a worktree of its own, apart
+from the build you use as evidence, and run `cargo clean -p CRATE` after you restore it.
+
 ## Code
 
 Follow the [architecture principles](docs/architecture.md#principles) and the

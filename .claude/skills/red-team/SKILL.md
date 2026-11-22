@@ -67,7 +67,8 @@ Read the failure, not only the exit status.
 When no test can reach it, write down the exact steps, with what you expected and what happened.
 
 Then turn to the author's own tests, the ones the analysis names. Break the code the way each test exists to
-catch, see whether it fails, and restore the code. Report each test that passes anyway.
+catch, see whether it fails, and restore the code, as [CONTRIBUTING.md](../../../CONTRIBUTING.md#development)
+describes. Report each test that passes anyway.
 
 ## Report
 
