@@ -34,7 +34,8 @@ Argue that the issue should not be done, or not this way:
 - It is a symptom. Ask how the code ended up in this state, and whether the cause is larger than the issue.
 - Planned work replaces it. Read the open issues and pull requests that touch the same code.
 - Something simpler would do, including doing nothing.
-- A claim in the analysis is wrong or was never checked.
+- A claim in the analysis is wrong or was never checked. That includes the reasons an earlier analysis gave for
+  leaving something out or rejecting an option.
 - The change needs a person and the analysis does not say so. The list is under "What always needs a person" in
   the [worker-bee skill](../worker-bee/SKILL.md#what-always-needs-a-person).
 

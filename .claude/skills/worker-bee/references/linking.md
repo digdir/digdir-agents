@@ -9,8 +9,10 @@ Look before you start on an issue, and again right before you open a pull reques
 - `gh pr list --state all --search "N in:body,title"` finds the ones that only mention it. A closed one tells you
   what was tried and why it stopped.
 - `gh issue develop --list N` lists the branches linked to it.
+- `gh pr list --limit 200 --json number,title,files` lists the files each open pull request changes. One that
+  changes the files you will change may solve the issue on the way, or conflict with your fix.
 - Read the thread for a comment that claims the issue, however old. If the claim looks stale, say so rather than
-  taking the issue.
+  taking the issue, unless the board shows it up for grabs and nobody assigned.
 
 ## Linking a pull request
 
