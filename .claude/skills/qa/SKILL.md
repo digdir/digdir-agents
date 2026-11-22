@@ -91,7 +91,9 @@ you accepted, one by one, and say for each whether it holds. Check them yourself
 not CI passing.
 
 - When all hold except those only a person can meet, such as an approval, add the `process/agent-says-merge` label
-  to the pull request and say in your report what is left. The label is yours to set, never the author's.
+  to the pull request and say in your report what is left. The label is yours to set, never the author's. When the
+  review bot is also left because your brief leaves asking it to the session, don't set the label yet. Say that it
+  waits for the bot, and set it when you are sent back after the review.
 - When all hold and your brief says that a person asked for the change to be merged in this run, merge it as that
   step describes, and report the commit on `main`. The repository does not close an issue when a pull request
   merges, so say whether what merged does everything the issue asks. The author closes it.
