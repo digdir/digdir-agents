@@ -72,11 +72,11 @@ You can still analyze it.
 ## The run
 
 Work on one issue at a time, through the steps below, and start on the next when this one is merged or waits for
-something, unless the person asks for several at once. An issue that ends up waiting for a person's decision does
-not count towards the number you were asked for, since nothing was delivered. Stop when you reach the number, when
-no issue is left that you can take, or when you are told to. Stop as well when three issues in a row ended up
-waiting for a person. Each of them got an analysis that someone now has to read, and a run that only produces those
-is asking for more attention than it saves.
+something, unless the person says to run several at the same time. A count alone does not say that. An issue that
+ends up waiting for a person's decision does not count towards the number you were asked for, since nothing was
+delivered. Stop when you reach the number, when no issue is left that you can take, or when you are told to. Stop as
+well when three issues in a row ended up waiting for a person. Each of them got an analysis that someone now has to
+read, and a run that only produces those is asking for more attention than it saves.
 
 When they do, give each issue a session, a worktree and build directories of its own, and keep no more of them in
 work than the machine can build at the same time. Most checks build the workspace, and a check that runs under
@@ -102,12 +102,13 @@ prompting you instead of starting.
 
 ### Work that an earlier session left
 
-An issue can have a pull request from an earlier session or an earlier process that the board shows nobody is on,
-with WIP State Up-for-grabs or no assignee. Take it over rather than start again, and go through the steps from the
-analysis as for any issue. What it holds is a set of claims to check, like the issue's text, and that includes what
-it left out or rejected and why. Its earlier reviews had another brief and saw other commits, so they count as none
-of [the checks](#the-checks). Read what they found, and run the checks as for any change. Leave a ready pull request
-ready, since converting it to a draft cancels its CI. If you do convert it, add the `ci` label first.
+An issue can have a pull request from an earlier session or an earlier process that nobody is on any more: its WIP
+State is Up-for-grabs and it has no assignee. The board decides that over an old claim in the thread. Take it over
+rather than start again, and go through the steps from the analysis as for any issue. What it holds is a set of
+claims to check, like the issue's text, and that includes what it left out or rejected and why. Its earlier reviews
+had another brief and saw other commits, so they count as none of [the checks](#the-checks). Read what they found,
+and run the checks as for any change. Leave a ready pull request ready, since converting it to a draft cancels its
+CI. If you do convert it, add the `ci` label first.
 
 ## 2. Analyze it
 
@@ -299,9 +300,10 @@ Start each check as a subagent with a fresh context, never as a copy of your own
 - Give it the issue, the analysis comment, the base and head commits, and for the test phase the pull request.
   Don't give it your reasoning. A reviewer that has read why you did something tends to agree with it.
 - Give it a worktree of its own on the head commit, and a build directory of its own when it builds. A build from
-  nothing can take up its whole time limit, so copy yours with `cp -a` once its worktree exists. That keeps the file
-  times, so cargo reuses the dependencies and still rebuilds the workspace from the new checkout. Say whether a
-  debug build is enough, which it is unless the change is about how a release is built.
+  nothing can take up its whole time limit, so copy yours with `cp -a`, which keeps the file times, and run
+  `cargo clean -p` in the copy for the workspace's crates. Cargo then reuses the dependencies and builds the rest
+  from the check's own checkout, which it would otherwise skip when your build is newer than that checkout. Say
+  whether a debug build is enough, which it is unless the change is about how a release is built.
 - Give it a time limit. A check that nothing stops can run for hours.
 - For QA of the test phase, say whether the person asked for `close` in this run. That line is what lets it merge.
   Link the comments on the issue and the pull request that are yours. Agents often post from one account, and QA
@@ -392,7 +394,9 @@ run and all of this holds:
   person. The bot limits how many reviews it gives this repository in an hour. It drops a request over the limit,
   sometimes after first saying that the review was triggered, and its status comment then says when to ask again.
   So check that comment a minute after you ask. When several pull requests wait for the bot, as in a run of
-  several issues at once, the session that runs them asks for one at a time, and QA leaves the asking to it.
+  several issues at once, the session that runs them asks for one at a time. QA then leaves the asking to it,
+  reports that the pull request waits only for the bot, and stops. The session sends the same QA agent back once
+  the bot has reviewed.
 - No review asks for changes.
 - GitHub lets the pull request merge as it is. When [CODEOWNERS](../../../.github/CODEOWNERS) asks for a person's
   approval, it waits for that. Nobody uses administrator rights or any other way around a requirement.
