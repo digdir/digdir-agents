@@ -17,6 +17,10 @@ pub(super) struct HookScript<'a> {
     /// other notifications carry no signal. Empty when the harness has no
     /// notification hook.
     pub(super) waiting_notifications: &'a [&'a str],
+    /// Hook events that carry their signal only when the operator asked for what they report,
+    /// which the harness marks with `trigger: "manual"`. A harness also compacts by itself, inside
+    /// or ahead of a turn, and that compaction must not end the turn.
+    pub(super) manual_only: &'a [&'a str],
 }
 
 /// The report half shared by hook scripts and in-process harness extensions: the
@@ -100,6 +104,7 @@ __REPORTER__
 // table; events not listed carry no signal and are ignored.
 const EVENTS = __EVENTS__;
 const WAITING_NOTIFICATIONS = __WAITING_NOTIFICATIONS__;
+const MANUAL_ONLY = __MANUAL_ONLY__;
 
 function read(stream) {
   // Codex 0.156 keeps stdin open while waiting for the hook to exit.
@@ -151,6 +156,8 @@ if (
 ) {
   process.exit(0);
 }
+// What the harness did by itself is not the operator's turn.
+if (MANUAL_ONLY.includes(input.hook_event_name) && input.trigger !== "manual") process.exit(0);
 
 const fields = { source: typeof input.source === "string" ? input.source : "" };
 if (event === "sessionStart") {
@@ -196,10 +203,12 @@ impl HookScript<'_> {
             .collect::<Result<serde_json::Map<_, _>, serde_json::Error>>()?;
         let events = serde_json::to_string(&serde_json::Value::Object(events))?;
         let waiting = serde_json::to_string(self.waiting_notifications)?;
+        let manual_only = serde_json::to_string(self.manual_only)?;
         Ok(TEMPLATE
             .replace("__REPORTER__", &reporter()?)
             .replace("__EVENTS__", &events)
-            .replace("__WAITING_NOTIFICATIONS__", &waiting))
+            .replace("__WAITING_NOTIFICATIONS__", &waiting)
+            .replace("__MANUAL_ONLY__", &manual_only))
     }
 
     /// Hook event names the adapter registers: exactly the table's keys.
@@ -220,6 +229,7 @@ pub(super) mod tests {
         let script = HookScript {
             events: &[("SessionStart", ActivityEvent::SessionStart)],
             waiting_notifications: &[],
+            manual_only: &[],
         }
         .render()
         .expect("script");
@@ -251,6 +261,7 @@ pub(super) mod tests {
         let script = HookScript {
             events: &[("SessionStart", ActivityEvent::SessionStart)],
             waiting_notifications: &[],
+            manual_only: &[],
         }
         .render()
         .expect("script")

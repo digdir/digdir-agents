@@ -27,7 +27,8 @@ pub struct Activity {
     /// Current coarse work phase.
     #[serde(default)]
     pub phase: Phase,
-    /// Reported turn endings (including interruption) observed for the running harness launch.
+    /// Reported turn endings observed for the running harness launch, including interruptions and
+    /// the end of a compaction the operator asked for.
     #[serde(default)]
     pub turns: u64,
     /// Time of the most recent activity event, when one has been observed.

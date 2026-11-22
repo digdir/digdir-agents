@@ -15,6 +15,8 @@ const EVENTS: &[(&str, ActivityEvent)] = &[
     // Fires once every tool call of a model step has resolved, so after the operator answers a
     // question or approves a call, and not while another call in the same step still waits.
     ("PostToolBatch", ActivityEvent::TurnStarted),
+    // A `/compact` the operator sends fires no `Stop`, only this once the compaction is done.
+    ("PostCompact", ActivityEvent::TurnCompleted),
 ];
 
 /// `Notification` types that mean Claude Code is blocked on the operator;
@@ -32,6 +34,7 @@ const BASH_APPROVAL_COMMAND: &str = r#"node -e 'if (JSON.parse(require("node:fs"
 const SCRIPT: HookScript<'static> = HookScript {
     events: EVENTS,
     waiting_notifications: WAITING_NOTIFICATIONS,
+    manual_only: &["PostCompact"],
 };
 
 /// Renders Claude Code's activity hook script.

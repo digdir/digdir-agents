@@ -10,6 +10,8 @@ const EVENTS: &[(&str, ActivityEvent)] = &[
     ("Stop", ActivityEvent::TurnCompleted),
     ("Interrupt", ActivityEvent::TurnCompleted),
     ("PermissionRequest", ActivityEvent::WaitingForInput),
+    // A `/compact` the operator sends fires no `Stop`, only this once the compaction is done.
+    ("PostCompact", ActivityEvent::TurnCompleted),
 ];
 
 /// Seconds Codex waits for the hook before continuing; a slow report must not
@@ -19,6 +21,7 @@ const HOOK_TIMEOUT_SECONDS: u32 = 3;
 const SCRIPT: HookScript<'static> = HookScript {
     events: EVENTS,
     waiting_notifications: &[],
+    manual_only: &["PostCompact"],
 };
 
 /// Renders Codex's activity hook script.
