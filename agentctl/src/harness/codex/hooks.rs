@@ -68,6 +68,8 @@ mod tests {
             Some("turnCompleted")
         );
         assert_eq!(report(&script, &compacted("auto")).await, None);
+        let unmarked = serde_json::json!({ "hook_event_name": "PostCompact" });
+        assert_eq!(report(&script, &unmarked).await, None);
         assert!(super::configuration("hook.mjs")["hooks"].get("PostCompact").is_some());
     }
 }
