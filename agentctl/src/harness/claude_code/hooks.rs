@@ -107,4 +107,18 @@ mod tests {
         });
         assert_eq!(event(&script, &answered).await.as_deref(), Some("turnStarted"));
     }
+
+    /// A `/compact` the operator sends fires no `Stop`, only `PostCompact` once it is done. Claude
+    /// Code also compacts by itself inside a turn, which must not end the turn.
+    #[tokio::test]
+    async fn a_compaction_the_operator_asked_for_completes_a_turn() {
+        let script = super::script().expect("script");
+        let compacted = |trigger| serde_json::json!({ "hook_event_name": "PostCompact", "trigger": trigger });
+        assert_eq!(
+            event(&script, &compacted("manual")).await.as_deref(),
+            Some("turnCompleted")
+        );
+        assert_eq!(event(&script, &compacted("auto")).await, None);
+        assert!(super::configuration("hook.mjs").get("PostCompact").is_some());
+    }
 }
