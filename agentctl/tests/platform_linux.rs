@@ -1320,7 +1320,6 @@ async fn linux_setup_reads_home_instructions_and_skills_below_the_home_directory
     let mut record = worker_record(directory.path());
     let home = directory.path().join("home");
     std::fs::write(home.join("tilde-marker"), "home").expect("home file");
-    std::fs::write(directory.path().join("instructions.md"), "tilde instructions\n").expect("instruction file");
     let skill = directory.path().join("skills").join("evidence");
     std::fs::create_dir_all(&skill).expect("skill directory");
     std::fs::write(skill.join("SKILL.md"), "capture").expect("skill file");
@@ -1375,7 +1374,7 @@ async fn linux_setup_reads_home_instructions_and_skills_below_the_home_directory
     );
     let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
     assert!(
-        instructions.ends_with("spec.instructions -->\ntilde instructions\n"),
+        instructions.ends_with(&format!("spec.instructions -->\n{INSTRUCTIONS}")),
         "{instructions}"
     );
     assert_eq!(
