@@ -47,3 +47,6 @@ A test checks behavior that could break. Avoid tests that cannot fail or only re
   kernel does, not `unix`, which includes macOS. Linux refuses to run a binary that is still open for writing, for
   example, and macOS runs it.
 - When a test fails now and then, make the assertion print what it got, so a failure in CI says which way it went.
+- A child process holds copies of the parent's open files, and the locks on them, until it execs. A test that starts
+  a process can therefore make a lock test in the same binary fail now and then. When you add one beside lock tests,
+  run the module's tests in a loop.

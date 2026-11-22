@@ -72,15 +72,15 @@ You can still analyze it.
 ## The run
 
 Work on one issue at a time, through the steps below, and start on the next when this one is merged or waits for
-something. An issue that ends up waiting for a person's decision does not count towards the number you were asked
-for, since nothing was delivered. Stop when you reach the number, when no issue is left that you can take, or when
-you are told to. Stop as well when three issues in a row ended up waiting for a person. Each of them got an analysis
-that someone now has to read, and a run that only produces those is asking for more attention than it saves.
+something, unless the person asks for several at once. An issue that ends up waiting for a person's decision does
+not count towards the number you were asked for, since nothing was delivered. Stop when you reach the number, when
+no issue is left that you can take, or when you are told to. Stop as well when three issues in a row ended up
+waiting for a person. Each of them got an analysis that someone now has to read, and a run that only produces those
+is asking for more attention than it saves.
 
-When the person asks for several issues at once, give each a session, a worktree and build directories of its own,
-and keep no more of them in work than the machine can build at the same time. Every check builds the workspace, and
-a check that runs under another's load measures that load or runs out of time. One session asks
-[the review bot](#6-merge-it) for all of them.
+When they do, give each issue a session, a worktree and build directories of its own, and keep no more of them in
+work than the machine can build at the same time. Most checks build the workspace, and a check that runs under
+another's load measures that load or runs out of time.
 
 Keep notes for each issue in a file outside the checkout: the analysis, each finding from the checks and what
 happened to it. A long run outlives your memory of its first issue, and the report at the end is written from
@@ -102,16 +102,12 @@ prompting you instead of starting.
 
 ### Work that an earlier session left
 
-An issue can have a pull request that nobody is on any more, from an earlier session or an earlier process. Take it
-over rather than start again, and go through the steps from the analysis as for any issue. What it already holds
-is a set of claims to check, like the issue's text. That includes what it left out or rejected and why, since such
-a reason has often not been checked. In your report, say which of its earlier reviews stand in for which of
-[the checks](#the-checks), so that QA can tell whether every check the change calls for ran.
-
-- Post the line that says the issue passed [the gate](#who-decides-whether-to-build), if nobody has.
-- Remove a `process/agent-says-merge` label when you push, as for any push.
-- Leave a ready pull request ready. Converting it to a draft cancels its CI, and CI skips drafts that don't have the
-  `ci` label, so add the label first if you do convert it.
+An issue can have a pull request from an earlier session or an earlier process that the board shows nobody is on,
+with WIP State Up-for-grabs or no assignee. Take it over rather than start again, and go through the steps from the
+analysis as for any issue. What it holds is a set of claims to check, like the issue's text, and that includes what
+it left out or rejected and why. Its earlier reviews had another brief and saw other commits, so they count as none
+of [the checks](#the-checks). Read what they found, and run the checks as for any change. Leave a ready pull request
+ready, since converting it to a draft cancels its CI. If you do convert it, add the `ci` label first.
 
 ## 2. Analyze it
 
@@ -212,8 +208,9 @@ not that it should:
 - It is a breaking change, or leaves something a revert does not undo, such as a database migration.
 - The issue can be read in more than one way, or more than one approach is reasonable and the choice matters
   later.
-- A test failed and then passed when run again without a change. When that failure is the bug the change fixes,
-  and you have forced it, the change is what removes it, and this does not apply.
+- A test failed and then passed when run again without a change. This does not apply when the failure was seen only
+  without the change, it is the bug the change fixes, and you have forced it with the same result, since the change
+  is then what removes it.
 - This skill does not fit the work, or you are unsure whether one of these applies.
 
 ### When a person has decided
@@ -244,9 +241,9 @@ set Status to Building.
   It has to fail on what it asserts, not on a compile error or in its setup. When the fix adds something the test
   calls, add only its signature in the test's commit, with a body that leaves the behaviour as it is.
   CI fails on that commit alone, so say in the hand-over comment that it does so on purpose, and that the squash
-  merge is what keeps it out of `main`. The commit has to pass `make lint`, or CI stops before it runs the test.
-  When the bug shows on a platform you can't run, push that commit as the head once, so that CI shows it failing
-  there, before you push the fix.
+  merge is what keeps it out of `main`. The commit has to pass `make fmt lint`, or CI stops before it runs the
+  test. When the bug shows on a platform you can't run, open the draft pull request with the `ci` label at that
+  commit, so that CI shows it failing there, before you push the fix.
 - Write tests that would fail if the change were wrong, and show it for the ones that matter: break the code the
   way the test exists to catch, see it fail, and restore it, as
   [CONTRIBUTING.md](../../../CONTRIBUTING.md#development) describes. A test that asserts on what it just built
@@ -270,8 +267,8 @@ breaking the code a test guards: commit it, or keep its exact diff beside the re
 by its subject, which a later rebase leaves alone.
 
 Run the branch's build with a home of its own, as [CONTRIBUTING.md](../../../CONTRIBUTING.md#development) describes,
-or in a nested agent. Installed over the `agentd` you run on, it puts code nobody has accepted under every agent that
-`agentd` runs, your own session among them.
+or in a nested agent. Installed over the `agentd` on the machine you work on, it puts code nobody has accepted under
+every agent that `agentd` runs.
 
 Then have the testing [challenged](#the-checks). QA of the testing comes after the pull request is open, in
 [step 5](#5-hand-it-over), since it reviews what will merge.
@@ -301,9 +298,10 @@ Start each check as a subagent with a fresh context, never as a copy of your own
 - Tell it to read its skill by the file's path, and which phase the work is in.
 - Give it the issue, the analysis comment, the base and head commits, and for the test phase the pull request.
   Don't give it your reasoning. A reviewer that has read why you did something tends to agree with it.
-- Give it a worktree of its own on the head commit, and a build directory of its own when it builds. Make that a
-  copy of yours, since a build from nothing can take up its whole time limit. Say whether a debug build is enough,
-  which it is unless the change is about how a release is built.
+- Give it a worktree of its own on the head commit, and a build directory of its own when it builds. A build from
+  nothing can take up its whole time limit, so copy yours with `cp -a` once its worktree exists. That keeps the file
+  times, so cargo reuses the dependencies and still rebuilds the workspace from the new checkout. Say whether a
+  debug build is enough, which it is unless the change is about how a release is built.
 - Give it a time limit. A check that nothing stops can run for hours.
 - For QA of the test phase, say whether the person asked for `close` in this run. That line is what lets it merge.
   Link the comments on the issue and the pull request that are yours. Agents often post from one account, and QA
@@ -332,9 +330,6 @@ Run nothing heavy of your own while a check measures time or runs under load. Yo
 A change to tests alone has no QA of its use, since nobody uses a test the way they use the product, and the
 build's QA has already run it with and without the change. Tell QA of the test phase to go straight to whether
 the pull request is ready to merge.
-
-For a fix of a few lines, the build phase needs only the challenger. In a change that small the red team seldom
-finds anything, while the challenger is the check that finds a simpler fix at the cause.
 
 A text-only change or a fix of a few lines can skip checks when it ends as a draft. Say in the hand-over comment
 which ones it skipped, and likewise when your harness can't start a subagent. Nothing that skipped a check is
@@ -394,9 +389,10 @@ run and all of this holds:
   that commit, not for a review. The bot posts no review when it has nothing to say. QA declines what is wrong, with the
   reason in terms of the code, and resolves the thread. What is right goes back to you, which starts the checks
   again. A thread about correctness or security that QA is not sure of stays open, and the pull request waits for a
-  person. The bot gives this repository about one review an hour and drops a request it can't take, after first
-  saying that the review was triggered. So a minute after asking, check that its status comment says it is
-  reviewing, and when several pull requests wait for it, one session asks for them one at a time.
+  person. The bot limits how many reviews it gives this repository in an hour. It drops a request over the limit,
+  sometimes after first saying that the review was triggered, and its status comment then says when to ask again.
+  So check that comment a minute after you ask. When several pull requests wait for the bot, as in a run of
+  several issues at once, the session that runs them asks for one at a time, and QA leaves the asking to it.
 - No review asks for changes.
 - GitHub lets the pull request merge as it is. When [CODEOWNERS](../../../.github/CODEOWNERS) asks for a person's
   approval, it waits for that. Nobody uses administrator rights or any other way around a requirement.

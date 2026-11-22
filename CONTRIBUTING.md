@@ -10,16 +10,18 @@ Make, run `.\agentctl\make-user-install.ps1`.
 
 To try a branch without replacing what you have installed, run its `agentctl` from the build directory with
 `--home DIR`. It starts the `agentd` built beside it for that home, so the installed `agentd`, and the agents it
-runs, are left alone.
+runs, are left alone. An `agentd` that already runs for that home answers instead, whichever build started it, so
+give each build you try a home of its own.
 
 Code for one platform, such as under `#[cfg(windows)]`, is compiled only on that platform. Before you push a change
 to it from another, run the `cargo clippy` command that `make check-platforms` runs with `--target` added, such as
-`--target x86_64-pc-windows-gnu`. That needs the Rust target and its linker installed. CI would otherwise be the
-first to compile it.
+`--target x86_64-pc-windows-gnu`. That needs the Rust target and a C compiler for it, such as MinGW, for the
+dependencies that build C code. CI would otherwise be the first to compile it.
 
-Cargo decides what to rebuild from file times, and it has missed a file that was broken on purpose and restored, so
-a later run tested the broken code. When you break code to see a test fail, do it in a worktree of its own, apart
-from the build you use as evidence, and run `cargo clean -p CRATE` after you restore it.
+Cargo decides what to rebuild from file times, so anything that leaves a restored file looking older than the build,
+such as a clock that steps back, leaves the broken build in place. That has happened in agent VMs. When you break
+code to see a test fail, do it in a worktree and a target directory (`CARGO_TARGET_DIR`) of their own, apart from
+the build you use as evidence, and run `cargo clean -p CRATE` after you restore it.
 
 ## Code
 

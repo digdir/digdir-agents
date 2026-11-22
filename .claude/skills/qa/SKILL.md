@@ -48,7 +48,7 @@ Your brief says which phase the work is in.
 ### The build
 
 - Reproduce the evidence. Check out the commit that holds the test alone and run it: it has to fail, on what it
-  asserts and for the reason given, and `make lint` has to pass on it, or CI never reaches the test. Check out the
+  asserts and for the reason given, and `make fmt lint` has to pass on it, or CI never reaches the test. Check out the
   head and run it again: it has to pass.
 - For each test the change relies on, find out whether it would pass without the change, such as one that asserts
   on what it set up itself. When you break the code to see, do it as
