@@ -5,7 +5,7 @@ use crate::support;
 use std::{io::Cursor, path::PathBuf, rc::Rc};
 
 use agent::{
-    AgentId, HomeSpec,
+    HomeSpec,
     control_plane::AgentRecord,
     sandbox::{Assignment, PlacedSkills, PlatformAdapter as _, ProviderId, platform::Linux},
 };
@@ -135,63 +135,20 @@ fn declared(record: &AgentRecord) -> Vec<agent::Harness> {
         .collect()
 }
 
-/// Setup acts on the installed set preparation reported, not on everything the agent declares.
-///
-/// The two run in the same convergence pass and must agree about an optional installation whose
-/// host login was absent. Preparation decides and reports; setup is told. An omitted harness is
-/// skipped entirely: not verified, not configured.
-#[tokio::test(flavor = "local")]
-#[allow(clippy::too_many_lines)]
-async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
-    let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
+/// What [`worker_record`] writes in the agent's instruction file.
+const INSTRUCTIONS: &str = "test instructions\n";
+
+/// Agent `worker` at generation 1, whose home and instruction file this writes in `directory`.
+fn worker_record(directory: &std::path::Path) -> AgentRecord {
+    let home = directory.join("home");
     std::fs::create_dir_all(&home).expect("home directory");
-    std::fs::write(directory.path().join("instructions.md"), "test instructions\n").expect("instruction file");
-    let agent_id: AgentId = "5c0fd6ac-1d5a-4f8b-9f58-6b0f4de1f6c1".parse().expect("Agent ID");
+    std::fs::write(directory.join("instructions.md"), INSTRUCTIONS).expect("instruction file");
     let mut resource = support::agent("worker");
     resource.metadata.generation = 1;
     resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.harnesses[0].default = true;
-    resource.spec.harnesses.push(agent::HarnessSpec {
-        kind: agent::Harness::Codex,
-        version: None,
-        login: agent::harness::LoginSet::default(),
-        auth: agent::HarnessAuthMode::Mediated,
-        optional: true,
-        default: false,
-        defaults: agent::ModelSelection::default(),
-    });
-    resource.spec.secrets = vec![
-        secret("GITHUB_TOKEN", &["github.com", "api.github.com"]),
-        secret("GATEWAY_KEY", &["gateway.example.com"]),
-    ];
-    resource.spec.environment = vec![agent::EnvironmentSpec {
-        name: "GIT_USER_NAME".into(),
-        source: None,
-        value: None,
-    }];
-    resource.spec.access = vec![agent::AccessSpec::Ssh {}];
-    resource.spec.network.deny = vec!["metadata.google.internal".into()];
-    let bind = |target: &str, read_only: bool, optional: bool| agent::MountSpec::Bind {
-        source: Some(directory.path().to_path_buf()),
-        target: SandboxPath::new(target),
-        read_only,
-        optional,
-    };
-    // Only the folders mounted from the host are listed: not the optional one whose source was missing when the
-    // agent was created, nor storage the sandbox owns.
-    resource.spec.sandbox.mounts = vec![
-        bind("/home/agent/code/app", false, false),
-        bind("/home/agent/code/reports", true, false),
-        bind("/home/agent/code/missing", false, true),
-        agent::MountSpec::Tmpfs {
-            target: SandboxPath::new("/scratch"),
-            capacity: "1Gi".parse().expect("capacity"),
-        },
-    ];
-    let record = AgentRecord {
-        id: agent_id,
-        source_directory: directory.path().to_path_buf(),
+    AgentRecord {
+        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
+        source_directory: directory.to_path_buf(),
         manifest_path: None,
         env_file: None,
         agent: resource,
@@ -201,7 +158,57 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
         lifetime: agent::Lifetime::UntilDeleted,
         bindings: std::collections::BTreeMap::new(),
         exposed_files: std::collections::BTreeSet::new(),
+    }
+}
+
+/// Setup acts on the installed set preparation reported, not on everything the agent declares.
+///
+/// The two run in the same convergence pass and must agree about an optional installation whose
+/// host login was absent. Preparation decides and reports; setup is told. An omitted harness is
+/// skipped entirely: not verified, not configured.
+#[tokio::test(flavor = "local")]
+#[allow(clippy::too_many_lines)]
+async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
+    let directory = TempDir::new().expect("temporary directory");
+    let mut record = worker_record(directory.path());
+    record.agent.spec.harnesses[0].default = true;
+    record.agent.spec.harnesses.push(agent::HarnessSpec {
+        kind: agent::Harness::Codex,
+        version: None,
+        login: agent::harness::LoginSet::default(),
+        auth: agent::HarnessAuthMode::Mediated,
+        optional: true,
+        default: false,
+        defaults: agent::ModelSelection::default(),
+    });
+    record.agent.spec.secrets = vec![
+        secret("GITHUB_TOKEN", &["github.com", "api.github.com"]),
+        secret("GATEWAY_KEY", &["gateway.example.com"]),
+    ];
+    record.agent.spec.environment = vec![agent::EnvironmentSpec {
+        name: "GIT_USER_NAME".into(),
+        source: None,
+        value: None,
+    }];
+    record.agent.spec.access = vec![agent::AccessSpec::Ssh {}];
+    record.agent.spec.network.deny = vec!["metadata.google.internal".into()];
+    let bind = |target: &str, read_only: bool, optional: bool| agent::MountSpec::Bind {
+        source: Some(directory.path().to_path_buf()),
+        target: SandboxPath::new(target),
+        read_only,
+        optional,
     };
+    // Only the folders mounted from the host are listed: not the optional one whose source was missing when the
+    // agent was created, nor storage the sandbox owns.
+    record.agent.spec.sandbox.mounts = vec![
+        bind("/home/agent/code/app", false, false),
+        bind("/home/agent/code/reports", true, false),
+        bind("/home/agent/code/missing", false, true),
+        agent::MountSpec::Tmpfs {
+            target: SandboxPath::new("/scratch"),
+            capacity: "1Gi".parse().expect("capacity"),
+        },
+    ];
 
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
@@ -292,8 +299,7 @@ as one-off images, finished worktrees and build output, and nothing else.
 <!-- agentd: end of Agent sandbox section -->
 
 <!-- agentd: the agent's own instructions, from spec.instructions -->
-test instructions
-",
+{INSTRUCTIONS}",
         agent::build_version()
     );
     assert_eq!(instructions, expected);
@@ -305,33 +311,16 @@ test instructions
 #[tokio::test(flavor = "local")]
 async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns() {
     let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
     let skill = directory.path().join("skills").join("agentctl");
     std::fs::create_dir_all(&skill).expect("skill directory");
     std::fs::write(skill.join("SKILL.md"), "---\nname: agentctl\n---\nour own").expect("skill file");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.instructions = Vec::new();
-    resource.spec.skills = vec![agent::SkillSpec {
+    let mut record = worker_record(directory.path());
+    record.agent.spec.instructions = Vec::new();
+    record.agent.spec.skills = vec![agent::SkillSpec {
         source: PathBuf::from("skills/agentctl"),
         name: None,
         optional: false,
     }];
-    let record = AgentRecord {
-        id: "0b6f3c7e-4a8d-4c55-9a3e-2f1d7c9b8e10".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
         backend.queue_execution_events_matching(
@@ -411,9 +400,6 @@ async fn linux_setup_places_the_section_above_an_instruction_file_the_image_owns
 async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_declares() {
     const SKILLS: &str = "/home/agent/.claude/skills";
     let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    std::fs::write(directory.path().join("instructions.md"), "test instructions\n").expect("instruction file");
     for name in ["evidence", "review"] {
         let skill = directory.path().join("skills").join(name);
         std::fs::create_dir_all(&skill).expect("skill directory");
@@ -424,23 +410,8 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
         name: name.map(str::to_owned),
         optional: false,
     };
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.skills = vec![skill("skills/evidence", None), skill("skills/review", None)];
-    let mut record = AgentRecord {
-        id: "7c2e9a41-5b3d-4f6e-8a1c-0d9b4e7f2a63".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
+    let mut record = worker_record(directory.path());
+    record.agent.spec.skills = vec![skill("skills/evidence", None), skill("skills/review", None)];
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..3 {
         backend.queue_execution_events_matching(
@@ -487,7 +458,7 @@ async fn linux_setup_removes_the_skills_and_instructions_an_agent_no_longer_decl
         .await
         .expect("first setup");
     let instructions = String::from_utf8(read_file(&sandbox, "/home/agent/.claude/CLAUDE.md").await).expect("UTF-8");
-    assert!(instructions.ends_with("\ntest instructions\n"), "{instructions}");
+    assert!(instructions.ends_with(&format!("\n{INSTRUCTIONS}")), "{instructions}");
     assert_eq!(
         first.skills,
         placed(&[(SKILLS, &["evidence", "review", "agentctl", "agent-definition"])])
@@ -563,9 +534,6 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
     const CLAUDE: &str = "/home/agent/.claude/skills";
     const AGENTS: &str = "/home/agent/.agents/skills";
     let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    std::fs::write(directory.path().join("instructions.md"), "test instructions\n").expect("instruction file");
     for name in ["evidence", "review"] {
         let skill = directory.path().join("skills").join(name);
         std::fs::create_dir_all(&skill).expect("skill directory");
@@ -576,11 +544,9 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
         name: None,
         optional: false,
     };
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.harnesses[0].default = true;
-    resource.spec.harnesses.push(agent::HarnessSpec {
+    let mut record = worker_record(directory.path());
+    record.agent.spec.harnesses[0].default = true;
+    record.agent.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
         version: None,
         login: agent::harness::LoginSet::default(),
@@ -589,20 +555,7 @@ async fn linux_setup_removes_dropped_skills_from_each_harness_folder_it_placed_t
         default: false,
         defaults: agent::ModelSelection::default(),
     });
-    resource.spec.skills = vec![skill("evidence"), skill("review")];
-    let mut record = AgentRecord {
-        id: "0b6f3d52-8e1a-4c7b-9d24-5a3e8f1c6b90".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
+    record.agent.spec.skills = vec![skill("evidence"), skill("review")];
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..4 {
         backend.queue_execution_events_matching(
@@ -774,26 +727,8 @@ async fn linux_setup_approves_claude_bash_requests_in_bypass_mode_for_every_clau
 
     const MANAGED_SETTINGS: &str = "/etc/claude-code/managed-settings.d/10-agent-platform.json";
     let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.harnesses[0].version = None;
-    let record = AgentRecord {
-        id: "5d0c2f7a-93b1-4e8e-8c4f-1a6b2e9d7f30".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
+    let mut record = worker_record(directory.path());
+    record.agent.spec.harnesses[0].version = None;
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
         backend.queue_execution_events_matching(
@@ -877,23 +812,8 @@ fn secret(environment: &str, hosts: &[&str]) -> agent::SecretSpec {
 #[tokio::test(flavor = "local")]
 async fn linux_setup_without_a_home_copies_nothing_into_the_guest_home() {
     let directory = TempDir::new().expect("temporary directory");
-    std::fs::write(directory.path().join("instructions.md"), "test instructions\n").expect("instruction file");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = None;
-    let record = AgentRecord {
-        id: "0d9b5f5e-8a8f-4d0e-9a51-5b1f6f0c2a37".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
+    let mut record = worker_record(directory.path());
+    record.agent.spec.home = None;
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
         is_claude_version,
@@ -943,9 +863,6 @@ async fn linux_setup_without_a_home_copies_nothing_into_the_guest_home() {
 #[allow(clippy::too_many_lines)]
 async fn linux_setup_rewrites_configuration_without_owning_workspace_initialization() {
     let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    std::fs::write(directory.path().join("instructions.md"), "test instructions\n").expect("instruction file");
     std::fs::write(
         directory.path().join("environment.md"),
         "# Environment\n\nhas a browser\n",
@@ -955,21 +872,18 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     std::fs::create_dir_all(skill.join("references")).expect("skill directory");
     std::fs::write(skill.join("SKILL.md"), "---\nname: evidence\n---\ncapture").expect("skill file");
     std::fs::write(skill.join("references").join("gif.md"), "palette").expect("skill reference");
-    let agent_id: AgentId = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.skills = vec![agent::SkillSpec {
+    let mut record = worker_record(directory.path());
+    record.agent.spec.skills = vec![agent::SkillSpec {
         source: PathBuf::from("skills/evidence"),
         name: None,
         optional: false,
     }];
-    resource.spec.instructions.push(agent::InstructionsSpec {
+    record.agent.spec.instructions.push(agent::InstructionsSpec {
         source: PathBuf::from("environment.md"),
         optional: false,
     });
-    resource.spec.harnesses[0].default = true;
-    resource.spec.harnesses.push(agent::HarnessSpec {
+    record.agent.spec.harnesses[0].default = true;
+    record.agent.spec.harnesses.push(agent::HarnessSpec {
         kind: agent::Harness::Codex,
         version: Some("0.149.1".into()),
         login: agent::harness::LoginSet::default(),
@@ -978,19 +892,6 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
         default: false,
         defaults: agent::ModelSelection::default(),
     });
-    let record = AgentRecord {
-        id: agent_id,
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
 
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
@@ -1067,7 +968,9 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
     let instructions = String::from_utf8(instructions).expect("UTF-8 instructions");
     assert!(instructions.contains("\n# Agent sandbox\n"), "{instructions}");
     assert!(
-        instructions.ends_with("spec.instructions -->\ntest instructions\n\n# Environment\n\nhas a browser\n"),
+        instructions.ends_with(&format!(
+            "spec.instructions -->\n{INSTRUCTIONS}\n# Environment\n\nhas a browser\n"
+        )),
         "the agent's own instructions follow the agent sandbox section: {instructions}"
     );
     let codex_instructions = read_file(&sandbox, "/home/agent/.codex/AGENTS.md").await;
@@ -1086,26 +989,7 @@ async fn linux_setup_rewrites_configuration_without_owning_workspace_initializat
 #[allow(clippy::too_many_lines)]
 async fn linux_setup_waits_for_systemd_and_restores_managed_podman_configuration() {
     let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
-    let agent_id: AgentId = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    let record = AgentRecord {
-        id: agent_id,
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
+    let record = worker_record(directory.path());
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
         backend.queue_execution_events_matching(
@@ -1177,27 +1061,8 @@ async fn linux_setup_waits_for_systemd_and_restores_managed_podman_configuration
 #[tokio::test(flavor = "local")]
 async fn linux_setup_accepts_any_installed_version_when_none_is_declared() {
     let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
-    let agent_id: AgentId = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.harnesses[0].version = None;
-    let record = AgentRecord {
-        id: agent_id,
-        source_directory: PathBuf::from(directory.path()),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
+    let mut record = worker_record(directory.path());
+    record.agent.spec.harnesses[0].version = None;
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
         is_claude_version,
@@ -1260,25 +1125,7 @@ async fn linux_setup_enables_huge_pages_only_for_nested_sandboxes() {
         (true, true, true, false, 1),
     ] {
         let directory = TempDir::new().expect("temporary directory");
-        let home = directory.path().join("home");
-        std::fs::create_dir_all(&home).expect("home directory");
-        std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
-        let mut resource = support::agent("worker");
-        resource.metadata.generation = 1;
-        resource.spec.home = Some(HomeSpec { source: home });
-        let record = AgentRecord {
-            id: "8d1b0d3e-3c55-4a8f-9e0a-2f3f1f6c9b21".parse().expect("Agent ID"),
-            source_directory: PathBuf::from(directory.path()),
-            manifest_path: None,
-            env_file: None,
-            agent: resource,
-            optional_mount_sources: std::collections::BTreeMap::new(),
-            volume_revisions: std::collections::BTreeMap::new(),
-            origin: agent::Origin::Local,
-            lifetime: agent::Lifetime::UntilDeleted,
-            bindings: std::collections::BTreeMap::new(),
-            exposed_files: std::collections::BTreeSet::new(),
-        };
+        let record = worker_record(directory.path());
         let backend = Rc::new(memory::Provider::new());
         if !kvm {
             backend.queue_execution_events_matching(|spec| is_presence_check(spec, "-c", "/dev/kvm"), completed(1));
@@ -1318,26 +1165,8 @@ async fn linux_setup_enables_huge_pages_only_for_nested_sandboxes() {
 async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
     const RESTARTED_URL: &str = "http://host.microsandbox.internal:4200";
     let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    std::fs::write(directory.path().join("instructions.md"), "test instructions").expect("instruction file");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.harnesses[0].version = None;
-    let record = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: PathBuf::from(directory.path()),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
+    let mut record = worker_record(directory.path());
+    record.agent.spec.harnesses[0].version = None;
     let backend = Rc::new(memory::Provider::new());
     for _ in 0..2 {
         backend.queue_execution_events_matching(
@@ -1399,25 +1228,8 @@ async fn linux_setup_points_harness_hooks_at_the_current_platform_api_url() {
 #[tokio::test(flavor = "local")]
 async fn linux_setup_rejects_partial_git_identity() {
     let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.instructions.clear();
-    let record = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
+    let mut record = worker_record(directory.path());
+    record.agent.spec.instructions.clear();
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
         is_claude_version,
@@ -1454,25 +1266,7 @@ async fn linux_setup_rejects_partial_git_identity() {
 #[tokio::test(flavor = "local")]
 async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injection() {
     let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
-    let agent_id: AgentId = "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    let record = AgentRecord {
-        id: agent_id,
-        source_directory: PathBuf::from(directory.path()),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
+    let record = worker_record(directory.path());
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
         is_claude_version,
@@ -1523,40 +1317,26 @@ async fn linux_setup_rejects_a_declared_harness_version_mismatch_before_injectio
 #[tokio::test(flavor = "local")]
 async fn linux_setup_reads_home_instructions_and_skills_below_the_home_directory_for_a_tilde() {
     let directory = TempDir::new().expect("temporary directory");
+    let mut record = worker_record(directory.path());
     let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
     std::fs::write(home.join("tilde-marker"), "home").expect("home file");
     std::fs::write(directory.path().join("instructions.md"), "tilde instructions\n").expect("instruction file");
     let skill = directory.path().join("skills").join("evidence");
     std::fs::create_dir_all(&skill).expect("skill directory");
     std::fs::write(skill.join("SKILL.md"), "capture").expect("skill file");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec {
+    record.agent.spec.home = Some(HomeSpec {
         source: support::via_home(&home),
     });
-    resource.spec.instructions = vec![agent::InstructionsSpec {
+    record.agent.spec.instructions = vec![agent::InstructionsSpec {
         source: support::via_home(&directory.path().join("instructions.md")),
         optional: false,
     }];
-    resource.spec.skills = vec![agent::SkillSpec {
+    record.agent.spec.skills = vec![agent::SkillSpec {
         source: support::via_home(&skill),
         name: None,
         optional: false,
     }];
-    let record = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: directory.path().join("manifest"),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
+    record.source_directory = directory.path().join("manifest");
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
         is_claude_version,
@@ -1610,8 +1390,6 @@ async fn linux_setup_reads_home_instructions_and_skills_below_the_home_directory
 #[tokio::test(flavor = "local")]
 async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
     let directory = TempDir::new().expect("temporary directory");
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
     let skill = directory.path().join("skills").join("evidence");
     std::fs::create_dir_all(&skill).expect("skill directory");
     std::fs::write(skill.join("SKILL.md"), "capture").expect("skill file");
@@ -1620,28 +1398,13 @@ async fn linux_setup_rejects_a_skill_tree_with_a_fifo_instead_of_blocking() {
         .status()
         .expect("mkfifo runs");
     assert!(status.success());
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.instructions.clear();
-    resource.spec.skills = vec![agent::SkillSpec {
+    let mut record = worker_record(directory.path());
+    record.agent.spec.instructions.clear();
+    record.agent.spec.skills = vec![agent::SkillSpec {
         source: PathBuf::from("skills/evidence"),
         name: None,
         optional: false,
     }];
-    let record = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(
         is_claude_version,
@@ -1717,34 +1480,18 @@ async fn claude_sandbox_on(
 
 /// A record in `directory` with one required instruction file and the given optional sources.
 fn optional_sources_record(directory: &std::path::Path, instructions: &str, skill: &str) -> AgentRecord {
-    let home = directory.join("home");
-    std::fs::create_dir_all(&home).expect("home directory");
+    let mut record = worker_record(directory);
     std::fs::write(directory.join("instructions.md"), "required\n").expect("instruction file");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = Some(HomeSpec { source: home });
-    resource.spec.instructions.push(agent::InstructionsSpec {
+    record.agent.spec.instructions.push(agent::InstructionsSpec {
         source: PathBuf::from(instructions),
         optional: true,
     });
-    resource.spec.skills = vec![agent::SkillSpec {
+    record.agent.spec.skills = vec![agent::SkillSpec {
         source: PathBuf::from(skill),
         name: None,
         optional: true,
     }];
-    AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: directory.to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    }
+    record
 }
 
 /// Optional sources that do not exist are left out and reported, and the next pass installs them
@@ -1845,25 +1592,11 @@ async fn git_settings_written(
     accounts: &agent::sandbox::AccountSetup,
 ) -> Vec<(String, String)> {
     let directory = TempDir::new().expect("temporary directory");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = None;
-    resource.spec.instructions.clear();
+    let mut record = worker_record(directory.path());
+    record.agent.spec.home = None;
+    record.agent.spec.instructions.clear();
     // Without harnesses, setup writes no instruction file, which this sandbox has none of.
-    resource.spec.harnesses.clear();
-    let record = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
+    record.agent.spec.harnesses.clear();
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
     let service = SandboxService::new(backend.clone());
@@ -1968,15 +1701,15 @@ async fn workspace_actions(
     start_exit_code: i32,
 ) -> (Option<Option<agent::sandbox::WorkspaceClone>>, Vec<String>) {
     let directory = TempDir::new().expect("temporary directory");
-    let mut resource = support::agent("worker");
-    resource.metadata.generation = 1;
-    resource.spec.home = None;
-    resource.spec.instructions.clear();
-    resource.spec.harnesses.clear();
-    resource.spec.accounts.push(agent::AccountSpec::Github {
+    let mut record = worker_record(directory.path());
+    record.agent.spec.home = None;
+    record.agent.spec.instructions.clear();
+    record.agent.spec.harnesses.clear();
+    record.agent.spec.accounts.push(agent::AccountSpec::Github {
         login: "default".into(),
     });
-    resource
+    record
+        .agent
         .status
         .conditions
         .extend(accounts_reported.map(|status| agent::Condition {
@@ -1986,19 +1719,6 @@ async fn workspace_actions(
             message: String::new(),
             last_transition_time: None,
         }));
-    let record = AgentRecord {
-        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
-        source_directory: directory.path().to_path_buf(),
-        manifest_path: None,
-        env_file: None,
-        agent: resource,
-        optional_mount_sources: std::collections::BTreeMap::new(),
-        volume_revisions: std::collections::BTreeMap::new(),
-        origin: agent::Origin::Local,
-        lifetime: agent::Lifetime::UntilDeleted,
-        bindings: std::collections::BTreeMap::new(),
-        exposed_files: std::collections::BTreeSet::new(),
-    };
     let backend = Rc::new(memory::Provider::new());
     backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
     backend.queue_execution_events_matching(
