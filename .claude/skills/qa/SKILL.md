@@ -48,8 +48,9 @@ Your brief says which phase the work is in.
 ### The build
 
 - Reproduce the evidence. Check out the commit that holds the test alone and run it: it has to fail, on what it
-  asserts and for the reason given, and `make fmt lint` has to pass on it, or CI never reaches the test. Check out the
-  head and run it again: it has to pass.
+  asserts and for the reason given. CI never reaches the test unless the commit is formatted and passes `make lint`,
+  so check both on it: `make fmt` must leave `git status --porcelain` empty. Discard what it changed before you
+  check out the head, and run the test there again: it has to pass.
 - For each test the change relies on, find out whether it would pass without the change, such as one that asserts
   on what it set up itself. When you break the code to see, do it as
   [CONTRIBUTING.md](../../../CONTRIBUTING.md#development) describes.

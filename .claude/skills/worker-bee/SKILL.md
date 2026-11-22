@@ -242,9 +242,10 @@ set Status to Building.
   It has to fail on what it asserts, not on a compile error or in its setup. When the fix adds something the test
   calls, add only its signature in the test's commit, with a body that leaves the behaviour as it is.
   CI fails on that commit alone, so say in the hand-over comment that it does so on purpose, and that the squash
-  merge is what keeps it out of `main`. The commit has to pass `make fmt lint`, or CI stops before it runs the
-  test. When the bug shows on a platform you can't run, open the draft pull request with the `ci` label at that
-  commit, so that CI shows it failing there, before you push the fix.
+  merge is what keeps it out of `main`. CI stops before it runs the test unless the commit is formatted, so that
+  `make fmt` changes nothing, and passes `make lint`. When the bug shows on a platform you can't run, open the
+  draft pull request with the `ci` label at that commit, so that CI shows it failing there, before you push the
+  fix.
 - Write tests that would fail if the change were wrong, and show it for the ones that matter: break the code the
   way the test exists to catch, see it fail, and restore it, as
   [CONTRIBUTING.md](../../../CONTRIBUTING.md#development) describes. A test that asserts on what it just built
@@ -309,7 +310,9 @@ Start each check as a subagent with a fresh context, never as a copy of your own
   Link the comments on the issue and the pull request that are yours. Agents often post from one account, and QA
   can't otherwise tell your comments from a person's.
 
-Run nothing heavy of your own while a check measures time or runs under load. Your load becomes its result.
+Run nothing heavy of your own while a check measures time or runs under load. Your load becomes its result. When
+several issues run at once, the session that runs them holds the others' heavy work for as long as such a check
+runs.
 
 ### What you do with a finding
 
