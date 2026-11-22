@@ -10,7 +10,8 @@ const EVENTS: &[(&str, ActivityEvent)] = &[
     ("Stop", ActivityEvent::TurnCompleted),
     ("Interrupt", ActivityEvent::TurnCompleted),
     ("PermissionRequest", ActivityEvent::WaitingForInput),
-    // A `/compact` the operator sends fires no `Stop`, only this once the compaction is done.
+    // A `/compact` the operator sends fires no `Stop`, only this once the compaction is done. The
+    // script passes on only that one, and not a compaction the harness starts by itself.
     ("PostCompact", ActivityEvent::TurnCompleted),
 ];
 
@@ -21,7 +22,6 @@ const HOOK_TIMEOUT_SECONDS: u32 = 3;
 const SCRIPT: HookScript<'static> = HookScript {
     events: EVENTS,
     waiting_notifications: &[],
-    manual_only: &["PostCompact"],
 };
 
 /// Renders Codex's activity hook script.
