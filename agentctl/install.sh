@@ -86,7 +86,23 @@ source_release="${temporary}/release"
 trap 'rm -rf "${temporary}"' EXIT HUP INT TERM
 
 target="${install_root}/releases/${version}-${platform}"
+# An installed release that does not start is installed again, as new files. macOS can refuse to
+# run a file that was written to while a process had it open, until every such process exits, and
+# a new file runs regardless. The subshell keeps the shell's report of a killed command quiet.
+release_starts() {
+  (
+    "${target}/agentctl" --version || exit 1
+    "${target}/agentd" --version || exit 1
+  ) >/dev/null 2>&1
+}
+install_release=false
 if [ "${install_mode}" = standalone ] || [ ! -d "${target}" ]; then
+  install_release=true
+elif ! release_starts; then
+  echo "agentctl ${version} is installed but does not start, so it is installed again" >&2
+  install_release=true
+fi
+if [ "${install_release}" = true ]; then
   if [ -n "${local_archive}" ]; then
     archive="$(basename "${local_archive}")"
     cp "${local_archive}" "${temporary}/${archive}"

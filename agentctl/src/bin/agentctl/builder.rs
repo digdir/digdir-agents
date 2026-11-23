@@ -199,6 +199,7 @@ impl Builder {
             lifetime: remove.then_some(Lifetime::Ephemeral),
             name: None,
             allow_exposed_files: agreed,
+            allow_low_disk: false,
         };
         // Held while the person talks with it: agentd deletes an ephemeral builder when it goes.
         let (ran, _lease) = consent::send(

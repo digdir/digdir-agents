@@ -137,6 +137,10 @@ const STOP_SCRIPT: &str = include_str!("stop.sh");
 /// The tmux user option holding a session's name, which the status bar shows.
 const SESSION_NAME_OPTION: &str = "@agent_session_name";
 
+/// The tmux window option that marks the harness's window. Its output is the
+/// only window output the observation counts as the session's activity.
+const HARNESS_WINDOW_OPTION: &str = "@agent_harness";
+
 /// Observes attachment and the freshest terminal or transcript activity.
 async fn observe(session: &Session, sandbox: &SandboxHandle) -> Result<Observation, Error> {
     let inspected = run_lifecycle_execution(
@@ -316,6 +320,13 @@ fn launch_arguments(
         pane_target(session),
         SESSION_NAME_OPTION.into(),
         session.name.to_string(),
+        ";".into(),
+        "set-option".into(),
+        "-w".into(),
+        "-t".into(),
+        pane_target(session),
+        HARNESS_WINDOW_OPTION.into(),
+        "1".into(),
     ]);
     arguments
 }
@@ -767,16 +778,27 @@ mod tests {
             assert!(environment.contains(&expected), "{expected} in {environment:?}");
         }
         assert_eq!(
-            arguments[arguments.len() - 6..],
+            arguments[arguments.len() - 13..],
             [
                 ";",
                 "set-option",
                 "-t",
                 "=agent-session-dd4cdbaf-9ea0-477e-96dd-bbd6b1e4f7dc:",
                 "@agent_session_name",
-                "review"
+                "review",
+                ";",
+                "set-option",
+                "-w",
+                "-t",
+                "=agent-session-dd4cdbaf-9ea0-477e-96dd-bbd6b1e4f7dc:",
+                "@agent_harness",
+                "1"
             ],
-            "the label is set on the new session, after its command: {arguments:?}"
+            "the label and the harness's window are set on the new session, after its command: {arguments:?}"
+        );
+        assert!(
+            super::OBSERVE_SCRIPT.contains(&format!("#{{?{},", super::HARNESS_WINDOW_OPTION)),
+            "the observation counts the window the launch marks"
         );
     }
 

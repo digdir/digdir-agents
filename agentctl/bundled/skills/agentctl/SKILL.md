@@ -48,7 +48,8 @@ Write that file outside every checkout, from this agent's variables, and pass it
 **Size** a nested agent to fit inside this sandbox beside your own work. Disk usually runs out first: the nested
 agent's disk can grow to its `rootFilesystem.capacity`, and every image built for one stays in Podman's storage. Check
 `df -h /`, `nproc` and `free -g`, and keep its `capacity`, `cpu` and `memory` well below them; agents often ship a
-`nested` variant sized for this.
+`nested` variant sized for this. `apply` warns when the agents' disks there can together grow by more than the free
+space, and `agentctl get agents -o wide` shows how much of its capacity each one takes.
 
 ## On a host: rules
 
@@ -91,7 +92,9 @@ agentctl exec agent/NAME -- systemctl is-system-running
 
 - `--harness` is `claudeCode`, `codex` or `pi`. For trials, use the cheapest model and the lowest effort it offers.
 - `prompt --wait` returns when the turn completes; read its result with `turns`.
-- `exec` runs a command directly, for checking what a session did.
+- `exec` runs a command directly, for checking what a session did. It passes on standard input that is a pipe or a
+  file, such as a script piped into `sh`. A command that reads it waits for it to end, so give it `</dev/null` when
+  there is nothing to pass.
 - `attach` and `tui` need an interactive terminal; avoid them.
 - `agentctl get agents` and `agentctl get sessions --agent NAME` list what exists.
 

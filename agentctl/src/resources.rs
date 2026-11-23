@@ -136,6 +136,9 @@ pub struct Resources {
     /// Volumes, by name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<crate::volumes::Volume>,
+    /// The space on the host filesystem holding the agents' disks, as agentd last measured it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_disk: Option<crate::local::disk::DiskSpace>,
 }
 
 #[allow(

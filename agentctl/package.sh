@@ -34,6 +34,9 @@ case "${compression_level}" in
   [1-9]) ;;
   *) echo "AGENT_PACKAGE_COMPRESSION_LEVEL must be a gzip level from 1 to 9" >&2; exit 1 ;;
 esac
+# tar on macOS otherwise stores a file's extended attributes as a `._<name>` entry beside it, and the updater accepts
+# an archive that holds only the binaries. Other tars ignore the variable.
+export COPYFILE_DISABLE=1
 tar -cf "${temporary}/agent.tar" -C "${temporary}" "agentctl${executable_suffix}" "agentd${executable_suffix}"
 gzip "-${compression_level}" -c "${temporary}/agent.tar" > "${archive}"
 if command -v sha256sum >/dev/null 2>&1; then

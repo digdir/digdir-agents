@@ -12,6 +12,10 @@ use crate::{Agent, AgentId, Error, MountSpec, definitions::DefinitionSource, pro
 
 use super::{AgentRecord, SharedAgentStore, Wakeup};
 
+/// How long `apply` waits to measure the agents' disks for its overcommit warning. Each one is a
+/// `stat` and a read of its extents, so this only passes when the filesystem stalls.
+const OVERCOMMIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Desired state supplied by a local API client.
 #[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -37,6 +41,10 @@ pub struct ApplyRequest {
     /// other, also on an update, unless the agent was allowed to read it before.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub allow_exposed_files: BTreeSet<PathBuf>,
+    /// Make or start the agent also while the filesystem holding the sandboxes' disks is below
+    /// `lowDiskThreshold`, which agentd refuses otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_low_disk: bool,
     /// Agent manifest to store.
     pub agent: Agent,
 }
@@ -60,7 +68,9 @@ pub struct ControlPlane {
     provisioning: ProvisioningState,
     immediate_stops: ImmediateStops,
     volumes: Rc<dyn crate::volumes::VolumeStore>,
+    sandboxes: Option<Rc<crate::sandbox::Service>>,
     pub(super) bundled: Option<super::bundled::Bundled>,
+    host_disk: Option<super::HostDisk>,
 }
 
 /// Agents whose stop ends their sandbox at once, without letting the guest shut down.
@@ -122,8 +132,17 @@ impl ControlPlane {
             provisioning: ProvisioningState::default(),
             immediate_stops: ImmediateStops::default(),
             volumes: Rc::new(crate::volumes::memory::InMemoryVolumeStore::new()),
+            sandboxes: None,
             bundled: None,
+            host_disk: None,
         }
+    }
+
+    /// Shows on every agent whether the filesystem holding its disk is low on space.
+    #[must_use]
+    pub fn with_host_disk(mut self, host_disk: super::HostDisk) -> Self {
+        self.host_disk = Some(host_disk);
+        self
     }
 
     /// Runs agents from `definitions`, keeping its copies of them in `home`, agentd's home, which
@@ -149,6 +168,20 @@ impl ControlPlane {
         self
     }
 
+    /// The space on the host filesystem holding the sandboxes' disks, as last measured, or `None`
+    /// when nothing measures it.
+    #[must_use]
+    pub fn host_disk(&self) -> Option<crate::local::disk::DiskSpace> {
+        self.host_disk.as_ref().and_then(super::HostDisk::space)
+    }
+
+    /// Measures the root filesystem of each agent it gets or lists through `sandboxes`.
+    #[must_use]
+    pub fn with_sandboxes(mut self, sandboxes: Rc<crate::sandbox::Service>) -> Self {
+        self.sandboxes = Some(sandboxes);
+        self
+    }
+
     /// Projects the reconciler's in-memory provisioning state onto returned agents.
     #[must_use]
     pub fn with_provisioning(mut self, provisioning: ProvisioningState) -> Self {
@@ -163,6 +196,13 @@ impl ControlPlane {
     /// Returns an error when the request is invalid, changes an immutable field, conflicts with deletion,
     /// or cannot be stored.
     pub async fn apply(&self, request: ApplyRequest) -> Result<Agent, Error> {
+        // Boxed, as storing is a large future of its own.
+        let applied = Box::pin(self.store_applied(request)).await?;
+        Ok(self.with_overcommit(applied).await)
+    }
+
+    /// Stores the desired state `request` gives, as [`Self::apply`] does, without its warnings.
+    async fn store_applied(&self, request: ApplyRequest) -> Result<Agent, Error> {
         let given = self.validate_bind_sources(&request.binds).await?;
         // Boxed, as preparing reads the filesystem through several steps that would otherwise
         // make every caller's future as large.
@@ -206,6 +246,8 @@ impl ControlPlane {
                     let mut desired = bound.agent;
                     validate_immutable_fields(&current, &desired)?;
                     desired.spec.set_run_state(applied_run_state(run_state, Some(&current)));
+                    self.admit_start(Some(&current.agent), &desired, request.allow_low_disk)
+                        .await?;
                     let mut record = AgentRecord {
                         id: current.id,
                         source_directory: prepared.source_directory.clone(),
@@ -252,6 +294,7 @@ impl ControlPlane {
                     let mut new = prepared.clone();
                     Box::pin(new.bind(&given)).await?;
                     new.agent.spec.set_run_state(applied_run_state(run_state, None));
+                    self.admit_start(None, &new.agent, request.allow_low_disk).await?;
                     Box::pin(self.create(&new, crate::Lifetime::UntilDeleted, &request.allow_exposed_files)).await
                 }
                 Err(error) => return Err(error),
@@ -266,6 +309,43 @@ impl ControlPlane {
                 }
             }
         }
+    }
+
+    /// Adds to `applied` the warning that the agents' root disks can grow past the free space on
+    /// a filesystem holding them, the applied agent's among them.
+    ///
+    /// It is worked out on apply, when the person chooses capacities, rather than on every read,
+    /// since it measures every agent's disk. The agent is stored by then, so a failure to work it
+    /// out, or a measurement that takes longer than [`OVERCOMMIT_DEADLINE`], only leaves it out.
+    async fn with_overcommit(&self, mut applied: Agent) -> Agent {
+        let Some(sandboxes) = &self.sandboxes else {
+            return applied;
+        };
+        match tokio::time::timeout(OVERCOMMIT_DEADLINE, self.overcommit(sandboxes)).await {
+            Ok(Ok(warning)) => applied.status.conditions.extend(warning),
+            Ok(Err(error)) => tracing::debug!(%error, "could not compare the agents' disks with free space"),
+            Err(_) => tracing::debug!(
+                deadline = ?OVERCOMMIT_DEADLINE,
+                "gave up comparing the agents' disks with free space"
+            ),
+        }
+        applied
+    }
+
+    /// Works out the warning [`Self::with_overcommit`] adds, if any.
+    async fn overcommit(&self, sandboxes: &crate::sandbox::Service) -> Result<Option<crate::Condition>, Error> {
+        let records = self
+            .store
+            .list()
+            .await?
+            .into_iter()
+            .filter(|record| record.agent.metadata.deletion_timestamp.is_none())
+            .collect::<Vec<_>>();
+        Ok(sandboxes
+            .root_disk_room(&records)
+            .await?
+            .into_iter()
+            .find_map(|(space, room)| super::host_disk::overcommitted(space, room)))
     }
 
     /// Records in `record` the files that may hold real keys in its bind mounts, once the person has
@@ -358,7 +438,8 @@ impl ControlPlane {
     ///
     /// Returns an error when the agent does not exist or storage fails.
     pub async fn get(&self, name: &str) -> Result<Agent, Error> {
-        self.store.get_by_name(name).await.map(|record| self.resource(record))
+        let record = self.store.get_by_name(name).await?;
+        Ok(self.measured(record).await)
     }
 
     /// Lists every active agent ordered by name.
@@ -367,10 +448,8 @@ impl ControlPlane {
     ///
     /// Returns an error when storage cannot be read.
     pub async fn list(&self) -> Result<Vec<Agent>, Error> {
-        self.store
-            .list()
-            .await
-            .map(|records| records.into_iter().map(|record| self.resource(record)).collect())
+        let records = self.store.list().await?;
+        Ok(futures_util::future::join_all(records.into_iter().map(|record| self.measured(record))).await)
     }
 
     /// Reads an agent's stored status and the complete progress of its latest
@@ -504,20 +583,74 @@ impl ControlPlane {
     /// Records whether an agent's sandbox runs and returns the agent as stored,
     /// without waiting for the reconciler to stop or start it. A change is a new
     /// generation; setting the run state the agent already has changes nothing.
+    /// Running is a [`Self::start`] that does not allow a low disk.
     ///
     /// # Errors
     ///
     /// Returns an error when the agent does not exist, is being deleted, or
-    /// cannot be stored.
+    /// cannot be stored, or as [`Self::start`] says.
     pub async fn set_run_state(&self, name: &str, state: crate::RunState) -> Result<Agent, Error> {
+        if state == crate::RunState::Running {
+            return self.start(name, false).await;
+        }
         let record = self
             .change_desired(name, |agent| {
                 let changed = agent.spec.run_state() != state;
                 agent.spec.set_run_state(state);
-                changed
+                Ok(changed)
             })
             .await?;
         Ok(self.resource(record))
+    }
+
+    /// Records an agent as running, as [`Self::set_run_state`] does. A stopped agent is not
+    /// started while the filesystem holding the sandboxes' disks is low, unless `allow_low_disk`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the agent does not exist, is being deleted, cannot be stored, or is
+    /// stopped while the filesystem is low and `allow_low_disk` is not given.
+    pub async fn start(&self, name: &str, allow_low_disk: bool) -> Result<Agent, Error> {
+        // Measuring the free space takes a while, so it comes before the change, which is retried
+        // on a concurrent write. An agent stopped meanwhile is a conflict rather than started
+        // unchecked.
+        let checked = self.store.get_by_name(name).await?.agent.spec.is_stopped();
+        if checked {
+            self.admit(allow_low_disk).await?;
+        }
+        let record = self
+            .change_desired(name, |agent| {
+                if !agent.spec.is_stopped() {
+                    return Ok(false);
+                }
+                if !checked {
+                    return Err(Error::Conflict);
+                }
+                agent.spec.set_run_state(crate::RunState::Running);
+                Ok(true)
+            })
+            .await?;
+        Ok(self.resource(record))
+    }
+
+    /// Refuses to make or start a sandbox while the filesystem holding the sandboxes' disks is
+    /// low, unless `allow_low_disk`; see [`super::HostDisk::admit`].
+    pub(super) async fn admit(&self, allow_low_disk: bool) -> Result<(), Error> {
+        match &self.host_disk {
+            Some(host_disk) => host_disk.admit(allow_low_disk).await,
+            None => Ok(()),
+        }
+    }
+
+    /// Refuses `desired` as [`Self::admit`] does when it starts an agent: a new one, when `current`
+    /// is `None`, or one `current` has stopped. An agent already running keeps the space it holds.
+    async fn admit_start(&self, current: Option<&Agent>, desired: &Agent, allow_low_disk: bool) -> Result<(), Error> {
+        let starts = !desired.spec.is_stopped() && current.is_none_or(|current| current.spec.is_stopped());
+        if starts {
+            self.admit(allow_low_disk).await
+        } else {
+            Ok(())
+        }
     }
 
     /// Records an agent as stopped, as [`Self::set_run_state`] does, and has the reconciler end
@@ -552,7 +685,7 @@ impl ControlPlane {
             .change_desired(name, |agent| {
                 agent.spec.set_run_state(crate::RunState::Running);
                 agent.metadata.restart_timestamp = Some(requested);
-                true
+                Ok(true)
             })
             .await?;
         if now {
@@ -564,14 +697,19 @@ impl ControlPlane {
 
     /// Stores `change` to an agent's desired state as a new generation, retrying it on a
     /// concurrent write, wakes the reconciler and returns the agent as stored. When `change`
-    /// reports that it changed nothing, nothing is stored and the reconciler is only woken.
-    async fn change_desired(&self, name: &str, change: impl Fn(&mut Agent) -> bool) -> Result<AgentRecord, Error> {
+    /// reports that it changed nothing, nothing is stored and the reconciler is only woken. When
+    /// it fails, nothing is stored.
+    async fn change_desired(
+        &self,
+        name: &str,
+        change: impl Fn(&mut Agent) -> Result<bool, Error>,
+    ) -> Result<AgentRecord, Error> {
         loop {
             let mut record = self.store.get_by_name(name).await?;
             if record.agent.metadata.deletion_timestamp.is_some() {
                 return Err(Error::Conflict);
             }
-            if change(&mut record.agent) {
+            if change(&mut record.agent)? {
                 let expected_generation = record.agent.metadata.generation;
                 record.agent.metadata.generation = expected_generation + 1;
                 match self.store.put(record.clone(), expected_generation).await {
@@ -603,12 +741,34 @@ impl ControlPlane {
 }
 
 impl ControlPlane {
+    /// Like [`Self::resource`], and with the host storage the agent's root filesystem takes.
+    ///
+    /// It is measured for each request rather than kept in status, since measuring one file per agent is
+    /// cheaper than keeping a stored copy current, also for a stopped agent no reconciler visits.
+    /// An agent whose sandbox cannot be measured is returned without it.
+    async fn measured(&self, record: AgentRecord) -> Agent {
+        let usage = match &self.sandboxes {
+            Some(sandboxes) => sandboxes.root_filesystem_usage(&record).await.unwrap_or_else(|error| {
+                tracing::debug!(agent = %record.agent.metadata.name, %error, "could not measure root filesystem");
+                None
+            }),
+            None => None,
+        };
+        let mut agent = self.resource(record);
+        agent.status.root_filesystem = usage;
+        agent
+    }
+
     /// Converts a stored record to its API representation, projecting
     /// provisioning progress, provenance and volume revisions into status.
     pub(super) fn resource(&self, record: AgentRecord) -> Agent {
         let progress = self.provisioning.summary(record.id);
         let mut agent = projected(record);
         agent.status.progress = progress;
+        agent
+            .status
+            .conditions
+            .extend(self.host_disk.as_ref().and_then(super::HostDisk::condition));
         agent
     }
 }

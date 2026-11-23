@@ -35,7 +35,7 @@ mod tui;
 mod update;
 mod watch;
 
-use format::{condition_status, format_age, format_harnesses, session_state};
+use format::{format_age, session_state};
 use futures_util::StreamExt as _;
 use sandbox::{execution::ExecutionEvent, terminal::TerminalAttachOutcome};
 use tokio::io::AsyncWriteExt as _;
@@ -61,6 +61,9 @@ enum Command {
     /// Open the terminal UI with every agent and session.
     Tui,
     /// Create or update an agent, or a volume, from a manifest.
+    ///
+    /// Warns when the root disks of the agents on this host can together grow past the free space
+    /// on the filesystem holding them.
     Apply {
         /// Agent or volume manifest path; defaults to ./agent.yaml.
         #[arg(short = 'f', long = "filename", conflicts_with_all = ["variant", "from"])]
@@ -88,6 +91,10 @@ enum Command {
         /// real keys, without asking. At a terminal agentctl asks, and otherwise refuses them.
         #[arg(long)]
         allow_env_files: bool,
+        /// Start the agent also while the host disk holding agents' disks is below agentd's
+        /// `lowDiskThreshold`, which agentd refuses otherwise.
+        #[arg(long)]
+        allow_low_disk: bool,
         /// Stay attached after applying and show provisioning progress until the agent is Ready.
         #[arg(long)]
         wait: bool,
@@ -131,6 +138,10 @@ enum Command {
         /// real keys, without asking. At a terminal agentctl asks, and otherwise refuses them.
         #[arg(long)]
         allow_env_files: bool,
+        /// Start the agent also while the host disk holding agents' disks is below agentd's
+        /// `lowDiskThreshold`, which agentd refuses otherwise.
+        #[arg(long)]
+        allow_low_disk: bool,
         #[command(flatten)]
         selection: SessionSelection,
     },
@@ -161,6 +172,10 @@ enum Command {
     Start {
         #[command(flatten)]
         target: RunStateTarget,
+        /// Start it also while the host disk holding agents' disks is below agentd's
+        /// `lowDiskThreshold`, which agentd refuses otherwise.
+        #[arg(long)]
+        allow_low_disk: bool,
     },
     /// Stop an agent's sandbox VM, start it on its kept disk and wait until the agent is Ready.
     ///
@@ -221,10 +236,11 @@ enum Command {
     },
     /// Run a command in an agent.
     Exec {
-        /// Pass stdin to an allocated terminal.
-        #[arg(short = 'i', long, requires = "tty")]
+        /// Pass standard input to the command also when it is a terminal. It is passed without this
+        /// when it is a pipe or a file.
+        #[arg(short = 'i', long)]
         stdin: bool,
-        /// Allocate a terminal; currently used together with --stdin.
+        /// Allocate a terminal for the command, together with --stdin.
         #[arg(short = 't', long, requires = "stdin")]
         tty: bool,
         /// Agent resource or name; inferred from the current directory when omitted.
@@ -301,7 +317,7 @@ enum Command {
         #[command(flatten)]
         input: PromptInput,
     },
-    /// Deliver a prompt to a running session's harness.
+    /// Deliver a prompt to a session's harness, resuming an Idle session first.
     Prompt {
         #[command(flatten)]
         target: SessionTarget,
@@ -345,7 +361,7 @@ enum Command {
         watch: bool,
         /// Output format.
         #[arg(short = 'o', long, default_value = "table", value_enum)]
-        output: OutputFormat,
+        output: GetFormat,
     },
     /// Show detailed state and conditions for one resource.
     Describe {
@@ -594,6 +610,24 @@ enum OutputFormat {
     Json,
 }
 
+/// What `get` prints: [`OutputFormat`], or a table with more columns where a resource has them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum GetFormat {
+    Table,
+    /// A table with more columns, such as the host storage each agent's root filesystem takes.
+    Wide,
+    Json,
+}
+
+impl From<GetFormat> for OutputFormat {
+    fn from(format: GetFormat) -> Self {
+        match format {
+            GetFormat::Table | GetFormat::Wide => Self::Table,
+            GetFormat::Json => Self::Json,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 enum CommandError {
     #[error(transparent)]
@@ -712,17 +746,22 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("agentctl: {error}");
+            report_error(&error, &mut std::io::stderr());
             ExitCode::FAILURE
         }
     }
+}
+
+fn report_error(error: &CommandError, stderr: &mut impl std::io::Write) {
+    // Nothing is left to tell when standard error cannot be written.
+    writeln!(stderr, "agentctl: {error}").ok();
 }
 
 fn run() -> CommandResult<ExitCode> {
     let arguments = Arguments::parse();
     let home = ControlPlaneHome::resolve(arguments.home.as_deref())?;
     let client = Client::for_path(home.socket_path());
-    LocalRuntime::new().map_err(Error::from)?.block_on(async move {
+    run_command(async move {
         if !matches!(arguments.command, Command::Self_ { .. }) {
             self_update::resume_pending_before_command(&home)?;
         }
@@ -738,6 +777,25 @@ fn run() -> CommandResult<ExitCode> {
         }
         Box::pin(execute(arguments.command, &home, &client)).await
     })
+}
+
+/// How long a command's blocking work, such as a write of its output, gets to finish once the
+/// command has ended.
+const BLOCKING_WORK_GRACE: Duration = Duration::from_secs(1);
+
+/// Runs a command on a runtime of its own, and leaves once the command has ended, without waiting
+/// for blocking work that may never end.
+///
+/// A read of standard input runs on the runtime's blocking threads, and stays blocked for as long
+/// as the input stays open, as `ssh` keeps the input of `ssh-proxy`. Dropping the runtime would
+/// wait for it, and the command's error with it. Nothing can use what it reads once the command
+/// has ended, so it ends with the process. Work that does end, such as a write of output still
+/// under way, gets [`BLOCKING_WORK_GRACE`] to finish.
+fn run_command<T>(command: impl Future<Output = CommandResult<T>>) -> CommandResult<T> {
+    let runtime = LocalRuntime::new().map_err(Error::from)?;
+    let result = runtime.block_on(command);
+    runtime.shutdown_timeout(BLOCKING_WORK_GRACE);
+    result
 }
 
 #[allow(
@@ -799,6 +857,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             name,
             env_file,
             allow_env_files,
+            allow_low_disk,
             wait,
             timeout,
         } => {
@@ -824,6 +883,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 request.agent.metadata.name = name;
             }
             request.binds = absolute_binds(mounts)?;
+            request.allow_low_disk = allow_low_disk;
             let reader = format!("agent/{}", request.agent.metadata.name);
             let ask = consent::Ask {
                 reader: &reader,
@@ -839,6 +899,14 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             .await?;
             let name = applied.metadata.name;
             println!("agent/{name} applied");
+            let overcommitted = applied
+                .status
+                .conditions
+                .iter()
+                .filter(|condition| condition.kind == agent::Condition::HOST_DISK_OVERCOMMITTED);
+            for condition in overcommitted {
+                eprintln!("Warning: {}", condition.message);
+            }
             if wait {
                 let converged = wait_until_converged(client, &name, timeout).await?;
                 let outcome = if converged.spec.is_stopped() {
@@ -927,7 +995,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
         }
         Command::Stop { target } => stop(client, target).await?,
         Command::Kill { target } => stop(client, target.into()).await?,
-        Command::Start { target } => set_run_state(client, target, RunState::Running).await?,
+        Command::Start { target, allow_low_disk } => start(client, target, allow_low_disk).await?,
         Command::Restart { target, now } => restart(client, target, now).await?,
         Command::Archive { target } => set_archived(client, target, true).await?,
         Command::Unarchive { target } => set_archived(client, target, false).await?,
@@ -948,6 +1016,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
             session,
             env_file,
             allow_env_files,
+            allow_low_disk,
             selection,
         } => {
             let mut binds = mounts;
@@ -959,6 +1028,7 @@ async fn execute(command: Command, home: &ControlPlaneHome, client: &Client) -> 
                 name,
                 env_file,
                 allow_env_files,
+                allow_low_disk,
             };
             let session = (!detach).then(|| SessionName::new(session)).transpose()?;
             run_agent(home, client, run, session, selection).await?;
@@ -1071,8 +1141,10 @@ async fn get_agents(
     name: Option<String>,
     ephemeral: bool,
     watch: bool,
-    output: OutputFormat,
+    output: GetFormat,
 ) -> CommandResult<()> {
+    let wide = output == GetFormat::Wide;
+    let output = OutputFormat::from(output);
     let agents = if let Some(name) = &name {
         vec![client.get(name).await?]
     } else {
@@ -1086,7 +1158,7 @@ async fn get_agents(
             |resources| {
                 let mut agents = resources.agents;
                 agents.retain(|agent| name.as_ref().is_none_or(|name| agent.metadata.name == *name));
-                render_watched(output, &agents, agents_table)
+                render_watched(output, &agents, |agents| format::agents_table(agents, wide))
             },
             &mut std::io::stdout(),
         )
@@ -1094,7 +1166,7 @@ async fn get_agents(
     }
     match output {
         OutputFormat::Json => print_json(&agents)?,
-        OutputFormat::Table => print_table(&agents_table(&agents)),
+        OutputFormat::Table => print_table(&format::agents_table(&agents, wide)),
     }
     Ok(())
 }
@@ -1105,14 +1177,15 @@ async fn get_resources(
     name: Option<String>,
     scope: SessionScope,
     watch: bool,
-    output: OutputFormat,
+    format: GetFormat,
 ) -> CommandResult<()> {
+    let output = OutputFormat::from(format);
     let (resource, name) = resource_reference(resource, name)?;
     // A watch first reads as `get` does, so that it fails the same way, such as on a misspelled name.
     match resource {
         Resource::Agent => {
             reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
-            return get_agents(client, name, scope.ephemeral, watch, output).await;
+            return get_agents(client, name, scope.ephemeral, watch, format).await;
         }
         Resource::Definition => {
             reject_session_scope(scope.agent.as_deref(), scope.variant.as_ref(), scope.all_agents)?;
@@ -1285,7 +1358,7 @@ async fn exec_command(
         )
         .await?;
     let spec = agent::sandbox::platform::execution_spec(&target.operating_system, command, tty)?;
-    let status = if stdin && tty {
+    let status = if tty {
         match agent::sandbox::attach_terminal(
             home.path(),
             &target.sandbox,
@@ -1298,10 +1371,24 @@ async fn exec_command(
             _ => return Err(Error::Session("terminal execution returned an unsupported outcome".into()).into()),
         }
     } else {
-        let execution = agent::sandbox::start_execution(home.path(), &target, spec).await?;
-        stream_execution(execution).await?
+        // As `ssh` does, a pipe or a file reaches the command without asking, since nothing else
+        // would read it. A terminal does with `-i`, as with `kubectl exec`, so that a command does
+        // not wait for typed input that nobody means to give it.
+        let passes_input = stdin || !std::io::stdin().is_terminal();
+        let mut request = ::sandbox::execution::StartExecutionRequest::new(spec);
+        if passes_input {
+            request = request.with_input();
+        }
+        let execution = agent::sandbox::start_execution(home.path(), &target, request).await?;
+        let result = stream_execution(execution).await;
+        if passes_input {
+            // A command can exit or fail before reading all its input, and a read of standard
+            // input that is still blocked would keep the runtime from shutting down.
+            std::process::exit(finish_passing_input(result, &mut std::io::stderr()).into());
+        }
+        result?
     };
-    Ok(exit_code(status.code))
+    Ok(exit_code(status.code).into())
 }
 
 /// Splits a leading agent reference from the port mappings.
@@ -1513,7 +1600,7 @@ fn run_ssh_client(mut ssh: ProcessCommand) -> CommandResult<ExitCode> {
 #[cfg(not(unix))]
 fn run_ssh_client(mut ssh: ProcessCommand) -> CommandResult<ExitCode> {
     let status = ssh.status().map_err(|error| ssh_client_error(&error))?;
-    Ok(status.code().map_or(ExitCode::FAILURE, exit_code))
+    Ok(status.code().map_or(ExitCode::FAILURE, |code| exit_code(code).into()))
 }
 
 fn ssh_client_error(error: &std::io::Error) -> CommandError {
@@ -1552,9 +1639,7 @@ async fn ssh_proxy(home: &ControlPlaneHome, client: &Client, resource: String) -
         tokio::io::stdout(),
     )
     .await?;
-    // A blocked standard-input read would keep the runtime from shutting down;
-    // the relay is finished, so leave immediately.
-    std::process::exit(0)
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Shows warnings on standard error, such as why connecting waits, for a relay whose standard
@@ -1713,9 +1798,7 @@ async fn vnc_proxy(home: &ControlPlaneHome, client: &Client, resource: String) -
         tokio::io::stdout(),
     )
     .await?;
-    // A blocked standard-input read would keep the runtime from shutting down;
-    // the relay is finished, so leave immediately.
-    std::process::exit(0)
+    Ok(ExitCode::SUCCESS)
 }
 
 async fn vnc_info(
@@ -1880,37 +1963,125 @@ async fn resolve_execution_agent(
     require_name(name, "Agent").map_err(CommandError::from)
 }
 
+/// Writes an Execution's output to ours until it exits, while passing it our standard input when
+/// it takes input.
 async fn stream_execution(
-    mut execution: ::sandbox::execution::StartedExecution,
+    execution: ::sandbox::execution::StartedExecution,
 ) -> Result<::sandbox::execution::ExitStatus, Error> {
-    let id = execution.id.clone();
-    let mut stdout = tokio::io::stdout();
-    let mut stderr = tokio::io::stderr();
-    while let Some(event) = execution.events.next().await {
-        match event? {
-            ExecutionEvent::Started { .. } => {}
-            ExecutionEvent::Stdout(bytes) => stdout.write_all(&bytes).await?,
-            ExecutionEvent::Stderr(bytes) => stderr.write_all(&bytes).await?,
-            ExecutionEvent::Exited(status) => {
-                stdout.flush().await?;
-                stderr.flush().await?;
-                return Ok(status);
-            }
-            ExecutionEvent::Failed { message } => {
-                return Err(::sandbox::Error::ExecutionFailed { id, message }.into());
-            }
-            _ => {
-                return Err(Error::Sandbox(::sandbox::Error::Backend(
-                    "unsupported Execution event".into(),
-                )));
-            }
-        }
-    }
-    Err(::sandbox::Error::ExecutionStreamEnded { id }.into())
+    stream_execution_with(execution, tokio::io::stdin(), tokio::io::stdout(), tokio::io::stderr()).await
 }
 
-fn exit_code(code: i32) -> ExitCode {
-    u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
+/// Writes an Execution's output to `stdout` and `stderr` until it exits, while passing it `source`
+/// when it takes input.
+///
+/// The output is flushed however the Execution ends, since `exec` may then leave with
+/// `std::process::exit`, which does not wait for a write still under way. When `source` cannot be
+/// read, the command still runs to its end, and that error is returned rather than its exit, so
+/// that a command given part of its input does not look as if it succeeded.
+async fn stream_execution_with(
+    execution: ::sandbox::execution::StartedExecution,
+    source: impl tokio::io::AsyncRead + Unpin,
+    mut stdout: impl tokio::io::AsyncWrite + Unpin,
+    mut stderr: impl tokio::io::AsyncWrite + Unpin,
+) -> Result<::sandbox::execution::ExitStatus, Error> {
+    let ::sandbox::execution::StartedExecution { id, input, mut events } = execution;
+    let output = async {
+        let streamed = async {
+            while let Some(event) = events.next().await {
+                match event? {
+                    ExecutionEvent::Started { .. } => {}
+                    ExecutionEvent::Stdout(bytes) => stdout.write_all(&bytes).await?,
+                    ExecutionEvent::Stderr(bytes) => stderr.write_all(&bytes).await?,
+                    ExecutionEvent::Exited(status) => return Ok(status),
+                    ExecutionEvent::Failed { message } => {
+                        return Err(::sandbox::Error::ExecutionFailed { id, message }.into());
+                    }
+                    _ => {
+                        return Err(Error::Sandbox(::sandbox::Error::Backend(
+                            "unsupported Execution event".into(),
+                        )));
+                    }
+                }
+            }
+            Err(::sandbox::Error::ExecutionStreamEnded { id }.into())
+        }
+        .await;
+        let flushed_stdout = stdout.flush().await;
+        let flushed_stderr = stderr.flush().await;
+        let status = streamed?;
+        flushed_stdout?;
+        flushed_stderr?;
+        Ok(status)
+    };
+    let Some(input) = input else {
+        return output.await;
+    };
+    tokio::pin!(output);
+    let read_error = std::cell::Cell::new(None);
+    let status = tokio::select! {
+        status = &mut output => status,
+        () = pass_input(source, input.as_ref(), &read_error) => output.await,
+    };
+    match read_error.take() {
+        None => status,
+        Some(error) => {
+            status?;
+            Err(std::io::Error::new(error.kind(), format!("could not read standard input: {error}")).into())
+        }
+    }
+}
+
+/// Passes `source` to an Execution's standard input until end-of-file, which it then passes on.
+///
+/// It stops early when the Execution no longer takes input, as when the command exits before
+/// reading all of it, which is not an error, as writing to a pipe whose reader has gone is not.
+/// When `source` cannot be read, it sets `read_error` and closes the command's input as at
+/// end-of-file, so that the command can end. It sets the error first, since the command can end
+/// while the close is still under way, and the caller then stops waiting for it.
+async fn pass_input(
+    mut source: impl tokio::io::AsyncRead + Unpin,
+    input: &dyn ::sandbox::execution::ExecutionInput,
+    read_error: &std::cell::Cell<Option<std::io::Error>>,
+) {
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let bytes = match tokio::io::AsyncReadExt::read(&mut source, &mut buffer).await {
+            Ok(0) => break,
+            Ok(read) => bytes::Bytes::copy_from_slice(&buffer[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                read_error.set(Some(error));
+                break;
+            }
+        };
+        if let Err(error) = input.write_input(bytes).await {
+            tracing::debug!(%error, "the command no longer takes standard input");
+            return;
+        }
+    }
+    if let Err(error) = input.close_input().await {
+        tracing::debug!(%error, "could not close the command's standard input");
+    }
+}
+
+/// Reports how an Execution that was passed input ended, as `main` would, and returns the exit
+/// code to leave with. `exec` leaves with it at once, whether the command exited or failed.
+fn finish_passing_input(
+    result: Result<::sandbox::execution::ExitStatus, Error>,
+    stderr: &mut impl std::io::Write,
+) -> u8 {
+    match result {
+        Ok(status) => exit_code(status.code),
+        Err(error) => {
+            report_error(&error.into(), stderr);
+            1
+        }
+    }
+}
+
+/// The exit code that reports a command's `code`: the same, or failure when it does not fit a byte.
+fn exit_code(code: i32) -> u8 {
+    u8::try_from(code).unwrap_or(1)
 }
 
 async fn describe(client: &Client, resource: &str, name: Option<String>, output: OutputFormat) -> CommandResult<()> {
@@ -2214,20 +2385,17 @@ async fn agents_to_stop(client: &Client, target: &StopTarget) -> CommandResult<O
     Ok(prompt::confirm_lines(&[&running_line, &question])?.then_some(names))
 }
 
-/// Stops or starts an agent and waits until it is stopped or Ready.
-async fn set_run_state(client: &Client, target: RunStateTarget, state: RunState) -> CommandResult<()> {
+/// Starts an agent and waits until it is Ready.
+async fn start(client: &Client, target: RunStateTarget, allow_low_disk: bool) -> CommandResult<()> {
     let name = agent_reference(&target.resource, target.name)?;
-    client.set_run_state(&name, state).await?;
+    client.start(&name, allow_low_disk).await?;
     let converged = wait_until_converged(client, &name, target.timeout).await?;
-    match (state, converged.spec.run_state()) {
-        (RunState::Stopped, RunState::Stopped) => println!("agent/{name} stopped"),
-        (RunState::Running, RunState::Running) => println!("agent/{name} started"),
-        (_, current) => {
-            return Err(CommandError::Message(format!(
-                "Agent {name:?} was set to {current:?} again before it finished"
-            )));
-        }
+    if converged.spec.is_stopped() {
+        return Err(CommandError::Message(format!(
+            "Agent {name:?} was set to Stopped again before it finished"
+        )));
     }
+    println!("agent/{name} started");
     Ok(())
 }
 
@@ -2319,48 +2487,6 @@ fn parse_effort(value: &str) -> Result<agent::Effort, String> {
 
 fn parse_variant_name(value: &str) -> Result<AgentVariantName, String> {
     value.parse().map_err(|error: Error| error.to_string())
-}
-
-fn agents_table(agents: &[Agent]) -> Vec<String> {
-    let rows = agents
-        .iter()
-        .map(|agent| {
-            let ready = agent.status.ready_condition();
-            let ready_value = ready.map_or("Unknown", |condition| condition_status(condition.status));
-            let status = if agent.metadata.deletion_timestamp.is_some() {
-                "Terminating"
-            } else {
-                ready.map_or("Pending", |condition| condition.reason.as_str())
-            };
-            let harnesses = format_harnesses(&agent.spec);
-            let provider = agent
-                .status
-                .sandbox
-                .as_ref()
-                .map_or("-", |assignment| assignment.provider().as_str());
-            vec![
-                agent.metadata.name.clone(),
-                ready_value.into(),
-                status.into(),
-                harnesses,
-                provider.into(),
-            ]
-        })
-        .collect::<Vec<_>>();
-    // Ephemeral agents are listed only when asked for, and then said to be.
-    if agents.iter().any(|agent| agent.status.is_ephemeral()) {
-        let rows = agents
-            .iter()
-            .zip(rows)
-            .map(|(agent, mut row)| {
-                let lifetime = if agent.status.is_ephemeral() { "ephemeral" } else { "-" };
-                row.insert(1, lifetime.into());
-                row
-            })
-            .collect::<Vec<_>>();
-        return table_lines(&["NAME", "LIFETIME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows);
-    }
-    table_lines(&["NAME", "READY", "STATUS", "HARNESSES", "PROVIDER"], &rows)
 }
 
 fn print_agent_description(agent: &Agent) {
@@ -2468,6 +2594,7 @@ fn daemon_startup_diagnostics(home: &ControlPlaneHome) -> String {
 }
 
 fn spawn_daemon(home: &ControlPlaneHome) -> Result<Child, Error> {
+    home.check_socket_path()?;
     home.prepare()?;
     let log = home.open_daemon_log()?;
     let executable = daemon_executable(&std::env::current_exe()?);
@@ -2658,6 +2785,7 @@ fn read_apply_request_in(
         binds: Vec::new(),
         create_only: false,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        allow_low_disk: false,
         agent,
     })
 }
@@ -2692,6 +2820,8 @@ struct Run {
     env_file: Option<PathBuf>,
     /// Whether `--allow-env-files` lets the agent read the `.env` files in its folders.
     allow_env_files: bool,
+    /// Whether `--allow-low-disk` lets agentd make the agent while the host disk is low.
+    allow_low_disk: bool,
 }
 
 impl Run {
@@ -2741,6 +2871,7 @@ impl Run {
             lifetime: self.lifetime,
             name: self.name.clone(),
             allow_exposed_files: std::collections::BTreeSet::new(),
+            allow_low_disk: self.allow_low_disk,
         })
     }
 }
@@ -2986,6 +3117,8 @@ fn absolute(current_dir: impl Fn() -> std::io::Result<PathBuf>, path: PathBuf) -
 mod tests {
     #![allow(clippy::expect_used)]
 
+    use std::cell::{Cell, RefCell};
+
     use super::*;
 
     /// A program built as Git for Windows' `ssh` is, started as `agentctl` starts `ssh`, gets each
@@ -3197,6 +3330,63 @@ mod tests {
         }
     }
 
+    /// A blocking task that waits until the test lets it go stands in for a read of standard
+    /// input that stays open, as `ssh` keeps the input of `ssh-proxy`.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "tokio reads standard input on a blocking thread, and the command runs on a thread the test can give up on"
+    )]
+    fn a_command_leaves_with_its_error_while_a_read_of_standard_input_is_blocked() {
+        let (let_go, held) = std::sync::mpsc::channel::<()>();
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = run_command(async move {
+                let (reading, read_started) = tokio::sync::oneshot::channel();
+                drop(tokio::task::spawn_blocking(move || {
+                    reading.send(()).ok();
+                    held.recv().ok();
+                }));
+                read_started.await.ok();
+                Err::<(), _>(CommandError::Message("the relay failed".into()))
+            });
+            ended.send(result.map_err(|error| error.to_string())).ok();
+        });
+        let result = end.recv_timeout(Duration::from_secs(10));
+        let_go.send(()).ok();
+        assert_eq!(
+            result,
+            Ok(Err("the relay failed".into())),
+            "the command should leave with its error without waiting for the read"
+        );
+    }
+
+    /// A blocking task that takes a moment stands in for a write of output still under way.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "tokio writes standard output on a blocking thread"
+    )]
+    fn a_command_leaves_once_output_still_being_written_is_written() {
+        let written = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writing = std::sync::Arc::clone(&written);
+        let result = run_command(async move {
+            let (started, write_started) = tokio::sync::oneshot::channel();
+            drop(tokio::task::spawn_blocking(move || {
+                started.send(()).ok();
+                std::thread::sleep(Duration::from_millis(100));
+                writing.store(true, std::sync::atomic::Ordering::SeqCst);
+            }));
+            write_started.await.ok();
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert!(
+            written.load(std::sync::atomic::Ordering::SeqCst),
+            "output still being written when the command ends should be written before it leaves"
+        );
+    }
+
     #[test]
     fn kill_is_stop_now() {
         let stop = |arguments: &[&str]| {
@@ -3276,6 +3466,27 @@ mod tests {
             .expect_err("preview daemon is incompatible");
         assert!(error.to_string().contains("protocol Some(\"v1\")"));
         assert!(!home.daemon_log_path().exists(), "no second daemon was spawned");
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn home_too_long_for_its_socket_is_reported_without_starting_agentd() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let home = ControlPlaneHome::resolve(Some(&directory.path().join("a".repeat(120)))).expect("home");
+        let client = Client::for_path(home.socket_path());
+
+        let error = ensure_daemon(&home, &client)
+            .await
+            .expect_err("no agentd can listen on a socket path this long");
+
+        let message = error.to_string();
+        assert!(
+            message.contains(&home.socket_path().display().to_string()) && message.contains("too long"),
+            "the error names the socket path and the problem: {message}"
+        );
+        assert!(
+            !home.path().exists(),
+            "agentctl neither created the home nor started agentd, whose log is in it"
+        );
     }
 
     #[test]
@@ -3556,6 +3767,244 @@ mod tests {
         };
         assert!(resource.is_none());
         assert_eq!(command, ["pwd"]);
+    }
+
+    #[test]
+    fn exec_takes_standard_input_without_a_terminal() {
+        let parsed = Arguments::try_parse_from(["agentctl", "exec", "-i", "agent/worker", "--", "cat"])
+            .expect("exec arguments with -i alone");
+        let Command::Exec { stdin, tty, .. } = parsed.command else {
+            panic!("expected exec command");
+        };
+        assert!(stdin);
+        assert!(!tty);
+        assert!(Arguments::try_parse_from(["agentctl", "exec", "-t", "agent/worker", "--", "cat"]).is_err());
+    }
+
+    /// Records what [`pass_input`] passes on, and fails writes after `accepted` of them.
+    struct RecordedInput {
+        accepted: usize,
+        written: RefCell<Vec<u8>>,
+        writes: Cell<usize>,
+        attempts: Cell<usize>,
+        closed: Cell<bool>,
+        on_close: RefCell<Option<tokio::sync::oneshot::Sender<()>>>,
+        /// Keeps closing pending after end-of-file is signalled, as Microsandbox's close does
+        /// while it waits for the frame it queued to be written.
+        close_stays_pending: bool,
+    }
+
+    impl RecordedInput {
+        fn accepting(accepted: usize) -> Self {
+            Self {
+                accepted,
+                written: RefCell::default(),
+                writes: Cell::default(),
+                attempts: Cell::default(),
+                closed: Cell::default(),
+                on_close: RefCell::default(),
+                close_stays_pending: false,
+            }
+        }
+    }
+
+    impl ::sandbox::execution::ExecutionInput for RecordedInput {
+        fn write_input(&self, bytes: bytes::Bytes) -> ::sandbox::LocalFuture<'_, Result<(), ::sandbox::Error>> {
+            Box::pin(async move {
+                self.attempts.set(self.attempts.get() + 1);
+                if self.writes.get() == self.accepted {
+                    return Err(::sandbox::Error::Backend("the command exited".into()));
+                }
+                self.writes.set(self.writes.get() + 1);
+                self.written.borrow_mut().extend_from_slice(&bytes);
+                Ok(())
+            })
+        }
+
+        fn close_input(&self) -> ::sandbox::LocalFuture<'_, Result<(), ::sandbox::Error>> {
+            Box::pin(async move {
+                self.closed.set(true);
+                if let Some(closed) = self.on_close.borrow_mut().take() {
+                    let _ = closed.send(());
+                }
+                if self.close_stays_pending {
+                    std::future::pending::<()>().await;
+                }
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn passed_input_reaches_the_command_and_then_ends() {
+        let source = vec![b'x'; 200 * 1024];
+        let input = RecordedInput::accepting(usize::MAX);
+        let read_error = Cell::new(None);
+        pass_input(source.as_slice(), &input, &read_error).await;
+        assert!(read_error.take().is_none(), "no read error should be reported");
+        let written = input.written.borrow();
+        assert!(
+            *written == source,
+            "the command should get all the input: got {} of {} bytes",
+            written.len(),
+            source.len()
+        );
+        assert!(input.closed.get(), "the command should read end-of-file");
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn passing_input_stops_when_the_command_takes_no_more() {
+        let source = vec![b'x'; 200 * 1024];
+        let input = RecordedInput::accepting(1);
+        let read_error = Cell::new(None);
+        pass_input(source.as_slice(), &input, &read_error).await;
+        assert!(read_error.take().is_none(), "no read error should be reported");
+        assert_eq!(
+            input.attempts.get(),
+            2,
+            "nothing should be written after the write that failed"
+        );
+        assert!(
+            !input.closed.get(),
+            "input the command no longer takes should not be closed"
+        );
+    }
+
+    /// A source whose every read fails.
+    struct FailingRead;
+
+    impl tokio::io::AsyncRead for FailingRead {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+            _buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("the disk went away")))
+        }
+    }
+
+    fn started_execution(
+        input: Option<std::rc::Rc<dyn ::sandbox::execution::ExecutionInput>>,
+        events: ::sandbox::execution::ExecutionEventStream,
+    ) -> ::sandbox::execution::StartedExecution {
+        ::sandbox::execution::StartedExecution {
+            id: "00000000-0000-0000-0000-000000000000".parse().expect("an Execution id"),
+            input,
+            events,
+        }
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn exec_flushes_output_written_before_the_execution_fails() {
+        let endings: [Option<ExecutionEvent>; 2] = [None, Some(ExecutionEvent::Failed { message: "lost".into() })];
+        for ending in endings {
+            let events = [
+                ExecutionEvent::Stdout("out".into()),
+                ExecutionEvent::Stderr("err".into()),
+            ]
+            .into_iter()
+            .chain(ending)
+            .map(Ok);
+            let execution = started_execution(None, Box::pin(futures_util::stream::iter(events)));
+            let mut stdout = tokio::io::BufWriter::new(Vec::new());
+            let mut stderr = tokio::io::BufWriter::new(Vec::new());
+            let result = stream_execution_with(execution, tokio::io::empty(), &mut stdout, &mut stderr).await;
+            assert!(
+                matches!(
+                    result,
+                    Err(Error::Sandbox(
+                        ::sandbox::Error::ExecutionStreamEnded { .. } | ::sandbox::Error::ExecutionFailed { .. }
+                    ))
+                ),
+                "the execution's own error should be returned: {result:?}"
+            );
+            assert_eq!(stdout.get_ref().as_slice(), b"out", "standard output should be flushed");
+            assert_eq!(stderr.get_ref().as_slice(), b"err", "standard error should be flushed");
+        }
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn passing_input_closes_it_and_reports_a_read_error() {
+        let input = RecordedInput::accepting(usize::MAX);
+        let source = tokio::io::AsyncReadExt::chain(&b"prefix"[..], FailingRead);
+        let read_error = Cell::new(None);
+        pass_input(source, &input, &read_error).await;
+        assert!(read_error.take().is_some(), "the read error should be reported");
+        assert_eq!(input.written.borrow().as_slice(), b"prefix");
+        assert!(
+            input.closed.get(),
+            "the command should read end-of-file, so that it ends"
+        );
+    }
+
+    /// Streams an Execution that exits with 0 once its input is closed, as `cat` does.
+    async fn exec_reading_until_end_of_file(source: impl tokio::io::AsyncRead + Unpin, input: RecordedInput) -> u8 {
+        let (closed, on_closed) = tokio::sync::oneshot::channel();
+        *input.on_close.borrow_mut() = Some(closed);
+        let exited = futures_util::stream::once(async move {
+            let _ = on_closed.await;
+            Ok(ExecutionEvent::Exited(::sandbox::execution::ExitStatus { code: 0 }))
+        });
+        let execution = started_execution(Some(std::rc::Rc::new(input)), Box::pin(exited));
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            stream_execution_with(execution, source, tokio::io::sink(), tokio::io::sink()),
+        )
+        .await
+        .expect("the execution should end once its input is closed");
+        let mut stderr = Vec::new();
+        let code = finish_passing_input(result, &mut stderr);
+        if code != 0 {
+            let printed = String::from_utf8_lossy(&stderr);
+            assert!(
+                printed.contains("could not read standard input") && printed.contains("the disk went away"),
+                "the read error should be printed: {printed:?}"
+            );
+        }
+        code
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn exec_fails_when_its_standard_input_cannot_be_read() {
+        let input = || RecordedInput::accepting(usize::MAX);
+        assert_eq!(exec_reading_until_end_of_file(&b"all of it"[..], input()).await, 0);
+        let failing = tokio::io::AsyncReadExt::chain(&b"prefix"[..], FailingRead);
+        assert_eq!(
+            exec_reading_until_end_of_file(failing, input()).await,
+            1,
+            "a command given part of its input should not look as if it succeeded"
+        );
+    }
+
+    #[tokio::test(flavor = "local")]
+    async fn exec_fails_on_a_read_error_when_the_command_exits_before_its_input_is_closed() {
+        let input = || RecordedInput {
+            close_stays_pending: true,
+            ..RecordedInput::accepting(usize::MAX)
+        };
+        assert_eq!(exec_reading_until_end_of_file(&b"all of it"[..], input()).await, 0);
+        let failing = tokio::io::AsyncReadExt::chain(&b"prefix"[..], FailingRead);
+        assert_eq!(
+            exec_reading_until_end_of_file(failing, input()).await,
+            1,
+            "the read error should not be lost when the command exits while its input is being closed"
+        );
+    }
+
+    #[test]
+    fn exec_passing_input_reports_a_failed_command_before_it_leaves() {
+        let mut stderr = Vec::new();
+        let failed = Err(Error::Sandbox(::sandbox::Error::Backend("spawn failed".into())));
+        assert_eq!(finish_passing_input(failed, &mut stderr), 1);
+        let printed = String::from_utf8_lossy(&stderr);
+        assert!(
+            printed.starts_with("agentctl: ") && printed.contains("spawn failed"),
+            "the error should be printed: {printed:?}"
+        );
+        let exited = Ok(::sandbox::execution::ExitStatus { code: 7 });
+        let mut stderr = Vec::new();
+        assert_eq!(finish_passing_input(exited, &mut stderr), 7);
+        assert_eq!(String::from_utf8_lossy(&stderr), "", "an exit should print nothing");
     }
 
     #[test]

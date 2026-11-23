@@ -8,8 +8,9 @@ use std::{
 use microsandbox::sandbox::{PullPolicy, SandboxModificationBuilder, SandboxStatus};
 use sandbox::progress::SandboxProgress;
 use sandbox::{
-    Error, LocalFuture, PendingOperation, Platform, ResourceKind, RootFilesystemMode, RootFilesystemModeSet, Sandbox,
-    SandboxFeature, SandboxFeatureSet, SandboxId, SandboxName, SandboxResources, SandboxState,
+    Error, LocalFuture, PendingOperation, Platform, ResourceKind, RootFilesystemMode, RootFilesystemModeSet,
+    RootFilesystemUsage, Sandbox, SandboxFeature, SandboxFeatureSet, SandboxId, SandboxName, SandboxResources,
+    SandboxState,
     backend::{CreateSandboxRequest, SandboxBackend, SandboxBackendCapabilities},
     execution, file_transfer,
     mount::{Mount, MountKind, MountKindSet},
@@ -25,7 +26,7 @@ use crate::{
     heartbeat,
     image::MicrosandboxImageBackend,
     image_cache::ImageCache,
-    network_endpoint, platform,
+    network_endpoint, platform, root_disk,
     state::{SandboxRecord, StateStore},
 };
 
@@ -92,6 +93,13 @@ impl MicrosandboxProvider {
     /// cannot open its local runtime.
     pub async fn open(home: impl AsRef<Path>) -> Result<Self, Error> {
         Self::builder(home.as_ref().to_path_buf()).open().await
+    }
+
+    /// The folder holding the sandboxes' disks. It is under the Provider's home unless
+    /// Microsandbox's `config.json` moves it elsewhere with `paths.sandboxes`.
+    #[must_use]
+    pub fn sandboxes_directory(&self) -> PathBuf {
+        self.client.local().sandboxes_dir()
     }
 
     /// Checks whether this host can let a sandbox run sandboxes of its own.
@@ -299,13 +307,14 @@ impl MicrosandboxProvider {
         })
     }
 
+    /// Host-side directory the runtime keeps a sandbox's disks, logs and guest state in.
+    fn runtime_directory(&self, runtime_name: &str) -> PathBuf {
+        self.client.local().sandboxes_dir().join(runtime_name)
+    }
+
     /// Host-side directory the runtime shares with its guest as `/.msb`.
     fn guest_directory(&self, runtime_name: &str) -> PathBuf {
-        self.client
-            .local()
-            .sandboxes_dir()
-            .join(runtime_name)
-            .join("guest-state")
+        self.runtime_directory(runtime_name).join("guest-state")
     }
 
     async fn update_sandbox_resources(
@@ -792,6 +801,20 @@ impl SandboxBackend for MicrosandboxProvider {
         })
     }
 
+    fn root_filesystem_usage<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<RootFilesystemUsage, Error>> {
+        Box::pin(async move {
+            let record = self.state.sandbox_by_id(id).await?;
+            let root_filesystem = record.resources.root_filesystem();
+            let directory = self.runtime_directory(&record.runtime_name);
+            let path = root_disk::path(&directory, root_filesystem.mode()).ok_or_else(|| {
+                error::backend(format!("unsupported root filesystem mode {:?}", root_filesystem.mode()))
+            })?;
+            root_disk::usage(&path, root_filesystem.capacity())
+                .await
+                .map_err(|source| error::io("measure Microsandbox root disk", source))
+        })
+    }
+
     fn start<'a>(&'a self, id: &'a SandboxId) -> PendingOperation<'a, ()> {
         PendingOperation::run(move |progress| Box::pin(async move { self.start_sandbox(id, &progress).await }))
     }
@@ -1225,6 +1248,27 @@ mod tests {
             "no rule may allow, or a name could resolve to the gateway: {:?}",
             policy.rules
         );
+    }
+
+    // `paths.sandboxes` can move the sandboxes' disks off the Provider's home, and free space must
+    // be read where they are.
+    #[tokio::test(flavor = "local")]
+    async fn the_sandboxes_directory_follows_the_configured_path() {
+        let home = tempfile::tempdir().expect("temporary home should be created");
+        let provider_home = PathBuf::from(home.path()).join("microsandbox");
+        let elsewhere = PathBuf::from(home.path()).join("elsewhere");
+        std::fs::create_dir_all(provider_home.join("runtime")).expect("runtime home should be created");
+        std::fs::write(
+            provider_home.join("runtime/config.json"),
+            serde_json::json!({"paths": {"sandboxes": elsewhere}}).to_string(),
+        )
+        .expect("config.json should be written");
+
+        let provider = MicrosandboxProvider::open(&provider_home)
+            .await
+            .expect("Provider should open without starting a VM");
+
+        assert_eq!(provider.sandboxes_directory(), elsewhere);
     }
 
     // A persisted attachment that this build cannot enforce must never reach

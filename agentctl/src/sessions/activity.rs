@@ -53,7 +53,8 @@ pub struct Activity {
 pub enum ActivityEvent {
     /// The harness process started (also carries the native session ID).
     SessionStart,
-    /// The operator submitted a prompt; a turn began.
+    /// The harness is working on a turn: the operator submitted a prompt, or answered a question
+    /// or approved a call the harness was waiting on.
     TurnStarted,
     /// The harness ended a turn and is awaiting input; this does not imply success.
     TurnCompleted,

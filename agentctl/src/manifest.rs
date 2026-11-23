@@ -1266,6 +1266,11 @@ pub struct Status {
     /// onto API responses from the stored agent record; stores scrub it, so it is never persisted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<MountedVolume>,
+    /// The host storage the sandbox's root filesystem takes, measured for each API response that
+    /// lists or gets the agent, so it is current for a stopped agent too. Stores scrub it, so it
+    /// is never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_filesystem: Option<::sandbox::RootFilesystemUsage>,
 }
 
 /// The revision of a volume an agent mounts, chosen when its sandbox is created.
@@ -1282,7 +1287,8 @@ pub struct MountedVolume {
 }
 
 impl Status {
-    /// Creates reconciler-observed state; progress, provenance and volumes stay API-projected.
+    /// Creates reconciler-observed state; progress, provenance, volumes and root filesystem usage stay
+    /// API-projected.
     #[must_use]
     pub const fn observed(
         observed_generation: u64,
@@ -1301,6 +1307,7 @@ impl Status {
             lifetime: None,
             bindings: BTreeMap::new(),
             volumes: Vec::new(),
+            root_filesystem: None,
         }
     }
 
@@ -1320,6 +1327,9 @@ impl Status {
         self.lifetime = None;
         self.bindings.clear();
         self.volumes.clear();
+        self.root_filesystem = None;
+        self.conditions
+            .retain(|condition| condition.kind != Condition::HOST_DISK_LOW);
     }
 
     fn is_empty(&self) -> bool {
@@ -1334,6 +1344,7 @@ impl Status {
             && self.lifetime.is_none()
             && self.bindings.is_empty()
             && self.volumes.is_empty()
+            && self.root_filesystem.is_none()
     }
 
     /// Carries each condition's transition time forward from `previous`, the
@@ -1425,6 +1436,13 @@ impl Condition {
     pub const SSH_READY: &'static str = "SshReady";
     /// VNC access is reconciled and the bridge to the desktop is listening.
     pub const VNC_READY: &'static str = "VncReady";
+    /// Condition type for whether the host filesystem holding the sandboxes' disks, the agent's
+    /// among them, is low on space. Its message says how much is free and the threshold.
+    pub const HOST_DISK_LOW: &'static str = "HostDiskLow";
+    /// Condition type in `apply`'s response for whether the agents' root disks on one host
+    /// filesystem can together grow past the space free on it. Its message says by how much they
+    /// can grow and what is free. It is advice: the agents run either way.
+    pub const HOST_DISK_OVERCOMMITTED: &'static str = "HostDiskOvercommitted";
 
     /// `Ready` reason while a pass stops the agent's sandbox, and after a stop failed.
     pub const REASON_STOPPING: &'static str = "Stopping";
@@ -1434,6 +1452,13 @@ impl Condition {
     pub const REASON_STARTING: &'static str = "Starting";
     /// `Ready` reason while an agent waits for the volumes it mounts.
     pub const REASON_WAITING_FOR_VOLUMES: &'static str = "WaitingForVolumes";
+    /// `Ready` reason, and that of the condition for what failed, when a pass failed while the host
+    /// filesystem holding the agent's sandbox was full. Its message says how much is free.
+    pub const REASON_HOST_DISK_FULL: &'static str = "HostDiskFull";
+    /// `HostDiskLow` reason while the filesystem has less free space than agentd's threshold.
+    pub const REASON_BELOW_THRESHOLD: &'static str = "BelowThreshold";
+    /// `HostDiskOvercommitted` reason while the root disks can grow by more than is free.
+    pub const REASON_CAPACITY_OVER_FREE_SPACE: &'static str = "CapacityOverFreeSpace";
 
     /// Finds the `Ready` condition in a condition list.
     #[must_use]
@@ -1448,12 +1473,14 @@ impl Condition {
     }
 
     /// The conditions saying that a ready agent works without something it needs, such as its
-    /// GitHub account or its checkout. Readiness does not wait for them, so clients show them beside
-    /// it, or the person finds out only once the agent fails at its work.
+    /// GitHub account, its checkout or free space for its disk to grow. Readiness does not wait for
+    /// them, so clients show them beside it, or the person finds out only once the agent fails at
+    /// its work.
     pub fn shortfalls(conditions: &[Self]) -> impl Iterator<Item = &Self> {
-        conditions.iter().filter(|condition| {
-            [Self::ACCOUNTS, Self::WORKSPACE].contains(&condition.kind.as_str())
-                && condition.status == ConditionStatus::False
+        conditions.iter().filter(|condition| match condition.kind.as_str() {
+            Self::ACCOUNTS | Self::WORKSPACE => condition.status == ConditionStatus::False,
+            Self::HOST_DISK_LOW => condition.status == ConditionStatus::True,
+            _ => false,
         })
     }
 

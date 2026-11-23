@@ -235,6 +235,13 @@ impl Provider for Adapter {
         })
     }
 
+    fn root_filesystem_usage<'a>(
+        &'a self,
+        id: &'a ::sandbox::SandboxId,
+    ) -> LocalFuture<'a, Result<::sandbox::RootFilesystemUsage, Error>> {
+        Box::pin(async move { self.service.root_filesystem_usage(id).await.map_err(Error::from) })
+    }
+
     fn ensure_volume(
         &self,
         request: ::sandbox::volume::EnsureVolumeRequest,
@@ -252,6 +259,17 @@ impl Provider for Adapter {
 
     fn delete_volume<'a>(&'a self, id: &'a ::sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async move { Ok(self.service.delete_volume(id).await?) })
+    }
+
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<crate::local::disk::DiskSpace>, Error>> {
+        let sandboxes = self.provider.sandboxes_directory();
+        Box::pin(async move {
+            let space = common::blocking::run("reading the host's free space", move || {
+                crate::local::disk::DiskSpace::of(&sandboxes)
+            })
+            .await??;
+            Ok(Some(space))
+        })
     }
 
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {

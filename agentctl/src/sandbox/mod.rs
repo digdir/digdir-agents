@@ -6,7 +6,7 @@ use std::{
     rc::Rc,
 };
 
-use ::sandbox::{LocalFuture, Platform, SandboxHandle, SandboxId};
+use ::sandbox::{LocalFuture, Platform, RootFilesystemUsage, SandboxHandle, SandboxId};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, control_plane::AgentRecord};
@@ -16,10 +16,12 @@ pub mod forward;
 pub mod microsandbox;
 pub mod platform;
 pub mod responsiveness;
+mod trim;
 
 pub use execution::{ExecutionService, ExecutionTarget, start_execution};
 pub use microsandbox::{GuestConnection, GuestDialer};
 pub use responsiveness::UNRESPONSIVE_AFTER;
+pub use trim::{TRIM_INTERVAL, TRIM_SCRIPT, Trimmer};
 
 /// What watching a guest's heartbeat found.
 enum Heartbeat {
@@ -190,6 +192,10 @@ pub trait Provider {
     /// Opens the exact already-materialized sandbox without lifecycle effects.
     fn open<'a>(&'a self, record: &'a AgentRecord, id: &'a SandboxId) -> LocalFuture<'a, Result<SandboxHandle, Error>>;
 
+    /// Measures the host storage the root filesystem of the materialized sandbox `id` takes,
+    /// whether it runs or not.
+    fn root_filesystem_usage<'a>(&'a self, id: &'a SandboxId) -> LocalFuture<'a, Result<RootFilesystemUsage, Error>>;
+
     /// Idempotently releases the sandbox and its Provider-specific host integration.
     fn release<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>>;
 
@@ -209,6 +215,10 @@ pub trait Provider {
 
     /// Deletes a Volume, failing as in use while a sandbox mounts it.
     fn delete_volume<'a>(&'a self, id: &'a ::sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>>;
+
+    /// Reports the space on the host filesystem that holds this Provider's sandbox disks, or `None`
+    /// when it keeps them elsewhere.
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<crate::local::disk::DiskSpace>, Error>>;
 }
 
 /// Provider result retaining lifecycle information needed by dependent sessions.
@@ -485,6 +495,9 @@ impl Service {
 
     /// Opens the persisted materialized sandbox without lifecycle or setup effects.
     ///
+    /// It records the heartbeat it sees, so that [`Self::guard_guest`] judges the guest by the
+    /// snapshot the caller holds rather than by an older inspection.
+    ///
     /// # Errors
     ///
     /// Returns an error unless the assignment is materialized through a configured Provider.
@@ -492,7 +505,23 @@ impl Service {
         let Some(Assignment::Materialized { provider, id, .. }) = &record.agent.status.sandbox else {
             return Err(Error::Invalid("Agent has no materialized sandbox assignment".into()));
         };
-        self.provider(provider)?.open(record, id).await
+        let sandbox = self.provider(provider)?.open(record, id).await?;
+        self.responsiveness
+            .observe(sandbox.snapshot(), tokio::time::Instant::now());
+        Ok(sandbox)
+    }
+
+    /// Measures the host storage the agent's sandbox root filesystem takes, or none before the
+    /// sandbox exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the assigned Provider is unavailable or cannot measure it.
+    pub async fn root_filesystem_usage(&self, record: &AgentRecord) -> Result<Option<RootFilesystemUsage>, Error> {
+        let Some(Assignment::Materialized { provider, id, .. }) = &record.agent.status.sandbox else {
+            return Ok(None);
+        };
+        self.provider(provider)?.root_filesystem_usage(id).await.map(Some)
     }
 
     /// Whether the sandbox's guest reported a heartbeat when last inspected.
@@ -581,6 +610,69 @@ impl Service {
             self.responsiveness.forget(id);
         }
         Ok(())
+    }
+
+    /// Reports the space on the host filesystem holding the agent's sandbox, or `None` when its
+    /// Provider keeps it elsewhere.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the agent has no Provider yet or the space cannot be read.
+    pub async fn host_disk(&self, record: &AgentRecord) -> Result<Option<crate::local::disk::DiskSpace>, Error> {
+        self.assigned_provider(record)?.host_disk().await
+    }
+
+    /// Reports the space on each host filesystem holding sandbox disks, from every Provider that
+    /// keeps them on this host.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a Provider cannot read the space.
+    pub async fn host_disks(&self) -> Result<Vec<crate::local::disk::DiskSpace>, Error> {
+        let mut spaces = Vec::new();
+        for provider in &self.providers {
+            spaces.extend(provider.host_disk().await?);
+        }
+        Ok(spaces)
+    }
+
+    /// Reports, for each host filesystem holding sandbox disks, its space and the room the root
+    /// disks of `records` on it can still grow into: each one's capacity less what the host has
+    /// already allocated to it. An agent without a sandbox yet counts as the Provider it would get
+    /// and its whole manifest capacity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a Provider cannot read the space or a disk cannot be measured, since
+    /// counting that disk at its whole capacity could warn of growth it no longer has room for.
+    pub async fn root_disk_room(
+        &self,
+        records: &[AgentRecord],
+    ) -> Result<Vec<(crate::local::disk::DiskSpace, u64)>, Error> {
+        let mut rooms = Vec::new();
+        for provider in &self.providers {
+            let Some(space) = provider.host_disk().await? else {
+                continue;
+            };
+            let mut room = 0_u64;
+            for record in records {
+                // An agent no Provider supports never gets a disk.
+                let assigned = match &record.agent.status.sandbox {
+                    Some(assignment) => Some(assignment.provider().clone()),
+                    None => self.resolve(record).await.ok(),
+                };
+                if assigned.as_ref() != Some(provider.id()) {
+                    continue;
+                }
+                let usage = self.root_filesystem_usage(record).await?;
+                room = room.saturating_add(usage.map_or_else(
+                    || record.agent.spec.sandbox.resources.root_filesystem.capacity().bytes(),
+                    |usage| usage.capacity_bytes().saturating_sub(usage.allocated_bytes()),
+                ));
+            }
+            rooms.push((space, room));
+        }
+        Ok(rooms)
     }
 
     fn assigned_provider(&self, record: &AgentRecord) -> Result<&dyn Provider, Error> {

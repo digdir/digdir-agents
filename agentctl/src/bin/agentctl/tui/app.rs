@@ -339,6 +339,8 @@ pub(crate) struct App {
     /// How many ephemeral agents agentd left out of the last state, which belong to the clients
     /// that ran them, so the status line can say they exist.
     pub(crate) ephemeral_agents: usize,
+    /// The space on the host filesystem holding the agents' disks, as agentd last reported it.
+    pub(crate) host_disk: Option<agent::local::disk::DiskSpace>,
     pub(crate) creating: usize,
     /// Prompts being sent.
     pub(crate) prompting: usize,
@@ -1426,6 +1428,7 @@ impl App {
             volumes: Vec::new(),
             volume_selected: 0,
             ephemeral_agents: 0,
+            host_disk: None,
             creating: 0,
             prompting: 0,
             transcript: None,
@@ -2448,6 +2451,9 @@ impl App {
             return Vec::new();
         };
         let mut lines = format::readiness_lines(&agent.status);
+        if let Some(usage) = agent.status.root_filesystem {
+            lines.push(format!("Disk:       {}", format::root_filesystem_usage(usage)));
+        }
         if let Some(provisioning) = &agent.status.progress {
             let progress = &provisioning.progress;
             lines.extend(format::provisioning_lines(
@@ -3322,6 +3328,21 @@ pub(crate) mod tests {
         app.apply_snapshot(vec![mounting("worker", false, &[Some(2)])], Vec::new());
         let lines = app.agent_panel_lines("worker");
         assert!(lines.contains(&"  apps, revision 2, writable".to_owned()), "{lines:?}");
+    }
+
+    #[test]
+    fn the_agent_panel_shows_the_root_disk_use_once_measured() {
+        const GIB: u64 = 1 << 30;
+        let mut app = App::new();
+        app.apply_snapshot(vec![agent("worker")], Vec::new());
+        let lines = app.agent_panel_lines("worker");
+        assert!(!lines.iter().any(|line| line.starts_with("Disk:")), "{lines:?}");
+
+        let mut measured = agent("worker");
+        measured.status.root_filesystem = Some(sandbox::RootFilesystemUsage::new(12 * GIB, 100 * GIB));
+        app.apply_snapshot(vec![measured], Vec::new());
+        let lines = app.agent_panel_lines("worker");
+        assert!(lines.contains(&"Disk:       12Gi/100Gi".to_owned()), "{lines:?}");
     }
 
     #[test]
