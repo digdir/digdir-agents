@@ -159,8 +159,13 @@ impl TurnTracker {
 }
 
 /// Whether `entry` is the event that ends a turn, carrying the error the turn ended on.
-const fn ends_turn_on_error(_entry: &Value) -> bool {
-    false
+fn ends_turn_on_error(entry: &Value) -> bool {
+    entry.get("type").and_then(Value::as_str) == Some("event_msg")
+        && matches!(
+            entry.pointer("/payload/type").and_then(Value::as_str),
+            Some("task_complete" | "turn_complete")
+        )
+        && entry.pointer("/payload/error").is_some_and(|error| !error.is_null())
 }
 
 /// Drops records before the first turn boundary in a bounded rollout suffix.
