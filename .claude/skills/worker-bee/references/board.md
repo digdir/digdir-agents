@@ -20,7 +20,7 @@ Status says how far the work has come:
 - **Building** when you write the change.
 - **Testing** when the change is built and its checks have passed, while you test it and CI runs.
 - **Waiting to be merged** when all that is left is something that holds the merge, such as a person reading the
-  draft or a code owner's approval.
+  pull request or a code owner's approval.
 
 GitHub sets **Waiting to be released** when the work is merged or closed. That includes work closed without a
 merge, so archive it then, since no release will ship it. The [`release` skill](../../release/SKILL.md) archives

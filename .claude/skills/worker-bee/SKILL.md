@@ -98,7 +98,7 @@ Pass over an issue that you can't move on: one that is labelled `no-agent`, that
 something outside the repository, or that someone else is on. Find that out as
 [finding existing work](references/linking.md#finding-existing-work) describes. A second pull request for the same
 issue costs a review and helps nobody. When you were given the issue and someone is on it, tell the person
-prompting you instead of starting. A ready pull request in Waiting to be merged
+prompting you instead of starting. A pull request in Waiting to be merged
 [waits for a person](references/board.md#wip-state), even though it is Up-for-grabs.
 
 ### Work that an earlier session left
@@ -337,8 +337,9 @@ A change to tests alone has no QA of its use, since nobody uses a test the way t
 build's QA has already run it with and without the change. Tell QA of the test phase to go straight to whether
 the pull request is ready to merge.
 
-A small change runs its checks too, since the team reviews it as ready work like any other. When your harness can't
-start a subagent, say in the hand-over comment which checks did not run. The pull request then stays a draft with
+A small change runs its checks too, since the team reviews it as ready work like any other. For a change to text
+alone, building and testing are one phase, which the challenger and QA check. When your harness can't start a
+subagent, say in the hand-over comment which checks did not run. The pull request then stays a draft in Testing with
 WIP State Blocked: Human needed, since a person has to do what the checks would have.
 
 ## 5. Hand it over
@@ -400,14 +401,15 @@ What only a person can do, such as approving and merging, is left to them:
 - Nobody has commented on the pull request or the issue since the last push without getting an answer. The
   author's own analysis and report comments are not such comments.
 
-This is where the issue rests, with Status set to Waiting to be merged:
+This is where the issue rests:
 
-- When every condition above holds, apart from the gate on proof, approving and merging, mark the pull
-  request ready for review, set WIP State to Up-for-grabs, and remove yourself as assignee from both the issue and
-  the pull request. Nothing is left that needs you, and a draft would tell the person who merges it that it is
-  still moving. The label, when QA set it, tells them that the change passed the gate on proof as well.
-- When what is left needs a person's decision, leave it a draft, set WIP State to Blocked: Human needed, and say in
-  your report what it needs from them.
+- When every condition above holds, apart from the gate on proof, approving and merging, mark the pull request ready for
+  review, set Status to Waiting to be merged and WIP State to Up-for-grabs, and remove yourself as assignee from both
+  the issue and the pull request. Nothing is left that needs you, and a draft would tell the person who merges it that
+  it is still moving. The label, when QA set it, tells them that the change passed the gate on proof as well.
+- When what is left needs a person's decision, leave it a draft in Testing, set WIP State to Blocked: Human
+  needed, and say in your report what it needs from them. Waiting to be merged holds only what the team can read as
+  ready.
 - Anything else, such as a failing check or an open thread, is still yours. Stay on it until one of the above
   holds. A ready pull request is passed over by later runs, so one left ready with work in it has nobody coming
   back to it.
