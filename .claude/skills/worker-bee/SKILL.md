@@ -408,8 +408,8 @@ This is where the issue rests:
   review, set Status to Waiting to be merged and WIP State to Up-for-grabs, and remove yourself as assignee from both
   the issue and the pull request. Nothing is left that needs you, and a draft would tell the person who merges it that
   it is still moving. The label, when QA set it, tells them that the change passed the gate on proof as well. When the
-  issue also stands for a pull request that is not ready yet, do all of this for this pull request alone. Leave the
-  issue where that one is, and stay on it.
+  issue also stands for a pull request that is not ready yet, mark this pull request ready and unassign yourself from
+  it, but leave the issue where that one is, and stay on it.
 - When what is left needs a person's decision, leave it a draft in Testing, set WIP State to Blocked: Human
   needed, and say in your report what it needs from them.
 - Anything else, such as a failing check or an open thread, is still yours. Stay on it until one of the above
