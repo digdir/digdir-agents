@@ -103,14 +103,14 @@ prompting you instead of starting. A ready pull request in Waiting to be merged
 
 ### Work that an earlier session left
 
-An issue can have a pull request from an earlier session or an earlier process that nobody is on any more: its WIP
-State is Up-for-grabs, it has no assignee, and it does not wait to be merged. The board decides that over an old
-claim in the thread. Take it over rather than start again, and go through the steps from the analysis as for any
-issue. What it holds is a set of claims to check, like the issue's text, and that includes what it left out or
-rejected and why. Its earlier reviews had another brief and saw other commits, so they count as none of
-[the checks](#the-checks). Read what they found, and run the checks as for any change. Leave a ready pull request
-ready, since converting it to a draft cancels its CI. If you do convert it, add the `ci` label first. A pull request
-that a person asked for changes in is taken back as the end of [step 6](#6-ready-to-merge) says instead.
+An issue can have an open pull request from an earlier session or an earlier process that nobody is on any more: its WIP
+State is Up-for-grabs, it has no assignee, and it does not wait to be merged. The board decides that over an old claim
+in the thread. Take it over rather than start again, and go through the steps from the analysis as for any issue. What
+it holds is a set of claims to check, like the issue's text, and that includes what it left out or rejected and why. Its
+earlier reviews had another brief and saw other commits, so they count as none of [the checks](#the-checks). Read what
+they found, and run the checks as for any change. Leave a ready pull request ready, since converting it to a draft
+cancels its CI. If you do convert it, add the `ci` label first. A pull request that a person asked for changes in is
+taken back as the end of [step 6](#6-ready-to-merge) says instead.
 
 ## 2. Analyze it
 
@@ -367,8 +367,8 @@ Meanwhile, see CI through. When a check fails, read the failing step's log and f
 change. "Probably flaky" is not a diagnosis. Confirm that the jobs for the area you changed ran. The required check also
 passes when an area was skipped, and a change that CI maps to no area has been tested by nobody, which is something
 to tell the person. A session that can't wait for CI goes on anyway and says in its report that the checks had not
-finished. It leaves the pull request a draft, sets WIP State to Up-for-grabs and removes itself as assignee, so that
-a later run [takes it over](#work-that-an-earlier-session-left).
+finished. It leaves the pull request a draft, sets WIP State to Up-for-grabs and removes itself as assignee from
+both the issue and the pull request, so that a later run [takes it over](#work-that-an-earlier-session-left).
 
 ## 6. Ready to merge
 
