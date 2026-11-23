@@ -415,10 +415,11 @@ This is where the issue rests, with Status set to Waiting to be merged:
 A person merges it. The repository does not close an issue when a pull request merges, so the description's
 `Closes #N` or `Part of #N` is what tells them whether to close the issue too.
 
-When a person asks for changes in a pull request that rests here, take it back: set WIP State to Working and assign
-yourself again. Commit and push each change and say which commit it is in, since they read diffs in the pull request.
-Rewrite the description to match, correct anything you claimed that turned out wrong, and have QA of the test phase
-check the new commit before the pull request rests again.
+When a person asks for changes in a pull request that rests here, take it back: set WIP State to Working, assign
+yourself again and remove the `process/agent-says-merge` label, which their request has made untrue. Commit and push
+each change and say which commit it is in, since they read diffs in the pull request. Rewrite the description to match,
+correct anything you claimed that turned out wrong, and have QA of the test phase check the new commit before the pull
+request rests again.
 
 ## Leaving the work
 
