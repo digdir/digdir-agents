@@ -156,10 +156,11 @@ impl TurnTracker {
         } else if let Some(origin) = turn_origin(entry) {
             self.idle = false;
             if origin == "human" {
-                // A prompt typed when nothing ran was not taken from the queue, even when Claude
-                // Code writes it below input queued while its hooks ran.
-                let typed = entry.get("promptSource").and_then(Value::as_str) == Some("typed");
-                if self.queued > 0 && !typed {
+                // Only a turn that a `dequeue` started was taken from the queue. A prompt or slash
+                // command typed when nothing ran was not, even when Claude Code writes it below
+                // input queued while its hooks ran.
+                let dequeued = matches!(self.taken, Taken::BeforeEnd | Taken::AfterEnd);
+                if self.queued > 0 && dequeued {
                     // Claude Code may take all the queued input into the one turn.
                     self.queued = 0;
                     self.untold = 0;
