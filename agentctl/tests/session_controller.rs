@@ -340,8 +340,8 @@ struct FakeRuntime {
     conversation: RefCell<Vec<agent::sessions::Turn>>,
     /// What the conversation shows that no report says.
     conversation_signals: Cell<agent::sessions::TurnSignals>,
-    /// How often the conversation was marked, and how often by the time of the last delivery.
-    marks: Cell<usize>,
+    /// The prompts the conversation was marked for, and how many by the time of the last delivery.
+    marks: RefCell<Vec<String>>,
     marks_at_delivery: Cell<Option<usize>>,
     sent: RefCell<Vec<String>>,
     launches: RefCell<Vec<(Option<String>, Option<String>)>>,
@@ -372,7 +372,7 @@ impl Default for FakeRuntime {
             release_observe: Notify::new(),
             conversation: RefCell::default(),
             conversation_signals: Cell::default(),
-            marks: Cell::new(0),
+            marks: RefCell::new(Vec::new()),
             marks_at_delivery: Cell::new(None),
             sent: RefCell::default(),
             launches: RefCell::default(),
@@ -480,7 +480,7 @@ impl agent::sessions::SessionRuntime for FakeRuntime {
     ) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             tokio::time::sleep(self.delivery_delay.get()).await;
-            self.marks_at_delivery.set(Some(self.marks.get()));
+            self.marks_at_delivery.set(Some(self.marks.borrow().len()));
             self.sent.borrow_mut().push(prompt.to_owned());
             self.conversation.borrow_mut().push(user_turn(prompt));
             self.delivered.notify_one();
@@ -515,8 +515,9 @@ impl agent::sessions::SessionRuntime for FakeRuntime {
         &'a self,
         _session: &'a agent::sessions::Session,
         _sandbox: &'a SandboxHandle,
+        prompt: &'a str,
     ) -> LocalFuture<'a, Result<agent::sessions::ConversationMark, Error>> {
-        self.marks.set(self.marks.get() + 1);
+        self.marks.borrow_mut().push(prompt.to_owned());
         Box::pin(async { Ok(agent::sessions::ConversationMark::default()) })
     }
 
@@ -1462,6 +1463,11 @@ async fn prompt_wait_ends_when_the_conversation_shows_the_turn_was_interrupted()
             Some(1),
             "the wait marks where the conversation ends once, before delivery"
         );
+        assert_eq!(
+            *harness.runtime.marks.borrow(),
+            ["run the slow command"],
+            "the conversation is followed for the prompt"
+        );
         for event in reports {
             harness.report(*event).await;
         }
@@ -1471,13 +1477,65 @@ async fn prompt_wait_ends_when_the_conversation_shows_the_turn_was_interrupted()
                 .is_err(),
             "the turn is not over after {reports:?}"
         );
-        harness
-            .runtime
-            .conversation_signals
-            .set(agent::sessions::TurnSignals { interrupted: true });
+        harness.runtime.conversation_signals.set(agent::sessions::TurnSignals {
+            interrupted: true,
+            ..agent::sessions::TurnSignals::default()
+        });
         tokio::time::timeout(Duration::from_secs(3), waiting)
             .await
             .expect("the interruption ends the wait")
+            .expect("task")
+            .expect("prompt");
+        harness.finish();
+    }
+}
+
+#[tokio::test(flavor = "local")]
+async fn prompt_wait_follows_a_prompt_queued_behind_the_running_turn() {
+    // Claude Code reports a prompt it queues behind the running turn as submitted at once, and
+    // reports nothing when the queued prompt's turn starts. Only its conversation shows the queue.
+    for further_completion in [true, false] {
+        let directory = TempDir::new().expect("directory");
+        let harness = ServiceHarness::start(&directory, "55555555-5555-4555-8555-555555555555").await;
+        harness.report(agent::sessions::ActivityEvent::TurnStarted).await;
+        let mut waiting = harness.prompt("reply with exactly SECOND");
+        harness.await_delivery(&mut waiting).await;
+        harness.report(agent::sessions::ActivityEvent::TurnStarted).await;
+        // The operator interrupts the running turn, which reports nothing, and the queued prompt's
+        // turn follows.
+        harness.runtime.conversation_signals.set(agent::sessions::TurnSignals {
+            interrupted: true,
+            pending: true,
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1500), &mut waiting)
+                .await
+                .is_err(),
+            "the running turn was interrupted, and the queued prompt's turn follows"
+        );
+        harness.runtime.conversation_signals.set(agent::sessions::TurnSignals {
+            pending: true,
+            ..agent::sessions::TurnSignals::default()
+        });
+        harness.report(agent::sessions::ActivityEvent::TurnCompleted).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(2500), &mut waiting)
+                .await
+                .is_err(),
+            "the running turn ended, and the queued prompt's turn follows"
+        );
+        harness
+            .runtime
+            .conversation_signals
+            .set(agent::sessions::TurnSignals::default());
+        if further_completion {
+            harness.report(agent::sessions::ActivityEvent::TurnCompleted).await;
+        }
+        // Without a further report, the conversation shows the end the hook's report arrived
+        // before.
+        tokio::time::timeout(Duration::from_secs(3), waiting)
+            .await
+            .expect("the queued prompt's turn ends the wait")
             .expect("task")
             .expect("prompt");
         harness.finish();

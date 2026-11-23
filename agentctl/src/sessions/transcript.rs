@@ -83,6 +83,10 @@ pub struct QuestionOption {
 /// What a session's conversation shows about its turns that the harness does not report.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TurnSignals {
-    /// A turn ended because the operator interrupted it or refused a tool call.
+    /// The latest turn that ended was ended by the operator, who interrupted it or refused a tool
+    /// call.
     pub interrupted: bool,
+    /// Operator input has not been answered yet: it waits behind the running turn to start a turn
+    /// of its own, or has started one that has not ended.
+    pub pending: bool,
 }

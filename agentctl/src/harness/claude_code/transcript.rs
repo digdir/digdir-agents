@@ -8,8 +8,10 @@
 //! compaction summaries and text the client injects on the user's behalf
 //! (slash-command echoes, background task notifications, system reminders,
 //! interruption markers).
-//! Input the operator sends while a turn is running is not a `user` entry at
-//! all: it is an `attachment` of type `queued_command` absorbed into the turn.
+//! Input the operator sends while a turn is running is queued. During a tool
+//! call it is absorbed into the turn as an `attachment` of type
+//! `queued_command`. Otherwise it waits for the turn to end and starts a turn
+//! of its own as a `user` entry.
 
 use std::collections::HashMap;
 
@@ -83,28 +85,240 @@ fn is_interruption(entry: &Value) -> bool {
         && user_text(entry).is_some_and(|text| is_interruption_marker(&text))
 }
 
-/// Follows a transcript as it grows, for the turn endings Claude Code fires no hook for.
+/// Follows a transcript as it grows, for what Claude Code fires no hook for: a turn the operator
+/// ended, and operator input queued to start a turn of its own.
+///
+/// Claude Code writes `queue-operation` lines at once and conversation lines in batches, so the
+/// `dequeue` that takes queued input sits above the end of the turn before it. What it writes
+/// after that end shows whether the input started a turn.
 #[derive(Debug, Default)]
 pub(crate) struct TurnTracker {
+    /// Operator input queued and not yet seen to start a turn: `enqueue`s less the operations that
+    /// take it out of the queue without one, such as a `remove` when it is absorbed into the
+    /// running turn.
+    queued: u32,
+    /// How many of `queued` Claude Code wrote without their text, as it does for input sent while
+    /// the hooks of the prompt ahead run. Such input may be Claude Code's own, or someone else's
+    /// sent while the prompt's own hooks ran.
+    untold: u32,
+    /// What the input the latest `dequeue` took started. A `dequeue` doesn't say whose input it
+    /// takes, and Claude Code takes its own input and the operator's in the order they came.
+    taken: Taken,
+    /// The latest turn the conversation shows has ended. Input is queued only while a turn runs,
+    /// so a turn is taken to run at the mark.
+    idle: bool,
+    /// The operator ended the latest turn that ended.
     interrupted: bool,
+    /// The prompt has started its turn or left the queue. Input queued after that is someone
+    /// else's, such as a prompt sent without waiting, and the prompt's turn does not wait for it.
+    resolved: bool,
+    /// The prompt as [`prompt_key`] compares it. A prompt sent just before it can start its turn
+    /// below the mark, so a turn that starts with nothing queued is the prompt's only when it holds
+    /// the prompt.
+    prompt: String,
+}
+
+/// What input taken from the queue started.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum Taken {
+    /// Nothing that has not ended, or a turn for Claude Code's own input.
+    #[default]
+    Nothing,
+    /// Not known yet, since the turn that ran when the input was taken has not ended.
+    BeforeEnd,
+    /// Not known yet. The turn before has ended, so the next line of the conversation shows it.
+    AfterEnd,
+    /// A turn that has not ended yet.
+    Turn,
 }
 
 impl TurnTracker {
+    /// A tracker for what follows the mark set before `prompt` is sent.
+    pub(crate) fn new(prompt: &str) -> Self {
+        Self {
+            prompt: prompt_key(prompt),
+            ..Self::default()
+        }
+    }
+
     /// Folds complete transcript lines. Lines that are not JSON objects are skipped.
     pub(crate) fn push(&mut self, lines: &[u8]) {
         for line in lines.split(|byte| *byte == b'\n') {
-            if let Ok(entry) = serde_json::from_slice::<Value>(line)
-                && is_interruption(&entry)
-            {
-                self.interrupted = true;
+            if let Ok(entry) = serde_json::from_slice::<Value>(line) {
+                self.fold(&entry);
             }
+        }
+    }
+
+    fn fold(&mut self, entry: &Value) {
+        if entry.get("type").and_then(Value::as_str) == Some("queue-operation") {
+            self.fold_queue_operation(entry);
+        } else if let Some(origin) = turn_origin(entry) {
+            self.idle = false;
+            if origin == "human" {
+                // Only a turn that a `dequeue` started was taken from the queue. A prompt or slash
+                // command typed when nothing ran was not, even when Claude Code writes it below
+                // input queued while its hooks ran.
+                let dequeued = matches!(self.taken, Taken::BeforeEnd | Taken::AfterEnd);
+                if self.queued > 0 && dequeued {
+                    // Claude Code may take all the queued input into the one turn.
+                    self.queued = 0;
+                    self.untold = 0;
+                    self.taken = Taken::Turn;
+                    self.resolved = true;
+                } else if user_text(entry).is_some_and(|text| prompt_key(&text) == self.prompt) {
+                    // The prompt was not queued and started its turn at once, so input queued
+                    // without its text while the prompt's hooks ran is someone else's.
+                    self.queued -= self.untold;
+                    self.untold = 0;
+                    self.resolved = true;
+                }
+            } else if matches!(self.taken, Taken::BeforeEnd | Taken::AfterEnd) {
+                // Claude Code took its own input, such as a notification that a background task
+                // finished or a scheduled prompt, and the operator's stays queued. Input whose text
+                // it left out may have been that input.
+                self.taken = Taken::Nothing;
+                if self.untold > 0 {
+                    self.untold -= 1;
+                    self.leave_queue();
+                }
+            }
+        } else if let Some(interrupted) = ends_turn(entry) {
+            self.idle = true;
+            self.taken = match self.taken {
+                Taken::BeforeEnd => Taken::AfterEnd,
+                Taken::Turn => Taken::Nothing,
+                taken => taken,
+            };
+            self.interrupted = interrupted;
+        } else if self.taken == Taken::AfterEnd && is_conversation(entry) {
+            // The input started no turn, such as a slash command Claude Code warns it doesn't know.
+            self.leave_queue();
+            self.taken = Taken::Nothing;
+        }
+    }
+
+    fn fold_queue_operation(&mut self, entry: &Value) {
+        // Claude Code queues its own input too, and runs it in a turn of its own that the
+        // operator's wait should not follow.
+        let content = entry.get("content");
+        if content.and_then(Value::as_str).is_some_and(is_injected) {
+            return;
+        }
+        match entry.get("operation").and_then(Value::as_str) {
+            Some("enqueue") => {
+                if !self.resolved {
+                    self.queued = self.queued.saturating_add(1);
+                    if content.is_none() {
+                        self.untold = self.untold.saturating_add(1);
+                    }
+                }
+            }
+            Some("dequeue") => {
+                if self.queued > 0 {
+                    self.taken = if self.idle { Taken::AfterEnd } else { Taken::BeforeEnd };
+                }
+            }
+            _ => self.leave_queue(),
+        }
+    }
+
+    /// Operator input left the queue without a turn of its own.
+    const fn leave_queue(&mut self) {
+        // Input queued before the mark can be taken too, so the count stops at zero.
+        if self.queued > 0 {
+            self.queued -= 1;
+            if self.untold > self.queued {
+                self.untold = self.queued;
+            }
+            self.resolved |= self.queued == 0;
         }
     }
 
     pub(crate) const fn signals(&self) -> TurnSignals {
         TurnSignals {
             interrupted: self.interrupted,
+            pending: self.queued > 0 || matches!(self.taken, Taken::Turn),
         }
+    }
+}
+
+/// What [`TurnTracker`] compares of a prompt and of the line that starts a turn. Claude Code writes
+/// a pasted prompt of several lines wrapped in `<pasted_content>` tags, with its tabs and line
+/// breaks changed, and a slash command as its echo. A prompt that is not recognized only makes the
+/// wait follow input queued behind it, so this need not catch every change.
+fn prompt_key(text: &str) -> String {
+    let between = |open: &str, close: &str| {
+        let start = text.find(open)? + open.len();
+        text[start..].find(close).map(|end| &text[start..start + end])
+    };
+    let text = between("<command-name>", "</command-name>").map_or_else(
+        || without_tags(text, "pasted_content"),
+        |name| {
+            format!(
+                "{name}{}",
+                between("<command-args>", "</command-args>").unwrap_or_default()
+            )
+        },
+    );
+    text.chars()
+        .filter(|character| !character.is_whitespace() && *character != '\u{200b}')
+        .collect()
+}
+
+/// `text` without the opening and closing tags named `tag`, whatever their attributes.
+fn without_tags(text: &str, tag: &str) -> String {
+    let (open, close) = (format!("<{tag}"), format!("</{tag}"));
+    let mut rest = text;
+    let mut kept = String::with_capacity(text.len());
+    while let Some(start) = [rest.find(&open), rest.find(&close)].into_iter().flatten().min() {
+        let Some(end) = rest[start..].find('>') else {
+            break;
+        };
+        kept.push_str(&rest[..start]);
+        rest = &rest[start + end + 1..];
+    }
+    kept.push_str(rest);
+    kept
+}
+
+/// Who started the turn of the main conversation that `entry` starts, if it starts one: `human`
+/// for the operator's prompt or slash command, or such as `task_notification` or `scheduled` for
+/// input Claude Code queued itself.
+fn turn_origin(entry: &Value) -> Option<&str> {
+    if flag(entry, "isSidechain") || entry.get("type").and_then(Value::as_str) != Some("user") {
+        return None;
+    }
+    entry.get("turnOrigin").and_then(Value::as_str)
+}
+
+/// Whether `entry` is a line of the main conversation that can show what queued input started.
+/// Claude Code writes how long a turn took after its end, and that a scheduled task fired before
+/// the scheduled prompt's turn, so neither shows it.
+fn is_conversation(entry: &Value) -> bool {
+    !flag(entry, "isSidechain")
+        && match entry.get("type").and_then(Value::as_str) {
+            Some("user" | "assistant") => true,
+            Some("system") => !matches!(
+                entry.get("subtype").and_then(Value::as_str),
+                Some("turn_duration" | "scheduled_task_fire")
+            ),
+            _ => false,
+        }
+}
+
+/// Whether `entry` ends a turn of the main conversation, and if so whether the operator ended it.
+/// Claude Code writes `stop_hook_summary` after the `Stop` hooks, which agentctl always registers,
+/// an API error message when the turn fails, and the interruption marker when the operator ends it.
+fn ends_turn(entry: &Value) -> Option<bool> {
+    if flag(entry, "isSidechain") {
+        return None;
+    }
+    match entry.get("type").and_then(Value::as_str) {
+        Some("system") => (entry.get("subtype").and_then(Value::as_str) == Some("stop_hook_summary")).then_some(false),
+        Some("assistant") => flag(entry, "isApiErrorMessage").then_some(false),
+        Some("user") => is_interruption(entry).then_some(true),
+        _ => None,
     }
 }
 
@@ -506,6 +720,513 @@ mod tests {
     }
 
     const INTERRUPTED_THEN_PROMPTED: &str = r#"{"type":"api-request-blob","sessionId":"484733e9-d6e4-4788-a6a8-496b294e8969","hash":"5f805a933bb67ac44d78e1bb00fb8470f737f3d02d3e10c10827277839977be4","message":{"role":"user","content":[{"type":"tool_result","content":"The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.","is_error":true,"tool_use_id":"toolu_01JT6UL3E2BqrvKB7LnXA4Uv"},{"type":"text","text":"[Request interrupted by user for tool use]\n"},{"type":"text","text":"Write a 2000-word story about a harbour pilot, as plain text, without using any tools."}]}}"#;
+
+    /// Turns recorded with Claude Code 2.1.321, separated by a blank line: a prompt queued behind
+    /// an answer being written, one absorbed while a tool ran, and one queued behind an answer the
+    /// operator then interrupted. Each turn is followed by the one its input started, if any.
+    const QUEUED: &str = include_str!("../../../tests/fixtures/claude-code-queued.jsonl");
+
+    #[test]
+    fn a_prompt_queued_behind_the_running_turn_starts_a_turn_of_its_own() {
+        let sections = QUEUED.split("\n\n").collect::<Vec<_>>();
+        let [queued, absorbed, queued_then_interrupted] = sections[..] else {
+            panic!("three recorded sections");
+        };
+        // What the signals are once each line is written, in the order the file holds them. Each
+        // section starts with the turn the prompt is queued behind, as when its line is written
+        // after the mark.
+        for (case, section, prompt, expected) in [
+            // The prompt is queued while the essay is written. The essay's turn ends, and the
+            // queued prompt's turn starts and ends.
+            (
+                "queued behind the essay",
+                queued,
+                "Reply with exactly SECOND.",
+                "-qqqqqqq--",
+            ),
+            (
+                "absorbed during a tool call",
+                absorbed,
+                "Also tell me how many lines it printed.",
+                "--q------",
+            ),
+            // The operator interrupts the essay, and the queued prompt's turn follows.
+            (
+                "queued behind an interrupted essay",
+                queued_then_interrupted,
+                "Reply with exactly THIRD.",
+                "-qqqIII--",
+            ),
+        ] {
+            let mut tracker = TurnTracker::new(prompt);
+            let seen = section
+                .lines()
+                .map(|line| {
+                    tracker.push(format!("{line}\n").as_bytes());
+                    match tracker.signals() {
+                        TurnSignals {
+                            interrupted: false,
+                            pending: false,
+                        } => '-',
+                        TurnSignals {
+                            interrupted: false,
+                            pending: true,
+                        } => 'q',
+                        TurnSignals {
+                            interrupted: true,
+                            pending: true,
+                        } => 'I',
+                        TurnSignals {
+                            interrupted: true,
+                            pending: false,
+                        } => 'i',
+                    }
+                })
+                .collect::<String>();
+            assert_eq!(seen, expected, "{case}");
+        }
+    }
+
+    #[test]
+    fn input_claude_code_queues_itself_starts_no_turn_to_follow() {
+        // Claude Code 2.1.321 queues the notification that a background task finished, and takes
+        // it into a turn of its own.
+        let notification =
+            "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>";
+        let turn = [
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": notification}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+            serde_json::json!({"type": "user", "promptSource": "system", "turnOrigin": "task_notification", "message": {"role": "user", "content": notification}}),
+        ]
+        .map(|entry| format!("{entry}\n"))
+        .concat();
+        assert_eq!(signals(&turn), TurnSignals::default());
+
+        // A notification taken into the running turn does not take the operator's input with it.
+        let queued = [
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly SECOND."}),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": notification}),
+            serde_json::json!({"type": "queue-operation", "operation": "remove", "reason": "absorbed_mid_turn", "content": notification}),
+        ]
+        .map(|entry| format!("{entry}\n"))
+        .concat();
+        assert!(signals(&queued).pending);
+
+        // Nor does a notification's turn that runs first. Claude Code 2.1.321 takes its own input
+        // and the operator's in the order they were queued.
+        let ended = serde_json::json!({"type": "system", "subtype": "stop_hook_summary"});
+        let took = serde_json::json!({"type": "system", "subtype": "turn_duration"});
+        let dequeued = serde_json::json!({"type": "queue-operation", "operation": "dequeue"});
+        let answer = |text: &str| serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}});
+        let lines = [
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": notification}),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly THIRD."}),
+            dequeued.clone(),
+            answer("Volcanoes are openings in the crust."),
+            ended.clone(),
+            took.clone(),
+            serde_json::json!({"type": "user", "promptSource": "system", "turnOrigin": "task_notification", "message": {"role": "user", "content": notification}}),
+            dequeued,
+            answer("The background `sleep 3` finished."),
+            ended.clone(),
+            took,
+            serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly THIRD."}}),
+            answer("THIRD"),
+            ended,
+        ];
+        let mut tracker = TurnTracker::default();
+        let seen = lines
+            .iter()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().pending { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        assert_eq!(seen, "-qqqqqqqqqqqq-");
+    }
+
+    /// The transcript lines that hold `entries`.
+    fn jsonl(entries: &[Value]) -> String {
+        entries
+            .iter()
+            .map(|entry| format!("{entry}\n"))
+            .collect::<Vec<_>>()
+            .concat()
+    }
+
+    #[test]
+    fn the_turn_queued_input_starts_ends_as_any_turn_does() {
+        let running = [
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "/hello"}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+        ];
+        let ended = serde_json::json!({"type": "system", "subtype": "stop_hook_summary"});
+        let queued = jsonl(&[running[0].clone(), running[1].clone(), ended.clone()]);
+        // Claude Code 2.1.321 starts the turn of a queued prompt with the prompt, and the turn of a
+        // queued slash command with the command's echo, which has no `promptSource`.
+        let prompt = serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}});
+        let command = serde_json::json!({"type": "user", "turnOrigin": "human", "message": {"role": "user", "content": "<command-message>hello</command-message>\n<command-name>/hello</command-name>"}});
+        for start in [prompt.clone(), command] {
+            let started = format!("{queued}{}", jsonl(std::slice::from_ref(&start)));
+            assert!(signals(&started).pending, "{start}");
+            for (end, expected) in [
+                (ended.clone(), TurnSignals::default()),
+                (
+                    serde_json::json!({"type": "assistant", "isApiErrorMessage": true, "message": {"role": "assistant", "content": [{"type": "text", "text": "API Error: 529"}]}}),
+                    TurnSignals::default(),
+                ),
+                (
+                    serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "[Request interrupted by user]"}]}}),
+                    TurnSignals {
+                        interrupted: true,
+                        pending: false,
+                    },
+                ),
+            ] {
+                let lines = format!("{started}{}", jsonl(std::slice::from_ref(&end)));
+                assert_eq!(signals(&lines), expected, "{start} {end}");
+            }
+        }
+
+        // A subagent's lines neither start nor end the main conversation's turns.
+        let subagent_started = serde_json::json!({"type": "user", "isSidechain": true, "turnOrigin": "human", "message": {"role": "user", "content": "Explore the repository."}});
+        let subagent_ended = serde_json::json!({"type": "system", "isSidechain": true, "subtype": "stop_hook_summary"});
+        let lines = jsonl(&[
+            running[0].clone(),
+            subagent_started.clone(),
+            subagent_ended.clone(),
+            ended,
+        ]);
+        assert!(signals(&lines).pending, "a subagent's turn in the running turn");
+        let lines = format!("{queued}{}", jsonl(&[prompt, subagent_started, subagent_ended]));
+        assert!(signals(&lines).pending, "a subagent's turn in the queued turn");
+    }
+
+    #[test]
+    fn queued_input_that_starts_no_turn_is_not_followed() {
+        // Recorded with Claude Code 2.1.321: a slash command it doesn't know, queued behind an
+        // essay. It is taken from the queue, and Claude Code warns about it instead of starting a
+        // turn.
+        let enqueued = serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "/otters"});
+        let dequeued = serde_json::json!({"type": "queue-operation", "operation": "dequeue"});
+        let essay = serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Ocean tides are the regular rising and falling of sea levels."}]}});
+        let ended = serde_json::json!({"type": "system", "subtype": "stop_hook_summary"});
+        let took = serde_json::json!({"type": "system", "subtype": "turn_duration", "durationMs": 5102});
+        let warned = serde_json::json!({"type": "system", "subtype": "informational", "content": "Unknown command: /otters", "level": "warning"});
+        let prompt = serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}});
+
+        let lines = [&enqueued, &dequeued, &essay, &ended, &took];
+        for count in 1..=lines.len() {
+            let lines = lines[..count].iter().copied().cloned().collect::<Vec<_>>();
+            assert!(
+                signals(&jsonl(&lines)).pending,
+                "until the essay's turn has ended: {lines:?}"
+            );
+        }
+        let lines = [&enqueued, &dequeued, &essay, &ended, &took, &warned].map(Clone::clone);
+        assert_eq!(signals(&jsonl(&lines)), TurnSignals::default(), "the warning");
+
+        // Input that arrives as the turn ends is queued and taken below its end.
+        let lines = [&essay, &ended, &took, &enqueued, &dequeued].map(Clone::clone);
+        assert!(signals(&jsonl(&lines)).pending, "taken after the end");
+        let lines = [&essay, &ended, &took, &enqueued, &dequeued, &warned].map(Clone::clone);
+        assert_eq!(
+            signals(&jsonl(&lines)),
+            TurnSignals::default(),
+            "taken after the end, then the warning"
+        );
+        let lines = [&essay, &ended, &took, &enqueued, &dequeued, &prompt].map(Clone::clone);
+        assert!(signals(&jsonl(&lines)).pending, "taken after the end, then its turn");
+    }
+
+    #[test]
+    fn input_sent_after_the_prompts_turn_started_is_not_followed() {
+        // The waited prompt reaches an idle Claude Code and starts its turn at once. Another prompt,
+        // such as one sent without --wait or typed into the attached terminal, is queued behind it.
+        // The waited prompt's turn ends where its own answer ends, not where the later one's does.
+        let lines = jsonl(&[
+            serde_json::json!({"type": "user", "promptSource": "typed", "turnOrigin": "human", "message": {"role": "user", "content": "Write a 300-word essay about ocean tides. Use no tools."}}),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly SECOND."}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Ocean tides are the regular rising and falling of sea levels."}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+            serde_json::json!({"type": "system", "subtype": "turn_duration"}),
+            serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}}),
+        ]);
+        let mut tracker = TurnTracker::new("Write a 300-word essay about ocean tides. Use no tools.");
+        let seen = lines
+            .lines()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().pending { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        assert_eq!(seen, "-------");
+    }
+
+    #[test]
+    fn a_prompt_queued_behind_a_turn_started_just_before_the_mark_is_followed() {
+        // A prompt sent without --wait reaches an idle Claude Code just before the waited one.
+        // `prompt` returns once it is typed, before Claude Code has run the UserPromptSubmit hooks
+        // and written the prompt, so its line comes after the waited prompt's mark. The waited
+        // prompt is pasted while that turn runs and is queued behind it.
+        let lines = jsonl(&[
+            serde_json::json!({"type": "user", "promptSource": "typed", "turnOrigin": "human", "message": {"role": "user", "content": "Write a 300-word essay about ocean tides. Use no tools."}}),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly SECOND."}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Ocean tides are the regular rising and falling of sea levels."}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+            serde_json::json!({"type": "system", "subtype": "turn_duration"}),
+            serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "SECOND"}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+        ]);
+        let mut tracker = TurnTracker::new("Reply with exactly SECOND.");
+        let seen = lines
+            .lines()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().pending { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        // The waited prompt's own turn is followed to its end.
+        assert_eq!(seen, "-qqqqqqq-");
+    }
+
+    #[test]
+    fn a_prompt_queued_before_the_turn_ahead_of_it_is_written_is_followed() {
+        // A prompt sent without --wait reaches an idle Claude Code just before the waited one, and
+        // Claude Code is still running its UserPromptSubmit hooks when the waited prompt is pasted.
+        // The waited prompt is queued, and its `enqueue` is written at once, above the line of the
+        // turn ahead of it. That line was typed, not taken from the queue.
+        let lines = jsonl(&[
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly SECOND."}),
+            serde_json::json!({"type": "user", "promptSource": "typed", "turnOrigin": "human", "message": {"role": "user", "content": "Write a 300-word essay about ocean tides. Use no tools."}}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Ocean tides are the regular rising and falling of sea levels."}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+            serde_json::json!({"type": "system", "subtype": "turn_duration"}),
+            serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "SECOND"}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+        ]);
+        let mut tracker = TurnTracker::new("Reply with exactly SECOND.");
+        let seen = lines
+            .lines()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().pending { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        // The waited prompt's own turn is followed to its end.
+        assert_eq!(seen, "qqqqqqqq-");
+    }
+
+    #[test]
+    fn a_prompt_queued_while_the_hooks_of_the_turn_ahead_run_is_followed() {
+        // Recorded with Claude Code 2.1.321, 3 of 3 runs, in tmux with a UserPromptSubmit hook that
+        // takes 3 s: a prompt or a slash command typed at idle, and the waited prompt pasted a
+        // second later, while the hook runs. Claude Code writes the waited prompt's `enqueue` above
+        // the typed line, and without its text. A slash command's echo says nothing of how it was
+        // sent.
+        for ahead in [
+            serde_json::json!({"type": "user", "promptSource": "typed", "turnOrigin": "human", "message": {"role": "user", "content": "Write a 150-word essay about volcanoes. Use no tools."}}),
+            serde_json::json!({"type": "user", "turnOrigin": "human", "message": {"role": "user", "content": "<command-message>hello</command-message>\n<command-name>/hello</command-name>"}}),
+        ] {
+            let lines = jsonl(&[
+                serde_json::json!({"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-23T21:35:28.484Z"}),
+                ahead.clone(),
+                serde_json::json!({"type": "queue-operation", "operation": "dequeue", "timestamp": "2026-11-23T21:35:36.844Z"}),
+                serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Volcanoes are openings in Earth's crust."}]}}),
+                serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+                serde_json::json!({"type": "system", "subtype": "turn_duration"}),
+                serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly THIRD."}}),
+                serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "THIRD"}]}}),
+                serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+            ]);
+            let mut tracker = TurnTracker::new("Reply with exactly THIRD.");
+            let seen = lines
+                .lines()
+                .map(|line| {
+                    tracker.push(format!("{line}\n").as_bytes());
+                    if tracker.signals().pending { 'q' } else { '-' }
+                })
+                .collect::<String>();
+            // The turn ahead's end is not the waited prompt's. Its own turn is followed to its end.
+            assert_eq!(&seen[4..], "qqqq-", "{ahead}: {seen}");
+        }
+    }
+
+    #[test]
+    fn input_sent_after_a_pasted_multiline_prompts_turn_started_is_not_followed() {
+        // Recorded with Claude Code 2.1.321: a prompt of several lines, pasted with bracketed paste
+        // as agentctl delivers it, is written wrapped in `<pasted_content>`.
+        let prompt = "Reply with exactly OK.\nLine two\n\nLine four";
+        let lines = jsonl(&[
+            serde_json::json!({"type": "user", "promptSource": "typed", "turnOrigin": "human", "message": {"role": "user", "content": "\n\n<pasted_content id=\"344d\">\nReply with exactly OK.\nLine two\n\nLine four\n</pasted_content id=\"344d\">\n"}}),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly SECOND."}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "OK"}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+            serde_json::json!({"type": "system", "subtype": "turn_duration"}),
+            serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}}),
+        ]);
+        let mut tracker = TurnTracker::new(prompt);
+        let seen = lines
+            .lines()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().pending { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        assert_eq!(seen, "-------");
+    }
+
+    #[test]
+    fn input_sent_after_the_prompt_was_absorbed_is_not_followed() {
+        // The waited prompt is absorbed into the running turn while a tool runs, and another prompt
+        // is queued behind that turn.
+        let lines = jsonl(&[
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Also tell me how many lines it printed."}),
+            serde_json::json!({"type": "queue-operation", "operation": "remove", "reason": "absorbed_mid_turn", "content": "Also tell me how many lines it printed."}),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly SECOND."}),
+        ]);
+        assert_eq!(signals(&lines), TurnSignals::default());
+    }
+
+    #[test]
+    fn a_scheduled_prompts_turn_does_not_take_the_operators_input() {
+        // A scheduled task fired while the essay was written, before the operator's prompt was
+        // queued, and Claude Code 2.1.321 takes it first. It writes that the task fired, then
+        // starts the scheduled prompt's turn.
+        let ended = serde_json::json!({"type": "system", "subtype": "stop_hook_summary"});
+        let took = serde_json::json!({"type": "system", "subtype": "turn_duration"});
+        let dequeued = serde_json::json!({"type": "queue-operation", "operation": "dequeue"});
+        let answer = |text: &str| serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}});
+        let lines = [
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly THIRD."}),
+            dequeued.clone(),
+            answer("Volcanoes are openings in the crust."),
+            ended.clone(),
+            took.clone(),
+            serde_json::json!({"type": "system", "subtype": "scheduled_task_fire", "content": "Running scheduled task"}),
+            serde_json::json!({"type": "user", "turnOrigin": "scheduled", "message": {"role": "user", "content": "Check the build."}}),
+            dequeued,
+            answer("The build passes."),
+            ended.clone(),
+            took,
+            serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly THIRD."}}),
+            answer("THIRD"),
+            ended,
+        ];
+        let mut tracker = TurnTracker::default();
+        let seen = lines
+            .iter()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().pending { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        assert_eq!(seen, "qqqqqqqqqqqqq-");
+    }
+
+    #[test]
+    fn input_queued_without_its_text_is_not_followed_past_a_turn_for_claude_codes_own_input() {
+        // Without the text the tracker can't tell the operator's input from Claude Code's own.
+        // Following Claude Code's past its turn would hold the wait until its timeout.
+        let lines = jsonl(&[
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue"}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+            serde_json::json!({"type": "user", "promptSource": "system", "turnOrigin": "task_notification", "message": {"role": "user", "content": "<task-notification>\n<status>completed</status>\n</task-notification>"}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+        ]);
+        let mut tracker = TurnTracker::new("Reply with exactly SECOND.");
+        let seen = lines
+            .lines()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().pending { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        assert_eq!(seen, "qqq--");
+    }
+
+    #[test]
+    fn input_sent_while_the_prompts_hooks_run_is_not_followed() {
+        // Claude Code writes the `enqueue` of input sent while it runs the prompt's
+        // UserPromptSubmit hooks above the prompt, and without its text, as in
+        // `a_prompt_queued_while_the_hooks_of_the_turn_ahead_run_is_followed`. Here the prompt is
+        // the one typed, so the queued input is someone else's.
+        let lines = jsonl(&[
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue"}),
+            serde_json::json!({"type": "user", "promptSource": "typed", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "SECOND"}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+            serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly THIRD."}}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "THIRD"}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+        ]);
+        let mut tracker = TurnTracker::new("Reply with exactly SECOND.");
+        let seen = lines
+            .lines()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().pending { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        assert_eq!(seen, "q-------");
+        // Of two inputs sent while the prompt's hooks ran, one was absorbed into the turn ahead.
+        let lines = jsonl(&[
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue"}),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue"}),
+            serde_json::json!({"type": "queue-operation", "operation": "remove"}),
+            serde_json::json!({"type": "user", "promptSource": "typed", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}}),
+        ]);
+        let mut tracker = TurnTracker::new("Reply with exactly SECOND.");
+        tracker.push(lines.as_bytes());
+        assert!(!tracker.signals().pending, "{lines}");
+    }
+
+    #[test]
+    fn a_prompt_is_known_in_the_forms_claude_code_writes_it() {
+        // Recorded with Claude Code 2.1.321, pasted as agentctl delivers prompts.
+        for (sent, written) in [
+            ("Reply with exactly OK.", "Reply with exactly OK."),
+            ("a\tb", "a    b"),
+            ("a\r\nb", "a\n\nb"),
+            (
+                "Reply with exactly OK.\nLine two",
+                "\n\n<pasted_content id=\"344d\">\nReply with exactly OK.\nLine two\n</pasted_content id=\"344d\">\n",
+            ),
+            (
+                "/review src",
+                "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>src</command-args>",
+            ),
+        ] {
+            assert_eq!(prompt_key(written), prompt_key(sent), "{written:?}");
+        }
+        assert_ne!(
+            prompt_key("Reply with exactly SECOND."),
+            prompt_key("Write a 300-word essay about ocean tides.")
+        );
+    }
+
+    #[test]
+    fn queued_input_taken_back_starts_no_turn() {
+        // Claude Code 2.1.321 moves queued input back to the prompt for editing, all of it or the
+        // latest.
+        for operation in ["popAll", "popOne"] {
+            let lines = [
+                serde_json::json!({"type": "queue-operation", "operation": "enqueue", "content": "Reply with exactly SECOND."}),
+                serde_json::json!({"type": "queue-operation", "operation": operation, "content": "Reply with exactly SECOND."}),
+            ]
+            .map(|entry| format!("{entry}\n"))
+            .concat();
+            assert_eq!(signals(&lines), TurnSignals::default(), "{operation}");
+        }
+    }
 
     #[test]
     fn only_claude_codes_own_marker_is_an_interruption() {
