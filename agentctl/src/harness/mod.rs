@@ -929,6 +929,7 @@ pub(crate) fn trim_partial_transcript(harness: Harness, bytes: &[u8]) -> &[u8] {
 #[derive(Debug)]
 pub(crate) enum TurnTracker {
     ClaudeCode(claude_code::transcript::TurnTracker),
+    Codex(codex::transcript::TurnTracker),
 }
 
 impl TurnTracker {
@@ -936,7 +937,8 @@ impl TurnTracker {
     pub(crate) fn new(harness: Harness) -> Option<Self> {
         match harness {
             Harness::ClaudeCode => Some(Self::ClaudeCode(claude_code::transcript::TurnTracker::default())),
-            Harness::Codex | Harness::Pi => None,
+            Harness::Codex => Some(Self::Codex(codex::transcript::TurnTracker::default())),
+            Harness::Pi => None,
         }
     }
 
@@ -944,6 +946,7 @@ impl TurnTracker {
     pub(crate) fn push(&mut self, lines: &[u8]) {
         match self {
             Self::ClaudeCode(tracker) => tracker.push(lines),
+            Self::Codex(tracker) => tracker.push(lines),
         }
     }
 
@@ -951,6 +954,7 @@ impl TurnTracker {
     pub(crate) const fn signals(&self) -> crate::sessions::TurnSignals {
         match self {
             Self::ClaudeCode(tracker) => tracker.signals(),
+            Self::Codex(tracker) => tracker.signals(),
         }
     }
 }

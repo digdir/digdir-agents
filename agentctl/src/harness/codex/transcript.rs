@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::{
     Error,
-    sessions::{Message, Part, Role, Turn},
+    sessions::{Message, Part, Role, Turn, TurnSignals},
 };
 
 /// Codex prefixes a bundled context-and-request user message with this marker.
@@ -127,6 +127,40 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Vec<Turn>, Error> {
         }
     }
     Ok(builder.finish())
+}
+
+/// Follows a rollout as it grows, for the turn endings Codex fires no hook for.
+///
+/// Codex ends a turn that fails, such as on a model error, with the `task_complete` event that
+/// ends any turn, carrying the error. It runs neither `Stop` nor `Interrupt` for it.
+#[derive(Debug, Default)]
+pub(crate) struct TurnTracker {
+    failed: bool,
+}
+
+impl TurnTracker {
+    /// Folds complete rollout lines. Lines that are not JSON objects are skipped.
+    pub(crate) fn push(&mut self, lines: &[u8]) {
+        for line in lines.split(|byte| *byte == b'\n') {
+            if let Ok(entry) = serde_json::from_slice::<Value>(line)
+                && ends_turn_on_error(&entry)
+            {
+                self.failed = true;
+            }
+        }
+    }
+
+    pub(crate) const fn signals(&self) -> TurnSignals {
+        TurnSignals {
+            interrupted: false,
+            failed: self.failed,
+        }
+    }
+}
+
+/// Whether `entry` is the event that ends a turn, carrying the error the turn ended on.
+const fn ends_turn_on_error(_entry: &Value) -> bool {
+    false
 }
 
 /// Drops records before the first turn boundary in a bounded rollout suffix.
@@ -665,6 +699,63 @@ mod tests {
         );
         let turns = parse(jsonl.as_bytes()).expect("parse");
         assert_eq!(prompts(&turns), ["first", "second"]);
+    }
+
+    /// A rollout Codex 0.167.0 recorded against a model server that answered its first prompt
+    /// with `400`, the second with an answer and the fourth with `response.failed` part-way
+    /// through the answer. The third was interrupted with Esc while the answer streamed. Its
+    /// `session_meta` is cut to the fields that say where it came from.
+    const FAILED_FIXTURE: &str = include_str!("../../../tests/fixtures/codex-0.167-failed-turns.jsonl");
+
+    fn signals(lines: &str) -> TurnSignals {
+        let mut tracker = TurnTracker::default();
+        tracker.push(lines.as_bytes());
+        tracker.signals()
+    }
+
+    #[test]
+    fn a_turn_that_ended_on_an_error_has_failed() {
+        // Each prompt's wait reads from its own mark, taken before the prompt's turn starts.
+        let mut turns = Vec::<String>::new();
+        for line in FAILED_FIXTURE.lines() {
+            if line.contains(r#""type":"task_started""#) || turns.is_empty() {
+                turns.push(String::new());
+            }
+            if let Some(turn) = turns.last_mut() {
+                turn.push_str(line);
+                turn.push('\n');
+            }
+        }
+        let failed = turns.iter().map(|turn| signals(turn).failed).collect::<Vec<_>>();
+        assert_eq!(
+            failed,
+            [false, true, false, false, true],
+            "session start, the model's 400, an answer, an interruption, and a failure mid-answer"
+        );
+        assert_eq!(
+            signals(FAILED_FIXTURE),
+            TurnSignals {
+                interrupted: false,
+                failed: true
+            }
+        );
+    }
+
+    #[test]
+    fn only_codexs_own_turn_end_with_an_error_has_failed() {
+        for entry in [
+            serde_json::json!({"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "pong"}}),
+            serde_json::json!({"type": "event_msg", "payload": {"type": "task_complete", "error": null}}),
+            serde_json::json!({"type": "event_msg", "payload": {"type": "turn_aborted", "reason": "interrupted"}}),
+            serde_json::json!({"type": "response_item", "payload": {"type": "task_complete", "error": {"message": "quoted"}}}),
+            serde_json::json!({"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": r#"{"type":"task_complete","error":{"message":"x"}}"#}]}}),
+        ] {
+            assert!(!signals(&entry.to_string()).failed, "{entry}");
+        }
+        for kind in ["task_complete", "turn_complete"] {
+            let entry = serde_json::json!({"type": "event_msg", "payload": {"type": kind, "error": {"message": "The model is not supported.", "codex_error_info": "other"}}});
+            assert!(signals(&entry.to_string()).failed, "{entry}");
+        }
     }
 }
 

@@ -1471,10 +1471,10 @@ async fn prompt_wait_ends_when_the_conversation_shows_the_turn_was_interrupted()
                 .is_err(),
             "the turn is not over after {reports:?}"
         );
-        harness
-            .runtime
-            .conversation_signals
-            .set(agent::sessions::TurnSignals { interrupted: true });
+        harness.runtime.conversation_signals.set(agent::sessions::TurnSignals {
+            interrupted: true,
+            ..Default::default()
+        });
         tokio::time::timeout(Duration::from_secs(3), waiting)
             .await
             .expect("the interruption ends the wait")
@@ -1482,6 +1482,32 @@ async fn prompt_wait_ends_when_the_conversation_shows_the_turn_was_interrupted()
             .expect("prompt");
         harness.finish();
     }
+}
+
+#[tokio::test(flavor = "local")]
+async fn prompt_wait_ends_when_the_conversation_shows_the_turn_failed() {
+    // Codex reports nothing when a turn ends on a model error. Only its rollout shows it.
+    let directory = TempDir::new().expect("directory");
+    let harness = ServiceHarness::start(&directory, "44444444-4444-4444-8444-444444444444").await;
+    let mut waiting = harness.prompt("Reply with: pong");
+    harness.await_delivery(&mut waiting).await;
+    harness.report(agent::sessions::ActivityEvent::TurnStarted).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1500), &mut waiting)
+            .await
+            .is_err(),
+        "the turn is not over"
+    );
+    harness.runtime.conversation_signals.set(agent::sessions::TurnSignals {
+        failed: true,
+        ..Default::default()
+    });
+    tokio::time::timeout(Duration::from_secs(3), waiting)
+        .await
+        .expect("the failed turn ends the wait")
+        .expect("task")
+        .expect("prompt");
+    harness.finish();
 }
 
 #[tokio::test(flavor = "local")]
