@@ -3,7 +3,7 @@ name: worker-bee
 description: Take issues in digdir-agents from the project board to a pull request that waits for a person to merge it. Runs only when a person asks for it by name, as /worker-bee.
 user-invocable: true
 disable-model-invocation: true
-argument-hint: "<issue> | draft [count|all] [bugs|enhancements]"
+argument-hint: "<issue> | ready [count|all] [bugs|enhancements]"
 ---
 
 # Worker bee
@@ -19,7 +19,7 @@ If that line still shows a placeholder, the request is what the person wrote aft
 | Request | What you do |
 | --- | --- |
 | `<issue>` | Take that issue to a pull request that waits for a person. |
-| `draft [count\|all] [bugs\|enhancements]` | Pick issues yourself until `count` of them, one when it is left out, have a pull request that waits only for a person to merge it. `all` goes on for as long as an issue is left that you can take. A type limits what you pick to that type. |
+| `ready [count\|all] [bugs\|enhancements]` | Pick issues yourself until `count` of them, one when it is left out, have a ready pull request that waits only for a person to merge it. `all` goes on for as long as an issue is left that you can take. A type limits what you pick to that type. |
 
 Ask when the request fits none of them.
 
