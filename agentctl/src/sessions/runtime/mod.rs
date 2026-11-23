@@ -12,9 +12,9 @@ pub use tmux::Tmux;
 
 use ::sandbox::SandboxHandle;
 
-use crate::Error;
+use crate::{Error, harness};
 
-use super::{AttachTarget, LaunchToken, Session, Turn};
+use super::{AttachTarget, LaunchToken, Session, Turn, TurnSignals};
 
 /// Runtime-observed liveness and inactivity for a session.
 ///
@@ -48,6 +48,20 @@ pub struct LaunchContext<'a> {
     /// Where the session starts: the agent's `spec.workingDirectory`, or the sandbox's working
     /// directory.
     pub working_directory: &'a str,
+}
+
+/// A point in a session's conversation, from which [`SessionRuntime::follow_conversation`] reads what
+/// was added after it. The default reads nothing.
+#[derive(Debug, Default)]
+pub struct ConversationMark {
+    /// The conversation file the offset is in. A harness that starts another conversation, such as
+    /// after `/clear`, reports a new one.
+    path: Option<String>,
+    /// Bytes of the file read so far.
+    offset: u64,
+    /// What has been read so far, or `None` when the harness's conversation shows nothing its
+    /// reports do not.
+    tracker: Option<harness::TurnTracker>,
 }
 
 /// One harness session carried inside a sandbox.
@@ -113,6 +127,23 @@ pub trait SessionRuntime {
         sandbox: &'a SandboxHandle,
         last: Option<usize>,
     ) -> ::sandbox::LocalFuture<'a, Result<Vec<Turn>, Error>>;
+
+    /// Marks where the session's conversation ends now, so that
+    /// [`Self::follow_conversation`] reads only what is added after it.
+    fn mark_conversation<'a>(
+        &'a self,
+        session: &'a Session,
+        sandbox: &'a SandboxHandle,
+    ) -> ::sandbox::LocalFuture<'a, Result<ConversationMark, Error>>;
+
+    /// Reads what the session's conversation gained since `mark`, moves `mark` past it, and says
+    /// what everything read since the mark shows about turns the harness did not report.
+    fn follow_conversation<'a>(
+        &'a self,
+        session: &'a Session,
+        sandbox: &'a SandboxHandle,
+        mark: &'a mut ConversationMark,
+    ) -> ::sandbox::LocalFuture<'a, Result<TurnSignals, Error>>;
 
     /// Attaches a local terminal to the session; a client capability distinct
     /// from daemon-owned convergence. It never creates or resumes a session.
