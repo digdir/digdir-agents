@@ -420,9 +420,7 @@ fn start_daemon(release: &Path, home: &ControlPlaneHome) -> Result<(), Error> {
 /// marker, which names the target, so the target is started again whenever nothing holds the home.
 ///
 /// `start_target` gets the lock that found the home free, so a target that takes the home in this
-/// process keeps that lock rather than locking it again. A child that another thread is starting
-/// holds the files this process has open until it runs its program, so a lock dropped meanwhile
-/// stays held.
+/// process keeps that lock rather than locking it again.
 async fn verify_target(
     client: &Client,
     home: &ControlPlaneHome,
