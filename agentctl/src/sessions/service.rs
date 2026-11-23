@@ -252,7 +252,7 @@ impl Service {
                     // once, so the completion may be the running turn's. The conversation shows
                     // whether the input's own turn follows, and then when it ends.
                     follow_at = now + CONVERSATION_POLL;
-                    if !self.follow(&current, sandbox, &mut mark).await.queued {
+                    if !self.follow(&current, sandbox, &mut mark).await.pending {
                         return Ok(());
                     }
                 }
@@ -265,7 +265,7 @@ impl Service {
                     follow_at = now + CONVERSATION_POLL;
                     // An interrupted turn that queued input follows is not the end of the prompt's.
                     let signals = self.follow(&current, sandbox, &mut mark).await;
-                    if signals.interrupted && !signals.queued {
+                    if signals.interrupted && !signals.pending {
                         return Ok(());
                     }
                 }

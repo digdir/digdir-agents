@@ -1505,7 +1505,7 @@ async fn prompt_wait_follows_a_prompt_queued_behind_the_running_turn() {
         // turn follows.
         harness.runtime.conversation_signals.set(agent::sessions::TurnSignals {
             interrupted: true,
-            queued: true,
+            pending: true,
         });
         assert!(
             tokio::time::timeout(Duration::from_millis(1500), &mut waiting)
@@ -1514,7 +1514,7 @@ async fn prompt_wait_follows_a_prompt_queued_behind_the_running_turn() {
             "the running turn was interrupted, and the queued prompt's turn follows"
         );
         harness.runtime.conversation_signals.set(agent::sessions::TurnSignals {
-            queued: true,
+            pending: true,
             ..agent::sessions::TurnSignals::default()
         });
         harness.report(agent::sessions::ActivityEvent::TurnCompleted).await;

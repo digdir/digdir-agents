@@ -219,7 +219,7 @@ impl TurnTracker {
     pub(crate) const fn signals(&self) -> TurnSignals {
         TurnSignals {
             interrupted: self.interrupted,
-            queued: self.queued > 0 || matches!(self.taken, Taken::Turn),
+            pending: self.queued > 0 || matches!(self.taken, Taken::Turn),
         }
     }
 }
@@ -747,19 +747,19 @@ mod tests {
                     match tracker.signals() {
                         TurnSignals {
                             interrupted: false,
-                            queued: false,
+                            pending: false,
                         } => '-',
                         TurnSignals {
                             interrupted: false,
-                            queued: true,
+                            pending: true,
                         } => 'q',
                         TurnSignals {
                             interrupted: true,
-                            queued: true,
+                            pending: true,
                         } => 'I',
                         TurnSignals {
                             interrupted: true,
-                            queued: false,
+                            pending: false,
                         } => 'i',
                     }
                 })
@@ -791,7 +791,7 @@ mod tests {
         ]
         .map(|entry| format!("{entry}\n"))
         .concat();
-        assert!(signals(&queued).queued);
+        assert!(signals(&queued).pending);
 
         // Nor does a notification's turn that runs first. Claude Code 2.1.321 takes its own input
         // and the operator's in the order they were queued.
@@ -820,7 +820,7 @@ mod tests {
             .iter()
             .map(|line| {
                 tracker.push(format!("{line}\n").as_bytes());
-                if tracker.signals().queued { 'q' } else { '-' }
+                if tracker.signals().pending { 'q' } else { '-' }
             })
             .collect::<String>();
         assert_eq!(seen, "-qqqqqqqqqqqq-");
@@ -849,7 +849,7 @@ mod tests {
         let command = serde_json::json!({"type": "user", "turnOrigin": "human", "message": {"role": "user", "content": "<command-message>hello</command-message>\n<command-name>/hello</command-name>"}});
         for start in [prompt.clone(), command] {
             let started = format!("{queued}{}", jsonl(std::slice::from_ref(&start)));
-            assert!(signals(&started).queued, "{start}");
+            assert!(signals(&started).pending, "{start}");
             for (end, expected) in [
                 (ended.clone(), TurnSignals::default()),
                 (
@@ -860,7 +860,7 @@ mod tests {
                     serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "[Request interrupted by user]"}]}}),
                     TurnSignals {
                         interrupted: true,
-                        queued: false,
+                        pending: false,
                     },
                 ),
             ] {
@@ -878,9 +878,9 @@ mod tests {
             subagent_ended.clone(),
             ended,
         ]);
-        assert!(signals(&lines).queued, "a subagent's turn in the running turn");
+        assert!(signals(&lines).pending, "a subagent's turn in the running turn");
         let lines = format!("{queued}{}", jsonl(&[prompt, subagent_started, subagent_ended]));
-        assert!(signals(&lines).queued, "a subagent's turn in the queued turn");
+        assert!(signals(&lines).pending, "a subagent's turn in the queued turn");
     }
 
     #[test]
@@ -900,7 +900,7 @@ mod tests {
         for count in 1..=lines.len() {
             let lines = lines[..count].iter().copied().cloned().collect::<Vec<_>>();
             assert!(
-                signals(&jsonl(&lines)).queued,
+                signals(&jsonl(&lines)).pending,
                 "until the essay's turn has ended: {lines:?}"
             );
         }
@@ -909,7 +909,7 @@ mod tests {
 
         // Input that arrives as the turn ends is queued and taken below its end.
         let lines = [&essay, &ended, &took, &enqueued, &dequeued].map(Clone::clone);
-        assert!(signals(&jsonl(&lines)).queued, "taken after the end");
+        assert!(signals(&jsonl(&lines)).pending, "taken after the end");
         let lines = [&essay, &ended, &took, &enqueued, &dequeued, &warned].map(Clone::clone);
         assert_eq!(
             signals(&jsonl(&lines)),
@@ -917,7 +917,7 @@ mod tests {
             "taken after the end, then the warning"
         );
         let lines = [&essay, &ended, &took, &enqueued, &dequeued, &prompt].map(Clone::clone);
-        assert!(signals(&jsonl(&lines)).queued, "taken after the end, then its turn");
+        assert!(signals(&jsonl(&lines)).pending, "taken after the end, then its turn");
     }
 
     #[test]
@@ -939,7 +939,7 @@ mod tests {
             .lines()
             .map(|line| {
                 tracker.push(format!("{line}\n").as_bytes());
-                if tracker.signals().queued { 'q' } else { '-' }
+                if tracker.signals().pending { 'q' } else { '-' }
             })
             .collect::<String>();
         assert_eq!(seen, "-------");
@@ -967,7 +967,7 @@ mod tests {
             .lines()
             .map(|line| {
                 tracker.push(format!("{line}\n").as_bytes());
-                if tracker.signals().queued { 'q' } else { '-' }
+                if tracker.signals().pending { 'q' } else { '-' }
             })
             .collect::<String>();
         // The waited prompt's own turn is followed to its end.
@@ -996,7 +996,7 @@ mod tests {
             .lines()
             .map(|line| {
                 tracker.push(format!("{line}\n").as_bytes());
-                if tracker.signals().queued { 'q' } else { '-' }
+                if tracker.signals().pending { 'q' } else { '-' }
             })
             .collect::<String>();
         // The waited prompt's own turn is followed to its end.
@@ -1022,7 +1022,7 @@ mod tests {
             .lines()
             .map(|line| {
                 tracker.push(format!("{line}\n").as_bytes());
-                if tracker.signals().queued { 'q' } else { '-' }
+                if tracker.signals().pending { 'q' } else { '-' }
             })
             .collect::<String>();
         assert_eq!(seen, "-------");
@@ -1070,7 +1070,7 @@ mod tests {
             .iter()
             .map(|line| {
                 tracker.push(format!("{line}\n").as_bytes());
-                if tracker.signals().queued { 'q' } else { '-' }
+                if tracker.signals().pending { 'q' } else { '-' }
             })
             .collect::<String>();
         assert_eq!(seen, "qqqqqqqqqqqqq-");

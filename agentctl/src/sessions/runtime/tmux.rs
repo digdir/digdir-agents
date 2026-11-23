@@ -1065,7 +1065,7 @@ mod tests {
         let signals = super::follow_conversation(&session, &sandbox, &mut mark)
             .await
             .expect("follow");
-        assert!(!signals.queued, "input queued behind the prompt's turn");
+        assert!(!signals.pending, "input queued behind the prompt's turn");
     }
 
     #[tokio::test(flavor = "local")]

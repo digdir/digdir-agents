@@ -86,7 +86,7 @@ pub struct TurnSignals {
     /// The latest turn that ended was ended by the operator, who interrupted it or refused a tool
     /// call.
     pub interrupted: bool,
-    /// Operator input waits behind the running turn to start a turn of its own, or has started one
-    /// that has not ended.
-    pub queued: bool,
+    /// Operator input has not been answered yet: it waits behind the running turn to start a turn
+    /// of its own, or has started one that has not ended.
+    pub pending: bool,
 }
