@@ -337,9 +337,9 @@ A change to tests alone has no QA of its use, since nobody uses a test the way t
 build's QA has already run it with and without the change. Tell QA of the test phase to go straight to whether
 the pull request is ready to merge.
 
-A text-only change or a fix of a few lines can skip checks when it ends as a draft. Say in the hand-over comment
-which ones it skipped, and likewise when your harness can't start a subagent. Nothing that skipped a check gets
-the `process/agent-says-merge` label.
+A small change runs its checks too, since the team reviews it as ready work like any other. When your harness can't
+start a subagent, say in the hand-over comment which checks did not run. The pull request then stays a draft with
+WIP State Blocked: Human needed, since a person has to do what the checks would have.
 
 ## 5. Hand it over
 
