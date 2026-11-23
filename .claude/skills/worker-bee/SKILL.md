@@ -408,8 +408,7 @@ This is where the issue rests:
   the issue and the pull request. Nothing is left that needs you, and a draft would tell the person who merges it that
   it is still moving. The label, when QA set it, tells them that the change passed the gate on proof as well.
 - When what is left needs a person's decision, leave it a draft in Testing, set WIP State to Blocked: Human
-  needed, and say in your report what it needs from them. Waiting to be merged holds only what the team can read as
-  ready.
+  needed, and say in your report what it needs from them.
 - Anything else, such as a failing check or an open thread, is still yours. Stay on it until one of the above
   holds. A ready pull request is passed over by later runs, so one left ready with work in it has nobody coming
   back to it.
