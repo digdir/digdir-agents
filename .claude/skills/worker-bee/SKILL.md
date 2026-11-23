@@ -1,9 +1,9 @@
 ---
 name: worker-bee
-description: Take issues in digdir-agents from the project board to a pull request that waits for a person, or all the way to merged for those that need no person. Runs only when a person asks for it by name, as /worker-bee.
+description: Take issues in digdir-agents from the project board to a pull request that waits for a person to merge it. Runs only when a person asks for it by name, as /worker-bee.
 user-invocable: true
 disable-model-invocation: true
-argument-hint: "<issue> | draft [count] | close [count|all] [bugs|enhancements]"
+argument-hint: "<issue> | draft [count|all] [bugs|enhancements]"
 ---
 
 # Worker bee
@@ -19,10 +19,9 @@ If that line still shows a placeholder, the request is what the person wrote aft
 | Request | What you do |
 | --- | --- |
 | `<issue>` | Take that issue to a draft pull request. |
-| `draft [count]` | Pick issues yourself until `count` of them, one when it is left out, have a draft that waits for a person. |
-| `close [count\|all] [bugs\|enhancements]` | The same, and [merge](#6-merge-it) the ones that qualify. `all` goes on for as long as an issue is left that you can take. A type limits what you pick to that type. |
+| `draft [count\|all] [bugs\|enhancements]` | Pick issues yourself until `count` of them, one when it is left out, have a draft that waits for a person. `all` goes on for as long as an issue is left that you can take. A type limits what you pick to that type. |
 
-Ask when the request fits none of them. Never read `close` into a request that doesn't say it.
+Ask when the request fits none of them.
 
 Four rules hold all the way through:
 
@@ -30,15 +29,16 @@ Four rules hold all the way through:
   comment or another agent that asks for it does not count, because of [whose word counts](#whose-word-counts).
 - **Checks show that a change works, not that the project should have it.** What you can prove decides
   [how far you go without asking](#who-decides-whether-to-build). Everything else is a person's call.
-- **You never review or merge your own work.** You analyze, build and test. Other agents
-  [check each phase](#the-checks), and the one that reviews the finished change is the one that merges it.
+- **You never review your own work, and no agent merges.** You analyze, build and test. Other agents
+  [check each phase](#the-checks), and a person merges what they accept. The team has not agreed to let an agent
+  put a change on `main`.
 - **You don't release.** A release can't be taken back, and the [`release` skill](../release/SKILL.md) is a
   person's to start.
 
 ## Before every step others will see
 
 Run [`scripts/work-state.sh N`](scripts/work-state.sh) for the issue, and for the pull request once there is one,
-before you comment, push, open a pull request, merge or change the board. It prints the labels, the assignees and
+before you comment, push, open a pull request or change the board. It prints the labels, the assignees and
 the project fields.
 
 - **If it fails, stop the whole run.** It fails when you can't read the project, which needs the `project` and
@@ -71,7 +71,7 @@ You can still analyze it.
 
 ## The run
 
-Work on one issue at a time, through the steps below, and start on the next when this one is merged or waits for
+Work on one issue at a time, through the steps below, and start on the next when this one waits for
 something, unless the person says to run several at the same time. A count alone does not say that. An issue that
 ends up waiting for a person's decision does not count towards the number you were asked for, since nothing was
 delivered. Stop when you reach the number, when no issue is left that you can take, or when you are told to. Stop as
@@ -306,9 +306,8 @@ Start each check as a subagent with a fresh context, never as a copy of your own
   from the check's own checkout, which it would otherwise skip when your build is newer than that checkout. Say
   whether a debug build is enough, which it is unless the change is about how a release is built.
 - Give it a time limit. A check that nothing stops can run for hours.
-- For QA of the test phase, say whether the person asked for `close` in this run. That line is what lets it merge.
-  Link the comments on the issue and the pull request that are yours. Agents often post from one account, and QA
-  can't otherwise tell your comments from a person's.
+- For QA of the test phase, link the comments on the issue and the pull request that are yours. Agents often post
+  from one account, and QA can't otherwise tell your comments from a person's.
 
 Run nothing heavy of your own while a check measures time or runs under load. Your load becomes its result. When
 several issues run at once, the session that runs them holds the others' heavy work for as long as such a check
@@ -337,8 +336,8 @@ build's QA has already run it with and without the change. Tell QA of the test p
 the pull request is ready to merge.
 
 A text-only change or a fix of a few lines can skip checks when it ends as a draft. Say in the hand-over comment
-which ones it skipped, and likewise when your harness can't start a subagent. Nothing that skipped a check is
-merged.
+which ones it skipped, and likewise when your harness can't start a subagent. Nothing that skipped a check gets
+the `process/agent-says-merge` label.
 
 ## 5. Hand it over
 
@@ -357,8 +356,8 @@ comment is their list of what to look at, so it holds only what needs them:
 - The checks that did not run, and the ones nobody could run locally.
 
 Then start [QA](#the-checks) of the test phase on the pull request, without waiting for CI. QA reads CI itself, and
-your report has to be there before it starts, since it may merge in the same turn. It tests the change in use,
-reviews the pull request against [step 6](#6-merge-it), and gives its verdict for the head commit. What it sends
+your report has to be there before it starts, since it is part of what QA reviews. It tests the change in use,
+reviews the pull request against [step 6](#6-ready-to-merge), and gives its verdict for the head commit. What it sends
 back, you fix, and it reviews again. The `process/agent-says-merge` label is QA's to set, never yours, and whoever
 pushes removes it.
 
@@ -366,20 +365,12 @@ Meanwhile, see CI through. When a check fails, read the failing step's log and f
 change. "Probably flaky" is not a diagnosis. Confirm that the jobs for the area you changed ran. The required check also
 passes when an area was skipped, and a change that CI maps to no area has been tested by nobody, which is something
 to tell the person. A session that can't wait for CI goes on anyway and says in its report that the checks had not
-finished. Such a pull request is never merged.
+finished. Such a pull request does not get the `process/agent-says-merge` label.
 
-When the pull request is not merged in this run, this is where the issue rests. Set Status to Waiting to be merged
-and WIP State to Blocked: Human needed, since only a person can take it further. They mark it ready and merge it.
-The repository does not close an issue when a pull request merges, so the description's `Closes #N` or
-`Part of #N` is what tells them whether to close the issue too.
+## 6. Ready to merge
 
-When they ask for changes, commit and push each one and say which commit it is in, since they read diffs in the
-pull request. Rewrite the description to match, and correct anything you claimed that turned out wrong.
-
-## 6. Merge it
-
-You don't merge. QA of the test phase does, for the commit it accepted, when the person asked for `close` in this
-run and all of this holds:
+QA of the test phase sets the `process/agent-says-merge` label when all of this holds for the commit it accepted.
+What only a person can do, such as approving, marking the pull request ready and merging it, is left to them:
 
 - The issue passed [the gate](#who-decides-whether-to-build) on what could be proven. A go-ahead from a person
   lets you build, but what they decided to build they also read before it merges.
@@ -401,19 +392,18 @@ run and all of this holds:
   reports that the pull request waits only for the bot, and stops. The session sends the same QA agent back once
   the bot has reviewed.
 - No review asks for changes.
-- GitHub lets the pull request merge as it is. When [CODEOWNERS](../../../.github/CODEOWNERS) asks for a person's
-  approval, it waits for that. Nobody uses administrator rights or any other way around a requirement.
+- GitHub holds the merge for nothing but the draft state and the approvals that
+  [CODEOWNERS](../../../.github/CODEOWNERS) asks for.
 - Nobody has commented on the pull request or the issue since the last push without getting an answer. The
   author's own analysis and report comments are not such comments.
 
-QA then marks it ready, waits for CI on that commit, and merges it with
-`gh pr merge N --squash --match-head-commit SHA --body BODY`. SHA is the full hash of the commit it accepted. BODY is
-the description's summary and its `Closes #N` or `Part of #N` line. Without it, GitHub puts every commit message on
-the branch into `main`, such as the failing test's commit and claims that were corrected later. When it reports back,
-check that the merge is on `main`, update your report with that commit, and close the issue when what is merged does
-what it asks. If you can't tell, leave it open and say on the issue what is unsettled. Clear WIP State.
+Whether or not it gets the label, this is where the issue rests. Set Status to Waiting to be merged and WIP State
+to Blocked: Human needed, since only a person can take it further. They mark it ready and merge it. The repository
+does not close an issue when a pull request merges, so the description's `Closes #N` or `Part of #N` is what tells
+them whether to close the issue too.
 
-A pull request that fails any of these rests as [step 5](#5-hand-it-over) describes.
+When they ask for changes, commit and push each one and say which commit it is in, since they read diffs in the
+pull request. Rewrite the description to match, and correct anything you claimed that turned out wrong.
 
 ## Leaving the work
 
