@@ -134,6 +134,15 @@ if [ "${RUNNER_OS:-}" = "Windows" ]; then
     & $agentctl --home $env:AGENT_HOME self update --version $env:AGENT_TARGET_VERSION
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   '
+  # The agentctl that PATH finds passes arguments on as given, even those that cmd.exe would read as commands.
+  # shellcheck disable=SC2016 # PowerShell expands its own environment variables.
+  pwsh -NoProfile -Command '
+    $env:PATH = $env:AGENT_SMOKE_BIN + [IO.Path]::PathSeparator + $env:PATH
+    $output = (& agentctl --home $env:AGENT_HOME "no such `"|echo HOST-RAN" 2>&1 | Out-String)
+    if ($output -match "(?m)^HOST-RAN" -or -not $output.Contains("no such `"|echo HOST-RAN")) {
+      throw "agentctl did not receive its argument as given: $output"
+    }
+  '
   AGENT_INSTALL_ROOT="$(cygpath -w "${files_root}/install")"
   export AGENT_INSTALL_DIR="${AGENT_SMOKE_BIN}"
   AGENT_LOCAL_ARCHIVE="$(cygpath -w "${old_archive}")"
