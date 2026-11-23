@@ -97,6 +97,10 @@ pub(crate) struct TurnTracker {
     /// take it out of the queue without one, such as a `remove` when it is absorbed into the
     /// running turn.
     queued: u32,
+    /// How many of `queued` Claude Code wrote without their text, as it does for input sent while
+    /// the hooks of the prompt ahead run. Such input may be Claude Code's own, or someone else's
+    /// sent while the prompt's own hooks ran.
+    untold: u32,
     /// What the input the latest `dequeue` took started. A `dequeue` doesn't say whose input it
     /// takes, and Claude Code takes its own input and the operator's in the order they came.
     taken: Taken,
@@ -158,16 +162,25 @@ impl TurnTracker {
                 if self.queued > 0 && !typed {
                     // Claude Code may take all the queued input into the one turn.
                     self.queued = 0;
+                    self.untold = 0;
                     self.taken = Taken::Turn;
                     self.resolved = true;
                 } else if user_text(entry).is_some_and(|text| prompt_key(&text) == self.prompt) {
-                    // The prompt was not queued and started its turn at once.
+                    // The prompt was not queued and started its turn at once, so input queued
+                    // without its text while the prompt's hooks ran is someone else's.
+                    self.queued -= self.untold;
+                    self.untold = 0;
                     self.resolved = true;
                 }
             } else if matches!(self.taken, Taken::BeforeEnd | Taken::AfterEnd) {
                 // Claude Code took its own input, such as a notification that a background task
-                // finished or a scheduled prompt, and the operator's stays queued.
+                // finished or a scheduled prompt, and the operator's stays queued. Input whose text
+                // it left out may have been that input.
                 self.taken = Taken::Nothing;
+                if self.untold > 0 {
+                    self.untold -= 1;
+                    self.leave_queue();
+                }
             }
         } else if let Some(interrupted) = ends_turn(entry) {
             self.idle = true;
@@ -193,9 +206,11 @@ impl TurnTracker {
         }
         match entry.get("operation").and_then(Value::as_str) {
             Some("enqueue") => {
-                // Claude Code leaves the text out at times, such as while it screens the input.
-                if content.is_some() && !self.resolved {
+                if !self.resolved {
                     self.queued = self.queued.saturating_add(1);
+                    if content.is_none() {
+                        self.untold = self.untold.saturating_add(1);
+                    }
                 }
             }
             Some("dequeue") => {
@@ -212,6 +227,9 @@ impl TurnTracker {
         // Input queued before the mark can be taken too, so the count stops at zero.
         if self.queued > 0 {
             self.queued -= 1;
+            if self.untold > self.queued {
+                self.untold = self.queued;
+            }
             self.resolved |= self.queued == 0;
         }
     }
@@ -1106,11 +1124,62 @@ mod tests {
     }
 
     #[test]
-    fn an_enqueue_without_its_text_is_not_followed() {
-        // Without the text the tracker can't tell the operator's input from Claude Code's own, and
-        // following Claude Code's could hold the wait until its timeout.
-        let lines = jsonl(&[serde_json::json!({"type": "queue-operation", "operation": "enqueue"})]);
-        assert_eq!(signals(&lines), TurnSignals::default());
+    fn input_queued_without_its_text_is_not_followed_past_a_turn_for_claude_codes_own_input() {
+        // Without the text the tracker can't tell the operator's input from Claude Code's own.
+        // Following Claude Code's past its turn would hold the wait until its timeout.
+        let lines = jsonl(&[
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue"}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+            serde_json::json!({"type": "user", "promptSource": "system", "turnOrigin": "task_notification", "message": {"role": "user", "content": "<task-notification>\n<status>completed</status>\n</task-notification>"}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+        ]);
+        let mut tracker = TurnTracker::new("Reply with exactly SECOND.");
+        let seen = lines
+            .lines()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().pending { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        assert_eq!(seen, "qqq--");
+    }
+
+    #[test]
+    fn input_sent_while_the_prompts_hooks_run_is_not_followed() {
+        // Claude Code writes the `enqueue` of input sent while it runs the prompt's
+        // UserPromptSubmit hooks above the prompt, and without its text, as in
+        // `a_prompt_queued_while_the_hooks_of_the_turn_ahead_run_is_followed`. Here the prompt is
+        // the one typed, so the queued input is someone else's.
+        let lines = jsonl(&[
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue"}),
+            serde_json::json!({"type": "user", "promptSource": "typed", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue"}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "SECOND"}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+            serde_json::json!({"type": "user", "promptSource": "queued", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly THIRD."}}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "THIRD"}]}}),
+            serde_json::json!({"type": "system", "subtype": "stop_hook_summary"}),
+        ]);
+        let mut tracker = TurnTracker::new("Reply with exactly SECOND.");
+        let seen = lines
+            .lines()
+            .map(|line| {
+                tracker.push(format!("{line}\n").as_bytes());
+                if tracker.signals().pending { 'q' } else { '-' }
+            })
+            .collect::<String>();
+        assert_eq!(seen, "q-------");
+        // Of two inputs sent while the prompt's hooks ran, one was absorbed into the turn ahead.
+        let lines = jsonl(&[
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue"}),
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue"}),
+            serde_json::json!({"type": "queue-operation", "operation": "remove"}),
+            serde_json::json!({"type": "user", "promptSource": "typed", "turnOrigin": "human", "message": {"role": "user", "content": "Reply with exactly SECOND."}}),
+        ]);
+        let mut tracker = TurnTracker::new("Reply with exactly SECOND.");
+        tracker.push(lines.as_bytes());
+        assert!(!tracker.signals().pending, "{lines}");
     }
 
     #[test]
