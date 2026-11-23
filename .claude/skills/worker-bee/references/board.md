@@ -43,8 +43,6 @@ on it. Otherwise it says what the work waits for:
   agent's work.
 - **Other/Limbo** when none of these fit, with a comment that says what is going on.
 
-Whoever merges the work clears the field.
-
 ## Labels on pull requests
 
 Two labels show the state of a pull request in the list, without opening it. Each holds only while what it says is

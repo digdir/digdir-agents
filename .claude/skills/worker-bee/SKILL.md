@@ -367,7 +367,8 @@ Meanwhile, see CI through. When a check fails, read the failing step's log and f
 change. "Probably flaky" is not a diagnosis. Confirm that the jobs for the area you changed ran. The required check also
 passes when an area was skipped, and a change that CI maps to no area has been tested by nobody, which is something
 to tell the person. A session that can't wait for CI goes on anyway and says in its report that the checks had not
-finished. Such a pull request does not get the `process/agent-says-merge` label.
+finished. It leaves the pull request a draft, sets WIP State to Up-for-grabs and removes itself as assignee, so that
+a later run [takes it over](#work-that-an-earlier-session-left).
 
 ## 6. Ready to merge
 
@@ -401,7 +402,7 @@ What only a person can do, such as approving and merging, is left to them:
 
 This is where the issue rests, with Status set to Waiting to be merged:
 
-- When every condition above holds, apart from the gate on proof and what only a person can do, mark the pull
+- When every condition above holds, apart from the gate on proof, approving and merging, mark the pull
   request ready for review, set WIP State to Up-for-grabs, and remove yourself as assignee from both the issue and
   the pull request. Nothing is left that needs you, and a draft would tell the person who merges it that it is
   still moving. The label, when QA set it, tells them that the change passed the gate on proof as well.
