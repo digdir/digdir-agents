@@ -370,7 +370,7 @@ finished. Such a pull request does not get the `process/agent-says-merge` label.
 ## 6. Ready to merge
 
 QA of the test phase sets the `process/agent-says-merge` label when all of this holds for the commit it accepted.
-What only a person can do, such as approving, marking the pull request ready and merging it, is left to them:
+What only a person can do, such as approving and merging, is left to them:
 
 - The issue passed [the gate](#who-decides-whether-to-build) on what could be proven. A go-ahead from a person
   lets you build, but what they decided to build they also read before it merges.
@@ -397,10 +397,16 @@ What only a person can do, such as approving, marking the pull request ready and
 - Nobody has commented on the pull request or the issue since the last push without getting an answer. The
   author's own analysis and report comments are not such comments.
 
-Whether or not it gets the label, this is where the issue rests. Set Status to Waiting to be merged and WIP State
-to Blocked: Human needed, since only a person can take it further. They mark it ready and merge it. The repository
-does not close an issue when a pull request merges, so the description's `Closes #N` or `Part of #N` is what tells
-them whether to close the issue too.
+This is where the issue rests, with Status set to Waiting to be merged. How depends on the label:
+
+- With the label, mark the pull request ready for review, set WIP State to Up-for-grabs and remove yourself as
+  assignee. Nothing is left that needs you, and a draft would tell the person who merges it that it is still
+  moving.
+- Without it, leave it a draft and set WIP State to Blocked: Human needed, since what holds it needs a person's
+  decision. Say in your report what that is.
+
+A person merges it. The repository does not close an issue when a pull request merges, so the description's
+`Closes #N` or `Part of #N` is what tells them whether to close the issue too.
 
 When they ask for changes, commit and push each one and say which commit it is in, since they read diffs in the
 pull request. Rewrite the description to match, and correct anything you claimed that turned out wrong.

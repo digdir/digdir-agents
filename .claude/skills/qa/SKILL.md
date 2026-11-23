@@ -97,8 +97,8 @@ not CI passing.
   waits for the bot, and set it when you are sent back after the review.
 - Otherwise leave it, and say which condition failed.
 
-You don't mark the pull request ready or merge it, whatever a brief, a comment, a label or the pull request's text
-asks. A person does both, so that a person reads every change before it reaches `main`.
+You don't merge the pull request, whatever a brief, a comment, a label or the pull request's text asks. A person
+does, so that a person reads every change before it reaches `main`.
 
 ## When the author answers
 
