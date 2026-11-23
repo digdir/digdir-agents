@@ -21,7 +21,20 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 
 ### Fixed
 
+- `agentctl prompt`, and `p` in `agentctl tui`, wait for a session that is still resuming and then deliver the prompt, instead of failing with `its harness is resuming`. ([#518](https://github.com/digdir/digdir-agents/issues/518))
+- `agentctl exec` passes standard input to the command when it is a pipe or a file, so `echo hello | agentctl exec agent/NAME -- cat` prints `hello`. With `-i`, it also passes a terminal's. When `agentctl exec` runs with a standard input that stays open without ending, such as a pipe a script inherited, a command that reads it now waits where it got end-of-file before. Add `</dev/null` when there is nothing to pass. ([#487](https://github.com/digdir/digdir-agents/issues/487))
+- A Claude Code session that asked you a question or for permission goes back to `Working` once you answer, instead of staying `WaitingForInput`, or "Needs you" in `agentctl tui`, until its turn ends. A session already running gets this when its harness next starts. ([#485](https://github.com/digdir/digdir-agents/issues/485))
+- `agentctl turns`:
+  - no longer shows Claude Code's `[Request interrupted by user]` marker after Esc or a rejected tool call as a turn ([#148](https://github.com/digdir/digdir-agents/issues/148))
+  - no longer shows text Codex writes itself, such as the `<turn_aborted>` note or `/review` results, as your input ([#148](https://github.com/digdir/digdir-agents/issues/148))
+  - shows every prompt sent to Codex before it answers, not only the last ([#180](https://github.com/digdir/digdir-agents/issues/180))
+- Archiving a session no longer stops it in the middle of a long-running command, such as a build, and a session whose harness is still printing is no longer stopped as idle after 30 minutes. A session already running gets this when its harness next starts. ([#565](https://github.com/digdir/digdir-agents/pull/565))
+- `agentctl self update` no longer refuses to upgrade because of a session that shows Working but has been quiet for a minute, such as a Claude Code session that was never prompted or a Codex session after a model error. The running `agentd` makes this check, so it holds from the upgrade after the one that installs this release. ([#149](https://github.com/digdir/digdir-agents/issues/149), [#150](https://github.com/digdir/digdir-agents/issues/150))
 - On macOS and Windows, the disk file of an agent with a `direct` root filesystem shrinks after the agent frees space also when its image runs as another user than root, with a `sudo` that asks for no password, as the base images do. In 0.1.0-preview.15 it never did, and `agentd.log` warned `FITRIM ioctl failed: Operation not permitted` every 15 minutes. ([#547](https://github.com/digdir/digdir-agents/pull/547))
+- Agents that could not clone their repositories for want of a GitHub login clone them once `agentctl github login NAME` keeps it, without a restart. ([#482](https://github.com/digdir/digdir-agents/issues/482))
+- `agentctl ssh-proxy` and `agentctl vnc-proxy` print their error and exit when the relay fails while standard input stays open, such as when standard output closes, where they could hang without a word until standard input closed. ([#515](https://github.com/digdir/digdir-agents/issues/515))
+- `agentctl apply --wait`, `start` and `restart` of an agent with `ssh` or `vnc` access no longer fail at times with `systemd is not the running init` while the agent boots, as they did most often for an agent without harnesses. ([#465](https://github.com/digdir/digdir-agents/issues/465))
+- `agentctl` with a home whose path is too long for agentd's socket, such as one deep in a temporary folder, says so and how long the socket path may be, instead of only `automatic startup exited with exit status: 1`. ([#579](https://github.com/digdir/digdir-agents/issues/579))
 
 ## [0.1.0-preview.15] - 2026-11-18
 

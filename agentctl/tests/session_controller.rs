@@ -10,7 +10,7 @@ use std::{
 };
 
 use agent::{
-    AgentId, Condition, ConditionStatus, Error, Status,
+    AgentId, Condition, ConditionStatus, Error, Recheck, Status,
     control_plane::{AgentRecord, AgentStore as _, Convergence, WaitPolicy},
     local::home::ControlPlaneHome,
     persistence,
@@ -53,7 +53,7 @@ struct BlockingAgentReady {
 }
 
 impl Reconcile<AgentId> for BlockingAgentReady {
-    fn reconcile(&self, id: AgentId) -> LocalFuture<'_, Result<(), Error>> {
+    fn reconcile(&self, id: AgentId) -> LocalFuture<'_, Result<Recheck, Error>> {
         Box::pin(async move {
             self.started.notify_one();
             self.release.notified().await;
@@ -83,7 +83,7 @@ impl Reconcile<AgentId> for BlockingAgentReady {
                     ),
                 )
                 .await
-                .map(drop)
+                .map(|_| Recheck::Periodically)
         })
     }
 }
@@ -93,17 +93,18 @@ struct MarkSessionReady(persistence::Database);
 struct NoopAgentReconcile;
 
 impl Reconcile<AgentId> for NoopAgentReconcile {
-    fn reconcile(&self, _id: AgentId) -> LocalFuture<'_, Result<(), Error>> {
-        Box::pin(async { Ok(()) })
+    fn reconcile(&self, _id: AgentId) -> LocalFuture<'_, Result<Recheck, Error>> {
+        Box::pin(async { Ok(Recheck::Periodically) })
     }
 }
 
 impl Reconcile<SessionId> for MarkSessionReady {
-    fn reconcile(&self, id: SessionId) -> LocalFuture<'_, Result<(), Error>> {
+    fn reconcile(&self, id: SessionId) -> LocalFuture<'_, Result<Recheck, Error>> {
         Box::pin(async move {
             self.0
                 .update_session_lifecycle(id, agent::sessions::Lifecycle::running(), 0)
                 .await
+                .map(|()| Recheck::Periodically)
         })
     }
 }
@@ -241,7 +242,7 @@ impl Provider for MemoryProvider {
 }
 
 impl Reconcile<SessionId> for BlockingReconcile {
-    fn reconcile(&self, id: SessionId) -> LocalFuture<'_, Result<(), Error>> {
+    fn reconcile(&self, id: SessionId) -> LocalFuture<'_, Result<Recheck, Error>> {
         Box::pin(async move {
             if id == self.slow {
                 assert_eq!(self.active_slow.replace(self.active_slow.get() + 1), 0);
@@ -253,7 +254,7 @@ impl Reconcile<SessionId> for BlockingReconcile {
                 }
                 self.active_slow.set(0);
             }
-            Ok(())
+            Ok(Recheck::Periodically)
         })
     }
 }
@@ -796,61 +797,26 @@ async fn prompt_waits_for_completion_and_turns_are_read_separately() {
 
 #[tokio::test(flavor = "local")]
 async fn prompt_wait_reports_a_failed_session_instead_of_hanging() {
-    const TOKEN: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     let directory = TempDir::new().expect("temporary directory");
-    let (database, sandboxes, session) = running_session(&directory, TOKEN, true).await;
-    let session_store: Rc<dyn agent::sessions::SessionStore> = Rc::new(database.clone());
-    let agent_store: Rc<dyn agent::control_plane::AgentStore> = Rc::new(database.clone());
-    let (agent_controller, agent_wakeup) = agent::control_plane::Controller::new(
-        agent_store.clone(),
-        Rc::new(NoopAgentReconcile),
-        Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected agent reconciliation error: {error}")),
-    );
-    let (session_controller, session_wakeup) = agent::sessions::Controller::new(
-        session_store.clone(),
-        Rc::new(MarkSessionReady(database.clone())),
-        Duration::from_mins(1),
-        Rc::new(|_, error| panic!("unexpected session reconciliation error: {error}")),
-    );
-    let agent_task = tokio::task::spawn_local(agent_controller.run());
-    let session_task = tokio::task::spawn_local(session_controller.run());
-    let service = Rc::new(agent::sessions::Service::new(
-        session_store.clone(),
-        Rc::new(agent::sessions::AgentSandboxes::new(agent_store.clone(), sandboxes)),
-        Rc::new(FakeRuntime::default()),
-        Convergence::new(agent_wakeup, agent_store, Changes::new()),
-        session_wakeup,
-    ));
-    let name = SessionName::new("s1").expect("name");
-
-    let sending_service = service.clone();
-    let sending_name = name.clone();
-    let send = tokio::task::spawn_local(async move {
-        sending_service
-            .prompt(
-                "worker",
-                &sending_name,
-                "do the thing",
-                true,
-                Some(Duration::from_mins(1)),
-            )
-            .await
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(!send.is_finished());
-    // No activity report arrives; the lifecycle write itself wakes the wait.
-    session_store
-        .update_session_lifecycle(session.id, agent::sessions::Lifecycle::failed("harness exited"), 1)
+    let harness = ServiceHarness::start(&directory, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee").await;
+    let mut waiting = harness.prompt("do the thing");
+    harness.await_delivery(&mut waiting).await;
+    // No activity report arrives. The wait finds the failure on its next poll.
+    harness
+        .database
+        .update_session_lifecycle(
+            harness.session.id,
+            agent::sessions::Lifecycle::failed("harness exited"),
+            1,
+        )
         .await
         .expect("failed");
-    let error = send
+    let error = waiting
         .await
         .expect("send task")
         .expect_err("a failed session ends the wait");
     assert!(error.to_string().contains("harness exited"), "{error}");
-    agent_task.abort();
-    session_task.abort();
+    harness.finish();
 }
 
 #[tokio::test(flavor = "local")]
@@ -1052,6 +1018,26 @@ impl ServiceHarness {
         }
     }
 
+    /// Stops the harness after inactivity, as the session reconciler does, leaving the session Idle.
+    async fn stop_idle(&self) {
+        self.report(agent::sessions::ActivityEvent::TurnCompleted).await;
+        let generation = self
+            .database
+            .activate_session(self.session.id)
+            .await
+            .expect("activation");
+        self.database
+            .update_session_lifecycle(self.session.id, agent::sessions::Lifecycle::idle(), generation)
+            .await
+            .expect("Idle session");
+        // An idle stop leaves no relaunch backoff behind.
+        self.database
+            .reset_session_launch_attempts(self.session.id)
+            .await
+            .expect("launch attempts");
+        self.runtime.present.set(false);
+    }
+
     /// Reports one activity event for the current launch, as the Platform API would.
     async fn report(&self, event: agent::sessions::ActivityEvent) {
         self.database
@@ -1173,6 +1159,70 @@ async fn upgrade_preflight_reports_work_and_terminal_attachments() {
             .expect("missing native ID")
             .warnings,
         ["session/worker/s1 will start a new conversation"]
+    );
+    harness.finish();
+}
+
+/// A session can report Working long after its turn is over, such as a Claude Code session that was never prompted
+/// or a Codex turn that failed without saying so. Such a session holds back an upgrade only while its harness moves.
+#[tokio::test(flavor = "local")]
+async fn upgrade_preflight_waits_only_for_a_working_session_that_moves() {
+    let directory = TempDir::new().expect("directory");
+    let harness = ServiceHarness::start(&directory, "12121212-1212-4212-8212-121212121212").await;
+    harness
+        .database
+        .apply_session_activity_for_launch(
+            harness.session.id,
+            &harness.token,
+            uuid::Uuid::new_v4(),
+            agent::sessions::ActivityEvent::TurnStarted,
+            time::OffsetDateTime::now_utc() - time::Duration::hours(1),
+        )
+        .await
+        .expect("fold")
+        .expect("current launch");
+    assert_eq!(
+        harness
+            .database
+            .get_session(harness.session.id)
+            .await
+            .expect("session")
+            .status
+            .state,
+        agent::sessions::State::Working
+    );
+
+    harness.runtime.idle_seconds.set(3_600);
+    assert_eq!(
+        harness.service.upgrade_readiness().await.expect("quiet").blockers,
+        Vec::<String>::new(),
+        "a quiet harness is not working on a turn"
+    );
+
+    harness.runtime.idle_seconds.set(5);
+    assert_eq!(
+        harness.service.upgrade_readiness().await.expect("moving").blockers,
+        ["session/worker/s1 (working)"],
+        "a harness whose terminal moved recently is"
+    );
+
+    harness.runtime.idle_seconds.set(3_600);
+    harness
+        .database
+        .apply_session_activity_for_launch(
+            harness.session.id,
+            &harness.token,
+            uuid::Uuid::new_v4(),
+            agent::sessions::ActivityEvent::TurnStarted,
+            time::OffsetDateTime::now_utc(),
+        )
+        .await
+        .expect("fold")
+        .expect("current launch");
+    assert_eq!(
+        harness.service.upgrade_readiness().await.expect("reporting").blockers,
+        ["session/worker/s1 (working)"],
+        "a harness that reported a moment ago is, however quiet its terminal"
     );
     harness.finish();
 }
@@ -3253,24 +3303,7 @@ async fn a_prompt_wait_outlasts_an_archive_that_has_not_stopped_the_harness() {
 async fn a_prompt_resumes_an_idle_session_and_delivers() {
     let directory = TempDir::new().expect("directory");
     let harness = ServiceHarness::start_reconciled(&directory, "a3a3a3a3-a3a3-4a3a-8a3a-a3a3a3a3a3a3").await;
-    harness.report(agent::sessions::ActivityEvent::TurnCompleted).await;
-    let generation = harness
-        .database
-        .activate_session(harness.session.id)
-        .await
-        .expect("activation");
-    harness
-        .database
-        .update_session_lifecycle(harness.session.id, agent::sessions::Lifecycle::idle(), generation)
-        .await
-        .expect("Idle session");
-    // An idle stop leaves no relaunch backoff behind.
-    harness
-        .database
-        .reset_session_launch_attempts(harness.session.id)
-        .await
-        .expect("launch attempts");
-    harness.runtime.present.set(false);
+    harness.stop_idle().await;
     harness.runtime.ready_without_report.set(true);
 
     harness
@@ -3285,6 +3318,41 @@ async fn a_prompt_resumes_an_idle_session_and_delivers() {
         "the harness resumes its conversation"
     );
     assert_eq!(harness.runtime.sent.borrow().as_slice(), ["go on"]);
+    harness.finish();
+}
+
+/// A second prompt that arrives while the first one resumes the session waits for the resume
+/// instead of failing, since the harness takes input moments later.
+#[tokio::test(flavor = "local")]
+async fn a_prompt_to_a_resuming_session_waits_for_the_resume_and_delivers() {
+    let directory = TempDir::new().expect("directory");
+    let harness = ServiceHarness::start_reconciled(&directory, "a4a4a4a4-a4a4-4a4a-8a4a-a4a4a4a4a4a4").await;
+    harness.stop_idle().await;
+    let prompt = |text: &'static str| {
+        let service = harness.service.clone();
+        let name = harness.session.name.clone();
+        tokio::task::spawn_local(async move { service.prompt("worker", &name, text, false, None).await })
+    };
+
+    let first = prompt("first");
+    harness.runtime.launch_started.notified().await;
+    let second = prompt("second");
+    // Let the second prompt see the session Resuming before the harness takes input.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    harness.runtime.ready_without_report.set(true);
+
+    first
+        .await
+        .expect("task")
+        .expect("the first prompt resumes the session");
+    second
+        .await
+        .expect("task")
+        .expect("the second prompt waits for the resume");
+    assert_eq!(harness.runtime.launches.borrow().len(), 1, "the session resumes once");
+    let mut sent = harness.runtime.sent.borrow().clone();
+    sent.sort();
+    assert_eq!(sent, ["first", "second"]);
     harness.finish();
 }
 

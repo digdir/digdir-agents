@@ -19,8 +19,18 @@ const WAKEUP_QUEUE_CAPACITY: usize = 1_024;
 
 /// One at-least-once convergence pass over a durable resource key.
 pub trait Reconcile<Key> {
-    /// Converges one resource and records its observed state.
-    fn reconcile(&self, key: Key) -> ::sandbox::LocalFuture<'_, Result<(), Error>>;
+    /// Converges one resource, records its observed state, and says when it needs the next pass.
+    fn reconcile(&self, key: Key) -> ::sandbox::LocalFuture<'_, Result<Recheck, Error>>;
+}
+
+/// When a resource that a pass converged needs another pass that nothing else would start.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Recheck {
+    /// At the next wakeup or periodic scan.
+    Periodically,
+    /// After this delay, for what the pass observed still changing outside agentd, which wakes
+    /// nothing when it settles. A pass that starts earlier replaces it.
+    After(Duration),
 }
 
 /// Lists durable resource keys for startup and repair scans.
@@ -141,7 +151,7 @@ impl<Key> Wakeup<Key> {
 }
 
 type Response = oneshot::Sender<Result<(), ReconcileFailure>>;
-type ReconcileResult<Key> = (Key, Vec<Response>, Result<(), Error>);
+type ReconcileResult<Key> = (Key, Vec<Response>, Result<Recheck, Error>);
 type ReconcileFuture<Key> = futures_util::future::LocalBoxFuture<'static, ReconcileResult<Key>>;
 
 /// Continuously schedules independent reconciliations keyed by durable identity.
@@ -187,11 +197,13 @@ where
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut pending = BTreeMap::<Key, Vec<Response>>::new();
         let mut running = BTreeSet::new();
+        let mut rechecks = BTreeMap::<Key, Instant>::new();
         let mut reconciliations = FuturesUnordered::<ReconcileFuture<Key>>::new();
         self.enqueue_all(&mut pending).await;
 
         loop {
-            self.start_pending(&mut pending, &mut running, &reconciliations);
+            self.start_pending(&mut pending, &mut running, &mut rechecks, &reconciliations);
+            let next_recheck = rechecks.values().min().copied();
             tokio::select! {
                 biased;
                 request = self.receiver.recv() => {
@@ -202,12 +214,25 @@ where
                     }
                 }
                 _ = ticker.tick() => self.enqueue_all(&mut pending).await,
+                () = sleep_until(next_recheck) => {
+                    let now = Instant::now();
+                    rechecks.retain(|&key, &mut due| {
+                        if due <= now {
+                            pending.entry(key).or_default();
+                        }
+                        due > now
+                    });
+                }
                 Some((key, responses, result)) = reconciliations.next(), if !reconciliations.is_empty() => {
                     running.remove(&key);
-                    if let Err(error) = &result {
-                        (self.on_error)(Some(key), error);
+                    match &result {
+                        Ok(Recheck::Periodically) => {}
+                        Ok(Recheck::After(delay)) => {
+                            rechecks.insert(key, Instant::now() + *delay);
+                        }
+                        Err(error) => (self.on_error)(Some(key), error),
                     }
-                    let response = result.as_ref().copied().map_err(ReconcileFailure::classify);
+                    let response = result.as_ref().map(drop).map_err(ReconcileFailure::classify);
                     for sender in responses {
                         let _ignored = sender.send(response.clone());
                     }
@@ -231,6 +256,7 @@ where
         &self,
         pending: &mut BTreeMap<Key, Vec<Response>>,
         running: &mut BTreeSet<Key>,
+        rechecks: &mut BTreeMap<Key, Instant>,
         reconciliations: &FuturesUnordered<ReconcileFuture<Key>>,
     ) {
         while running.len() < MAX_CONCURRENT_RECONCILES {
@@ -239,9 +265,19 @@ where
             };
             let responses = pending.remove(&key).unwrap_or_default();
             running.insert(key);
+            // The pass asks again if it still needs one.
+            rechecks.remove(&key);
             let reconciler = self.reconciler.clone();
             reconciliations.push(async move { (key, responses, reconciler.reconcile(key).await) }.boxed_local());
         }
+    }
+}
+
+/// Waits until `deadline`, or forever without one.
+async fn sleep_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
     }
 }
 

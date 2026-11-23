@@ -24,6 +24,7 @@ const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_mins(1);
 const INSTALL_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 const RELEASE_RENAME_TIMEOUT: Duration = Duration::from_secs(15);
+const BUSY_EXECUTABLE_TIMEOUT: Duration = Duration::from_secs(2);
 const BINARY_STEMS: [&str; 2] = ["agentctl", "agentd"];
 
 /// Filesystem locations for one managed agentctl installation.
@@ -129,7 +130,7 @@ impl InstallPaths {
                 Err(std::fs::TryLockError::Error(error)) => return Err(Error::Io(error)),
             }
         }
-        Ok(InstallLock { _file: file })
+        Ok(InstallLock { file })
     }
 
     /// Whether an installer or updater holds the lock that [`InstallPaths::lock`] takes. Creates
@@ -154,7 +155,16 @@ impl InstallPaths {
 
 #[derive(Debug)]
 pub struct InstallLock {
-    _file: File,
+    file: File,
+}
+
+impl Drop for InstallLock {
+    /// Unlocks the file before it is closed. The lock belongs to the open file, and a child that
+    /// another thread is starting holds a copy of it until it runs its program, so closing alone
+    /// would leave the lock held until then.
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 /// Non-secret facts about a managed installation.
@@ -858,7 +868,7 @@ pub fn validate_release_directory(path: &Path, version: &str) -> Result<(), Erro
     for binary in binary_names() {
         let executable = path.join(&binary);
         require_executable(&executable)?;
-        let output = Command::new(&executable).arg("--version").output()?;
+        let output = run_version(&executable)?;
         let actual = String::from_utf8_lossy(&output.stdout);
         let name = binary.trim_end_matches(std::env::consts::EXE_SUFFIX);
         if !output.status.success() || actual.trim() != format!("{name} {version}") {
@@ -870,6 +880,23 @@ pub fn validate_release_directory(path: &Path, version: &str) -> Result<(), Erro
         }
     }
     Ok(())
+}
+
+/// Runs a binary with `--version`, waiting while it is busy. Linux refuses to run a file that any
+/// process has open for writing, and a child that another thread forks keeps a copy of the
+/// descriptor the file was written with until that child execs.
+fn run_version(executable: &Path) -> std::io::Result<std::process::Output> {
+    let deadline = std::time::Instant::now() + BUSY_EXECUTABLE_TIMEOUT;
+    loop {
+        match Command::new(executable).arg("--version").output() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
 }
 
 /// Reads and validates the version encoded by one managed release directory.
@@ -1327,8 +1354,11 @@ mod tests {
 
         let lock = paths.lock().await.expect("lock");
         assert!(paths.update_running().expect("held"));
+        // A child that another thread is starting holds such a copy until it runs its program.
+        let copy = lock.file.try_clone().expect("copy of the lock's file");
         drop(lock);
         assert!(!paths.update_running().expect("released"));
+        drop(copy);
     }
 
     #[test]
@@ -1470,18 +1500,7 @@ mod tests {
     fn managed_release_version_comes_from_the_active_package() {
         let temporary = tempfile::TempDir::new().expect("temporary directory");
         let release = temporary.path().join(format!("v2.3.4-preview.1-{}", package_target()));
-        fs::create_dir(&release).expect("release");
-        // A child process writes the executables. A descriptor this process
-        // opened for writing leaks into any child another test is forking
-        // until that child execs, and executing the file meanwhile fails with
-        // ETXTBSY ("Text file busy").
-        let written = Command::new("/bin/sh")
-            .arg("-c")
-            .arg(r#"for binary in agentctl agentd; do printf '#!/bin/sh\necho "%s v2.3.4-preview.1"\n' "$binary" > "$binary" && chmod 755 "$binary" || exit; done"#)
-            .current_dir(&release)
-            .status()
-            .expect("write binaries");
-        assert!(written.success());
+        write_release(&release, "v2.3.4-preview.1");
 
         assert_eq!(
             managed_release_version(&release).expect("managed version"),
@@ -1508,6 +1527,50 @@ mod tests {
     fn inode(path: &Path) -> u64 {
         use std::os::unix::fs::MetadataExt as _;
         fs::metadata(path).expect("metadata").ino()
+    }
+
+    // macOS runs a binary that is open for writing, so it is never busy there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn validation_runs_a_binary_once_it_is_no_longer_open_for_writing() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let release = temporary.path().join("release");
+        write_release(&release, "v1.0.0");
+        // As a child that another thread forks keeps the descriptor a binary was written with,
+        // until it execs.
+        let writer = OpenOptions::new()
+            .write(true)
+            .open(release.join("agentctl"))
+            .expect("open for writing");
+
+        let validated = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                drop(writer);
+            });
+            validate_release_directory(&release, "v1.0.0")
+        });
+
+        validated.expect("the release runs");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn validation_fails_for_a_binary_that_stays_open_for_writing() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let release = temporary.path().join("release");
+        write_release(&release, "v1.0.0");
+        let _writer = OpenOptions::new()
+            .write(true)
+            .open(release.join("agentctl"))
+            .expect("open for writing");
+
+        let error = validate_release_directory(&release, "v1.0.0").expect_err("a busy binary does not run");
+
+        assert!(
+            matches!(&error, Error::Io(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy),
+            "{error:?}"
+        );
     }
 
     #[cfg(unix)]
