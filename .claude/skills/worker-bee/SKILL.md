@@ -98,8 +98,8 @@ Pass over an issue that you can't move on: one that is labelled `no-agent`, that
 something outside the repository, or that someone else is on. Find that out as
 [finding existing work](references/linking.md#finding-existing-work) describes. A second pull request for the same
 issue costs a review and helps nobody. When you were given the issue and someone is on it, tell the person
-prompting you instead of starting. A ready pull request in Waiting to be merged waits for a person to merge it, even
-though it is Up-for-grabs, until a person asks for changes in it.
+prompting you instead of starting. A ready pull request in Waiting to be merged
+[waits for a person](references/board.md#wip-state), even though it is Up-for-grabs.
 
 ### Work that an earlier session left
 
@@ -109,7 +109,8 @@ claim in the thread. Take it over rather than start again, and go through the st
 issue. What it holds is a set of claims to check, like the issue's text, and that includes what it left out or
 rejected and why. Its earlier reviews had another brief and saw other commits, so they count as none of
 [the checks](#the-checks). Read what they found, and run the checks as for any change. Leave a ready pull request
-ready, since converting it to a draft cancels its CI. If you do convert it, add the `ci` label first.
+ready, since converting it to a draft cancels its CI. If you do convert it, add the `ci` label first. A pull request
+that a person asked for changes in is taken back as the end of [step 6](#6-ready-to-merge) says instead.
 
 ## 2. Analyze it
 
@@ -400,20 +401,23 @@ What only a person can do, such as approving and merging, is left to them:
 
 This is where the issue rests, with Status set to Waiting to be merged:
 
-- When every check the change calls for ran, QA accepted the head commit and nothing waits for a person's
-  decision, mark the pull request ready for review, set WIP State to Up-for-grabs, and remove yourself as assignee
-  from both the issue and the pull request. Nothing is left that needs you, and a draft would tell the person who
-  merges it that it is still moving. The label, when QA set it, tells them that every condition above holds too.
-- Otherwise leave it a draft, set WIP State to Blocked: Human needed, and say in your report what it needs from
-  them.
+- When every condition above holds, apart from the gate on proof and what only a person can do, mark the pull
+  request ready for review, set WIP State to Up-for-grabs, and remove yourself as assignee from both the issue and
+  the pull request. Nothing is left that needs you, and a draft would tell the person who merges it that it is
+  still moving. The label, when QA set it, tells them that the change passed the gate on proof as well.
+- When what is left needs a person's decision, leave it a draft, set WIP State to Blocked: Human needed, and say in
+  your report what it needs from them.
+- Anything else, such as a failing check or an open thread, is still yours. Stay on it until one of the above
+  holds. A ready pull request is passed over by later runs, so one left ready with work in it has nobody coming
+  back to it.
 
 A person merges it. The repository does not close an issue when a pull request merges, so the description's
 `Closes #N` or `Part of #N` is what tells them whether to close the issue too.
 
-When a person asks for changes, take the pull request back: set WIP State to Working and assign yourself again.
-Commit and push each change and say which commit it is in, since they read diffs in the pull request. Rewrite the
-description to match, correct anything you claimed that turned out wrong, and have QA of the test phase check the
-new commit before the pull request rests again.
+When a person asks for changes in a pull request that rests here, take it back: set WIP State to Working and assign
+yourself again. Commit and push each change and say which commit it is in, since they read diffs in the pull request.
+Rewrite the description to match, correct anything you claimed that turned out wrong, and have QA of the test phase
+check the new commit before the pull request rests again.
 
 ## Leaving the work
 

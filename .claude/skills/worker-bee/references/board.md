@@ -31,10 +31,11 @@ what a release has shipped.
 WIP State says whether the work is moving right now, which Status can't show. It is **Working** while a session is
 on it. Otherwise it says what the work waits for:
 
-- **Up-for-grabs** when anyone can pick it up. Remove yourself as assignee in the same step, with
-  `gh issue edit N --remove-assignee @me`. An assignee says that someone is on the issue, and others pass over it
-  for that reason. If you mean to come back to it yourself, it is not up for grabs: stay assigned and set the state
-  that says what it waits for.
+- **Up-for-grabs** when anyone can pick it up. On a ready pull request in Waiting to be merged, that means a person
+  picking it up to review and merge it. An agent leaves it alone until a person asks for changes in it. Remove yourself
+  as assignee in the same step, with `gh issue edit N --remove-assignee @me`. An assignee says that someone is on the
+  issue, and others pass over it for that reason. If you mean to come back to it yourself, it is not up for grabs: stay
+  assigned and set the state that says what it waits for.
 - The **Waiting** state that fits when it waits on another issue or on something outside the repository. Name what
   it waits on with a [blocked-by relation](linking.md#relations-between-issues).
 - **Blocked: Human needed** when only a person can move it on. Say on the issue or pull request what you need from
@@ -42,7 +43,7 @@ on it. Otherwise it says what the work waits for:
   agent's work.
 - **Other/Limbo** when none of these fit, with a comment that says what is going on.
 
-Clear the field when the work is merged.
+Whoever merges the work clears the field.
 
 ## Labels on pull requests
 
