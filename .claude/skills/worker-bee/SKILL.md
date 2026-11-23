@@ -413,8 +413,8 @@ This is where the issue rests:
 - When what is left needs a person's decision, leave it a draft in Testing, set WIP State to Blocked: Human
   needed, and say in your report what it needs from them.
 - Anything else, such as a failing check or an open thread, is still yours. Stay on it until one of the above
-  holds. A ready pull request is passed over by later runs, so one left ready with work in it has nobody coming
-  back to it.
+  holds. Later runs pass over a pull request in Waiting to be merged, so one left there with work in it has
+  nobody coming back to it.
 
 A person merges it. The repository does not close an issue when a pull request merges, so the description's
 `Closes #N` or `Part of #N` is what tells them whether to close the issue too.
