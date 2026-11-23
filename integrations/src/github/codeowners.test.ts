@@ -89,13 +89,22 @@ const REPO_CODEOWNERS = parseCodeowners(
   readFileSync(new URL("../../../.github/CODEOWNERS", import.meta.url), "utf-8"),
 );
 
-test("repoets CODEOWNERS: kun dokumentasjon er trygt", () => {
+test("repoets CODEOWNERS: dokumentasjon og agentlaget er åpent", () => {
   for (const path of [
     "README.md",
     "LICENSE",
     "docs/presentations/agentctl-sandbox-sdk/slides.md",
     "agents/ny-agent/README.md",
     "integrations/README.md",
+    // agentlaget, der man ber om review ved behov
+    "agentctl/src/lib.rs",
+    "sandbox/microsandbox/src/lib.rs",
+    "images/agentctl-base/Dockerfile",
+    "agents/dev/README.md",
+    "agents/dev/Dockerfile",
+    "Cargo.lock",
+    ".github/workflows/rust.yml",
+    ".github/workflows/agentctl-release.yml",
   ]) {
     assert.equal(isOwned(REPO_CODEOWNERS, path), false, path);
   }
@@ -106,8 +115,6 @@ test("repoets CODEOWNERS: alt annet krever review", () => {
     // agent-instrukser og -definisjoner, uansett filnavn
     "agents/ny-agent/agent.yaml",
     "agents/ny-agent/instructions.md",
-    "agents/dev/README.md",
-    "agents/dev/Dockerfile",
     // tjenester og avhengighetene deres
     "integrations/src/config.ts",
     "integrations/package.json",
@@ -119,8 +126,6 @@ test("repoets CODEOWNERS: alt annet krever review", () => {
     ".gitignore",
     ".github/CODEOWNERS",
     ".github/workflows/ci.yml",
-    "images/agentctl-base/Dockerfile",
-    "agentctl/src/lib.rs",
     // stier som ikke finnes (lenger)
     "doc/index.md",
     "apps/ny-tjeneste/index.ts",

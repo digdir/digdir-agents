@@ -24,6 +24,7 @@ const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_mins(1);
 const INSTALL_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 const RELEASE_RENAME_TIMEOUT: Duration = Duration::from_secs(15);
+const BUSY_EXECUTABLE_TIMEOUT: Duration = Duration::from_secs(2);
 const BINARY_STEMS: [&str; 2] = ["agentctl", "agentd"];
 
 /// Filesystem locations for one managed agentctl installation.
@@ -129,7 +130,7 @@ impl InstallPaths {
                 Err(std::fs::TryLockError::Error(error)) => return Err(Error::Io(error)),
             }
         }
-        Ok(InstallLock { _file: file })
+        Ok(InstallLock { file })
     }
 
     /// Whether an installer or updater holds the lock that [`InstallPaths::lock`] takes. Creates
@@ -154,7 +155,16 @@ impl InstallPaths {
 
 #[derive(Debug)]
 pub struct InstallLock {
-    _file: File,
+    file: File,
+}
+
+impl Drop for InstallLock {
+    /// Unlocks the file before it is closed. The lock belongs to the open file, and a child that
+    /// another thread is starting holds a copy of it until it runs its program, so closing alone
+    /// would leave the lock held until then.
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 /// Non-secret facts about a managed installation.
@@ -279,8 +289,7 @@ pub async fn stage_release(paths: &InstallPaths, release: Release) -> Result<Sta
     let final_path = paths.releases().join(release.directory_name());
     {
         let _lock = paths.lock().await?;
-        if final_path.exists() {
-            validate_release_directory(&final_path, &release.version)?;
+        if final_path.exists() && validate_release_directory(&final_path, &release.version).is_ok() {
             return Ok(StagedRelease {
                 release,
                 path: final_path,
@@ -320,6 +329,11 @@ pub async fn stage_release(paths: &InstallPaths, release: Release) -> Result<Sta
 
 /// Validates and publishes an extracted package while serializing release ownership.
 ///
+/// A release that is already published is kept while it runs. One that does not run gets its binaries
+/// replaced by new files. macOS can refuse to run a file whose contents were written in place while a
+/// process had it open, even with the same bytes, until every such process exits. A new file is a
+/// different file to the kernel, so it runs while those processes keep the old one.
+///
 /// # Errors
 ///
 /// Returns an error when the package is invalid or another update holds the install lock.
@@ -329,8 +343,8 @@ pub async fn publish_release(paths: &InstallPaths, source: &Path, version: &str)
     fs::create_dir_all(paths.releases())?;
     crate::local::home::secure_directory(&paths.releases())?;
     let final_path = paths.releases().join(format!("{version}-{}", package_target()));
-    if final_path.exists() {
-        validate_release_directory(&final_path, version)?;
+    let published = final_path.exists();
+    if published && validate_release_directory(&final_path, version).is_ok() {
         return Ok(final_path);
     }
     let staging = tempfile::Builder::new()
@@ -340,6 +354,16 @@ pub async fn publish_release(paths: &InstallPaths, source: &Path, version: &str)
         fs::copy(source.join(&binary), staging.path().join(binary))?;
     }
     validate_release_directory(staging.path(), version)?;
+    if published {
+        // Each rename swaps in a new file, so a launch sees either the old or the new binary.
+        for binary in binary_names() {
+            fs::rename(staging.path().join(&binary), final_path.join(&binary))?;
+        }
+        #[cfg(unix)]
+        sync_directory(&final_path)?;
+        validate_release_directory(&final_path, version)?;
+        return Ok(final_path);
+    }
     #[cfg(windows)]
     let published = rename_release(staging.path(), &final_path).await;
     #[cfg(not(windows))]
@@ -802,6 +826,13 @@ fn extract_archive(archive: &Path, destination: &Path) -> Result<(), Error> {
         let name = name
             .to_str()
             .ok_or_else(|| Error::Invalid("Agent archive contains a non-UTF-8 path".into()))?;
+        // Refused like any other extra entry, but named, since the generic message does not lead to the cause.
+        if name.strip_prefix("._").is_some_and(|binary| expected.contains(binary)) {
+            return Err(Error::Invalid(format!(
+                "agentctl archive entry {name:?} is macOS metadata (an AppleDouble entry), which tar adds for a file \
+                 with extended attributes. Pack the archive without it, such as with COPYFILE_DISABLE=1 set for tar"
+            )));
+        }
         if !expected.contains(name) || !found.insert(name.to_owned()) || !entry.header().entry_type().is_file() {
             return Err(Error::Invalid(format!("unexpected agentctl archive entry {name:?}")));
         }
@@ -837,7 +868,7 @@ pub fn validate_release_directory(path: &Path, version: &str) -> Result<(), Erro
     for binary in binary_names() {
         let executable = path.join(&binary);
         require_executable(&executable)?;
-        let output = Command::new(&executable).arg("--version").output()?;
+        let output = run_version(&executable)?;
         let actual = String::from_utf8_lossy(&output.stdout);
         let name = binary.trim_end_matches(std::env::consts::EXE_SUFFIX);
         if !output.status.success() || actual.trim() != format!("{name} {version}") {
@@ -849,6 +880,23 @@ pub fn validate_release_directory(path: &Path, version: &str) -> Result<(), Erro
         }
     }
     Ok(())
+}
+
+/// Runs a binary with `--version`, waiting while it is busy. Linux refuses to run a file that any
+/// process has open for writing, and a child that another thread forks keeps a copy of the
+/// descriptor the file was written with until that child execs.
+fn run_version(executable: &Path) -> std::io::Result<std::process::Output> {
+    let deadline = std::time::Instant::now() + BUSY_EXECUTABLE_TIMEOUT;
+    loop {
+        match Command::new(executable).arg("--version").output() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
 }
 
 /// Reads and validates the version encoded by one managed release directory.
@@ -1306,8 +1354,11 @@ mod tests {
 
         let lock = paths.lock().await.expect("lock");
         assert!(paths.update_running().expect("held"));
+        // A child that another thread is starting holds such a copy until it runs its program.
+        let copy = lock.file.try_clone().expect("copy of the lock's file");
         drop(lock);
         assert!(!paths.update_running().expect("released"));
+        drop(copy);
     }
 
     #[test]
@@ -1379,6 +1430,41 @@ mod tests {
         assert!(!paths.releases().exists());
     }
 
+    #[test]
+    fn archive_with_macos_metadata_is_refused_by_name() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let archive = temporary.path().join("agent.tar.gz");
+        let metadata = format!("._{}", binary_names()[0]);
+        let mut package = tar::Builder::new(flate2::write::GzEncoder::new(
+            File::create(&archive).expect("archive"),
+            flate2::Compression::fast(),
+        ));
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o755);
+        header.set_cksum();
+        package
+            .append_data(&mut header, &metadata, std::io::empty())
+            .expect("entry");
+        package
+            .into_inner()
+            .expect("archive")
+            .finish()
+            .expect("compressed archive");
+        let destination = temporary.path().join("release");
+        fs::create_dir(&destination).expect("destination");
+
+        let error = extract_archive(&archive, &destination)
+            .expect_err("macOS metadata")
+            .to_string();
+
+        // The error leads to the cause and the remedy: which entry, what it is and how to pack without it.
+        assert!(error.contains(&format!("{metadata:?}")), "names the entry: {error}");
+        assert!(error.contains("macOS metadata"), "says it is macOS metadata: {error}");
+        assert!(error.contains("COPYFILE_DISABLE=1"), "names the remedy: {error}");
+        assert!(!destination.join(&metadata).exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn activation_and_pruning_use_canonical_release_paths() {
@@ -1414,22 +1500,116 @@ mod tests {
     fn managed_release_version_comes_from_the_active_package() {
         let temporary = tempfile::TempDir::new().expect("temporary directory");
         let release = temporary.path().join(format!("v2.3.4-preview.1-{}", package_target()));
-        fs::create_dir(&release).expect("release");
-        // A child process writes the executables. A descriptor this process
-        // opened for writing leaks into any child another test is forking
-        // until that child execs, and executing the file meanwhile fails with
-        // ETXTBSY ("Text file busy").
-        let written = Command::new("/bin/sh")
-            .arg("-c")
-            .arg(r#"for binary in agentctl agentd; do printf '#!/bin/sh\necho "%s v2.3.4-preview.1"\n' "$binary" > "$binary" && chmod 755 "$binary" || exit; done"#)
-            .current_dir(&release)
-            .status()
-            .expect("write binaries");
-        assert!(written.success());
+        write_release(&release, "v2.3.4-preview.1");
 
         assert_eq!(
             managed_release_version(&release).expect("managed version"),
             "v2.3.4-preview.1"
         );
+    }
+
+    #[cfg(unix)]
+    fn write_binary(path: &Path, script: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::write(path, format!("#!/bin/sh\n{script}\n")).expect("binary");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("executable");
+    }
+
+    #[cfg(unix)]
+    fn write_release(path: &Path, version: &str) {
+        fs::create_dir_all(path).expect("release directory");
+        for name in BINARY_STEMS {
+            write_binary(&path.join(name), &format!("echo {name} {version}"));
+        }
+    }
+
+    #[cfg(unix)]
+    fn inode(path: &Path) -> u64 {
+        use std::os::unix::fs::MetadataExt as _;
+        fs::metadata(path).expect("metadata").ino()
+    }
+
+    // macOS runs a binary that is open for writing, so it is never busy there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn validation_runs_a_binary_once_it_is_no_longer_open_for_writing() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let release = temporary.path().join("release");
+        write_release(&release, "v1.0.0");
+        // As a child that another thread forks keeps the descriptor a binary was written with,
+        // until it execs.
+        let writer = OpenOptions::new()
+            .write(true)
+            .open(release.join("agentctl"))
+            .expect("open for writing");
+
+        let validated = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                drop(writer);
+            });
+            validate_release_directory(&release, "v1.0.0")
+        });
+
+        validated.expect("the release runs");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn validation_fails_for_a_binary_that_stays_open_for_writing() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let release = temporary.path().join("release");
+        write_release(&release, "v1.0.0");
+        let _writer = OpenOptions::new()
+            .write(true)
+            .open(release.join("agentctl"))
+            .expect("open for writing");
+
+        let error = validate_release_directory(&release, "v1.0.0").expect_err("a busy binary does not run");
+
+        assert!(
+            matches!(&error, Error::Io(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy),
+            "{error:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "local")]
+    async fn publishing_replaces_a_published_release_that_does_not_run() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let paths = InstallPaths::new(temporary.path().join("install"), temporary.path().join("bin")).expect("paths");
+        let source = temporary.path().join("source");
+        write_release(&source, "v1.0.0");
+        let published = paths.releases().join(format!("v1.0.0-{}", package_target()));
+        write_release(&published, "v1.0.0");
+        // As macOS does with a file it refuses to run.
+        write_binary(&published.join("agentctl"), "kill -KILL $$");
+        let refused = inode(&published.join("agentctl"));
+
+        let path = publish_release(&paths, &source, "v1.0.0").await.expect("published");
+
+        assert_eq!(path, published);
+        validate_release_directory(&published, "v1.0.0").expect("the release runs");
+        assert_ne!(
+            inode(&published.join("agentctl")),
+            refused,
+            "a new file, not new contents"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "local")]
+    async fn publishing_keeps_a_published_release_that_runs() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let paths = InstallPaths::new(temporary.path().join("install"), temporary.path().join("bin")).expect("paths");
+        let source = temporary.path().join("source");
+        write_release(&source, "v1.0.0");
+        let published = paths.releases().join(format!("v1.0.0-{}", package_target()));
+        write_release(&published, "v1.0.0");
+        let files = BINARY_STEMS.map(|name| inode(&published.join(name)));
+
+        publish_release(&paths, &source, "v1.0.0").await.expect("published");
+
+        assert_eq!(BINARY_STEMS.map(|name| inode(&published.join(name))), files);
     }
 }

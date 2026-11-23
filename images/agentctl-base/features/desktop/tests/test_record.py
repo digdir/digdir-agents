@@ -56,17 +56,21 @@ class StateTest(unittest.TestCase):
             self.assertFalse(record.alive(123))
 
     def test_a_process_that_ended_but_is_not_reaped_has_ended(self):
-        # The shell starts `true` and becomes `sleep`, which never reaps it, as a batch that started a recorder does
-        # not until it ends.
-        parent = subprocess.Popen(['sh', '-c', 'true & echo $!; exec sleep 30'], stdout=subprocess.PIPE, text=True)
+        # The parent waits for its child to end without reaping it, and then never reaps it, as a batch that started a
+        # recorder does not until it ends. A shell can't be the parent, since it reaps a child that ends while it runs.
+        parent = subprocess.Popen([sys.executable, '-c', '''
+import os, time
+child = os.fork()
+if not child:
+    os._exit(0)
+os.waitid(os.P_PID, child, os.WEXITED | os.WNOWAIT)
+print(child, flush=True)
+time.sleep(30)
+'''], stdout=subprocess.PIPE, text=True)
         try:
             zombie = int(parent.stdout.readline())
-            for _ in range(100):
-                with open(f'/proc/{zombie}/stat') as f:
-                    if f.read().rsplit(')', 1)[1].split()[0] == 'Z':
-                        break
-                time.sleep(0.01)
-            os.kill(zombie, 0)
+            with open(f'/proc/{zombie}/stat') as f:
+                self.assertEqual(f.read().rsplit(')', 1)[1].split()[0], 'Z')
             self.assertFalse(record.alive(zombie))
         finally:
             parent.kill()

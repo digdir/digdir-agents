@@ -3,6 +3,7 @@
 mod bundled;
 mod controller;
 mod convergence;
+mod host_disk;
 pub mod memory;
 mod prepare;
 mod reconciler;
@@ -19,6 +20,7 @@ use crate::{Error, Status};
 pub use crate::definitions::DefinitionSummary;
 pub use controller::{Controller, ErrorHandler, Wakeup};
 pub use convergence::{Convergence, WaitPolicy};
+pub use host_disk::HostDisk;
 pub use reconciler::{Reconciler, SessionNotifier};
 pub use resource::{AgentId, AgentRecord, ENV_FILE};
 pub use run::{BindSource, Ran, RunDefinition, RunRequest};

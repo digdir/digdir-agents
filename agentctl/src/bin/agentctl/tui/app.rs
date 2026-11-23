@@ -14,6 +14,7 @@ use sandbox::progress::{OperationStatus, Progress};
 use time::OffsetDateTime;
 
 use super::open::{Environment, MenuEntry, OpenMenu, OpenTarget, SshSetup};
+use super::session_names;
 use crate::{format, forward::ForwardSpec};
 
 /// Output lines of a failed pass the agent side panel shows.
@@ -338,6 +339,8 @@ pub(crate) struct App {
     /// How many ephemeral agents agentd left out of the last state, which belong to the clients
     /// that ran them, so the status line can say they exist.
     pub(crate) ephemeral_agents: usize,
+    /// The space on the host filesystem holding the agents' disks, as agentd last reported it.
+    pub(crate) host_disk: Option<agent::local::disk::DiskSpace>,
     pub(crate) creating: usize,
     /// Prompts being sent.
     pub(crate) prompting: usize,
@@ -611,12 +614,15 @@ impl SessionField {
 
 /// New session form state: a name, optional model and effort, and a harness picker.
 ///
-/// Empty model and effort fields leave the choice to the daemon, which applies
-/// the selected installation's manifest defaults and then the harness's own.
+/// An empty name field stands for a generated name. Empty model and effort fields
+/// leave the choice to the daemon, which applies the selected installation's
+/// manifest defaults and then the harness's own.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SessionForm {
     pub(crate) agent: String,
     pub(crate) name: String,
+    /// The name the session gets while the name field is empty, free when the form opened.
+    pub(crate) generated: Option<SessionName>,
     pub(crate) model: String,
     pub(crate) effort: String,
     pub(crate) field: SessionField,
@@ -678,7 +684,10 @@ impl SessionForm {
     /// Validates the form. An existing name is rejected, because ensuring it
     /// would attach to that session instead of creating one.
     fn submit(&self, sessions: &[Session]) -> Result<Action, String> {
-        let session = SessionName::new(self.name.clone()).map_err(|invalid| invalid.to_string())?;
+        let session = match &self.generated {
+            Some(generated) if self.name.is_empty() => generated.clone(),
+            _ => SessionName::new(self.name.clone()).map_err(|invalid| invalid.to_string())?,
+        };
         if sessions
             .iter()
             .any(|existing| existing.agent == self.agent && existing.name == session)
@@ -1419,6 +1428,7 @@ impl App {
             volumes: Vec::new(),
             volume_selected: 0,
             ephemeral_agents: 0,
+            host_disk: None,
             creating: 0,
             prompting: 0,
             transcript: None,
@@ -2441,6 +2451,9 @@ impl App {
             return Vec::new();
         };
         let mut lines = format::readiness_lines(&agent.status);
+        if let Some(usage) = agent.status.root_filesystem {
+            lines.push(format!("Disk:       {}", format::root_filesystem_usage(usage)));
+        }
         if let Some(provisioning) = &agent.status.progress {
             let progress = &provisioning.progress;
             lines.extend(format::provisioning_lines(
@@ -2729,9 +2742,15 @@ impl App {
             .iter()
             .position(|spec| spec.default)
             .unwrap_or_default();
+        let generated = session_names::random(|name| {
+            self.sessions
+                .iter()
+                .any(|session| session.agent == agent.metadata.name && session.name.as_str() == name)
+        });
         self.modal = Some(Modal::NewSession(SessionForm {
             agent: agent.metadata.name.clone(),
             name: String::new(),
+            generated,
             model: String::new(),
             effort: String::new(),
             field: SessionField::Name,
@@ -3040,7 +3059,16 @@ fn agent_state(agent: &Agent) -> AgentState {
         ),
         (None, None) => match ready.map(|ready| ready.status) {
             None => state(Tone::Gray, "Pending", String::new(), None),
-            Some(ConditionStatus::True) => state(Tone::Green, "Ready", String::new(), entered),
+            Some(ConditionStatus::True) => {
+                let shortfalls = Condition::shortfalls(&agent.status.conditions)
+                    .map(|condition| condition.message.as_str())
+                    .collect::<Vec<_>>();
+                if shortfalls.is_empty() {
+                    state(Tone::Green, "Ready", String::new(), entered)
+                } else {
+                    state(Tone::Yellow, "Ready", shortfalls.join(" · "), entered)
+                }
+            }
             Some(_) => failed(Tone::Cyan, "Starting", message(), entered),
         },
     }
@@ -3300,6 +3328,21 @@ pub(crate) mod tests {
         app.apply_snapshot(vec![mounting("worker", false, &[Some(2)])], Vec::new());
         let lines = app.agent_panel_lines("worker");
         assert!(lines.contains(&"  apps, revision 2, writable".to_owned()), "{lines:?}");
+    }
+
+    #[test]
+    fn the_agent_panel_shows_the_root_disk_use_once_measured() {
+        const GIB: u64 = 1 << 30;
+        let mut app = App::new();
+        app.apply_snapshot(vec![agent("worker")], Vec::new());
+        let lines = app.agent_panel_lines("worker");
+        assert!(!lines.iter().any(|line| line.starts_with("Disk:")), "{lines:?}");
+
+        let mut measured = agent("worker");
+        measured.status.root_filesystem = Some(sandbox::RootFilesystemUsage::new(12 * GIB, 100 * GIB));
+        app.apply_snapshot(vec![measured], Vec::new());
+        let lines = app.agent_panel_lines("worker");
+        assert!(lines.contains(&"Disk:       12Gi/100Gi".to_owned()), "{lines:?}");
     }
 
     #[test]
@@ -4300,9 +4343,15 @@ pub(crate) mod tests {
     fn new_session_modal_validates_the_name_and_creates_on_enter() {
         let mut app = populated();
         app.on_key(key(KeyCode::Char('n')));
-        assert!(matches!(app.modal, Some(Modal::NewSession(_))));
+        let Some(Modal::NewSession(form)) = &mut app.modal else {
+            panic!("expected the NewSession modal");
+        };
+        form.generated = None;
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
-        assert!(matches!(&app.modal, Some(Modal::NewSession(form)) if form.error.is_some()));
+        assert!(
+            matches!(&app.modal, Some(Modal::NewSession(form)) if form.error.is_some()),
+            "an empty name is refused when no name was generated"
+        );
         app.on_key(key(KeyCode::Char('s')));
         app.on_key(key(KeyCode::Char('!')));
         app.on_key(key(KeyCode::Char('1')));
@@ -4329,6 +4378,64 @@ pub(crate) mod tests {
         assert!(matches!(
             &app.modal,
             Some(Modal::NewSession(form)) if form.error.as_deref() == Some("session \"s1\" already exists")
+        ));
+    }
+
+    #[test]
+    fn new_session_modal_creates_an_unnamed_session_under_the_generated_name() {
+        let mut app = populated();
+        app.on_key(key(KeyCode::Char('n')));
+        let Some(Modal::NewSession(form)) = &app.modal else {
+            panic!("expected the NewSession modal");
+        };
+        let generated = form.generated.clone().expect("a generated name");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::CreateSession {
+                agent: "builder".into(),
+                session: generated,
+                harness: Harness::ClaudeCode,
+                model_selection: ModelSelection::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn new_session_modal_rejects_a_generated_name_taken_since_it_opened() {
+        let mut app = populated();
+        app.on_key(key(KeyCode::Char('n')));
+        let Some(Modal::NewSession(form)) = &app.modal else {
+            panic!("expected the NewSession modal");
+        };
+        let generated = form.generated.clone().expect("a generated name");
+        let mut sessions = app.sessions.clone();
+        sessions.push(session("builder", generated.as_str(), "idle"));
+        app.apply_snapshot(app.agents.clone(), sessions);
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert!(matches!(
+            &app.modal,
+            Some(Modal::NewSession(form))
+                if form.error.as_deref() == Some(format!("session {:?} already exists", generated.as_str()).as_str())
+        ));
+    }
+
+    #[test]
+    fn new_session_modal_generates_a_name_the_agent_has_no_session_by() {
+        let mut names = session_names::all().collect::<Vec<_>>();
+        let free = names.pop().expect("names");
+        let mut sessions = names
+            .iter()
+            .map(|name| session("worker", name, "idle"))
+            .collect::<Vec<_>>();
+        sessions.push(session("builder", &free, "idle"));
+        let mut app = App::new();
+        app.apply_snapshot(vec![agent("worker"), agent("builder")], sessions);
+        app.select_index(2);
+        app.on_key(key(KeyCode::Char('n')));
+        assert!(matches!(
+            &app.modal,
+            Some(Modal::NewSession(form))
+                if form.agent == "worker" && form.generated.as_ref().map(SessionName::as_str) == Some(free.as_str())
         ));
     }
 
@@ -4827,6 +4934,43 @@ pub(crate) mod tests {
         assert_eq!(
             (rows[0].state, rows[0].tone, rows[0].detail.as_str()),
             ("Waiting", Tone::Yellow, "volume \"apps\" is taking its first copy")
+        );
+    }
+
+    #[test]
+    fn a_ready_agent_without_its_account_or_checkout_says_what_it_lacks() {
+        let mut lacking = ready_agent("lacking");
+        for (kind, status, message) in [
+            (
+                Condition::ACCOUNTS,
+                ConditionStatus::False,
+                "run `agentctl github login default`",
+            ),
+            (Condition::WORKSPACE, ConditionStatus::False, "could not clone"),
+            (
+                Condition::OPTIONAL_SOURCES,
+                ConditionStatus::False,
+                "left out ~/.gitconfig",
+            ),
+        ] {
+            lacking.status.conditions.push(agent::Condition {
+                kind: kind.into(),
+                status,
+                reason: String::new(),
+                message: message.into(),
+                last_transition_time: None,
+            });
+        }
+        let mut app = App::new();
+        app.apply_snapshot(vec![lacking], Vec::new());
+        let rows = app.render_rows();
+        assert_eq!(
+            (rows[0].state, rows[0].tone, rows[0].detail.as_str()),
+            (
+                "Ready",
+                Tone::Yellow,
+                "run `agentctl github login default` · could not clone"
+            )
         );
     }
 
@@ -5504,6 +5648,7 @@ pub(crate) mod tests {
         app.ssh_include = Some(agent::ssh::UserInclude {
             user_config: "/tmp/user/.ssh/config".into(),
             line: "Include ~/.agent/ssh/config".into(),
+            earlier: Vec::new(),
         });
         app.apply_snapshot(vec![worker], vec![session("worker", "main", "working")]);
         app

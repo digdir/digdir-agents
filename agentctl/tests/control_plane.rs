@@ -14,8 +14,10 @@ use agent::{
     AgentId, Condition, ConditionStatus, EnvironmentSpec, Error, FailureKind, MountSpec, NestedSandboxes, SecretSpec,
     Status,
     control_plane::{
-        AgentRecord, AgentStore, ControlPlane, Controller, Convergence, Notifier, Reconciler, WaitPolicy, memory,
+        AgentRecord, AgentStore, ControlPlane, Controller, Convergence, HostDisk, Notifier, Reconciler, WaitPolicy,
+        memory,
     },
+    local::disk::{DiskSpace, LowDiskThreshold},
     progress::{OutputPosition, ProvisioningState, SandboxObserver},
     resources::Changes,
     sandbox::{
@@ -103,6 +105,8 @@ pub(crate) struct MemoryProvider {
     hanging_stops: Rc<Cell<bool>>,
     /// Whether nested sandboxes are offered, or why not.
     nested_sandboxes_offered: Rc<RefCell<Result<(), String>>>,
+    /// What preparation says of the logins it found missing.
+    missing_logins: Rc<RefCell<Vec<String>>>,
     /// Runs after each directory copy is taken, as a change to the source while it is copied would.
     pub(crate) while_copying: Rc<RefCell<Option<SourceChange>>>,
     /// Volume deletions that fail, as a Provider that cannot be reached does.
@@ -127,6 +131,7 @@ impl MemoryProvider {
             kills: Rc::new(Cell::new(0)),
             hanging_stops: Rc::new(Cell::new(false)),
             nested_sandboxes_offered: Rc::new(RefCell::new(Err("the memory backend cannot nest".into()))),
+            missing_logins: Rc::new(RefCell::new(Vec::new())),
             while_copying: Rc::new(RefCell::new(None)),
             failing_volume_deletes: Rc::new(Cell::new(0)),
         }
@@ -209,7 +214,10 @@ impl Provider for MemoryProvider {
                     .iter()
                     .map(|installation| installation.kind)
                     .collect(),
-                accounts: agent::sandbox::AccountSetup::default(),
+                accounts: agent::sandbox::AccountSetup {
+                    missing_logins: self.missing_logins.borrow().clone(),
+                    ..agent::sandbox::AccountSetup::default()
+                },
             })
         })
     }
@@ -225,6 +233,13 @@ impl Provider for MemoryProvider {
                 .await
                 .map_err(Error::from)
         })
+    }
+
+    fn root_filesystem_usage<'a>(
+        &'a self,
+        id: &'a sandbox::SandboxId,
+    ) -> LocalFuture<'a, Result<sandbox::RootFilesystemUsage, Error>> {
+        Box::pin(async move { self.service.root_filesystem_usage(id).await.map_err(Error::from) })
     }
 
     fn stop<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
@@ -284,6 +299,10 @@ impl Provider for MemoryProvider {
             Ok(self.service.delete_volume(id).await?)
         })
     }
+
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<DiskSpace>, Error>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 struct UnsupportedProvider {
@@ -296,7 +315,7 @@ struct UnsupportedProvider {
 /// manifest or `.env` changes. A transient failure fails only the pass that
 /// takes it.
 #[derive(Clone)]
-enum PlannedFailure {
+pub(crate) enum PlannedFailure {
     Invalid(String),
     /// The sandbox provider rejects the request itself (an SDK `InvalidRequest`).
     Rejected,
@@ -312,17 +331,45 @@ enum PlannedFailure {
 
 const TELEMETRY_FLOOD: usize = 4_096;
 
-struct PlannedProvider {
+pub(crate) struct PlannedProvider {
     inner: MemoryProvider,
     failures: RefCell<VecDeque<PlannedFailure>>,
+    /// The space it reports on the host filesystem holding its sandboxes.
+    pub(crate) disk: Cell<Option<DiskSpace>>,
+    /// How it answers when asked for [`Self::disk`].
+    disk_measurement: Cell<Measurement>,
+    /// How it answers when asked to measure a root disk.
+    measurement: Cell<Measurement>,
+}
+
+/// How [`PlannedProvider`] answers when asked to measure a disk.
+#[derive(Clone, Copy, Default)]
+enum Measurement {
+    /// As its backend measures it.
+    #[default]
+    Measured,
+    Failing,
+    /// Never, as a stalled filesystem would.
+    Hanging,
 }
 
 impl PlannedProvider {
-    fn new(backend: Rc<sandbox_memory::Provider>, failures: impl IntoIterator<Item = PlannedFailure>) -> Self {
+    pub(crate) fn new(
+        backend: Rc<sandbox_memory::Provider>,
+        failures: impl IntoIterator<Item = PlannedFailure>,
+    ) -> Self {
         Self {
             inner: MemoryProvider::new(backend),
             failures: RefCell::new(failures.into_iter().collect()),
+            disk: Cell::new(None),
+            disk_measurement: Cell::new(Measurement::default()),
+            measurement: Cell::new(Measurement::default()),
         }
+    }
+
+    fn with_host_disk(self, disk: DiskSpace) -> Self {
+        self.disk.set(Some(disk));
+        self
     }
 }
 
@@ -387,6 +434,19 @@ impl Provider for PlannedProvider {
         self.inner.open(record, id)
     }
 
+    fn root_filesystem_usage<'a>(
+        &'a self,
+        id: &'a sandbox::SandboxId,
+    ) -> LocalFuture<'a, Result<sandbox::RootFilesystemUsage, Error>> {
+        match self.measurement.get() {
+            Measurement::Measured => self.inner.root_filesystem_usage(id),
+            Measurement::Failing => {
+                Box::pin(async { Err(Error::Sandbox(sandbox::Error::Backend("cannot read the disk".into()))) })
+            }
+            Measurement::Hanging => Box::pin(std::future::pending()),
+        }
+    }
+
     fn stop<'a>(&'a self, record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
         self.inner.stop(record)
     }
@@ -416,6 +476,17 @@ impl Provider for PlannedProvider {
 
     fn delete_volume<'a>(&'a self, id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
         self.inner.delete_volume(id)
+    }
+
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<DiskSpace>, Error>> {
+        let disk = self.disk.get();
+        match self.disk_measurement.get() {
+            Measurement::Measured => Box::pin(async move { Ok(disk) }),
+            Measurement::Failing => {
+                Box::pin(async { Err(Error::Sandbox(sandbox::Error::Backend("cannot read the disk".into()))) })
+            }
+            Measurement::Hanging => Box::pin(std::future::pending()),
+        }
     }
 }
 
@@ -453,6 +524,13 @@ impl Provider for UnsupportedProvider {
         Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
     }
 
+    fn root_filesystem_usage<'a>(
+        &'a self,
+        _id: &'a sandbox::SandboxId,
+    ) -> LocalFuture<'a, Result<sandbox::RootFilesystemUsage, Error>> {
+        Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
+    }
+
     fn stop<'a>(&'a self, _record: &'a AgentRecord) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
     }
@@ -482,6 +560,10 @@ impl Provider for UnsupportedProvider {
 
     fn delete_volume<'a>(&'a self, _id: &'a sandbox::volume::VolumeId) -> LocalFuture<'a, Result<(), Error>> {
         Box::pin(async { Err(Error::Invalid("unsupported Provider was selected".into())) })
+    }
+
+    fn host_disk(&self) -> LocalFuture<'_, Result<Option<DiskSpace>, Error>> {
+        Box::pin(async { Ok(None) })
     }
 }
 
@@ -524,6 +606,7 @@ fn apply_request_in(name: &str, source_directory: PathBuf) -> agent::control_pla
         source_directory,
         create_only: false,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        allow_low_disk: false,
         agent: agent(name),
     }
 }
@@ -578,6 +661,358 @@ async fn apply_stores_desired_state_without_running_inline() {
     );
     assert_eq!(fixture.backend.count(), 0);
     assert_eq!(applied.status.conditions, []);
+}
+
+/// `apply` warns once the room the agents' root disks can still grow into, their capacity less
+/// what the host already allocated to them, is more than the filesystem holding them has free.
+#[tokio::test(flavor = "local")]
+async fn apply_warns_when_the_root_disks_can_outgrow_the_free_space() {
+    const GIB: u64 = 1 << 30;
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let provider = Rc::new(PlannedProvider::new(Rc::new(sandbox_memory::Provider::new()), []));
+    let sandboxes = sandbox_service(provider.clone());
+    let control_plane =
+        ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default())).with_sandboxes(sandboxes.clone());
+    let reconciler = Reconciler::new(store.clone(), sandboxes, ProvisioningState::default());
+    let free = |available: u64| {
+        provider.disk.set(Some(DiskSpace {
+            available,
+            total: 100 * GIB,
+        }));
+    };
+    let overcommitted = |agent: &agent::Agent| {
+        agent
+            .status
+            .conditions
+            .iter()
+            .find(|condition| condition.kind == Condition::HOST_DISK_OVERCOMMITTED)
+            .cloned()
+    };
+
+    free(10 * GIB);
+    let first = control_plane
+        .apply(with_direct_root(apply_request("first")))
+        .await
+        .expect("apply");
+    assert_eq!(overcommitted(&first), None, "4 GiB can grow into 10 GiB free");
+    // Its sandbox exists now, so its disk is measured rather than taken from the manifest.
+    reconciler
+        .reconcile(store.get_by_name("first").await.expect("stored agent").id)
+        .await
+        .expect("reconcile");
+    let second = control_plane
+        .apply(with_direct_root(apply_request("second")))
+        .await
+        .expect("apply");
+    assert_eq!(overcommitted(&second), None, "8 GiB can grow into 10 GiB free");
+
+    free(6 * GIB);
+    let again = control_plane
+        .apply(with_direct_root(apply_request("second")))
+        .await
+        .expect("apply");
+    let warning = overcommitted(&again).expect("8 GiB cannot grow into 6 GiB free");
+    assert_eq!(warning.status, ConditionStatus::True);
+    assert!(
+        warning.message.contains("8.0 GiB") && warning.message.contains("6.0 GiB"),
+        "says how much the disks can grow and what is free: {}",
+        warning.message
+    );
+    assert!(
+        Condition::any_ready(&control_plane.get("first").await.expect("get agent").status.conditions),
+        "it is advice, and the agents run"
+    );
+    assert!(
+        overcommitted(&store.get_by_name("second").await.expect("stored agent").agent).is_none(),
+        "the warning is not stored"
+    );
+}
+
+/// Applies two agents of 4 GiB each, with sandboxes, beside 6 GiB free, so that `apply` warns
+/// while their disks can be measured, and returns what [`PlannedProvider`] measures them with.
+async fn overcommitted_fixture() -> (ControlPlane, Rc<PlannedProvider>) {
+    const GIB: u64 = 1 << 30;
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let provider = Rc::new(
+        PlannedProvider::new(Rc::new(sandbox_memory::Provider::new()), []).with_host_disk(DiskSpace {
+            available: 6 * GIB,
+            total: 100 * GIB,
+        }),
+    );
+    let sandboxes = sandbox_service(provider.clone());
+    let control_plane =
+        ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default())).with_sandboxes(sandboxes.clone());
+    let reconciler = Reconciler::new(store.clone(), sandboxes, ProvisioningState::default());
+    for name in ["first", "second"] {
+        control_plane
+            .apply(with_direct_root(apply_request(name)))
+            .await
+            .expect("apply");
+        reconciler
+            .reconcile(store.get_by_name(name).await.expect("stored agent").id)
+            .await
+            .expect("reconcile");
+    }
+    let measured = control_plane
+        .apply(with_direct_root(apply_request("second")))
+        .await
+        .expect("apply");
+    assert!(
+        overcommit_warning(&measured).is_some(),
+        "8 GiB cannot grow into 6 GiB free"
+    );
+    (control_plane, provider)
+}
+
+fn overcommit_warning(agent: &agent::Agent) -> Option<&Condition> {
+    agent
+        .status
+        .conditions
+        .iter()
+        .find(|condition| condition.kind == Condition::HOST_DISK_OVERCOMMITTED)
+}
+
+/// A disk `apply` cannot measure may have grown close to its capacity already, so counting it at
+/// its whole capacity could warn of growth there is no room for. `apply` leaves the warning out.
+#[tokio::test(flavor = "local")]
+async fn apply_leaves_the_overcommit_warning_out_when_a_disk_cannot_be_measured() {
+    let (control_plane, provider) = overcommitted_fixture().await;
+
+    provider.measurement.set(Measurement::Failing);
+    let applied = control_plane
+        .apply(with_direct_root(apply_request("second")))
+        .await
+        .expect("apply");
+
+    assert_eq!(overcommit_warning(&applied), None);
+}
+
+/// The agent is stored before its disks are measured, so a filesystem that stalls the measurement
+/// costs `apply` the warning rather than its response.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn apply_answers_without_the_overcommit_warning_when_measuring_stalls() {
+    let (control_plane, provider) = overcommitted_fixture().await;
+
+    provider.measurement.set(Measurement::Hanging);
+    let applied = tokio::time::timeout(
+        Duration::from_secs(60),
+        control_plane.apply(with_direct_root(apply_request("second"))),
+    )
+    .await
+    .expect("apply answers while the measurement stalls")
+    .expect("apply");
+
+    assert_eq!(overcommit_warning(&applied), None);
+}
+
+#[tokio::test(flavor = "local")]
+async fn every_agent_reports_a_low_host_disk_until_space_returns() {
+    const GIB: u64 = 1 << 30;
+    let changes = Changes::new();
+    let mut fixture = fixture();
+    // The Provider reports the filesystem holding its sandboxes' disks, which need not be agentd's
+    // home, so the warning follows what it reports.
+    let provider = Rc::new(PlannedProvider::new(fixture.backend.clone(), []));
+    let host_disk = HostDisk::new(
+        sandbox_service(provider.clone()),
+        LowDiskThreshold::Share(500),
+        changes.clone(),
+    );
+    fixture.control_plane = ControlPlane::new(fixture.store.clone(), Rc::new(NotificationCounter::default()))
+        .with_host_disk(host_disk.clone());
+    for name in ["running", "pending"] {
+        fixture.control_plane.apply(apply_request(name)).await.expect("apply");
+    }
+    reconcile(&fixture, "running").await;
+    let threshold = LowDiskThreshold::Share(500);
+    let host_disk_low = |agent: &agent::Agent| {
+        agent
+            .status
+            .conditions
+            .iter()
+            .find(|condition| condition.kind == Condition::HOST_DISK_LOW)
+            .cloned()
+    };
+    let reports = |available: u64| {
+        provider.disk.set(Some(DiskSpace {
+            available,
+            total: 1_000 * GIB,
+        }));
+    };
+
+    reports(100 * GIB);
+    host_disk.measure(threshold).await;
+    let before = changes.revision();
+    reports(GIB);
+    host_disk.measure(threshold).await;
+    assert_ne!(changes.revision(), before, "watchers learn that the filesystem is low");
+    let listed = fixture.control_plane.list().await.expect("list agents");
+    assert_eq!(listed.len(), 2);
+    for agent in &listed {
+        let low = host_disk_low(agent).unwrap_or_else(|| panic!("{} reports the low filesystem", agent.metadata.name));
+        assert_eq!(low.status, ConditionStatus::True);
+        assert!(
+            low.message.contains("1.0 GiB") && low.message.contains("5%"),
+            "says what is free and the threshold: {}",
+            low.message
+        );
+        assert!(low.last_transition_time.is_some());
+    }
+    let running = fixture.control_plane.get("running").await.expect("get agent");
+    assert!(
+        Condition::any_ready(&running.status.conditions),
+        "a low filesystem does not stop an agent"
+    );
+    assert!(host_disk_low(&running).is_some());
+
+    reconcile(&fixture, "running").await;
+    assert!(
+        host_disk_low(&stored(&fixture, "running").await.agent).is_none(),
+        "the warning is worked out when read, not stored"
+    );
+
+    reports(100 * GIB);
+    host_disk.measure(threshold).await;
+    let listed = fixture.control_plane.list().await.expect("list agents");
+    assert!(
+        listed.iter().all(|agent| host_disk_low(agent).is_none()),
+        "the warning clears"
+    );
+}
+
+/// A control plane with one stopped agent, `worker`, beside a filesystem of 1,000 GiB with
+/// `available` free, which the returned Provider reports and agentd has not measured yet. Below
+/// 50 GiB it is low.
+async fn stopped_beside_host_disk(available: u64) -> (ControlPlane, HostDisk, Rc<PlannedProvider>) {
+    let fixture = fixture();
+    let provider = Rc::new(PlannedProvider::new(fixture.backend.clone(), []));
+    provider.disk.set(Some(DiskSpace {
+        available,
+        total: 1_000 * GIB,
+    }));
+    let host_disk = HostDisk::new(
+        sandbox_service(provider.clone()),
+        LowDiskThreshold::Share(500),
+        Changes::new(),
+    );
+    let control_plane = ControlPlane::new(fixture.store.clone(), Rc::new(NotificationCounter::default()))
+        .with_host_disk(host_disk.clone());
+    control_plane
+        .apply(agent::control_plane::ApplyRequest {
+            allow_low_disk: true,
+            ..apply_request("worker")
+        })
+        .await
+        .expect("apply");
+    control_plane
+        .set_run_state("worker", agent::RunState::Stopped)
+        .await
+        .expect("stop");
+    (control_plane, host_disk, provider)
+}
+
+const GIB: u64 = 1 << 30;
+
+/// The periodic measurement can be up to 30 seconds old, and a build writes gigabytes in that
+/// time, so a start is checked against the free space when it is asked for.
+#[tokio::test(flavor = "local")]
+async fn a_start_is_checked_against_the_free_space_when_it_is_asked_for() {
+    let (control_plane, host_disk, provider) = stopped_beside_host_disk(100 * GIB).await;
+    let reports = |available: u64| {
+        provider.disk.set(Some(DiskSpace {
+            available,
+            total: 1_000 * GIB,
+        }));
+    };
+    host_disk.measure(LowDiskThreshold::Share(500)).await;
+
+    reports(GIB);
+    let refused = control_plane.start("worker", false).await;
+    assert!(
+        matches!(&refused, Err(Error::Invalid(message)) if message.contains("1.0 GiB")),
+        "the disk went low after the last measurement: {refused:?}"
+    );
+    let worker = control_plane.get("worker").await.expect("get agent");
+    assert!(
+        worker
+            .status
+            .conditions
+            .iter()
+            .any(|condition| condition.kind == Condition::HOST_DISK_LOW),
+        "agents show what the start was refused for"
+    );
+
+    reports(100 * GIB);
+    control_plane
+        .start("worker", false)
+        .await
+        .expect("space came back after the last measurement");
+}
+
+/// agentd serves requests before its first measurement, which must not let a start through
+/// unchecked.
+#[tokio::test(flavor = "local")]
+async fn a_start_before_the_first_measurement_is_checked() {
+    let (control_plane, _host_disk, _provider) = stopped_beside_host_disk(GIB).await;
+
+    let refused = control_plane.start("worker", false).await;
+    assert!(
+        matches!(&refused, Err(Error::Invalid(message)) if message.contains("1.0 GiB")),
+        "{refused:?}"
+    );
+}
+
+/// A fault in measuring the free space would otherwise keep every agent from starting, and an
+/// earlier measurement says nothing about the space now.
+#[tokio::test(flavor = "local")]
+async fn a_start_goes_ahead_when_the_free_space_cannot_be_measured() {
+    let (control_plane, host_disk, provider) = stopped_beside_host_disk(GIB).await;
+    host_disk.measure(LowDiskThreshold::Share(500)).await;
+
+    provider.disk_measurement.set(Measurement::Failing);
+    let started = control_plane
+        .start("worker", false)
+        .await
+        .expect("started without knowing the free space");
+    assert_eq!(started.spec.run_state(), agent::RunState::Running);
+}
+
+/// A filesystem that stalls costs the start its check rather than its answer.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_start_goes_ahead_when_measuring_the_free_space_stalls() {
+    let (control_plane, host_disk, provider) = stopped_beside_host_disk(GIB).await;
+    host_disk.measure(LowDiskThreshold::Share(500)).await;
+
+    provider.disk_measurement.set(Measurement::Hanging);
+    let started = tokio::time::timeout(Duration::from_secs(60), control_plane.start("worker", false))
+        .await
+        .expect("start answers while the measurement stalls")
+        .expect("started without knowing the free space");
+    assert_eq!(started.spec.run_state(), agent::RunState::Running);
+}
+
+/// Clients show how much the host has left for the agents' disks, also while it is not low.
+#[tokio::test(flavor = "local")]
+async fn the_host_disk_reports_the_space_last_measured() {
+    const GIB: u64 = 1 << 30;
+    let fixture = fixture();
+    let provider = Rc::new(PlannedProvider::new(fixture.backend.clone(), []));
+    let host_disk = HostDisk::new(
+        sandbox_service(provider.clone()),
+        LowDiskThreshold::Share(500),
+        Changes::new(),
+    );
+    let control_plane = ControlPlane::new(fixture.store.clone(), Rc::new(NotificationCounter::default()))
+        .with_host_disk(host_disk.clone());
+    assert_eq!(control_plane.host_disk(), None, "nothing is measured yet");
+
+    let space = DiskSpace {
+        available: 400 * GIB,
+        total: 1_000 * GIB,
+    };
+    provider.disk.set(Some(space));
+    host_disk.measure(LowDiskThreshold::Share(500)).await;
+    assert_eq!(control_plane.host_disk(), Some(space));
 }
 
 #[tokio::test(flavor = "local")]
@@ -1470,10 +1905,11 @@ async fn nested_sandboxes_are_reported_in_a_condition_and_an_unmet_requirement_f
     assert_eq!(nested(&status), None, "an agent that asks for none reports none");
 }
 
-/// Reports `set_up` as what platform setup did.
+/// Reports `set_up` as what platform setup did, and counts its passes.
 #[derive(Default)]
 struct ReportingPlatform {
     set_up: RefCell<PlatformSetup>,
+    passes: Cell<usize>,
 }
 
 impl PlatformAdapter for ReportingPlatform {
@@ -1489,7 +1925,10 @@ impl PlatformAdapter for ReportingPlatform {
         _accounts: &'a agent::sandbox::AccountSetup,
         _steps: &'a sandbox::SandboxProgress,
     ) -> LocalFuture<'a, Result<PlatformSetup, Error>> {
-        Box::pin(async { Ok(self.set_up.borrow().clone()) })
+        Box::pin(async {
+            self.passes.set(self.passes.get() + 1);
+            Ok(self.set_up.borrow().clone())
+        })
     }
 }
 
@@ -1545,6 +1984,169 @@ async fn missing_optional_sources_are_reported_in_a_condition_of_a_ready_agent()
         optional_sources("reviewer").await,
         Some((ConditionStatus::True, "Found".into(), String::new()))
     );
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_ready_agent_reports_a_missing_login_and_a_failed_workspace_clone_in_conditions() {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let provider = MemoryProvider::new(Rc::new(sandbox_memory::Provider::new()));
+    let missing_logins = provider.missing_logins.clone();
+    let provider: Rc<dyn Provider> = Rc::new(provider);
+    let platform = Rc::new(ReportingPlatform::default());
+    let service = Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service");
+    let reconciler = Reconciler::new(store.clone(), Rc::new(service), ProvisioningState::default());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    let observe = async |name: &str| {
+        let id = store.get_by_name(name).await.expect("Agent").id;
+        reconciler.reconcile(id).await.expect("reconcile");
+        let status = store.get_by_name(name).await.expect("Agent").agent.status;
+        assert!(status.is_ready(), "the agent runs without its account and checkout");
+        [Condition::ACCOUNTS, Condition::WORKSPACE].map(|kind| {
+            status
+                .conditions
+                .iter()
+                .find(|condition| condition.kind == kind)
+                .map(|condition| (condition.status, condition.reason.clone()))
+        })
+    };
+
+    control_plane.apply(apply_request("plain")).await.expect("apply");
+    assert_eq!(
+        observe("plain").await,
+        [None, None],
+        "an agent that asks for no account in an image that clones nothing reports neither"
+    );
+
+    let mut request = apply_request("worker");
+    request.agent.spec.accounts.push(agent::AccountSpec::Github {
+        login: "default".into(),
+    });
+    control_plane.apply(request).await.expect("apply");
+    *missing_logins.borrow_mut() = vec!["run `agentctl github login default`".into()];
+    platform.set_up.borrow_mut().workspace = Some(agent::sandbox::WorkspaceClone::Failed);
+    assert_eq!(
+        observe("worker").await,
+        [
+            Some((ConditionStatus::False, "NotLoggedIn".into())),
+            Some((ConditionStatus::False, "CloneFailed".into())),
+        ]
+    );
+    let status = store.get_by_name("worker").await.expect("Agent").agent.status;
+    assert_eq!(
+        Condition::shortfalls(&status.conditions).count(),
+        2,
+        "clients show both beside readiness"
+    );
+
+    missing_logins.borrow_mut().clear();
+    platform.set_up.borrow_mut().workspace = Some(agent::sandbox::WorkspaceClone::Cloned);
+    assert_eq!(
+        observe("worker").await,
+        [
+            Some((ConditionStatus::True, "LoggedIn".into())),
+            Some((ConditionStatus::True, "Cloned".into())),
+        ]
+    );
+}
+
+/// The image clones its repositories after boot, so the pass that finds the agent ready often finds the clone still
+/// running, and nothing wakes the agent when it ends. Its outcome shows before the next periodic pass, in what
+/// `describe` and the TUI read.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_running_workspace_clone_is_looked_at_again_before_the_next_periodic_pass() {
+    use agent::sandbox::WorkspaceClone;
+
+    let changes = Changes::new();
+    let store = Rc::new(memory::InMemoryAgentStore::with_changes(changes.clone()));
+    let provider: Rc<dyn Provider> = Rc::new(MemoryProvider::new(Rc::new(sandbox_memory::Provider::new())));
+    let platform = Rc::new(ReportingPlatform::default());
+    let service = Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service");
+    let reconciler = Rc::new(Reconciler::new(
+        store.clone(),
+        Rc::new(service),
+        ProvisioningState::new(changes.clone()),
+    ));
+    let (controller, wakeup) = Controller::new(store.clone(), reconciler, NO_BACKGROUND_PASSES, Rc::new(|_, _| {}));
+    let task = tokio::task::spawn_local(controller.run());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let workspace = async || {
+        let status = store.get_by_name("worker").await.expect("Agent").agent.status;
+        status
+            .conditions
+            .iter()
+            .find(|condition| condition.kind == Condition::WORKSPACE)
+            .map(|condition| (condition.status, condition.reason.clone()))
+    };
+
+    // Held to the end, since the controller stops once no one can wake it.
+    let convergence = Convergence::new(wakeup, store.clone(), changes);
+    platform.set_up.borrow_mut().workspace = Some(WorkspaceClone::Cloning);
+    convergence
+        .converge("worker", WaitPolicy::UntilConverged)
+        .await
+        .expect("the agent is ready while it clones");
+    assert_eq!(workspace().await, Some((ConditionStatus::Unknown, "Cloning".into())));
+
+    platform.set_up.borrow_mut().workspace = Some(WorkspaceClone::Failed);
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert_eq!(
+        workspace().await,
+        Some((ConditionStatus::False, "CloneFailed".into())),
+        "the failed clone shows before the periodic pass, {NO_BACKGROUND_PASSES:?} after the last"
+    );
+
+    let passes = platform.passes.get();
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert_eq!(
+        platform.passes.get(),
+        passes,
+        "an agent whose clone has ended waits for the periodic pass again"
+    );
+    assert!(!task.is_finished(), "the controller still runs");
+    task.abort();
+}
+
+/// A pass that starts before a recheck is due, such as the one `agentctl github login` wakes, replaces it, so an
+/// agent whose clone that pass saw end is not set up once more for nothing.
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_pass_that_starts_before_a_workspace_recheck_replaces_it() {
+    use agent::sandbox::WorkspaceClone;
+
+    let changes = Changes::new();
+    let store = Rc::new(memory::InMemoryAgentStore::with_changes(changes.clone()));
+    let provider: Rc<dyn Provider> = Rc::new(MemoryProvider::new(Rc::new(sandbox_memory::Provider::new())));
+    let platform = Rc::new(ReportingPlatform::default());
+    let service = Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service");
+    let reconciler = Rc::new(Reconciler::new(
+        store.clone(),
+        Rc::new(service),
+        ProvisioningState::new(changes.clone()),
+    ));
+    let (controller, wakeup) = Controller::new(store.clone(), reconciler, NO_BACKGROUND_PASSES, Rc::new(|_, _| {}));
+    let task = tokio::task::spawn_local(controller.run());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let convergence = Convergence::new(wakeup, store.clone(), changes);
+    platform.set_up.borrow_mut().workspace = Some(WorkspaceClone::Cloning);
+    convergence
+        .converge("worker", WaitPolicy::UntilConverged)
+        .await
+        .expect("the agent is ready while it clones");
+
+    platform.set_up.borrow_mut().workspace = Some(WorkspaceClone::Cloned);
+    convergence
+        .converge("worker", WaitPolicy::FirstPass)
+        .await
+        .expect("a pass before the recheck is due");
+    let passes = platform.passes.get();
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert_eq!(
+        platform.passes.get(),
+        passes,
+        "the recheck the earlier pass asked for was replaced"
+    );
+    task.abort();
 }
 
 /// The skills setup placed are recorded with the sandbox they are in, for the next pass to remove those the agent no
@@ -2502,6 +3104,72 @@ async fn execution_target_waits_for_agent_convergence() {
     fixture.task.abort();
 }
 
+/// The `Ready` and `SandboxReady` conditions after one pass whose sandbox fails with a guest I/O
+/// error while the host filesystem holding it has `disk`.
+async fn conditions_after_an_io_error(disk: DiskSpace) -> Vec<(String, String, String)> {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let control_plane = ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()));
+    let provider = PlannedProvider::new(
+        Rc::new(sandbox_memory::Provider::new()),
+        [PlannedFailure::Transient(
+            "sandbox fs error: open: I/O error (os error 5)".into(),
+        )],
+    )
+    .with_host_disk(disk);
+    let reconciler = reconciler(store.clone(), Rc::new(provider));
+    control_plane.apply(apply_request("worker")).await.expect("apply");
+    let id = store.get_by_name("worker").await.expect("stored agent").id;
+    reconciler.reconcile(id).await.expect_err("the sandbox fails");
+    store
+        .get(id)
+        .await
+        .expect("stored agent")
+        .agent
+        .status
+        .conditions
+        .into_iter()
+        .filter(|condition| [Condition::READY, Condition::SANDBOX_READY].contains(&condition.kind.as_str()))
+        .map(|condition| (condition.kind, condition.reason, condition.message))
+        .collect()
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_failure_while_the_host_disk_is_full_names_the_full_disk() {
+    const GIB: u64 = 1 << 30;
+    let error = "sandbox fs error: open: I/O error (os error 5)";
+
+    let full = conditions_after_an_io_error(DiskSpace {
+        available: 512 << 20,
+        total: 934 * GIB,
+    })
+    .await;
+    assert_eq!(full.len(), 2, "{full:?}");
+    for (kind, reason, message) in &full {
+        assert_eq!(reason, Condition::REASON_HOST_DISK_FULL, "{kind}");
+        assert!(message.contains("512.0 MiB of 934.0 GiB free"), "{kind}: {message}");
+        assert!(message.ends_with(error), "{kind} keeps the original error: {message}");
+    }
+
+    let ample = conditions_after_an_io_error(DiskSpace {
+        available: 200 * GIB,
+        total: 934 * GIB,
+    })
+    .await;
+    let reasons = ample
+        .iter()
+        .map(|(kind, reason, _)| (kind.as_str(), reason.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reasons,
+        [("Ready", "SandboxReconcileFailed"), ("SandboxReady", "ReconcileFailed")],
+        "an I/O error alone does not mean the disk is full"
+    );
+    for (kind, _, message) in &ample {
+        assert!(!message.contains("full"), "{kind}: {message}");
+        assert!(message.ends_with(error), "{kind}: {message}");
+    }
+}
+
 #[tokio::test(flavor = "local")]
 async fn an_invalid_failure_fails_the_wait_immediately() {
     let fixture = waiting(
@@ -2982,6 +3650,7 @@ struct Stalling {
     store: Rc<memory::InMemoryAgentStore>,
     backend: Rc<sandbox_memory::Provider>,
     platform: Rc<StallingPlatform>,
+    sandboxes: Rc<Service>,
     reconciler: Rc<Reconciler>,
     id: AgentId,
 }
@@ -2993,7 +3662,11 @@ async fn stalling(changes: Changes) -> Stalling {
     let platform = Rc::new(StallingPlatform::default());
     let sandboxes =
         Rc::new(Service::new([provider], [platform.clone() as Rc<dyn PlatformAdapter>]).expect("Sandbox service"));
-    let reconciler = Rc::new(Reconciler::new(store.clone(), sandboxes, ProvisioningState::default()));
+    let reconciler = Rc::new(Reconciler::new(
+        store.clone(),
+        sandboxes.clone(),
+        ProvisioningState::default(),
+    ));
     ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default()))
         .apply(apply_request("worker"))
         .await
@@ -3003,6 +3676,7 @@ async fn stalling(changes: Changes) -> Stalling {
         store,
         backend,
         platform,
+        sandboxes,
         reconciler,
         id,
     }
@@ -3099,6 +3773,32 @@ async fn a_stalled_guest_ends_setup_and_its_agent_reports_it_unresponsive() {
     assert_eq!(
         (responsive.status, responsive.reason.as_str()),
         (ConditionStatus::True, "HeartbeatAdvancing")
+    );
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn work_on_an_opened_sandbox_runs_long_after_the_last_pass_while_the_guest_beats() {
+    let fixture = stalling(Changes::new()).await;
+    fixture.reconciler.reconcile(fixture.id).await.expect("first pass");
+    fixture.beat(1).await;
+    fixture
+        .reconciler
+        .reconcile(fixture.id)
+        .await
+        .expect("pass that sees the heartbeat");
+    tokio::time::advance(UNRESPONSIVE_AFTER * 4).await;
+    fixture.beat(2).await;
+
+    let record = fixture.record().await;
+    let sandbox = fixture.sandboxes.open(&record).await.expect("open");
+    let result = fixture
+        .sandboxes
+        .guard_guest(&record, &sandbox.snapshot().id, async { Ok(()) })
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "the heartbeat open saw has advanced, so the guest is not stalled: {result:?}"
     );
 }
 
@@ -4407,4 +5107,254 @@ async fn a_delete_just_before_a_restart_starts_the_agent_keeps_it_from_booting_a
         sandbox::SandboxState::Stopped,
         "the Starting write fails, so the pass the delete woke releases it instead"
     );
+}
+
+fn with_direct_root(mut request: agent::control_plane::ApplyRequest) -> agent::control_plane::ApplyRequest {
+    request.agent.spec.sandbox.resources.root_filesystem =
+        RootFilesystem::direct("4Gi".parse().expect("test root filesystem"));
+    request
+}
+
+fn is_trim(spec: &sandbox::execution::ExecutionSpec) -> bool {
+    *spec
+        == sandbox::execution::ExecutionSpec::command(
+            SandboxPath::new("/bin/sh"),
+            ["-c".to_owned(), agent::sandbox::TRIM_SCRIPT.to_owned()],
+        )
+}
+
+fn trims(backend: &sandbox_memory::Provider) -> usize {
+    backend.execution_specs().iter().filter(|spec| is_trim(spec)).count()
+}
+
+/// A store and sandboxes with a trimmer running over them.
+fn trimming() -> (Fixture, tokio::task::JoinHandle<()>) {
+    let store = Rc::new(memory::InMemoryAgentStore::new());
+    let backend = Rc::new(sandbox_memory::Provider::new());
+    let sandboxes = sandbox_service(Rc::new(MemoryProvider::new(backend.clone())));
+    let fixture = Fixture {
+        control_plane: ControlPlane::new(store.clone(), Rc::new(NotificationCounter::default())),
+        reconciler: Reconciler::new(store.clone(), sandboxes.clone(), ProvisioningState::default()),
+        store: store.clone(),
+        backend,
+    };
+    let trimmer = tokio::task::spawn_local(agent::sandbox::Trimmer::new(store, sandboxes).run());
+    (fixture, trimmer)
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_running_agent_with_a_direct_root_has_it_trimmed_periodically() {
+    let (fixture, trimmer) = trimming();
+    for name in ["running", "stopped"] {
+        fixture
+            .control_plane
+            .apply(with_direct_root(apply_request(name)))
+            .await
+            .expect("apply");
+        reconcile(&fixture, name).await;
+    }
+    fixture
+        .control_plane
+        .apply(apply_request("layered"))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "layered").await;
+    fixture
+        .control_plane
+        .set_run_state("stopped", agent::RunState::Stopped)
+        .await
+        .expect("stop");
+    reconcile(&fixture, "stopped").await;
+
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL.saturating_sub(Duration::from_secs(1))).await;
+    assert_eq!(trims(&fixture.backend), 0, "nothing is trimmed before the interval");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        trims(&fixture.backend),
+        1,
+        "only the running agent with a direct root is trimmed"
+    );
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL).await;
+    assert_eq!(trims(&fixture.backend), 2, "and again after each interval");
+    trimmer.abort();
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_guest_without_discard_is_not_trimmed_again() {
+    let (fixture, trimmer) = trimming();
+    fixture
+        .control_plane
+        .apply(with_direct_root(apply_request("worker")))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "worker").await;
+    fixture.backend.queue_execution_events_matching(
+        is_trim,
+        vec![
+            sandbox::execution::ExecutionEvent::Started { process_id: None },
+            sandbox::execution::ExecutionEvent::Stderr("fstrim: /: the discard operation is not supported\n".into()),
+            sandbox::execution::ExecutionEvent::Exited(sandbox::execution::ExitStatus { code: 1 }),
+        ],
+    );
+
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL * 3 + Duration::from_secs(1)).await;
+
+    assert_eq!(trims(&fixture.backend), 1, "the guest is asked once");
+    assert!(
+        stored(&fixture, "worker").await.agent.status.is_ready(),
+        "the agent works without trimming"
+    );
+    trimmer.abort();
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_guest_whose_user_cannot_become_root_is_not_trimmed_again() {
+    let (fixture, trimmer) = trimming();
+    fixture
+        .control_plane
+        .apply(with_direct_root(apply_request("worker")))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "worker").await;
+    fixture.backend.queue_execution_events_matching(
+        is_trim,
+        vec![
+            sandbox::execution::ExecutionEvent::Started { process_id: None },
+            sandbox::execution::ExecutionEvent::Stderr(
+                "the guest's user is not root and cannot use sudo without a password\n".into(),
+            ),
+            sandbox::execution::ExecutionEvent::Exited(sandbox::execution::ExitStatus { code: 126 }),
+        ],
+    );
+
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL * 3 + Duration::from_secs(1)).await;
+
+    assert_eq!(trims(&fixture.backend), 1, "the guest is asked once");
+    trimmer.abort();
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_trim_the_guest_may_not_run_for_another_reason_is_tried_again() {
+    let (fixture, trimmer) = trimming();
+    fixture
+        .control_plane
+        .apply(with_direct_root(apply_request("worker")))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "worker").await;
+    // The shell's own exit status when it may not run a program, as on a `noexec` mount.
+    fixture.backend.queue_execution_events_matching(
+        is_trim,
+        vec![
+            sandbox::execution::ExecutionEvent::Started { process_id: None },
+            sandbox::execution::ExecutionEvent::Stderr(
+                "/bin/sh: 3: exec: /usr/sbin/fstrim: Permission denied\n".into(),
+            ),
+            sandbox::execution::ExecutionEvent::Exited(sandbox::execution::ExitStatus { code: 126 }),
+        ],
+    );
+
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL * 3 + Duration::from_secs(1)).await;
+
+    assert_eq!(trims(&fixture.backend), 3, "the guest is asked at every interval");
+    trimmer.abort();
+}
+
+/// Runs the trim script with `id`, `fstrim` and `sudo` replaced by stand-ins, as the user `uid`
+/// whose `sudo -n true` exits with `sudo_status`. Returns the exit status, the error output and the
+/// commands the stand-ins were run as.
+#[cfg(unix)]
+fn run_trim_script(uid: u32, sudo_status: i32) -> (Option<i32>, String, String) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let log = directory.path().join("log");
+    for (name, body) in [
+        ("id", "echo \"$STUB_UID\""),
+        ("fstrim", "echo \"fstrim $*\" >> \"$STUB_LOG\""),
+        (
+            "sudo",
+            "if [ \"$2\" = true ]; then exit \"$STUB_SUDO_STATUS\"; fi\necho \"sudo $1 ${2##*/} $3\" >> \"$STUB_LOG\"",
+        ),
+    ] {
+        let path = directory.path().join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("stand-in");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("executable stand-in");
+    }
+    let output = std::process::Command::new("/bin/sh")
+        .args(["-c", agent::sandbox::TRIM_SCRIPT])
+        .env_clear()
+        .env("PATH", directory.path())
+        .env("STUB_UID", uid.to_string())
+        .env("STUB_SUDO_STATUS", sudo_status.to_string())
+        .env("STUB_LOG", &log)
+        .output()
+        .expect("shell");
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        std::fs::read_to_string(&log).unwrap_or_default(),
+    )
+}
+
+/// An execution runs as the image's user, and only root may trim.
+#[cfg(unix)]
+#[test]
+fn a_trim_goes_through_sudo_unless_the_guest_user_is_root() {
+    assert_eq!(run_trim_script(0, 1), (Some(0), String::new(), "fstrim /\n".to_owned()));
+    assert_eq!(
+        run_trim_script(1000, 0),
+        (Some(0), String::new(), "sudo -n fstrim /\n".to_owned())
+    );
+    let (status, stderr, ran) = run_trim_script(1000, 1);
+    assert_eq!(status, Some(126));
+    assert!(stderr.contains("cannot use sudo without a password"), "{stderr}");
+    assert_eq!(ran, "", "nothing is trimmed");
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_guest_that_beats_is_trimmed_long_after_its_last_reconcile() {
+    let (fixture, trimmer) = trimming();
+    fixture
+        .control_plane
+        .apply(with_direct_root(apply_request("worker")))
+        .await
+        .expect("apply");
+    reconcile(&fixture, "worker").await;
+    let sandbox = stored(&fixture, "worker")
+        .await
+        .agent
+        .status
+        .sandbox
+        .and_then(|assignment| assignment.id().cloned())
+        .expect("materialized sandbox");
+    fixture
+        .backend
+        .set_guest_heartbeat(&sandbox, Some(GuestHeartbeat::new(1)))
+        .expect("heartbeat should be set");
+    // The last pass records the heartbeat, long before the trim.
+    reconcile(&fixture, "worker").await;
+    let beating = tokio::task::spawn_local({
+        let backend = fixture.backend.clone();
+        async move {
+            let mut sequence = 1;
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                sequence += 1;
+                backend
+                    .set_guest_heartbeat(&sandbox, Some(GuestHeartbeat::new(sequence)))
+                    .expect("heartbeat should be set");
+            }
+        }
+    });
+
+    tokio::time::sleep(agent::sandbox::TRIM_INTERVAL + Duration::from_secs(1)).await;
+
+    assert_eq!(
+        trims(&fixture.backend),
+        1,
+        "a guest whose heartbeat advances is trimmed, however old the last pass is"
+    );
+    beating.abort();
+    trimmer.abort();
 }

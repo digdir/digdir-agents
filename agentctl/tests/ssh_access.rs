@@ -13,6 +13,7 @@ use agent::{
 use sandbox::{
     EnsureSandboxRequest, Platform, SandboxHandle, SandboxPath, SandboxService,
     execution::{ExecutionEvent, ExecutionSpec, ExitStatus, Program},
+    init::InitSystem,
     memory,
 };
 use tempfile::TempDir;
@@ -139,7 +140,11 @@ impl Fixture {
     /// The `ProxyCommand` the generated configuration gives `agent`, which names this home. Its
     /// words are quoted for this host's shell, with `%` doubled for OpenSSH.
     fn proxy_command(&self, agent: &str) -> String {
-        let shell = agent::ssh::CommandShell::host();
+        self.proxy_command_for(agent, agent::ssh::CommandShell::host())
+    }
+
+    /// [`Self::proxy_command`] with its words quoted for `shell`.
+    fn proxy_command_for(&self, agent: &str, shell: agent::ssh::CommandShell) -> String {
         format!(
             "{} --home {} ssh-proxy agent/{agent}",
             agent::ssh::shell_word(AGENTCTL, shell).replace('%', "%%"),
@@ -148,8 +153,13 @@ impl Fixture {
     }
 
     fn new() -> Self {
+        Self::in_home("agent-home")
+    }
+
+    /// A fixture whose control-plane home is the folder `name`.
+    fn in_home(name: &str) -> Self {
         let directory = TempDir::new().expect("temporary directory");
-        let home = ControlPlaneHome::resolve(Some(&directory.path().join("agent-home"))).expect("home");
+        let home = ControlPlaneHome::resolve(Some(&directory.path().join(name))).expect("home");
         home.prepare().expect("prepare home");
         let store = Rc::new(InMemoryAgentStore::new());
         let keys = Rc::new(InMemoryHostKeyStore::new());
@@ -371,6 +381,58 @@ async fn an_image_without_systemd_support_fails_permanently() {
     }
 }
 
+/// An agent whose image's init boots the guest, as an image providing systemd needs.
+const fn image_init(mut record: AgentRecord) -> AgentRecord {
+    record.agent.spec.sandbox.init_system = InitSystem::Image;
+    record
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_guest_still_starting_systemd_gets_access_once_systemd_runs() {
+    let fixture = Fixture::new();
+    let record = image_init(record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", true));
+    fixture.store(&record, 0).await;
+    let sandbox = fixture.sandbox(&record).await;
+    // Setup can run after the image's init has become PID 1 but before systemd marks itself running.
+    fixture
+        .backend
+        .queue_execution_events_matching(is_systemd_running_check, exited(1));
+    queue_valid_environment_policy(&fixture.backend);
+
+    assert!(
+        fixture
+            .access
+            .reconcile(&record, &sandbox)
+            .await
+            .expect("access once systemd runs")
+    );
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn an_image_whose_init_never_becomes_systemd_fails_permanently() {
+    let fixture = Fixture::new();
+    let record = image_init(record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", true));
+    fixture.store(&record, 0).await;
+    let sandbox = fixture.sandbox(&record).await;
+    // More answers than any wait for systemd polls.
+    for _ in 0..1000 {
+        fixture
+            .backend
+            .queue_execution_events_matching(is_systemd_running_check, exited(1));
+    }
+
+    let error = fixture
+        .access
+        .reconcile(&record, &sandbox)
+        .await
+        .expect_err("an init that is not systemd");
+    assert!(
+        matches!(&error, Error::Invalid(message) if message.contains("systemd is not the running init")),
+        "{error}"
+    );
+    assert!(!fixture.keys.contains(record.id));
+}
+
 #[tokio::test(flavor = "local")]
 async fn an_image_that_blocks_the_managed_environment_fails_permanently() {
     for response in [environment(b"permituserenvironment yes\nusepam yes\n"), exited(1)] {
@@ -506,6 +568,31 @@ async fn withdrawing_access_removes_guest_and_host_state() {
     assert!(!fixture.access.reconcile(&record, &sandbox).await.expect("steady"));
 }
 
+/// OpenSSH reads `${NAME}` in `IdentityFile` and `UserKnownHostsFile` as an environment variable
+/// and cannot be given a literal one, so SSH access in such a home fails with the reason
+/// instead of writing a configuration no client can read.
+#[tokio::test(flavor = "local")]
+async fn a_home_openssh_cannot_name_fails_with_the_reason() {
+    let fixture = Fixture::in_home("agent${x}home");
+    let worker = record("worker", "38f41de4-6ff7-4679-ae46-678bc61e4dcb", true);
+    fixture.store(&worker, 0).await;
+    let sandbox = fixture.sandbox(&worker).await;
+    fixture
+        .backend
+        .queue_execution_events_matching(is_server_check, exited(0));
+    queue_valid_environment_policy(&fixture.backend);
+    let error = fixture
+        .access
+        .reconcile(&worker, &sandbox)
+        .await
+        .expect_err("a home with `${`");
+    assert!(
+        error.to_string().contains("reads `${` in a path"),
+        "unexpected error: {error}"
+    );
+    assert!(!fixture.access.home().config_path().exists());
+}
+
 #[tokio::test(flavor = "local")]
 async fn deletion_removes_host_material_and_config_lists_only_active_ssh_agents() {
     let fixture = Fixture::new();
@@ -523,6 +610,41 @@ async fn deletion_removes_host_material_and_config_lists_only_active_ssh_agents(
         .queue_execution_events_matching(is_server_check, exited(0));
     queue_valid_environment_policy(&fixture.backend);
     assert!(fixture.access.reconcile(&worker, &sandbox).await.expect("grant"));
+
+    // Win32-OpenSSH runs a `ProxyCommand` through `CreateProcess` and Git for Windows' `ssh`
+    // through bash, so on Windows the configuration first includes a copy quoted for bash, named
+    // `/c/...` as only the second reads it. The copy includes nothing. Elsewhere there is none.
+    let generated = std::fs::read_to_string(fixture.ssh_home().config_path()).expect("configuration");
+    let msys = std::fs::read_to_string(fixture.ssh_home().msys_config_path()).ok();
+    if cfg!(windows) {
+        let (global, _) = generated.split_once("\nHost ").expect("host blocks");
+        let include = global
+            .lines()
+            .find(|line| line.starts_with("Include "))
+            .expect("an include of the copy before the host blocks");
+        let named = include.trim_start_matches("Include ").trim_matches('"');
+        assert!(
+            named.starts_with('/') && named.ends_with("/agent-home/ssh/config|msys"),
+            "{include}"
+        );
+        let mut expected = generated.replace(&format!("\n{include}\n"), "");
+        for agent in ["reviewer", "worker"] {
+            expected = expected.replace(
+                &format!("ProxyCommand {}\n", fixture.proxy_command(agent)),
+                &format!(
+                    "ProxyCommand {}\n",
+                    fixture.proxy_command_for(agent, ssh::CommandShell::Posix)
+                ),
+            );
+        }
+        assert!(
+            !expected.contains(&fixture.proxy_command("worker")),
+            "the home needs quoting, which differs between the shells"
+        );
+        assert_eq!(msys.as_deref(), Some(expected.as_str()));
+    } else {
+        assert_eq!(msys, None);
+    }
 
     #[cfg(unix)]
     for (agent, listed) in [

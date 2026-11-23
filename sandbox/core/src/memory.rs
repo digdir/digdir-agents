@@ -238,7 +238,8 @@ struct MemoryTerminalEventStream {
     state: Rc<RefCell<BackendState>>,
 }
 
-struct MemoryTerminalControl {
+/// Accepts input to a live memory Execution, and terminal controls for a terminal one.
+struct MemoryExecutionControl {
     execution: (SandboxId, execution::ExecutionId),
     state: Rc<RefCell<BackendState>>,
 }
@@ -282,7 +283,7 @@ impl Stream for MemoryTerminalEventStream {
         Poll::Ready(event.map(Ok))
     }
 }
-impl terminal::TerminalControl for MemoryTerminalControl {
+impl execution::ExecutionInput for MemoryExecutionControl {
     fn write_input(&self, _bytes: bytes::Bytes) -> LocalFuture<'_, Result<(), Error>> {
         Box::pin(async move { self.ensure_live() })
     }
@@ -290,13 +291,15 @@ impl terminal::TerminalControl for MemoryTerminalControl {
     fn close_input(&self) -> LocalFuture<'_, Result<(), Error>> {
         Box::pin(async move { self.ensure_live() })
     }
+}
 
+impl terminal::TerminalControl for MemoryExecutionControl {
     fn resize(&self, _size: terminal::TerminalSize) -> LocalFuture<'_, Result<(), Error>> {
         Box::pin(async move { self.ensure_live() })
     }
 }
 
-impl MemoryTerminalControl {
+impl MemoryExecutionControl {
     fn ensure_live(&self) -> Result<(), Error> {
         if self.state.borrow().executions.contains(&self.execution) {
             Ok(())
@@ -438,6 +441,20 @@ impl SandboxBackend for Provider {
         })
     }
 
+    /// An in-memory root filesystem takes no host storage.
+    fn root_filesystem_usage<'a>(
+        &'a self,
+        id: &'a SandboxId,
+    ) -> LocalFuture<'a, Result<crate::RootFilesystemUsage, Error>> {
+        Box::pin(async move {
+            let sandbox = self.inspect(id).await?;
+            Ok(crate::RootFilesystemUsage::new(
+                0,
+                sandbox.resources.root_filesystem().capacity().bytes(),
+            ))
+        })
+    }
+
     fn start<'a>(&'a self, id: &'a SandboxId) -> PendingOperation<'a, ()> {
         PendingOperation::run(move |_progress| Box::pin(async move { self.set_state(id, SandboxState::Running) }))
     }
@@ -509,6 +526,7 @@ impl SandboxBackend for Provider {
         request: execution::StartExecutionRequest,
     ) -> LocalFuture<'a, Result<execution::StartedExecution, Error>> {
         Box::pin(async move {
+            let pipes_input = request.pipes_input();
             let (id, spec) = request.into_parts();
             self.ensure_running(sandbox_id)?;
             let mut storage = self.state.borrow_mut();
@@ -530,8 +548,16 @@ impl SandboxBackend for Provider {
                     ]
                 });
 
+            let input = pipes_input.then(|| {
+                Rc::new(MemoryExecutionControl {
+                    execution: execution_key.clone(),
+                    state: self.state.clone(),
+                }) as Rc<dyn execution::ExecutionInput>
+            });
+
             Ok(execution::StartedExecution {
                 id,
+                input,
                 events: Box::pin(MemoryExecutionEventStream {
                     events: events.into(),
                     execution: Some(execution_key),
@@ -558,7 +584,7 @@ impl SandboxBackend for Provider {
                     terminal::TerminalEvent::Exited(execution::ExitStatus { code: 0 }),
                 ]
             });
-            let control = Rc::new(MemoryTerminalControl {
+            let control = Rc::new(MemoryExecutionControl {
                 execution: execution_key.clone(),
                 state: self.state.clone(),
             });

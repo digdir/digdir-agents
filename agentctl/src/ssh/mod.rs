@@ -36,8 +36,9 @@ use crate::{
 };
 
 pub use client_config::{
-    CommandShell, HostEntry, IncludeOutcome, directory_word, install_include, remove_known_host, render_config,
-    render_include, render_path, render_proxy_command, resolves_through_agentctl, shell_word, upsert_known_host,
+    CommandShell, HostEntry, IncludeOutcome, MSYS_CONFIG, directory_word, install_include, remove_known_host,
+    render_config, render_include, render_path, render_proxy_command, resolves_through_agentctl, shell_word,
+    upsert_known_host,
 };
 pub use keys::KeyPair;
 
@@ -83,6 +84,14 @@ impl SshHome {
         self.0.join("config")
     }
 
+    /// Returns the copy of the generated configuration for the MSYS build of OpenSSH that Git for
+    /// Windows ships, whose `ProxyCommand` is quoted for bash. It is written on Windows only, where
+    /// the generated configuration includes it for that client.
+    #[must_use]
+    pub fn msys_config_path(&self) -> PathBuf {
+        self.0.join(MSYS_CONFIG)
+    }
+
     /// Returns the `known_hosts` file pre-seeded with every agent's host key.
     #[must_use]
     pub fn known_hosts_path(&self) -> PathBuf {
@@ -116,6 +125,8 @@ pub struct UserInclude {
     pub user_config: PathBuf,
     /// The complete `Include` line.
     pub line: String,
+    /// The lines earlier versions wrote for the same configuration, which installing removes.
+    pub earlier: Vec<String>,
 }
 
 impl UserInclude {
@@ -127,19 +138,22 @@ impl UserInclude {
     pub fn for_home(home: &ControlPlaneHome) -> Result<Self, Error> {
         let user_home = crate::local::home::user_home_directory()
             .ok_or_else(|| Error::Invalid("the user home directory is not set (HOME or USERPROFILE)".into()))?;
+        let config = SshHome::new(home).config_path();
         Ok(Self {
             user_config: user_home.join(".ssh").join("config"),
-            line: render_include(&SshHome::new(home).config_path(), Some(&user_home)),
+            line: render_include(&config, Some(&user_home)),
+            earlier: client_config::earlier_includes(&config, Some(&user_home)),
         })
     }
 
-    /// Adds the line at the top of the user's configuration unless it is there.
+    /// Adds the line at the top of the user's configuration unless it is there, and removes the
+    /// ones earlier versions wrote for the same configuration.
     ///
     /// # Errors
     ///
     /// Returns an error when the configuration cannot be read or written.
     pub fn install(&self) -> Result<IncludeOutcome, Error> {
-        install_include(&self.user_config, &self.line)
+        client_config::replace_include(&self.user_config, &self.line, &self.earlier)
     }
 }
 
@@ -380,14 +394,41 @@ impl Access {
         self.rewrite_config().await
     }
 
-    /// Rewrites the generated client configuration from every active agent with SSH access.
+    /// Rewrites the generated client configuration from every active agent with SSH access, and on
+    /// Windows its copy for the MSYS build of OpenSSH, which the configuration includes and which
+    /// differs only in the shell its `ProxyCommand`s are quoted for.
     async fn rewrite_config(&self) -> Result<(), Error> {
-        let mut entries = self
+        let mut records: Vec<AgentRecord> = self
             .agents
             .list()
             .await?
             .into_iter()
             .filter(|record| record.agent.metadata.deletion_timestamp.is_none() && record.agent.spec.ssh_access())
+            .collect();
+        records.sort_by(|left, right| left.agent.metadata.name.cmp(&right.agent.metadata.name));
+        if !records.is_empty() {
+            client_config::require_nameable(&self.home.known_hosts_path(), self.user_home.as_deref())?;
+        }
+        prepare_directory(self.home.root())?;
+        let msys_config = self.home.msys_config_path();
+        if cfg!(windows) {
+            self.write_config(&records, &msys_config, CommandShell::Posix, None)?;
+        }
+        let chained = cfg!(windows).then_some(msys_config.as_path());
+        self.write_config(&records, &self.home.config_path(), CommandShell::host(), chained)
+    }
+
+    /// Writes one generated client configuration, with each `ProxyCommand` quoted for `shell`,
+    /// which first includes `msys_config` for Git for Windows' `ssh` when it is given.
+    fn write_config(
+        &self,
+        records: &[AgentRecord],
+        path: &Path,
+        shell: CommandShell,
+        msys_config: Option<&Path>,
+    ) -> Result<(), Error> {
+        let entries = records
+            .iter()
             .map(|record| {
                 Ok(HostEntry {
                     alias: alias(&record.agent.metadata.name),
@@ -396,7 +437,7 @@ impl Access {
                         &self.agentctl,
                         &self.control_home,
                         &record.agent.metadata.name,
-                        CommandShell::host(),
+                        shell,
                     )?,
                     host_key_alias: host_key_alias(record.id),
                     identity_file: self.home.identity_path(record.id),
@@ -404,10 +445,8 @@ impl Access {
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        entries.sort_by(|left, right| left.alias.cmp(&right.alias));
-        prepare_directory(self.home.root())?;
-        let text = render_config(&entries, self.user_home.as_deref());
-        client_config::write_private_file(&self.home.config_path(), text.as_bytes())
+        let text = render_config(&entries, msys_config, self.user_home.as_deref());
+        client_config::write_private_file(path, text.as_bytes())
     }
 }
 

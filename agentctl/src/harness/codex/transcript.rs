@@ -2,10 +2,10 @@
 //!
 //! A rollout records `event_msg` lines that delimit turns (`task_started`,
 //! `task_complete`, `turn_aborted`) and `response_item` lines with the model
-//! conversation. Codex injects context as `user`-role messages ahead of the
-//! operator's prompt (AGENTS.md, environment details), so a user message is
-//! never a turn boundary here: the turn markers are, and within a turn the last
-//! user message before the model's first output is the operator's prompt.
+//! conversation. Codex also writes text of its own as `user`-role messages, such
+//! as AGENTS.md and environment context ahead of the prompt, or a note after an
+//! interruption, so a user message is never a turn boundary here: the turn
+//! markers are. See [`UserContent`] for how operator input is told apart.
 
 use std::collections::HashMap;
 
@@ -18,6 +18,67 @@ use crate::{
 
 /// Codex prefixes a bundled context-and-request user message with this marker.
 const REQUEST_MARKER: &str = "## My request for Codex:";
+
+/// A `user`-role message, by who wrote it.
+///
+/// Codex 0.162 and later label each content item with where it came from, in
+/// `content_item_kinds`: a `user.` kind for what the operator sent,
+/// `shell.user_command` for a shell command they ran with `!`, and kinds such
+/// as `agents_md.instructions` or `generic.turn_aborted` for what Codex wrote.
+/// What Codex writes without a kind of its own, such as the results of a
+/// review, it labels `unknown`. Rollouts from older Codex have no labels, so
+/// their operator input is told apart by position: within a turn, the last
+/// user message before the model's first output is the prompt, and earlier ones
+/// are context.
+enum UserContent {
+    /// Labelled operator input.
+    Operator(String),
+    /// Labelled text that Codex wrote itself.
+    Inserted,
+    /// A message without labels.
+    Unlabelled(String),
+}
+
+impl UserContent {
+    fn of(payload: &Value) -> Self {
+        let parts = content(payload);
+        let Some(kinds) = payload
+            .pointer("/internal_chat_message_metadata_passthrough/content_item_kinds")
+            .and_then(Value::as_array)
+        else {
+            return Self::Unlabelled(text(parts.iter()));
+        };
+        let operator = parts
+            .iter()
+            .zip(kinds)
+            .filter(|(_, kind)| kind.as_str().is_some_and(is_operator_kind))
+            .map(|(part, _)| part)
+            .collect::<Vec<_>>();
+        if operator.is_empty() {
+            Self::Inserted
+        } else {
+            Self::Operator(text(operator.into_iter()))
+        }
+    }
+}
+
+/// Whether a content item kind marks what the operator sent or ran.
+fn is_operator_kind(kind: &str) -> bool {
+    kind.starts_with("user.") || kind == "shell.user_command"
+}
+
+fn content(message: &Value) -> &[Value] {
+    message
+        .get("content")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
+}
+
+fn text<'a>(parts: impl Iterator<Item = &'a Value>) -> String {
+    parts
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect()
+}
 
 // Codex 0.153 keeps success as internal metadata. Command results persist their
 // exit code in the tool's output header instead (core/src/tools/{mod,context}.rs).
@@ -89,9 +150,8 @@ pub(crate) fn trim_partial(bytes: &[u8]) -> &[u8] {
 #[derive(Default)]
 struct Builder {
     turns: Vec<Turn>,
-    /// Candidate prompt: the latest user message seen before the model's first
-    /// output in the current turn. Earlier candidates were injected context.
-    pending_prompt: Option<String>,
+    /// The operator's prompts in the current turn, until the model's first output.
+    pending_prompts: Vec<String>,
     /// Whether the current turn has recorded model output yet.
     answered: bool,
     /// Location of each recorded tool call by `call_id`.
@@ -145,29 +205,20 @@ impl Builder {
 
     fn push_item(&mut self, payload: &Value) {
         match payload.get("type").and_then(Value::as_str) {
-            Some("message") => {
-                let text = payload
-                    .get("content")
-                    .and_then(Value::as_array)
-                    .map(|parts| {
-                        parts
-                            .iter()
-                            .filter_map(|part| part.get("text").and_then(Value::as_str))
-                            .collect::<String>()
-                    })
-                    .unwrap_or_default();
-                match payload.get("role").and_then(Value::as_str) {
-                    Some("user") => self.push_user(text),
-                    Some("assistant") if !text.is_empty() => {
+            Some("message") => match payload.get("role").and_then(Value::as_str) {
+                Some("user") => self.push_user(UserContent::of(payload)),
+                Some("assistant") => {
+                    let text = text(content(payload).iter());
+                    if !text.is_empty() {
                         self.push_output(Message {
                             role: Role::Assistant,
                             parts: vec![Part::Text { text }],
                         });
                     }
-                    // Developer and system messages are harness context, not conversation.
-                    _ => {}
                 }
-            }
+                // Developer and system messages are harness context, not conversation.
+                _ => {}
+            },
             Some("function_call" | "custom_tool_call") => {
                 let Some(name) = payload.get("name").and_then(Value::as_str) else {
                     return;
@@ -177,6 +228,7 @@ impl Builder {
                     parts: vec![Part::ToolCall {
                         name: name.to_owned(),
                         failed: false,
+                        questions: Vec::new(),
                     }],
                 });
                 if let Some(call_id) = payload.get("call_id").and_then(Value::as_str) {
@@ -186,7 +238,7 @@ impl Builder {
             Some("function_call_output" | "custom_tool_call_output") => {
                 let nested_failed = self.pending_nested_command_failed.unwrap_or(false);
                 let mut consumed_nested_result = false;
-                if let Some(Part::ToolCall { name, failed }) = self.tool_part(payload) {
+                if let Some(Part::ToolCall { name, failed, .. }) = self.tool_part(payload) {
                     *failed |= command_failed(name, payload.get("output"));
                     if name == "exec" {
                         *failed |= nested_failed;
@@ -219,6 +271,7 @@ impl Builder {
         if let Some(Part::ToolCall {
             name,
             failed: tool_failed,
+            ..
         }) = self.tool_part_by_call_id(id)
         {
             if is_command_tool(name) {
@@ -235,13 +288,24 @@ impl Builder {
         }
     }
 
-    fn push_user(&mut self, text: String) {
-        let request = text
-            .strip_prefix("<environment_context>")
-            .and_then(|context| context.split_once("</environment_context>"))
-            .and_then(|(_, suffix)| suffix.trim_start().strip_prefix(REQUEST_MARKER))
-            .map(|request| request.trim().to_owned());
-        let text = request.unwrap_or(text);
+    fn push_user(&mut self, content: UserContent) {
+        let text = match content {
+            UserContent::Operator(text) => text,
+            UserContent::Inserted => return,
+            UserContent::Unlabelled(text) => {
+                let request = text
+                    .strip_prefix("<environment_context>")
+                    .and_then(|context| context.split_once("</environment_context>"))
+                    .and_then(|(_, suffix)| suffix.trim_start().strip_prefix(REQUEST_MARKER))
+                    .map(|request| request.trim().to_owned());
+                let text = request.unwrap_or(text);
+                if !self.answered {
+                    // Without labels, only the last message before output is the prompt.
+                    self.pending_prompts.clear();
+                }
+                text
+            }
+        };
         if self.answered {
             // Operator input injected mid-turn (steering) is conversation.
             self.current_turn().messages.push(Message {
@@ -249,7 +313,7 @@ impl Builder {
                 parts: vec![Part::Text { text }],
             });
         } else {
-            self.pending_prompt = Some(text);
+            self.pending_prompts.push(text);
         }
     }
 
@@ -263,14 +327,18 @@ impl Builder {
         (turn_index, message_index, turn.messages[message_index].parts.len() - 1)
     }
 
-    /// Commits the surviving prompt candidate as the turn's operator message.
+    /// Commits the pending prompts as the turn's operator messages.
     fn flush_prompt(&mut self) {
-        if let Some(text) = self.pending_prompt.take() {
-            self.current_turn().messages.push(Message {
+        if self.pending_prompts.is_empty() {
+            return;
+        }
+        let prompts = std::mem::take(&mut self.pending_prompts);
+        self.current_turn()
+            .messages
+            .extend(prompts.into_iter().map(|text| Message {
                 role: Role::User,
                 parts: vec![Part::Text { text }],
-            });
-        }
+            }));
     }
 
     fn current_turn(&mut self) -> &mut Turn {
@@ -293,6 +361,9 @@ mod tests {
     use super::*;
 
     const FIXTURE: &str = include_str!("../../../tests/fixtures/codex-rollout.jsonl");
+    /// Cut from rollouts that Codex 0.167.0 recorded, whose messages say where each
+    /// content item came from. Its turns come from more than one rollout.
+    const LABELLED_FIXTURE: &str = include_str!("../../../tests/fixtures/codex-0.167-rollout.jsonl");
 
     #[test]
     fn a_bounded_suffix_discards_a_partial_turn() {
@@ -337,6 +408,85 @@ mod tests {
         );
     }
 
+    fn user_messages(turn: &Turn) -> Vec<&str> {
+        turn.messages
+            .iter()
+            .filter(|message| message.role == Role::User)
+            .flat_map(|message| &message.parts)
+            .map(|part| match part {
+                Part::Text { text } => text.as_str(),
+                Part::ToolCall { .. } => panic!("a user message holds text"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn labelled_rollout_shows_every_operator_prompt_and_nothing_codex_inserts() {
+        let turns = parse(LABELLED_FIXTURE.as_bytes()).expect("parse");
+        assert_eq!(
+            turns.iter().map(user_messages).collect::<Vec<_>>(),
+            [
+                // Both prompts were sent before the model's first output.
+                vec![
+                    "Write a story about a lighthouse keeper.",
+                    "Then add one final line: THE-END"
+                ],
+                // Interrupted: Codex adds a `<turn_aborted>` note as a user message.
+                vec!["Run the LONG job."],
+                // The second prompt was steered in after the model's first output.
+                vec!["Run the LONG job again.", "Also say bye."],
+                // A shell command the operator ran with `!` is a turn of its own.
+                vec![
+                    "<user_shell_command>\n<command>\necho bee180-shell\n</command>\n<result>\nExit code: 0\nDuration: \
+                     0.0880 seconds\nOutput:\nbee180-shell\n\n</result>\n</user_shell_command>"
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn text_codex_puts_into_an_operator_message_is_dropped() {
+        // Codex 0.167 puts this text in place of an image it can't process
+        // (core/src/image_preparation.rs).
+        let rollout = concat!(
+            r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":["#,
+            r#"{"type":"input_text","text":"What is in this picture?"},"#,
+            r#"{"type":"input_text","text":"image content omitted because it could not be processed"}],"#,
+            r#""internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text","images.preparation_error"]}}}"#,
+            "\n",
+        );
+        let turns = parse(rollout.as_bytes()).expect("parse");
+        assert_eq!(
+            turns.iter().map(user_messages).collect::<Vec<_>>(),
+            [vec!["What is in this picture?"]]
+        );
+    }
+
+    #[test]
+    fn review_results_codex_writes_are_dropped() {
+        // As Codex 0.167 writes them after `/review`, abridged.
+        let rollout = concat!(
+            r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":["#,
+            r#"{"type":"input_text","text":"<user_action>\n  <context>User initiated a review task.</context>\n  <action>review</action>\n</user_action>"}],"#,
+            r#""internal_chat_message_metadata_passthrough":{"content_item_kinds":["unknown"]}}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"No findings."}]}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
+            "\n",
+        );
+        let turns = parse(rollout.as_bytes()).expect("parse");
+        assert_eq!(
+            turns.iter().map(user_messages).collect::<Vec<_>>(),
+            [Vec::<&str>::new()]
+        );
+        assert_eq!(turns[0].messages.len(), 1, "the review's answer stays");
+    }
+
     #[test]
     fn tool_calls_failures_and_final_message_are_recorded() {
         let turns = parse(FIXTURE.as_bytes()).expect("parse");
@@ -346,7 +496,7 @@ mod tests {
             .iter()
             .flat_map(|message| &message.parts)
             .filter_map(|part| match part {
-                Part::ToolCall { name, failed } => Some((name.as_str(), *failed)),
+                Part::ToolCall { name, failed, .. } => Some((name.as_str(), *failed)),
                 Part::Text { .. } => None,
             })
             .collect::<Vec<_>>();
@@ -435,7 +585,7 @@ mod tests {
             .iter()
             .flat_map(|message| &message.parts)
             .filter_map(|part| match part {
-                Part::ToolCall { name, failed } => Some((name.as_str(), *failed)),
+                Part::ToolCall { name, failed, .. } => Some((name.as_str(), *failed)),
                 Part::Text { .. } => None,
             })
             .collect::<Vec<_>>();
@@ -472,7 +622,7 @@ mod tests {
             .iter()
             .flat_map(|message| &message.parts)
             .filter_map(|part| match part {
-                Part::ToolCall { name, failed } => Some((name.as_str(), *failed)),
+                Part::ToolCall { name, failed, .. } => Some((name.as_str(), *failed)),
                 Part::Text { .. } => None,
             })
             .collect::<Vec<_>>();

@@ -342,15 +342,15 @@ struct DeclaredHarnessSpec {
     kind: Harness,
     #[serde(default)]
     version: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::manifest::null_as_default")]
     login: LoginSet,
     #[serde(default)]
     auth: Option<HarnessAuthMode>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::manifest::null_as_default")]
     optional: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::manifest::null_as_default")]
     default: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::manifest::null_as_default")]
     defaults: ModelSelection,
 }
 

@@ -25,8 +25,8 @@ use super::protocol::{
     METHOD_STOP_NOW, METHOD_VNC_ACCESS, METHOD_VOLUME_APPLY, METHOD_VOLUME_DELETE, METHOD_VOLUME_GET,
     METHOD_VOLUME_LIST, METHOD_VOLUME_MANIFESTS, ManifestListParams, NameParams, PROTOCOL_VERSION, ProgressParams,
     ReadMessage, Request, ResourcesWatchParams, Response, RestartParams, SessionEnsureParams, SessionListParams,
-    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, SignInAgentParams, error_response,
-    read_message,
+    SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, SignInAgentParams, StartParams,
+    error_response, read_message,
 };
 use super::protocol::{
     METHOD_SECRET_LIST, METHOD_SECRET_REMOVE, METHOD_SECRET_SET, SecretRemoveResult, SecretSetParams,
@@ -134,6 +134,11 @@ pub trait AgentApi {
     /// Lists every active agent.
     fn list(&self) -> LocalFuture<'_, Result<Vec<Agent>, Error>>;
 
+    /// The space on the host filesystem holding the agents' disks, as last measured.
+    fn host_disk(&self) -> Option<crate::local::disk::DiskSpace> {
+        None
+    }
+
     /// Resolves an agent from its persisted source directory.
     fn resolve_directory<'a>(
         &'a self,
@@ -146,6 +151,9 @@ pub trait AgentApi {
 
     /// Records whether an agent's sandbox runs; see [`control_plane::ControlPlane::set_run_state`].
     fn set_run_state<'a>(&'a self, name: &'a str, state: crate::RunState) -> LocalFuture<'a, Result<Agent, Error>>;
+
+    /// Records an agent as running; see [`control_plane::ControlPlane::start`].
+    fn start<'a>(&'a self, name: &'a str, allow_low_disk: bool) -> LocalFuture<'a, Result<Agent, Error>>;
 
     /// Stops an agent without letting its guest shut down; see
     /// [`control_plane::ControlPlane::stop_now`].
@@ -209,6 +217,10 @@ impl AgentApi for control_plane::ControlPlane {
         Box::pin(async move { Self::list(self).await })
     }
 
+    fn host_disk(&self) -> Option<crate::local::disk::DiskSpace> {
+        Self::host_disk(self)
+    }
+
     fn resolve_directory<'a>(
         &'a self,
         directory: &'a std::path::Path,
@@ -223,6 +235,10 @@ impl AgentApi for control_plane::ControlPlane {
 
     fn set_run_state<'a>(&'a self, name: &'a str, state: crate::RunState) -> LocalFuture<'a, Result<Agent, Error>> {
         Box::pin(async move { Self::set_run_state(self, name, state).await })
+    }
+
+    fn start<'a>(&'a self, name: &'a str, allow_low_disk: bool) -> LocalFuture<'a, Result<Agent, Error>> {
+        Box::pin(async move { Self::start(self, name, allow_low_disk).await })
     }
 
     fn stop_now<'a>(&'a self, name: &'a str) -> LocalFuture<'a, Result<Agent, Error>> {
@@ -844,10 +860,7 @@ impl Server {
                 self.handle_run_state(request.id, request.params, crate::RunState::Stopped)
                     .await
             }
-            METHOD_START => {
-                self.handle_run_state(request.id, request.params, crate::RunState::Running)
-                    .await
-            }
+            METHOD_START => self.handle_start(request.id, request.params).await,
             METHOD_STOP_NOW => self.handle_stop_now(request.id, request.params).await,
             METHOD_RESTART => self.handle_restart(request.id, request.params).await,
             METHOD_SSH_ACCESS => self.handle_ssh_access(request.id, request.params).await,
@@ -1054,6 +1067,16 @@ impl Server {
         result_response(id, self.agents.stop_now(&params.name).await)
     }
 
+    async fn handle_start(&self, id: u64, value: Value) -> Response {
+        let Some(params) = serde_json::from_value::<StartParams>(value)
+            .ok()
+            .filter(|params| !params.name.is_empty())
+        else {
+            return error_response(id, CODE_INVALID_PARAMS, "name is required");
+        };
+        result_response(id, self.agents.start(&params.name, params.allow_low_disk).await)
+    }
+
     async fn handle_restart(&self, id: u64, value: Value) -> Response {
         let Some(params) = serde_json::from_value::<RestartParams>(value)
             .ok()
@@ -1121,6 +1144,7 @@ impl Server {
                 agents,
                 ephemeral_agents: ephemeral.len(),
                 sessions,
+                host_disk: self.agents.host_disk(),
                 volumes: match &self.volumes {
                     Some(volumes) => volumes.list().await?,
                     None => Vec::new(),

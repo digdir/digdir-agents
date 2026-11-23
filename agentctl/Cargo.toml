@@ -39,6 +39,7 @@ ssh-key.workspace = true
 tar.workspace = true
 thiserror.workspace = true
 time.workspace = true
+toml_edit.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -51,7 +52,11 @@ whoami.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
 win_uds = { version = "0.2.4", features = ["async"] }
 

@@ -162,6 +162,7 @@ pub(crate) async fn prepare(database: &persistence::Database, spec: &Spec) -> Re
                 let setup = github::setup(login, kept.as_ref());
                 prepared.setup.git_identity = prepared.setup.git_identity.take().or(setup.git_identity);
                 prepared.setup.instructions.extend(setup.instructions);
+                prepared.setup.missing_logins.extend(setup.missing_logins);
             }
         }
     }

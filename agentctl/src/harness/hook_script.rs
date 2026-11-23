@@ -209,7 +209,7 @@ impl HookScript<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::HookScript;
     use crate::sessions::ActivityEvent;
 
@@ -345,5 +345,73 @@ mod tests {
         .expect("hook sent a request");
         child.kill().await.expect("stop hook");
         line
+    }
+
+    /// Runs `script` for one harness hook `payload` and returns the report it sends to the
+    /// Platform API, as JSON, or `None` when the hook exits without sending one.
+    pub(in crate::harness) async fn report(script: &str, payload: &serde_json::Value) -> Option<serde_json::Value> {
+        use tokio::io::AsyncWriteExt as _;
+
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let url_file = directory.path().join("platform-api-url");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("listener");
+        let port = listener.local_addr().expect("address").port();
+        std::fs::write(&url_file, format!("http://127.0.0.1:{port}\n")).expect("URL file");
+        let script = script.replacen(
+            &serde_json::to_string(crate::sandbox::platform::PLATFORM_API_URL_FILE).expect("path"),
+            &serde_json::to_string(&url_file).expect("path"),
+            1,
+        );
+        let mut child = start_hook(&script, Some(("token", "session"))).await;
+        let mut stdin = child.stdin.take().expect("stdin");
+        stdin
+            .write_all(payload.to_string().as_bytes())
+            .await
+            .expect("write hook payload");
+        drop(stdin);
+        let body = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                // A connection the hook made before it exited is still queued, so accepting first
+                // never misses a report.
+                tokio::select! {
+                    biased;
+                    accepted = listener.accept() => {
+                        let (stream, _) = accepted.expect("accept");
+                        // An attempt that timed out before its request is retried on a new
+                        // connection.
+                        if let Some(body) = request_body(stream).await {
+                            return Some(body);
+                        }
+                    }
+                    _ = child.wait() => return None,
+                }
+            }
+        })
+        .await
+        .expect("hook reported or exited");
+        child.kill().await.expect("stop hook");
+        Some(serde_json::from_slice(&body?).expect("report JSON"))
+    }
+
+    /// Reads the body of the HTTP request on `stream`, or `None` when it closes before one.
+    async fn request_body(stream: tokio::net::TcpStream) -> Option<Vec<u8>> {
+        use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _};
+
+        let mut reader = tokio::io::BufReader::new(stream);
+        let mut length = None;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).await.ok()?;
+            let line = line.trim_end();
+            if line.is_empty() {
+                break;
+            }
+            if let Some(value) = line.strip_prefix("content-length: ") {
+                length = Some(value.parse().expect("content length"));
+            }
+        }
+        let mut body = vec![0; length?];
+        reader.read_exact(&mut body).await.ok()?;
+        Some(body)
     }
 }

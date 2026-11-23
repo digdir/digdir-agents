@@ -16,8 +16,9 @@ use agent::{
         Server, SessionApi, SshAccessApi, VncAccessApi, VolumeApi,
     },
     control_plane::WaitPolicy,
-    control_plane::{ApplyRequest, ControlPlane, memory::InMemoryAgentStore},
+    control_plane::{ApplyRequest, ControlPlane, HostDisk, memory::InMemoryAgentStore},
     harness::{ImportedAuthentication, LoginName},
+    local::disk::{DiskSpace, LowDiskThreshold},
     resources::Changes,
 };
 use sandbox::LocalFuture;
@@ -28,7 +29,10 @@ use tokio::{
 
 use support::{IgnoreNotifications, agent};
 
-use crate::bundled;
+use crate::{
+    bundled,
+    control_plane::{PlannedProvider, sandbox_service},
+};
 use agent::control_plane::AgentStore as _;
 
 struct FakeAuthentication;
@@ -130,6 +134,7 @@ fn answered_turn(prompt: &str, answer: &str) -> agent::sessions::Turn {
                     agent::sessions::Part::ToolCall {
                         name: "Bash".into(),
                         failed: true,
+                        questions: Vec::new(),
                     },
                     agent::sessions::Part::Text { text: answer.into() },
                 ],
@@ -1243,6 +1248,7 @@ fn request(name: &str) -> ApplyRequest {
         binds: Vec::new(),
         create_only: false,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        allow_low_disk: false,
         agent: agent(name),
     }
 }
@@ -1278,6 +1284,50 @@ async fn client_and_server_exchange_versioned_agent_operations() {
     client.delete("worker").await.expect("delete request");
     let deleting = client.get("worker").await.expect("marked resource");
     assert!(deleting.metadata.deletion_timestamp.is_some());
+}
+
+#[tokio::test(flavor = "local")]
+async fn start_is_refused_while_the_host_disk_is_low_unless_allowed() {
+    const GIB: u64 = 1 << 30;
+    let provider = Rc::new(PlannedProvider::new(Rc::new(sandbox::memory::Provider::new()), []));
+    let host_disk = HostDisk::new(
+        sandbox_service(provider.clone()),
+        LowDiskThreshold::Share(500),
+        Changes::new(),
+    );
+    let fixture = api_with(Rc::new(
+        ControlPlane::new(Rc::new(InMemoryAgentStore::new()), Rc::new(IgnoreNotifications))
+            .with_host_disk(host_disk.clone()),
+    ));
+    let client = &fixture.client;
+    client.apply(request("worker")).await.expect("apply");
+    client
+        .set_run_state("worker", agent::RunState::Stopped)
+        .await
+        .expect("stop");
+    provider.disk.set(Some(DiskSpace {
+        available: GIB,
+        total: 1_000 * GIB,
+    }));
+    host_disk.measure(LowDiskThreshold::Share(500)).await;
+
+    let refused = client
+        .start("worker", false)
+        .await
+        .expect_err("a stopped agent is not started while the host disk is low");
+    let message = refused.to_string();
+    assert!(
+        message.contains("1.0 GiB") && message.contains("--allow-low-disk"),
+        "says what is free and how to start it anyway: {message}"
+    );
+    assert!(client.get("worker").await.expect("get").spec.is_stopped());
+
+    let started = client.start("worker", true).await.expect("start allowed");
+    assert_eq!(started.spec.run_state(), agent::RunState::Running);
+    client
+        .start("worker", false)
+        .await
+        .expect("an agent already running is not refused");
 }
 
 #[tokio::test(flavor = "local")]

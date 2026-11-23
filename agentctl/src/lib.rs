@@ -35,7 +35,7 @@ pub mod vnc;
 pub mod volumes;
 
 pub use control_plane::AgentId;
-pub use controller::{FailureKind, ReconcileFailure};
+pub use controller::{FailureKind, Recheck, ReconcileFailure};
 pub use harness::{Effort, Harness, HarnessAuthMode, HarnessSpec, Model, ModelSelection};
 pub use manifest::{
     API_VERSION, AccessSpec, AccountSpec, Agent, AgentVariant, AgentVariantName, Condition, ConditionStatus,

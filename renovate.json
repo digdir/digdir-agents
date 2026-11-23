@@ -26,5 +26,19 @@
       ],
       "enabled": false
     }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The browser feature's playwright-cli version also decides the Chromium build the base images ship.",
+      "managerFilePatterns": [
+        "/^images/agentctl-base/features/browser/install$/"
+      ],
+      "matchStrings": [
+        "PLAYWRIGHT_CLI_VERSION:-(?<currentValue>[^}]+)}"
+      ],
+      "depNameTemplate": "@playwright/cli",
+      "datasourceTemplate": "npm"
+    }
   ]
 }

@@ -1,13 +1,13 @@
 //! Streaming command execution inside a running sandbox.
 
-use std::{collections::BTreeMap, future::poll_fn, pin::Pin};
+use std::{collections::BTreeMap, future::poll_fn, pin::Pin, rc::Rc};
 
 use bytes::{Bytes, BytesMut};
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{Error, SandboxPath};
+use crate::{Error, LocalFuture, SandboxPath};
 
 /// Identifies a live Execution within a sandbox.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -135,16 +135,33 @@ pub struct StartExecutionRequest {
     id: ExecutionId,
     /// Desired command and process environment.
     spec: ExecutionSpec,
+    /// Whether the caller writes the process's standard input.
+    pipes_input: bool,
 }
 
 impl StartExecutionRequest {
-    /// Creates a request with a freshly assigned Execution identifier.
+    /// Creates a request with a freshly assigned Execution identifier, whose process reads
+    /// end-of-file from standard input at once.
     #[must_use]
     pub fn new(spec: ExecutionSpec) -> Self {
         Self {
             id: ExecutionId::generate(),
             spec,
+            pipes_input: false,
         }
+    }
+
+    /// Lets the caller write the process's standard input, through [`StartedExecution::input`].
+    #[must_use]
+    pub const fn with_input(mut self) -> Self {
+        self.pipes_input = true;
+        self
+    }
+
+    /// Reports whether the caller writes the process's standard input.
+    #[must_use]
+    pub const fn pipes_input(&self) -> bool {
+        self.pipes_input
     }
 
     /// Returns the assigned Execution identifier.
@@ -204,6 +221,15 @@ pub enum ExecutionEvent {
     },
 }
 
+/// Writes the standard input of one live Execution.
+pub trait ExecutionInput {
+    /// Writes raw input bytes, applying backend transport backpressure.
+    fn write_input(&self, bytes: Bytes) -> LocalFuture<'_, Result<(), Error>>;
+
+    /// Closes the input stream and sends end-of-file to the process.
+    fn close_input(&self) -> LocalFuture<'_, Result<(), Error>>;
+}
+
 /// A non-`Send` stream of events from one live Execution.
 pub type ExecutionEventStream = Pin<Box<dyn Stream<Item = Result<ExecutionEvent, Error>>>>;
 
@@ -211,6 +237,9 @@ pub type ExecutionEventStream = Pin<Box<dyn Stream<Item = Result<ExecutionEvent,
 pub struct StartedExecution {
     /// Identifier used for Execution control operations.
     pub id: ExecutionId,
+    /// The process's standard input, when the request asked for it with
+    /// [`StartExecutionRequest::with_input`].
+    pub input: Option<Rc<dyn ExecutionInput>>,
     /// Events emitted until the Execution exits or fails.
     pub events: ExecutionEventStream,
 }

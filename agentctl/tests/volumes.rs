@@ -598,6 +598,7 @@ fn mounting_agent(name: &str, volume: &str) -> ApplyRequest {
         binds: Vec::new(),
         create_only: false,
         allow_exposed_files: std::collections::BTreeSet::new(),
+        allow_low_disk: false,
         agent,
     }
 }
@@ -949,6 +950,7 @@ async fn an_agent_cannot_select_a_secret_file_inside_an_earlier_source_of_a_volu
             binds: Vec::new(),
             create_only: false,
             allow_exposed_files: std::collections::BTreeSet::new(),
+            allow_low_disk: false,
             agent: request,
         })
         .await

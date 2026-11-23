@@ -10,6 +10,13 @@ use crate::Error;
 
 const ENVIRONMENT_VARIABLE: &str = "AGENT_HOME";
 
+/// The most bytes a socket path can have: the size of `sun_path` in a socket address, less the
+/// byte that Rust and socket2 keep for its terminating NUL.
+#[cfg(target_vendor = "apple")]
+const SOCKET_PATH_LIMIT: usize = 103;
+#[cfg(not(target_vendor = "apple"))]
+const SOCKET_PATH_LIMIT: usize = 107;
+
 /// Root of one local agent control plane.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ControlPlaneHome(PathBuf);
@@ -44,6 +51,31 @@ impl ControlPlaneHome {
     #[must_use]
     pub fn socket_path(&self) -> PathBuf {
         self.0.join("run").join("agentd.sock")
+    }
+
+    /// Checks that agentd can listen on [`Self::socket_path`], which a socket address limits in
+    /// length. agentd would otherwise fail to start with an error that does not name the home.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error that names the socket path and the limit when the path is too long.
+    pub fn check_socket_path(&self) -> Result<(), Error> {
+        let path = self.socket_path();
+        let length = path.as_os_str().len();
+        if length <= SOCKET_PATH_LIMIT {
+            return Ok(());
+        }
+        Err(Error::Invalid(format!(
+            "agentd's socket path {} is {length} bytes, too long for agentd to listen on, since this host allows at most {SOCKET_PATH_LIMIT}. Use a home with a shorter path, with --home or {ENVIRONMENT_VARIABLE}",
+            path.display()
+        )))
+    }
+
+    /// Returns the path of agentd's settings, which it reads with
+    /// [`DaemonConfig::load`](super::config::DaemonConfig::load).
+    #[must_use]
+    pub fn config_path(&self) -> PathBuf {
+        self.0.join("agentd.toml")
     }
 
     /// Returns the daemon diagnostic log path used by automatic startup.

@@ -21,6 +21,7 @@ use tokio::io::AsyncReadExt as _;
 static NO_ACCOUNTS: agent::sandbox::AccountSetup = agent::sandbox::AccountSetup {
     git_identity: None,
     instructions: Vec::new(),
+    missing_logins: Vec::new(),
 };
 
 const PLATFORM_API_URL: &str = "http://host.microsandbox.internal:4100";
@@ -171,6 +172,23 @@ async fn linux_setup_configures_only_the_harnesses_preparation_reported() {
     }];
     resource.spec.access = vec![agent::AccessSpec::Ssh {}];
     resource.spec.network.deny = vec!["metadata.google.internal".into()];
+    let bind = |target: &str, read_only: bool, optional: bool| agent::MountSpec::Bind {
+        source: Some(directory.path().to_path_buf()),
+        target: SandboxPath::new(target),
+        read_only,
+        optional,
+    };
+    // Only the folders mounted from the host are listed: not the optional one whose source was missing when the
+    // agent was created, nor storage the sandbox owns.
+    resource.spec.sandbox.mounts = vec![
+        bind("/home/agent/code/app", false, false),
+        bind("/home/agent/code/reports", true, false),
+        bind("/home/agent/code/missing", false, true),
+        agent::MountSpec::Tmpfs {
+            target: SandboxPath::new("/scratch"),
+            capacity: "1Gi".parse().expect("capacity"),
+        },
+    ];
     let record = AgentRecord {
         id: agent_id,
         source_directory: directory.path().to_path_buf(),
@@ -251,6 +269,10 @@ comments and API calls, reaches real services and people.
 - **Harnesses:**
   - Claude Code (default)
   - Codex: not installed until the host logs in to it
+- **Folders:** the person's own files, mounted from their machine: changes happen at once and outlive this agent, \
+so don't switch branches, reset or push there unless asked.
+  - `/home/agent/code/app`
+  - `/home/agent/code/reports` (read-only)
 - **Secrets:** inert placeholders the host replaces only in requests to their hosts; never search for, print or \
 persist real values.
   - `GITHUB_TOKEN`: github.com, api.github.com
@@ -261,6 +283,12 @@ persist real values.
 - **Access:** people on the host reach this computer with `agentctl ssh worker`.
 - **Nested agents:** available (`/dev/kvm`, no Podman, so only manifests with an image `reference`); see the \
 `agentctl` skill.
+- **Changes:** inside this VM, apart from the person's folders, act freely, such as installing the tools a task \
+needs. Send something out through the host only when a task asks. Note what you install or change in the system, \
+and why, in `~/system-changes.md`, so it can be moved into the image.
+- **Cleanup:** stop the servers and containers you start. When a task is done, remove what you created for it, such \
+as one-off images, finished worktrees and build output, and nothing else.
+- **Clones:** fetch first, branch from the default branch, and never discard work you didn't make.
 <!-- agentd: end of Agent sandbox section -->
 
 <!-- agentd: the agent's own instructions, from spec.instructions -->
@@ -1884,6 +1912,7 @@ async fn linux_setup_commits_as_the_agents_account_unless_the_manifest_names_som
             email: "1+digdir-bot@users.noreply.github.com".into(),
         }),
         instructions: Vec::new(),
+        missing_logins: Vec::new(),
     };
     let setting = |key: &str, value: &str| (key.to_owned(), value.to_owned());
 
@@ -1906,4 +1935,146 @@ async fn linux_setup_commits_as_the_agents_account_unless_the_manifest_names_som
         ]
     );
     assert_eq!(git_settings_written(&[], &NO_ACCOUNTS).await, []);
+}
+
+const WORKSPACE_UNIT: &str = "agent-workspace-init.service";
+
+/// The arguments to `systemctl` of a command that runs it through `sudo -n`.
+fn systemctl_args(spec: &sandbox::execution::ExecutionSpec) -> Option<&[String]> {
+    match spec.program() {
+        Program::Command { executable, args } if executable.as_str() == "/usr/bin/sudo" => {
+            args.strip_prefix(&["-n".to_owned(), "/usr/bin/systemctl".to_owned()])
+        }
+        _ => None,
+    }
+}
+
+fn is_workspace_query(spec: &sandbox::execution::ExecutionSpec) -> bool {
+    systemctl_args(spec).is_some_and(|args| {
+        args.first().map(String::as_str) == Some("show") && args.last().map(String::as_str) == Some(WORKSPACE_UNIT)
+    })
+}
+
+fn is_workspace_start(spec: &sandbox::execution::ExecutionSpec) -> bool {
+    systemctl_args(spec).is_some_and(|args| args == ["start", "--no-block", WORKSPACE_UNIT])
+}
+
+/// How far setup found the workspace clone, or whether it failed, and the `systemctl` actions it
+/// took on the clone, after a pass in which the clone had failed. Starting the clone again exits
+/// with `start_exit_code`.
+async fn workspace_actions(
+    accounts_reported: Option<agent::ConditionStatus>,
+    missing_logins: &[&str],
+    start_exit_code: i32,
+) -> (Option<Option<agent::sandbox::WorkspaceClone>>, Vec<String>) {
+    let directory = TempDir::new().expect("temporary directory");
+    let mut resource = support::agent("worker");
+    resource.metadata.generation = 1;
+    resource.spec.home = None;
+    resource.spec.instructions.clear();
+    resource.spec.harnesses.clear();
+    resource.spec.accounts.push(agent::AccountSpec::Github {
+        login: "default".into(),
+    });
+    resource
+        .status
+        .conditions
+        .extend(accounts_reported.map(|status| agent::Condition {
+            kind: agent::Condition::ACCOUNTS.into(),
+            status,
+            reason: String::new(),
+            message: String::new(),
+            last_transition_time: None,
+        }));
+    let record = AgentRecord {
+        id: "38f41de4-6ff7-4679-ae46-678bc61e4dcb".parse().expect("Agent ID"),
+        source_directory: directory.path().to_path_buf(),
+        manifest_path: None,
+        env_file: None,
+        agent: resource,
+        optional_mount_sources: std::collections::BTreeMap::new(),
+        volume_revisions: std::collections::BTreeMap::new(),
+        origin: agent::Origin::Local,
+        lifetime: agent::Lifetime::UntilDeleted,
+        bindings: std::collections::BTreeMap::new(),
+        exposed_files: std::collections::BTreeSet::new(),
+    };
+    let backend = Rc::new(memory::Provider::new());
+    backend.queue_execution_events_matching(is_podman_presence_check, completed(1));
+    backend.queue_execution_events_matching(
+        is_workspace_query,
+        vec![
+            ExecutionEvent::Started { process_id: None },
+            ExecutionEvent::Stdout(
+                "LoadState=loaded\nActiveState=failed\nResult=exit-code\nConditionResult=yes\n".into(),
+            ),
+            ExecutionEvent::Exited(ExitStatus { code: 0 }),
+        ],
+    );
+    backend.queue_execution_events_matching(is_workspace_start, completed(start_exit_code));
+    let service = SandboxService::new(backend.clone());
+    let spec = record
+        .agent
+        .spec
+        .sandbox
+        .resolve_from(&record.source_directory, &Platform::native("linux").architecture)
+        .expect("Sandbox spec");
+    let sandbox = service
+        .ensure(&EnsureSandboxRequest::new(
+            record.sandbox_name().expect("Sandbox name"),
+            spec,
+        ))
+        .await
+        .expect("Sandbox");
+    let accounts = agent::sandbox::AccountSetup {
+        missing_logins: missing_logins.iter().map(|&missing| missing.to_owned()).collect(),
+        ..agent::sandbox::AccountSetup::default()
+    };
+
+    let set_up = Linux::new(PLATFORM_API_URL)
+        .setup(&record, &sandbox, &[], &accounts, &setup_phase())
+        .await
+        .ok()
+        .map(|set_up| set_up.workspace);
+
+    let actions = backend
+        .execution_specs()
+        .iter()
+        .filter(|spec| !is_workspace_query(spec))
+        .filter_map(systemctl_args)
+        .filter_map(|args| Some(args.strip_suffix(&[WORKSPACE_UNIT.to_owned()])?.join(" ")))
+        .collect();
+    (set_up, actions)
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_failed_workspace_clone_is_tried_again_once_the_login_arrives() {
+    use agent::{ConditionStatus, sandbox::WorkspaceClone};
+
+    assert_eq!(
+        workspace_actions(Some(ConditionStatus::False), &[], 0).await,
+        (Some(Some(WorkspaceClone::Cloning)), vec!["start --no-block".to_owned()]),
+        "the login arrived since the last pass"
+    );
+    assert_eq!(
+        workspace_actions(Some(ConditionStatus::False), &["no login"], 0).await,
+        (Some(Some(WorkspaceClone::Failed)), Vec::new()),
+        "the login is still missing"
+    );
+    assert_eq!(
+        workspace_actions(Some(ConditionStatus::True), &[], 0).await,
+        (Some(Some(WorkspaceClone::Failed)), Vec::new()),
+        "an earlier pass already had the login, so the clone failed for another reason"
+    );
+}
+
+/// A pass that cannot start the clone again fails, and the next pass tries again. It can only
+/// when the unit still reads as failed: systemd reports a failed unit that was reset as one that
+/// succeeded, so the next pass would take the clone for done.
+#[tokio::test(flavor = "local")]
+async fn a_workspace_clone_that_could_not_be_started_again_stays_failed() {
+    assert_eq!(
+        workspace_actions(Some(agent::ConditionStatus::False), &[], 1).await,
+        (None, vec!["start --no-block".to_owned()])
+    );
 }

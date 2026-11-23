@@ -166,6 +166,101 @@ pub(crate) fn describe_agent_lines(agent: &Agent) -> Vec<String> {
     lines
 }
 
+/// The agents table `agentctl get agents` prints, with the `-o wide` columns when `wide`.
+pub(crate) fn agents_table(agents: &[Agent], wide: bool) -> Vec<String> {
+    // Ephemeral agents are listed only when asked for, and then said to be.
+    let lifetimes = agents.iter().any(|agent| agent.status.is_ephemeral());
+    let mut headers = vec!["NAME"];
+    if lifetimes {
+        headers.push("LIFETIME");
+    }
+    headers.extend(["READY", "STATUS", "HARNESSES", "PROVIDER"]);
+    if wide {
+        headers.push("DISK");
+    }
+    let rows = agents
+        .iter()
+        .map(|agent| {
+            let ready = agent.status.ready_condition();
+            let ready_value = ready.map_or("Unknown", |condition| condition_status(condition.status));
+            let status = if agent.metadata.deletion_timestamp.is_some() {
+                "Terminating"
+            } else {
+                ready.map_or("Pending", |condition| condition.reason.as_str())
+            };
+            let provider = agent
+                .status
+                .sandbox
+                .as_ref()
+                .map_or("-", |assignment| assignment.provider().as_str());
+            let mut row = vec![agent.metadata.name.clone()];
+            if lifetimes {
+                let lifetime = if agent.status.is_ephemeral() { "ephemeral" } else { "-" };
+                row.push(lifetime.into());
+            }
+            row.extend([
+                ready_value.into(),
+                status.into(),
+                format_harnesses(&agent.spec),
+                provider.into(),
+            ]);
+            if wide {
+                row.push(
+                    agent
+                        .status
+                        .root_filesystem
+                        .map_or_else(|| "-".to_owned(), root_filesystem_usage),
+                );
+            }
+            row
+        })
+        .collect::<Vec<_>>();
+    with_host_disk_warning(agents, table_lines(&headers, &rows))
+}
+
+/// The host storage a root filesystem takes out of its capacity, such as `12Gi/100Gi`.
+pub(crate) fn root_filesystem_usage(usage: sandbox::RootFilesystemUsage) -> String {
+    format!(
+        "{}/{}",
+        approximate_bytes(usage.allocated_bytes()),
+        approximate_bytes(usage.capacity_bytes())
+    )
+}
+
+/// The `HostDiskLow` condition the agents report while the host's disk is low, which every agent on
+/// it reports alike.
+pub(crate) fn host_disk_low(agents: &[Agent]) -> Option<&agent::Condition> {
+    agents.iter().find_map(|agent| {
+        agent.status.conditions.iter().find(|condition| {
+            condition.kind == agent::Condition::HOST_DISK_LOW && condition.status == ConditionStatus::True
+        })
+    })
+}
+
+/// Says once under the table that the host's disk is low.
+fn with_host_disk_warning(agents: &[Agent], mut lines: Vec<String>) -> Vec<String> {
+    if let Some(low) = host_disk_low(agents) {
+        lines.push(String::new());
+        lines.push(format!("Warning: host disk low: {}", low.message));
+    }
+    lines
+}
+
+/// `bytes` in the largest binary unit it fills, such as `12Gi`, with one decimal below ten of it.
+pub(crate) fn approximate_bytes(bytes: u64) -> String {
+    const UNITS: [(u64, &str); 4] = [(1 << 40, "Ti"), (1 << 30, "Gi"), (1 << 20, "Mi"), (1 << 10, "Ki")];
+    let Some((size, suffix)) = UNITS.into_iter().find(|(size, _)| bytes >= *size) else {
+        return bytes.to_string();
+    };
+    // In tenths of the unit, rounded, so that 1.96Gi shows as 2Gi rather than 2.0Gi.
+    let tenths = (u128::from(bytes) * 10 + u128::from(size) / 2) / u128::from(size);
+    if tenths < 100 && tenths % 10 != 0 {
+        format!("{}.{}{suffix}", tenths / 10, tenths % 10)
+    } else {
+        format!("{}{suffix}", (tenths + 5) / 10)
+    }
+}
+
 /// An agent's readiness and, after a failed pass, whether it is retried.
 pub(crate) fn readiness_lines(status: &agent::Status) -> Vec<String> {
     let ready = status.ready_condition().map_or_else(
@@ -305,7 +400,9 @@ pub(crate) fn format_age(created_at: time::OffsetDateTime) -> String {
 }
 
 /// Renders turns as `agentctl turns` prints them: a heading per turn, then one
-/// line per text part or tool call, marked with its author.
+/// line per text part or tool call, marked with its author. A call that asks the
+/// operator something is followed by its questions and their options, so the
+/// reader can answer with `agentctl prompt`.
 pub(crate) fn turn_lines(turns: &[agent::sessions::Turn]) -> Vec<String> {
     use agent::sessions::{Part, Role};
     let mut lines = Vec::new();
@@ -320,13 +417,34 @@ pub(crate) fn turn_lines(turns: &[agent::sessions::Turn]) -> Vec<String> {
                 Role::Assistant => "assistant",
             };
             for part in &message.parts {
-                lines.push(match part {
-                    Part::Text { text } => format!("[{who}] {text}"),
-                    Part::ToolCall { name, failed } => {
+                match part {
+                    Part::Text { text } => lines.push(format!("[{who}] {text}")),
+                    Part::ToolCall {
+                        name,
+                        failed,
+                        questions,
+                    } => {
                         let mark = if *failed { " (failed)" } else { "" };
-                        format!("[{who}] -> {name}{mark}")
+                        lines.push(format!("[{who}] -> {name}{mark}"));
+                        for question in questions {
+                            let header = if question.header.is_empty() {
+                                String::new()
+                            } else {
+                                format!("[{}] ", question.header)
+                            };
+                            let any = if question.multi_select { " (one or more)" } else { "" };
+                            lines.push(format!("    {header}{}{any}", question.question));
+                            for (number, option) in question.options.iter().enumerate() {
+                                let description = if option.description.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(": {}", option.description)
+                                };
+                                lines.push(format!("      {}. {}{description}", number + 1, option.label));
+                            }
+                        }
                     }
-                });
+                }
             }
         }
     }
@@ -533,6 +651,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn turns_show_the_questions_a_tool_call_asks() {
+        let turns: Vec<agent::sessions::Turn> = serde_json::from_value(serde_json::json!([
+            {"messages": [{"role": "assistant", "parts": [{
+                "kind": "toolCall",
+                "name": "AskUserQuestion",
+                "questions": [
+                    {"question": "Which role?", "header": "Role", "options": [
+                        {"label": "Developer", "description": "Writes code"},
+                        {"label": "Reviewer"}
+                    ]},
+                    {"question": "Which checks?", "multiSelect": true, "options": [{"label": "Lint"}]}
+                ]
+            }]}]}
+        ]))
+        .expect("turns");
+        assert_eq!(
+            turn_lines(&turns),
+            [
+                "=== turn 1 ===",
+                "[assistant] -> AskUserQuestion",
+                "    [Role] Which role?",
+                "      1. Developer: Writes code",
+                "      2. Reviewer",
+                "    Which checks? (one or more)",
+                "      1. Lint",
+            ]
+        );
+    }
+
+    #[test]
     fn describe_shows_the_failure_class_and_condition_age() {
         let mut agent: Agent =
             serde_yaml_ng::from_str(include_str!("../../../tests/fixtures/agent.yaml")).expect("fixture manifest");
@@ -593,6 +741,35 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("SandboxReconcileFailed") && line.contains(" 3m "))
         );
+    }
+
+    /// `-o wide` adds the host storage each agent's root filesystem takes out of its capacity, and a
+    /// `-` for an agent that has not measured any, such as one without a sandbox yet.
+    #[test]
+    fn wide_agents_table_shows_root_filesystem_usage() {
+        const GIBIBYTE: u64 = 1024 * 1024 * 1024;
+        let fixture: Agent =
+            serde_yaml_ng::from_str(include_str!("../../../tests/fixtures/agent.yaml")).expect("fixture manifest");
+        let mut measured = fixture.clone();
+        measured.metadata.name = "measured".into();
+        measured.status.root_filesystem = Some(sandbox::RootFilesystemUsage::new(
+            12 * GIBIBYTE + 100 * 1024 * 1024,
+            100 * GIBIBYTE,
+        ));
+        let mut small = fixture.clone();
+        small.metadata.name = "small".into();
+        small.status.root_filesystem = Some(sandbox::RootFilesystemUsage::new(1536 * 1024 * 1024, 4 * GIBIBYTE));
+        let mut unmeasured = fixture;
+        unmeasured.metadata.name = "unmeasured".into();
+        let agents = [measured, small, unmeasured];
+
+        let wide = agents_table(&agents, true);
+        let cells = |line: &str| line.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(cells(&wide[0]).last().map(String::as_str), Some("DISK"));
+        assert_eq!(cells(&wide[1]).last().map(String::as_str), Some("12Gi/100Gi"));
+        assert_eq!(cells(&wide[2]).last().map(String::as_str), Some("1.5Gi/4Gi"));
+        assert_eq!(cells(&wide[3]).last().map(String::as_str), Some("-"));
+        assert!(!agents_table(&agents, false)[0].contains("DISK"));
     }
 
     /// A definition below the current folder is written with `/` alone, also where the host uses `\`.

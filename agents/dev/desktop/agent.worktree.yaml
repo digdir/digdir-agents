@@ -14,7 +14,7 @@ spec:
         source: ../../..
         target: /home/agent/code/digdir-agents
         readOnly: false
-  # A variant's instructions replace the list it extends.
+  # The base's files are listed too, so that an agentctl from before variants merged instructions keeps them.
   instructions:
     - source: ../instructions.md
     - source: environment.md

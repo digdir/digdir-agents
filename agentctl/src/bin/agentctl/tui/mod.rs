@@ -1,6 +1,7 @@
 mod app;
 mod open;
 mod provisioning;
+mod session_names;
 mod terminal;
 mod view;
 
@@ -200,6 +201,7 @@ pub(crate) async fn run(home: &ControlPlaneHome, client: &Client) -> CommandResu
                 forwards.prune(&resources.agents);
                 app.set_volumes(resources.volumes);
                 app.ephemeral_agents = resources.ephemeral_agents;
+                app.host_disk = resources.host_disk;
                 app.apply_snapshot(resources.agents, resources.sessions);
                 continue;
             }
@@ -1151,8 +1153,10 @@ async fn ssh_shell(client: &Client, agent: &str) -> Result<(), Error> {
     .await?;
     let access = client.ssh_access(agent).await?;
     // Awaited, not waited on: the TUI's forwards and watch share this thread.
-    let status = tokio::process::Command::new(crate::ssh_client_executable())
-        .args(crate::ssh_client_arguments(&access))
+    let mut ssh = std::process::Command::new(crate::ssh_client_executable());
+    crate::ssh_config_arguments(&mut ssh, &access.config_file);
+    ssh.arg(&access.alias);
+    let status = tokio::process::Command::from(ssh)
         .status()
         .await
         .map_err(|error| Error::Invalid(crate::ssh_client_failure(&error)))?;

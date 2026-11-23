@@ -92,6 +92,11 @@ An agent can bring its own definition up to date in the same way, such as when t
 to, or to run `agentctl update --print-task` there, which gives it the same task as the builder. It proposes each
 change, tries the result and opens a pull request.
 
+If every agentctl command on macOS prints only `killed`, with exit status 137, macOS refuses to run the installed file.
+Its crash reports in `~/Library/Logs/DiagnosticReports` then name `Code Signature Invalid`. Run the install command
+above again, which installs a release that does not start as new files. macOS can refuse a file that was written to
+while a process had it open, so replace agentctl only by installing or updating it, never by copying a file over it.
+
 ## Your first agent
 
 `agentctl new` makes an agent for a repository with you. Run it in the repository's checkout, or name the checkout:

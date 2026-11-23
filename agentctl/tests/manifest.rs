@@ -415,6 +415,16 @@ fn rejects_skills_without_a_directory_name_or_with_duplicate_names() {
 }
 
 #[test]
+fn rejects_instructions_that_repeat_a_source() {
+    let mut agent = support::agent("worker");
+    agent.spec.instructions.push(agent.spec.instructions[0].clone());
+    let error = agent.validate().expect_err("a repeated source");
+    assert!(
+        matches!(error, agent::Error::Invalid(message) if message == "spec.instructions[1] duplicates source \"instructions.md\"")
+    );
+}
+
+#[test]
 fn rejects_invalid_harness_default_selections() {
     let declared = manifest_with(&[(
         CLAUDE_CODE,
