@@ -18,8 +18,8 @@ If that line still shows a placeholder, the request is what the person wrote aft
 
 | Request | What you do |
 | --- | --- |
-| `<issue>` | Take that issue to a draft pull request. |
-| `draft [count\|all] [bugs\|enhancements]` | Pick issues yourself until `count` of them, one when it is left out, have a draft that waits for a person. `all` goes on for as long as an issue is left that you can take. A type limits what you pick to that type. |
+| `<issue>` | Take that issue to a pull request that waits for a person. |
+| `draft [count\|all] [bugs\|enhancements]` | Pick issues yourself until `count` of them, one when it is left out, have a pull request that waits only for a person to merge it. `all` goes on for as long as an issue is left that you can take. A type limits what you pick to that type. |
 
 Ask when the request fits none of them.
 
@@ -98,17 +98,18 @@ Pass over an issue that you can't move on: one that is labelled `no-agent`, that
 something outside the repository, or that someone else is on. Find that out as
 [finding existing work](references/linking.md#finding-existing-work) describes. A second pull request for the same
 issue costs a review and helps nobody. When you were given the issue and someone is on it, tell the person
-prompting you instead of starting.
+prompting you instead of starting. A ready pull request in Waiting to be merged waits for a person to merge it, even
+though it is Up-for-grabs, until a person asks for changes in it.
 
 ### Work that an earlier session left
 
 An issue can have a pull request from an earlier session or an earlier process that nobody is on any more: its WIP
-State is Up-for-grabs and it has no assignee. The board decides that over an old claim in the thread. Take it over
-rather than start again, and go through the steps from the analysis as for any issue. What it holds is a set of
-claims to check, like the issue's text, and that includes what it left out or rejected and why. Its earlier reviews
-had another brief and saw other commits, so they count as none of [the checks](#the-checks). Read what they found,
-and run the checks as for any change. Leave a ready pull request ready, since converting it to a draft cancels its
-CI. If you do convert it, add the `ci` label first.
+State is Up-for-grabs, it has no assignee, and it does not wait to be merged. The board decides that over an old
+claim in the thread. Take it over rather than start again, and go through the steps from the analysis as for any
+issue. What it holds is a set of claims to check, like the issue's text, and that includes what it left out or
+rejected and why. Its earlier reviews had another brief and saw other commits, so they count as none of
+[the checks](#the-checks). Read what they found, and run the checks as for any change. Leave a ready pull request
+ready, since converting it to a draft cancels its CI. If you do convert it, add the `ci` label first.
 
 ## 2. Analyze it
 
@@ -221,7 +222,7 @@ That decision covers what they wrote and no more. When the challenger finds some
 such as a proposal that goes against a rule elsewhere in the repository, put that to them before you build.
 
 A change that no test can show, such as one to text alone, never passes this gate on proof. It is built when a
-person has asked for it, and it always ends as a draft.
+person has asked for it.
 
 Go back to this gate when the work turns out to change more than the analysis said, such as a fix that needs a new
 flag.
@@ -373,7 +374,7 @@ QA of the test phase sets the `process/agent-says-merge` label when all of this 
 What only a person can do, such as approving and merging, is left to them:
 
 - The issue passed [the gate](#who-decides-whether-to-build) on what could be proven. A go-ahead from a person
-  lets you build, but what they decided to build they also read before it merges.
+  lets you build, but only they can judge whether what you built is what they meant.
 - Every check the change calls for ran, and nothing they found is open. Nothing waits for a person.
 - The change is what the analysis said, and no more.
 - Every CI check has passed on the commit, the jobs for the area it changes among them, and it adds no code
@@ -397,19 +398,22 @@ What only a person can do, such as approving and merging, is left to them:
 - Nobody has commented on the pull request or the issue since the last push without getting an answer. The
   author's own analysis and report comments are not such comments.
 
-This is where the issue rests, with Status set to Waiting to be merged. How depends on the label:
+This is where the issue rests, with Status set to Waiting to be merged:
 
-- With the label, mark the pull request ready for review, set WIP State to Up-for-grabs and remove yourself as
-  assignee. Nothing is left that needs you, and a draft would tell the person who merges it that it is still
-  moving.
-- Without it, leave it a draft and set WIP State to Blocked: Human needed, since what holds it needs a person's
-  decision. Say in your report what that is.
+- When every check the change calls for ran, QA accepted the head commit and nothing waits for a person's
+  decision, mark the pull request ready for review, set WIP State to Up-for-grabs, and remove yourself as assignee
+  from both the issue and the pull request. Nothing is left that needs you, and a draft would tell the person who
+  merges it that it is still moving. The label, when QA set it, tells them that every condition above holds too.
+- Otherwise leave it a draft, set WIP State to Blocked: Human needed, and say in your report what it needs from
+  them.
 
 A person merges it. The repository does not close an issue when a pull request merges, so the description's
 `Closes #N` or `Part of #N` is what tells them whether to close the issue too.
 
-When they ask for changes, commit and push each one and say which commit it is in, since they read diffs in the
-pull request. Rewrite the description to match, and correct anything you claimed that turned out wrong.
+When a person asks for changes, take the pull request back: set WIP State to Working and assign yourself again.
+Commit and push each change and say which commit it is in, since they read diffs in the pull request. Rewrite the
+description to match, correct anything you claimed that turned out wrong, and have QA of the test phase check the
+new commit before the pull request rests again.
 
 ## Leaving the work
 

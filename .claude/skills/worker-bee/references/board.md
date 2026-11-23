@@ -49,7 +49,8 @@ Clear the field when the work is merged.
 Two labels show the state of a pull request in the list, without opening it. Each holds only while what it says is
 true, so remove it in the step that makes it false.
 
-- `process/agent-says-merge`: an agent found this commit ready to merge. Whoever pushes to the branch removes it.
+- `process/agent-says-merge`: an agent found this commit ready to merge with `main` as it was then. Whoever pushes
+  to the branch removes it.
 - `process/blocked/stability-days`: a dependency update has been reviewed and waits only for the release age that
   Renovate requires. Use it in place of Blocked: Human needed until that check passes, since a person can't merge
   it before then either.
