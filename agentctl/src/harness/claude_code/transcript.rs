@@ -104,6 +104,7 @@ impl TurnTracker {
     pub(crate) const fn signals(&self) -> TurnSignals {
         TurnSignals {
             interrupted: self.interrupted,
+            failed: false,
         }
     }
 }

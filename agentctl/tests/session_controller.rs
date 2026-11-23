@@ -1443,44 +1443,52 @@ async fn prompt_waits_for_a_turn_that_started_before_delivery_finished() {
 }
 
 #[tokio::test(flavor = "local")]
-async fn prompt_wait_ends_when_the_conversation_shows_the_turn_was_interrupted() {
+async fn prompt_wait_ends_when_the_conversation_shows_a_turn_end_nothing_reported() {
     // Claude Code reports nothing when the operator presses Esc, or refuses a tool call at the
-    // permission prompt. Only its conversation shows that the turn ended.
-    for reports in [
-        &[agent::sessions::ActivityEvent::TurnStarted][..],
-        &[
-            agent::sessions::ActivityEvent::TurnStarted,
-            agent::sessions::ActivityEvent::WaitingForInput,
-        ],
-    ] {
-        let directory = TempDir::new().expect("directory");
-        let harness = ServiceHarness::start(&directory, "33333333-3333-4333-8333-333333333333").await;
-        let mut waiting = harness.prompt("run the slow command");
-        harness.await_delivery(&mut waiting).await;
-        assert_eq!(
-            harness.runtime.marks_at_delivery.get(),
-            Some(1),
-            "the wait marks where the conversation ends once, before delivery"
-        );
-        for event in reports {
-            harness.report(*event).await;
-        }
-        assert!(
-            tokio::time::timeout(Duration::from_millis(1500), &mut waiting)
+    // permission prompt, and Codex nothing when a turn ends on a model error. Only the conversation
+    // shows that the turn ended.
+    let interrupted = agent::sessions::TurnSignals {
+        interrupted: true,
+        ..Default::default()
+    };
+    let failed = agent::sessions::TurnSignals {
+        failed: true,
+        ..Default::default()
+    };
+    for signals in [interrupted, failed] {
+        for reports in [
+            &[agent::sessions::ActivityEvent::TurnStarted][..],
+            &[
+                agent::sessions::ActivityEvent::TurnStarted,
+                agent::sessions::ActivityEvent::WaitingForInput,
+            ],
+        ] {
+            let directory = TempDir::new().expect("directory");
+            let harness = ServiceHarness::start(&directory, "33333333-3333-4333-8333-333333333333").await;
+            let mut waiting = harness.prompt("run the slow command");
+            harness.await_delivery(&mut waiting).await;
+            assert_eq!(
+                harness.runtime.marks_at_delivery.get(),
+                Some(1),
+                "the wait marks where the conversation ends once, before delivery"
+            );
+            for event in reports {
+                harness.report(*event).await;
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(1500), &mut waiting)
+                    .await
+                    .is_err(),
+                "the turn is not over after {reports:?}"
+            );
+            harness.runtime.conversation_signals.set(signals);
+            tokio::time::timeout(Duration::from_secs(3), waiting)
                 .await
-                .is_err(),
-            "the turn is not over after {reports:?}"
-        );
-        harness
-            .runtime
-            .conversation_signals
-            .set(agent::sessions::TurnSignals { interrupted: true });
-        tokio::time::timeout(Duration::from_secs(3), waiting)
-            .await
-            .expect("the interruption ends the wait")
-            .expect("task")
-            .expect("prompt");
-        harness.finish();
+                .unwrap_or_else(|_| panic!("{signals:?} ends the wait"))
+                .expect("task")
+                .expect("prompt");
+            harness.finish();
+        }
     }
 }
 

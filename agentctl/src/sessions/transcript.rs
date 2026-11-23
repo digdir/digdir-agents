@@ -85,4 +85,6 @@ pub struct QuestionOption {
 pub struct TurnSignals {
     /// A turn ended because the operator interrupted it or refused a tool call.
     pub interrupted: bool,
+    /// A turn ended on an error, such as the model's.
+    pub failed: bool,
 }

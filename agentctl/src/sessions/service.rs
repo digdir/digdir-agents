@@ -145,9 +145,9 @@ impl Service {
     /// waits for it to advance with identical waiting activity in two consecutive
     /// polls, 250 ms apart. Work observed during settling requires another
     /// completion. This is a timing heuristic, not identification of an answer
-    /// to this prompt. A turn the operator interrupted, which some harnesses do
-    /// not report, also ends the wait once what the conversation gained since
-    /// delivery shows it, within about a second.
+    /// to this prompt. A turn the operator interrupted, or that ended on an error,
+    /// which some harnesses do not report, also ends the wait once what the
+    /// conversation gained since delivery shows it, within about a second.
     /// Read the conversation separately with [`Self::turns`].
     ///
     /// In both modes delivery waits for input readiness. The runtime may establish
@@ -252,7 +252,7 @@ impl Service {
                 settling = None;
                 if tokio::time::Instant::now() >= follow_at {
                     follow_at = tokio::time::Instant::now() + CONVERSATION_POLL;
-                    if self.interrupted(&current, sandbox, &mut mark).await {
+                    if self.ended_unreported(&current, sandbox, &mut mark).await {
                         return Ok(());
                     }
                 }
@@ -261,11 +261,11 @@ impl Service {
         }
     }
 
-    /// Whether the conversation shows that the turn ended by interruption, which the harness may not
-    /// report. A conversation that cannot be read leaves the wait to the harness's reports.
-    async fn interrupted(&self, session: &Session, sandbox: &SandboxHandle, mark: &mut ConversationMark) -> bool {
+    /// Whether the conversation shows that the turn was interrupted or failed, which the harness may
+    /// not report. A conversation that cannot be read leaves the wait to the harness's reports.
+    async fn ended_unreported(&self, session: &Session, sandbox: &SandboxHandle, mark: &mut ConversationMark) -> bool {
         match self.runtime.follow_conversation(session, sandbox, mark).await {
-            Ok(signals) => signals.interrupted,
+            Ok(signals) => signals.interrupted || signals.failed,
             Err(error) => {
                 tracing::debug!(%error, session = %session.id, "could not follow the conversation");
                 false
