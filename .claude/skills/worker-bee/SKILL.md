@@ -337,10 +337,11 @@ A change to tests alone has no QA of its use, since nobody uses a test the way t
 build's QA has already run it with and without the change. Tell QA of the test phase to go straight to whether
 the pull request is ready to merge.
 
-A small change runs its checks too, since the team reviews it as ready work like any other. For a change to text
-alone, building and testing are one phase, which the challenger and QA check. When your harness can't start a
-subagent, say in the hand-over comment which checks did not run. The pull request then stays a draft in Testing with
-WIP State Blocked: Human needed, since a person has to do what the checks would have.
+A small change runs its checks too, since the team reviews it as ready work like any other. For a change to text alone,
+building and testing are one phase, which the challenger and QA check. There is no test to fail without it, so QA checks
+the text against what was asked and against what it links to. When your harness can't start a subagent, say in the
+hand-over comment which checks did not run. The pull request then stays a draft in Testing with WIP State Blocked: Human
+needed, since a person has to do what the checks would have.
 
 ## 5. Hand it over
 
@@ -406,7 +407,8 @@ This is where the issue rests:
 - When every condition above holds, apart from the gate on proof, approving and merging, mark the pull request ready for
   review, set Status to Waiting to be merged and WIP State to Up-for-grabs, and remove yourself as assignee from both
   the issue and the pull request. Nothing is left that needs you, and a draft would tell the person who merges it that
-  it is still moving. The label, when QA set it, tells them that the change passed the gate on proof as well.
+  it is still moving. The label, when QA set it, tells them that the change passed the gate on proof as well. When the
+  issue also stands for a pull request that is not ready yet, the issue stays where that one is, and you stay on it.
 - When what is left needs a person's decision, leave it a draft in Testing, set WIP State to Blocked: Human
   needed, and say in your report what it needs from them.
 - Anything else, such as a failing check or an open thread, is still yours. Stay on it until one of the above
@@ -416,11 +418,11 @@ This is where the issue rests:
 A person merges it. The repository does not close an issue when a pull request merges, so the description's
 `Closes #N` or `Part of #N` is what tells them whether to close the issue too.
 
-When a person asks for changes in a pull request that rests here, take it back: set WIP State to Working, assign
-yourself again and remove the `process/agent-says-merge` label, which their request has made untrue. Commit and push
-each change and say which commit it is in, since they read diffs in the pull request. Rewrite the description to match,
-correct anything you claimed that turned out wrong, and have QA of the test phase check the new commit before the pull
-request rests again.
+When a person asks for changes in a pull request that rests here, take it back: set Status to Testing and WIP State to
+Working, assign yourself again and remove the `process/agent-says-merge` label, which their request has made untrue.
+Commit and push each change and say which commit it is in, since they read diffs in the pull request. Rewrite the
+description to match, correct anything you claimed that turned out wrong, and have QA of the test phase check the new
+commit before the pull request rests again.
 
 ## Leaving the work
 
