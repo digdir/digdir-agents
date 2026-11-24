@@ -99,7 +99,8 @@ something outside the repository, or that someone else is on. Find that out as
 [finding existing work](references/linking.md#finding-existing-work) describes. A second pull request for the same
 issue costs a review and helps nobody. When you were given the issue and someone is on it, tell the person
 prompting you instead of starting. A pull request in Waiting to be merged
-[waits for a person](references/board.md#wip-state), even though it is Up-for-grabs.
+[waits for a person](references/board.md#wip-state), even though it is Up-for-grabs, until a person asks for changes
+in it. Then take it back as the end of [step 6](#6-ready-to-merge) says.
 
 ### Work that an earlier session left
 
@@ -109,8 +110,7 @@ in the thread. Take it over rather than start again, and go through the steps fr
 it holds is a set of claims to check, like the issue's text, and that includes what it left out or rejected and why. Its
 earlier reviews had another brief and saw other commits, so they count as none of [the checks](#the-checks). Read what
 they found, and run the checks as for any change. Leave a ready pull request ready, since converting it to a draft
-cancels its CI. If you do convert it, add the `ci` label first. A pull request that a person asked for changes in is
-taken back as the end of [step 6](#6-ready-to-merge) says instead.
+cancels its CI. If you do convert it, add the `ci` label first.
 
 ## 2. Analyze it
 
