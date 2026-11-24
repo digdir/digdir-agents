@@ -19,8 +19,9 @@ Status says how far the work has come:
 - **Analyzing** when you start to read and plan.
 - **Building** when you write the change.
 - **Testing** when the change is built and its checks have passed, while you test it and CI runs.
-- **Waiting to be merged** when all that is left is something that holds the merge, such as a person reading the
-  draft or a code owner's approval.
+- **Waiting to be merged** when the pull request is ready and all that is left is a person reading it or a code
+  owner's approval. A draft that waits for a decision stays in Testing, so that this column holds only what the
+  team can read as ready.
 
 GitHub sets **Waiting to be released** when the work is merged or closed. That includes work closed without a
 merge, so archive it then, since no release will ship it. The [`release` skill](../../release/SKILL.md) archives
@@ -31,10 +32,11 @@ what a release has shipped.
 WIP State says whether the work is moving right now, which Status can't show. It is **Working** while a session is
 on it. Otherwise it says what the work waits for:
 
-- **Up-for-grabs** when anyone can pick it up. Remove yourself as assignee in the same step, with
-  `gh issue edit N --remove-assignee @me`. An assignee says that someone is on the issue, and others pass over it
-  for that reason. If you mean to come back to it yourself, it is not up for grabs: stay assigned and set the state
-  that says what it waits for.
+- **Up-for-grabs** when anyone can pick it up. On a ready pull request in Waiting to be merged, that means a person
+  picking it up to review and merge it. An agent leaves it alone until a person asks for changes in it. Remove yourself
+  as assignee in the same step, with `gh issue edit N --remove-assignee @me`. An assignee says that someone is on the
+  issue, and others pass over it for that reason. If you mean to come back to it yourself, it is not up for grabs: stay
+  assigned and set the state that says what it waits for.
 - The **Waiting** state that fits when it waits on another issue or on something outside the repository. Name what
   it waits on with a [blocked-by relation](linking.md#relations-between-issues).
 - **Blocked: Human needed** when only a person can move it on. Say on the issue or pull request what you need from
@@ -42,14 +44,13 @@ on it. Otherwise it says what the work waits for:
   agent's work.
 - **Other/Limbo** when none of these fit, with a comment that says what is going on.
 
-Clear the field when the work is merged.
-
 ## Labels on pull requests
 
 Two labels show the state of a pull request in the list, without opening it. Each holds only while what it says is
 true, so remove it in the step that makes it false.
 
-- `process/agent-says-merge`: an agent found this commit ready to merge. Whoever pushes to the branch removes it.
+- `process/agent-says-merge`: an agent found this commit ready to merge with `main` as it was then. Whoever pushes
+  to the branch removes it.
 - `process/blocked/stability-days`: a dependency update has been reviewed and waits only for the release age that
   Renovate requires. Use it in place of Blocked: Human needed until that check passes, since a person can't merge
   it before then either.
