@@ -101,9 +101,31 @@ fn windows_terminal(
     // The program gets a console window of its own and its arguments as they are, which `cmd /c start` would read
     // as a line of its own syntax, where `&` in a path starts another command.
     Ok(Launch::Console {
-        program: program.into(),
+        program: windows_program(program, variable)?,
         arguments: arguments.to_vec(),
     })
+}
+
+/// `program` as a path for Windows to start: as given when it names a folder, or else found on `PATH`.
+///
+/// Windows looks a program up only when it is given a command line without the program's path, and then in the
+/// current folder before `PATH`, so a bare name is looked up here instead. Without an extension it is the `.exe`, as
+/// Windows would add.
+fn windows_program(program: &OsStr, variable: &impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, String> {
+    let text = program.to_string_lossy();
+    if text.contains(['\\', '/', ':']) {
+        return Ok(program.into());
+    }
+    let name = program
+        .to_str()
+        .ok_or_else(|| format!("{text} is not Unicode, so it can't be looked up on PATH"))?;
+    let name = if std::path::Path::new(name).extension().is_some() {
+        name.to_owned()
+    } else {
+        format!("{name}.exe")
+    };
+    crate::local::process::find_executable(variable("PATH").as_deref(), &[&name])
+        .ok_or_else(|| format!("{name} not found on PATH"))
 }
 
 /// `$TERMINAL`, the convention for a person's own terminal, or the first terminal from [`LINUX_TERMINALS`] on `PATH`.
@@ -329,6 +351,19 @@ mod tests {
                     program: PathBuf::from(r"C:\agentctl\agentctl.exe"),
                     arguments: arguments.to_vec(),
                 })
+            );
+            runnable(directory.path(), "agentctl.exe");
+            assert_eq!(
+                windows_terminal(OsStr::new("agentctl"), &arguments, &environment(directory.path(), None)),
+                Ok(Launch::Console {
+                    program: directory.path().join("agentctl.exe"),
+                    arguments: arguments.to_vec(),
+                }),
+                "a program given by name is found on PATH, as Windows only does from the current folder first"
+            );
+            assert!(
+                windows_terminal(OsStr::new("missing"), &arguments, &environment(directory.path(), None))
+                    .is_err_and(|error| error.contains("missing.exe not found on PATH")),
             );
             let wt = runnable(directory.path(), "wt.exe");
             assert_eq!(

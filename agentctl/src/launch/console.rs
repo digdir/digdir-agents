@@ -9,13 +9,23 @@
 ///
 /// A word with a space, a tab or a `"` in it, or none at all, is put in double quotes. In there a backslash is
 /// literal unless it comes before a `"`, so those backslashes, and the ones before the closing quote, are doubled.
+///
+/// # Errors
+///
+/// Returns an error for a word with a NUL in it, where Windows would end the command line.
 #[cfg(any(windows, test))]
-fn command_line<W: IntoIterator<Item = u16>>(words: impl IntoIterator<Item = W>) -> Vec<u16> {
+fn command_line<W: IntoIterator<Item = u16>>(words: impl IntoIterator<Item = W>) -> Result<Vec<u16>, String> {
     const QUOTE: u16 = b'"' as u16;
     const BACKSLASH: u16 = b'\\' as u16;
     let mut line = Vec::new();
     for word in words {
         let word = word.into_iter().collect::<Vec<_>>();
+        if word.contains(&0) {
+            return Err(format!(
+                "{} has a NUL in it, where Windows would end the command line",
+                String::from_utf16_lossy(&word).replace('\0', "\\0")
+            ));
+        }
         if !line.is_empty() {
             line.push(u16::from(b' '));
         }
@@ -39,7 +49,7 @@ fn command_line<W: IntoIterator<Item = u16>>(words: impl IntoIterator<Item = W>)
         line.extend(std::iter::repeat_n(BACKSLASH, backslashes));
         line.push(QUOTE);
     }
-    line
+    Ok(line)
 }
 
 /// Starts `program` with `arguments` in a console window of its own, which is its standard input and output, and
@@ -86,13 +96,15 @@ fn start(
         CREATE_NEW_CONSOLE, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
     };
 
-    let application = program.encode_wide().chain([0]).collect::<Vec<u16>>();
     let mut line = command_line(
         std::iter::once(program)
             .chain(arguments.iter().map(std::ffi::OsString::as_os_str))
             .map(|word| word.encode_wide()),
-    );
+    )
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
     line.push(0);
+    // The command line has refused a NUL in the program.
+    let application = program.encode_wide().chain([0]).collect::<Vec<u16>>();
     let startup = STARTUPINFOW {
         cb: u32::try_from(std::mem::size_of::<STARTUPINFOW>()).map_err(std::io::Error::other)?,
         ..STARTUPINFOW::default()
@@ -139,7 +151,7 @@ fn start(
 fn exit_code(process: &std::os::windows::io::OwnedHandle) -> std::io::Result<Option<u32>> {
     use std::os::windows::io::AsRawHandle as _;
 
-    /// What GetExitCodeProcess reports for a process that is still running.
+    /// What `GetExitCodeProcess` reports for a process that is still running.
     const STILL_ACTIVE: u32 = 259;
     let mut code = 0_u32;
     // SAFETY: `process` is an open process handle for the duration of the call, and `code` is a live `u32`.
@@ -158,7 +170,16 @@ mod tests {
     use super::command_line;
 
     fn line(words: &[&str]) -> String {
-        String::from_utf16(&command_line(words.iter().map(|word| word.encode_utf16()))).expect("UTF-16")
+        String::from_utf16(&command_line(words.iter().map(|word| word.encode_utf16())).expect("no NUL"))
+            .expect("UTF-16")
+    }
+
+    /// Windows reads a command line only up to its first NUL, so a word with one would lose the rest of the command.
+    #[test]
+    fn a_word_with_a_nul_is_refused() {
+        let error = command_line(["agentctl", "--home", "C:\\a\0b", "attach"].map(str::encode_utf16))
+            .expect_err("a NUL in a word");
+        assert!(error.contains("C:\\a\\0b") && error.contains("NUL"), "{error}");
     }
 
     /// The words come back as the C runtime splits a command line: a backslash is literal unless it comes before a
