@@ -297,14 +297,6 @@ impl terminal::TerminalControl for MemoryExecutionControl {
     fn resize(&self, _size: terminal::TerminalSize) -> LocalFuture<'_, Result<(), Error>> {
         Box::pin(async move { self.ensure_live() })
     }
-
-    fn terminate(&self) -> LocalFuture<'_, Result<(), Error>> {
-        Box::pin(async move {
-            self.ensure_live()?;
-            self.state.borrow_mut().executions.remove(&self.execution);
-            Ok(())
-        })
-    }
 }
 
 impl MemoryExecutionControl {
