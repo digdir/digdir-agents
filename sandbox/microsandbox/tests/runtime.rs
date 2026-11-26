@@ -766,7 +766,11 @@ async fn assert_terminal_execution(backend: &dyn sandbox::backend::SandboxBacken
             .expect("terminal event should succeed")
         {
             TerminalEvent::Output(bytes) if !terminated && bytes.windows(5).any(|window| window == b"ready") => {
-                terminal.control.terminate().await.expect("terminal process should be asked to end");
+                terminal
+                    .control
+                    .terminate()
+                    .await
+                    .expect("terminal process should be asked to end");
                 terminated = true;
             }
             TerminalEvent::Exited(status) => break Ok(status),
