@@ -122,11 +122,8 @@ fn windows_program(program: &OsStr, variable: &impl Fn(&str) -> Option<OsString>
     if text.contains(['\\', '/', ':']) {
         return Ok(program.into());
     }
-    let name = program
-        .to_str()
-        .ok_or_else(|| format!("{text} is not Unicode, so it can't be looked up on PATH"))?;
-    crate::local::process::find_executable(variable("PATH").as_deref(), &[name])
-        .ok_or_else(|| format!("{name} not found on PATH"))
+    crate::local::process::find_executable(variable("PATH").as_deref(), &[&program])
+        .ok_or_else(|| format!("{} not found on PATH", program.display()))
 }
 
 /// `$TERMINAL`, the convention for a person's own terminal, or the first terminal from [`LINUX_TERMINALS`] on `PATH`.
@@ -143,7 +140,7 @@ fn linux_terminal(
             if terminal.is_absolute() {
                 crate::local::process::runnable(&terminal).then_some(terminal)
             } else {
-                crate::local::process::find_executable(path.as_deref(), &[&terminal.to_string_lossy()])
+                crate::local::process::find_executable(path.as_deref(), &[&terminal])
             }
         })
         .map(|terminal| {
@@ -327,6 +324,47 @@ mod tests {
                     program: xterm,
                     arguments: vec!["-e".into(), "agentctl".into(), "--home".into(), home],
                 })
+            );
+        }
+
+        /// A name that isn't Unicode is looked up on `PATH` as it is, so it finds the program of that name rather
+        /// than another. Only Linux takes such a file name, as macOS file systems hold Unicode names.
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn names_that_are_not_unicode_are_looked_up_as_they_are() {
+            use std::os::unix::{ffi::OsStringExt as _, fs::PermissionsExt as _};
+            let directory = tempfile::tempdir().expect("directory");
+            let runnable_named = |name: &OsStr| {
+                let path = directory.path().join(name);
+                std::fs::write(&path, "").expect("program");
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("make runnable");
+                path
+            };
+            runnable(directory.path(), "xterm");
+            let name = OsString::from_vec(b"term-\xff".to_vec());
+            let terminal = runnable_named(&name);
+            let arguments = [OsString::from("attach")];
+
+            assert_eq!(
+                linux_terminal(
+                    OsStr::new("agentctl"),
+                    &arguments,
+                    &environment(directory.path(), Some(name.clone()))
+                )
+                .expect("a terminal"),
+                launched(terminal, &["-e", "agentctl", "attach"]),
+                "TERMINAL names that terminal, not the first one installed"
+            );
+            let exe = OsString::from_vec(b"term-\xff.exe".to_vec());
+            assert_eq!(
+                windows_program(&name, &environment(directory.path(), None)),
+                Err(format!("{} not found on PATH", exe.display())),
+            );
+            let program = runnable_named(&exe);
+            assert_eq!(
+                windows_program(&name, &environment(directory.path(), None)),
+                Ok(program),
+                "a program given by a name that isn't Unicode is found by it"
             );
         }
 
