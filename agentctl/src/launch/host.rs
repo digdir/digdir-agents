@@ -21,7 +21,7 @@ pub async fn open_url(url: &str) -> Result<&'static str, String> {
         .chain([url])
         .map(OsString::from)
         .collect::<Vec<_>>();
-    super::run_detached(OsStr::new(opener.program), &arguments, opener.exit_tells, false)
+    super::run_detached(OsStr::new(opener.program), &arguments, opener.exit_tells)
         .await
         .map(|()| opener.program)
 }

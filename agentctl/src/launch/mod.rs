@@ -5,6 +5,7 @@
 //! has handed over to the application, cannot be observed.
 
 mod browser;
+mod console;
 mod host;
 mod terminal;
 
@@ -25,9 +26,6 @@ const LAUNCH_GRACE: Duration = Duration::from_secs(2);
 /// Windows `CREATE_NO_WINDOW`: a console launcher such as `code.cmd` opens no console window.
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-/// Windows `CREATE_NEW_CONSOLE`: a console program gets a window of its own to run in.
-#[cfg(windows)]
-const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 
 /// An editor that opens an agent's working directory over SSH.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,8 +101,8 @@ impl Editor {
 pub enum Launch {
     /// Runs a program with arguments, detached from the terminal.
     Command { program: PathBuf, arguments: Vec<OsString> },
-    /// Runs a console program in a window of its own, as Windows does without a terminal
-    /// application. Elsewhere it runs as [`Self::Command`] does.
+    /// Runs a console program in a window of its own that is its standard input and output, as
+    /// Windows does without a terminal application. Elsewhere it runs as [`Self::Command`] does.
     Console { program: PathBuf, arguments: Vec<OsString> },
     /// Opens an address with whichever application handles its scheme.
     Url(String),
@@ -120,8 +118,11 @@ impl Launch {
     /// an opener finding no application for the address.
     pub async fn start(&self) -> Result<(), String> {
         match self {
-            Self::Command { program, arguments } => run_detached(program.as_os_str(), arguments, true, false).await,
-            Self::Console { program, arguments } => run_detached(program.as_os_str(), arguments, true, true).await,
+            Self::Command { program, arguments } => run_detached(program.as_os_str(), arguments, true).await,
+            #[cfg(windows)]
+            Self::Console { program, arguments } => console::run(program.as_os_str(), arguments, LAUNCH_GRACE).await,
+            #[cfg(not(windows))]
+            Self::Console { program, arguments } => run_detached(program.as_os_str(), arguments, true).await,
             Self::Url(url) => open_url(url).await.map(|_| ()),
         }
     }
@@ -131,9 +132,8 @@ impl Launch {
 /// and it gets a process group of its own, so closing the terminal does not
 /// close the application. One still running after [`LAUNCH_GRACE`] is taken
 /// to have launched and is left running; Tokio reaps it when it exits. With
-/// `exit_tells` unset, an exit status is not taken as a failure. With `console`
-/// set, a console program gets a window of its own on Windows instead of none.
-async fn run_detached(program: &OsStr, arguments: &[OsString], exit_tells: bool, console: bool) -> Result<(), String> {
+/// `exit_tells` unset, an exit status is not taken as a failure.
+async fn run_detached(program: &OsStr, arguments: &[OsString], exit_tells: bool) -> Result<(), String> {
     let name = program.to_string_lossy();
     let mut command = tokio::process::Command::new(program);
     command
@@ -144,9 +144,7 @@ async fn run_detached(program: &OsStr, arguments: &[OsString], exit_tells: bool,
     #[cfg(unix)]
     command.process_group(0);
     #[cfg(windows)]
-    command.creation_flags(if console { CREATE_NEW_CONSOLE } else { CREATE_NO_WINDOW });
-    #[cfg(not(windows))]
-    let _ = console;
+    command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command
         .spawn()
         .map_err(|error| format!("could not run {name}: {error}"))?;
@@ -314,20 +312,20 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "local")]
     async fn a_launcher_that_fails_at_once_is_reported_and_one_that_runs_is_launched() {
-        assert!(run_detached(OsStr::new("false"), &[], true, false).await.is_err());
+        assert!(run_detached(OsStr::new("false"), &[], true).await.is_err());
         assert_eq!(
-            run_detached(OsStr::new("false"), &[], false, false).await,
+            run_detached(OsStr::new("false"), &[], false).await,
             Ok(()),
             "an opener whose exit status says nothing"
         );
-        assert_eq!(run_detached(OsStr::new("true"), &[], true, false).await, Ok(()));
+        assert_eq!(run_detached(OsStr::new("true"), &[], true).await, Ok(()));
         assert_eq!(
-            run_detached(OsStr::new("sleep"), &["5".into()], true, false).await,
+            run_detached(OsStr::new("sleep"), &["5".into()], true).await,
             Ok(()),
             "still running after the grace period"
         );
         assert!(
-            run_detached(OsStr::new("agentctl-no-such-launcher"), &[], true, false)
+            run_detached(OsStr::new("agentctl-no-such-launcher"), &[], true)
                 .await
                 .is_err_and(|error| error.starts_with("could not run"))
         );
