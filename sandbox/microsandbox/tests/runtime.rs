@@ -743,6 +743,39 @@ async fn assert_terminal_execution(backend: &dyn sandbox::backend::SandboxBacken
         output.contains("terminal:hello:42x111"),
         "unexpected terminal output: {output}"
     );
+
+    // Terminating reaches the process however its terminal was used, as a relay that detaches
+    // a tmux client relies on.
+    let mut terminal = backend
+        .start_terminal_execution(
+            &sandbox.id,
+            StartTerminalExecutionRequest::new(
+                shell("trap 'exit 7' TERM; printf 'ready\\n'; while :; do sleep 0.1; done"),
+                TerminalSize::new(24, 80).expect("terminal size should be valid"),
+            ),
+        )
+        .await
+        .expect("terminal Execution should start");
+    let mut terminated = false;
+    let status = loop {
+        match terminal
+            .events
+            .next()
+            .await
+            .expect("terminal event stream should report exit")
+            .expect("terminal event should succeed")
+        {
+            TerminalEvent::Output(bytes) if !terminated && bytes.windows(5).any(|window| window == b"ready") => {
+                terminal.control.terminate().await.expect("terminal process should be asked to end");
+                terminated = true;
+            }
+            TerminalEvent::Exited(status) => break Ok(status),
+            TerminalEvent::Failed { message } => break Err(message),
+            _ => {}
+        }
+    }
+    .expect("terminal process should start and exit");
+    assert_eq!(status.code, 7, "the process ends through its TERM handler");
 }
 
 async fn assert_execution_input(backend: &dyn sandbox::backend::SandboxBackend, sandbox: &Sandbox) {

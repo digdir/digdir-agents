@@ -747,11 +747,10 @@ pub struct SessionTerminal {
 }
 
 impl SessionTerminal {
-    pub(crate) fn new(started: ::sandbox::terminal::StartedTerminalExecution, detach: &'static [u8]) -> Self {
+    pub(crate) fn new(started: ::sandbox::terminal::StartedTerminalExecution) -> Self {
         Self {
             control: SessionControl {
                 terminal: started.control,
-                detach,
             },
             events: started.events,
         }
@@ -768,7 +767,6 @@ impl std::fmt::Debug for SessionTerminal {
 #[derive(Clone)]
 pub struct SessionControl {
     terminal: std::rc::Rc<dyn ::sandbox::terminal::TerminalControl>,
-    detach: &'static [u8],
 }
 
 impl SessionControl {
@@ -790,13 +788,17 @@ impl SessionControl {
         self.terminal.resize(size).await.map_err(Error::from)
     }
 
-    /// Asks the session's terminal to let go of this client, which then exits and ends the events.
+    /// Ends this client, which then exits and ends the events, and leaves the session running.
+    ///
+    /// The client is asked to end rather than typed tmux's detach keys, which a Ctrl-b typed
+    /// before would turn into a Ctrl-b and a `d` for the session. tmux detaches a client asked to
+    /// end and keeps its session.
     ///
     /// # Errors
     ///
-    /// Returns an error when the input cannot reach the terminal, as when it has already ended.
+    /// Returns an error when the client cannot be reached, as when it has already ended.
     pub async fn detach(&self) -> Result<(), Error> {
-        self.write(bytes::Bytes::from_static(self.detach)).await
+        self.terminal.terminate().await.map_err(Error::from)
     }
 }
 

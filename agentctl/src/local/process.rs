@@ -35,14 +35,16 @@ pub fn find_executable(path: Option<&std::ffi::OsStr>, names: &[&str]) -> Option
     })
 }
 
+/// Whether `candidate` is a file, and on Unix one that may be run, as a shell counts one.
 #[cfg(unix)]
-fn runnable(candidate: &std::path::Path) -> bool {
+pub(crate) fn runnable(candidate: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::metadata(candidate).is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
+/// Whether `candidate` is a file, and on Unix one that may be run, as a shell counts one.
 #[cfg(not(unix))]
-fn runnable(candidate: &std::path::Path) -> bool {
+pub(crate) fn runnable(candidate: &std::path::Path) -> bool {
     candidate.is_file()
 }
 

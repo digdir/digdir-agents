@@ -167,6 +167,10 @@ pub enum TerminalAttachOutcome {
 pub trait TerminalControl: execution::ExecutionInput {
     /// Changes the terminal's character-cell dimensions.
     fn resize(&self, size: TerminalSize) -> LocalFuture<'_, Result<(), Error>>;
+
+    /// Asks the process to end, as terminating an Execution does, whatever was typed into the
+    /// terminal before.
+    fn terminate(&self) -> LocalFuture<'_, Result<(), Error>>;
 }
 
 /// One event from a live terminal Execution.

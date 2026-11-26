@@ -30,8 +30,6 @@ const INPUT_READY_GRACE: std::time::Duration = std::time::Duration::from_secs(2)
 const LIFECYCLE_EXECUTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const LIFECYCLE_EXECUTION_KILL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const DETACH_KEYS: &str = "ctrl-b,d";
-/// What a relayed terminal types to detach: tmux's own Ctrl-b d, which the status line shows.
-const DETACH_INPUT: &[u8] = b"\x02d";
 
 // Set history-limit before pane creation; reapply on attach for existing servers.
 // Mouse mode routes wheels to copy mode or the application: https://man.openbsd.org/tmux.1#mouse
@@ -412,7 +410,7 @@ async fn open_relayed_terminal(
     }
     let request = StartTerminalExecutionRequest::new(attach_spec(&target.session), size);
     let started = crate::sandbox::start_terminal_execution(home, &target.sandbox, request).await?;
-    Ok(SessionTerminal::new(started, DETACH_INPUT))
+    Ok(SessionTerminal::new(started))
 }
 
 fn attach_arguments(session: &Session) -> Vec<String> {

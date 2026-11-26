@@ -356,6 +356,10 @@ impl terminal::TerminalControl for MicrosandboxExecutionControl {
                 .map_err(error::microsandbox)
         })
     }
+
+    fn terminate(&self) -> LocalFuture<'_, Result<(), Error>> {
+        Box::pin(async move { self.runtime_control.signal(15).await.map_err(error::microsandbox) })
+    }
 }
 
 struct ExecutionGuard {

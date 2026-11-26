@@ -666,7 +666,7 @@ async fn hand_over(
 ) -> Result<OpenOutcome, String> {
     let url = match &launch {
         agent::launch::Launch::Url(url) => Some(url.clone()),
-        agent::launch::Launch::Command { .. } => None,
+        agent::launch::Launch::Command { .. } | agent::launch::Launch::Console { .. } => None,
     };
     if let (Some(url), true) = (&url, copy) {
         return Ok(OpenOutcome {
