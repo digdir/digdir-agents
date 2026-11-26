@@ -78,6 +78,13 @@ Two methods upgrade their connection:
   that is not running, as `attach_terminal` does today, and otherwise starts a tmux client in the sandbox with the
   session's `attach_spec` as a terminal Execution (`SandboxHandle::start_terminal_execution`), at the client's size.
   The result is the `Session`, so a client can title its window.
+
+  Attaching never creates or resumes a session, as `SessionRuntime::attach` promises today. That stays with
+  `sessions.v1.ensure`, which takes the harness, model and initial prompt, so a client calls it first. The GUI can
+  then show a session it listed without carrying what creating one needs. Folding the two into one call would save a
+  call but not change how progress is shown, since `Wait::until` follows an agent's progress alongside any call. A
+  session that goes Idle between the two calls is refused as not running, and the client ensures it again and retries
+  once.
 - `agents.v1.terminal` with the agent, a command and the size, for terminals that are not a session's: the sign-in,
   `agentctl exec -it` and the TUI's shell. `agentd` builds the Execution with `platform::execution_spec`, as the client
   does today. This gives a client no new power, since `agentctl exec` already runs any command in an agent.
@@ -144,6 +151,14 @@ relay from that terminal to stdin and stdout.
   has its own. It sends `resize` when xterm.js resizes and closes the attachment when the WebSocket closes. It never
   opens Microsandbox, and needs neither `agentd`'s home path nor the Provider linked in.
 
+On Windows the relay has to put the console in virtual-terminal input mode, and convert between the console's UTF-16
+and the UTF-8 the sandbox speaks. Microsandbox's attach does that today, in its SDK's `sandbox/terminal/` module, which
+also handles a character split across two reads. agentctl gets a module of its own for it rather than calling
+Microsandbox's, because the host's console is not a sandbox concern and the client should not need the Provider for
+it. Microsandbox's code is Apache-2.0, so agentctl's is written with it as the reference rather than copied into the
+MIT crate. The conversion is unit-tested in the Windows portable-host jobs in `rust.yml`, and attach is tried by
+hand in Windows Terminal and in the classic console before it lands.
+
 ## What goes away
 
 - `AttachTarget.sandbox`, and with it `AttachTarget`: `sessions.v1.ensure` returns the `Session`. `agentd` finds the
@@ -152,10 +167,22 @@ relay from that terminal to stdin and stdout.
 - `agent::sandbox::attach_terminal` and `agent::sandbox::start_terminal_execution`, with their Microsandbox versions in
   `agentctl/src/sandbox/microsandbox/terminal.rs`.
 
+The Sandbox SDK keeps `attach_terminal`, `AttachTerminalRequest` and `TerminalAttachOutcome`. The SDK stands without
+agents, and a program that embeds it and owns its terminal, such as its `worktree` example, still needs them. Only
+agentctl stops calling them.
+
 The client still opens `home/microsandbox` for what is not a terminal: `agentctl exec` without `-t`, the sign-in's
 read of its credential file (`sandbox::start_execution`), and port forwards for `agentctl forward`, SSH and VNC
-(`guest_tcp_dialer`). The same upgraded connection could carry them later with their own frame types. Until then
-`ExecutionTarget.sandbox` stays. The runtime diagram, which says terminals go straight to `msb`, changes with this.
+(`guest_tcp_dialer`). Each moves in a later change, on a connection that its call upgrades:
+
+1. Executions without a terminal, with frames for standard input, output and error and the exit status. The sign-in's
+   credential read moves with them.
+2. Port forwards, with a call that connects to a port in the sandbox and upgrades to the bare byte stream. A TCP
+   stream needs no frames, since the client closing its write side stands for the end of its input.
+
+Keeping them out of this change keeps it to what the GUI needs, and tries the upgraded connection on one kind of
+stream first. Once both have moved, `ExecutionTarget.sandbox` goes and no client opens the sandbox. The runtime
+diagram, which says terminals go straight to `msb`, changes with each.
 
 ## Several clients on one session
 
@@ -170,41 +197,65 @@ attaching at once share it.
 `session_attached` counts `agentd`'s tmux clients like any other. The idle timeout and the upgrade check keep working
 from it unchanged, and still see a person who runs `tmux attach` over SSH.
 
+## Limits
+
+Terminals share two limits with everything else. `agentd` serves at most 128 connections and stops accepting more,
+so a GUI with many tabs open could keep `agentctl` from reaching it at all. Microsandbox admits at most
+`max_executions` Executions per sandbox, 128 by default, and refuses the next one. `agentd`'s own Executions, which
+observe sessions and deliver prompts, count against that too, and a session whose observation is refused goes Failed.
+
+So `agentd` caps terminals itself, at 16 per agent and 64 in all, and refuses the next attachment with an error that
+names the cap. Both leave room under the shared limits for the CLI and the reconcilers. They are starting points, to
+revisit once the GUI shows how many terminals people keep open.
+
+## When agentd stops
+
+An attachment lives in `agentd` now, so it ends when `agentd` does, which a direct Microsandbox attach did not.
+
+An upgrade keeps refusing to start while a session is attached, as it does today. The relay is not why. After an
+upgrade `agentd` relaunches every quiescent session so that its harness runs with the new hooks
+(`relaunch_after_upgrade`), and that would restart the harness under the person using it. `sessions.v1.attach` and
+`agents.v1.terminal` are listed with the mutating methods, so `agentd` also refuses new attachments while it prepares
+for an upgrade, as it refuses `sessions.v1.ensure`. A browser tab left open blocks an upgrade just as a terminal
+window left attached does today, and the refusal names the session either way.
+
+When `agentd` shuts down for another reason, it detaches every relay so the sessions stay, and sends `ended` with an
+error saying it is stopping. When it crashes, Microsandbox ends its Executions for it: the guest agent kills the
+process group of every Execution whose host connection closed (`cleanup_relay_client_range` in Microsandbox's guest
+`agentd`). tmux drops those clients and `session_attached` falls back, so no tmux client outlives `agentd` to keep a
+session from idling. The tmux server runs in a session of its own, so the kill does not reach it. This is what
+already happens when `agentctl attach` is killed. A test that kills `agentd` during an attach confirms it.
+
+A terminal that is not a session's ends with `agentd`, since its program is the Execution. A sign-in in progress
+fails and is run again.
+
+`agentctl attach`, the TUI and the GUI attach again when an attachment ends with an error or without `ended`, once
+`health` reports a compatible `agentd`. tmux redraws the screen, so the person sees a flicker rather than losing the
+session. Against an incompatible `agentd` they say why instead.
+
 ## A client from another build
 
 The Control API takes only a client of the same protocol and build (`DaemonInfo::require_compatible`), and the frames
 are part of the protocol. The change bumps `PROTOCOL_VERSION`, since it adds methods and changes the result of
-`sessions.v1.ensure`. Nothing negotiates frame types, because both ends always come from one build.
-
-An attachment lives in `agentd` now, so it ends when `agentd` does, which a direct Microsandbox attach did not. An
-upgrade still refuses to start while a session is attached, so that case does not change. When `agentd` stops for
-another reason, it detaches every relay so its session stays, and sends `ended` with an error saying it is stopping.
-`sessions.v1.attach` and `agents.v1.terminal` are listed with the mutating methods, so `agentd` refuses new
-attachments while it prepares for an upgrade, as it refuses `sessions.v1.ensure`. A client that loses its attachment
-this way can attach again once `health` reports a compatible `agentd`, and otherwise says why it cannot.
+`sessions.v1.ensure`. Nothing negotiates frame types, because both ends always come from one build. A client still
+running from before an upgrade finds the new `agentd` incompatible when it tries to attach again, and asks the person
+to start it again.
 
 ## Costs
 
-- Every byte of terminal output passes through `agentd`, which runs on one thread with the reconcilers. Terminal
-  traffic is small, but a program that floods its terminal competes with reconciliation. Bounded frames and Tokio's
-  cooperative budget should keep that fair, and it should be measured with a large `cat` before merging.
-- Each attachment holds one of the 128 connections `agentd` serves at once.
+Every byte of terminal output passes through `agentd`, which runs on one thread with the reconcilers. Terminal traffic
+is small, but a program that floods its terminal competes with reconciliation. Bounded frames and Tokio's cooperative
+budget should keep that fair, and it should be measured with a large `cat` before merging.
 
-## Open questions
+## For the maintainers to decide
 
-1. Is an upgraded Control API connection acceptable, so the Control API is no longer only JSON-RPC, or do you prefer
-   a ticket for a second connection despite the cost above?
-2. Should `sessions.v1.attach` ensure the session itself, saving a call, or stay a separate call after
-   `sessions.v1.ensure` so that clients keep showing its progress the way they do now?
-3. What does Microsandbox do with an Execution whose host process is gone? If a tmux client survives `agentd`
-   crashing, it keeps `session_attached` above zero, which holds the session from idling and blocks upgrades. `agentd`
-   would then have to end its own clients when it starts, without touching a tmux client someone started over SSH.
-4. Should an upgrade keep refusing while a session is attached, or should `agentd` detach every relay before it stops
-   and let clients attach again to the new one?
-5. Should exec without a TTY, file reads and port forwards move onto the same upgraded connections in this change, or
-   later, so that no client opens `home/microsandbox` at all?
-6. Should the Sandbox SDK keep `attach_terminal`, `AttachTerminalRequest` and `TerminalAttachOutcome` for other users
-   once agentctl stops using them?
-7. Should terminals have a limit of their own, per session or per `agentd`, apart from the 128 connections?
-8. On Windows, Microsandbox's client set up the console for attach. The shared relay has to read the console's input
-   as VT bytes itself. Is Windows attach supported today, and should it be tested before this lands?
+Each of these is argued where the proposal makes it.
+
+1. [An upgraded connection](#how-a-terminal-crosses-the-control-api) rather than a ticket for a second one, so a
+   connection can leave JSON-RPC after its response.
+2. [Attaching stays separate from ensuring](#what-agentd-runs) a session.
+3. [Upgrades keep refusing](#when-agentd-stops) while a session is attached.
+4. [Executions without a terminal and port forwards move later](#what-goes-away), in that order.
+5. [The Sandbox SDK keeps its terminal attach](#what-goes-away).
+6. [Terminals are capped](#limits) at 16 per agent and 64 in all.
+7. [agentctl gets its own Windows console module](#what-each-client-changes) rather than using Microsandbox's.
