@@ -106,25 +106,26 @@ fn windows_terminal(
     })
 }
 
-/// `program` as a path for Windows to start: as given when it names a folder, or else found on `PATH`.
+/// `program` as a path for Windows to start: as given when it names a folder, or else found on `PATH`, and the
+/// `.exe` when it has no extension.
 ///
-/// Windows looks a program up only when it is given a command line without the program's path, and then in the
-/// current folder before `PATH`, so a bare name is looked up here instead. Without an extension it is the `.exe`, as
-/// Windows would add.
+/// Windows looks a program up and adds `.exe` only when it isn't given the program's path, and then looks in the
+/// current folder before `PATH`. It is given the path, so both are done here.
 fn windows_program(program: &OsStr, variable: &impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, String> {
     let text = program.to_string_lossy();
+    // Read as Windows does on any host, which separates folders with either slash.
+    let file_name = text.rsplit(['\\', '/']).next().unwrap_or_default();
+    let mut program = program.to_owned();
+    if !file_name.contains('.') {
+        program.push(".exe");
+    }
     if text.contains(['\\', '/', ':']) {
         return Ok(program.into());
     }
     let name = program
         .to_str()
         .ok_or_else(|| format!("{text} is not Unicode, so it can't be looked up on PATH"))?;
-    let name = if std::path::Path::new(name).extension().is_some() {
-        name.to_owned()
-    } else {
-        format!("{name}.exe")
-    };
-    crate::local::process::find_executable(variable("PATH").as_deref(), &[&name])
+    crate::local::process::find_executable(variable("PATH").as_deref(), &[name])
         .ok_or_else(|| format!("{name} not found on PATH"))
 }
 
@@ -364,6 +365,30 @@ mod tests {
             assert!(
                 windows_terminal(OsStr::new("missing"), &arguments, &environment(directory.path(), None))
                     .is_err_and(|error| error.contains("missing.exe not found on PATH")),
+            );
+            assert_eq!(
+                windows_terminal(
+                    OsStr::new(r".\bin\agentctl"),
+                    &arguments,
+                    &environment(directory.path(), None)
+                ),
+                Ok(Launch::Console {
+                    program: PathBuf::from(r".\bin\agentctl.exe"),
+                    arguments: arguments.to_vec(),
+                }),
+                "a path without an extension is to the .exe, which Windows only adds when it looks a program up"
+            );
+            assert_eq!(
+                windows_terminal(
+                    OsStr::new(r"C:\my.tools\agentctl"),
+                    &arguments,
+                    &environment(directory.path(), None)
+                ),
+                Ok(Launch::Console {
+                    program: PathBuf::from(r"C:\my.tools\agentctl.exe"),
+                    arguments: arguments.to_vec(),
+                }),
+                "a dot in a folder's name is no extension"
             );
             let wt = runnable(directory.path(), "wt.exe");
             assert_eq!(
