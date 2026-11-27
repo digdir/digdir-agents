@@ -74,17 +74,15 @@ the output, which comes from the untrusted sandbox. It only cuts it into frames.
 
 Two methods upgrade their connection:
 
-- `sessions.v1.attach` with the agent, the session name and the client's terminal size. `agentd` refuses a session
-  that is not running, as `attach_terminal` does today, and otherwise starts a tmux client in the sandbox with the
-  session's `attach_spec` as a terminal Execution (`SandboxHandle::start_terminal_execution`), at the client's size.
-  The result is the `Session`, so a client can title its window.
+- `sessions.v1.attach` with the agent, the session name and the client's terminal size. `agentd` starts a tmux client
+  in the sandbox with the session's `attach_spec` as a terminal Execution (`SandboxHandle::start_terminal_execution`),
+  at the client's size. The result is the `Session`, so a client can title its window.
 
-  Attaching never creates or resumes a session, as `SessionRuntime::attach` promises today. That stays with
-  `sessions.v1.ensure`, which takes the harness, model and initial prompt, so a client calls it first. The GUI can
-  then show a session it listed without carrying what creating one needs. Folding the two into one call would save a
-  call but not change how progress is shown, since `Wait::until` follows an agent's progress alongside any call. A
-  session that goes Idle between the two calls is refused as not running, and the client ensures it again and retries
-  once.
+  Attaching never creates a session. That stays with `sessions.v1.ensure`, which takes the harness, model and
+  initial prompt, so a client that may create one calls it first. The GUI can then show a session it listed without
+  carrying what creating one needs. Folding the two into one call would save a call but not change how progress is
+  shown, since `Wait::until` follows an agent's progress alongside any call. Attaching does resume an Idle session and
+  wait for a Resuming one, as `sessions.v1.prompt` does, so a session that went Idle between the two calls is no error.
 - `agents.v1.terminal` with the agent, a command and the size, for terminals that are not a session's: the sign-in,
   `agentctl exec -it` and the TUI's shell. `agentd` builds the Execution with `platform::execution_spec`, as the client
   does today. This gives a client no new power, since `agentctl exec` already runs any command in an agent.
@@ -187,9 +185,8 @@ diagram, which says terminals go straight to `msb`, changes with each.
 ## Several clients on one session
 
 Each client has its own tmux client, so they see the same session at their own sizes. tmux's `window-size` option,
-`latest` by default, sizes the window for the client that typed last. This needs the separate fix that has
-`parse_observation` read tmux's `session_attached` as a count of clients rather than a flag. Without it, a session
-with two clients reads as an invalid observation and goes Failed.
+`latest` by default, sizes the window for the client that typed last. `parse_observation` reads tmux's
+`session_attached` as a count of clients, so a session with several stays healthy.
 
 Concurrent attaches also stop opening a Microsandbox Provider per attach. `agentd` already has one, so two clients
 attaching at once share it.
