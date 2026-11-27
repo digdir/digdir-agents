@@ -107,7 +107,7 @@ pub(super) fn render(record: &AgentRecord, observed: &Observed<'_>) -> String {
             .map(|(label, text)| (*label, Some(text.clone()))),
     );
     lines.extend([
-        ("Access", access(spec, name)),
+        ("Access", Some(access(spec, name))),
         ("Nested agents", Some(nested_agents(spec, observed).to_owned())),
         ("Changes", Some(CHANGES.to_owned())),
         ("Cleanup", Some(CLEANUP.to_owned())),
@@ -246,7 +246,9 @@ fn network(network: &NetworkSpec) -> String {
     text
 }
 
-fn access(spec: &Spec, name: &str) -> Option<String> {
+/// Every agent can forward a port, whatever its access entries, so the line always names `agentctl port-forward`:
+/// a server the agent starts listens on the sandbox's `localhost`, not on the person's.
+fn access(spec: &Spec, name: &str) -> String {
     let commands = spec
         .access
         .iter()
@@ -255,12 +257,15 @@ fn access(spec: &Spec, name: &str) -> Option<String> {
             AccessSpec::Vnc {} => format!("`agentctl vnc {name}`"),
         })
         .collect::<Vec<_>>();
-    (!commands.is_empty()).then(|| {
+    let forward = format!("`agentctl port-forward {name} PORT`");
+    if commands.is_empty() {
+        format!("people on the host reach a server on this computer's `localhost` with {forward}.")
+    } else {
         format!(
-            "people on the host reach this computer with {}.",
+            "people on the host reach this computer with {}, and a server on its `localhost` with {forward}.",
             commands.join(" and ")
         )
-    })
+    }
 }
 
 const fn nested_agents(spec: &Spec, observed: &Observed<'_>) -> &'static str {
