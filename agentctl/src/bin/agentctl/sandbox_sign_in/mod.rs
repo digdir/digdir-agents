@@ -3,23 +3,18 @@
 //! machine's browser. The credential comes back to the caller, which has agentd keep
 //! it; agents only ever see placeholders.
 
-use std::{collections::BTreeSet, io::Write as _, path::Path, time::Duration};
+use std::{collections::BTreeSet, io::Write as _, time::Duration};
 
 use agent::{
     Error,
-    control_api::{AgentLease, Client},
+    control_api::{AgentLease, Client, Ended},
     control_plane::WaitPolicy,
     local::home::ControlPlaneHome,
-    sandbox::ExecutionTarget,
+    sandbox::{ExecutionTarget, TerminalSpec},
     sign_in::SandboxSignIn,
 };
-use bytes::Bytes;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt as _;
-use sandbox::{
-    execution::{ExecutionEvent, StartExecutionRequest},
-    terminal::{StartTerminalExecutionRequest, TerminalEvent, TerminalSize},
-};
+use sandbox::execution::{ExecutionEvent, Program, StartExecutionRequest};
 use zeroize::Zeroizing;
 
 use crate::CommandResult;
@@ -30,7 +25,9 @@ const START_TIMEOUT: Duration = Duration::from_mins(20);
 /// A running sign-in agent. It is ephemeral, so agentd deletes it once this is dropped or the
 /// process ends, however it ends.
 struct SignInAgent<'a> {
+    client: &'a Client,
     home: &'a ControlPlaneHome,
+    name: String,
     target: ExecutionTarget,
     _lease: AgentLease,
 }
@@ -40,7 +37,7 @@ impl<'a> SignInAgent<'a> {
     /// it, as one line about getting the sign-in ready: the agent is how the sign-in runs, not what
     /// the person asked for.
     async fn start(
-        client: &Client,
+        client: &'a Client,
         home: &'a ControlPlaneHome,
         service: &str,
         sign_in: &SandboxSignIn,
@@ -55,7 +52,9 @@ impl<'a> SignInAgent<'a> {
         let target = client.ensure_execution(&name, WaitPolicy::UntilConverged).await?;
         wait.ready();
         Ok(Self {
+            client,
             home,
+            name,
             target,
             _lease: lease,
         })
@@ -68,15 +67,7 @@ impl<'a> SignInAgent<'a> {
             error: Box::new(error),
             signed_in: false,
         };
-        let base = agent::sandbox::platform::execution_spec(&self.target.operating_system, &["/bin/true".into()], true)
-            .map_err(before)?;
-        let mut spec = sign_in.execution.clone().with_environment(base.environment().clone());
-        if let Some(directory) = base.working_directory() {
-            spec = spec.with_working_directory(directory.clone());
-        }
-        let output = relay(self.home.path(), &self.target, spec, open_links.then_some(sign_in))
-            .await
-            .map_err(before)?;
+        let output = self.relay(sign_in, open_links).await.map_err(before)?;
         // The program signed in, so whatever fails now leaves a credential the host never gets.
         let after = |error: Error| SignInFailure {
             error: Box::new(error),
@@ -89,6 +80,47 @@ impl<'a> SignInAgent<'a> {
         sign_in
             .credential(&output, artifact.as_ref().map(|artifact| artifact.as_slice()))
             .map_err(after)
+    }
+
+    /// Runs `sign_in`'s program in a terminal relayed to this one until it exits, opening each sign-in page it shows
+    /// in this machine's browser with `open_links`, and returns everything it printed.
+    async fn relay(&self, sign_in: &SandboxSignIn, open_links: bool) -> Result<Zeroizing<Vec<u8>>, Error> {
+        let Program::Command { executable, args } = sign_in.execution.program() else {
+            return Err(Error::Invalid("a sign-in runs a command".into()));
+        };
+        let spec = TerminalSpec {
+            command: std::iter::once(executable.as_str().to_owned())
+                .chain(args.iter().cloned())
+                .collect(),
+            environment: sign_in.execution.environment().clone(),
+            working_directory: sign_in
+                .execution
+                .working_directory()
+                .map(|directory| directory.as_str().to_owned()),
+        };
+        let terminal = self
+            .client
+            .open_terminal(&self.name, spec, crate::terminal::size())
+            .await?;
+        let mut output = Zeroizing::new(Vec::new());
+        let mut opened = BTreeSet::new();
+        let ended = crate::terminal::relay(terminal, async |bytes: &[u8]| {
+            output.extend_from_slice(bytes);
+            if open_links {
+                open_new_links(sign_in, &output, &mut opened).await;
+            }
+        })
+        .await?;
+        match ended {
+            Ended::Exited(0) => Ok(output),
+            Ended::Exited(code) => Err(Error::Invalid(format!(
+                "the sign-in ended without signing in (exit code {code})"
+            ))),
+            Ended::Detached => Err(Error::Invalid("the sign-in ended without signing in".into())),
+            Ended::Error(message) => Err(Error::Invalid(format!(
+                "the sign-in ended without signing in: {message}"
+            ))),
+        }
     }
 
     /// The contents of a file in the sign-in agent.
@@ -116,140 +148,24 @@ impl<'a> SignInAgent<'a> {
     }
 }
 
-/// Runs `spec` in a terminal relayed to this one until it exits, opening each of the sign-in pages
-/// of `opens` it shows in this machine's browser, and returns everything it printed.
-async fn relay(
-    home: &Path,
-    target: &ExecutionTarget,
-    spec: sandbox::execution::ExecutionSpec,
-    opens: Option<&SandboxSignIn>,
-) -> Result<Zeroizing<Vec<u8>>, Error> {
-    let size = crossterm::terminal::size()
-        .ok()
-        .and_then(|(columns, rows)| TerminalSize::new(rows, columns).ok())
-        .unwrap_or(TerminalSize::DEFAULT);
-    let started =
-        agent::sandbox::start_terminal_execution(home, &target.sandbox, StartTerminalExecutionRequest::new(spec, size))
-            .await?;
-    let raw = RawMode::enable()?;
-    let result = pump(started, opens).await;
-    drop(raw);
-    let (output, status) = result?;
-    if !status.success() {
-        return Err(Error::Invalid(format!(
-            "the sign-in ended without signing in (exit code {})",
-            status.code
-        )));
-    }
-    Ok(output)
-}
-
-/// This terminal in raw mode, as the relayed program needs it, until dropped, which happens on a
-/// panic too.
-struct RawMode;
-
-impl RawMode {
-    fn enable() -> std::io::Result<Self> {
-        crossterm::terminal::enable_raw_mode()?;
-        Ok(Self)
-    }
-}
-
-impl Drop for RawMode {
-    fn drop(&mut self) {
-        crossterm::terminal::disable_raw_mode().ok();
-        // The program may have hidden the cursor or turned on modes this terminal keeps after it.
-        print!("\x1b[?25h\x1b[?2004l\x1b[0m");
-        std::io::stdout().flush().ok();
-    }
-}
-
-async fn pump(
-    mut started: sandbox::terminal::StartedTerminalExecution,
-    opens: Option<&SandboxSignIn>,
-) -> Result<(Zeroizing<Vec<u8>>, sandbox::execution::ExitStatus), Error> {
-    let mut output = Zeroizing::new(Vec::new());
-    let mut opened = BTreeSet::new();
-    let mut keys = EventStream::new();
-    let mut stdout = std::io::stdout();
-    loop {
-        tokio::select! {
-            event = started.events.next() => match event.transpose()? {
-                Some(TerminalEvent::Output(bytes)) => {
-                    stdout.write_all(&bytes)?;
-                    stdout.flush()?;
-                    output.extend_from_slice(&bytes);
-                    let links = opens.map(|sign_in| sign_in.links(&output)).unwrap_or_default();
-                    for link in links {
-                        if !opened.insert(link.to_string()) {
-                            continue;
-                        }
-                        // Written among what the program draws, which it may draw over, but the
-                        // person would otherwise wait for a page that never opens.
-                        if let Err(error) = crate::launch::open_url(link.as_str()).await {
-                            write!(stdout, "\r\n(The sign-in page did not open: {error}. Open the link in your browser.)\r\n")?;
-                            stdout.flush()?;
-                        }
-                    }
-                }
-                Some(TerminalEvent::Exited(status)) => return Ok((output, status)),
-                Some(TerminalEvent::Failed { message }) => return Err(Error::Invalid(message)),
-                Some(_) => {}
-                None => return Err(Error::Invalid("the sign-in's terminal closed".into())),
-            },
-            key = keys.next() => match key {
-                Some(Ok(Event::Key(key))) => {
-                    if let Some(bytes) = key_bytes(key) {
-                        started.control.write_input(Bytes::from(bytes)).await?;
-                    }
-                }
-                Some(Ok(Event::Paste(text))) => started.control.write_input(Bytes::from(text.into_bytes())).await?,
-                Some(Ok(Event::Resize(columns, rows))) => {
-                    if let Ok(size) = TerminalSize::new(rows, columns) {
-                        started.control.resize(size).await.ok();
-                    }
-                }
-                Some(Ok(_)) => {}
-                Some(Err(error)) => return Err(error.into()),
-                None => started.control.close_input().await?,
-            },
+/// Opens each sign-in page `output` shows that is not in `opened` yet in this machine's browser.
+async fn open_new_links(sign_in: &SandboxSignIn, output: &[u8], opened: &mut BTreeSet<String>) {
+    for link in sign_in.links(output) {
+        if !opened.insert(link.to_string()) {
+            continue;
+        }
+        // Written among what the program draws, which it may draw over, but the person would
+        // otherwise wait for a page that never opens.
+        if let Err(error) = crate::launch::open_url(link.as_str()).await {
+            let mut stdout = std::io::stdout();
+            write!(
+                stdout,
+                "\r\n(The sign-in page did not open: {error}. Open the link in your browser.)\r\n"
+            )
+            .ok();
+            stdout.flush().ok();
         }
     }
-}
-
-/// The bytes a terminal sends for `key`, as the program on the other side expects them.
-fn key_bytes(key: KeyEvent) -> Option<Vec<u8>> {
-    if key.kind == KeyEventKind::Release {
-        return None;
-    }
-    // Windows reports a character typed with AltGr, such as `@` on a Norwegian keyboard, as one
-    // with Control and Alt held.
-    let control = key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT);
-    let alt = key.modifiers.contains(KeyModifiers::ALT) && !key.modifiers.contains(KeyModifiers::CONTROL);
-    let bytes = match key.code {
-        KeyCode::Char(character) if control => {
-            let byte = u8::try_from(character.to_ascii_lowercase()).ok()?;
-            vec![byte & 0x1f]
-        }
-        KeyCode::Char(character) if alt => format!("\x1b{character}").into_bytes(),
-        KeyCode::Char(character) => character.to_string().into_bytes(),
-        KeyCode::Enter => b"\r".to_vec(),
-        KeyCode::Backspace => vec![0x7f],
-        KeyCode::Tab => b"\t".to_vec(),
-        KeyCode::Esc => vec![0x1b],
-        KeyCode::Up => b"\x1b[A".to_vec(),
-        KeyCode::Down => b"\x1b[B".to_vec(),
-        KeyCode::Right => b"\x1b[C".to_vec(),
-        KeyCode::Left => b"\x1b[D".to_vec(),
-        KeyCode::Home => b"\x1b[H".to_vec(),
-        KeyCode::End => b"\x1b[F".to_vec(),
-        KeyCode::Delete => b"\x1b[3~".to_vec(),
-        KeyCode::PageUp => b"\x1b[5~".to_vec(),
-        KeyCode::PageDown => b"\x1b[6~".to_vec(),
-        KeyCode::BackTab => b"\x1b[Z".to_vec(),
-        _ => return None,
-    };
-    Some(bytes)
 }
 
 /// Why a sign-in gave no credential.
@@ -279,48 +195,4 @@ pub(crate) async fn sign_in(
         Some(reason) => println!("No browser here would reach you: {reason}. Open the link it shows in a browser."),
     }
     Ok(agent.run(sign_in, blocked.is_none()).await)
-}
-
-#[cfg(test)]
-mod tests {
-    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-
-    use super::key_bytes;
-
-    #[test]
-    fn keys_reach_the_program_as_a_terminal_sends_them() {
-        let press = |code, modifiers| KeyEvent::new(code, modifiers);
-        assert_eq!(
-            key_bytes(press(KeyCode::Char('a'), KeyModifiers::NONE)),
-            Some(b"a".to_vec())
-        );
-        assert_eq!(
-            key_bytes(press(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-            Some(vec![0x03])
-        );
-        assert_eq!(
-            key_bytes(press(KeyCode::Enter, KeyModifiers::NONE)),
-            Some(b"\r".to_vec())
-        );
-        assert_eq!(
-            key_bytes(press(KeyCode::Left, KeyModifiers::NONE)),
-            Some(b"\x1b[D".to_vec())
-        );
-        assert_eq!(
-            key_bytes(press(KeyCode::Char('@'), KeyModifiers::CONTROL | KeyModifiers::ALT)),
-            Some(b"@".to_vec()),
-            "AltGr on Windows types the character"
-        );
-        assert_eq!(
-            key_bytes(press(KeyCode::Char('b'), KeyModifiers::ALT)),
-            Some(b"\x1bb".to_vec())
-        );
-        assert_eq!(
-            key_bytes(press(KeyCode::Delete, KeyModifiers::NONE)),
-            Some(b"\x1b[3~".to_vec())
-        );
-        let mut release = press(KeyCode::Char('a'), KeyModifiers::NONE);
-        release.kind = KeyEventKind::Release;
-        assert_eq!(key_bytes(release), None);
-    }
 }

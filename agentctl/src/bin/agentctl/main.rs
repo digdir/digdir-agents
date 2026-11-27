@@ -30,6 +30,7 @@ mod sandbox_sign_in;
 mod secret;
 mod self_update;
 mod skills;
+mod terminal;
 mod tui;
 mod update;
 mod watch;
