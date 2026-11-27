@@ -72,6 +72,9 @@ the tests start with Compose, `browser` for browser tests, `desktop` for the des
 
 - **Pin each tool to the version the repository pins**, in `global.json`, `.nvmrc`, `rust-toolchain.toml`, `go.mod`
   or its CI workflows, and check each download's checksum, so the agent gets the results CI gets.
+- **Bring what a downloaded tool needs to run**, and run it once in the step that installs it, as the base images'
+  README says. A tool that does not come from an Ubuntu package brings none of the libraries it depends on, and the
+  base images have only what every agent needs.
 - **Install outside `/home/agent`.** agentd copies the home overlay over it on every reconcile, and a cache a root
   step leaves there locks the agent out of it.
 - **Trust the mediated CA in build steps** that download through Node or Python, as the base images' README says,

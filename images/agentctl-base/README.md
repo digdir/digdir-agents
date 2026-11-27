@@ -40,6 +40,11 @@ RUN agent-image-check
 USER agent
 ```
 
+- The images hold what every agent needs, not what one language or tool needs to run. A package from Ubuntu brings
+  the libraries its tool depends on, while a tool you download brings none, so install those libraries with it. Run
+  the tool once in the step that installs it. A missing library then stops the build there, with the tool's own
+  message. .NET from a download aborts without ICU, for example, as the
+  [.NET example's Dockerfile](../../agents/examples/dotnet-dev/Dockerfile) says.
 - `HOME` is `/home/agent` in every stage, so remove caches a root build step writes there, such as npm's.
   `agent-image-check` reports what is left.
 - When an agent builds the image, a build step that downloads through Node must trust the agent's mediated CA. Start
