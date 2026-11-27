@@ -278,6 +278,25 @@ impl Service {
         self.runtime.turns(&session, &sandbox, last).await
     }
 
+    /// Starts a terminal showing a session, for agentd to relay to a client. An Idle session is resumed first and a
+    /// resuming one waited for, as a prompt does. It never creates a session. Returns the session as it is then, and
+    /// the sandbox the terminal runs in.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session is archived, its agent is stopped, it cannot be resumed or the terminal
+    /// cannot start.
+    pub async fn attach(
+        &self,
+        agent: &str,
+        name: &SessionName,
+        size: ::sandbox::terminal::TerminalSize,
+    ) -> Result<(Session, SandboxHandle, ::sandbox::terminal::StartedTerminalExecution), Error> {
+        let (session, sandbox) = self.open_running(agent, name).await?;
+        let terminal = self.runtime.terminal(&session, &sandbox, size).await?;
+        Ok((session, sandbox, terminal))
+    }
+
     /// Opens a session's sandbox to take input. An Idle session's harness is resumed first, as an
     /// attach resumes it, so a client without a terminal can go on with the conversation. A
     /// session already resuming is waited for: the controller runs one pass at a time per session,

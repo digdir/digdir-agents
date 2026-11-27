@@ -530,6 +530,17 @@ impl super::SessionRuntime for Tmux {
         Box::pin(turns(session, sandbox, last))
     }
 
+    fn terminal<'a>(
+        &'a self,
+        session: &'a Session,
+        sandbox: &'a SandboxHandle,
+        size: ::sandbox::terminal::TerminalSize,
+    ) -> ::sandbox::LocalFuture<'a, Result<::sandbox::terminal::StartedTerminalExecution, Error>> {
+        // tmux's client takes SIGTERM as a detach, so terminating this Execution leaves the session running.
+        let request = ::sandbox::terminal::StartTerminalExecutionRequest::new(attach_spec(session), size);
+        Box::pin(async move { Ok(sandbox.start_terminal_execution(request).await?) })
+    }
+
     fn attach<'a>(
         &'a self,
         home: &'a std::path::Path,
@@ -994,7 +1005,7 @@ mod tests {
         }
 
         #[test]
-        #[ignore = "requires Node.js, tmux and script; exercises scrollback, UTF-8 and detaching in an isolated terminal server"]
+        #[ignore = "requires Node.js, tmux and script; exercises scrollback, UTF-8, detaching and SIGTERM in an isolated terminal server"]
         fn scrollback_in_a_real_terminal() {
             let session = test_session(crate::ModelSelection::default());
             let output = std::process::Command::new("node")

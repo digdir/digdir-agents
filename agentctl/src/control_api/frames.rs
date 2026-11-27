@@ -3,7 +3,7 @@
 //! Each frame is a type byte, a big-endian `u32` payload length and the payload. Output stays raw bytes, as it can end
 //! inside a UTF-8 character and is nearly all of the traffic. `agentd` never interprets it, only cuts it into frames.
 
-use std::{collections::BTreeMap, io};
+use std::io;
 
 use bytes::{Buf as _, Bytes, BytesMut};
 use sandbox::terminal::TerminalSize;
@@ -99,17 +99,6 @@ impl Ended {
             EndedJson { .. } => Err(invalid("an ended frame must say exactly one reason")),
         }
     }
-}
-
-/// The command, environment and folder of a terminal that is not a session's.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct TerminalSpec {
-    /// The program and its arguments.
-    pub command: Vec<String>,
-    /// Variables set on top of the agent's own.
-    pub environment: BTreeMap<String, String>,
-    /// Where the program starts, when not the agent's default.
-    pub working_directory: Option<String>,
 }
 
 /// Writes one frame and flushes it, so a keystroke or its echo is not held back.

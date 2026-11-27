@@ -32,7 +32,8 @@ use super::protocol::{
     AgentTerminalParams, METHOD_AGENT_TERMINAL, METHOD_SECRET_LIST, METHOD_SECRET_REMOVE, METHOD_SECRET_SET,
     METHOD_SESSION_ATTACH, SecretRemoveResult, SecretSetParams, SessionAttachParams,
 };
-use super::{relay::Terminal, terminal::TerminalSpec};
+use super::relay::Terminal;
+use crate::sandbox::TerminalSpec;
 
 /// Quiet period after a change before a progress reply, so a burst of byte
 /// progress costs one reply.

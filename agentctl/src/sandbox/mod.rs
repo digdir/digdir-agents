@@ -18,7 +18,7 @@ pub mod platform;
 pub mod responsiveness;
 mod trim;
 
-pub use execution::{ExecutionService, ExecutionTarget, start_execution};
+pub use execution::{ExecutionService, ExecutionTarget, TerminalSpec, start_execution};
 pub use microsandbox::{GuestConnection, GuestDialer};
 pub use responsiveness::UNRESPONSIVE_AFTER;
 pub use trim::{TRIM_INTERVAL, TRIM_SCRIPT, Trimmer};

@@ -135,6 +135,19 @@ exec sleep 120
   assert.ok(tmux("capture-pane", "-p", "-t", "=utf8:").includes(text), "the session survives detaching");
   console.log("PASS: the attach environment renders UTF-8 and hyperlinks; the detach keys detach and the session survives");
 
+  // agentd detaches a client by terminating its Execution. tmux's client takes SIGTERM as a detach and exits with
+  // code 1, which agentd reports as detached since it asked for it. `script -e` passes that code on.
+  client = spawn("script", ["-e", "-q", "-c", utf8Command, "/dev/null"], { env: clientEnv, stdio: ["pipe", "ignore", "ignore"] });
+  await until(() => format("=utf8:", "session_attached") === "1");
+  const terminated = new Promise((resolve) => client.once("exit", resolve));
+  process.kill(Number(tmux("list-clients", "-t", "=utf8:", "-F", "#{client_pid}")), "SIGTERM");
+  const terminationTimedOut = setTimeout(5000).then(() => assert.fail("SIGTERM did not end the client"));
+  assert.equal(await Promise.race([terminated, terminationTimedOut]), 1, "tmux's client exits with code 1 on SIGTERM");
+  client = undefined;
+  assert.equal(format("=utf8:", "session_attached"), "0");
+  assert.ok(tmux("capture-pane", "-p", "-t", "=utf8:").includes(text), "the session survives SIGTERM to its client");
+  console.log("PASS: SIGTERM to a client detaches it and the session survives");
+
 } finally {
   client?.kill();
   try { tmux("kill-server"); } finally { await rm(directory, { recursive: true, force: true }); }

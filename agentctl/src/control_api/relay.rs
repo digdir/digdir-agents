@@ -15,8 +15,8 @@ use tokio::{
 use crate::Error;
 
 use super::{
+    frames::{Ended, Frame, FrameReader, output_frames, write_frame},
     server::Server,
-    terminal::{Ended, Frame, FrameReader, output_frames, write_frame},
 };
 
 /// How long a program has to exit after it is asked to, before it is killed. tmux's client detaches at once on

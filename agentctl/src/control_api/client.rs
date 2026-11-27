@@ -6,6 +6,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::{Agent, Error, control_plane, control_plane::WaitPolicy, harness, sessions};
 
+use super::frames::{Ended, Frame, FrameReader, write_frame};
 use super::protocol::{
     AccountLoginParams, AccountLogoutResult, AccountParams, AgentListParams, CODE_EXPOSED_FILES, DaemonInfo,
     DefinitionListParams, DirectoryParams, ExecutionEnsureParams, ExposedFilesParams, JSON_RPC_VERSION, LoginParams,
@@ -25,7 +26,7 @@ use super::protocol::{
 use super::protocol::{
     AgentTerminalParams, METHOD_AGENT_TERMINAL, METHOD_SESSION_ATTACH, SessionAttachParams, TerminalSizeParams,
 };
-use super::terminal::{Ended, Frame, FrameReader, TerminalSpec, write_frame};
+use crate::sandbox::TerminalSpec;
 
 /// A byte stream usable by the Control API client.
 pub trait Connection: AsyncRead + AsyncWrite + Unpin {}
@@ -904,7 +905,7 @@ impl TerminalInput {
     pub async fn input(&mut self, bytes: bytes::Bytes) -> Result<(), Error> {
         let mut rest = bytes;
         loop {
-            let piece = rest.split_to(rest.len().min(super::terminal::MAX_FRAME_PAYLOAD));
+            let piece = rest.split_to(rest.len().min(super::frames::MAX_FRAME_PAYLOAD));
             write_frame(&mut self.writer, &Frame::Input(piece)).await?;
             if rest.is_empty() {
                 return Ok(());

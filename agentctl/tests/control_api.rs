@@ -13,14 +13,14 @@ use agent::{
     accounts::AccountType,
     control_api::{
         AccountsApi, AuthenticationApi, Client, Connection, Connector, ConvergenceApi, Ended, ExecutionApi, Output,
-        SecretsApi, Server, SessionApi, SshAccessApi, Terminal, TerminalApi, TerminalProcess, TerminalSpec,
-        VncAccessApi, VolumeApi,
+        SecretsApi, Server, SessionApi, SshAccessApi, Terminal, TerminalApi, TerminalProcess, VncAccessApi, VolumeApi,
     },
     control_plane::WaitPolicy,
     control_plane::{ApplyRequest, ControlPlane, HostDisk, memory::InMemoryAgentStore},
     harness::{ImportedAuthentication, LoginName},
     local::disk::{DiskSpace, LowDiskThreshold},
     resources::Changes,
+    sandbox::TerminalSpec,
 };
 use sandbox::LocalFuture;
 use tokio::{
