@@ -73,9 +73,9 @@ for a new one and keeps each client's size.
 
 | | How it travels |
 | --- | --- |
-| Input | An `input` frame is written to the Execution. Microsandbox applies backpressure there, so a fast paste waits rather than piles up. |
+| Input | An `input` frame is written to the Execution. Microsandbox applies backpressure there, so a fast paste waits rather than piles up. Input and output each wait on their own, so a program that takes no input while it draws still draws. |
 | Resize | A `resize` frame resizes the Execution's terminal. The size in the request is the Execution's initial size, so the first screen is drawn at the right size. |
-| Output | The Execution's output becomes `output` frames. `agentd` stops reading it while a write to a slow client waits, which pushes back on the Execution. |
+| Output | The Execution's output becomes `output` frames. `agentd` stops reading it while a write to a slow client waits, which pushes back on the Execution. A client that stops reading still gets detached when `agentd` stops. |
 | Exit | The Execution's exit becomes `ended` with the exit code. A tmux client exits when someone detaches it with `Ctrl-b d` or when the session ends. |
 
 ## Detaching
@@ -91,7 +91,7 @@ as detached, since it asked for it. The real-tmux test in `tests/tmux_scrollback
 `detach` exists alongside closing because a client that keeps its terminal wants it put back. When tmux exits on
 `SIGTERM` it writes the sequences that leave the alternate screen and turn off the modes it set. A client that sends
 `detach` gets those as `output`, then `ended` with `{"detached": true}`. A client that just closes, such as a closed
-browser tab, needs none of that. `agentctl` sends `detach` when its terminal is closed or it gets `SIGTERM`.
+browser tab or a killed `agentctl`, needs none of that.
 
 For a terminal that is not a session's there is nothing to keep. An interactive shell ignores `SIGTERM`, so the kill
 is what ends it.

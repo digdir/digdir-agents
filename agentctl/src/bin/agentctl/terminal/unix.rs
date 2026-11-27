@@ -16,16 +16,11 @@ use super::Local;
 /// The most bytes one read takes, which is more than a paste usually sends at once.
 const READ_SIZE: usize = 16 * 1024;
 
-/// This terminal's input, size changes and the signals that end a relay.
-///
-/// tokio keeps handling a signal once it has been asked to, so after a relay `SIGTERM` and `SIGHUP` no longer end
-/// the process by themselves, as `SIGINT` already does not.
+/// This terminal's input and size changes.
 pub(super) struct Input {
     tty: AsyncFd<File>,
     buffer: Vec<u8>,
     resized: Signal,
-    terminated: Signal,
-    hung_up: Signal,
 }
 
 impl Input {
@@ -57,8 +52,6 @@ impl Input {
             tty,
             buffer: vec![0; READ_SIZE],
             resized: signal(SignalKind::window_change())?,
-            terminated: signal(SignalKind::terminate())?,
-            hung_up: signal(SignalKind::hangup())?,
         })
     }
 
@@ -78,8 +71,6 @@ impl Input {
                     }
                 }
                 _ = self.resized.recv() => return Ok(Some(Local::Resize(super::size()))),
-                _ = self.terminated.recv() => return Ok(Some(Local::Leave)),
-                _ = self.hung_up.recv() => return Ok(Some(Local::Leave)),
             }
         }
     }

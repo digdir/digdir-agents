@@ -166,11 +166,6 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
         }
     }
 
-    /// The stream, to write to when it is one.
-    pub(crate) const fn get_mut(&mut self) -> &mut R {
-        &mut self.reader
-    }
-
     /// The next frame, or `None` when the stream ends between frames.
     ///
     /// # Errors

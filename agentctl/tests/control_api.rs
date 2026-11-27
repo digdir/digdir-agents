@@ -1869,6 +1869,8 @@ struct FakeTerminals {
     calls: Rc<RefCell<Vec<String>>>,
     /// The program ignores `SIGTERM`, as an interactive shell does.
     stubborn: bool,
+    /// The program takes no input, so a write to it never completes.
+    deaf: bool,
     /// Draws this as soon as it starts.
     greeting: Option<&'static [u8]>,
     /// Each program started, to make it draw or exit by itself.
@@ -1880,6 +1882,7 @@ type ProgramEvents = tokio::sync::mpsc::UnboundedSender<Result<sandbox::terminal
 struct FakeControl {
     events: ProgramEvents,
     calls: Rc<RefCell<Vec<String>>>,
+    deaf: bool,
 }
 
 struct FakeProcess {
@@ -1906,6 +1909,7 @@ impl FakeTerminals {
             control: Rc::new(FakeControl {
                 events: events.clone(),
                 calls: self.calls.clone(),
+                deaf: self.deaf,
             }),
             events: Box::pin(futures_util::stream::unfold(receiver, |mut receiver| async move {
                 receiver.recv().await.map(|event| (event, receiver))
@@ -1936,6 +1940,9 @@ impl FakeTerminals {
 
 impl sandbox::execution::ExecutionInput for FakeControl {
     fn write_input(&self, bytes: bytes::Bytes) -> LocalFuture<'_, Result<(), sandbox::Error>> {
+        if self.deaf {
+            return Box::pin(std::future::pending());
+        }
         let _sent = self.events.send(Ok(sandbox::terminal::TerminalEvent::Output(bytes)));
         Box::pin(async { Ok(()) })
     }
@@ -2281,4 +2288,61 @@ async fn agentd_stopping_ends_a_terminal_and_says_why() {
         Output::Ended(Ended::Error("agentd is stopping".into()))
     );
     assert!(terminals.calls().contains(&"terminate".to_owned()));
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_program_that_takes_no_input_still_draws_and_can_be_detached() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals {
+        deaf: true,
+        ..FakeTerminals::default()
+    });
+    let (_session, terminal) = fixture
+        .client
+        .attach_session("worker", session_name("main"), terminal_size(24, 80))
+        .await
+        .expect("attach");
+    let (mut input, mut output) = terminal.split();
+
+    input.input(bytes::Bytes::from_static(b"pasted")).await.expect("input");
+    terminals.programs.borrow()[0]
+        .send(Ok(sandbox::terminal::TerminalEvent::Output(bytes::Bytes::from_static(
+            b"busy",
+        ))))
+        .expect("program");
+    assert_eq!(output.next().await.expect("output"), drew(b"busy"));
+
+    input.detach().await.expect("detach");
+    assert_eq!(output.next().await.expect("last output"), drew(b"bye"));
+    assert_eq!(output.next().await.expect("ended"), Output::Ended(Ended::Detached));
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_client_that_stops_reading_does_not_keep_agentd_from_stopping() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals {
+        stubborn: true,
+        ..FakeTerminals::default()
+    });
+    let spec = TerminalSpec {
+        command: vec!["yes".into()],
+        ..TerminalSpec::default()
+    };
+    let _unread = fixture
+        .client
+        .open_terminal("worker", spec, terminal_size(24, 80))
+        .await
+        .expect("open");
+    // Far more than the connection holds, so the relay waits on the client.
+    for _ in 0..32 {
+        terminals.programs.borrow()[0]
+            .send(Ok(sandbox::terminal::TerminalEvent::Output(bytes::Bytes::from(
+                vec![b'y'; 64 * 1024],
+            ))))
+            .expect("program");
+    }
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    fixture.client.shutdown_for_upgrade().await.expect("shutdown");
+
+    terminals.wait_for("terminate").await;
+    terminals.wait_for("kill").await;
 }

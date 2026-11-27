@@ -861,6 +861,9 @@ impl Client {
 
 /// A terminal `agentd` relays to this client; see [`Client::attach_session`] and [`Client::open_terminal`].
 ///
+/// Keep reading the output while sending input. A program that is busy drawing may take no input until its output is
+/// read, and input waits for the program to take it.
+///
 /// `agentd` takes the connection closing as a detach, which happens once both halves are dropped.
 pub struct RemoteTerminal {
     stream: BufReader<Box<dyn Connection>>,

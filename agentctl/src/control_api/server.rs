@@ -829,9 +829,10 @@ impl Server {
                 match self.open_terminal(request).await {
                     // The connection carries the terminal from here on, and closes when it ends.
                     Ok((response, terminal)) => {
-                        write_response(stream.get_mut(), &response, None).await?;
+                        // A client already gone is the relay's to notice, so that the terminal it started stops.
+                        let answered = write_response(stream.get_mut(), &response, None).await;
                         super::relay::serve(stream, terminal, self).await;
-                        return Ok(());
+                        return answered;
                     }
                     Err(response) => {
                         write_response(stream.get_mut(), &response, None).await?;

@@ -14,7 +14,7 @@ use std::{io::Write as _, time::Duration};
 
 use agent::{
     Error,
-    control_api::{Client, Ended, Output, RemoteTerminal},
+    control_api::{Client, Ended, Output, RemoteTerminal, TerminalInput},
     local::home::ControlPlaneHome,
     sandbox::TerminalSpec,
     sessions::SessionName,
@@ -32,8 +32,6 @@ enum Local {
     Input(Bytes),
     /// The terminal changed size.
     Resize(TerminalSize),
-    /// The person is leaving, such as by closing the terminal window.
-    Leave,
 }
 
 /// Attaches this terminal to the session `name` of `agent` until the person detaches or the session ends. When
@@ -111,7 +109,8 @@ pub(crate) fn size() -> TerminalSize {
 /// Relays this terminal to `terminal` until agentd says it ended, and returns why. `on_output` sees each piece of
 /// output after it is drawn.
 ///
-/// Closing this terminal, or a `SIGTERM`, detaches, and agentd then puts the terminal back before it ends.
+/// The relay keeps drawing output while it sends input, since a program that is busy drawing may not take input
+/// until its output is read. When this process ends, however it ends, its connection closes, and agentd detaches it.
 ///
 /// # Errors
 ///
@@ -119,7 +118,10 @@ pub(crate) fn size() -> TerminalSize {
 pub(crate) async fn relay(terminal: RemoteTerminal, mut on_output: impl AsyncFnMut(&[u8])) -> Result<Ended, Error> {
     let mut local = Input::open()?;
     let _raw = RawMode::enable()?;
-    let (mut input, mut output) = terminal.split();
+    let (input, mut output) = terminal.split();
+    // The input, while nothing is on its way to agentd.
+    let mut idle = Some(input);
+    let mut sending: Option<Sending> = None;
     let mut stdout = std::io::stdout();
     let mut leaving = false;
     loop {
@@ -132,15 +134,37 @@ pub(crate) async fn relay(terminal: RemoteTerminal, mut on_output: impl AsyncFnM
                 }
                 Output::Ended(ended) => return Ok(ended),
             },
-            event = local.next(), if !leaving => match event? {
-                Some(Local::Input(bytes)) => input.input(bytes).await?,
-                Some(Local::Resize(size)) => input.resize(size).await?,
-                Some(Local::Leave) | None => {
-                    input.detach().await?;
-                    leaving = true;
-                }
-            },
+            (input, sent) = in_flight(&mut sending) => {
+                sending = None;
+                sent?;
+                idle = Some(input);
+            }
+            event = local.next(), if !leaving && sending.is_none() => {
+                let event = event?;
+                let Some(mut input) = idle.take() else { continue };
+                leaving = event.is_none();
+                sending = Some(Box::pin(async move {
+                    let sent = match event {
+                        Some(Local::Input(bytes)) => input.input(bytes).await,
+                        Some(Local::Resize(size)) => input.resize(size).await,
+                        // This terminal's input ended, so nothing more can be typed.
+                        None => input.detach().await,
+                    };
+                    (input, sent)
+                }));
+            }
         }
+    }
+}
+
+/// Input on its way to agentd, which gives the input back once it is sent.
+type Sending = std::pin::Pin<Box<dyn std::future::Future<Output = (TerminalInput, Result<(), Error>)>>>;
+
+/// Completes with what `pending` completes with, and never when there is nothing pending.
+async fn in_flight(pending: &mut Option<Sending>) -> (TerminalInput, Result<(), Error>) {
+    match pending {
+        Some(pending) => pending.await,
+        None => std::future::pending().await,
     }
 }
 

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt as _};
 
 /// Control API version, independent of the JSON-RPC envelope.
-pub const PROTOCOL_VERSION: &str = "v7";
+pub const PROTOCOL_VERSION: &str = "v6";
 pub(crate) const JSON_RPC_VERSION: &str = "2.0";
 
 pub(crate) const METHOD_APPLY: &str = "agents.v1.apply";
