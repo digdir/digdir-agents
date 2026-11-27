@@ -29,8 +29,10 @@ use super::protocol::{
     error_response, read_message,
 };
 use super::protocol::{
-    METHOD_SECRET_LIST, METHOD_SECRET_REMOVE, METHOD_SECRET_SET, SecretRemoveResult, SecretSetParams,
+    AgentTerminalParams, METHOD_AGENT_TERMINAL, METHOD_SECRET_LIST, METHOD_SECRET_REMOVE, METHOD_SECRET_SET,
+    METHOD_SESSION_ATTACH, SecretRemoveResult, SecretSetParams, SessionAttachParams,
 };
+use super::{relay::Terminal, terminal::TerminalSpec};
 
 /// Quiet period after a change before a progress reply, so a burst of byte
 /// progress costs one reply.
@@ -553,6 +555,25 @@ impl ExecutionApi for crate::sandbox::ExecutionService {
     }
 }
 
+/// Terminals a client drives over its connection; see [`Terminal`].
+pub trait TerminalApi {
+    /// Attaches to a session's program, resuming the session when it is idle, and returns the session as it is then.
+    fn attach_session<'a>(
+        &'a self,
+        agent: &'a str,
+        name: &'a sessions::SessionName,
+        size: sandbox::terminal::TerminalSize,
+    ) -> LocalFuture<'a, Result<(sessions::Session, Terminal), Error>>;
+
+    /// Starts a program of its own in an agent's sandbox, such as a shell.
+    fn open<'a>(
+        &'a self,
+        agent: &'a str,
+        spec: TerminalSpec,
+        size: sandbox::terminal::TerminalSize,
+    ) -> LocalFuture<'a, Result<Terminal, Error>>;
+}
+
 /// SSH access descriptors exposed through the local control API.
 pub trait SshAccessApi {
     /// Describes the SSH access of a named agent.
@@ -663,6 +684,7 @@ pub struct Server {
     volumes: Option<Rc<dyn VolumeApi>>,
     accounts: Option<Rc<dyn AccountsApi>>,
     secrets: Option<Rc<dyn SecretsApi>>,
+    terminals: Option<Rc<dyn TerminalApi>>,
     changes: Changes,
     on_error: ErrorHandler,
     lifecycle: Lifecycle,
@@ -697,6 +719,7 @@ impl Server {
             volumes: None,
             accounts: None,
             secrets: None,
+            terminals: None,
             changes,
             on_error,
             lifecycle: Lifecycle::default(),
@@ -721,6 +744,13 @@ impl Server {
     #[must_use]
     pub fn with_secrets(mut self, secrets: Rc<dyn SecretsApi>) -> Self {
         self.secrets = Some(secrets);
+        self
+    }
+
+    /// Serves terminals as well.
+    #[must_use]
+    pub fn with_terminals(mut self, terminals: Rc<dyn TerminalApi>) -> Self {
+        self.terminals = Some(terminals);
         self
     }
 
@@ -794,6 +824,20 @@ impl Server {
                     return Err(Error::Json(error));
                 }
             };
+            if upgrades_connection(&request.method) {
+                match self.open_terminal(request).await {
+                    // The connection carries the terminal from here on, and closes when it ends.
+                    Ok((response, terminal)) => {
+                        write_response(stream.get_mut(), &response, None).await?;
+                        super::relay::serve(stream, terminal, self).await;
+                        return Ok(());
+                    }
+                    Err(response) => {
+                        write_response(stream.get_mut(), &response, None).await?;
+                        continue;
+                    }
+                }
+            }
             let method = request.method.clone();
             let response = if ends_with_its_client(&request.method) {
                 // A reply that is ready wins over a client that has half-closed.
@@ -823,17 +867,29 @@ impl Server {
         }
     }
 
-    async fn handle(&self, request: Request, owned: &std::cell::RefCell<Vec<crate::AgentId>>) -> Response {
+    /// Refuses a request that is not JSON-RPC 2.0, and a change while agentd prepares for an upgrade. The guard
+    /// holds the upgrade back until the change is made.
+    fn admit(&self, request: &Request) -> Result<Option<MutationGuard<'_>>, Response> {
         if request.jsonrpc != JSON_RPC_VERSION || request.method.is_empty() {
-            return error_response(request.id, CODE_INVALID_REQUEST, "invalid JSON-RPC 2.0 request");
+            return Err(error_response(
+                request.id,
+                CODE_INVALID_REQUEST,
+                "invalid JSON-RPC 2.0 request",
+            ));
         }
-        let _mutation = if is_mutating(&request.method) {
-            let Some(mutation) = self.lifecycle.admit_mutation() else {
-                return error_response(request.id, CODE_UPDATING, "Agent daemon is preparing for an upgrade");
-            };
-            Some(mutation)
-        } else {
-            None
+        if !is_mutating(&request.method) {
+            return Ok(None);
+        }
+        self.lifecycle
+            .admit_mutation()
+            .map(Some)
+            .ok_or_else(|| error_response(request.id, CODE_UPDATING, "Agent daemon is preparing for an upgrade"))
+    }
+
+    async fn handle(&self, request: Request, owned: &std::cell::RefCell<Vec<crate::AgentId>>) -> Response {
+        let _mutation = match self.admit(&request) {
+            Ok(mutation) => mutation,
+            Err(response) => return response,
         };
         match request.method.as_str() {
             METHOD_APPLY => self.handle_apply(request.id, request.params).await,
@@ -896,6 +952,50 @@ impl Server {
             METHOD_VOLUME_DELETE => self.handle_volume_delete(request.id, request.params).await,
             _ => error_response(request.id, CODE_METHOD_NOT_FOUND, "method not found"),
         }
+    }
+
+    /// Starts the terminal a request asks for. `Err` is the response refusing it, after which the connection stays
+    /// JSON. Only starting it holds an upgrade back. An attached session blocks the upgrade by itself.
+    async fn open_terminal(&self, request: Request) -> Result<(Response, Terminal), Response> {
+        let id = request.id;
+        let _mutation = self.admit(&request)?;
+        let Some(terminals) = &self.terminals else {
+            return Err(error_response(
+                id,
+                CODE_METHOD_NOT_FOUND,
+                "this agentd serves no terminals",
+            ));
+        };
+        let refused = |error| result_response::<()>(id, Err(error));
+        if request.method == METHOD_SESSION_ATTACH {
+            let params = serde_json::from_value::<SessionAttachParams>(request.params)
+                .map_err(|_| error_response(id, CODE_INVALID_PARAMS, "agent, session name and size are required"))?;
+            let size = params
+                .size
+                .size()
+                .map_err(|error| error_response(id, CODE_INVALID_PARAMS, error.to_string()))?;
+            let (session, terminal) = terminals
+                .attach_session(&params.agent, &params.name, size)
+                .await
+                .map_err(refused)?;
+            return Ok((result_response(id, Ok(session)), terminal));
+        }
+        let params = serde_json::from_value::<AgentTerminalParams>(request.params)
+            .map_err(|_| error_response(id, CODE_INVALID_PARAMS, "agent name, command and size are required"))?;
+        if params.command.is_empty() {
+            return Err(error_response(id, CODE_INVALID_PARAMS, "command is required"));
+        }
+        let size = params
+            .size
+            .size()
+            .map_err(|error| error_response(id, CODE_INVALID_PARAMS, error.to_string()))?;
+        let spec = TerminalSpec {
+            command: params.command,
+            environment: params.environment,
+            working_directory: params.working_directory,
+        };
+        let terminal = terminals.open(&params.name, spec, size).await.map_err(refused)?;
+        Ok((result_response(id, Ok(serde_json::json!({}))), terminal))
     }
 
     async fn handle_shutdown(&self, id: u64, value: Value) -> Response {
@@ -1510,6 +1610,11 @@ async fn disconnected<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) {
     }
 }
 
+/// Whether a request turns its connection into a terminal once it succeeds.
+fn upgrades_connection(method: &str) -> bool {
+    matches!(method, METHOD_SESSION_ATTACH | METHOD_AGENT_TERMINAL)
+}
+
 fn is_mutating(method: &str) -> bool {
     matches!(
         method,
@@ -1533,6 +1638,8 @@ fn is_mutating(method: &str) -> bool {
             | METHOD_SESSION_DELETE
             | METHOD_SESSION_ARCHIVE
             | METHOD_SESSION_UNARCHIVE
+            | METHOD_SESSION_ATTACH
+            | METHOD_AGENT_TERMINAL
     )
 }
 

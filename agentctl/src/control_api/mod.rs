@@ -2,12 +2,16 @@
 
 mod client;
 mod protocol;
+mod relay;
 mod server;
 mod socket;
+mod terminal;
 
-pub use client::{AgentLease, Client, Connection, Connector};
+pub use client::{AgentLease, Client, Connection, Connector, Output, RemoteTerminal, TerminalInput, TerminalOutput};
 pub use protocol::{DaemonInfo, PROTOCOL_VERSION, ResponseError};
+pub use relay::{Terminal, TerminalProcess};
 pub use server::{
     AccountsApi, AgentApi, AuthenticationApi, ConvergenceApi, ErrorHandler, ExecutionApi, SecretsApi, Server,
-    SessionApi, SshAccessApi, VncAccessApi, VolumeApi,
+    SessionApi, SshAccessApi, TerminalApi, VncAccessApi, VolumeApi,
 };
+pub use terminal::{Ended, TerminalSpec};

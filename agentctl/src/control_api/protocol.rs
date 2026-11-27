@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt as _};
 
 /// Control API version, independent of the JSON-RPC envelope.
-pub const PROTOCOL_VERSION: &str = "v5";
+pub const PROTOCOL_VERSION: &str = "v6";
 pub(crate) const JSON_RPC_VERSION: &str = "2.0";
 
 pub(crate) const METHOD_APPLY: &str = "agents.v1.apply";
@@ -43,6 +43,8 @@ pub(crate) const METHOD_SESSION_TURNS: &str = "sessions.v1.turns";
 pub(crate) const METHOD_SESSION_DELETE: &str = "sessions.v1.delete";
 pub(crate) const METHOD_SESSION_ARCHIVE: &str = "sessions.v1.archive";
 pub(crate) const METHOD_SESSION_UNARCHIVE: &str = "sessions.v1.unarchive";
+pub(crate) const METHOD_SESSION_ATTACH: &str = "sessions.v1.attach";
+pub(crate) const METHOD_AGENT_TERMINAL: &str = "agents.v1.terminal";
 pub(crate) const METHOD_VOLUME_APPLY: &str = "volumes.v1.apply";
 pub(crate) const METHOD_VOLUME_GET: &str = "volumes.v1.get";
 pub(crate) const METHOD_VOLUME_LIST: &str = "volumes.v1.list";
@@ -196,6 +198,49 @@ pub(crate) struct SessionEnsureParams {
     pub initial_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub follow: bool,
+}
+
+/// A terminal's size in a request, checked by [`Self::size`], so a zero is refused before anything starts.
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TerminalSizeParams {
+    pub rows: u16,
+    pub columns: u16,
+}
+
+impl TerminalSizeParams {
+    pub(crate) const fn size(self) -> Result<sandbox::terminal::TerminalSize, sandbox::terminal::InvalidTerminalSize> {
+        sandbox::terminal::TerminalSize::new(self.rows, self.columns)
+    }
+}
+
+impl From<sandbox::terminal::TerminalSize> for TerminalSizeParams {
+    fn from(size: sandbox::terminal::TerminalSize) -> Self {
+        Self {
+            rows: size.rows(),
+            columns: size.columns(),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SessionAttachParams {
+    pub agent: String,
+    pub name: crate::sessions::SessionName,
+    pub size: TerminalSizeParams,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct AgentTerminalParams {
+    pub name: String,
+    pub command: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub environment: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+    pub size: TerminalSizeParams,
 }
 
 #[derive(Deserialize, Serialize)]

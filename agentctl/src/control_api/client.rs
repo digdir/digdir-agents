@@ -22,6 +22,10 @@ use super::protocol::{
     SessionListParams, SessionParams, SessionPromptParams, SessionTurnsParams, ShutdownParams, ShutdownResult,
     SignInAgentParams, StartParams, read_message,
 };
+use super::protocol::{
+    AgentTerminalParams, METHOD_AGENT_TERMINAL, METHOD_SESSION_ATTACH, SessionAttachParams, TerminalSizeParams,
+};
+use super::terminal::{Ended, Frame, FrameReader, TerminalSpec, write_frame};
 
 /// A byte stream usable by the Control API client.
 pub trait Connection: AsyncRead + AsyncWrite + Unpin {}
@@ -736,6 +740,58 @@ impl Client {
         .await
     }
 
+    /// Attaches to a session's program, resuming the session when it is idle. Returns the session as it is then, and
+    /// its terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session cannot run, such as when it is archived or its agent is stopped, or when the
+    /// call fails.
+    pub async fn attach_session(
+        &self,
+        agent: &str,
+        name: sessions::SessionName,
+        size: sandbox::terminal::TerminalSize,
+    ) -> Result<(sessions::Session, RemoteTerminal), Error> {
+        let (session, stream) = self
+            .exchange_buffered(
+                METHOD_SESSION_ATTACH,
+                SessionAttachParams {
+                    agent: agent.into(),
+                    name,
+                    size: size.into(),
+                },
+            )
+            .await?;
+        Ok((session, RemoteTerminal::new(stream)))
+    }
+
+    /// Starts a program of its own in the sandbox of the agent `name`, such as a shell, in a terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the agent cannot run it or the call fails.
+    pub async fn open_terminal(
+        &self,
+        name: &str,
+        spec: TerminalSpec,
+        size: sandbox::terminal::TerminalSize,
+    ) -> Result<RemoteTerminal, Error> {
+        let (_result, stream): (serde_json::Value, _) = self
+            .exchange_buffered(
+                METHOD_AGENT_TERMINAL,
+                AgentTerminalParams {
+                    name: name.into(),
+                    command: spec.command,
+                    environment: spec.environment,
+                    working_directory: spec.working_directory,
+                    size: TerminalSizeParams::from(size),
+                },
+            )
+            .await?;
+        Ok(RemoteTerminal::new(stream))
+    }
+
     async fn call<P: Serialize, R: DeserializeOwned>(&self, method: &str, params: P) -> Result<R, Error> {
         self.exchange(method, params).await.map(|(result, _)| result)
     }
@@ -746,6 +802,16 @@ impl Client {
         method: &str,
         params: P,
     ) -> Result<(R, Box<dyn Connection>), Error> {
+        let (result, stream) = self.exchange_buffered(method, params).await?;
+        Ok((result, stream.into_inner()))
+    }
+
+    /// Calls `method` on a connection of its own, which it returns open with what was read past the response.
+    async fn exchange_buffered<P: Serialize, R: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: P,
+    ) -> Result<(R, BufReader<Box<dyn Connection>>), Error> {
         let id = self.next_id.get().wrapping_add(1);
         self.next_id.set(id);
         let request = Request {
@@ -788,7 +854,133 @@ impl Client {
                 .result
                 .ok_or_else(|| Error::Invalid("Control API response has no result".into()))?,
         )?;
-        Ok((result, stream.into_inner()))
+        Ok((result, stream))
+    }
+}
+
+/// A terminal `agentd` relays to this client; see [`Client::attach_session`] and [`Client::open_terminal`].
+///
+/// `agentd` takes the connection closing as a detach, which happens once both halves are dropped.
+pub struct RemoteTerminal {
+    stream: BufReader<Box<dyn Connection>>,
+}
+
+impl RemoteTerminal {
+    fn new(stream: BufReader<Box<dyn Connection>>) -> Self {
+        Self { stream }
+    }
+
+    /// Splits the terminal so input and output can be driven apart.
+    #[must_use]
+    pub fn split(self) -> (TerminalInput, TerminalOutput) {
+        let (reader, writer) = tokio::io::split(self.stream);
+        (
+            TerminalInput { writer },
+            TerminalOutput {
+                frames: FrameReader::new(reader),
+            },
+        )
+    }
+}
+
+impl std::fmt::Debug for RemoteTerminal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("RemoteTerminal").finish_non_exhaustive()
+    }
+}
+
+/// What a client sends a [`RemoteTerminal`].
+pub struct TerminalInput {
+    writer: tokio::io::WriteHalf<BufReader<Box<dyn Connection>>>,
+}
+
+impl TerminalInput {
+    /// Sends bytes typed or pasted, as the terminal sends them. Each call is one frame, so larger input is sent in
+    /// pieces of at most 64 KiB.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the connection is gone.
+    pub async fn input(&mut self, bytes: bytes::Bytes) -> Result<(), Error> {
+        let mut rest = bytes;
+        loop {
+            let piece = rest.split_to(rest.len().min(super::terminal::MAX_FRAME_PAYLOAD));
+            write_frame(&mut self.writer, &Frame::Input(piece)).await?;
+            if rest.is_empty() {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Tells the program the terminal's new size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the connection is gone.
+    pub async fn resize(&mut self, size: sandbox::terminal::TerminalSize) -> Result<(), Error> {
+        Ok(write_frame(&mut self.writer, &Frame::Resize(size)).await?)
+    }
+
+    /// Asks to leave. The program's last output, such as a session's sequences that put the terminal back, then
+    /// arrives, and [`Output::Ended`] last.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the connection is gone.
+    pub async fn detach(&mut self) -> Result<(), Error> {
+        Ok(write_frame(&mut self.writer, &Frame::Detach).await?)
+    }
+}
+
+impl std::fmt::Debug for TerminalInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("TerminalInput").finish_non_exhaustive()
+    }
+}
+
+/// What a [`RemoteTerminal`] sends a client.
+pub struct TerminalOutput {
+    frames: FrameReader<tokio::io::ReadHalf<BufReader<Box<dyn Connection>>>>,
+}
+
+/// One piece of a [`RemoteTerminal`]'s output.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Output {
+    /// What the program drew, to be written to the terminal as it is.
+    Bytes(bytes::Bytes),
+    /// Why the terminal ended. Nothing follows it.
+    Ended(Ended),
+}
+
+impl TerminalOutput {
+    /// The next piece of output. Dropping the call before it completes loses nothing.
+    ///
+    /// # Errors
+    ///
+    /// A connection that closes before [`Output::Ended`] is [`std::io::ErrorKind::UnexpectedEof`], as when `agentd`
+    /// stopped without saying so, and a client may connect again. Anything that is not a frame `agentd` sends is
+    /// [`std::io::ErrorKind::InvalidData`].
+    pub async fn next(&mut self) -> Result<Output, Error> {
+        match self.frames.next().await? {
+            Some(Frame::Output(bytes)) => Ok(Output::Bytes(bytes)),
+            Some(Frame::Ended(ended)) => Ok(Output::Ended(ended)),
+            Some(Frame::Input(_) | Frame::Resize(_) | Frame::Detach) => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "agentd sent a frame only a client sends",
+            )
+            .into()),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "agentd closed the terminal without saying why",
+            )
+            .into()),
+        }
+    }
+}
+
+impl std::fmt::Debug for TerminalOutput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("TerminalOutput").finish_non_exhaustive()
     }
 }
 
