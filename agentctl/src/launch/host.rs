@@ -12,14 +12,14 @@ pub(super) const WSL_OPENER: &str = "rundll32.exe";
 /// # Errors
 ///
 /// Returns why the opener could not be started or failed at once.
-pub(crate) async fn open_url(url: &str) -> Result<&'static str, String> {
+pub async fn open_url(url: &str) -> Result<&'static str, String> {
     let opener = opener(|name| std::env::var_os(name));
     let arguments = opener
         .arguments
         .iter()
         .copied()
         .chain([url])
-        .map(str::to_owned)
+        .map(OsString::from)
         .collect::<Vec<_>>();
     super::run_detached(OsStr::new(opener.program), &arguments, opener.exit_tells)
         .await
@@ -71,7 +71,7 @@ fn opener(variable: impl Fn(&str) -> Option<OsString>) -> Opener {
 /// desktop, need no display variable and open windows on the machine's own
 /// screen, so there a terminal reached over SSH is taken to be elsewhere.
 /// WSL also needs the Windows `PATH`, which it may be configured not to add.
-pub(crate) fn launch_blocked(variable: impl Fn(&str) -> Option<OsString>) -> Option<String> {
+pub fn launch_blocked(variable: impl Fn(&str) -> Option<OsString>) -> Option<String> {
     let set = |name: &str| set(&variable, name);
     match variable("AGENTCTL_OPEN").as_deref().and_then(OsStr::to_str) {
         Some("launch") => return None,
@@ -83,7 +83,7 @@ pub(crate) fn launch_blocked(variable: impl Fn(&str) -> Option<OsString>) -> Opt
         if set("SSH_CONNECTION") || set("SSH_TTY") {
             return Some("this terminal is reached over SSH, so it would open on that machine".into());
         }
-        (wsl && agent::local::process::find_executable(variable("PATH").as_deref(), &[WSL_OPENER]).is_none())
+        (wsl && crate::local::process::find_executable(variable("PATH").as_deref(), &[WSL_OPENER]).is_none())
             .then(|| format!("{WSL_OPENER} is not on PATH, so nothing here reaches the Windows desktop"))
     } else {
         (!set("DISPLAY") && !set("WAYLAND_DISPLAY")).then(|| "this terminal has no display to open windows on".into())

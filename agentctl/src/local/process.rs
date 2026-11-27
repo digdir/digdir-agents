@@ -20,7 +20,10 @@ pub fn configure_logging(command: &mut std::process::Command) {
 /// absolute directory for one name before the next. On Unix, as a shell does, a file only counts
 /// when it may be run.
 #[must_use]
-pub fn find_executable(path: Option<&std::ffi::OsStr>, names: &[&str]) -> Option<std::path::PathBuf> {
+pub fn find_executable(
+    path: Option<&std::ffi::OsStr>,
+    names: &[impl AsRef<std::ffi::OsStr>],
+) -> Option<std::path::PathBuf> {
     let directories = path
         .map(std::env::split_paths)
         .into_iter()
@@ -30,19 +33,21 @@ pub fn find_executable(path: Option<&std::ffi::OsStr>, names: &[&str]) -> Option
         directories
             .iter()
             .filter(|directory| directory.is_absolute())
-            .map(|directory| directory.join(name))
+            .map(|directory| directory.join(name.as_ref()))
             .find(|candidate| runnable(candidate))
     })
 }
 
+/// Whether `candidate` is a file, and on Unix one that may be run, as a shell counts one.
 #[cfg(unix)]
-fn runnable(candidate: &std::path::Path) -> bool {
+pub(crate) fn runnable(candidate: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::metadata(candidate).is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
+/// Whether `candidate` is a file, and on Unix one that may be run, as a shell counts one.
 #[cfg(not(unix))]
-fn runnable(candidate: &std::path::Path) -> bool {
+pub(crate) fn runnable(candidate: &std::path::Path) -> bool {
     candidate.is_file()
 }
 

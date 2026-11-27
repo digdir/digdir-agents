@@ -11,7 +11,7 @@ use std::{
 
 use agent::{Agent, Condition, ConditionStatus};
 
-use crate::launch::Editor;
+use agent::launch::Editor;
 
 /// Where the agent's desktop is shown.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -173,7 +173,7 @@ impl Environment {
     pub(crate) fn detect() -> Self {
         let path = std::env::var_os("PATH");
         Self {
-            launch_blocked: crate::launch::launch_blocked(|name| std::env::var_os(name)),
+            launch_blocked: agent::launch::launch_blocked(|name| std::env::var_os(name)),
             launchers: Editor::ALL
                 .into_iter()
                 .filter_map(|editor| Some((editor, editor.locate(path.as_deref())?)))

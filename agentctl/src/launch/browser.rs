@@ -3,38 +3,26 @@
 
 use std::{ffi::OsString, path::PathBuf};
 
-use agent::harness::{SignIn, UrlOpener};
+use crate::harness::{SignIn, UrlOpener};
 
-use super::host::{launch_blocked, open_url, set, wsl};
+use super::host::{launch_blocked, set, wsl};
 
 /// Set for a harness that runs agentctl as its browser, so that agentctl only
 /// opens the address it is given.
 const AS_BROWSER_ENVIRONMENT: &str = "AGENTCTL_AS_BROWSER";
 
 /// Whether agentctl runs as a harness's browser rather than as itself.
-pub(crate) fn as_browser(variable: impl Fn(&str) -> Option<OsString>) -> bool {
+pub fn as_browser(variable: impl Fn(&str) -> Option<OsString>) -> bool {
     set(&variable, AS_BROWSER_ENVIRONMENT)
-}
-
-/// Opens the one address agentctl is given when it runs as a harness's browser.
-pub(crate) fn open_argument() -> std::process::ExitCode {
-    let opened = address_to_open(std::env::args_os().skip(1)).and_then(|url| {
-        tokio::runtime::LocalRuntime::new()
-            .map_err(|error| format!("could not start: {error}"))
-            .and_then(|runtime| runtime.block_on(open_url(&url)))
-    });
-    opened.map_or_else(
-        |error| {
-            eprintln!("agentctl: {error}");
-            std::process::ExitCode::FAILURE
-        },
-        |_| std::process::ExitCode::SUCCESS,
-    )
 }
 
 /// The address a harness asks its browser to open. Only web addresses are
 /// accepted: the openers behind it also open files and start programs.
-fn address_to_open(arguments: impl IntoIterator<Item = OsString>) -> Result<String, String> {
+///
+/// # Errors
+///
+/// Returns why the arguments are not one web address.
+pub fn address_to_open(arguments: impl IntoIterator<Item = OsString>) -> Result<String, String> {
     let mut arguments = arguments.into_iter();
     match (arguments.next().map(OsString::into_string), arguments.next()) {
         (Some(Ok(url)), None) if url.starts_with("https://") || url.starts_with("http://") => Ok(url),
@@ -43,11 +31,12 @@ fn address_to_open(arguments: impl IntoIterator<Item = OsString>) -> Result<Stri
 }
 
 /// Where a harness login sends the person: a browser here when one would reach
-/// them, or else a link to open elsewhere. A `BROWSER` of the person's own is
+/// them, or else a link to open elsewhere.
+///
+/// A `BROWSER` of the person's own is
 /// the harness's to use; otherwise, under WSL, where a harness's own opener
-/// misses the Windows desktop, `agentctl`, this program, stands in as its
-/// browser.
-pub(crate) fn sign_in(variable: impl Fn(&str) -> Option<OsString>, agentctl: Option<PathBuf>) -> SignIn {
+/// misses the Windows desktop, `agentctl` stands in as its browser.
+pub fn sign_in(variable: impl Fn(&str) -> Option<OsString>, agentctl: Option<PathBuf>) -> SignIn {
     if let Some(reason) = launch_blocked(&variable) {
         return SignIn::Elsewhere { reason };
     }
@@ -109,8 +98,8 @@ mod tests {
     fn only_a_single_web_address_is_opened_as_a_browser() {
         for (arguments, expected) in [
             (
-                &["https://claude.com/authorize?a=1&b=%2F"][..],
-                Some("https://claude.com/authorize?a=1&b=%2F"),
+                &["https://sign-in.example/authorize?a=1&b=%2F"][..],
+                Some("https://sign-in.example/authorize?a=1&b=%2F"),
             ),
             (
                 &["http://localhost:1455/callback"],

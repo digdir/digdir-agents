@@ -356,14 +356,15 @@ pub fn resolves_through_agentctl(resolved: &str, agent: &str) -> bool {
 }
 
 /// Quotes one word for `/bin/sh`: single quotes, with an embedded `'` written as `'\''` and a
-/// backslash as `'\\'`.
+/// backslash as `'\\'`. A word that starts with `~` is quoted too, since the shell would put a
+/// home directory in its place.
 ///
 /// The shell reads a backslash inside single quotes literally, but OpenSSH, which checks the
 /// quotes of every configuration line before it runs the command, reads one before `'` or `\` as
 /// an escape. A home such as `/tmp/agents\` would leave the quote open for OpenSSH, which then
 /// refuses the whole configuration. Outside the quotes both read `\'` and `\\` alike.
 fn posix_quote(text: &str) -> String {
-    if is_plain(text) {
+    if is_plain(text) && !text.starts_with('~') {
         return text.to_owned();
     }
     let mut quoted = String::with_capacity(text.len() + 2);
@@ -770,6 +771,20 @@ mod tests {
             (r#"C:\odd\"name"#, r#""C:\odd\\\"name""#),
         ] {
             assert_eq!(shell_word(text, CommandShell::Windows), quoted, "{text}");
+        }
+    }
+
+    /// The shell puts a home directory in place of a leading `~`, so a word starting with one is
+    /// quoted, and one with `~` elsewhere is not.
+    #[test]
+    fn posix_words_keep_a_leading_tilde() {
+        for (text, quoted) in [
+            ("~/work", "'~/work'"),
+            ("~", "'~'"),
+            ("a~b", "a~b"),
+            ("/srv/work", "/srv/work"),
+        ] {
+            assert_eq!(shell_word(text, CommandShell::Posix), quoted, "{text}");
         }
     }
 

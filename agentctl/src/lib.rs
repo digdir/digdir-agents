@@ -16,6 +16,7 @@ pub mod exposed;
 pub mod github;
 pub mod harness;
 mod host_pattern;
+pub mod launch;
 pub mod local;
 pub mod manifest;
 pub mod names;
