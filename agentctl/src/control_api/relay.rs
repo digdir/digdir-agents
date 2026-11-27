@@ -15,7 +15,7 @@ use tokio::{
 use crate::Error;
 
 use super::{
-    frames::{Ended, Frame, FrameReader, output_frames, write_frame},
+    frames::{AGENTD_STOPPING, Ended, Frame, FrameReader, output_frames, write_frame},
     server::Server,
 };
 
@@ -138,7 +138,7 @@ where
                 }
             },
             () = server.shutdown_requested(), if running => {
-                detaching = Some(detach(&*process, Ended::Error("agentd is stopping".into())).await);
+                detaching = Some(detach(&*process, Ended::Error(AGENTD_STOPPING.into())).await);
             }
             () = sleep_until(deadline), if deadline.is_some() => {
                 let Some(detaching) = detaching.as_mut() else { continue };

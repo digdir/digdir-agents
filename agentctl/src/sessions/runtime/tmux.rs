@@ -9,7 +9,6 @@
 use ::sandbox::{
     SandboxHandle, SandboxPath,
     execution::{ExecutionOutput, ExecutionSpec, ExitStatus, StartExecutionRequest},
-    terminal::{AttachTerminalRequest, TerminalAttachOutcome},
 };
 
 use crate::{
@@ -18,7 +17,7 @@ use crate::{
 };
 
 use super::{LaunchContext, Observation};
-use crate::sessions::{Activity, AttachTarget, LaunchToken, LifecycleState, Phase, Session, Turn};
+use crate::sessions::{Activity, LaunchToken, Phase, Session, Turn};
 
 /// Quiet period after the latest hook event before input is pasted into a
 /// harness that is not waiting for input. The start hook fires before the
@@ -29,7 +28,6 @@ const INPUT_READY_GRACE: std::time::Duration = std::time::Duration::from_secs(2)
 /// fails the operation instead of holding it.
 const LIFECYCLE_EXECUTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const LIFECYCLE_EXECUTION_KILL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-const DETACH_KEYS: &str = "ctrl-b,d";
 
 // Set history-limit before pane creation; reapply on attach for existing servers.
 // Mouse mode routes wheels to copy mode or the application: https://man.openbsd.org/tmux.1#mouse
@@ -367,33 +365,6 @@ async fn launch(
     )))
 }
 
-/// Attaches a local terminal to an existing tmux-backed session.
-///
-/// This client capability is separate from daemon-owned lifecycle
-/// convergence. It never creates or resumes a session.
-///
-/// # Errors
-///
-/// Returns an error unless the session is ready and the sandbox provider
-/// supports direct terminal attachment.
-async fn attach_terminal(home: &std::path::Path, target: &AttachTarget) -> Result<(), Error> {
-    if target.session.status.lifecycle.state != LifecycleState::Running {
-        return Err(target.session.not_running_error());
-    }
-    let request = attach_request(&target.session);
-    match crate::sandbox::attach_terminal(home, &target.sandbox, request).await? {
-        TerminalAttachOutcome::Exited(status) if status.success() => Ok(()),
-        TerminalAttachOutcome::Detached => Ok(()),
-        TerminalAttachOutcome::Exited(status) => Err(Error::Session(format!(
-            "tmux attachment exited with code {}",
-            status.code
-        ))),
-        _ => Err(Error::Session(
-            "terminal attachment returned an unsupported outcome".into(),
-        )),
-    }
-}
-
 fn attach_arguments(session: &Session) -> Vec<String> {
     let mut arguments = terminal_options();
     // The host terminal's tab names the agent and the session it shows. The tmux server belongs
@@ -437,10 +408,6 @@ fn attach_spec(session: &Session) -> ExecutionSpec {
             ("LANG".into(), UTF8_LOCALE.into()),
             ("TERM".into(), PORTABLE_TERMINAL.into()),
         ])
-}
-
-fn attach_request(session: &Session) -> AttachTerminalRequest {
-    AttachTerminalRequest::new(attach_spec(session)).with_detach_keys(DETACH_KEYS)
 }
 
 /// The M0 Unix session runtime backed by tmux.
@@ -539,14 +506,6 @@ impl super::SessionRuntime for Tmux {
         // tmux's client takes SIGTERM as a detach, so terminating this Execution leaves the session running.
         let request = ::sandbox::terminal::StartTerminalExecutionRequest::new(attach_spec(session), size);
         Box::pin(async move { Ok(sandbox.start_terminal_execution(request).await?) })
-    }
-
-    fn attach<'a>(
-        &'a self,
-        home: &'a std::path::Path,
-        target: &'a AttachTarget,
-    ) -> ::sandbox::LocalFuture<'a, Result<(), Error>> {
-        Box::pin(attach_terminal(home, target))
     }
 }
 
@@ -970,7 +929,7 @@ mod tests {
 
         use crate::sessions::{Lifecycle, Reported, Session, Status};
 
-        use super::super::{attach_request, session_name, terminal_options};
+        use super::super::{attach_spec, session_name, terminal_options};
 
         fn test_session(model_selection: crate::ModelSelection) -> Session {
             Session {
@@ -989,17 +948,16 @@ mod tests {
             }
         }
 
-        /// The arguments, environment and detach keys the runtime attaches a terminal with, for a
-        /// driver to attach a real client exactly as the runtime does.
+        /// The arguments and environment the runtime attaches a terminal with, for a driver to attach a real
+        /// client exactly as the runtime does.
         fn attachment(session: &Session) -> String {
-            let request = attach_request(session);
-            let sandbox::execution::Program::Command { args, .. } = request.spec().program() else {
+            let spec = attach_spec(session);
+            let sandbox::execution::Program::Command { args, .. } = spec.program() else {
                 panic!("tmux attaches by command");
             };
             serde_json::json!({
                 "arguments": args,
-                "environment": request.spec().environment(),
-                "detachKeys": request.detach_keys(),
+                "environment": spec.environment(),
             })
             .to_string()
         }

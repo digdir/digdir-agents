@@ -568,7 +568,7 @@ impl Client {
         Ok(result.removed)
     }
 
-    /// Creates or resolves one named session attach target.
+    /// Creates or gets one named session, and returns it once it runs.
     ///
     /// `request` selects the harness, model, effort and first prompt of a
     /// session this call creates; see [`sessions::Service::ensure`] for the
@@ -586,7 +586,7 @@ impl Client {
         name: sessions::SessionName,
         request: sessions::SessionRequest,
         wait: WaitPolicy,
-    ) -> Result<sessions::AttachTarget, Error> {
+    ) -> Result<sessions::Session, Error> {
         self.call(
             METHOD_SESSION_ENSURE,
             SessionEnsureParams {

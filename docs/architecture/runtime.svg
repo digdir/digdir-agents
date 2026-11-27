@@ -270,12 +270,13 @@ svg { font-family: Arial, Helvetica, "Liberation Sans", sans-serif; color: #1e2b
 <path class="edge" d="M330,244 H441" marker-end="url(#arrow)"/>
 <text class="code-sm" x="342" y="232">JSON-RPC</text>
 <text class="s-sm" x="342" y="262">agentd.sock</text>
+<text class="s-sm" x="342" y="278">and terminals</text>
 
 <path class="edge-blue dashed" d="M110,285 V631" marker-end="url(#arrow-blue)"/>
 <rect class="label-bg" x="120" y="418" width="200" height="56" rx="4"/>
-<text class="code-sm" x="126" y="434">attach · exec · ssh · vnc</text>
-<text class="s-sm" x="126" y="452">terminals and port forwards</text>
-<text class="s-sm" x="126" y="468">go straight to msb</text>
+<text class="code-sm" x="126" y="434">exec · ssh · vnc</text>
+<text class="s-sm" x="126" y="452">exec without -t and port</text>
+<text class="s-sm" x="126" y="468">forwards go straight to msb</text>
 
 <path class="edge" d="M545,283 V311" marker-end="url(#arrow)"/>
 <path class="edge" d="M645,244 H661" marker-end="url(#arrow)"/>

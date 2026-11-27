@@ -20,6 +20,11 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 - `agentctl apply` warns when the agents' root disks can together grow past the free space on the filesystem holding them: each one's `rootFilesystem.capacity`, less what the host has already allocated to it, added up over every agent. The agent is applied either way. ([#228](https://github.com/digdir/digdir-agents/issues/228))
 - agentd refuses to make or start an agent while the host filesystem holding agents' disks is below `lowDiskThreshold`, and says how much is free: `agentctl apply` of a new agent or of a stopped one set to `runState: Running`, `agentctl start` and `agentctl run`. Pass `--allow-low-disk` to start that agent anyway. An agent already running keeps running. ([agentd configuration](https://github.com/digdir/digdir-agents/blob/main/agentctl/docs/agentd-configuration.md), [#415](https://github.com/digdir/digdir-agents/issues/415))
 
+### Changed
+
+- `agentctl attach`, and attaching to a session in `agentctl tui`, attach again on their own when agentd stops and comes back, instead of ending. agentd now runs every terminal you open in an agent and relays it, so it ends when agentd does.
+- `agentctl exec -it` and the shell in `agentctl tui` pass `Ctrl-]` to the program like any other key, instead of leaving it. Leave the shell with `exit`.
+
 ### Fixed
 
 - `agentctl prompt`, and `p` in `agentctl tui`, wait for a session that is still resuming and then deliver the prompt, instead of failing with `its harness is resuming`. ([#518](https://github.com/digdir/digdir-agents/issues/518))

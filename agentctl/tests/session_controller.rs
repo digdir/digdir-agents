@@ -516,14 +516,6 @@ impl agent::sessions::SessionRuntime for FakeRuntime {
         let request = sandbox::terminal::StartTerminalExecutionRequest::new(spec, size);
         Box::pin(async move { Ok(sandbox.start_terminal_execution(request).await?) })
     }
-
-    fn attach<'a>(
-        &'a self,
-        _home: &'a std::path::Path,
-        _target: &'a agent::sessions::AttachTarget,
-    ) -> LocalFuture<'a, Result<(), Error>> {
-        Box::pin(async { Err(Error::Invalid("no terminal in tests".into())) })
-    }
 }
 
 /// A database, a materialized memory sandbox for agent `worker`, and one
@@ -2188,8 +2180,8 @@ async fn session_ensure_resolves_explicit_and_implicit_harnesses() {
         .await
         .expect("implicit default session");
 
-    assert_eq!(explicit.session.harness, agent::Harness::Codex);
-    assert_eq!(implicit.session.harness, agent::Harness::ClaudeCode);
+    assert_eq!(explicit.harness, agent::Harness::Codex);
+    assert_eq!(implicit.harness, agent::Harness::ClaudeCode);
 
     let conflict = service
         .ensure(
@@ -2244,11 +2236,9 @@ async fn a_session_on_an_agent_without_a_harness_is_refused_without_persisting()
 impl SelectionFixture {
     async fn ensure(&self, name: &str, request: SessionRequest) -> Result<agent::sessions::Session, Error> {
         let name = SessionName::new(name).expect("name");
-        let target = self
-            .service
+        self.service
             .ensure("worker", &name, request, WaitPolicy::FirstPass)
-            .await?;
-        Ok(target.session)
+            .await
     }
 }
 
@@ -2572,13 +2562,10 @@ async fn session_ensure_persists_intent_before_waiting_for_agent_convergence() {
         agent::sessions::LifecycleState::Starting
     );
     release.notify_one();
-    let target = ensure.await.expect("ensure task").expect("ready session");
+    let session = ensure.await.expect("ensure task").expect("ready session");
 
-    assert_eq!(target.session.name.as_str(), "s1");
-    assert_eq!(
-        target.session.status.lifecycle.state,
-        agent::sessions::LifecycleState::Running
-    );
+    assert_eq!(session.name.as_str(), "s1");
+    assert_eq!(session.status.lifecycle.state, agent::sessions::LifecycleState::Running);
     agent_task.abort();
     session_task.abort();
 }

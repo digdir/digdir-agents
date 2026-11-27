@@ -20,7 +20,6 @@ use crossterm::event::{
     Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use futures_util::StreamExt as _;
-use sandbox::terminal::TerminalAttachOutcome;
 
 use crate::CommandResult;
 use crate::forward::{ForwardSpec, PortForward};
@@ -1082,7 +1081,7 @@ async fn suspended(
         | Action::Open {
             agent,
             target: OpenTarget::Shell,
-        } => exec(home, client, &agent).await,
+        } => exec(client, &agent).await,
         Action::Open {
             agent,
             target: OpenTarget::SshShell,
@@ -1104,38 +1103,27 @@ async fn attach(
     request: SessionRequest,
 ) -> Result<(), Error> {
     let wait = Wait::start();
-    let target = wait
+    let session = wait
         .until(
             client,
             agent,
             client.ensure_session(agent, session, request, WaitPolicy::UntilConverged),
         )
         .await?;
-    agent::sessions::attach(home.path(), &target).await
+    crate::terminal::attach_session(home, client, agent, &session.name).await
 }
 
-async fn exec(home: &ControlPlaneHome, client: &Client, agent: &str) -> Result<(), Error> {
+async fn exec(client: &Client, agent: &str) -> Result<(), Error> {
     let wait = Wait::start();
-    let target = wait
-        .until(
-            client,
-            agent,
-            client.ensure_execution(agent, WaitPolicy::UntilConverged),
-        )
-        .await?;
-    let command = ["bash".to_owned(), "-l".to_owned()];
-    let spec = agent::sandbox::platform::execution_spec(&target.operating_system, &command, true)?;
-    match agent::sandbox::attach_terminal(
-        home.path(),
-        &target.sandbox,
-        sandbox::terminal::AttachTerminalRequest::new(spec),
+    wait.until(
+        client,
+        agent,
+        client.ensure_execution(agent, WaitPolicy::UntilConverged),
     )
-    .await?
-    {
-        TerminalAttachOutcome::Exited(_) | TerminalAttachOutcome::Detached => Ok(()),
-        _ => Err(Error::Session(
-            "terminal execution returned an unsupported outcome".into(),
-        )),
+    .await?;
+    match crate::terminal::run(client, agent, vec!["bash".to_owned(), "-l".to_owned()]).await? {
+        agent::control_api::Ended::Exited(_) | agent::control_api::Ended::Detached => Ok(()),
+        agent::control_api::Ended::Error(message) => Err(Error::Session(message)),
     }
 }
 

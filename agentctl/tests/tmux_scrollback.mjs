@@ -18,11 +18,8 @@ const env = { ...process.env, TERM: "xterm-256color", TMUX: "" };
 // TMUX variable, which makes a client assume UTF-8, may decide for it.
 const { LC_ALL, LC_CTYPE, TMUX, ...inherited } = process.env;
 const clientEnv = { ...inherited, ...attachment.environment };
-// Docker-style detach keys, such as "ctrl-b,d", as the bytes a terminal sends for them.
-const detachBytes = attachment.detachKeys
-  .split(",")
-  .map((key) => (key.startsWith("ctrl-") ? String.fromCharCode(key.charCodeAt(5) & 0x1f) : key))
-  .join("");
+// tmux's own detach, Ctrl-b d, as the bytes a terminal sends for it.
+const detachBytes = "\x02d";
 const tmux = (...args) => execFileSync("tmux", ["-S", socket, "-f", "/dev/null", ...args], { encoding: "utf8", env }).trim();
 const format = (target, value) => tmux("display-message", "-p", "-t", target, `#{${value}}`);
 async function until(predicate) {
@@ -112,8 +109,7 @@ exec sleep 120
   client = undefined;
   console.log("PASS: wheel events reach a fullscreen application that requests mouse input");
 
-  // The runtime's attach environment renders UTF-8 and hyperlinks, and its detach keys end the client, not the
-  // session.
+  // The runtime's attach environment renders UTF-8 and hyperlinks, and Ctrl-b d ends the client, not the session.
   const text = "blåbærsyltetøy ✓";
   const link = "\\033]8;;https://example.com/linked\\033\\\\linked-text\\033]8;;\\033\\\\";
   tmux("new-session", "-d", "-x", "80", "-y", "10", "-s", "utf8", `printf '%s\\n${link}\\n' '${text}'; exec sleep 120`);
@@ -128,12 +124,12 @@ exec sleep 120
   assert.match(drawn.toString("utf8"), /\x1b\]8;[^;]*;https:\/\/example\.com\/linked/, "the link reaches the terminal");
   const detached = new Promise((resolve) => client.once("exit", resolve));
   client.stdin.write(detachBytes);
-  const timedOut = setTimeout(5000).then(() => assert.fail("the detach keys did not end the client"));
-  assert.equal(await Promise.race([detached, timedOut]), 0, "the detach keys end the client");
+  const timedOut = setTimeout(5000).then(() => assert.fail("Ctrl-b d did not end the client"));
+  assert.equal(await Promise.race([detached, timedOut]), 0, "Ctrl-b d ends the client");
   client = undefined;
   assert.equal(format("=utf8:", "session_attached"), "0");
   assert.ok(tmux("capture-pane", "-p", "-t", "=utf8:").includes(text), "the session survives detaching");
-  console.log("PASS: the attach environment renders UTF-8 and hyperlinks; the detach keys detach and the session survives");
+  console.log("PASS: the attach environment renders UTF-8 and hyperlinks; Ctrl-b d detaches and the session survives");
 
   // agentd detaches a client by terminating its Execution. tmux's client takes SIGTERM as a detach and exits with
   // code 1, which agentd reports as detached since it asked for it. `script -e` passes that code on.

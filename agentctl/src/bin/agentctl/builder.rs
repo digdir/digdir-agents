@@ -17,7 +17,7 @@ use agent::{
     control_api::Client,
     control_plane::{BindSource, RunDefinition, RunRequest, WaitPolicy},
     local::home::ControlPlaneHome,
-    sessions::{AttachTarget, SessionName, SessionRequest},
+    sessions::{Session, SessionName, SessionRequest},
 };
 use sandbox::SandboxPath;
 
@@ -105,8 +105,8 @@ impl Builder {
         if builder.spec.run_state() == RunState::Stopped {
             client.set_run_state(name, RunState::Running).await?;
         }
-        let target = open_session(&wait, client, name, task).await?;
-        agent::sessions::attach(home.path(), &target).await?;
+        let session = open_session(&wait, client, name, task).await?;
+        crate::terminal::attach_session(home, client, name, &session.name).await?;
         Ok(())
     }
 
@@ -215,14 +215,14 @@ impl Builder {
             format!("Starting the agent builder on {}", checkout.display()),
             format!("Agent builder started on {}", checkout.display()),
         );
-        let target = match open_session(&wait, client, &name, task).await {
-            Ok(target) => target,
+        let session = match open_session(&wait, client, &name, task).await {
+            Ok(session) => session,
             Err(error) => {
                 client.delete(&name).await.ok();
                 return Err(error);
             }
         };
-        agent::sessions::attach(home.path(), &target).await?;
+        crate::terminal::attach_session(home, client, &name, &session.name).await?;
         Ok(name)
     }
 }
@@ -331,8 +331,8 @@ fn builds_on(agent: &Agent, targets: &Targets, checkout: &Path) -> bool {
 /// started, and goes back to the conversation when it is open already. `wait` shows the progress
 /// and, once the session is open, that the builder is ready: the builder is how the command makes
 /// or updates definitions, not what the person asked for.
-async fn open_session(wait: &progress::Wait, client: &Client, name: &str, task: &Task) -> CommandResult<AttachTarget> {
-    let target = wait
+async fn open_session(wait: &progress::Wait, client: &Client, name: &str, task: &Task) -> CommandResult<Session> {
+    let session = wait
         .until(
             client,
             name,
@@ -349,7 +349,7 @@ async fn open_session(wait: &progress::Wait, client: &Client, name: &str, task: 
         )
         .await?;
     wait.ready();
-    Ok(target)
+    Ok(session)
 }
 
 #[cfg(test)]

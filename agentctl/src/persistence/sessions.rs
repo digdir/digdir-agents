@@ -5,10 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgentId, Error,
-    sandbox::Assignment,
     sessions::{
-        Activity, ActivityEvent, AttachTarget, LaunchState, LaunchToken, Lifecycle, LifecycleState, NewSession,
-        Reported, Session, SessionId, SessionName, Status,
+        Activity, ActivityEvent, LaunchState, LaunchToken, Lifecycle, LifecycleState, NewSession, Reported, Session,
+        SessionId, SessionName, Status,
     },
 };
 
@@ -440,28 +439,6 @@ pub(super) fn reset_launch_attempts(connection: &Connection, id: SessionId) -> R
         )
         .map_err(database_error)?;
     if changed == 1 { Ok(()) } else { Err(Error::NotFound) }
-}
-
-pub(super) fn attach_target(connection: &Connection, id: SessionId) -> Result<AttachTarget, Error> {
-    let session = get(connection, id)?;
-    if session.status.lifecycle.state != LifecycleState::Running {
-        return Err(session.not_running_error());
-    }
-    let agent = agents::get(connection, session.agent_id)?;
-    let ready = agent.agent.status.is_ready();
-    let Some(sandbox @ Assignment::Materialized { .. }) = agent.agent.status.sandbox else {
-        return Err(Error::Invalid(format!(
-            "Agent {:?} is not ready",
-            agent.agent.metadata.name
-        )));
-    };
-    if !ready || agent.agent.metadata.deletion_timestamp.is_some() {
-        return Err(Error::Invalid(format!(
-            "Agent {:?} is not ready",
-            agent.agent.metadata.name
-        )));
-    }
-    Ok(AttachTarget { session, sandbox })
 }
 
 fn query_named(connection: &Connection, agent: AgentId, name: &SessionName) -> Result<Option<Session>, Error> {

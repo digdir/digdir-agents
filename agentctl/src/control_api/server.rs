@@ -395,14 +395,14 @@ impl AccountsApi for crate::accounts::Accounts {
 
 /// Host-tracked session operations exposed through the local control API.
 pub trait SessionApi {
-    /// Creates or resolves one named session attach target; see [`sessions::Service::ensure`].
+    /// Creates or gets one named session, and returns it once it runs; see [`sessions::Service::ensure`].
     fn ensure<'a>(
         &'a self,
         agent: &'a str,
         name: &'a sessions::SessionName,
         request: sessions::SessionRequest,
         wait: WaitPolicy,
-    ) -> LocalFuture<'a, Result<sessions::AttachTarget, Error>>;
+    ) -> LocalFuture<'a, Result<sessions::Session, Error>>;
 
     /// Gets one named session scoped to an agent.
     fn get<'a>(
@@ -455,7 +455,7 @@ impl SessionApi for sessions::Service {
         name: &'a sessions::SessionName,
         request: sessions::SessionRequest,
         wait: WaitPolicy,
-    ) -> LocalFuture<'a, Result<sessions::AttachTarget, Error>> {
+    ) -> LocalFuture<'a, Result<sessions::Session, Error>> {
         Box::pin(async move { Self::ensure(self, agent, name, request, wait).await })
     }
 

@@ -36,6 +36,9 @@ pub(crate) enum Frame {
     Ended(Ended),
 }
 
+/// Why a terminal ends when agentd stops, which [`Ended::agentd_stopped`] recognizes.
+pub(crate) const AGENTD_STOPPING: &str = "agentd is stopping";
+
 /// Why a terminal ended.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Ended {
@@ -60,6 +63,13 @@ struct EndedJson {
 }
 
 impl Ended {
+    /// Whether the terminal ended because agentd stopped, as it does for an upgrade, so that a client can attach
+    /// again once agentd is back.
+    #[must_use]
+    pub fn agentd_stopped(&self) -> bool {
+        matches!(self, Self::Error(message) if message == AGENTD_STOPPING)
+    }
+
     fn to_json(&self) -> Vec<u8> {
         let json = match self {
             Self::Exited(code) => EndedJson {
