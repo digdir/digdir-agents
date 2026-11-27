@@ -280,7 +280,8 @@ persist real values.
 - **Plain environment:** `GIT_USER_NAME`.
 - **Network:** all traffic passes through the host, which intercepts TLS with a CA that the system store and \
 `NODE_EXTRA_CA_CERTS` trust. Denied: `metadata.google.internal`.
-- **Access:** people on the host reach this computer with `agentctl ssh worker`.
+- **Access:** people on the host reach this computer with `agentctl ssh worker`, and a server on its `localhost` \
+with `agentctl port-forward worker PORT`.
 - **Nested agents:** available (`/dev/kvm`, no Podman, so only manifests with an image `reference`); see the \
 `agentctl` skill.
 - **Changes:** inside this VM, apart from the person's folders, act freely, such as installing the tools a task \
