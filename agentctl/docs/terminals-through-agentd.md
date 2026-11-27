@@ -149,7 +149,7 @@ is, and needs trying on a real console before it replaces that.
 ## What still opens the sandbox
 
 A client still opens Microsandbox for what is not a terminal: `agentctl exec` without `-t`, the sign-in's read of its
-credential file, and port forwards for `agentctl forward`, SSH and VNC. Each can move the same way, on a connection
+credential file, and port forwards for `agentctl port-forward`, SSH and VNC. Each can move the same way, on a connection
 its call upgrades: executions without a terminal with frames for standard input, output and error, then port forwards
 as the bare byte stream. The Sandbox SDK keeps its own terminal attach, since a program that embeds the SDK and owns
 its terminal still needs it.
