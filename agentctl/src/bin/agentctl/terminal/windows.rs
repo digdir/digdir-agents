@@ -18,6 +18,10 @@ pub(super) struct Input {
 }
 
 impl Input {
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the relay opens each platform's input alike, and opening a Unix terminal can fail"
+    )]
     pub(super) fn open() -> Result<Self, Error> {
         Ok(Self {
             events: EventStream::new(),
