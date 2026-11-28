@@ -14,7 +14,7 @@ use ::sandbox::SandboxHandle;
 
 use crate::Error;
 
-use super::{AttachTarget, LaunchToken, Session, Turn};
+use super::{LaunchToken, Session, Turn};
 
 /// Runtime-observed liveness and inactivity for a session.
 ///
@@ -114,11 +114,12 @@ pub trait SessionRuntime {
         last: Option<usize>,
     ) -> ::sandbox::LocalFuture<'a, Result<Vec<Turn>, Error>>;
 
-    /// Attaches a local terminal to the session; a client capability distinct
-    /// from daemon-owned convergence. It never creates or resumes a session.
-    fn attach<'a>(
+    /// Starts a terminal showing the running session, for agentd to relay to a client. The client leaves by
+    /// asking the Execution to terminate, which leaves the session running.
+    fn terminal<'a>(
         &'a self,
-        home: &'a std::path::Path,
-        target: &'a AttachTarget,
-    ) -> ::sandbox::LocalFuture<'a, Result<(), Error>>;
+        session: &'a Session,
+        sandbox: &'a SandboxHandle,
+        size: ::sandbox::terminal::TerminalSize,
+    ) -> ::sandbox::LocalFuture<'a, Result<::sandbox::terminal::StartedTerminalExecution, Error>>;
 }

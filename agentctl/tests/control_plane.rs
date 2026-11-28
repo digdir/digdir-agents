@@ -3057,15 +3057,13 @@ async fn waiting(failures: impl IntoIterator<Item = PlannedFailure>, interval: D
     let backend = Rc::new(sandbox_memory::Provider::new());
     let provider: Rc<dyn Provider> = Rc::new(PlannedProvider::new(backend.clone(), failures));
     let provisioning = ProvisioningState::new(changes.clone());
-    let reconciler = Rc::new(Reconciler::new(
-        store.clone(),
-        sandbox_service(provider),
-        provisioning.clone(),
-    ));
+    let sandboxes = sandbox_service(provider);
+    let reconciler = Rc::new(Reconciler::new(store.clone(), sandboxes.clone(), provisioning.clone()));
     let (controller, wakeup) = Controller::new(store.clone(), reconciler, interval, Rc::new(|_, _| {}));
     let execution = Rc::new(ExecutionService::new(
         store.clone(),
         Convergence::new(wakeup.clone(), store.clone(), changes),
+        sandboxes,
     ));
     let task = tokio::task::spawn_local(controller.run());
     tokio::task::yield_now().await;
@@ -4784,7 +4782,7 @@ async fn a_stop_recorded_while_an_execution_waits_refuses_it() {
     );
     let (controller, wakeup) = Controller::new(
         store.clone(),
-        Rc::new(reconciler(store.clone(), provider)),
+        Rc::new(reconciler(store.clone(), provider.clone())),
         NO_BACKGROUND_PASSES,
         Rc::new(|_, _| {}),
     );
@@ -4795,6 +4793,7 @@ async fn a_stop_recorded_while_an_execution_waits_refuses_it() {
     let execution = Rc::new(ExecutionService::new(
         store.clone(),
         Convergence::new(wakeup, store.clone(), changes),
+        sandbox_service(provider),
     ));
     let waited = tokio::task::spawn_local(async move { execution.ensure("worker", WaitPolicy::FirstPass).await });
     tokio::task::yield_now().await;

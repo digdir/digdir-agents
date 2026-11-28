@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{AgentId, Error, Harness, ModelSelection, sandbox};
+use crate::{AgentId, Error, Harness, ModelSelection};
 
 pub use crate::controller::Reconcile;
 pub use activity::{Activity, ActivityEvent, Phase};
@@ -570,17 +570,6 @@ impl NewSession {
     }
 }
 
-/// Non-secret information required for a terminal attachment.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct AttachTarget {
-    /// Persistent session metadata and driver assignment.
-    pub session: Session,
-    // TODO: Replace this provider assignment with a daemon-owned attachment capability.
-    /// Provider-qualified materialized sandbox assignment.
-    pub sandbox: sandbox::Assignment,
-}
-
 /// Persistent session operations required by reconciliation.
 pub trait SessionStore: SessionReports {
     /// Creates or gets one named session for the active agent incarnation.
@@ -647,9 +636,6 @@ pub trait SessionStore: SessionReports {
     /// keyed to the session, including its activity reports, goes with it.
     fn finalize_session_deletion(&self, id: SessionId) -> ::sandbox::LocalFuture<'_, Result<(), Error>>;
 
-    /// Resolves a ready session into a terminal attachment target.
-    fn session_attach_target(&self, id: SessionId) -> ::sandbox::LocalFuture<'_, Result<AttachTarget, Error>>;
-
     /// Clears everything the previous harness incarnation reported: the native
     /// conversation ID, its transcript location and the folded activity.
     fn clear_session_report(&self, id: SessionId) -> ::sandbox::LocalFuture<'_, Result<(), Error>>;
@@ -706,19 +692,6 @@ pub trait SessionReports {
 }
 
 pub(crate) type SharedStore = std::rc::Rc<dyn SessionStore>;
-
-/// Attaches a local terminal to the session's runtime.
-///
-/// Delegates to the M0 [`Tmux`] runtime through the [`SessionRuntime`] seam;
-/// only the runtime knows how a session is carried inside the sandbox.
-///
-/// # Errors
-///
-/// Returns an error when the session is not ready or the recorded sandbox
-/// Provider cannot carry the attachment.
-pub async fn attach(home: &std::path::Path, target: &AttachTarget) -> Result<(), Error> {
-    runtime::Tmux.attach(home, target).await
-}
 
 #[cfg(test)]
 mod tests {

@@ -382,13 +382,6 @@ impl crate::sessions::SessionStore for Database {
         })
     }
 
-    fn session_attach_target(
-        &self,
-        id: crate::sessions::SessionId,
-    ) -> sandbox::LocalFuture<'_, Result<crate::sessions::AttachTarget, Error>> {
-        Box::pin(async move { self.request(|response| Command::GetAttachTarget { id, response }).await })
-    }
-
     fn clear_session_report(&self, id: crate::sessions::SessionId) -> sandbox::LocalFuture<'_, Result<(), Error>> {
         Box::pin(async move {
             self.request(|response| Command::ClearSessionReport { id, response })
@@ -816,10 +809,6 @@ enum Command {
         archived: bool,
         response: oneshot::Sender<Result<crate::sessions::Session, Error>>,
     },
-    GetAttachTarget {
-        id: crate::sessions::SessionId,
-        response: oneshot::Sender<Result<crate::sessions::AttachTarget, Error>>,
-    },
     ClearSessionReport {
         id: crate::sessions::SessionId,
         response: oneshot::Sender<Result<(), Error>>,
@@ -904,7 +893,6 @@ impl Command {
             | Self::GetSessionByName { .. }
             | Self::ListAllSessions { .. }
             | Self::ListSessions { .. }
-            | Self::GetAttachTarget { .. }
             | Self::GetSessionLaunchState { .. }
             | Self::ResetSessionLaunchAttempts { .. } => false,
         }
@@ -1202,9 +1190,6 @@ fn execute_session(connection: &mut Connection, command: Command) {
             response,
         } => {
             let _ = response.send(sessions::set_archived(connection, &agent, &name, archived));
-        }
-        Command::GetAttachTarget { id, response } => {
-            let _ = response.send(sessions::attach_target(connection, id));
         }
         command @ (Command::ClearSessionReport { .. }
         | Command::RecordSessionStartForLaunch { .. }

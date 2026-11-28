@@ -7,7 +7,7 @@ use std::{
 
 use agent::{
     Agent, AgentVariantName, Error, RunState,
-    control_api::Client,
+    control_api::{Client, Ended},
     control_plane::ApplyRequest,
     control_plane::WaitPolicy,
     launch,
@@ -30,13 +30,14 @@ mod sandbox_sign_in;
 mod secret;
 mod self_update;
 mod skills;
+mod terminal;
 mod tui;
 mod update;
 mod watch;
 
 use format::{format_age, session_state};
 use futures_util::StreamExt as _;
-use sandbox::{execution::ExecutionEvent, terminal::TerminalAttachOutcome};
+use sandbox::execution::ExecutionEvent;
 use tokio::io::AsyncWriteExt as _;
 use tokio::runtime::LocalRuntime;
 
@@ -1335,14 +1336,14 @@ async fn attach(
     let session = SessionName::new(require_name(name, "Session")?)?;
     let agent = resolve_agent_name(client, agent, variant).await?;
     let wait = progress::Wait::start();
-    let target = wait
+    let session = wait
         .until(
             client,
             &agent,
             client.ensure_session(&agent, session, selection.request(None), WaitPolicy::UntilConverged),
         )
         .await?;
-    agent::sessions::attach(home.path(), &target).await?;
+    terminal::attach_session(home, client, &agent, &session.name).await?;
     Ok(())
 }
 
@@ -1372,20 +1373,14 @@ async fn exec_command(
             client.ensure_execution(&agent, WaitPolicy::UntilConverged),
         )
         .await?;
-    let spec = agent::sandbox::platform::execution_spec(&target.operating_system, command, tty)?;
     let status = if tty {
-        match agent::sandbox::attach_terminal(
-            home.path(),
-            &target.sandbox,
-            ::sandbox::terminal::AttachTerminalRequest::new(spec),
-        )
-        .await?
-        {
-            TerminalAttachOutcome::Exited(status) => status,
-            TerminalAttachOutcome::Detached => return Ok(ExitCode::SUCCESS),
-            _ => return Err(Error::Session("terminal execution returned an unsupported outcome".into()).into()),
+        match terminal::run(client, &agent, command.to_vec()).await? {
+            Ended::Exited(code) => ::sandbox::execution::ExitStatus { code },
+            Ended::Detached => return Ok(ExitCode::SUCCESS),
+            Ended::Error(message) => return Err(Error::Session(message).into()),
         }
     } else {
+        let spec = agent::sandbox::platform::execution_spec(&target.operating_system, command, false)?;
         // As `ssh` does, a pipe or a file reaches the command without asking, since nothing else
         // would read it. A terminal does with `-i`, as with `kubectl exec`, so that a command does
         // not wait for typed input that nobody means to give it.
@@ -2864,14 +2859,14 @@ async fn run_agent(
     let Some(session) = session else {
         return Ok(());
     };
-    let target = progress::Wait::start()
+    let session = progress::Wait::start()
         .until(
             client,
             &name,
             client.ensure_session(&name, session, selection.request(None), WaitPolicy::UntilConverged),
         )
         .await?;
-    agent::sessions::attach(home.path(), &target).await?;
+    terminal::attach_session(home, client, &name, &session.name).await?;
     Ok(())
 }
 

@@ -23,6 +23,8 @@ delivers, so changes to them get no entry. The Rust workspace version is a build
 ### Changed
 
 - The Agent sandbox section at the top of an agent's instructions names `agentctl port-forward`, so an agent that starts a server for you, such as a preview, tells you how to open it from your machine. ([#630](https://github.com/digdir/digdir-agents/pull/630))
+- `agentctl attach`, and attaching to a session in `agentctl tui`, attach again on their own when agentd stops and comes back, instead of ending. agentd now runs every terminal you open in an agent and relays it, so it ends when agentd does.
+- `agentctl exec -it` and the shell in `agentctl tui` pass `Ctrl-]` to the program like any other key, instead of leaving it. Leave the shell with `exit`.
 
 ### Fixed
 

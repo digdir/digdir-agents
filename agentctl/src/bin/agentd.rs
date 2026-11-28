@@ -256,7 +256,11 @@ async fn run_control_plane(
             .with_home(home.path().to_path_buf()),
     );
     let convergence = agent::control_plane::Convergence::new(wakeup, store.clone(), changes.clone());
-    let executions = Rc::new(ExecutionService::new(store.clone(), convergence.clone()));
+    let executions = Rc::new(ExecutionService::new(
+        store.clone(),
+        convergence.clone(),
+        sandboxes.clone(),
+    ));
     let sessions = Rc::new(SessionService::new(
         session_store,
         agent_sandboxes,
@@ -265,6 +269,7 @@ async fn run_control_plane(
         session_wakeup,
     ));
     agent::upgrade::consume_pending_session_relaunch(&home, &sessions).await?;
+    let terminals = Rc::new(agent::control_api::Terminals::new(sessions.clone(), executions.clone()));
     let server = Rc::new(
         Server::new(
             control_plane,
@@ -279,7 +284,8 @@ async fn run_control_plane(
         )
         .with_volumes(volumes)
         .with_accounts(Rc::new(agent::accounts::Accounts::new(database.clone())))
-        .with_secrets(Rc::new(agent::secrets::Secrets::new(database.clone()))),
+        .with_secrets(Rc::new(agent::secrets::Secrets::new(database.clone())))
+        .with_terminals(terminals),
     );
     let mut controller_task = tokio::task::spawn_local(controller.run());
     let mut session_controller_task = tokio::task::spawn_local(session_controller.run());

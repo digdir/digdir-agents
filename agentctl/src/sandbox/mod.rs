@@ -18,7 +18,7 @@ pub mod platform;
 pub mod responsiveness;
 mod trim;
 
-pub use execution::{ExecutionService, ExecutionTarget, start_execution};
+pub use execution::{ExecutionService, ExecutionTarget, TerminalSpec, start_execution};
 pub use microsandbox::{GuestConnection, GuestDialer};
 pub use responsiveness::UNRESPONSIVE_AFTER;
 pub use trim::{TRIM_INTERVAL, TRIM_SCRIPT, Trimmer};
@@ -765,45 +765,6 @@ pub async fn guest_tcp_dialer(home: &Path, assignment: &Assignment) -> Result<Gu
         microsandbox::PROVIDER_ID => microsandbox::guest_tcp_dialer(home, assignment).await,
         provider => Err(Error::Invalid(format!(
             "guest TCP forwarding is not supported through sandbox provider {provider:?}"
-        ))),
-    }
-}
-
-/// Attaches a terminal through the recorded sandbox provider.
-///
-/// # Errors
-///
-/// Returns an error when the Provider is unsupported by this client or attachment fails.
-pub async fn attach_terminal(
-    home: &Path,
-    assignment: &Assignment,
-    request: ::sandbox::terminal::AttachTerminalRequest,
-) -> Result<::sandbox::terminal::TerminalAttachOutcome, Error> {
-    match assignment.provider().as_str() {
-        microsandbox::PROVIDER_ID => microsandbox::attach_terminal(home, assignment, request).await,
-        provider => Err(Error::Invalid(format!(
-            "terminal attachment is not supported through sandbox provider {provider:?}"
-        ))),
-    }
-}
-
-/// Starts a terminal Execution through the recorded sandbox provider, for the caller to relay.
-///
-/// Unlike [`attach_terminal`], the caller owns the terminal: it writes the input, resizes it and
-/// reads the output from the returned Execution, so it can also scan what the program prints.
-///
-/// # Errors
-///
-/// Returns an error when the Provider is unsupported by this client or the Execution cannot start.
-pub async fn start_terminal_execution(
-    home: &Path,
-    assignment: &Assignment,
-    request: ::sandbox::terminal::StartTerminalExecutionRequest,
-) -> Result<::sandbox::terminal::StartedTerminalExecution, Error> {
-    match assignment.provider().as_str() {
-        microsandbox::PROVIDER_ID => microsandbox::start_terminal_execution(home, assignment, request).await,
-        provider => Err(Error::Invalid(format!(
-            "terminal execution is not supported through sandbox provider {provider:?}"
         ))),
     }
 }

@@ -541,15 +541,6 @@ fn sessions_are_idempotent_and_survive_database_reopen() {
             )
             .await
             .expect("persist a failed launch");
-        let not_running = first
-            .session_attach_target(created.id)
-            .await
-            .expect_err("a session that is not running cannot be attached")
-            .to_string();
-        assert!(
-            not_running.contains("Session \"s1\"") && not_running.contains("harness exited; relaunching"),
-            "the error identifies the session and its lifecycle failure: {not_running}"
-        );
         first
             .update_session_lifecycle(created.id, Lifecycle::running(), 0)
             .await

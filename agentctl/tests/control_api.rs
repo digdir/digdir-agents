@@ -12,14 +12,15 @@ use agent::{
     Error,
     accounts::AccountType,
     control_api::{
-        AccountsApi, AuthenticationApi, Client, Connection, Connector, ConvergenceApi, ExecutionApi, SecretsApi,
-        Server, SessionApi, SshAccessApi, VncAccessApi, VolumeApi,
+        AccountsApi, AuthenticationApi, Client, Connection, Connector, ConvergenceApi, Ended, ExecutionApi, Output,
+        SecretsApi, Server, SessionApi, SshAccessApi, Terminal, TerminalApi, TerminalProcess, VncAccessApi, VolumeApi,
     },
     control_plane::WaitPolicy,
     control_plane::{ApplyRequest, ControlPlane, HostDisk, memory::InMemoryAgentStore},
     harness::{ImportedAuthentication, LoginName},
     local::disk::{DiskSpace, LowDiskThreshold},
     resources::Changes,
+    sandbox::TerminalSpec,
 };
 use sandbox::LocalFuture;
 use tokio::{
@@ -273,7 +274,7 @@ impl SessionApi for FakeSessions {
         _name: &'a agent::sessions::SessionName,
         request: agent::sessions::SessionRequest,
         _wait: WaitPolicy,
-    ) -> LocalFuture<'a, Result<agent::sessions::AttachTarget, Error>> {
+    ) -> LocalFuture<'a, Result<agent::sessions::Session, Error>> {
         self.ensured.borrow_mut().push(request);
         Box::pin(async { Err(Error::NotFound) })
     }
@@ -510,7 +511,7 @@ fn api() -> ApiFixture {
 }
 
 fn api_with(control_plane: Rc<ControlPlane>) -> ApiFixture {
-    api_serving(control_plane, None)
+    api_serving(control_plane, None, None)
 }
 
 /// Lists one volume manifest in the folder it is asked about, and serves nothing else.
@@ -554,7 +555,11 @@ impl VolumeApi for FakeVolumes {
     }
 }
 
-fn api_serving(control_plane: Rc<ControlPlane>, volumes: Option<Rc<dyn VolumeApi>>) -> ApiFixture {
+fn api_serving(
+    control_plane: Rc<ControlPlane>,
+    volumes: Option<Rc<dyn VolumeApi>>,
+    terminals: Option<Rc<dyn TerminalApi>>,
+) -> ApiFixture {
     let conversation = Rc::new(RefCell::new(vec![answered_turn("one", "1"), answered_turn("two", "2")]));
     let ensured = Rc::new(RefCell::new(Vec::new()));
     let sent = Rc::new(RefCell::new(Vec::new()));
@@ -596,6 +601,14 @@ fn api_serving(control_plane: Rc<ControlPlane>, volumes: Option<Rc<dyn VolumeApi
     );
     let server = match volumes {
         Some(volumes) => Rc::new(Rc::into_inner(server).expect("the only server").with_volumes(volumes)),
+        None => server,
+    };
+    let server = match terminals {
+        Some(terminals) => Rc::new(
+            Rc::into_inner(server)
+                .expect("the only server")
+                .with_terminals(terminals),
+        ),
         None => server,
     };
     let client = Client::new(Rc::new(InProcessConnector { server: server.clone() }));
@@ -1585,6 +1598,7 @@ async fn volume_manifests_are_listed_for_the_folder_a_client_names() {
             Rc::new(IgnoreNotifications),
         )),
         Some(Rc::new(FakeVolumes)),
+        None,
     );
 
     let listed = fixture
@@ -1606,6 +1620,7 @@ async fn listing_manifests_rejects_params_that_are_not_an_object_with_a_folder()
             Rc::new(IgnoreNotifications),
         )),
         Some(Rc::new(FakeVolumes)),
+        None,
     );
     let (mut raw_client, raw_server) = tokio::io::duplex(4096);
     let api = fixture.server.clone();
@@ -1845,4 +1860,541 @@ async fn listings_leave_out_ephemeral_agents_unless_asked_and_count_them() {
             .lifetime,
         Some(agent::Lifetime::Ephemeral)
     );
+}
+
+/// Terminals whose program echoes its input, records what agentd asks of it, and on `SIGTERM` draws `bye` and exits
+/// with code 1, as tmux's client does. Only the agent `worker` has them.
+#[derive(Default)]
+struct FakeTerminals {
+    calls: Rc<RefCell<Vec<String>>>,
+    /// The program ignores `SIGTERM`, as an interactive shell does.
+    stubborn: bool,
+    /// The program takes no input, so a write to it never completes.
+    deaf: bool,
+    /// The sandbox never answers a request to terminate or kill the program.
+    hung: bool,
+    /// Draws this as soon as it starts.
+    greeting: Option<&'static [u8]>,
+    /// Each program started, to make it draw or exit by itself.
+    programs: RefCell<Vec<ProgramEvents>>,
+}
+
+type ProgramEvents = tokio::sync::mpsc::UnboundedSender<Result<sandbox::terminal::TerminalEvent, sandbox::Error>>;
+
+struct FakeControl {
+    events: ProgramEvents,
+    calls: Rc<RefCell<Vec<String>>>,
+    deaf: bool,
+}
+
+struct FakeProcess {
+    events: ProgramEvents,
+    calls: Rc<RefCell<Vec<String>>>,
+    stubborn: bool,
+    hung: bool,
+}
+
+impl FakeTerminals {
+    fn start(&self, agent: &str, size: sandbox::terminal::TerminalSize) -> Result<Terminal, Error> {
+        use sandbox::terminal::TerminalEvent;
+        if agent != "worker" {
+            return Err(Error::NotFound);
+        }
+        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
+        self.calls
+            .borrow_mut()
+            .push(format!("start {}x{}", size.rows(), size.columns()));
+        if let Some(greeting) = self.greeting {
+            let _sent = events.send(Ok(TerminalEvent::Output(bytes::Bytes::from_static(greeting))));
+        }
+        self.programs.borrow_mut().push(events.clone());
+        Ok(Terminal {
+            control: Rc::new(FakeControl {
+                events: events.clone(),
+                calls: self.calls.clone(),
+                deaf: self.deaf,
+            }),
+            events: Box::pin(futures_util::stream::unfold(receiver, |mut receiver| async move {
+                receiver.recv().await.map(|event| (event, receiver))
+            })),
+            process: Box::new(FakeProcess {
+                events,
+                calls: self.calls.clone(),
+                stubborn: self.stubborn,
+                hung: self.hung,
+            }),
+        })
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.borrow().clone()
+    }
+
+    /// Waits for agentd to ask `call` of a program, letting paused time run.
+    async fn wait_for(&self, call: &str) {
+        for _ in 0..1000 {
+            if self.calls.borrow().iter().any(|made| made == call) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("{call:?} was never asked for: {:?}", self.calls());
+    }
+}
+
+impl sandbox::execution::ExecutionInput for FakeControl {
+    fn write_input(&self, bytes: bytes::Bytes) -> LocalFuture<'_, Result<(), sandbox::Error>> {
+        if self.deaf {
+            return Box::pin(std::future::pending());
+        }
+        let _sent = self.events.send(Ok(sandbox::terminal::TerminalEvent::Output(bytes)));
+        Box::pin(async { Ok(()) })
+    }
+
+    fn close_input(&self) -> LocalFuture<'_, Result<(), sandbox::Error>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+impl sandbox::terminal::TerminalControl for FakeControl {
+    fn resize(&self, size: sandbox::terminal::TerminalSize) -> LocalFuture<'_, Result<(), sandbox::Error>> {
+        self.calls
+            .borrow_mut()
+            .push(format!("resize {}x{}", size.rows(), size.columns()));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+impl TerminalProcess for FakeProcess {
+    fn terminate(&self) -> LocalFuture<'_, Result<(), Error>> {
+        use sandbox::terminal::TerminalEvent;
+        self.calls.borrow_mut().push("terminate".into());
+        if self.hung {
+            return Box::pin(std::future::pending());
+        }
+        if !self.stubborn {
+            let _sent = self
+                .events
+                .send(Ok(TerminalEvent::Output(bytes::Bytes::from_static(b"bye"))));
+            let _sent = self
+                .events
+                .send(Ok(TerminalEvent::Exited(sandbox::execution::ExitStatus { code: 1 })));
+        }
+        Box::pin(async { Ok(()) })
+    }
+
+    fn kill(&self) -> LocalFuture<'_, Result<(), Error>> {
+        self.calls.borrow_mut().push("kill".into());
+        if self.hung {
+            return Box::pin(std::future::pending());
+        }
+        let _sent = self.events.send(Ok(sandbox::terminal::TerminalEvent::Exited(
+            sandbox::execution::ExitStatus { code: 137 },
+        )));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+impl TerminalApi for FakeTerminals {
+    fn attach_session<'a>(
+        &'a self,
+        agent: &'a str,
+        name: &'a agent::sessions::SessionName,
+        size: sandbox::terminal::TerminalSize,
+    ) -> LocalFuture<'a, Result<(agent::sessions::Session, Terminal), Error>> {
+        Box::pin(async move {
+            let terminal = self.start(agent, size)?;
+            let session = serde_json::from_value(serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000001",
+                "agentId": "00000000-0000-0000-0000-000000000002",
+                "agent": agent,
+                "name": name,
+                "harness": "claudeCode",
+                "createdAt": "2026-08-25T00:00:00Z",
+                "status": {"state": "waitingForInput", "lifecycle": {"state": "running"}}
+            }))
+            .expect("test session");
+            Ok((session, terminal))
+        })
+    }
+
+    fn open<'a>(
+        &'a self,
+        agent: &'a str,
+        spec: TerminalSpec,
+        size: sandbox::terminal::TerminalSize,
+    ) -> LocalFuture<'a, Result<Terminal, Error>> {
+        Box::pin(async move {
+            let terminal = self.start(agent, size)?;
+            self.calls.borrow_mut().push(format!(
+                "open {} {:?} {:?}",
+                spec.command.join(" "),
+                spec.environment,
+                spec.working_directory
+            ));
+            Ok(terminal)
+        })
+    }
+}
+
+fn api_with_terminals(terminals: FakeTerminals) -> (ApiFixture, Rc<FakeTerminals>) {
+    let terminals = Rc::new(terminals);
+    let fixture = api_serving(
+        Rc::new(ControlPlane::new(
+            Rc::new(InMemoryAgentStore::new()),
+            Rc::new(IgnoreNotifications),
+        )),
+        None,
+        Some(terminals.clone()),
+    );
+    (fixture, terminals)
+}
+
+fn session_name(name: &str) -> agent::sessions::SessionName {
+    agent::sessions::SessionName::new(name).expect("session name")
+}
+
+fn terminal_size(rows: u16, columns: u16) -> sandbox::terminal::TerminalSize {
+    sandbox::terminal::TerminalSize::new(rows, columns).expect("terminal size")
+}
+
+const fn drew(bytes: &'static [u8]) -> Output {
+    Output::Bytes(bytes::Bytes::from_static(bytes))
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_attached_session_relays_its_terminal_from_the_first_byte() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals {
+        greeting: Some(b"welcome"),
+        ..FakeTerminals::default()
+    });
+
+    let (session, terminal) = fixture
+        .client
+        .attach_session("worker", session_name("main"), terminal_size(24, 80))
+        .await
+        .expect("attach");
+    assert_eq!(session.name.as_str(), "main");
+    let (mut input, mut output) = terminal.split();
+    // Drawn before the client read anything, so it arrived with the response.
+    assert_eq!(output.next().await.expect("output"), drew(b"welcome"));
+
+    input.resize(terminal_size(50, 132)).await.expect("resize");
+    input.input(bytes::Bytes::from_static(b"ls\r")).await.expect("input");
+    assert_eq!(output.next().await.expect("echo"), drew(b"ls\r"));
+    assert_eq!(terminals.calls(), ["start 24x80", "resize 50x132"]);
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_detach_puts_the_terminal_back_then_says_it_detached() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals::default());
+    let (_session, terminal) = fixture
+        .client
+        .attach_session("worker", session_name("main"), terminal_size(24, 80))
+        .await
+        .expect("attach");
+    let (mut input, mut output) = terminal.split();
+
+    input.detach().await.expect("detach");
+
+    assert_eq!(output.next().await.expect("last output"), drew(b"bye"));
+    assert_eq!(
+        output.next().await.expect("ended"),
+        Output::Ended(Ended::Detached),
+        "tmux's code 1 after SIGTERM is a detach, as agentd asked for it"
+    );
+    let closed = output.next().await.expect_err("nothing follows");
+    assert!(matches!(&closed, Error::Io(error) if error.kind() == std::io::ErrorKind::UnexpectedEof));
+    assert_eq!(terminals.calls(), ["start 24x80", "terminate"]);
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_program_that_exits_by_itself_says_its_code() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals::default());
+    let (_session, terminal) = fixture
+        .client
+        .attach_session("worker", session_name("main"), terminal_size(24, 80))
+        .await
+        .expect("attach");
+    let (_input, mut output) = terminal.split();
+
+    terminals.programs.borrow()[0]
+        .send(Ok(sandbox::terminal::TerminalEvent::Exited(
+            sandbox::execution::ExitStatus { code: 3 },
+        )))
+        .expect("program");
+
+    assert_eq!(output.next().await.expect("ended"), Output::Ended(Ended::Exited(3)));
+    assert_eq!(terminals.calls(), ["start 24x80"]);
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_client_that_goes_away_detaches_and_a_stubborn_program_is_killed() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals {
+        stubborn: true,
+        ..FakeTerminals::default()
+    });
+    let spec = TerminalSpec {
+        command: vec!["bash".into(), "-l".into()],
+        ..TerminalSpec::default()
+    };
+    let terminal = fixture
+        .client
+        .open_terminal("worker", spec, terminal_size(24, 80))
+        .await
+        .expect("open");
+
+    drop(terminal);
+
+    terminals.wait_for("terminate").await;
+    let asked = tokio::time::Instant::now();
+    terminals.wait_for("kill").await;
+    assert!(asked.elapsed() >= Duration::from_secs(2), "the program had its grace");
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_terminal_of_its_own_carries_its_command_environment_and_folder() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals::default());
+    let spec = TerminalSpec {
+        command: vec!["bash".into(), "-l".into()],
+        environment: [("TERM".to_owned(), "xterm-256color".to_owned())].into(),
+        working_directory: Some("/work".into()),
+    };
+
+    let _terminal = fixture
+        .client
+        .open_terminal("worker", spec, terminal_size(30, 100))
+        .await
+        .expect("open");
+
+    assert_eq!(
+        terminals.calls(),
+        [
+            "start 30x100",
+            r#"open bash -l {"TERM": "xterm-256color"} Some("/work")"#
+        ]
+    );
+    let error = fixture
+        .client
+        .open_terminal("worker", TerminalSpec::default(), terminal_size(30, 100))
+        .await
+        .expect_err("no command");
+    assert!(
+        matches!(&error, Error::Rpc(error) if error.is_invalid_params()),
+        "{error:?}"
+    );
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_refused_terminal_leaves_the_connection_serving_json() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals::default());
+    let (mut raw_client, raw_server) = tokio::io::duplex(4096);
+    let api = fixture.server.clone();
+    tokio::task::spawn_local(async move {
+        let _ignored = api.serve_connection(raw_server).await;
+    });
+    let mut reader = BufReader::new(&mut raw_client);
+    for (id, method, params, code) in [
+        (
+            1,
+            "sessions.v1.attach",
+            r#"{"agent":"missing","name":"main","size":{"rows":24,"columns":80}}"#,
+            -32004,
+        ),
+        (
+            2,
+            "sessions.v1.attach",
+            r#"{"agent":"worker","name":"main","size":{"rows":0,"columns":80}}"#,
+            -32602,
+        ),
+        (
+            3,
+            "agents.v1.terminal",
+            r#"{"name":"worker","command":["bash"],"size":{"rows":24,"columns":0}}"#,
+            -32602,
+        ),
+    ] {
+        let request = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{params}}}"#);
+        reader
+            .get_mut()
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .expect("write request");
+        let mut response = String::new();
+        reader.read_line(&mut response).await.expect("read response");
+        let response: serde_json::Value = serde_json::from_str(&response).expect("JSON-RPC response");
+        assert_eq!(response["error"]["code"], code, "{response}");
+    }
+
+    reader
+        .get_mut()
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"control.v1.health\"}\n")
+        .await
+        .expect("write request");
+    let mut response = String::new();
+    reader.read_line(&mut response).await.expect("read response");
+    let response: serde_json::Value = serde_json::from_str(&response).expect("JSON-RPC response");
+    assert_eq!(response["id"], 4, "{response}");
+    assert!(response["result"]["protocolVersion"].is_string(), "{response}");
+    assert_eq!(terminals.calls(), Vec::<String>::new());
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_agentd_without_terminals_says_so() {
+    let fixture = api();
+    let error = fixture
+        .client
+        .attach_session("worker", session_name("main"), terminal_size(24, 80))
+        .await
+        .expect_err("no terminals");
+    assert!(matches!(&error, Error::Rpc(error) if error.code == -32601), "{error:?}");
+}
+
+#[tokio::test(flavor = "local")]
+async fn no_terminal_starts_while_agentd_prepares_for_an_upgrade() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals::default());
+    let readiness_gate = Rc::new(Notify::new());
+    *fixture.upgrade_gates.readiness.borrow_mut() = Some(readiness_gate.clone());
+    let shutdown_client = Client::new(Rc::new(InProcessConnector {
+        server: fixture.server.clone(),
+    }));
+    let checking = fixture.upgrade_gates.readiness_started.notified();
+    let shutdown = tokio::task::spawn_local(async move { shutdown_client.shutdown_for_upgrade().await });
+    checking.await;
+
+    let error = fixture
+        .client
+        .attach_session("worker", session_name("main"), terminal_size(24, 80))
+        .await
+        .expect_err("preparing for an upgrade");
+
+    assert!(matches!(&error, Error::Rpc(error) if error.code == -32010), "{error:?}");
+    assert_eq!(terminals.calls(), Vec::<String>::new());
+    // Its second look at the sessions goes through without waiting.
+    *fixture.upgrade_gates.readiness.borrow_mut() = None;
+    readiness_gate.notify_one();
+    shutdown.await.expect("shutdown task").expect("shutdown");
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn agentd_stopping_ends_a_terminal_and_says_why() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals::default());
+    let spec = TerminalSpec {
+        command: vec!["bash".into()],
+        ..TerminalSpec::default()
+    };
+    let terminal = fixture
+        .client
+        .open_terminal("worker", spec, terminal_size(24, 80))
+        .await
+        .expect("open");
+    let (_input, mut output) = terminal.split();
+
+    fixture.client.shutdown_for_upgrade().await.expect("shutdown");
+
+    assert_eq!(output.next().await.expect("last output"), drew(b"bye"));
+    assert_eq!(
+        output.next().await.expect("ended"),
+        Output::Ended(Ended::Error("agentd is stopping".into()))
+    );
+    assert!(terminals.calls().contains(&"terminate".to_owned()));
+}
+
+#[tokio::test(flavor = "local")]
+async fn a_program_that_takes_no_input_still_draws_and_can_be_detached() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals {
+        deaf: true,
+        ..FakeTerminals::default()
+    });
+    let (_session, terminal) = fixture
+        .client
+        .attach_session("worker", session_name("main"), terminal_size(24, 80))
+        .await
+        .expect("attach");
+    let (mut input, mut output) = terminal.split();
+
+    input.input(bytes::Bytes::from_static(b"pasted")).await.expect("input");
+    terminals.programs.borrow()[0]
+        .send(Ok(sandbox::terminal::TerminalEvent::Output(bytes::Bytes::from_static(
+            b"busy",
+        ))))
+        .expect("program");
+    assert_eq!(output.next().await.expect("output"), drew(b"busy"));
+
+    input.detach().await.expect("detach");
+    assert_eq!(output.next().await.expect("last output"), drew(b"bye"));
+    assert_eq!(output.next().await.expect("ended"), Output::Ended(Ended::Detached));
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_client_still_leaves_after_more_input_than_a_program_that_takes_none_is_held_for() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals {
+        deaf: true,
+        ..FakeTerminals::default()
+    });
+    let (_session, terminal) = fixture
+        .client
+        .attach_session("worker", session_name("main"), terminal_size(24, 80))
+        .await
+        .expect("attach");
+    let (mut input, output) = terminal.split();
+
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        input.input(bytes::Bytes::from(vec![b'x'; 1024 * 1024])),
+    )
+    .await
+    .expect("agentd reads the client's frames again")
+    .expect("input");
+    drop((input, output));
+
+    terminals.wait_for("terminate").await;
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_sandbox_that_does_not_answer_still_has_its_program_killed() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals {
+        hung: true,
+        ..FakeTerminals::default()
+    });
+    let (_session, terminal) = fixture
+        .client
+        .attach_session("worker", session_name("main"), terminal_size(24, 80))
+        .await
+        .expect("attach");
+    drop(terminal);
+
+    terminals.wait_for("terminate").await;
+    terminals.wait_for("kill").await;
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_client_that_stops_reading_does_not_keep_agentd_from_stopping() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals {
+        stubborn: true,
+        ..FakeTerminals::default()
+    });
+    let spec = TerminalSpec {
+        command: vec!["yes".into()],
+        ..TerminalSpec::default()
+    };
+    let _unread = fixture
+        .client
+        .open_terminal("worker", spec, terminal_size(24, 80))
+        .await
+        .expect("open");
+    // Far more than the connection holds, so the relay waits on the client.
+    for _ in 0..32 {
+        terminals.programs.borrow()[0]
+            .send(Ok(sandbox::terminal::TerminalEvent::Output(bytes::Bytes::from(
+                vec![b'y'; 64 * 1024],
+            ))))
+            .expect("program");
+    }
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    fixture.client.shutdown_for_upgrade().await.expect("shutdown");
+
+    terminals.wait_for("terminate").await;
+    terminals.wait_for("kill").await;
 }

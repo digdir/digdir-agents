@@ -8,8 +8,8 @@ use tokio::sync::Notify;
 use crate::{Error, control_plane, control_plane::WaitPolicy};
 
 use super::{
-    AgentSandboxes, AttachTarget, LifecycleState, NewSession, Session, SessionId, SessionName, SessionRequest,
-    SessionRuntime, SharedStore, State, Turn, Wakeup,
+    AgentSandboxes, LifecycleState, NewSession, Session, SessionId, SessionName, SessionRequest, SessionRuntime,
+    SharedStore, State, Turn, Wakeup,
 };
 
 /// Ceiling for completion waiting after prompt submission.
@@ -120,7 +120,7 @@ impl Service {
         name: &SessionName,
         request: SessionRequest,
         wait: WaitPolicy,
-    ) -> Result<AttachTarget, Error> {
+    ) -> Result<Session, Error> {
         let (owner, session) = self.prepare(agent, name, request).await?;
         let converged = self.convergence.converge(agent, wait).await?;
         if converged.id != owner.id {
@@ -131,7 +131,11 @@ impl Service {
         // On a brand-new agent this is the first moment the answer exists.
         Self::reject_omitted_optional_harness(&converged, session.harness)?;
         self.wakeup.reconcile(session.id).await?;
-        self.store.session_attach_target(session.id).await
+        let session = self.store.get_session(session.id).await?;
+        if session.status.lifecycle.state != LifecycleState::Running {
+            return Err(session.not_running_error());
+        }
+        Ok(session)
     }
 
     /// Delivers a prompt to a session's harness, resuming it first when the session is Idle, and
@@ -276,6 +280,25 @@ impl Service {
         let sandbox = self.sandboxes.open(&owner).await?;
         let session = self.store.get_session(session.id).await?;
         self.runtime.turns(&session, &sandbox, last).await
+    }
+
+    /// Starts a terminal showing a session, for agentd to relay to a client. An Idle session is resumed first and a
+    /// resuming one waited for, as a prompt does. It never creates a session. Returns the session as it is then, and
+    /// the sandbox the terminal runs in.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session is archived, its agent is stopped, it cannot be resumed or the terminal
+    /// cannot start.
+    pub async fn attach(
+        &self,
+        agent: &str,
+        name: &SessionName,
+        size: ::sandbox::terminal::TerminalSize,
+    ) -> Result<(Session, SandboxHandle, ::sandbox::terminal::StartedTerminalExecution), Error> {
+        let (session, sandbox) = self.open_running(agent, name).await?;
+        let terminal = self.runtime.terminal(&session, &sandbox, size).await?;
+        Ok((session, sandbox, terminal))
     }
 
     /// Opens a session's sandbox to take input. An Idle session's harness is resumed first, as an

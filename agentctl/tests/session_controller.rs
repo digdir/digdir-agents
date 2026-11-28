@@ -341,6 +341,8 @@ struct FakeRuntime {
     sent: RefCell<Vec<String>>,
     launches: RefCell<Vec<(Option<String>, Option<String>)>>,
     launch_tokens: RefCell<Vec<agent::sessions::LaunchToken>>,
+    /// The sessions a terminal was started for.
+    terminals: RefCell<Vec<String>>,
 }
 
 impl Default for FakeRuntime {
@@ -369,6 +371,7 @@ impl Default for FakeRuntime {
             sent: RefCell::default(),
             launches: RefCell::default(),
             launch_tokens: RefCell::default(),
+            terminals: RefCell::default(),
         }
     }
 }
@@ -502,12 +505,16 @@ impl agent::sessions::SessionRuntime for FakeRuntime {
         })
     }
 
-    fn attach<'a>(
+    fn terminal<'a>(
         &'a self,
-        _home: &'a std::path::Path,
-        _target: &'a agent::sessions::AttachTarget,
-    ) -> LocalFuture<'a, Result<(), Error>> {
-        Box::pin(async { Err(Error::Invalid("no terminal in tests".into())) })
+        session: &'a agent::sessions::Session,
+        sandbox: &'a SandboxHandle,
+        size: sandbox::terminal::TerminalSize,
+    ) -> LocalFuture<'a, Result<sandbox::terminal::StartedTerminalExecution, Error>> {
+        self.terminals.borrow_mut().push(session.name.to_string());
+        let spec = sandbox::execution::ExecutionSpec::command(sandbox::SandboxPath::new("/usr/bin/tmux"), []);
+        let request = sandbox::terminal::StartTerminalExecutionRequest::new(spec, size);
+        Box::pin(async move { Ok(sandbox.start_terminal_execution(request).await?) })
     }
 }
 
@@ -2173,8 +2180,8 @@ async fn session_ensure_resolves_explicit_and_implicit_harnesses() {
         .await
         .expect("implicit default session");
 
-    assert_eq!(explicit.session.harness, agent::Harness::Codex);
-    assert_eq!(implicit.session.harness, agent::Harness::ClaudeCode);
+    assert_eq!(explicit.harness, agent::Harness::Codex);
+    assert_eq!(implicit.harness, agent::Harness::ClaudeCode);
 
     let conflict = service
         .ensure(
@@ -2229,11 +2236,9 @@ async fn a_session_on_an_agent_without_a_harness_is_refused_without_persisting()
 impl SelectionFixture {
     async fn ensure(&self, name: &str, request: SessionRequest) -> Result<agent::sessions::Session, Error> {
         let name = SessionName::new(name).expect("name");
-        let target = self
-            .service
+        self.service
             .ensure("worker", &name, request, WaitPolicy::FirstPass)
-            .await?;
-        Ok(target.session)
+            .await
     }
 }
 
@@ -2557,13 +2562,10 @@ async fn session_ensure_persists_intent_before_waiting_for_agent_convergence() {
         agent::sessions::LifecycleState::Starting
     );
     release.notify_one();
-    let target = ensure.await.expect("ensure task").expect("ready session");
+    let session = ensure.await.expect("ensure task").expect("ready session");
 
-    assert_eq!(target.session.name.as_str(), "s1");
-    assert_eq!(
-        target.session.status.lifecycle.state,
-        agent::sessions::LifecycleState::Running
-    );
+    assert_eq!(session.name.as_str(), "s1");
+    assert_eq!(session.status.lifecycle.state, agent::sessions::LifecycleState::Running);
     agent_task.abort();
     session_task.abort();
 }
@@ -3625,4 +3627,80 @@ struct NoNotifications;
 
 impl agent::control_plane::Notifier for NoNotifications {
     fn notify(&self, _id: AgentId) {}
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_attach_resumes_an_idle_session_and_starts_its_terminal() {
+    let directory = TempDir::new().expect("directory");
+    let harness = ServiceHarness::start_reconciled(&directory, "a5a5a5a5-a5a5-4a5a-8a5a-a5a5a5a5a5a5").await;
+    harness.stop_idle().await;
+    harness.runtime.ready_without_report.set(true);
+
+    let (session, _sandbox, _terminal) = harness
+        .service
+        .attach(
+            "worker",
+            &harness.session.name,
+            sandbox::terminal::TerminalSize::DEFAULT,
+        )
+        .await
+        .expect("the attach resumes the session");
+
+    assert_eq!(session.status.lifecycle.state, agent::sessions::LifecycleState::Running);
+    assert_eq!(
+        harness.runtime.launches.borrow().as_slice(),
+        [(Some("native-0".to_owned()), None)],
+        "the harness resumes its conversation"
+    );
+    assert_eq!(harness.runtime.terminals.borrow().as_slice(), ["s1"]);
+    harness.finish();
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_attach_to_an_archived_session_neither_resumes_it_nor_starts_a_terminal() {
+    let directory = TempDir::new().expect("directory");
+    let harness = ServiceHarness::start_reconciled(&directory, "a6a6a6a6-a6a6-4a6a-8a6a-a6a6a6a6a6a6").await;
+    harness.stop_idle().await;
+    harness
+        .service
+        .set_archived("worker", &harness.session.name, true)
+        .await
+        .expect("archive");
+
+    let error = harness
+        .service
+        .attach(
+            "worker",
+            &harness.session.name,
+            sandbox::terminal::TerminalSize::DEFAULT,
+        )
+        .await
+        .expect_err("archived");
+
+    assert!(error.to_string().contains("is archived"), "{error}");
+    assert_eq!(harness.runtime.launches.borrow().len(), 0);
+
+    assert_eq!(harness.runtime.terminals.borrow().len(), 0);
+    harness.finish();
+}
+
+#[tokio::test(flavor = "local")]
+async fn an_attach_in_a_stopped_agent_is_refused() {
+    let directory = TempDir::new().expect("directory");
+    let harness = ServiceHarness::start(&directory, "a7a7a7a7-a7a7-4a7a-8a7a-a7a7a7a7a7a7").await;
+    set_worker_run_state(&harness.database, agent::RunState::Stopped).await;
+
+    let error = harness
+        .service
+        .attach(
+            "worker",
+            &harness.session.name,
+            sandbox::terminal::TerminalSize::DEFAULT,
+        )
+        .await
+        .expect_err("nothing runs to attach to");
+
+    assert!(matches!(&error, Error::Stopped(name) if name == "worker"), "{error:?}");
+    assert_eq!(harness.runtime.terminals.borrow().len(), 0);
+    harness.finish();
 }
