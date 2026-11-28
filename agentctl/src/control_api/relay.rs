@@ -47,6 +47,12 @@ pub trait TerminalProcess {
 /// client's frames, which pushes back on the client.
 const MAX_QUEUED_INPUT: usize = 64 * 1024;
 
+/// How long a program may leave a full queue of input untaken before the relay reads the client's frames again and
+/// drops the input in them, as a terminal does when its input buffer is full. Otherwise a client that detaches or goes
+/// away behind that input would go unnoticed, and its terminal would stay open, for as long as the program does not
+/// read.
+const INPUT_STALL: Duration = Duration::from_secs(5);
+
 /// `agentd` has asked the program to exit, and says why once it has.
 struct Detaching {
     ended: Ended,
@@ -86,6 +92,7 @@ where
             sending = client.next_for(&*control);
         }
         let deadline = detaching.as_ref().map(|detaching| detaching.deadline);
+        let stall = client.stalls_at(sending.is_some());
         // Not stopping already, so a stop only starts once.
         let running = detaching.is_none();
         tokio::select! {
@@ -100,6 +107,7 @@ where
             }
             sent = in_flight(&mut sending) => {
                 sending = None;
+                client.stalled = false;
                 if let Err(error) = sent {
                     tracing::debug!(%error, "writing to a terminal failed");
                 }
@@ -142,6 +150,7 @@ where
             () = server.shutdown_requested(), if running => {
                 detaching = Some(detach(&*process, Ended::Error(AGENTD_STOPPING.into())).await);
             }
+            () = sleep_until(stall), if stall.is_some() => client.stalled = true,
             () = sleep_until(deadline), if deadline.is_some() => {
                 let Some(detaching) = detaching.as_mut() else { continue };
                 if detaching.killed {
@@ -177,6 +186,10 @@ struct Client {
     writing: bool,
     queued: BytesMut,
     resized: Option<TerminalSize>,
+    /// When the program was last handed something.
+    handed: Instant,
+    /// The program has left a full queue untaken for [`INPUT_STALL`], so input that follows is dropped.
+    stalled: bool,
 }
 
 impl Default for Client {
@@ -186,21 +199,38 @@ impl Default for Client {
             writing: true,
             queued: BytesMut::new(),
             resized: None,
+            handed: Instant::now(),
+            stalled: false,
         }
     }
 }
 
 impl Client {
-    /// Whether to read the client's next frame: not once it stopped, nor while too much input waits.
+    /// Whether to read the client's next frame: not once it stopped, nor while too much input waits for a program
+    /// that is still taking it.
     fn takes_frames(&self) -> bool {
-        self.reading && self.queued.len() < MAX_QUEUED_INPUT
+        self.reading && (!self.full() || self.stalled)
+    }
+
+    fn full(&self) -> bool {
+        self.queued.len() >= MAX_QUEUED_INPUT
+    }
+
+    /// When to stop waiting for a program that is taking input, `sending`, while a full queue keeps the client's
+    /// frames unread.
+    fn stalls_at(&self, sending: bool) -> Option<Instant> {
+        (sending && self.reading && !self.takes_frames()).then_some(self.handed + INPUT_STALL)
     }
 
     /// Takes in one read of the client's frames, and says why the client is leaving when it is.
     fn take(&mut self, frame: std::io::Result<Option<Frame>>) -> Option<Ended> {
         match frame {
             Ok(Some(Frame::Input(bytes))) => {
-                self.queued.extend_from_slice(&bytes);
+                if self.full() {
+                    tracing::debug!("dropping input for a program that has not taken its input for a while");
+                } else {
+                    self.queued.extend_from_slice(&bytes);
+                }
                 None
             }
             Ok(Some(Frame::Resize(size))) => {
@@ -213,6 +243,10 @@ impl Client {
             Ok(Some(Frame::Output(_) | Frame::Ended(_))) => {
                 self.reading = false;
                 Some(Ended::Error("the client sent a frame only agentd sends".into()))
+            }
+            Err(error) if super::frames::lost(&error) => {
+                self.gone();
+                Some(Ended::Detached)
             }
             Err(error) => {
                 self.reading = false;
@@ -236,6 +270,7 @@ impl Client {
         &mut self,
         control: &'a dyn TerminalControl,
     ) -> Option<LocalFuture<'a, Result<(), sandbox::Error>>> {
+        self.handed = Instant::now();
         if let Some(size) = self.resized.take() {
             return Some(control.resize(size));
         }
@@ -251,21 +286,28 @@ async fn in_flight<T>(pending: &mut Option<LocalFuture<'_, T>>) -> T {
     }
 }
 
-/// Asks the program to exit, and gives it [`DETACH_GRACE`] to.
+/// Asks the program to exit, and gives it [`DETACH_GRACE`] to. Asking counts against that time, since the sandbox may
+/// not answer at all.
 async fn detach(process: &dyn TerminalProcess, ended: Ended) -> Detaching {
-    if let Err(error) = process.terminate().await {
-        tracing::debug!(%error, "asking a terminal's program to exit failed");
+    let deadline = Instant::now() + DETACH_GRACE;
+    match tokio::time::timeout_at(deadline, process.terminate()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::debug!(%error, "asking a terminal's program to exit failed"),
+        Err(_) => tracing::debug!("asking a terminal's program to exit did not finish"),
     }
     Detaching {
         ended,
-        deadline: Instant::now() + DETACH_GRACE,
+        deadline,
         killed: false,
     }
 }
 
+/// Kills the program, waiting at most [`DETACH_GRACE`] for the sandbox to take it.
 async fn kill(process: &dyn TerminalProcess) {
-    if let Err(error) = process.kill().await {
-        tracing::debug!(%error, "killing a terminal's program failed");
+    match tokio::time::timeout(DETACH_GRACE, process.kill()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::debug!(%error, "killing a terminal's program failed"),
+        Err(_) => tracing::debug!("killing a terminal's program did not finish"),
     }
 }
 

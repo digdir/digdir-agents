@@ -73,7 +73,7 @@ for a new one and keeps each client's size.
 
 | | How it travels |
 | --- | --- |
-| Input | An `input` frame is written to the Execution. Microsandbox applies backpressure there, so a fast paste waits rather than piles up. Input and output each wait on their own, so a program that takes no input while it draws still draws. |
+| Input | An `input` frame is written to the Execution. Microsandbox applies backpressure there, so a fast paste waits rather than piles up. Input and output each wait on their own, so a program that takes no input while it draws still draws. A program that leaves 64 KiB of input untaken for five seconds loses the input that follows, as with a terminal whose input buffer is full, so a client behind that input can still detach. |
 | Resize | A `resize` frame resizes the Execution's terminal. The size in the request is the Execution's initial size, so the first screen is drawn at the right size. |
 | Output | The Execution's output becomes `output` frames. `agentd` stops reading it while a write to a slow client waits, which pushes back on the Execution. A client that stops reading still gets detached when `agentd` stops. |
 | Exit | The Execution's exit becomes `ended` with the exit code. A tmux client exits when someone detaches it with `Ctrl-b d` or when the session ends. |
@@ -81,7 +81,8 @@ for a new one and keeps each client's size.
 ## Detaching
 
 A client detaches by sending `detach` or by closing the connection. Either way `agentd` asks the Execution to
-terminate, which sends `SIGTERM`, and kills it if it is still running two seconds later.
+terminate, which sends `SIGTERM`, and kills it if it is still running two seconds later. A sandbox that does not answer
+either request holds up neither, so the terminal still ends and frees its place under the caps.
 
 For a session that is enough, because of how tmux handles signals. tmux's client answers `SIGTERM` while attached by
 telling the server it is leaving and exiting. The server drops that client and keeps the session. It is the same as

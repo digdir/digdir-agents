@@ -12,6 +12,50 @@ use sandbox::terminal::TerminalSize;
 
 use super::Local;
 
+/// This console's output interpreting the escape sequences a program draws with, until dropped.
+///
+/// crossterm's raw mode changes only the console's input, and a console that does not interpret them shows them as
+/// text instead.
+pub(super) struct OutputMode {
+    /// The mode to put back, when this changed it.
+    restore: Option<u32>,
+}
+
+impl OutputMode {
+    #[expect(unsafe_code, reason = "the console's mode is only reachable through the Windows API")]
+    pub(super) fn enable() -> Self {
+        use windows_sys::Win32::System::Console::{
+            ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetStdHandle, STD_OUTPUT_HANDLE, SetConsoleMode,
+        };
+
+        // SAFETY: Both take this process's own output handle, and `mode` outlives the call that writes it.
+        unsafe {
+            let output = GetStdHandle(STD_OUTPUT_HANDLE);
+            let mut mode = 0;
+            // Output that is not a console has no mode to change.
+            let restore = (GetConsoleMode(output, &raw mut mode) != 0
+                && mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING == 0
+                && SetConsoleMode(output, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0)
+                .then_some(mode);
+            Self { restore }
+        }
+    }
+}
+
+impl Drop for OutputMode {
+    #[expect(unsafe_code, reason = "the console's mode is only reachable through the Windows API")]
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE, SetConsoleMode};
+
+        if let Some(mode) = self.restore {
+            // SAFETY: It takes this process's own output handle.
+            unsafe {
+                SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), mode);
+            }
+        }
+    }
+}
+
 /// This console's keys, pastes and size changes.
 pub(super) struct Input {
     events: EventStream,

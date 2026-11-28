@@ -170,8 +170,8 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     ///
     /// # Errors
     ///
-    /// A stream that ends inside a frame, and a frame that is too large, of an unknown type or with a payload its type
-    /// does not allow, are [`io::ErrorKind::InvalidData`].
+    /// A stream that ends inside a frame is [`io::ErrorKind::UnexpectedEof`]. A frame that is too large, of an unknown
+    /// type or with a payload its type does not allow is [`io::ErrorKind::InvalidData`].
     pub(crate) async fn next(&mut self) -> io::Result<Option<Frame>> {
         loop {
             if let Some(frame) = self.parse()? {
@@ -182,7 +182,10 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
                 if self.buffer.is_empty() {
                     return Ok(None);
                 }
-                return Err(invalid("the stream ended inside a frame"));
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "the stream ended inside a frame",
+                ));
             }
         }
     }
@@ -236,6 +239,17 @@ fn frame(kind: u8, payload: Bytes) -> io::Result<Frame> {
         TYPE_OUTPUT => Ok(Frame::Output(payload)),
         _ => Ended::from_json(&payload).map(Frame::Ended),
     }
+}
+
+/// Whether `error` means the other end of the connection went away, rather than that it sent something wrong.
+pub(crate) fn lost(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+    )
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -330,10 +344,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stream_that_ends_inside_a_frame_is_refused() {
+    async fn a_stream_that_ends_inside_a_frame_was_cut_off() {
         let bytes = encoded(&[Frame::Output(Bytes::from_static(b"hello"))]).await;
-        assert_eq!(refused(&bytes[..2]).await.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(refused(&bytes[..7]).await.kind(), io::ErrorKind::InvalidData);
+        assert!(lost(&refused(&bytes[..2]).await));
+        assert!(lost(&refused(&bytes[..7]).await));
     }
 
     #[tokio::test]

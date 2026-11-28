@@ -904,12 +904,12 @@ impl TerminalInput {
     ///
     /// # Errors
     ///
-    /// Returns an error when the connection is gone.
+    /// Returns an error when the connection is gone, as [`TerminalOutput::next`] describes.
     pub async fn input(&mut self, bytes: bytes::Bytes) -> Result<(), Error> {
         let mut rest = bytes;
         loop {
             let piece = rest.split_to(rest.len().min(super::frames::MAX_FRAME_PAYLOAD));
-            write_frame(&mut self.writer, &Frame::Input(piece)).await?;
+            self.send(&Frame::Input(piece)).await?;
             if rest.is_empty() {
                 return Ok(());
             }
@@ -920,9 +920,9 @@ impl TerminalInput {
     ///
     /// # Errors
     ///
-    /// Returns an error when the connection is gone.
+    /// Returns an error when the connection is gone, as [`TerminalOutput::next`] describes.
     pub async fn resize(&mut self, size: sandbox::terminal::TerminalSize) -> Result<(), Error> {
-        Ok(write_frame(&mut self.writer, &Frame::Resize(size)).await?)
+        self.send(&Frame::Resize(size)).await
     }
 
     /// Asks to leave. The program's last output, such as a session's sequences that put the terminal back, then
@@ -930,9 +930,14 @@ impl TerminalInput {
     ///
     /// # Errors
     ///
-    /// Returns an error when the connection is gone.
+    /// Returns an error when the connection is gone, as [`TerminalOutput::next`] describes.
     pub async fn detach(&mut self) -> Result<(), Error> {
-        Ok(write_frame(&mut self.writer, &Frame::Detach).await?)
+        self.send(&Frame::Detach).await
+    }
+
+    async fn send(&mut self, frame: &Frame) -> Result<(), Error> {
+        write_frame(&mut self.writer, frame).await.map_err(connection_lost)?;
+        Ok(())
     }
 }
 
@@ -961,11 +966,11 @@ impl TerminalOutput {
     ///
     /// # Errors
     ///
-    /// A connection that closes before [`Output::Ended`] is [`std::io::ErrorKind::UnexpectedEof`], as when `agentd`
-    /// stopped without saying so, and a client may connect again. Anything that is not a frame `agentd` sends is
-    /// [`std::io::ErrorKind::InvalidData`].
+    /// A connection that is lost before [`Output::Ended`] is [`std::io::ErrorKind::UnexpectedEof`], however it was
+    /// lost, as when `agentd` stopped without saying so, and a client may connect again. Anything that is not a frame
+    /// `agentd` sends is [`std::io::ErrorKind::InvalidData`].
     pub async fn next(&mut self) -> Result<Output, Error> {
-        match self.frames.next().await? {
+        match self.frames.next().await.map_err(connection_lost)? {
             Some(Frame::Output(bytes)) => Ok(Output::Bytes(bytes)),
             Some(Frame::Ended(ended)) => Ok(Output::Ended(ended)),
             Some(Frame::Input(_) | Frame::Resize(_) | Frame::Detach) => Err(std::io::Error::new(
@@ -979,6 +984,16 @@ impl TerminalOutput {
             )
             .into()),
         }
+    }
+}
+
+/// `error` as [`std::io::ErrorKind::UnexpectedEof`] when it means the connection to `agentd` was lost, so a client
+/// tells that from `agentd` sending something wrong without knowing every way a connection breaks.
+fn connection_lost(error: std::io::Error) -> std::io::Error {
+    if super::frames::lost(&error) && error.kind() != std::io::ErrorKind::UnexpectedEof {
+        std::io::Error::new(std::io::ErrorKind::UnexpectedEof, error)
+    } else {
+        error
     }
 }
 

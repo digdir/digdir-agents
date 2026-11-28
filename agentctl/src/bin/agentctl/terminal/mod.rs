@@ -21,6 +21,7 @@ use agent::{
 };
 use bytes::Bytes;
 use sandbox::terminal::TerminalSize;
+use tokio::io::AsyncWriteExt as _;
 
 /// How long an attachment waits for agentd to come back after it stopped, such as for an upgrade, before it starts
 /// agentd itself.
@@ -117,19 +118,23 @@ pub(crate) fn size() -> TerminalSize {
 /// Returns an error when this is not an interactive terminal, or the connection to agentd fails.
 pub(crate) async fn relay(terminal: RemoteTerminal, mut on_output: impl AsyncFnMut(&[u8])) -> Result<Ended, Error> {
     let mut local = Input::open()?;
+    // Dropped after raw mode, whose last sequences it still interprets.
+    #[cfg(windows)]
+    let _output_mode = windows::OutputMode::enable();
     let _raw = RawMode::enable()?;
     let (input, mut output) = terminal.split();
     // The input, while nothing is on its way to agentd.
     let mut idle = Some(input);
     let mut sending: Option<Sending> = None;
-    let mut stdout = std::io::stdout();
+    // Written off the runtime's thread, so a terminal that is slow to draw holds up this relay and nothing else.
+    let mut stdout = tokio::io::stdout();
     let mut leaving = false;
     loop {
         tokio::select! {
             piece = output.next() => match piece? {
                 Output::Bytes(bytes) => {
-                    stdout.write_all(&bytes)?;
-                    stdout.flush()?;
+                    stdout.write_all(&bytes).await?;
+                    stdout.flush().await?;
                     on_output(&bytes).await;
                 }
                 Output::Ended(ended) => return Ok(ended),

@@ -1871,6 +1871,8 @@ struct FakeTerminals {
     stubborn: bool,
     /// The program takes no input, so a write to it never completes.
     deaf: bool,
+    /// The sandbox never answers a request to terminate or kill the program.
+    hung: bool,
     /// Draws this as soon as it starts.
     greeting: Option<&'static [u8]>,
     /// Each program started, to make it draw or exit by itself.
@@ -1889,6 +1891,7 @@ struct FakeProcess {
     events: ProgramEvents,
     calls: Rc<RefCell<Vec<String>>>,
     stubborn: bool,
+    hung: bool,
 }
 
 impl FakeTerminals {
@@ -1918,6 +1921,7 @@ impl FakeTerminals {
                 events,
                 calls: self.calls.clone(),
                 stubborn: self.stubborn,
+                hung: self.hung,
             }),
         })
     }
@@ -1965,6 +1969,9 @@ impl TerminalProcess for FakeProcess {
     fn terminate(&self) -> LocalFuture<'_, Result<(), Error>> {
         use sandbox::terminal::TerminalEvent;
         self.calls.borrow_mut().push("terminate".into());
+        if self.hung {
+            return Box::pin(std::future::pending());
+        }
         if !self.stubborn {
             let _sent = self
                 .events
@@ -1978,6 +1985,9 @@ impl TerminalProcess for FakeProcess {
 
     fn kill(&self) -> LocalFuture<'_, Result<(), Error>> {
         self.calls.borrow_mut().push("kill".into());
+        if self.hung {
+            return Box::pin(std::future::pending());
+        }
         let _sent = self.events.send(Ok(sandbox::terminal::TerminalEvent::Exited(
             sandbox::execution::ExitStatus { code: 137 },
         )));
@@ -2314,6 +2324,48 @@ async fn a_program_that_takes_no_input_still_draws_and_can_be_detached() {
     input.detach().await.expect("detach");
     assert_eq!(output.next().await.expect("last output"), drew(b"bye"));
     assert_eq!(output.next().await.expect("ended"), Output::Ended(Ended::Detached));
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_client_still_leaves_after_more_input_than_a_program_that_takes_none_is_held_for() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals {
+        deaf: true,
+        ..FakeTerminals::default()
+    });
+    let (_session, terminal) = fixture
+        .client
+        .attach_session("worker", session_name("main"), terminal_size(24, 80))
+        .await
+        .expect("attach");
+    let (mut input, output) = terminal.split();
+
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        input.input(bytes::Bytes::from(vec![b'x'; 1024 * 1024])),
+    )
+    .await
+    .expect("agentd reads the client's frames again")
+    .expect("input");
+    drop((input, output));
+
+    terminals.wait_for("terminate").await;
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn a_sandbox_that_does_not_answer_still_has_its_program_killed() {
+    let (fixture, terminals) = api_with_terminals(FakeTerminals {
+        hung: true,
+        ..FakeTerminals::default()
+    });
+    let (_session, terminal) = fixture
+        .client
+        .attach_session("worker", session_name("main"), terminal_size(24, 80))
+        .await
+        .expect("attach");
+    drop(terminal);
+
+    terminals.wait_for("terminate").await;
+    terminals.wait_for("kill").await;
 }
 
 #[tokio::test(flavor = "local", start_paused = true)]
